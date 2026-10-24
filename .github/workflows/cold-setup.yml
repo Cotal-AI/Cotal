@@ -3,6 +3,11 @@ name: Cold setup
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      snapshot:
+        description: "Prepare a snapshot under this dist-tag without publishing it. Leave empty for a normal candidate."
+        type: string
+        default: ""
   workflow_call:
     inputs:
       snapshot:
@@ -46,6 +51,11 @@ jobs:
     needs: [native, workspace-native]
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6.0.8
@@ -85,8 +95,26 @@ jobs:
         env:
           WORKSPACE_NATIVE_X64: ${{ runner.temp }}/workspace-native-x64
           WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/workspace-native-arm64
+      - name: Probe package shape before publication is requested
+        run: node scripts/post-publish-install-probe.mjs
       - name: Pack every public candidate package
         run: node scripts/pack-cold-candidate.mjs cold-candidate
+      - name: Attest the manifest and its executed build source
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        id: build-attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: cold-candidate/manifest.json
+      - name: Retain the public signature bundle with the candidate
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          QUALIFICATION_BUNDLE: ${{ steps.build-attestation.outputs.bundle-path }}
+        run: cp "$QUALIFICATION_BUNDLE" cold-candidate/qualification.sigstore.json
+      - name: Verify the live certificate and source/run rejection before qualification
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/verify-qualification-attestation.mjs cold-candidate
       - uses: actions/upload-artifact@v4
         with:
           name: cold-candidate
@@ -146,3 +174,12 @@ jobs:
           CANDIDATE: ${{ needs.candidate.result }}
           LIFECYCLE: ${{ needs.lifecycle.result }}
         run: test "$NATIVE" = success && test "$WORKSPACE_NATIVE" = success && test "$CANDIDATE" = success && test "$LIFECYCLE" = success
+      - name: Seal the completed qualification for promotion
+        env:
+          SNAPSHOT: ${{ inputs.snapshot || '' }}
+        run: node scripts/release-qualification.mjs record cold-candidate cold-results qualification.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cold-qualified
+          path: qualification.json
+          if-no-files-found: error

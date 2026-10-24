@@ -140,7 +140,7 @@ const {
   createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
   principalKey, registry, dmStream, dlvStream, openAclRegistry, openMembersRegistry, readMember, listMembers, memberKey,
   CotalEndpoint, mintMembershipObserverCreds, mintConnectionEvictorCreds, evictDeniedPrincipalWithCreds,
-  createEndpointStreams, DEV_OWNER, recordsBucket, epAuthBucket, mintLifecycleUid,
+  createEndpointStreams, DEV_OWNER, recordsBucket, epAuthBucket, mintLifecycleUid, DeprovisionError,
 } = await import("@cotal-ai/core");
 const {
   activateStaticLifecycle,
@@ -508,16 +508,16 @@ try {
   // at-least-once redelivery of a retired lifecycle's cleanup that the lifecycle pinning makes
   // harmless.
   type DeprovArg = { id: string; name: string };
-  type DeprovBroker = (a: DeprovArg) => Promise<void>;
+  type DeprovBroker = (a: DeprovArg) => Promise<import("@cotal-ai/core").DeprovisionResourceAccounting>;
   type Handle = import("@cotal-ai/core").AgentHandle;
   const mAny = manager as unknown as { deprovisionBroker: DeprovBroker; absentByLeaseRow: () => Promise<"absent">; ep: { ref: () => { id: string }; getRoster: () => Array<{ card: { name: string }; status?: string }> }; opStop: (a: Record<string, unknown>, c: string, admin: boolean) => Promise<ControlReply>; agents: Map<string, { handle: Handle }> };
   const origBroker: DeprovBroker = mAny.deprovisionBroker.bind(manager);
   let releaseGate!: () => void;
   const gate = new Promise<void>((r) => { releaseGate = r; });
-  let gatedRun: Promise<void> | undefined;
+  let gatedRun: Promise<never> | undefined;
   let predArg: DeprovArg | undefined;
-  const brokerCalls: Array<{ name: string; gated: boolean; done: Promise<void> }> = [];
-  mAny.deprovisionBroker = (a: DeprovArg): Promise<void> => {
+  const brokerCalls: Array<{ name: string; gated: boolean; done: Promise<unknown> }> = [];
+  mAny.deprovisionBroker = (a: DeprovArg): ReturnType<DeprovBroker> => {
     if (a.name === AGENT && !gatedRun) {
       predArg = a;
       gatedRun = (async () => { await gate; throw new Error("injected first-teardown broker failure"); })();
@@ -695,10 +695,10 @@ try {
   await delivery!.durableJoinFor(principal.key, "general", succUid);
   check("MEMBERS: the replacement holds its own lifecycle-distinct general row", succUid !== predUid && await memberRow("general", succUid), { predUid, succUid });
   replayAtMs = Date.now();
-  await origBroker(predArg!).catch(() => { /* a conforming retired-lifecycle no-op may also throw */ });
+  // A conforming retired-lifecycle no-op may also throw; a DeprovisionError carries that call's accounting.
+  const replayRes = await origBroker(predArg!).catch((e: unknown) => e instanceof DeprovisionError ? e.accounting : undefined);
   mAny.deprovisionBroker = origBroker;
 
-  const replayRes = (manager as unknown as { lastDeprovisionResources?: import("@cotal-ai/core").DeprovisionResourceAccounting }).lastDeprovisionResources;
   check("REPLAY ACCOUNTING: replayed predecessor teardown reports zero deletions",
     replayRes !== undefined && replayRes.deleted === 0 && replayRes.absent >= 3,
     replayRes);

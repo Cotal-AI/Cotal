@@ -235,7 +235,7 @@ const CORPUS: readonly (readonly [string, string])[] = [
   for (const [, source] of CORPUS) for (const t of nodeTypes(parse(source, { ecmaVersion: 2023, sourceType: "module", allowAwaitOutsideFunction: true }) as unknown as Node)) covered.add(t);
   const missing = [...ADMITTED_NODES].filter((t) => !covered.has(t));
   ok("the corpus exercises every admitted node type", missing.length === 0, missing);
-  console.log(`  (${ADMITTED_NODES.size} admitted node types, ${covered.size} node types in the corpus)`);
+  console.log(`  (${ADMITTED_NODES.length} admitted node types, ${covered.size} node types in the corpus)`);
 }
 
 // ---- 6) the surfaced-but-unruled debt is exactly what it is ---------------------------------------

@@ -17,63 +17,140 @@ import {
   eventPlaneArmed,
   hasIdentity,
   MeshAgent,
+  prepareInlineDelivery,
+  type GatewayConnection,
   startControlServer,
   registerCotalTools,
   feedbackLine,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
   WORKFLOW_STEER,
-  AguiEmitter,
-  AguiEmitterHolder,
-  eventPlaneStopped,
-  EventWal,
-  FileSubjectFrontier,
-  ensureEventWalDir,
-  resolveEventsStateRoot,
+  CHANNEL_GUIDANCE,
+  type AguiEmitterHolder,
   controlFromEnv,
-  NO_TOOL_ARGS,
-  JsonlFileSource,
-  type DurableSource,
+  GATEWAY_CONNECTING,
+  GATEWAY_INSTRUCTIONS,
+  GATEWAY_LISTENING,
+  NATIVE_GATEWAY_TOOLS,
+  serveGatewayStdio,
+  DOCS_VERSION,
 } from "@cotal-ai/connector-core";
-import { principalKey } from "@cotal-ai/core";
-import { randomUUID } from "node:crypto";
-import { basename } from "node:path";
+import { homedir } from "node:os";
+import { dirname, parse } from "node:path";
 import { createClaudeHandle, createWakePolicy, type WakePolicy } from "./hooks.js";
-import { createClaudeMapper, type ClaudeEntry, type ClaudeMapper } from "./agui-map.js";
-import { createBoundClaudeTranscriptSource } from "./agui-source.js";
+import type { ClaudeEntry } from "./agui-map.js";
+import { createClaudeEventPlane } from "./claude-events.js";
+import { createAppHost } from "./app-host.js";
+import { readCliRecord } from "./cli-record.js";
+import { openWakeFeed } from "./wake-feed.js";
 
-/** What a plain session's one tool says. Static: an unmanaged process knows nothing about any mesh. */
-const HOW_TO_JOIN =
-  "This Claude Code session is not on a Cotal mesh, so the cotal_* mesh tools are off. " +
-  "The Cotal plugin stays off the mesh unless the session was launched with a mesh identity " +
-  "(COTAL_NAME, COTAL_LINK or COTAL_AGENT_FILE in its environment). To work on a mesh, launch the " +
-  "session through Cotal: `cotal setup` once, `cotal up` to start a local mesh, then `cotal spawn` " +
-  "to start a Claude session that joins it (`cotal spawn <name> --detach` runs it under the manager). " +
-  "Docs: https://docs.cotal.ai/getting-started/";
+/** What a plain session's local server tells the model ahead of the gateway's own steps. */
+const LOCAL =
+  "This is the Cotal server on this computer. It joins the person's local Cotal mesh. If a hosted " +
+  "Cotal connector is also available, use this one unless the person asks for the hosted one: a " +
+  "conversation uses one Cotal path. ";
 
-/** A plain `claude`: answer MCP with one static tool instead of closing stdio. Builds no MeshAgent
- *  and no control server, so nothing reaches a broker or binds a socket. */
-async function serveUnmanaged(): Promise<void> {
-  const server = new McpServer({ name: "cotal", version: "0.0.0" });
-  server.registerTool(
-    "cotal_how_to_join",
-    {
-      title: "How to join a Cotal mesh",
-      description: "Explains why this session has no Cotal mesh tools and how to launch one that does.",
-      inputSchema: NO_TOOL_ARGS,
-    },
-    async () => ({ content: [{ type: "text" as const, text: HOW_TO_JOIN }] }),
-  );
-  await server.connect(new StdioServerTransport());
+/** What Desktop chat's local server tells the model instead. Desktop chat supplies no native session,
+ *  so this server cannot join a signed-in space. */
+const DESKTOP =
+  "This is the Cotal server on this computer. It joins the person's local Cotal mesh. It cannot join a " +
+  "signed-in Cotal space, such as one on Cotal Cloud, from this chat: for one, use the space's hosted Cotal " +
+  "connector, which the person adds under Settings > Connectors > Add custom connector with the URL " +
+  "cotal_connect names. A conversation uses one Cotal path. ";
+
+/** How a Claude Code conversation hears messages through its native hooks module. */
+const CODE_LISTENING =
+  "This plugin's native hooks module delivers Cotal-attributed incoming messages. " +
+  'A prompt beginning "Cotal: inline messages" contains complete messages; answer those without fetching them again. ' +
+  'A notification beginning "Cotal:" without complete messages names the connection_id; read those with cotal_inbox. ' +
+  "cotal_connect reports whether its incoming-message reader is connected. Where it is not: " +
+  GATEWAY_LISTENING;
+
+
+/** A plain session, one the launcher did not start: a Claude Code session, or Claude Desktop through
+ *  its extension (`--desktop`). It serves the gateway surface over stdio with a local host, so a
+ *  conversation joins the local mesh only when it calls `cotal_connect`, as an identity of its own.
+ *  Nothing reaches a broker before that. */
+async function serveLocal(desktop: boolean): Promise<void> {
+  const host = createAppHost({
+    cotal: () => readCliRecord(dirname(process.argv[1] ?? "")),
+    // Claude Desktop's working directory is not the person's project, so the mesh is found from a
+    // directory that is no project: the `cotal use` mesh, else the only one running.
+    cwd: desktop ? parse(homedir()).root : process.cwd(),
+    env: process.env,
+  });
+  // Desktop Chat runs no native hooks module. In Code, the server and native wake reader are
+  // children of the same host process, which names their private feed.
+  const feed = desktop ? undefined : await openWakeFeed(process.ppid);
+  feed?.onNative((event) => host.nativeEvent(event));
+  let rearm: (connection?: GatewayConnection, fireNow?: boolean) => void = () => {};
+  const served = await serveGatewayStdio(host, {
+    source: "claude-local",
+    connectContext: !desktop,
+    // A signed-in Code conversation asks for its own grant and calls with it; see the host.
+    ...(desktop ? {} : { tools: NATIVE_GATEWAY_TOOLS, selection: true }),
+    ...(feed
+      ? {
+          instructions: `${LOCAL}${GATEWAY_CONNECTING} ${CODE_LISTENING}`,
+          wake: {
+            signal(c, preview) {
+              const session = host.sessionFor(c.id);
+              if (session && feed.supportsInline(session)) {
+                // A prior handoff rearms this connection when it settles. Never turn a second
+                // short arrival into a competing inbox notification while that handoff is open.
+                if (feed.inlinePending(session)) return true;
+                const batch = prepareInlineDelivery(c.agent, {
+                  connectionId: c.id,
+                  fits: (payload) => feed.fitsInline(c.id, session, payload),
+                });
+                if (batch) {
+                  if (feed.sendInline(c.id, session, batch, (delivered) => queueMicrotask(() => rearm(c, delivered)), () => queueMicrotask(() => rearm(c)))) return true;
+                  batch.settle(false);
+                }
+              }
+              return feed.send(c.id, preview, session);
+            },
+            attach(rewake) {
+              rearm = rewake;
+              feed.onReader(() => rewake());
+            },
+            inboxNotice(c) {
+              const session = host.sessionFor(c.id);
+              return !session || !feed.supportsInline(session);
+            },
+            listening(c) {
+              const session = host.sessionFor(c.id);
+              if (!session || !feed.watched(session))
+                return "Automatic incoming messages are unavailable in this session. Check that the Cotal plugin and its native hooks module are enabled; call cotal_wait to listen.";
+              return feed.supportsInline(session)
+                ? "The Cotal incoming-message reader is connected with complete short-message delivery. New messages can start a turn, subject to Claude's Stop and organization policies."
+                : "The Cotal incoming-message reader is connected in notification-only mode. Read messages with cotal_inbox; reload the Cotal plugin to enable complete short-message delivery.";
+            },
+          },
+        }
+      : { instructions: `${DESKTOP}${GATEWAY_INSTRUCTIONS}` }),
+  });
+  let ending: Promise<void> | undefined;
+  const end = () =>
+    (ending ??= host
+      .closeAll()
+      .then(() => served.close())
+      .finally(() => {
+        feed?.close();
+        process.exit(0);
+      }));
+  process.stdin.on("end", end);
+  process.on("SIGINT", end);
+  process.on("SIGTERM", end);
 }
 
 async function main(): Promise<void> {
-  // No identity → this is a plain `claude`, not a launcher-spawned agent. Stay
-  // off the mesh, so an installed plugin can't make the operator's own sessions
-  // join as stray peers, but still answer MCP so the client sees a working server.
+  // No identity → this is a plain `claude`, not a launcher-spawned agent. It stays
+  // off the mesh until the conversation calls `cotal_connect`, so an installed
+  // plugin can't make the operator's own sessions join as stray peers.
   if (!hasIdentity()) {
-    process.stderr.write("[cotal-connector] no COTAL_NAME — not a managed session; staying off the mesh\n");
-    await serveUnmanaged();
+    process.stderr.write("[cotal-connector] no COTAL_NAME — not a managed session; serving cotal_connect for this computer's meshes\n");
+    await serveLocal(process.argv.includes("--desktop"));
     return;
   }
   const session = await serveClaudeSession({
@@ -129,8 +206,8 @@ async function startSession(
   if (opts.input.readableEnded || opts.input.destroyed)
     throw new Error("hosted MCP input is already ended or destroyed");
   /** Publishes this session's activity as AG-UI events on `events.<owner>.<actor>` — set below
-   *  iff COTAL_EVENTS is on (buildLaunch sets it for managed sessions; a personal session never
-   *  publishes). This replaces the `tr-<name>` transcript mirror, which is gone. */
+   *  when launch policy arms it. Personal native connections use the same recorder through the
+   *  app host, with a boundary captured when that conversation connects. */
   let events: AguiEmitterHolder<ClaudeEntry> | undefined;
 
   /** The `claude/channel` push side — set below once the MCP server exists. */
@@ -146,138 +223,11 @@ async function startSession(
   // Parsed here, not in the handshake handler that applies it: the SDK routes a throw from that
   // handler to its error hook and the session would run on with the flag unread.
   const channelFlag = envFlag(env, "COTAL_CHANNEL");
-  const agent = new MeshAgent(config, env);
-  const eventWaitStop = new AbortController();
-  // A Cotal bind can remain current while nats.js is reconnecting and has no server info.
-  // Wait for both edges before starting or pumping the recorder. Its transcript stays durable
-  // while the endpoint owns reconnection; shutdown cancels the wait instead of a timer killing MCP.
-  const waitForEventConnection = (): Promise<void> =>
-    new Promise<void>((resolve, reject) => {
-      const release = (): void => {
-        agent.off("connection", onConnection);
-        agent.off("transport", onTransport);
-        eventWaitStop.signal.removeEventListener("abort", onStop);
-      };
-      const finish = (): void => {
-        release();
-        resolve();
-      };
-      const onStop = (): void => {
-        release();
-        reject(new Error("seat stopping while the mesh connection is down; unpublished events stay in the transcript"));
-      };
-      const onConnection = (e: { connected: boolean }): void => {
-        if (e.connected && agent.transportConnected) finish();
-      };
-      const onTransport = (e: { connected: boolean }): void => {
-        if (e.connected && agent.connected) finish();
-      };
-      agent.on("connection", onConnection);
-      agent.on("transport", onTransport);
-      eventWaitStop.signal.addEventListener("abort", onStop);
-      if (eventWaitStop.signal.aborted) onStop();
-      else if (agent.connected && agent.transportConnected) finish();
-    });
-
-  if (eventPlaneArmed(config, env)) {
-    // The mapper is built inside the emitter factory, because it is keyed on the thread the
-    // transcript names and that is not known until a hook hands one over. It is HELD here because
-    // `onRunClosed` below has to reach it, and the two are assigned at different times.
-    let mapper: ClaudeMapper | undefined;
-    // The emitter is built LAZILY, on the first hook that hands over a transcript path: its source
-    // IS that transcript, whose location this process does not know until a hook says so, and
-    // `start()` reaches the broker, work that must not run for a session that never emits.
-    //
-    // The channel is derived inside the emitter from the endpoint's OWN principal, never from
-    // `config.name`, so the subject the broker enforces a grant against and the subject this
-    // publishes to are computed from the identity the connection authenticates as.
-    // ONE source for the holder's lifetime. The holder re-establishes a plane that stopped by
-    // calling this factory again, and the boundary a bound source captured on the first call is
-    // the position the thread adopted at; a second source would capture a second boundary, at the
-    // re-establish, and every record between the two would be lost without a word.
-    let source: DurableSource<ClaudeEntry> | undefined;
-    events = new AguiEmitterHolder<ClaudeEntry, unknown>(
-      async (transcriptPath: string, sessionSource: unknown) => {
-        // Captured as the FACTORY'S FIRST ACT, before the mesh wait below and before anything else
-        // this bind does: a lazily-built source otherwise positions itself on its own first read,
-        // which happens only after the mesh wait, and anything the session writes to the transcript
-        // in that window is silently dropped. `fork` runs its own file-appear wait inside this same
-        // call and still substitutes its boundary exactly once. `startup` needs no boundary.
-        const boundSource = (source ??= await createBoundClaudeTranscriptSource(transcriptPath, sessionSource));
-        const startEmitter = async () => {
-          // The events state root throws rather than defaulting to the working directory: a WAL
-          // written somewhere no later start looks is a silent loss.
-          const workspaceRoot = resolveEventsStateRoot(env);
-
-          // The native session IS the AG-UI thread, and Claude Code names the transcript after it.
-          // Taken from the path rather than from any env: the hook's path is what the emitter
-          // actually reads, so deriving the thread from anything else could key a log to one session
-          // while consuming another's bytes.
-          const threadId = basename(transcriptPath, ".jsonl");
-          const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
-
-          // The directory chain is made durable BEFORE the first transition, so a crash cannot lose
-          // the thread directory's own link and let a published thread reboot as virgin.
-          const { walPath, subjectPath } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
-
-          // The subject is per PRINCIPAL and the log is per thread, so the expectation a publish
-          // carries lives beside the thread directories rather than inside one of them. Without it a
-          // second session of this agent opens virgin, expects an empty subject its own first session
-          // filled, and halts for good.
-          const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
-
-          // `subjectMayExist: false` is an honest claim rather than a convenient default: this is a
-          // native session id, so nothing published under this (principal, thread) pair before this
-          // log existed, and a same-session connector restart finds the log on disk and never
-          // consults the flag. The case it would be wrong for, a session that published and then
-          // lost its log, does not fail silently: the first frame goes out expecting sequence 0 on a
-          // subject that already has one, the broker refuses it, and the emitter halts.
-          const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
-
-          // Seeded from the bracket state that will exist AFTER `start` settles a pending frame,
-          // not from the folded state before it: a pending terminal closes the log's run without
-          // passing through this mapper. A re-established plane starts here with the log's run
-          // open; a mapper that opened with none would drop every assistant record until the
-          // next prompt, whose `RUN_STARTED` the brackets then refuse.
-          const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
-          mapper = createClaudeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
-          return AguiEmitter.start<ClaudeEntry>({
-            endpoint: agent.ep,
-            wal,
-            subjectFrontier,
-            source: boundSource,
-            map: mapper.map,
-            // Claude writes the transcript, and a write it cut short (a full disk) leaves part of
-            // one record glued to the next on a single line that never becomes readable. That line
-            // is stepped over and named here; halting on it ended the plane, and on a space that
-            // requires events the seat with it, for good at that byte, on every restart.
-            onUnreadable: (gap) =>
-              process.stderr.write(
-                `[cotal-connector] AG-UI source: skipped an unreadable transcript record at offset ${gap.offset} ` +
-                  `(${gap.bytes} bytes): ${gap.reason}\n`,
-              ),
-          });
-        };
-
-        // Capture the source boundary above before waiting, so records written during a delayed
-        // initial connection remain eligible for publication when the endpoint becomes live.
-        await waitForEventConnection();
-        return startEmitter();
-      },
-      {
-        onError: eventPlaneStopped({ log: (line) => process.stderr.write(`[cotal-connector] ${line}\n`) }),
-        // The transcript's end when a Stop or StopFailure hook fires: what names the turn a terminal
-        // held through an outage ends.
-        sourceEnd: (transcriptPath: string) => new JsonlFileSource(transcriptPath).end(),
-        // The turn terminal closes a run the record stream never described, so the mapper still
-        // believes that run is open. Without this it would attribute the next records to a run the
-        // published stream has already finished and the emitter would refuse the batch. Keyed on
-        // the id, so a newer run opened in between is left alone.
-        onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
-        waitLive: waitForEventConnection,
-      },
-    );
-  }
+  // One process may host several sessions, so its own directory is not a session's: the card's
+  // directory comes from that session's SessionStart hook instead.
+  const agent = new MeshAgent(config, env, { withholdProcessCwd: true });
+  const plane = eventPlaneArmed(config, env) ? createClaudeEventPlane(agent, config, env) : undefined;
+  events = plane?.events;
 
   // Local control plane for the lifecycle hooks (presence + message injection) and the manager's
   // cooperative shutdown. The SOCKET PATH comes from the launch env; the first-frame TOKEN comes
@@ -306,7 +256,7 @@ async function startSession(
     (stopping ??= (async () => {
       opts.input.off("end", onInputClose);
       opts.input.off("close", onInputClose);
-      eventWaitStop.abort();
+      plane?.stop();
       try {
         controlServer?.close();
       } catch {
@@ -347,7 +297,8 @@ async function startSession(
   agent.start(); // custody is claimed before background broker connect, after control bind
 
   const server = new McpServer(
-    { name: "cotal", version: "0.0.0" },
+    // The Cotal release this process loaded, the same value cotal_orientation reports.
+    { name: "cotal", version: DOCS_VERSION },
     {
       // `claude/channel` makes this MCP server a Claude Code *channel*: peer
       // messages can be pushed straight into the session (waking it if idle).
@@ -359,6 +310,7 @@ async function startSession(
         feedbackLine(config) +
         `${MESH_FIRST_STEER} ` +
         `${WORKFLOW_STEER} ` +
+        `${CHANNEL_GUIDANCE} ` +
         `Other agents coordinate with you here as lateral peers. ` +
         `Peer messages may arrive as <channel source="cotal" from="<name>" role="<role>" ` +
         `kind="dm|channel|anycast" channel="<name>">…</channel> — read them and, when a reply is ` +

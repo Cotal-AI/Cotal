@@ -1,0 +1,2 @@
+# Keyed run submission on a signerless manager behind the auth service: a malformed keyed observation does not stop the issuer's reader.
+smoke:keyed-review-observer:auth

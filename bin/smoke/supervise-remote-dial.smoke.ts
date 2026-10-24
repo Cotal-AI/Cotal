@@ -23,17 +23,24 @@
  *   G: the remote space's OWN split records — refused with the combination message.
  *   I: an unreadable auth/auth.json — refused on the store's parse message before any exchange.
  *   H: no trust text may name auth/auth.json in F's output.
+ *   J: with two of the owner's managers up, one started with `--name`, an unpinned `ps` lists each
+ *      one by name with its host and gives the command again with `--on` for each, by name where
+ *      the name picks it; `ps --on <name>` is answered and `who --all` shows the name.
+ *   K: a managed spawn the host refuses at enrollment, for a role outside the caller's grant, is
+ *      refused as PERMISSION_DENIED with the host's reason, and no secret staged for the agent
+ *      remains under the manager's root.
  *
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/supervise-remote-dial.json
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { createServer as createHttpServer } from "node:http";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { hostname, tmpdir } from "node:os";
+import { basename, join, resolve } from "node:path";
+import { clean, cotalPty } from "../../implementations/cli/smoke/_console-pty.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const awaitExit = (child: ChildProcess, ms = 5_000): Promise<void> =>
@@ -90,6 +97,7 @@ const { registerRemoteManagerAuthority } = await import("../../implementations/m
 const { superviseTarget } = await import("../../implementations/manager/src/commands.js");
 const { runWorkflow } = await import("../../implementations/runtime/src/run-command.js");
 const { Manager } = await import("../../implementations/manager/src/manager.js");
+const { loadOrCreateRemoteManagerIdentity } = await import("../../implementations/manager/src/remote-authority.js");
 
 const auth = await createSpaceAuth(space);
 saveSpaceAuth(authDir(root), auth);
@@ -229,7 +237,7 @@ try {
   // websocket broker as a STATIC mesh - the mode `cotal run` is reachable on at all.
   recordMesh({ space, server: wsServer, root, mode: "auth", ts: new Date().toISOString() });
   const runLine = await runPs();
-  ok("E: `cotal run ps --local` opens its run planes over the recorded ws:// broker", runLine === `no workflow runs recorded in space ${space}`, runLine);
+  ok("E: `cotal run ps --local` opens its run planes over the recorded ws:// broker", new RegExp(`Workflow runs\\n\\s+Space:\\s+${space}\\n\\s+No workflow runs in this authorized record view\\.`).test(runLine), runLine);
 
   // A remote-authority manager never reads local signing trust (#1944). These cells run the
   // SHIPPED command — `tsx bin/cotal.ts supervise --space <space>` as a child, cwd = a per-cell
@@ -462,6 +470,110 @@ try {
   // validated it as this space's would print one of the trust texts. Assert on the MESSAGE.
   ok("H: the wrong-space monolith is never used as this space's trust (no trust text names auth/auth.json)",
     !/corrupt or mislabeled|cannot be combined|space trust bundle \(auth\/auth\.json\)/.test(fLine), fLine.slice(-600));
+
+  // J: two of the owner's managers live at once. An unpinned managed verb cannot choose between
+  // them, so its refusal lists each one with the host its presence reports, and the caller's own
+  // command again with `--on` for each. The caller registered the space as `cotal meshes add --from`
+  // does, with the sentinel under its own user-auth state dir. `ps` needs the admin scope. The
+  // earlier cells leave registrations the exchange still counts as live, so the cell finds its own
+  // two managers among the rows by their instance ids.
+  const jGrant = grantActor(hostDir, { owner, actor: "cli", scope: ["spawn", "supervise", "admin"], allowSubscribe: ["general"], allowPublish: ["general"] });
+  const scratch = (label: string): string => {
+    const path = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}supervise-${label}-${fixtureId}-`));
+    releaseRoots.push(path);
+    return path;
+  };
+  const twoManagers: ChildProcess[] = [];
+  const twoIds: string[] = [];
+  let j1Root = "", j1Home = "";
+  for (const label of ["J1", "J2"]) {
+    const cellRoot = scratch("two-root"), cellHome = scratch("two-home");
+    if (label === "J1") [j1Root, j1Home] = [cellRoot, cellHome];
+    mkdirSync(join(cellRoot, ".cotal"), { recursive: true });
+    recordMesh({ space, server: trustServer, root: cellRoot, mode: "user", userAuth: trustUserAuth, policy: { events: "required" }, origin: "manual", ts: new Date().toISOString() });
+    cpSync(trustHome, cellHome, { recursive: true });
+    const child = spawnProc(tsxBin, [cliBin, "supervise", "--space", space, ...(label === "J1" ? ["--name", "j-one"] : [])], { cwd: cellRoot, env: childHomeEnv(cellHome), stdio: ["ignore", "pipe", "pipe"] });
+    kids.push(child);
+    twoManagers.push(child);
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    child.stderr?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    for (let i = 0; i < 1_200 && !/✓ manager up/.test(output) && child.exitCode === null; i++) await sleep(100);
+    must(`J: manager ${label} is up`, /✓ manager up/.test(output), output.slice(-600));
+    twoIds.push(loadOrCreateRemoteManagerIdentity(cellRoot, space).instanceId);
+  }
+  const callerRoot = scratch("caller-root"), callerHome = scratch("caller-home");
+  mkdirSync(join(callerRoot, ".cotal"), { recursive: true });
+  const callerDir = userAuthStateDir(callerRoot, space);
+  mkdirSync(callerDir, { recursive: true, mode: 0o700 });
+  const sentinelCredsPath = join(callerDir, "sentinel.creds");
+  writeFileSync(sentinelCredsPath, callout!.sentinelCreds, { mode: 0o600 });
+  recordMesh({ space, server: trustServer, root: callerRoot, mode: "user", userAuth: { ...trustUserAuth, sentinelCredsPath }, policy: { events: "required" }, origin: "manual", ts: new Date().toISOString() });
+  cpSync(trustHome, callerHome, { recursive: true });
+  const caller = (...args: string[]) => new Promise<{ code: number | null; out: string; err: string }>((resolveRun) => {
+    const child = spawnProc(tsxBin, [cliBin, ...args], { cwd: callerRoot, env: childHomeEnv(callerHome), stdio: ["ignore", "pipe", "pipe"] });
+    kids.push(child);
+    let out = "", err = "";
+    child.stdout?.on("data", (chunk: Buffer) => { out += chunk.toString(); });
+    child.stderr?.on("data", (chunk: Buffer) => { err += chunk.toString(); });
+    child.on("close", (code) => resolveRun({ code, out, err }));
+  });
+  const ps = await caller("ps", "--space", space);
+  ok("J: an unpinned ps with several live managers refuses as PERMISSION_DENIED, exit 2",
+    ps.code === 2 && /Code:\s+PERMISSION_DENIED/.test(ps.err) && /\d+ of your managers are live/.test(ps.err), ps);
+  const rows = new Map([...(ps.err.split("Live managers")[1] ?? "").matchAll(/^\s+(\S+)\s+([a-z0-9]{26,32})\s+(\S+)\s/gm)].map((m) => [m[2]!, { name: m[1]!, host: m[3]! }]));
+  ok("J: the refusal lists each of its live managers on its own row, by name, with the host its presence reports",
+    twoIds.length === 2 && twoIds.every((id) => rows.get(id)?.host === hostname()) && rows.get(twoIds[0]!)?.name === "j-one" && rows.get(twoIds[1]!)?.name === `${hostname()}/pty`, { twoIds, err: ps.err.slice(-900) });
+  ok("J: its Next reruns the caller's own ps on each of them, by the name or <host>/<runtime> that picks it, otherwise by instance id",
+    ps.err.includes(`ps --space ${space} --on j-one`) && [`${hostname()}/pty`, twoIds[1]].some((selector) => ps.err.includes(`ps --space ${space} --on ${selector}`)), ps.err.slice(-600));
+  const pinned = await caller("ps", "--space", space, "--on", "j-one");
+  ok("J: ps --on <name> is answered by the manager started with that name", pinned.code === 0, pinned);
+  const who = await caller("who", "--all", "--space", space);
+  ok("J: who --all shows that manager by its name", who.code === 0 && who.out.includes("manager j-one"), who.out.slice(-900));
+  // On a terminal the same unpinned ps asks which manager, the most recently started first and the
+  // default, and Enter runs it there. COTAL_NO_PROMPT=1 keeps the refusal.
+  const onTerminal = async (keys: string | undefined, extra: Record<string, string> = {}) => {
+    const env = Object.fromEntries(Object.entries({ ...childHomeEnv(callerHome), TERM: "xterm-256color", ...extra }).filter((entry): entry is [string, string] => entry[1] !== undefined));
+    const pty = cotalPty(["ps", "--space", space], { cwd: callerRoot, env });
+    let raw = "", code: number | undefined;
+    pty.onData((data) => { raw += data; });
+    pty.onExit((e) => { code = e.exitCode; });
+    for (let i = 0; i < 600 && code === undefined && !(keys !== undefined && /Which one should run this/.test(clean(raw))); i++) await sleep(100);
+    if (keys !== undefined && code === undefined) pty.write(keys);
+    for (let i = 0; i < 600 && code === undefined; i++) await sleep(100);
+    if (code === undefined) pty.kill();
+    return { code, out: clean(raw) };
+  };
+  const picked = await onTerminal("\r");
+  ok("J: on a terminal, an unpinned ps asks which of the live managers should run it, marking the most recent",
+    /\d+ of your managers are live\. Which one should run this\?/.test(picked.out) && picked.out.includes("most recent"), picked.out.slice(-1200));
+  ok("J: Enter runs it on the most recently started manager, and a receipt names that manager",
+    picked.code === 0 && new RegExp(`Manager chosen[\\s\\S]*Instance:\\s+${twoIds[1]}`).test(picked.out) && /No managed agents/.test(picked.out), picked);
+  const scripted = await onTerminal(undefined, { COTAL_NO_PROMPT: "1" });
+  ok("J: with COTAL_NO_PROMPT=1 the terminal is not asked and the refusal stands",
+    scripted.code === 2 && /of your managers are live, and this command needs exactly one of them/.test(scripted.out) && !/Which one should run this/.test(scripted.out), scripted.out.slice(-900));
+
+  // K: a managed spawn the host refuses at enrollment is refused, not unknown. The caller's grant no
+  // longer carries admin, so the envelope walk applies, and the persona's role is not in its scope.
+  // The narrowed grant keeps the row's lifecycle, which the live managers and the caller run under.
+  // The fixture connector is installed into J1's own extension prefix, as `cotal ext add` would;
+  // the manager imports it at the spawn, and it is never launched.
+  grantActor(hostDir, { owner, actor: "cli", lifecycleUid: jGrant.lifecycleUid, scope: ["spawn", "supervise"], allowSubscribe: ["general"], allowPublish: ["general"] });
+  const probeExt = join(j1Home, "xdg", "cotal", "extensions");
+  const probePkg = join(probeExt, "node_modules", "@fixture", "probe-connector");
+  mkdirSync(probePkg, { recursive: true });
+  writeFileSync(join(probePkg, "package.json"), JSON.stringify({ name: "@fixture/probe-connector", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
+  writeFileSync(join(probePkg, "index.js"), 'import { eventChannel, registry } from "@cotal-ai/core";\nregistry.register({ kind: "connector", name: "probe", requires: ["node"], eventChannel, buildLaunch: () => { throw new Error("the probe connector is never launched"); } });\n');
+  writeFileSync(join(probeExt, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "@fixture/probe-connector", version: "1.0.0", spec: ".", provides: [{ kind: "connector", name: "probe" }], commands: [], connectors: [{ name: "probe", requires: ["node"] }] }] }));
+  mkdirSync(join(j1Root, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(j1Root, ".cotal", "agents", "roled.md"), "---\nname: roled\nagent: probe\nrole: secretrole\n---\nNever launched: its role is outside the grant.\n");
+  const refused = await caller("spawn", "roled", "--detach", "--space", space, "--on", "j-one");
+  ok("K: a spawn whose enrollment the host refuses is refused as PERMISSION_DENIED, exit 2, with the host's reason",
+    refused.code === 2 && /Outcome:\s+refused/.test(refused.err) && /Code:\s+PERMISSION_DENIED/.test(refused.err) && /would exceed its spawner's grant/.test(refused.err), refused.err.slice(-900));
+  const staged = readdirSync(join(j1Root, ".cotal"), { recursive: true }).map(String).filter((path) => basename(path).startsWith("roled.") && path !== join("agents", "roled.md"));
+  ok("K: and no secret staged for that agent remains under the manager's root", staged.length === 0, staged);
+  for (const child of twoManagers) child.kill("SIGTERM");
+  await Promise.all(twoManagers.map((child) => awaitExit(child, 15_000)));
 
   await teardown();
   const remainingArtifacts = [brokerStore, root, home, xdg, ...releaseRoots].filter((path) => existsSync(path)).length;

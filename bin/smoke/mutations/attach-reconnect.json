@@ -131,8 +131,8 @@
     {
       "name": "the first attach takes the RETRY path, so its refusal is rethrown instead of printed and exited",
       "file": "implementations/cli/src/commands/agents.ts",
-      "find": "  const t = await resolveControlTarget(v, \"control-caller-admin\", on, first ? {} : { onRefusal: \"throw\" });",
-      "replace": "  const t = await resolveControlTarget(v, \"control-caller-admin\", on, reconnect ? { onRefusal: \"throw\" } : {});",
+      "find": "  const t = seat ?? await resolveControlTarget(v, \"control-caller-admin\", on, first ? {} : { onRefusal: \"throw\" });",
+      "replace": "  const t = seat ?? await resolveControlTarget(v, \"control-caller-admin\", on, { onRefusal: \"throw\" });",
       "expectRed": "...with ONE failure mark, not the doubled one a rethrown refusal renders",
       "cell": "...with ONE failure mark, not the doubled one a rethrown refusal renders",
       "note": "The shipped defect, restored. `reconnect` is ON by default, so keying the disposition on the flag rather than on `first` sends the very first attach down the path meant only for re-establishments: its refusal escapes as an exception, the dispatcher's generic handler renders it as `\u2717 ${message}` over a sentence that already opens with `\u2717`, and the refusal's hint line is dropped. Aimed at the ONE load-bearing check in cell G: non-zero exit, the `no mesh running` sentence, and the absent reconnect banner all stay green under this mutation, because a first-attempt connect failure never announces a reconnect on either path. A kill here is therefore a claim about the failure MARK specifically, which is the whole finding.",

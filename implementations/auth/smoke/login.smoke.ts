@@ -11,6 +11,7 @@
  * emits it on a faster-than-interval poll this client never sends; the handling is code-reviewed.
  * Loopback HTTP only; broker-free. Run: pnpm smoke:auth-login
  */
+import { execFile } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
@@ -35,6 +36,8 @@ import {
   establishIdpSession,
   fetchIdpJwt,
   generateSigningKey,
+  IdpLoginCancelled,
+  IdpUnreachableError,
   loadIdpSession,
   normalizeIdpUrl,
   prepareIdpSpaceCatalogs,
@@ -121,6 +124,49 @@ console.log("A) one-shot remote enrollment client");
     check(`the ${label} refusal made no request`, requests === 3);
   }
   enrollment.close();
+  delete process.env.COTAL_HOME;
+  if (priorHome !== undefined) process.env.COTAL_HOME = priorHome;
+}
+
+// ---------- remote agent provisioning ----------
+console.log("A2) remote agent-provisioning client");
+{
+  let requests = 0;
+  const provisioningHome = mkdtempSync(join(tmpdir(), "cotal-provisioning-home-"));
+  const priorHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = provisioningHome;
+  // The path names the status the endpoint answers.
+  const provisioning = createServer((req, res) => {
+    requests++;
+    const status = Number(req.url?.slice(1));
+    res.statusCode = status;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify(status === 200 ? { ok: true } : { error: `fixture_${status}` }));
+  });
+  await new Promise<void>((r) => provisioning.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${(provisioning.address() as AddressInfo).port}`;
+  const idpUrl = `${base}/idp`;
+  const answer = async (status: number) => {
+    try {
+      await cotalAuthProvider.postAgentProvisioning!({ url: `${base}/${status}`, idpUrl, actor: "agent" });
+      return { code: "resolved", message: "" };
+    } catch (e) {
+      return { code: (e as { code?: unknown }).code, message: (e as Error).message };
+    }
+  };
+  const signedOut = await answer(403);
+  check("no sign-in is signed-out before any request", signedOut.code === "signed-out" && requests === 0 && signedOut.message.includes("cotal login --idp"));
+  saveIdpSession(provisioningHome, idpUrl, { token: "cached-login", expiresAt: Date.now() / 1000 + 600 });
+  const expired = await answer(401);
+  // The endpoint is the deployment's, and nothing pins what its refusal left behind.
+  check("an endpoint 401 carries no code and names the login", expired.code === undefined && expired.message.includes("fixture_401") && expired.message.includes("cotal login --idp"));
+  const denied = await answer(403);
+  check("an endpoint 403 carries no code and gives the endpoint's reason", denied.code === undefined && denied.message.includes("fixture_403"));
+  const failing = await answer(503);
+  check("an endpoint 503 carries no code", failing.code === undefined && failing.message.includes("fixture_503"));
+  check("a 200 answer resolves", (await answer(200)).code === "resolved");
+  check("each signed-in call sent one request", requests === 4);
+  provisioning.close();
   delete process.env.COTAL_HOME;
   if (priorHome !== undefined) process.env.COTAL_HOME = priorHome;
 }
@@ -483,7 +529,9 @@ console.log("C2) advertised space catalog cache");
   makeStale();
   failCatalog = true;
   const failed = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate, apply });
-  check("a failed refresh reports failure while retaining the previous snapshot", failed[0]?.state === "failed" && failed[0].snapshot !== undefined, failed);
+  check("a failed refresh reports failure while retaining the previous snapshot", failed[0]?.state === "failed" && failed[0].snapshot !== undefined && failed[0].ongoing !== true, failed);
+  const failedAgain = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate, apply });
+  check("the next failed refresh is marked as the same outage", failedAgain[0]?.state === "failed" && failedAgain[0].ongoing === true, failedAgain);
   failCatalog = false;
   invalidCatalog = true;
   const invalid = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate, apply });
@@ -502,6 +550,12 @@ console.log("C2) advertised space catalog cache");
       refused);
   }
   foreignTrust = undefined;
+  const recovered = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate, apply });
+  failCatalog = true;
+  const nextOutage = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate, apply });
+  failCatalog = false;
+  check("a successful refresh ends the outage, so the next failure starts a new one",
+    recovered[0]?.state === "not-modified" && nextOutage[0]?.state === "failed" && nextOutage[0].ongoing !== true, { recovered, nextOutage });
   if (process.platform !== "win32") {
     check("catalog cache file is 0600", (statSync(cacheFile).mode & 0o777) === 0o600);
     check("catalog state directory is 0700", (statSync(catalogDir).mode & 0o777) === 0o700);
@@ -705,14 +759,257 @@ console.log("E) hostile-IdP responses");
   // A non-401 sign-out failure is NOT the goal state (the server-side session may still be alive),
   // so revokeIdpSession must throw loudly — this is the signal `cotal logout` keys off to KEEP the
   // local session for a retry rather than silently dropping the handle.
-  const so = createServer((_req, res) => { res.writeHead(503, { "content-type": "application/json" }).end("{}"); });
+  let signOuts = 0;
+  const so = createServer((_req, res) => { signOuts++; res.writeHead(503, { "content-type": "application/json" }).end("{}"); });
   await new Promise<void>((r) => so.listen(0, "127.0.0.1", r));
   const soBase = `http://127.0.0.1:${(so.address() as AddressInfo).port}/api/auth`;
   await rejects("a non-401 sign-out failure is a loud throw (server-side session may still be alive)",
     () => revokeIdpSession(soBase, "sess"), "may still be alive");
+  // The command keeps the login on that failure and names `--local`, which clears it here without
+  // contacting the provider.
+  const logoutHome = mkdtempSync(join(tmpdir(), "cotal-logout-"));
+  saveIdpSession(logoutHome, soBase, { token: "cached-login", expiresAt: Date.now() / 1000 + 600 });
+  // Asynchronous, so this process's sign-out server can answer the child.
+  const cli = (...args: string[]) => new Promise<{ status: number | null; envelope?: { outcome?: string; result?: { serverRevoked?: boolean; localLoginCleared?: boolean } | null; error?: { code?: string; remedy?: string } }; stderr: string }>((done) => {
+    execFile(process.execPath, ["--import", import.meta.resolve("tsx"), join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts"), "logout", "--idp", soBase, "--json", ...args],
+      { env: { ...process.env, HOME: logoutHome, COTAL_HOME: logoutHome, XDG_CONFIG_HOME: join(logoutHome, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 60_000 },
+      (error, stdout, stderr) => {
+        let envelope;
+        try { envelope = JSON.parse(stdout); } catch { envelope = undefined; }
+        done({ status: error ? (typeof error.code === "number" ? error.code : null) : 0, envelope, stderr: stderr.slice(0, 400) });
+      });
+  });
+  const before = signOuts;
+  const kept = await cli();
+  check("logout on an unconfirmed sign-out exits 3, keeps the login and names --local",
+    kept.status === 3 && kept.envelope?.error?.code === "OPERATION_UNKNOWN" && (kept.envelope.error.remedy ?? "").includes(`cotal logout --idp ${soBase} --local`) && loadIdpSession(logoutHome, soBase) !== undefined, kept);
+  const local = await cli("--local");
+  check("logout --local clears the login without contacting the provider",
+    local.status === 0 && local.envelope?.result?.serverRevoked === false && local.envelope.result.localLoginCleared === true && loadIdpSession(logoutHome, soBase) === undefined && signOuts === before + 1, { local, signOuts, before });
   so.close();
 }
 
 server.close();
+
+// ---- caller cancellation ----
+console.log("G) caller cancellation (AbortSignal): stops this local sign-in, revokes nothing remotely");
+{
+  // A scripted IdP that counts every request per route, can hold /token open, and approves only
+  // when told. Cancellation is asserted on what the client SENDS and what it WRITES, not on timing.
+  const hits: Record<string, number> = {};
+  let approved = false;
+  let tokenGate: Promise<void> | undefined;
+  const jwtFor = (sub: string) =>
+    `${Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")}.${Buffer.from(JSON.stringify({ sub, iss: "x" })).toString("base64url")}.sig`;
+  const idp = createServer(async (req, res) => {
+    const route = new URL(req.url!, "http://x").pathname;
+    hits[route] = (hits[route] ?? 0) + 1;
+    const send = (status: number, body: unknown) => { res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body)); };
+    if (route === "/api/auth/device/code")
+      return send(200, { device_code: "d", user_code: "u", verification_uri: "v", verification_uri_complete: "vc", expires_in: 60, interval: 1 });
+    if (route === "/api/auth/device/token")
+      return approved ? send(200, { access_token: "opaque-cancel-session", expires_in: 3600 }) : send(400, { error: "authorization_pending" });
+    if (route === "/api/auth/token") {
+      if (tokenGate) await tokenGate;
+      return send(200, { token: jwtFor("cancel-user") });
+    }
+    send(404, {});
+  });
+  await new Promise<void>((r) => idp.listen(0, "127.0.0.1", r));
+  const cBase = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/api/auth`;
+  const reset = () => { for (const k of Object.keys(hits)) delete hits[k]; approved = false; tokenGate = undefined; };
+  const isCancel = (e: unknown) => e instanceof IdpLoginCancelled && !(e instanceof IdpUnreachableError);
+
+  // 1. Aborted before start: nothing is sent.
+  reset();
+  {
+    const ac = new AbortController();
+    ac.abort();
+    const err = await deviceLogin({ idpUrl: cBase, clientId: CLIENT_ID, onPrompt: () => {}, signal: ac.signal }).then(() => undefined, (e) => e);
+    check("an already-aborted signal is refused as a cancellation before any IdP request", isCancel(err) && Object.keys(hits).length === 0, { err: String(err), hits });
+  }
+
+  // 2. Aborted during the poll wait: settles within the interval, and no further poll is sent.
+  reset();
+  {
+    const ac = new AbortController();
+    const t0 = performance.now();
+    const p = deviceLogin({ idpUrl: cBase, clientId: CLIENT_ID, onPrompt: () => {}, signal: ac.signal }).then(() => undefined, (e) => e);
+    await new Promise((r) => setTimeout(r, 1300)); // after the first poll, inside the second wait
+    const pollsAtAbort = hits["/api/auth/device/token"] ?? 0;
+    ac.abort();
+    const err = await p;
+    const settledMs = performance.now() - t0 - 1300;
+    await new Promise((r) => setTimeout(r, 1500)); // a missed abort would poll again here
+    check("abort during the poll wait rejects as a cancellation, not as unreachable or expired", isCancel(err), String(err));
+    check("… settles promptly (well under one poll interval)", settledMs < 500, { settledMs });
+    check("… and sends no poll after the abort", pollsAtAbort >= 1 && (hits["/api/auth/device/token"] ?? 0) === pollsAtAbort, { pollsAtAbort, hits });
+  }
+
+  // 3. Aborted while the prompt is still open: the prompt race honours it and no poll starts.
+  reset();
+  {
+    const ac = new AbortController();
+    const p = deviceLogin({ idpUrl: cBase, clientId: CLIENT_ID, onPrompt: () => new Promise<void>(() => { setTimeout(() => ac.abort(), 50); }), signal: ac.signal }).then(() => undefined, (e) => e);
+    const err = await p;
+    check("abort while the prompt is unsettled rejects as a cancellation and never polls", isCancel(err) && (hits["/api/auth/device/token"] ?? 0) === 0, { err: String(err), hits });
+  }
+
+  // 4. Approved, then aborted while the session's JWT proof is in flight: nothing is persisted.
+  reset();
+  {
+    const cDir = mkdtempSync(join(tmpdir(), "cotal-login-smoke-cancel-"));
+    const ac = new AbortController();
+    let release!: () => void;
+    tokenGate = new Promise<void>((r) => { release = r; });
+    approved = true;
+    const p = establishIdpSession({ dir: cDir, idpUrl: cBase, clientId: CLIENT_ID, onPrompt: () => {}, signal: ac.signal }).then(() => undefined, (e) => e);
+    while ((hits["/api/auth/token"] ?? 0) === 0) await new Promise((r) => setTimeout(r, 20));
+    ac.abort();
+    release();
+    const err = await p;
+    check("abort after approval, before persistence, rejects as a cancellation", isCancel(err), String(err));
+    check("… and persists nothing: no session file, no catalog file", readdirSync(cDir).length === 0, readdirSync(cDir));
+  }
+
+  // 5. With no signal, behaviour is unchanged: the same flow completes and persists.
+  reset();
+  {
+    const okDir = mkdtempSync(join(tmpdir(), "cotal-login-smoke-nosignal-"));
+    approved = true;
+    const est = await establishIdpSession({ dir: okDir, idpUrl: cBase, clientId: CLIENT_ID, onPrompt: () => {} });
+    check("without a signal the same flow completes and persists (existing callers unchanged)",
+      est.sub === "cancel-user" && loadIdpSession(okDir, cBase)?.token === "opaque-cancel-session");
+  }
+  idp.close();
+}
+{
+  // 6 and 7. An error response whose body stalls: the IdP flushes non-OK headers, then never sends
+  // the body. A caller abort during that body read is a cancellation, on the first request and on
+  // a poll alike, never a generic error or an "unreachable".
+  let stallOn: "code" | "token" = "code";
+  const held = new Set<import("node:http").ServerResponse>();
+  const hits: Record<string, number> = {};
+  const stall = createServer((req, res) => {
+    const route = new URL(req.url!, "http://x").pathname;
+    hits[route] = (hits[route] ?? 0) + 1;
+    if (route === "/api/auth/device/code" && stallOn === "token") {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ device_code: "d", user_code: "u", verification_uri: "v", verification_uri_complete: "vc", expires_in: 60, interval: 1 }));
+      return;
+    }
+    res.writeHead(400, { "content-type": "application/json" });
+    res.flushHeaders();
+    held.add(res); // the body never comes
+  });
+  await new Promise<void>((r) => stall.listen(0, "127.0.0.1", r));
+  const sBase = `http://127.0.0.1:${(stall.address() as AddressInfo).port}/api/auth`;
+  const abortAfterHeaders = async (route: string): Promise<unknown> => {
+    const ac = new AbortController();
+    const p = deviceLogin({ idpUrl: sBase, clientId: CLIENT_ID, onPrompt: () => {}, signal: ac.signal }).then(() => undefined, (e) => e);
+    while ((hits[route] ?? 0) === 0) await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 30));
+    ac.abort();
+    return p;
+  };
+  const cancelledClass = (e: unknown) => e instanceof IdpLoginCancelled;
+
+  stallOn = "code";
+  const codeErr = await abortAfterHeaders("/api/auth/device/code");
+  check("abort while a /device/code error body stalls rejects as a cancellation", cancelledClass(codeErr), String(codeErr));
+
+  stallOn = "token";
+  const pollErr = await abortAfterHeaders("/api/auth/device/token");
+  check("abort while a /device/token error body stalls rejects as a cancellation", cancelledClass(pollErr), String(pollErr));
+
+  for (const r of held) r.destroy();
+  stall.close();
+}
+
+// ---- the in-process JWT hold ----
+console.log("H) /token is posted once per (IdP, session) within the hold, never for a failure");
+{
+  // A loopback IdP that counts /token hits per session and mints whatever `exp` the cell asks for.
+  const hits: Record<string, number> = {};
+  let expIn = 900; // seconds from now; Better Auth's default JWT lifetime is 15 minutes
+  let status = 200;
+  let body: unknown;
+  const mint = (sub: string) =>
+    `${Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")}.${Buffer.from(JSON.stringify({ sub, iss: "x", exp: Math.floor(Date.now() / 1000) + expIn })).toString("base64url")}.sig`;
+  let tokenGate: Promise<void> | undefined;
+  const idp = createServer(async (req, res) => {
+    const route = new URL(req.url!, "http://x").pathname;
+    const send = (s: number, b: unknown) => { res.writeHead(s, { "content-type": "application/json" }).end(JSON.stringify(b)); };
+    if (route === "/api/auth/device/code")
+      return send(200, { device_code: "d", user_code: "u", verification_uri: "v", verification_uri_complete: "vc", expires_in: 60, interval: 1 });
+    if (route === "/api/auth/device/token") return send(200, { access_token: "hold-cancel", expires_in: 3600 });
+    const session = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+    hits[session] = (hits[session] ?? 0) + 1;
+    if (tokenGate) await tokenGate;
+    send(status, body ?? { token: mint(`user-${session}`) });
+  });
+  await new Promise<void>((r) => idp.listen(0, "127.0.0.1", r));
+  const hBase = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/api/auth`;
+
+  const a1 = await fetchIdpJwt(hBase, "hold-a");
+  const a2 = await fetchIdpJwt(hBase, "hold-a");
+  const a3 = await fetchIdpJwt(`${hBase}/`, "hold-a"); // the key normalizes the IdP URL
+  check("three sequential calls for one session post /token once and hand back the same JWT", hits["hold-a"] === 1 && a1 === a2 && a2 === a3, hits);
+  await fetchIdpJwt(hBase, "hold-b");
+  check("another session is its own entry", hits["hold-b"] === 1 && hits["hold-a"] === 1, hits);
+
+  const burst = await Promise.all(Array.from({ length: 8 }, () => fetchIdpJwt(hBase, "hold-c")));
+  check("eight concurrent callers share one request", hits["hold-c"] === 1 && new Set(burst).size === 1, hits);
+
+  expIn = 31; // held for exp minus the 30 s margin: about one second
+  await fetchIdpJwt(hBase, "hold-short");
+  await fetchIdpJwt(hBase, "hold-short");
+  check("a JWT is held no longer than its exp minus the margin", hits["hold-short"] === 1, hits);
+  await new Promise((r) => setTimeout(r, 1300));
+  await fetchIdpJwt(hBase, "hold-short");
+  check("… and is fetched again once that passes", hits["hold-short"] === 2, hits);
+
+  expIn = 20; // inside the margin: nothing to hold
+  await fetchIdpJwt(hBase, "hold-none");
+  await fetchIdpJwt(hBase, "hold-none");
+  check("a JWT expiring inside the margin is never held", hits["hold-none"] === 2, hits);
+  expIn = 900;
+
+  body = { token: "not-a-jwt" };
+  await fetchIdpJwt(hBase, "hold-opaque");
+  await fetchIdpJwt(hBase, "hold-opaque");
+  check("a /token value with no decodable exp is never held", hits["hold-opaque"] === 2, hits);
+  body = undefined;
+
+  status = 429;
+  await rejects("a rate-limited /token is the same HTTP error as before", () => fetchIdpJwt(hBase, "hold-429"), "/token failed (HTTP 429)");
+  await rejects("… and is not held: the next call posts again", () => fetchIdpJwt(hBase, "hold-429"), "HTTP 429");
+  status = 200;
+  await fetchIdpJwt(hBase, "hold-429");
+  check("… and succeeds as soon as the IdP does", hits["hold-429"] === 3, hits);
+
+  status = 401;
+  await rejects("a 401 keeps its recovery message", () => fetchIdpJwt(hBase, "hold-401"), "run `cotal login --idp");
+  status = 200;
+
+  // One caller's abort rejects nobody else: a cancellable call (the login proof) makes its own
+  // request instead of sharing one with a concurrent caller that has no signal.
+  {
+    let release!: () => void;
+    tokenGate = new Promise<void>((r) => { release = r; });
+    const ac = new AbortController();
+    const cancellable = establishIdpSession({ dir: mkdtempSync(join(tmpdir(), "cotal-login-smoke-hold-")), idpUrl: hBase, clientId: CLIENT_ID, onPrompt: () => {}, signal: ac.signal }).then(() => undefined, (e) => e);
+    while ((hits["hold-cancel"] ?? 0) === 0) await new Promise((r) => setTimeout(r, 20));
+    const plain = fetchIdpJwt(hBase, "hold-cancel").then((jwt) => ({ jwt }), (e) => ({ err: String(e) }));
+    while ((hits["hold-cancel"] ?? 0) < 2) await new Promise((r) => setTimeout(r, 20));
+    ac.abort();
+    const cancelled = await cancellable;
+    release();
+    const plainResult = await plain;
+    check("a cancellable call makes its own request, so its abort rejects nobody else", cancelled instanceof IdpLoginCancelled && "jwt" in plainResult && hits["hold-cancel"] === 2, { cancelled: String(cancelled), plainResult, hits });
+    tokenGate = undefined;
+  }
+  idp.close();
+}
+
 console.log(`\nlogin smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

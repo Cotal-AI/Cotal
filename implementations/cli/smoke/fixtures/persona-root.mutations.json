@@ -34,35 +34,35 @@
     {
       "name": "mint reads the persona ACL from the cwd after resolving the target mesh",
       "file": "implementations/cli/src/commands/mint.ts",
-      "find": "    const f = agentFilePath(root, name);",
-      "replace": "    const f = agentFilePath(cwdRoot, name);",
+      "find": "      const path = agentFilePath(root, name);",
+      "replace": "      const path = agentFilePath(currentRoot, name);",
       "expectRed": "mint: the credential carries the MESH card's channel, not the cwd card's",
       "cell": "mint: the credential carries the MESH card's channel, not the cwd card's",
       "note": "This changes the shipped mint call site, not resolveMintTarget or a test-only restatement, and remains type-correct."
     },
     {
       "name": "mint ignores conflicting cwd trust instead of refusing the incoherent authority",
-      "file": "implementations/cli/src/commands/mint.ts",
-      "find": "  if (cwdAuth && (!auth || cwdAuth.space !== resolvedTarget.space || cwdAuth.account.pub !== auth.account.pub)) {",
-      "replace": "  if (cwdAuth && (!auth || cwdAuth.space !== resolvedTarget.space || cwdAuth.account.pub !== auth.account.pub) && process.pid < 0) {",
+      "file": "implementations/cli/src/lib/credential-authority.ts",
+      "find": "  if (currentAuth && (!auth || currentAuth.space !== space || currentAuth.account.pub !== auth.account.pub)) throw",
+      "replace": "  if (currentAuth && (!auth || currentAuth.space !== space || currentAuth.account.pub !== auth.account.pub) && process.pid < 0) throw",
       "expectRed": "mint: a cwd trust root that differs from the selected mesh authority is REFUSED",
       "cell": "mint: a cwd trust root that differs from the selected mesh authority is REFUSED",
       "note": "This compile-clean mutation reverts only the new B2 refusal guard and lets the exact conflicting-root input proceed."
     },
     {
       "name": "mint signs from cwd trust while reading ACLs from the selected mesh root",
-      "file": "implementations/cli/src/commands/mint.ts",
-      "find": "  const store = workspaceSecretStore(root);",
-      "replace": "  const store = cwdStore;",
+      "file": "implementations/cli/src/lib/credential-authority.ts",
+      "find": "  const currentRoot = findCotalRoot(), store = workspaceSecretStore(root);",
+      "replace": "  const currentRoot = findCotalRoot(), store = workspaceSecretStore(currentRoot);",
       "expectRed": "mint: a cwd trust root that differs from the selected mesh authority is REFUSED",
       "cell": "mint: a cwd trust root that differs from the selected mesh authority is REFUSED",
       "note": "This is the B2 mixed-authority defect itself: selected-root persona ACLs plus cwd signing material."
     },
     {
       "name": "mint stores the default credential under cwd instead of the selected mesh root",
-      "file": "implementations/cli/src/commands/mint.ts",
-      "find": "    const secrets = workspaceSecretStore(root);",
-      "replace": "    const secrets = cwdStore;",
+      "file": "implementations/cli/src/lib/credential-authority.ts",
+      "find": "  return { target, auth, currentRoot, store };",
+      "replace": "  return { target, auth, currentRoot, store: workspaceSecretStore(currentRoot) };",
       "expectRed": "mint: default credential storage does NOT use the cwd root",
       "cell": "mint: default credential storage does NOT use the cwd root",
       "note": "The target-root output is still materialized, but the source-of-truth store also writes the cwd copy, which the named cell detects."

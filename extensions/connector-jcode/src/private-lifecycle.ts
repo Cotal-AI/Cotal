@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { writePrivateRecord } from "@cotal-ai/core";
 
 /** Exact teardown of one seat's private Jcode process tree (#839).
  *
@@ -265,11 +266,9 @@ export interface LaunchRecord {
  * dead lifecycle left behind from one a live seat still legitimately holds. */
 export function recordLaunch(home: string, record: LaunchRecord): void {
   const path = join(home, LAUNCH_RECORD_FILE);
-  // `mode` applies only when the write CREATES the file, so a record that already exists keeps
-  // whatever permissions it has. Restate them on every write, or one loosened file stays loosened
-  // for the life of the seat home.
-  writeFileSync(path, `${JSON.stringify(record)}\n`, { mode: 0o600 });
-  chmodSync(path, 0o600);
+  // The private open restates 0o600 through the descriptor on every write, so one loosened file
+  // does not stay loosened for the life of the seat home, and a symlink at the name is refused.
+  writePrivateRecord(path, `${JSON.stringify(record)}\n`);
 }
 
 export function readLaunchRecord(home: string): LaunchRecord | undefined {

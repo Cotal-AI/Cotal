@@ -1,6 +1,7 @@
 import { execFile, type ExecFileException } from "node:child_process";
 import { registry, type Extension } from "./registry.js";
 import type { SecretStore } from "./secret-store.js";
+import type { ServiceAuthorityInfo, ServiceAuthorityProof, ServiceAuthorityRequest, ServiceAuthorityResult, ServiceRegistrationWitness } from "./remote-service-authority.js";
 import type {
   RemoteManagerAdminAuthorizationRequest,
   RemoteManagerAdminAuthorizationResult,
@@ -23,6 +24,39 @@ import type {
   RemoteRunAttemptRequest,
   RemoteRunAttemptResult,
 } from "./remote-manager-authority.js";
+import type { ConversationSelection } from "./conversation-selection.js";
+import { assertLifecycleToken } from "./subjects.js";
+
+/** Who holds one managed lifecycle, recorded on its managed-agent grant row by the writer that
+ *  granted it. `local-manager` is a manager on this host attesting its OWN persisted logical
+ *  `instanceId`; `remote-manager` is the auth service recording the instance it authorized an
+ *  enrollment for; `foreground` is a spawn with no manager. The value is attested by the writer and
+ *  is never taken from a participant-supplied field. */
+export type ManagedGrantCustody =
+  | { kind: "local-manager"; instanceId: string }
+  | { kind: "remote-manager"; instanceId: string }
+  | { kind: "foreground" };
+
+/** Validate a custody value at a write or read boundary: a closed shape, a known kind, and a
+ *  lifecycle-token `instanceId` exactly when the kind names a manager. Throws otherwise. */
+export function assertManagedGrantCustody(v: unknown): asserts v is ManagedGrantCustody {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) throw new Error("managed grant custody must be an object");
+  const o = v as Record<string, unknown>;
+  if (o.kind === "foreground") {
+    if (Object.keys(o).length !== 1) throw new Error("foreground custody carries no other field");
+    return;
+  }
+  if (o.kind !== "local-manager" && o.kind !== "remote-manager")
+    throw new Error(`managed grant custody kind ${JSON.stringify(o.kind)} is not local-manager, remote-manager or foreground`);
+  if (Object.keys(o).length !== 2 || typeof o.instanceId !== "string") throw new Error(`${o.kind} custody carries exactly kind and instanceId`);
+  assertLifecycleToken(o.instanceId, "custody instanceId");
+}
+
+/** Exact custody equality. */
+export function sameManagedGrantCustody(a: ManagedGrantCustody, b: ManagedGrantCustody): boolean {
+  if (a.kind !== b.kind) return false;
+  return a.kind === "foreground" || a.instanceId === (b as { instanceId: string }).instanceId;
+}
 
 /** A fresh agent grant refused an occupied actor without replacing its authority. */
 export class AgentGrantConflictError extends Error {
@@ -66,6 +100,16 @@ export interface AuthProvider extends Extension {
    * trust bundle.
    */
   prepareServer(input: AuthPrepareInput): Promise<AuthPrepared>;
+  /**
+   * Read-only check of the inputs {@link prepareServer} would refuse on its own terms, run BEFORE
+   * the caller writes any space trust, broker configuration or journal. It must provision nothing,
+   * pin nothing, create no directory, grant nothing and start no daemon. `prepareServer` applies
+   * the same checks itself, so a caller that skips this still cannot provision around a bad input;
+   * a race between the two calls is resolved by `prepareServer`, which remains authoritative.
+   * Reports one legible sentence and a typed reason naming the exact correction. Optional: a caller
+   * that needs a pre-effect guarantee refuses when a provider lacks it, rather than skipping it.
+   */
+  preflightServer?(input: AuthPreflightInput): Promise<AuthPreflightVerdict>;
   /** Read this space's already-provisioned operator-signed accounts for a whole-broker render.
    *  A missing or invalid account on an enabled space must refuse the render, not shrink it. */
   preloadAccounts(opts: { store: SecretStore; space: string }): Promise<Array<{ pub: string; jwt: string }>>;
@@ -85,6 +129,34 @@ export interface AuthProvider extends Extension {
    * `spawn -f`) ride. An under-scoped or unknown view MUST fail loud with the exact re-grant.
    */
   userCredentials(opts: UserCredentialsRequest): Promise<{ bearer: string; sentinelCreds: string }>;
+  /**
+   * Admit ONE distinct chat session for the signed-in human: the provider fetches the IdP
+   * proof itself, and the minting authority derives the owner, draws the session actor and its
+   * lifecycle UID, pins the human's own parent grant, and confines the session to `read`/`post`
+   * (each contained in that grant, never widened) and `ttlSec` (at most 8 h, never extended; a
+   * longer request refuses). The caller sends only the SHA-256 of a holder secret it keeps in
+   * memory. Idempotent per `holderHash`: a retry with the same hash and the same ceiling returns
+   * the same session, and a retired hash never admits again.
+   *
+   * Optional. A provider without it cannot serve user-mode chat, and the caller MUST refuse
+   * `UNSUPPORTED` rather than borrow another identity or fall back to another auth mode. A refusal
+   * whose outcome is `unknown` may have reserved a slot: retry with the SAME `holderHash`.
+   */
+  openChatSession?(opts: ChatSessionOpenRequest): Promise<ChatSessionOpened>;
+  /**
+   * Exchange the holder proof for a short-lived bearer of an ACTIVE chat session, with
+   * TTL = min(900 s, IdP proof remaining, session remaining). The bearer authorizes exactly the
+   * session's own agent leaf, never a view, role or capability. A moved parent grant, a non-active
+   * session or an expired session refuses `permission-denied` with no bearer. Optional, with the
+   * same no-fallback rule as {@link openChatSession}.
+   */
+  chatSessionBearer?(opts: ChatSessionBearerRequest): Promise<{ bearer: string; sentinelCreds: string; exp: number }>;
+  /**
+   * Retire a chat session. `failed` and a `pending` reason are never success: a blocked
+   * retirement stays frozen (nothing can mint for it) and is retried by the authority. Optional,
+   * with the same no-fallback rule as {@link openChatSession}.
+   */
+  retireChatSession?(opts: ChatSessionRetireRequest): Promise<ChatSessionRetireResult>;
   /**
    * Prepare the signed-in account's optional space catalog without exposing its cached session
    * bearer. The provider owns advertisement discovery, conditional HTTP, freshness, locking, and
@@ -113,6 +185,29 @@ export interface AuthProvider extends Extension {
   hasSpaceCatalog?(opts: { dir: string; idpUrl: string; sub: string }): boolean;
   /** Clear one account's provider cache and return its opaque registry ownership key. */
   removeSpaceCatalog?(opts: { dir: string; idpUrl: string; sub: string }): string;
+  /** Read this space's DATA-account identity from the pinned authority endpoint. A client persists
+   * it before first service registration and refuses a later mismatch rather than silently repinning. */
+  serviceEndpointInfo?(opts: { store: SecretStore; dir: string; space: string }): Promise<ServiceAuthorityInfo>;
+  /** Generic user-auth service registration. The provider supplies IdP proof when no service
+   * proof is supplied, validates its pinned authority origin, and returns that space's deny-all
+   * sentinel alongside the checked result. It never enrolls an actor or falls back to static auth. */
+  serviceEndpointAuthority?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: ServiceAuthorityRequest;
+    proof?: Exclude<ServiceAuthorityProof, { kind: "idp" }>;
+    /** Remaining local query budget. Describe queries are capped at two seconds. */
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  }): Promise<{ result: ServiceAuthorityResult; sentinelCreds: string }>;
+  /**
+   * A renewal source for one registered service witness: the bearer function a long-lived service
+   * endpoint passes as `EndpointOptions.bearer`. Its first pull activates and later pulls renew, each
+   * replaying one requestId per operation that is persisted in `store` before its first send. The
+   * source holds the material; it owns no timers, and the endpoint's own schedule drives it. Optional,
+   * so a provider without service endpoints refuses at the caller.
+   */
+  serviceEndpointRenewal?(opts: { store: SecretStore; dir: string; witness: ServiceRegistrationWitness }): ServiceEndpointRenewal;
   /**
    * Request the closed remote manager-service authority material from the host's loopback/operator
    * exchange. This is an explicitly typed lifecycle protocol, not a generic profile mint: the
@@ -133,11 +228,18 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteRunAdmissionRequest;
   }): Promise<RemoteRunAdmissionResult>;
+  requestRemoteRunSubmission?(opts: { store: SecretStore; dir: string;
+    request: import("./remote-manager-authority.js").RemoteRunSubmissionRequest;
+  }): Promise<import("./remote-manager-authority.js").RemoteRunSubmissionResult>;
   requestRemoteRunAttempt?(opts: {
     store: SecretStore;
     dir: string;
     request: RemoteRunAttemptRequest;
   }): Promise<RemoteRunAttemptResult>;
+  /** Body-bound observed cancellation, separate from the holder's operator revoke. */
+  requestRemoteRunCancel?(opts: { store: SecretStore; dir: string;
+    request: import("./remote-manager-authority.js").RemoteRunCancelRequest;
+  }): Promise<import("./remote-manager-authority.js").RemoteRunCancelResult>;
   /** Revoke through the issuing host under the authenticated owner's fresh ledger grant. */
   requestRemoteRunRevoke?(opts: {
     store: SecretStore;
@@ -181,7 +283,9 @@ export interface AuthProvider extends Extension {
    * request carries only its digest; the host picks the lifecycle UID, authors the ledger grant,
    * pre-creates the durables, and returns the stable non-secret metadata plus the space sentinel.
    * Optional so a provider with no hosted storage composition fails loud at the caller rather than
-   * letting a local grant masquerade as a host-owned one.
+   * letting a local grant masquerade as a host-owned one. A host that refuses the enrollment rejects
+   * as an `EpEnvelopeError` whose outcome is `not-executed`; any other failure carries no outcome,
+   * because the host may have enrolled the agent before it failed.
    */
   enrollRemoteManagedAgent?(opts: {
     store: SecretStore;
@@ -225,12 +329,26 @@ export interface AuthProvider extends Extension {
    * the session cache. The transport discipline is the provider's too: redirects are refused
    * (a 302 could walk the proof onto another host), and every failure MUST throw one sentence
    * with the exact operator action — not signed in names the `cotal login --idp …` line, an
-   * endpoint refusal surfaces the endpoint's own reason. The caller owns validating the returned
+   * endpoint refusal surfaces the endpoint's own reason. No sign-in throws with `code`
+   * `"signed-out"`, before any request. A failure after the request carries no such code, an
+   * endpoint 401 or 403 included: the endpoint is the deployment's, and nothing pins what its
+   * refusal left behind. The caller owns validating the returned
    * material's shape; this method proves and carries, it does not interpret. Optional: a
    * provider without a remote-provisioning story simply lacks it, and the caller refuses with
    * its own named message.
    */
   postAgentProvisioning?(opts: { url: string; idpUrl: string; actor: string }): Promise<unknown>;
+  /** Present the signed-in human's proof to a discovered conversation-identity authority. The
+   * caller validates the selected registration and endpoint before this call. The provider keeps
+   * the proof private, refuses non-HTTPS destinations and redirects, and performs one request only.
+   * A transport failure is an unknown outcome; callers retain their original request and secret.
+   * The status is returned with the body because pending retirement is not completed cleanup. */
+  requestConversationIdentity?(opts: {
+    url: string;
+    idpUrl: string;
+    method: "POST" | "DELETE";
+    body?: { v: 1; requestId: string; tokenHash: string; label?: string; selection?: ConversationSelection };
+  }): Promise<{ status: number; body: unknown }>;
   /**
    * CLIENT side of a REMOTE mesh's one-time enrollment redeem: GET the secret-bearing enrollment
    * URL exactly once and return the parsed JSON answer verbatim. The URL itself is the credential,
@@ -281,11 +399,17 @@ export interface AuthProvider extends Extension {
      *  callout mints this agent's lifecycle-keyed grants (`dm_…-<uid>`/`dlv_…-<uid>`/
      *  `chathist_…-<uid>`) from the SAME value its provisioned broker footprint carries. */
     lifecycleUid: string;
+    /** Who holds this lifecycle (recorded on the managed row). The local manager passes its own
+     *  logical instance id; a foreground spawn passes `foreground`. A remote-manager row is written
+     *  only by the auth service's enrollment, never through this method. */
+    custody: Exclude<ManagedGrantCustody, { kind: "remote-manager" }>;
   }): Promise<{ actorToken: string; sentinelCreds: string }>;
   /** Revoke an agent grant. False when there was nothing to revoke. New exchanges and new
    *  connects die immediately (both boundaries read the ledger fresh); an already-live
-   *  connection dies at its bearer-bound JWT expiry (live eviction is a separate lever). */
-  revokeAgent(opts: { dir: string; owner: string; actor: string; lifecycleUid?: string; actorToken?: string }): Promise<boolean>;
+   *  connection dies at its bearer-bound JWT expiry (live eviction is a separate lever).
+   *  `expectCustody` revokes only while the row still names both `lifecycleUid` (then required)
+   *  and exactly that custody, read under the same lock as the removal. */
+  revokeAgent(opts: { dir: string; owner: string; actor: string; lifecycleUid?: string; actorToken?: string; expectCustody?: ManagedGrantCustody }): Promise<boolean>;
   /**
    * Read-only FRESH capability-scope read for one granted principal — `undefined` when the
    * principal holds no grant (for an authorization read, unknowable is "no grant": fail-closed).
@@ -305,6 +429,10 @@ export interface AuthProvider extends Extension {
    * the caller's local-reset concern, swept only AFTER this succeeds.
    */
   deprovisionSecrets(opts: { store: SecretStore; space: string }): Promise<void>;
+  /** Offline key inventory for the same deprovision operation. A local reset can review and
+   * validate its filesystem scope without running the delete hook. No secret values are returned.
+   * Providers without this declaration cannot participate in a reviewed named identity reset. */
+  deprovisionSecretKeys?(space: string): readonly string[];
   /**
    * Read-only OFFLINE continuity commitment for this space's existing user-auth trust state. The
    * provider defines `scheme`; `value` is safe to place in a backup manifest and MUST commit to the
@@ -386,6 +514,9 @@ export interface AuthSpaceCatalogResult {
   snapshot?: unknown;
   fetchedAt?: string;
   error?: string;
+  /** On `failed`: the previous refresh of this account failed too, with no success since, so this
+   *  failure continues an outage an earlier preparation already returned. */
+  ongoing?: boolean;
 }
 
 /** Workstation consumer for provider-owned catalogs. Kept separate so auth never imports a CLI.
@@ -439,6 +570,37 @@ export function resolveAuthProvider(): AuthProvider {
   return providers[0];
 }
 
+/** Where a {@link ServiceEndpointRenewal} stands. `unavailable` is an outage the next pull retries with
+ *  the same request; `ended` is terminal, and every later pull refuses without sending anything. No
+ *  state carries a token. */
+export type ServiceEndpointRenewalState =
+  | { readonly state: "idle" }
+  | { readonly state: "current"; readonly accessExpiresAt: number; readonly renewalExpiresAt: number }
+  | { readonly state: "unavailable" }
+  | { readonly state: "ended"; readonly reason: string }
+  | { readonly state: "closed" };
+
+/** A validated `credential` result without its renewal material: what a guest's serve grant reads. */
+export type ServiceEndpointCredential = Omit<Extract<ServiceAuthorityResult, { state: "credential" }>, "renewalProof" | "renewalExpiresAt">;
+
+/** A service endpoint's renewal source (see {@link AuthProvider.serviceEndpointRenewal}). */
+export interface ServiceEndpointRenewal {
+  /** The bearer function: a fresh, unexpired service access bearer. Concurrent calls share one request. */
+  bearer(): Promise<string>;
+  /** The same pull as `bearer()`, answering the validated `credential` result a guest hands to
+   *  `authorizeGuestServeGrant`: the witness, the host-authorized snapshot and the access bearer,
+   *  without the renewal proof, which never leaves the source. Each caller gets its own copy.
+   *  Concurrent `bearer()` and `credential()` calls share one request; the persisted request ids
+   *  and the terminal behaviour are the same. */
+  credential(): Promise<ServiceEndpointCredential>;
+  /** The current state, with expiries only. */
+  state(): ServiceEndpointRenewalState;
+  /** The space's deny-all sentinel creds the endpoint presents with the bearer, known after the first success. */
+  readonly sentinelCreds: string | undefined;
+  /** Refuse new pulls, abort the request in flight and wait for it. Idempotent. */
+  close(): Promise<void>;
+}
+
 /** What {@link AuthProvider.userCredentials} takes: `store` and `dir` locate this machine's state,
  *  and the other fields are the coordinates of the credential requested. */
 export interface UserCredentialsRequest {
@@ -450,6 +612,57 @@ export interface UserCredentialsRequest {
   managerInstanceId?: string;
   sessionGrant?: unknown;
   transferWriter?: { instanceId: string; hex: string };
+}
+
+/** {@link AuthProvider.openChatSession}. `holderHash` is the lowercase SHA-256 hex of a holder
+ *  secret the caller keeps in memory; the secret itself is never sent here. */
+export interface ChatSessionOpenRequest {
+  store: SecretStore;
+  dir: string;
+  space: string;
+  holderHash: string;
+  label?: string;
+  read: string[];
+  post: string[];
+  ttlSec?: number;
+  /** The user-auth position the caller resolved for this space: its IdP URL and, for a remote
+   *  mesh only, its pinned exchange URL. A provider that resolves a different position, or a local
+   *  one where `exchangeUrl` names a remote, or the reverse, MUST refuse `failed-precondition` with
+   *  outcome `not-executed` before any request leaves. Narrowing only; it grants nothing. */
+  expect?: { idpUrl: string; exchangeUrl?: string };
+}
+
+/** What an admitted chat session is. `expiresAt` is unix seconds, fixed at admission. */
+export interface ChatSessionOpened {
+  actor: string;
+  lifecycleUid: string;
+  expiresAt: number;
+}
+
+/** {@link AuthProvider.chatSessionBearer}. `holderProof` is the in-memory holder secret whose
+ *  SHA-256 was sent at open. */
+export interface ChatSessionBearerRequest {
+  store: SecretStore;
+  dir: string;
+  space: string;
+  actor: string;
+  holderProof: string;
+}
+
+/** {@link AuthProvider.retireChatSession}. */
+export interface ChatSessionRetireRequest {
+  store: SecretStore;
+  dir: string;
+  space: string;
+  actor: string;
+  lifecycleUid: string;
+  holderProof: string;
+}
+
+/** The closed retirement outcome. `pending` names why a retirement has not completed. */
+export interface ChatSessionRetireResult {
+  outcome: "retired" | "alreadyRetired" | "notStarted" | "failed";
+  pending?: string;
 }
 
 /** What {@link AuthProvider.userStatus} reports. Fields are absent when locally unknowable —
@@ -493,6 +706,24 @@ export interface AuthPrepareInput {
    *  persisted pin or omit it; re-pointing an IdP is a migration, never a flag flip). */
   idpUrl?: string;
 }
+
+/** The read-only {@link AuthProvider.preflightServer} input: only what the pre-effect checks read.
+ *  No seed, signing key or secret store crosses this seam. */
+export interface AuthPreflightInput {
+  space: string;
+  /** The same provider state dir {@link AuthPrepareInput.dir} names. Read only; never created. */
+  dir: string;
+  /** The same opaque IdP base URL {@link AuthPrepareInput.idpUrl} carries. */
+  idpUrl?: string;
+}
+
+/** The {@link AuthProvider.preflightServer} result. `required`: a first enable needs an input the
+ *  caller did not give. `invalid`: a given input is malformed. `conflict`: it disagrees with, or
+ *  cannot be checked against, already persisted provider state. `unavailable`: a dependency the
+ *  provider must reach (an IdP) did not answer as required. */
+export type AuthPreflightVerdict =
+  | { ok: true }
+  | { ok: false; reason: "required" | "invalid" | "conflict" | "unavailable"; message: string };
 
 /** What `prepareServer` hands back to the composition root. */
 export interface AuthPrepared {

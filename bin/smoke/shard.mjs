@@ -57,6 +57,9 @@ const fragments = listPath === CI_SUITES_PATH ? readCiSuiteFragments() : [];
 const all = [...legacy, ...fragments].map((s) => `pnpm ${s}`);
 if (all.length === 0) { console.error(`no suites in ${listPath}`); process.exit(2); }
 const mine = suitesForShard(legacy, fragments, shard, count).map((s) => `pnpm ${s}`);
+// Keep inventory and shard assignments stable while honoring the repository's no-mutation policy.
+// These infrastructure suites can invoke mutation-proof transitively, even without its workflow.
+const mutationExcluded = mine.filter((cmd) => /^pnpm smoke:mutation(?:-|$)/.test(cmd));
 
 // The offline exclusion set, derived from BEHAVIOUR through the shared predicate under the runner's
 // cwd: the repo root in production (`pnpm smoke:ci:offline`), and the fixture dir when the sentinel
@@ -76,7 +79,7 @@ if (offline && excluded.length === 0) {
   );
   process.exit(2);
 }
-const planned = offline ? mine.filter((cmd) => !excluded.some((e) => e.cmd === cmd)) : mine;
+const planned = mine.filter((cmd) => !mutationExcluded.includes(cmd) && !excluded.some((e) => e.cmd === cmd));
 const pool = poolSelection(planned);
 const started = new Set();
 
@@ -87,6 +90,15 @@ const started = new Set();
 const RUN_MARKER = process.env.COTAL_RUN ?? `smoke-shard-${shard}-${count}-${process.pid}`;
 process.env.COTAL_RUN = RUN_MARKER;
 
+// A suite's CLI runs in a fresh home, where usage telemetry would arm at its default level and
+// count the run as a new install. DO_NOT_TRACK is not a COTAL_ variable, so it also reaches the
+// children of suites that drop every COTAL_ variable.
+process.env.DO_NOT_TRACK = "1";
+
+if (mutationExcluded.length > 0) {
+  console.log(`Mutation execution disabled: ${mutationExcluded.length} infrastructure suite(s) skipped by policy:`);
+  for (const cmd of mutationExcluded) console.log(`  skipped ${cmd} (mutation execution disabled)`);
+}
 if (offline) {
   console.log(`smoke:ci OFFLINE shard ${shard}/${count} — excluding ${excluded.length} live-shaped suite(s):`);
   for (const { cmd, reason } of excluded) console.log(`  ${cmd} (${reason})`);
@@ -261,7 +273,8 @@ async function main() {
         `${excluded.length} live-shaped suite(s) excluded)`,
     );
   } else {
-    console.log(`\n✓ smoke:ci shard ${shard}/${count} passed (${mine.length} smokes, ${totalCells} cells${skips})`);
+    const policySkips = mutationExcluded.length ? `; ${mutationExcluded.length} mutation suite(s) excluded by policy` : "";
+    console.log(`\n✓ smoke:ci shard ${shard}/${count} passed (${planned.length} smokes, ${totalCells} cells${skips}${policySkips})`);
   }
   for (const { cmd, reason } of skipped) console.log(`  skipped ${cmd} (${reason})`);
 }

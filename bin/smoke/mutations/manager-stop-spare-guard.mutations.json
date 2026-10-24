@@ -36,7 +36,7 @@
     {
       "name": "N3 pty spare optional-chains close instead of calling release",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    const managed = [...this.agents.values()].filter((a) => !(a.handle.kind === \"pty\" && typeof a.handle.release !== \"function\"));",
+      "find": "    const managed = [...this.agents.values()].filter((a) => !this.isProcessBoundSeat(a));",
       "replace": "    const managed = [...this.agents.values()].filter(() => true);",
       "expectRed": "releaseManagedAgents validates PTY release before invoking handles",
       "note": "Deletes the fail-closed validation that prevents a non-releasable PTY handle from partially detaching a manager. The source-scan cell must red."

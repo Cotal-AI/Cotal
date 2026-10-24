@@ -1,0 +1,3 @@
+# Cotal's entry in Claude Desktop's claude_desktop_config.json: setup adds one cotal server, keeps every
+# other key of the file, and refuses a file it cannot read rather than rewrite it.
+smoke:claude-desktop-config

@@ -16,9 +16,9 @@
   "mutations": [
     {
       "name": "the per-goal progress row is minted with the generation",
-      "file": "packages/core/src/endpoint-grants.ts",
-      "find": "  return `${spacePrefix(space)}.epe.${endpointToken(endpoint)}.*.*.goal.${callerTriple(caller)}.>`;",
-      "replace": "  return `${spacePrefix(space)}.epe.${endpointToken(endpoint)}.*.*.goal.${callerBlock(caller)}.>`;",
+      "file": "packages/core/src/endpoint-subjects.ts",
+      "find": "  return `${spacePrefix(space)}.epe.${endpointToken(endpoint)}.*.*.goal.${callerTokens(caller).join(\".\")}.>`;",
+      "replace": "  return `${spacePrefix(space)}.epe.${endpointToken(endpoint)}.*.*.goal.${callerRailTokens(caller).join(\".\")}.>`;",
       "expectRed": "issued per-goal progress row is the plain triple"
     },
     {

@@ -1,6 +1,7 @@
 /** Real hosted API and stream lifecycle, with a local TCP failure fixture and no broker.
  *  Requires the package build: source imports run the direct stdio entrypoint. */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
@@ -12,6 +13,9 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { ClaudeSession, ClaudeSessionOptions } from "../src/mcp.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const require = createRequire(import.meta.url);
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -229,6 +233,7 @@ async function main(): Promise<void> {
     rmSync(root, { recursive: true, force: true });
   }
   assert.equal(failed, 0, "hosted session lifecycle failures");
+  emitSentinel({ passed: counted.cells(), failed: 0 });
 }
 
 const scenario = process.env.HOSTED_SMOKE_CASE;

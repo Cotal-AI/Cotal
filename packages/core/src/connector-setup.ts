@@ -13,6 +13,28 @@ export interface ConnectorSetupAction<Input = void> {
   readonly run: (input: Input) => Promise<string> | string;
 }
 
+/** What a connector's install action receives. */
+export interface ConnectorSetupInput {
+  /** The argv that runs this Cotal CLI, `[node, ...loaderFlags, entry]` by absolute path, so an asset
+   *  the action installs can run the CLI without `cotal` on its PATH. */
+  readonly cotal: readonly string[];
+  /** Current authored skills for refreshing an already installed skills integration. */
+  readonly skills?: ConnectorSkillsSetupInput;
+  /** The space setup is for, when its members sign in. */
+  readonly signedIn?: SignedInSpace;
+}
+
+/** A space whose members sign in. A chat app that cannot join it through this computer's server
+ *  joins through the hosted connector the space's discovery document advertises. */
+export interface SignedInSpace {
+  readonly space: string;
+  /** The hosted connector's URL. Absent when the space advertises none or `unread` says why it is
+   *  unknown. */
+  readonly hostedConnector?: string;
+  /** Why the space's discovery document could not be read. */
+  readonly unread?: string;
+}
+
 /** Inputs shared by connector-specific skills installers. The authored skills themselves use the
  * cross-vendor Agent Skills format; a provider decides how its harness consumes them. */
 export interface ConnectorSkillsSetupInput {
@@ -47,6 +69,8 @@ export interface ConnectorStatusInput {
   readonly version: string;
   /** The command that repairs connector skills on this machine. */
   readonly skillsRemedy: string;
+  /** The selected space, when its members sign in. */
+  readonly signedIn?: SignedInSpace;
 }
 
 /** One machine-status row a provider reports for its harness. `ok` renders green, `warn` yellow,
@@ -66,7 +90,14 @@ export interface ConnectorSetupProvider extends Extension {
   /** Native executables required to run this provider. If none are present on PATH, setup skips this
    * provider while still reconciling the cross-vendor skills drop. */
   readonly requires?: readonly string[];
-  readonly connector?: ConnectorSetupAction;
+  /** Optional bounded native readiness check, including an app-bundled executable outside PATH.
+   * Overrides the setup executable check, not the connector's managed-launch requirements. Evaluated
+   * at setup discovery/action boundaries, never during registration. Refresh obligations bypass it. */
+  readonly available?: () => boolean;
+  readonly connector?: ConnectorSetupAction<ConnectorSetupInput>;
+  /** Brings what {@link connector} installed earlier up to this release and installs nothing new. A
+   * repeat `cotal setup` and `cotal update` run it, so an upgrade reaches the harness's own copy. */
+  readonly refresh?: ConnectorSetupAction<ConnectorSetupInput>;
   readonly skills?: ConnectorSetupAction<ConnectorSkillsSetupInput>;
   /** Shares the MCP servers the user's own harness sessions load with the agents this connector
    * spawns. First-run setup runs it; a share list the cotal config already declares is kept. */

@@ -13,7 +13,8 @@ import {
   createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid,
   epRequestGrantRows, epJournalGrantRow, epCallerReplyGrantRow, epGoalProgressGrantRow,
   epCallerGrantRows, epServeSubscribeRows, epServePublishRows, epServeGrantRows,
-  epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, operatorInstrumentCapabilities, permissionsFor,
+  epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, operatorInstrumentCapabilities, baselineCallerCapabilities, permissionsFor,
+  SPAWN_CREATE_COMMANDS,
   MAX_CONTROL_LINE_BYTES, CONNECT_ENVELOPE_OVERHEAD_BYTES, MAX_MINTED_JWT_BYTES,
   type EpCapability, type EpCaller,
 } from "../src/index.js";
@@ -138,27 +139,34 @@ c("the spawn capability grants NO `input` row in either mode: seat input is oper
 // only, §13.2 - the broker grant IS the tier boundary), BOTH modes of `input` and `turn` (the two
 // seat writes, granted nowhere else; the run driver submits its turns under this instrument), and
 // the untargeted `manager.admin` family.
-c("the privileged instrument set: reads + spawn + resolve-agent + define-persona + the run family, with run-answer self-targeted",
-  operatorInstrumentCapabilities("privileged").length === 16
+c("the privileged instrument set: reads + spawn + resolve-agent + define-persona + the chat-session pair + the run family with the keyed pair, with run-answer self-targeted",
+  operatorInstrumentCapabilities("privileged").length === 21
   && operatorInstrumentCapabilities("privileged").filter((cap) => cap.target !== undefined).every((cap) => cap.command === "run-answer" && cap.target?.mode === "self")
-  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,slots,inspect,models,list-personas,show-persona,goal-result,spawn,resolve-agent,define-persona,run-status,run-ps,run-start,run-resume,run-answer");
+  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,slots,inspect,models,list-personas,show-persona,goal-result,spawn,resolve-agent,define-persona,chat-session-open,chat-session-retire,run-status,run-ps,run-start,run-resume,run-start-keyed,run-submission-status,run-cancel,run-answer");
+// The chat-session pair mints or ends a credential for a fresh session principal, so it rides the
+// operator instruments only. A spawn-capable or run-capable agent must never carry it.
+c("chat-session-open/retire are untargeted operator rows and absent from the spawn and run capability sets",
+  operatorInstrumentCapabilities("privileged").filter((cap) => cap.command.startsWith("chat-session-")).every((cap) => cap.target === undefined && cap.routes === undefined)
+  && ![...spawnCallerCapabilities("u_abc"), ...runCallerCapabilities("u_abc"), ...baselineCallerCapabilities()].some((cap) => cap.command.startsWith("chat-session-"))
+  && !(SPAWN_CREATE_COMMANDS as readonly string[]).some((cmd) => cmd.startsWith("chat-session-")));
 // The two class-scatter reads (`cotal ps` and `cotal ps --slots`) carry the `all` route beside
 // `one`; every other read is anycast-only. A `slots` row without `all` is exactly the #1274 hand
 // test's broker refusal on a static mesh: the CLI scatters it like `ps`.
 c("the instrument's `ps` and `slots` rows are the only reads minted on the scatter rail",
   operatorInstrumentCapabilities("privileged").filter((cap) => cap.routes?.includes("all")).map((cap) => cap.command).join(",") === "ps,slots");
-// The `run` capability (SPEC 14.3): four untargeted run-* rows, self-targeted run-answer, PLUS the whole spawn set, and
+// The `run` capability (SPEC 14.3): seven untargeted run-* rows (the keyed pair and run-cancel
+// included), self-targeted run-answer, PLUS the whole spawn set, and
 // nothing targeted beyond what spawn already carries. The implication is one-way: a spawn-only
 // caller gains no run row.
-c("the run capability set: run-start/run-resume/run-status/run-ps untargeted, run-answer self-targeted + the spawn set",
-  runCallerCapabilities("u_abc").length === 14
-  && runCallerCapabilities("u_abc").slice(0, 5).map((cap) => cap.command).join(",") === "run-start,run-resume,run-answer,run-status,run-ps"
-  && runCallerCapabilities("u_abc").slice(0, 5).every((cap) => cap.command === "run-answer" ? cap.target?.mode === "self" : cap.target === undefined)
-  && JSON.stringify(runCallerCapabilities("u_abc").slice(5)) === JSON.stringify(spawnCallerCapabilities("u_abc"))
+c("the run capability set: run-start/run-resume/run-start-keyed/run-submission-status/run-cancel/run-status/run-ps untargeted, run-answer self-targeted + the spawn set",
+  runCallerCapabilities("u_abc").length === 17
+  && runCallerCapabilities("u_abc").slice(0, 8).map((cap) => cap.command).join(",") === "run-start,run-resume,run-start-keyed,run-submission-status,run-cancel,run-answer,run-status,run-ps"
+  && runCallerCapabilities("u_abc").slice(0, 8).every((cap) => cap.command === "run-answer" ? cap.target?.mode === "self" : cap.target === undefined)
+  && JSON.stringify(runCallerCapabilities("u_abc").slice(8)) === JSON.stringify(spawnCallerCapabilities("u_abc"))
   && !spawnCallerCapabilities("u_abc").some((cap) => cap.command.startsWith("run-")));
 const adminCaps = operatorInstrumentCapabilities("admin", "u_abc");
 c("the admin instrument set adds any-mode despawn/attach + BOTH modes of input and turn + the manager.admin family",
-  adminCaps.length === 31
+  adminCaps.length === 36
   && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").map((cap) => cap.command).join(",") === "input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").every((cap) => (cap.target as { tOwner?: string }).tOwner === "u_abc")

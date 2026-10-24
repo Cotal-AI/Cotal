@@ -11,7 +11,7 @@
 import { createServer, type Server, type Socket } from "node:net";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { MeshAgent, InboxItem } from "./agent.js";
-import { fmtItem } from "./framing.js";
+import { fmtDeliveryItem, fmtItem } from "./framing.js";
 
 /** One lifecycle event, as the agent runtime delivers it on stdin. */
 export interface HookEvent {
@@ -117,13 +117,13 @@ export function tokenMatches(presented: unknown, digest: Buffer): boolean {
  *  called and no file on disk, twice in a row. Naming the sequence (do it, verify it, then report
  *  what the tools actually returned) is the part the connector owns; the model is still free to
  *  disregard it, so this narrows the failure mode rather than closing it. */
-export function formatInjection(items: InboxItem[]): string | undefined {
+export function formatInjection(items: InboxItem[], options: { metadata?: boolean } = {}): string | undefined {
   if (!items.length) return undefined;
   const head = `📨 Cotal — ${items.length} new message${items.length === 1 ? "" : "s"} from peers:`;
   const tail =
     `(If this asks for work, do it with your own tools first and verify the result, then reply with ` +
     `cotal_dm / cotal_send — never report an action you did not actually perform. cotal_roster shows who's here.)`;
-  return `${head}\n${items.map(fmtItem).join("\n")}\n${tail}`;
+  return `${head}\n${items.map(options.metadata ? fmtDeliveryItem : fmtItem).join("\n")}\n${tail}`;
 }
 
 /** Write one reply frame and report whether it actually reached the runtime.

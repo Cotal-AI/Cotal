@@ -16,7 +16,7 @@
  *  counted from the acceptance, or `deadlineAt`, an instant the caller already holds (an ask's
  *  pause): the hold denies at that same instant, and one already past is refused
  *  `deadline-exceeded`. */
-export const TURN_INPUT_SCHEMA = {
+export const TURN_INPUT_SCHEMA = deepFreeze({
   type: "object", additionalProperties: false, required: ["payload"],
   oneOf: [{ required: ["deadlineMs"] }, { required: ["deadlineAt"] }],
   properties: {
@@ -27,11 +27,11 @@ export const TURN_INPUT_SCHEMA = {
     // id, mirrored into this goal's terminal data so the chain is readable from the facts alone.
     handoffFrom: { type: "string", minLength: 1, maxLength: 200 },
   },
-} as const;
+} as const);
 /** `turn` acceptance: the SEAT the goal was pinned to (its addressing triple), the goal
  *  coordinates, the absolute deadline the manager armed, and the executor coordinate — the same
  *  floor shape `spawn` serves, because a follower recovers the same way. */
-export const TURN_OUTPUT_SCHEMA = {
+export const TURN_OUTPUT_SCHEMA = deepFreeze({
   type: "object", additionalProperties: false,
   required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "deadlineAt", "executor"],
   properties: {
@@ -49,4 +49,14 @@ export const TURN_OUTPUT_SCHEMA = {
       properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
     },
   },
-} as const;
+} as const);
+
+/** Freeze a schema and everything it holds at its declaration. `as const` is type-only, so without
+ *  this an importer could change the contract every manager serves and validates against. */
+function deepFreeze<T>(v: T): T {
+  if (v !== null && typeof v === "object") {
+    for (const child of Object.values(v as Record<string, unknown>)) deepFreeze(child);
+    Object.freeze(v);
+  }
+  return v;
+}

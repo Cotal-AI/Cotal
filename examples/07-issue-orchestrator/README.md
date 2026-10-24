@@ -11,9 +11,9 @@ stands.
 
 ## Prerequisites
 
-- Node ≥ 22, pnpm, and `nats-server` (v2.11+). Install deps once, from the repo root: `pnpm install`.
+- Node ≥ 22, pnpm, and `nats-server` 2.12 or newer. Install deps once, from the repo root: `pnpm install`.
 - A static-auth mesh with a manager, from `cotal up` (not `--open`, not `--user-auth`). Hosted runs
-  need issued caller authority, which only a static-auth mesh provides.
+  need issued caller authority, and these steps get it from static auth.
 - `gh`, authenticated for this repository, on the manager's PATH.
 - The harness and provider for each persona's model: `claude` (triage, worker, merger), `codex`
   (reviewer A), `opencode` (reviewer B).
@@ -154,4 +154,6 @@ What only the personas promise:
 - The relay shows a seat the shell line `cotal run answer ... --by <seat>`, which the hosted path
   refuses. The personas answer with the `cotal_run` tool instead.
 
-A user-auth mesh hosts no runs, hosted or local, so this example needs a static-auth mesh.
+On a user-auth mesh, a registered participant manager hosts authorized runs for a managed agent
+whose grant and whose direct parent's grant both carry `run`. Local user-auth runs are unavailable
+([workflows](../../docs/workflows.md)). These steps cover a static-auth mesh only.

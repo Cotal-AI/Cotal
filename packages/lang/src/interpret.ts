@@ -54,6 +54,7 @@ import {
   applyCheckpointPolicy,
   type AgentHandleValue,
   type CancelSignal,
+  type RootCancellationSource,
   type ChannelHandleValue,
   type ConclaveRequest,
   type EffectContext,
@@ -319,6 +320,8 @@ export interface RunOptions {
    * where its journal says it is and the next driver resumes from there.
    */
   readonly shouldStop?: () => string | undefined;
+  /** Cooperative root cancellation, distinct from a next-boundary host release. */
+  readonly cancellation?: RootCancellationSource;
   /**
    * This walk is a MIGRATION's dry replay, not a resume.
    *
@@ -1505,14 +1508,19 @@ export async function run(source: string, options: RunOptions): Promise<RunResul
   const env = new Env(null);
   installGlobals(env, interp);
 
-  const completion = await interp.executeBlock(ast as AnyNode, env, frame);
-  return {
-    value: completion.type === "return" ? completion.value : undefined,
-    journal: interp.journal,
-    programHash,
-    pins,
-    steps: interp.stepCount,
-  };
+  const unsubscribe = options.cancellation?.subscribe((reason) => frame.signal.cancel(reason));
+  try {
+    const completion = await interp.executeBlock(ast as AnyNode, env, frame);
+    return {
+      value: completion.type === "return" ? completion.value : undefined,
+      journal: interp.journal,
+      programHash,
+      pins,
+      steps: interp.stepCount,
+    };
+  } finally {
+    unsubscribe?.();
+  }
 }
 
 /** Re-run a program against an existing journal. Journalled effects return recorded results. */

@@ -37,6 +37,7 @@ import { jetstream } from "@nats-io/jetstream";
 import {
   CATALOG,
   Journal,
+  LangErrors,
   journalEntryKeyString,
   resolvePins,
   WALKER_LANGUAGE_VERSION,
@@ -812,11 +813,16 @@ try {
     "value" in forked && forked.value.admissible
       && keys(forked.value.cut).join() === "/sleep:before#0"
       && JSON.stringify(forked.value.pins) === JSON.stringify(pins), forked);
-  const invalidDuration = await planFork({ ...request, source: source.replace('"1m"', '"invalid duration"') })
+  // Computed, because the validator refuses a literal that is not a duration (L2034) before replay.
+  const invalidDuration = await planFork({ ...request, source: source.replace('"1m"', '"invalid " + "duration"') })
     .then((value) => ({ value }), (error: Error) => ({ error: { name: error.name, message: error.message } }));
   c("a compiled fork propagates a duration error instead of reporting an unreached cut",
     "error" in invalidDuration && invalidDuration.error.name === "DurationError"
       && invalidDuration.error.message.includes('"invalid duration" is not a duration'), invalidDuration);
+  const literalDuration = await planFork({ ...request, source: source.replace('"1m"', '"invalid duration"') })
+    .then((value) => ({ value }), (error: Error) => ({ error }));
+  c("and a literal one is refused by validation with L2034",
+    "error" in literalDuration && literalDuration.error instanceof LangErrors && literalDuration.error.errors.some((e) => e.code === "L2034"), literalDuration);
   const migrated = await migrateRun({
     runId, endpoint: EP, kv, source, entries, pins, actor: "migration-control", now: () => NOW,
   }).then((value) => ({ value }), (error: Error) => ({ error: error.message }));

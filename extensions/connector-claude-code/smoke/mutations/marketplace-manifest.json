@@ -59,8 +59,8 @@
     {
       "name": "T4 the writer serializes bare names while the builder stays correct",
       "file": "extensions/connector-claude-code/src/setup.ts",
-      "find": "  writeFileSync(path, JSON.stringify(marketplaceManifest(market), null, 2) + \"\\n\");",
-      "replace": "  writeFileSync(path, JSON.stringify({ ...marketplaceManifest(market), plugins: marketplaceManifest(market).plugins.map((entry) => entry.name) }, null, 2) + \"\\n\");",
+      "find": "  writePrivateRecord(path, JSON.stringify(marketplaceManifest(market), null, 2) + \"\\n\");",
+      "replace": "  writePrivateRecord(path, JSON.stringify({ ...marketplaceManifest(market), plugins: marketplaceManifest(market).plugins.map((entry) => entry.name) }, null, 2) + \"\\n\");",
       "expectRed": "the file the writer puts on disk carries the entries the builder produced",
       "cell": "the file the writer puts on disk carries the entries the builder produced",
       "note": "The regression the builder cells are blind to by construction: marketplaceManifest keeps returning correct objects, so T1-T3's cells all stay green, and only the cell that reads the file back can see it. This is the gap the review panel named on PR #1416."

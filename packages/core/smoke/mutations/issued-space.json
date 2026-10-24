@@ -10,7 +10,7 @@
   "mutations": [
     {
       "name": "reference regresses to the DNS endpoint grammar",
-      "file": "packages/core/src/issued-authority.ts",
+      "file": "packages/core/src/issued-accepted.ts",
       "find": "function refSnapshot(value: IssuedAuthorityRef): IssuedAuthorityRef {\n  closed(value, [\"space\", \"owner\", \"actor\", \"uid\", \"generation\"], \"issued reference\");\n  assertIssuedSpace(value.space);",
       "replace": "import { endpointToken } from \"./endpoint-subjects.js\";\nfunction refSnapshot(value: IssuedAuthorityRef): IssuedAuthorityRef {\n  closed(value, [\"space\", \"owner\", \"actor\", \"uid\", \"generation\"], \"issued reference\");\n  endpointToken(value.space);",
       "expectRed": "issued reference accepts a canonical underscore space unchanged",
@@ -34,7 +34,7 @@
     },
     {
       "name": "malformed space is silently sanitized instead of refused",
-      "file": "packages/core/src/issued-authority.ts",
+      "file": "packages/core/src/issued-accepted.ts",
       "find": "  if (typeof space !== \"string\" || space.length === 0 || token(space) !== space)",
       "replace": "  if (typeof space !== \"string\" || space.length === 0)",
       "expectRed": "issued reference rejects wildcard separator whitespace and malformed spaces",

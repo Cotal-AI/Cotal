@@ -1,0 +1,2 @@
+# A channel subscription the broker refuses after its join reaches the endpoint's error event once.
+smoke:late-chat-refusal

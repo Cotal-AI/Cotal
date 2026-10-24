@@ -1,0 +1,2 @@
+# The dm-reader view and its purpose-bound IdP proof: own-DM reads only, every human-proof door refuses it (#4189).
+smoke:dm-reader:auth

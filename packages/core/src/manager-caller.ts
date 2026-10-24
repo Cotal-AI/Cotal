@@ -1,5 +1,6 @@
 import type { EpCaller } from "./endpoint-subjects.js";
 import { assertLifecycleToken } from "./subjects.js";
+import { fromBase64url } from "./base64url.js";
 
 /** Refuse a minted `manager-caller` bearer (SPEC §10) that is not bound to the caller's space and
  *  principal or that names another instance than the one the caller selected, and return the caller
@@ -14,7 +15,7 @@ export function managerCallerBinding(
   try {
     const parts = bearer.split(".");
     if (parts.length !== 3) throw new Error("invalid JWT");
-    payload = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8"));
+    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fromBase64url(parts[1]!)));
   } catch {
     throw new Error("manager control exchange returned an invalid bearer");
   }

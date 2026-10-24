@@ -21,7 +21,8 @@
 import { spawnSync } from "node:child_process";
 import { nativeWin32CreationToken } from "./win32-process.js";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync } from "node:fs";
+import { createPrivateRecord, writePrivateRecord } from "@cotal-ai/core";
 import { acquireLock, processStartToken as posixStartToken } from "./advisory-lock.js";
 
 /** A Node/POSIX-signalable pid: a positive INTEGER within the signed 32-bit range `process.kill`
@@ -84,6 +85,103 @@ export function probeLiveness(pid: number): "alive" | "dead" | "unknown" {
   }
 }
 
+/** Whether `pid` is stopped by a signal such as SIGSTOP, read from its `/proc` state. Only Linux
+ *  can answer here; elsewhere this is `false`, and callers keep their unanswered-broker path. */
+export function processStopped(pid: number): boolean {
+  if (process.platform !== "linux") return false;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) === "T";
+  } catch { return false; }
+}
+
+/** The listening sockets a loopback `server` dials, as the `socket:[inode]` links a holder's
+ *  descriptors show, or `undefined` for a host that is not loopback. An `http:` address without a
+ *  port is on 80, and any other on 4222. Linux reads `/proc/net/tcp{,6}`. */
+function loopbackListenSockets(server: string): Set<string> | undefined {
+  let host: string, port: number;
+  try {
+    const url = new URL(server.includes("://") ? server : `nats://${server}`);
+    host = url.hostname.replace(/^\[|\]$/g, "");
+    port = url.port ? Number(url.port) : url.protocol === "http:" ? 80 : 4222;
+  } catch { return undefined; }
+  if (!(host === "localhost" || host === "::1" || /^127\.\d+\.\d+\.\d+$/.test(host))) return undefined;
+  const sockets = new Set<string>();
+  for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    let text: string;
+    try { text = readFileSync(table, "utf8"); } catch { continue; }
+    for (const line of text.split("\n").slice(1)) {
+      const field = line.trim().split(/\s+/);
+      // `0A` is TCP_LISTEN; the local address ends in the port in hex.
+      if (field[3] === "0A" && parseInt(field[1]?.split(":").pop() ?? "", 16) === port && field[9]) sockets.add(`socket:[${field[9]}]`);
+    }
+  }
+  return sockets;
+}
+
+/** Whether `pid` has a descriptor on one of `sockets`. A process this account cannot read has none. */
+function holdsSocket(pid: number, sockets: ReadonlySet<string>): boolean {
+  let fds: string[];
+  try { fds = readdirSync(`/proc/${pid}/fd`); } catch { return false; }
+  for (const fd of fds) {
+    try { if (sockets.has(readlinkSync(`/proc/${pid}/fd/${fd}`))) return true; } catch { /* the descriptor closed */ }
+  }
+  return false;
+}
+
+/** The stopped process of this account that holds the listening socket a loopback `server` dials,
+ *  or `undefined`. A stopped broker still takes connections, because the kernel completes them, and
+ *  never greets, so a dial waits out its whole budget. Linux reads `/proc/net/tcp{,6}` and the
+ *  stopped processes' descriptors; elsewhere this is `undefined`. */
+export function stoppedLoopbackListener(server: string): number | undefined {
+  if (process.platform !== "linux") return undefined;
+  const sockets = loopbackListenSockets(server);
+  if (!sockets?.size) return undefined;
+  for (const entry of readdirSync("/proc")) {
+    const pid = parsePid(entry);
+    if (pid !== undefined && processStopped(pid) && holdsSocket(pid, sockets)) return pid;
+  }
+  return undefined;
+}
+
+/** Every process of this account that listens where a loopback `server` dials, so a report can name
+ *  what holds an address. Linux only; elsewhere, and for a host that is not loopback, none. */
+export function loopbackListeners(server: string): number[] {
+  if (process.platform !== "linux") return [];
+  const sockets = loopbackListenSockets(server);
+  if (!sockets?.size) return [];
+  return readdirSync("/proc").flatMap((entry) => {
+    const pid = parsePid(entry);
+    return pid !== undefined && holdsSocket(pid, sockets) ? [pid] : [];
+  });
+}
+
+/** The state, ppid and pgrp fields of `/proc/<pid>/stat`, which follow the parenthesised name, or
+ *  `undefined` when the process is gone. */
+function statFields(pid: number): string[] | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ", 3);
+  } catch { return undefined; }
+}
+
+/** The process group `pid` belongs to, or `undefined` when it is gone or this is not Linux. */
+export function processGroupOf(pid: number): number | undefined {
+  if (process.platform !== "linux") return undefined;
+  return parsePid(statFields(pid)?.[2] ?? "");
+}
+
+/** The live processes in process group `pgid`. A zombie has exited and holds nothing, so it is not
+ *  one. Linux only; elsewhere none. */
+export function processGroupMembers(pgid: number): number[] {
+  if (process.platform !== "linux") return [];
+  return readdirSync("/proc").flatMap((entry) => {
+    const pid = parsePid(entry);
+    const fields = pid === undefined ? undefined : statFields(pid);
+    return fields && fields[0] !== "Z" && fields[0] !== "X" && parsePid(fields[2] ?? "") === pgid ? [pid!] : [];
+  });
+}
+
 // ---- the manager's own record ------------------------------------------------------------------
 
 // `MANAGER_PIDFILE` and `MANAGER_DELIVERY_AWARE_MARKER` moved to `local-process.ts`. They became
@@ -141,7 +239,7 @@ export function readProcessCommand(pid: number): ProcessCommand {
 /**
  * Does this command line belong to a Cotal manager?
  *
- * The test is the `supervise` ARGV TOKEN, which is the manager daemon's own subcommand and is
+ * The test is the `supervise`, hidden `__daemon-manager` or hidden `__service-manager` ARGV TOKEN, which is the manager daemon's own subcommand and is
  * present however it was started — by `cotal up`'s detached re-exec, by a container entrypoint, by
  * cron, or typed by hand. Matching the token rather than a path keeps it true across a global
  * install, a `tsx bin/cotal.ts` dev run, and a bundled binary, none of which agree on argv[0].
@@ -152,15 +250,21 @@ export function readProcessCommand(pid: number): ProcessCommand {
  * direction is the safe one and is chosen deliberately.
  */
 export function commandIsCotalSupervisor(command: string): boolean {
-  return /(^|\s)supervise(\s|$)/.test(command);
+  return /(^|\s)(?:supervise|__daemon-manager|__service-manager)(\s|$)/.test(command);
 }
+
+/** The controller-owned manager child must never take a legacy signal/escalation path. */
+export function commandIsCotalServiceManager(command: string): boolean {
+  return /(^|\s)__service-manager(\s|$)/.test(command);
+}
+
 
 /**
  * Does this command line belong to a Cotal delivery daemon?
  *
  * Same rule and same direction as {@link commandIsCotalSupervisor}, one component over: the test is
- * the `deliver` ARGV TOKEN, which is the daemon's own subcommand and is present however it was
- * started — `cotal up`'s detached re-exec, a container entrypoint, systemd, or an operator typing
+ * the `deliver`, hidden `__daemon-deliver` or hidden `__service-delivery` ARGV TOKEN, which is the daemon's own entry and
+ * is present however it was started — `cotal up`'s detached re-exec, a container entrypoint, systemd, or an operator typing
  * `cotal deliver --space …`. A token, not a substring, so `delivery-thing` and a `--creds
  * .../delivery.creds` path are not mistaken for the daemon.
  *
@@ -169,7 +273,7 @@ export function commandIsCotalSupervisor(command: string): boolean {
  * affirmative evidence that the live process is something else may downgrade a record.
  */
 export function commandIsCotalDelivery(command: string): boolean {
-  return /(^|\s)deliver(\s|$)/.test(command);
+  return /(^|\s)(deliver|__daemon-deliver|__service-delivery)(\s|$)/.test(command);
 }
 
 /** A process record's state. THREE-VALUED liveness plus absent, because both ways of collapsing it
@@ -408,7 +512,7 @@ export function identityPinPath(pidfilePath: string): string {
 export function writeIdentityPin(pidfilePath: string, pid: number, tokenAt: ProcessStartTokenReader = defaultStartToken): void {
   const rec = identityRecord(pid, tokenAt);
   if (!("token" in rec)) return; // no start could be established: leave the legacy bare-pid shape, loud
-  writeFileSync(identityPinPath(pidfilePath), formatRecord(rec));
+  writePrivateRecord(identityPinPath(pidfilePath), formatRecord(rec));
 }
 
 /** One step of {@link writePidPair}'s publish, passed to `onStep` right after it completes. Production
@@ -433,16 +537,14 @@ function parsePinLines(raw: string): ProcessIdentityRecord[] | undefined {
  *  or an old pidfile that had no pin. The line reads as legacy, never as a torn pairing. */
 const NO_START_TOKEN = "-";
 
-/** The pin line of the pid the pidfile names right now. A pidfile with no pin at all is a legacy
- *  record, so its line carries {@link NO_START_TOKEN} and the bridge keeps it legacy. A pin that is
- *  unreadable or has no line for that pid has nothing to carry. */
+/** The pin line of the pid the pidfile names right now. The pidfile is read through
+ *  {@link readPidfile}, so only a missing pidfile is a first start and any other read error throws. A
+ *  pidfile with no pin at all is a legacy record, so its line carries {@link NO_START_TOKEN} and the
+ *  bridge keeps it legacy. A pin that is unreadable or has no line for that pid has nothing to carry. */
 function currentPinLine(pidfilePath: string): ProcessIdentityRecord | undefined {
-  let current: number | undefined;
-  try {
-    current = parsePid(readFileSync(pidfilePath, "utf8"));
-  } catch {
-    return undefined; // no pidfile: a first start, there is no old line to carry
-  }
+  const raw = readPidfile(pidfilePath);
+  if (raw === undefined) return undefined; // no pidfile: a first start, there is no old line to carry
+  const current = parsePid(raw);
   if (current === undefined) return undefined;
   let rawPin: string;
   try {
@@ -458,6 +560,55 @@ function lockPidRecord(pidfilePath: string): { release(): void } {
   return acquireLock(`${pidfilePath}.publish.lock`, { label: `the publish lock for ${pidfilePath}`, waitMs: 30_000, pollMs: 20 });
 }
 
+/** How {@link writePidPair} moves a temporary over the record. Production passes none; tests inject a
+ *  rename that refuses, a sleep that records and the platform, to drive the Windows retry without
+ *  Windows or a real wait. */
+export interface RecordReplaceIo {
+  rename?: (from: string, to: string) => void;
+  sleep?: (ms: number) => void;
+  platform?: NodeJS.Platform;
+}
+
+/** The codes Windows gives a rename over a file another handle holds open, until that handle closes. */
+const WIN32_HELD_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+/** The total backoff one publish may spend across all its renames. The wait is synchronous and taken
+ *  under the publish lock, so it blocks the publishing process and any writer queued for the lock;
+ *  5 s keeps both far inside the lock's 30 s wait. */
+const PUBLISH_REPLACE_BUDGET_MS = 5_000;
+
+/** The rename one publish uses to move each temporary over the record. On Windows a rename fails with
+ *  EPERM, EACCES or EBUSY while another handle holds either file open, such as a reader of the record,
+ *  which the publish lock does not serialize, or a virus scanner (#4168). As graceful-fs does for
+ *  `fs.rename` on Windows, those codes are retried with a backoff that grows from 0 by 10 ms to 100 ms.
+ *  graceful-fs gives up when the destination exists; here the destination is always the record being
+ *  replaced, so the retry goes on until the publish has spent {@link PUBLISH_REPLACE_BUDGET_MS} of
+ *  backoff, counted across every rename it makes, and then the last error is thrown. Any other error,
+ *  and any error on another platform, is thrown at once. */
+function publishRenamer(io: RecordReplaceIo = {}): (from: string, to: string) => void {
+  const rename = io.rename ?? renameSync;
+  const sleep = io.sleep ?? sleepSync;
+  const platform = io.platform ?? process.platform;
+  let spent = 0;
+  return (from, to) => {
+    for (let backoff = 0; ; backoff = Math.min(backoff + 10, 100)) {
+      try {
+        rename(from, to);
+        return;
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (platform !== "win32" || code === undefined || !WIN32_HELD_RENAME_CODES.has(code) || spent + backoff > PUBLISH_REPLACE_BUDGET_MS) throw e;
+        sleep(backoff);
+        spent += backoff;
+      }
+    }
+  };
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /** Publish the pidfile and its identity pin as ONE transition (issue #1238). The pidfile rename is the
  *  single commit point. Just before it, a BRIDGE pin is renamed into place holding the old record's
  *  line and the new one, so whichever pid the pidfile names at any instant, the pin carries that pid's
@@ -470,7 +621,9 @@ function lockPidRecord(pidfilePath: string): { release(): void } {
  *  line. After `publish-pin`, the NEW complete record. No state is torn and none drops to the unpinned
  *  legacy shape. A legacy old record (a pidfile with no pin) is carried as a {@link NO_START_TOKEN}
  *  line, so it stays legacy until the commit. An old pin that is torn or has no line for the old pid
- *  has nothing to carry, so until the commit it refuses as a torn pairing, as it already did.
+ *  has nothing to carry, so until the commit it refuses as a torn pairing, as it already did. A
+ *  pidfile that exists but cannot be read is not a first start: the publish throws before its first
+ *  rename, leaving the record as it was.
  *
  *  When `identityRecord` cannot establish a token (ps-less host, or a pid whose start could not be
  *  read - same rule as {@link writeIdentityPin}), the new line carries {@link NO_START_TOKEN} and
@@ -483,13 +636,18 @@ function lockPidRecord(pidfilePath: string): { release(): void } {
  *  record under the same lock ({@link removePidPair}). A crashed holder's lock is reclaimed by the
  *  next writer.
  *
+ *  Its renames go through one {@link publishRenamer}, which retries the brief refusal Windows gives a
+ *  rename over a record another handle holds open, on one backoff budget for the whole publish. A
+ *  refusal that outlasts the budget throws like any other step, leaving the state the previous step
+ *  reached.
+ *
  *  On any throw, the temporaries are removed (`finally`, best-effort) and the error rethrown; the
  *  temporary names are never read by any reader (`${path}.publish.<pid>.<hex>`, the same claim-file
  *  pattern {@link claimAuthPidSlot} uses for `.claim.`). */
 export function writePidPair(
   pidfilePath: string,
   pid: number,
-  opts: { tokenAt?: ProcessStartTokenReader; onStep?: (step: PidPairStep) => void } = {},
+  opts: { tokenAt?: ProcessStartTokenReader; onStep?: (step: PidPairStep) => void; replaceIo?: RecordReplaceIo } = {},
 ): void {
   const tokenAt = opts.tokenAt ?? defaultStartToken;
   const onStep = opts.onStep ?? (() => {});
@@ -500,33 +658,41 @@ export function writePidPair(
   const bridgeTemp = `${pinPath}.publish.${suffix}.bridge`;
   const rec = identityRecord(pid, tokenAt);
   const line: ProcessIdentityRecord = "token" in rec ? rec : { pid, token: NO_START_TOKEN };
+  const replace = publishRenamer(opts.replaceIo);
+  // Each temporary is created owner-private and exclusively, never through a symlink, then renamed
+  // onto a record under `.cotal`. Only the names this call created are removed afterwards: an EEXIST
+  // means the name belongs to someone else.
+  const created: string[] = [];
+  const create = (path: string, data: string): void => {
+    createPrivateRecord(path, data);
+    created.push(path);
+  };
   try {
-    writeFileSync(pidTemp, String(pid));
-    if ("token" in rec) writeFileSync(pinTemp, formatRecord(rec));
+    create(pidTemp, String(pid));
+    if ("token" in rec) create(pinTemp, formatRecord(rec));
     const held = lockPidRecord(pidfilePath);
     try {
       const old = currentPinLine(pidfilePath);
-      writeFileSync(bridgeTemp, (old !== undefined && old.pid !== pid ? [old, line] : [line]).map(formatRecord).join("\n"));
+      create(bridgeTemp, (old !== undefined && old.pid !== pid ? [old, line] : [line]).map(formatRecord).join("\n"));
       onStep("temporaries");
-      renameSync(bridgeTemp, pinPath);
+      replace(bridgeTemp, pinPath);
       onStep("bridge-pin");
-      renameSync(pidTemp, pidfilePath);
+      replace(pidTemp, pidfilePath);
       onStep("publish-pid");
-      if ("token" in rec) renameSync(pinTemp, pinPath);
+      if ("token" in rec) replace(pinTemp, pinPath);
       else rmSync(pinPath, { force: true });
       onStep("publish-pin");
     } finally {
       held.release();
     }
   } finally {
-    rmSync(pidTemp, { force: true });
-    rmSync(pinTemp, { force: true });
-    rmSync(bridgeTemp, { force: true });
+    for (const path of created) rmSync(path, { force: true });
   }
 }
 
 /** What {@link verifyIdentityPin} found for one pidfile. */
 export type PinVerdict =
+  | { kind: "no-pid" }        // the pidfile is absent, empty or holds no pid: there is nothing to verify
   | { kind: "legacy" }        // no sibling: a pre-identity record. Windows launches write a sibling (#1437)
   | { kind: "match"; record: ProcessIdentityRecord } // pinned, and the live process carries the recorded start
   | { kind: "gone" }          // pinned, and the pid is ESRCH-dead: the recorded process is gone
@@ -538,6 +704,7 @@ export type PinVerdict =
 /**
  * THE open-verify step every teardown runs BEFORE signalling (#969). Read the pidfile's bare pid,
  * then the sibling pin, and adjudicate the pairing:
+ *   - no-pid              -> no pid is recorded, so there is no process to verify or signal
  *   - legacy              -> the caller warns and signals for upgrade compatibility
  *   - match               -> safe to signal; the process behind the pid is the recorded one
  *   - gone                -> ESRCH-proven dead; the caller may clear the record
@@ -548,14 +715,9 @@ export type PinVerdict =
  * from it here so the pairing check cannot drift from however the caller read the pid.
  */
 export function verifyIdentityPin(pidfilePath: string, tokenAt: ProcessStartTokenReader = defaultStartToken): PinVerdict {
-  let rawPid: string;
-  try {
-    rawPid = readFileSync(pidfilePath, "utf8");
-  } catch {
-    return { kind: "legacy" }; // no pidfile at all: nothing is pinned; callers treat as absent
-  }
-  const pidRead = parsePid(rawPid);
-  if (pidRead === undefined) return { kind: "legacy" }; // husk/unattributable: existing callers own it
+  const rawPid = readPidfile(pidfilePath);
+  const pidRead = rawPid === undefined ? undefined : parsePid(rawPid);
+  if (pidRead === undefined) return { kind: "no-pid" };
   let rawPin: string;
   try {
     rawPin = readFileSync(identityPinPath(pidfilePath), "utf8");

@@ -59,8 +59,8 @@
     {
       "name": "M5 the event holder is not given the live wait",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "        () =>\n          new Promise<void>((resolve, reject) => {\n            const live = (): boolean => agent.connected && agent.transportConnected;",
-      "replace": "        undefined,\n        () =>\n          new Promise<void>((resolve, reject) => {\n            const live = (): boolean => agent.connected && agent.transportConnected;",
+      "find": "          waitLive: () =>\n            new Promise<void>((resolve, reject) => {\n              const live = (): boolean => agent.connected && agent.transportConnected;",
+      "replace": "          waitLiveDropped: () =>\n            new Promise<void>((resolve, reject) => {\n              const live = (): boolean => agent.connected && agent.transportConnected;",
       "expectRed": "the held run's flush was queued inside the outage and still unpublished when the broker came back (#1868)",
       "cell": "the held run's flush was queued inside the outage and still unpublished when the broker came back (#1868)",
       "note": "The inserted `undefined` fills the waitLive slot, so the holder takes its pre-fix path. The named cell is the outage-flush assertion: the held turn completes while the broker is down, and without the wait the flush reads max_payload off the missing connection and the seat exits 1 before the broker is restarted."

@@ -1009,6 +1009,27 @@ try {
     replies.length = 0;
   }
 
+  // stop() never outlives its connection: nats-core settles a subscription drain on the server's PONG,
+  // and a connection that closes mid-drain strands that PONG (close() rejects no pending flush), so a
+  // stop() racing the connection's close must settle on the close, with its in-flight handlers.
+  {
+    const nc2 = await connect({ servers: `nats://127.0.0.1:${PORT}` });
+    const srvMid = serveEndpoint(nc2, SPACE, grantD, fullDefs(), { public: true });
+    await nc2.flush();
+    const t0 = Date.now();
+    const stopping = srvMid.stop().then(() => "stopped" as const, (e: Error) => `rejected: ${e.message}`);
+    await nc2.close();
+    const outcome = await Promise.race([stopping, wait(3000).then(() => "hung" as const)]);
+    c("stop() settles when the connection closes mid-drain, without waiting for a PONG that never comes",
+      outcome === "stopped" && Date.now() - t0 < 3000, JSON.stringify({ outcome, ms: Date.now() - t0 }));
+    const nc3 = await connect({ servers: `nats://127.0.0.1:${PORT}` });
+    const srvGone = serveEndpoint(nc3, SPACE, grantD, fullDefs(), { public: true });
+    await nc3.flush();
+    await nc3.close();
+    const afterClose = await Promise.race([srvGone.stop().then(() => "stopped" as const, (e: Error) => `rejected: ${e.message}`), wait(3000).then(() => "hung" as const)]);
+    c("stop() on an already-closed connection settles at once", afterClose === "stopped", afterClose);
+  }
+
   await replySub.drain();
   await nc.close();
 } finally {

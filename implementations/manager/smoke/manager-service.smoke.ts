@@ -11,8 +11,9 @@
  *     JWT's digest — and the manager's STANDING supervisor credential is broker-DENIED the epgate
  *     write, so the traversal could only have ridden the scoped one-shot executor.
  *  3. F5(a)/maintenance CHOKEPOINT (checklist 3/8): a retired managed principal is refused on
- *     `ep.one` (permission-denied), and a resume-pending manager refuses ep ops (`unavailable`);
- *     both restore. (Since 1d the ep door is the only control door.)
+ *     `ep.one` (permission-denied), and a resume-pending manager refuses ep ops (`unavailable`)
+ *     while still answering `status`, the read a resume's readiness waits on; both restore.
+ *     (Since 1d the ep door is the only control door.)
  *  4. processEpoch ≠ instanceId (checklist 4): the served epoch is the GATE's processEpoch (0),
  *     while instanceId is the manager's lifecycle uid.
  *  5. Typed invoke + describe (the 1a walking skeleton): a caller-cred `epCall` over `ep.one`
@@ -42,7 +43,7 @@ import {
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
-import { MANAGER_ENDPOINT, MANAGER_STATUS_CONTRACT, type ManagerStatus } from "../src/manager-service-contract.js";
+import { MANAGER_ENDPOINT, MANAGER_CONTRACTS, MANAGER_STATUS_CONTRACT, type ManagerStatus } from "../src/manager-service-contract.js";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await freePort();
@@ -150,7 +151,7 @@ try {
   const caller = { owner: DEV_OWNER, actor: callerId.id, uid: callerUid };
   const callerCreds = await mintCreds(auth, callerId, "agent", {
     lifecycleUid: callerUid,
-    endpointCapabilities: [{ endpoint: MANAGER_ENDPOINT, command: "status" }],
+    endpointCapabilities: [{ endpoint: MANAGER_ENDPOINT, command: "status" }, { endpoint: MANAGER_ENDPOINT, command: "ps" }],
   });
   const callerNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: callerCreds, tls: false }), maxReconnectAttempts: 0 });
   // checklist 6: the `one`-rail currency reader is the GATE's processEpoch (the service epoch
@@ -158,6 +159,11 @@ try {
   const serviceEpochReader = async () => (await readGate()).processEpoch;
   const callStatus = () => epCall(callerNc, space, { mode: "one" },
     { endpoint: MANAGER_ENDPOINT, command: "status", contract: MANAGER_STATUS_CONTRACT, caller },
+    { deadlineMs: 8000, currentEpoch: serviceEpochReader });
+  // `status` answers a resume-pending manager by design (serveObservation), so the fence is probed
+  // with `ps`, an ordinary command that stays behind it.
+  const callPs = () => epCall(callerNc, space, { mode: "one" },
+    { endpoint: MANAGER_ENDPOINT, command: "ps", contract: MANAGER_CONTRACTS.ps, caller },
     { deadlineMs: 8000, currentEpoch: serviceEpochReader });
   const r1 = await callStatus();
   const s1 = r1.reply.data as ManagerStatus;
@@ -199,12 +205,16 @@ try {
     && String(rRet.reply.error?.message ?? "").includes("retired"), rRet.reply);
   M.retiredPrincipals.delete(callerPrincipal);
   M.resumeRequired = true;
-  const rRes = await callStatus();
+  const rRes = await callPs();
   check("a resume-pending manager refuses ep ops (unavailable, the maintenance fence)",
     rRes.reply.ok === false && rRes.reply.error?.code === "unavailable"
     && String(rRes.reply.error?.message ?? "").includes("resume"), rRes.reply);
+  const rObs = await callStatus();
+  check("a resume-pending manager still answers status, the read its resume readiness waits on",
+    rObs.reply.ok === true && (rObs.reply.data as ManagerStatus).instanceId === iid, rObs.reply);
   M.resumeRequired = false;
-  check("the fences RESTORE (the caller invokes again after both clear)", (await callStatus()).reply.ok === true);
+  check("the fences RESTORE (the caller invokes again after both clear)",
+    (await callStatus()).reply.ok === true && (await callPs()).reply.ok === true);
 
   console.log("4. standing renewal through the mint fence (checklist 7)");
   const before = M.serviceServe!.creds;

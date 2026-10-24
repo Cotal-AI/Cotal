@@ -49,7 +49,7 @@ console.log("1. the positive control: a complete search still finds, and still r
     && (locateSeatIn([answered(A, "seat"), answered(B)], "seat") as { instanceId: string }).instanceId === A);
   const both = locateSeatIn([answered(A, "other"), answered(B, "elsewhere")], "seat");
   check("a name on NEITHER of two managers that both answered is absent (a complete search concludes)",
-    both.kind === "absent" && (both as { checked: number }).checked === 2, both);
+    both.kind === "absent" && both.checked === 2 && both.instances.join() === [A, B].join(), both);
   check("a single answering manager stays unpinned (no ambiguity to resolve)",
     locateSeatIn([answered(A)], "seat").kind === "unpinned");
 }
@@ -82,8 +82,9 @@ console.log("\n2. THE DEFECT: an instance that did not answer FOR ITSELF cannot 
 
 console.log("\n3. what the operator is TOLD, which is where the damage landed");
 {
-  const absent = seatMissRefusal("seat", "cotal stop", { kind: "absent", checked: 2 });
+  const absent = seatMissRefusal("seat", "cotal stop", { kind: "absent", checked: 2, instances: [A, B] });
   check("a complete search still says the seat is on none of them", absent.startsWith('no managed agent "seat" on any of the 2 reachable'), absent);
+  check("...and names the managers that answered", absent.includes(`(${A}, ${B})`), absent);
   const unknown: Extract<SeatLocation, { kind: "unknown" }> = { kind: "unknown", answered: 1, silent: [B], refused: [] };
   const msg = seatMissRefusal("seat", "cotal stop", unknown);
   // THE REGRESSION GUARD. The old sentence is a definite negative and a retry loop believes it.
@@ -101,7 +102,7 @@ console.log("\n3. what the operator is TOLD, which is where the damage landed");
 
 // DECLARED, not implied: a suite that ends early reddens no line, and `fail === 0` with a zero exit
 // reads as a pass in every one of those ways out. The count is checked however the process leaves.
-const EXPECTED_CELLS = 18;
+const EXPECTED_CELLS = 19;
 process.on("exit", () => {
   const ran = pass + fail;
   if (ran !== EXPECTED_CELLS) {

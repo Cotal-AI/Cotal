@@ -20,8 +20,8 @@
     {
       "name": "Jcode connector carries the requested reasoning-effort tier",
       "file": "extensions/connector-jcode/src/extension.ts",
-      "find": "      env.COTAL_VARIANT = variant;",
-      "replace": "      env.COTAL_VARIANT = \"low\";",
+      "find": "    if (opts.variant) env.COTAL_VARIANT = opts.variant;",
+      "replace": "    if (opts.variant) env.COTAL_VARIANT = \"low\";",
       "expectRed": "variant rides env as the reasoning effort"
     },
     {

@@ -1,0 +1,3 @@
+# A native conversation's selected channels, role and capabilities on a real user-auth mesh, through
+# the native gateway, including a spawn and despawn of its own child by a real Manager.
+smoke:native-conversation-capabilities

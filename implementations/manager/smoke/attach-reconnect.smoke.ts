@@ -258,6 +258,10 @@ function attachUnderPty(root: string, extra: string[] = [], seat: string = SEAT)
   };
 }
 
+/** What the attach printed, without terminal styling or carriage returns, so its end report can be
+ *  matched line by line. */
+const shown = (a: Attached): string => a.seen().replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
+
 /** A plain (non-terminal) `cotal` run, for the control-plane commands this suite drives itself. */
 const cotal = (args: string[], cwd: string, timeoutMs = 90_000): Promise<{ status: number | null; out: string }> =>
   new Promise((res) => {
@@ -341,7 +345,8 @@ try {
 
     a.write(DETACH_BYTE);
     check("the detach key still detaches after a reconnect", await a.waitExit(30_000), a.seen().slice(-300));
-    check("...cleanly, saying so", a.exit()?.code === 0 && /detached from rcseat/.test(a.seen()),
+    // The redesigned attach ends with a "Detached" report whose `Agent:` row names the seat.
+    check("...cleanly, saying so", a.exit()?.code === 0 && /Detached\n\s+Agent:\s+rcseat\n/.test(shown(a)),
       { exit: a.exit(), tail: a.seen().slice(-300) });
   }
 
@@ -450,8 +455,10 @@ try {
     await heal();
     check("the attach exits", await a.waitExit(90_000), a.seen().slice(-500));
     check("...clean, saying the seat is gone (not an infinite retry against something that is not there)",
-      a.exit()?.code === 0 && /seat rcseat is gone/.test(a.seen()), { exit: a.exit(), tail: a.seen().slice(-500) });
-    check("...and it does NOT claim a detach", !/detached from rcseat/.test(a.seen()), a.seen().slice(-500));
+      // The redesigned attach reports a gone seat as "Attach target no longer available" for that agent.
+      a.exit()?.code === 0 && /Attach target no longer available\n\s+Agent:\s+rcseat\n/.test(shown(a)), { exit: a.exit(), tail: a.seen().slice(-500) });
+    // Only the detached report says that detaching sent no stop request.
+    check("...and it does NOT claim a detach", !/Detaching did not send a stop request/.test(shown(a)), a.seen().slice(-500));
   }
 
   // ---------------------------------------------------------------------------------------------

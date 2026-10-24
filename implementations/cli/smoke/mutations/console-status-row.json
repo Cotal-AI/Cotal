@@ -18,12 +18,12 @@
       "note": "`working` alone claims progress the manager never reported; the qualifier is the whole point of the row."
     },
     {
-      "name": "S2 the role loses its parentheses",
+      "name": "S2 the row drops the role from its name/role label",
       "file": "implementations/cli/src/console/commands.ts",
-      "find": "  const role = a.role ? ` (${a.role})` : \"\";",
-      "replace": "  const role = a.role ? ` ${a.role}` : \"\";",
-      "expectRed": "the role is parenthesised after the name",
-      "cell": "the role is parenthesised after the name",
+      "find": "${peerLabel(a)} · ${a.agent}",
+      "replace": "${a.name} · ${a.agent}",
+      "expectRed": "the row leads with the peer's name/role label",
+      "cell": "the row leads with the peer's name/role label",
       "note": "Without the parentheses a role is indistinguishable from a second name field."
     },
     {

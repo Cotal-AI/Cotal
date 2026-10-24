@@ -26,8 +26,8 @@
     {
       "name": "restore the claude and opencode membership gate",
       "file": "implementations/cli/src/commands/setup.ts",
-      "find": "  return [...connectors]\n    .sort((a, b) => a.name.localeCompare(b.name))\n    .map((connector) => {",
-      "replace": "  return [...connectors]\n    .filter((connector) => connector.name === \"claude\" || connector.name === \"opencode\")\n    .sort((a, b) => a.name.localeCompare(b.name))\n    .map((connector) => {",
+      "find": "  return Promise.all([...connectors]\n    .sort((a, b) => a.name.localeCompare(b.name))\n    .map(async (connector) => {",
+      "replace": "  return Promise.all([...connectors]\n    .filter((connector) => connector.name === \"claude\" || connector.name === \"opencode\")\n    .sort((a, b) => a.name.localeCompare(b.name))\n    .map(async (connector) => {",
       "expectRed": "every registered connector appears in setup candidates",
       "cell": "every registered connector appears in setup candidates",
       "command": "rm -rf implementations/cli/dist && pnpm --filter @cotal-ai/cli... build && pnpm exec tsx implementations/cli/smoke/setup-connectors.smoke.ts",
@@ -36,8 +36,8 @@
     {
       "name": "restore the claude name check for setup hints",
       "file": "implementations/cli/src/commands/setup.ts",
-      "find": "          : connector.setup\n            ? connector.pluginRoot\n              ? \"installs a plugin\"\n              : \"runs its own setup\"\n            : \"ready at spawn\",",
-      "replace": "          : connector.setup\n            ? connector.name === \"claude\"\n              ? \"installs a plugin\"\n              : \"runs its own setup\"\n            : \"ready at spawn\",",
+      "find": "            : connector.setup\n              ? connector.pluginRoot\n                ? \"installs a plugin\"\n                : \"runs its own setup\"\n              : \"ready at spawn\",",
+      "replace": "            : connector.setup\n              ? connector.name === \"claude\"\n                ? \"installs a plugin\"\n                : \"runs its own setup\"\n              : \"ready at spawn\",",
       "expectRed": "a non-claude connector with pluginRoot gets the plugin hint",
       "cell": "a non-claude connector with pluginRoot gets the plugin hint",
       "command": "rm -rf implementations/cli/dist && pnpm --filter @cotal-ai/cli... build && pnpm exec tsx implementations/cli/smoke/setup-connectors.smoke.ts",

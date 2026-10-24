@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, fchmodSync, fstatSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -105,9 +105,61 @@ export function processStartToken(pid: number): string | undefined {
 
 export function writeRecord(path: string, record: SeatRecord): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${JSON.stringify(record)}\n`, { mode: 0o600, flag: "w" });
-  chmodSync(path, 0o600);
+  writePrivate(path, `${JSON.stringify(record)}\n`);
   chmodSync(dirname(path), 0o700);
+}
+
+/**
+ * Open `path` as this user's private file, mode 0o600 when the open creates it. The open never follows
+ * a final symlink and never waits on a FIFO. Anything but this user's regular file is refused with
+ * code `EPERM` and left unchanged; an owned file is set to 0o600 through the descriptor. This package
+ * depends on nothing else in the repo, so it keeps its own copy of core's private open.
+ */
+function openPrivate(path: string, flags: number): number {
+  let fd: number;
+  try {
+    fd = openSync(path, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ELOOP") throw notPrivate(path, "is a symlink");
+    throw e;
+  }
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile()) throw notPrivate(path, "is not a regular file");
+    if (info.uid !== process.getuid!()) throw notPrivate(path, `is owned by uid ${info.uid}, not this user`);
+    fchmodSync(fd, 0o600);
+    return fd;
+  } catch (e) {
+    closeSync(fd);
+    throw e;
+  }
+}
+
+function notPrivate(path: string, why: string): NodeJS.ErrnoException {
+  const refused: NodeJS.ErrnoException = new Error(`refusing to write "${path}": it ${why}; it was left unchanged`);
+  refused.code = "EPERM";
+  return refused;
+}
+
+/** Replace a private file's bytes under {@link openPrivate}'s rule. */
+export function writePrivate(path: string, data: string): void {
+  const fd = openPrivate(path, constants.O_WRONLY | constants.O_CREAT);
+  try {
+    ftruncateSync(fd);
+    writeFileSync(fd, data);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Append to a private log under {@link openPrivate}'s rule. */
+export function appendPrivate(path: string, data: string): void {
+  const fd = openPrivate(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND);
+  try {
+    writeFileSync(fd, data);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function readRecord(path: string): SeatRecord {

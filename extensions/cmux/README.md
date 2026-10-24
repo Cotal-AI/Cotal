@@ -25,5 +25,5 @@ Lifecycle waits poll cmux's exact workspace inventory. Closing the workspace aut
 down its terminal and child; an unreachable app fails the wait closed. cmux does not expose child
 completion while a workspace remains open, so that case times out rather than reporting a false exit.
 
-See [docs/architecture.md](../../docs/architecture.md) (*Manager*) and the
+See [docs/architecture.md](../../docs/architecture.md) (*Manager supervision*) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.

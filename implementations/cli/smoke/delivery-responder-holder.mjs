@@ -46,9 +46,17 @@ const ep = new CotalEndpoint({
 });
 ep.on("error", (e) => console.error(e.message));
 await ep.start();
-const revision = await ep.acquireDeliveryLease(0);
-if (mode === "ready") await ep.markDeliveryLeaseReady(0, revision);
+let revision = await ep.acquireDeliveryLease(0);
+if (mode === "ready") revision = await ep.markDeliveryLeaseReady(0, revision);
 console.log(process.pid);
-// Hold the lease (and renew nothing else) until the smoke stops us: releasing early would let the
-// record expire mid-assertion and turn a real verdict into a flake.
-await new Promise(() => {});
+// Hold the lease until the smoke stops us, renewing it as the daemon does. The bucket TTL expires an
+// unrenewed row 10s after its last write, which a slow host reaches before the status reads that
+// follow, and then they measure a missing lease instead of this state. Each renew is the CAS write
+// that keeps this mode's readiness.
+setInterval(async () => {
+  try {
+    revision = mode === "ready" ? await ep.renewDeliveryLease(0, revision) : await ep.markDeliveryLeaseNotReady(0, revision);
+  } catch (e) {
+    console.error(`lease renew failed: ${e.message}`);
+  }
+}, 3_000);

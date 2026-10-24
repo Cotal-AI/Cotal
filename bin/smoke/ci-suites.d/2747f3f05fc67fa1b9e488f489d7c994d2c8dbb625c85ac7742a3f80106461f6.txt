@@ -1,0 +1,3 @@
+# history clear --dry-run on a prepared space is a classified TARGET_UNAVAILABLE refusal, a
+# registered space previews without a broker, and the docs name --yes and --dry-run.
+smoke:history-clear-surface

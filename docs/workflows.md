@@ -75,7 +75,12 @@ bounded decision record, not prose.
   A branch may not write to anything declared outside it; return the value and read it out of the
   scope's result.
 - **Time and randomness are tamed.** `now()` is the branch's run clock, the end of the last effect
-  it awaited; `random()` is a seeded stream derived per scope. Both replay identically.
+  it awaited; `random()` is a seeded stream derived per scope, each draw a number from 0 up to but
+  not including 1. `randomInt(n)` is `floor(random() * n)`, an integer from 0 to `n - 1` for a
+  positive integer `n`, and `pick(xs)` draws one element. They replay identically. A builtin ignores
+  arguments past the ones it takes, as JavaScript does, so there is no range form:
+  `randomInt(1, 1000)` is `randomInt(1)`, which is always 0, and `1 + randomInt(1000)` draws from 1
+  to 1000.
 - **Values freeze at the boundary.** What crossed into or out of an effect is what the journal
   recorded, and it cannot change afterwards; build a new value.
 - **The journal is the debugger.** Every entry carries its key, its inputs' hash, its outcome and
@@ -110,7 +115,9 @@ dispatch it again: it opens a hold, a checkpoint under a token derived from the 
 request id, whose prompt names that id. Answer it with
 `cotal run answer <run> <step-key> --value <json>`, and the value becomes the step's result. An
 expired hold fails the step with the catchable L4027. Only `ask` runs inside `once`, so wrap just
-the step that writes: a host restart while it is in flight costs a settle.
+the step that writes: a host restart while it is in flight costs a settle. `run validate` refuses
+another effect in the body, or in a function the body calls by name, with L2033, and the run
+refuses one it reaches any other way with L4028.
 
 ```js
 const publisher = await spawn("publisher")
@@ -145,6 +152,18 @@ the interpreter. Version-2 history is inspected inside a locked-down worker with
 journal, without a live effect handler or durable store. Inspection stops before the fork's cut
 step or any effect that needs new work. Program catch and finally blocks cannot extend the cut.
 The recorded pins are preserved.
+
+**Restore** brings a run back from a full backup (`cotal backup create`) of a static-auth or open
+mesh, which holds each run's journal, records and admission. A run that waited at a checkpoint or a
+timer when the backup was made is back after a full restore, and the manager takes it over as after
+a restart. What the run did after the backup is not in its record. A user-mode backup, and one made
+before full backups held workflow runs, holds none ([CLI reference](cli.md#backups)). After a
+restore from one of them, or a registry-only restore, the store the restore set aside holds the only
+copy of the runs, and `cotal backup cleanup-fallback` deletes it only with `--discard-history`.
+After a full restore of a backup made before the space last ran, that store holds the only copy of
+what the runs did after the backup, under the same rule. The restore names each run it rolled back
+and each checkpoint answered after the backup that is open again, and that checkpoint accepts an
+answer again.
 
 ## From an agent session
 
@@ -197,41 +216,54 @@ The manager hosts runs. `cotal run start` hands the program to the manager of th
 it in its own process, and answers with the id once the run is recorded. The terminal is free the
 moment the id prints; the run continues on the manager through every pause, and a manager restart
 takes back every run it had recorded running, from the journal, under the next epoch. `resume`
-names a run the manager recorded and is refused while the manager is already driving it. `ps` and
-`journal` read; `answer` resolves an open checkpoint, or an open `ask` attempt, from any terminal
+names a run the manager recorded and is refused while the manager is already driving it, and for
+a run recorded `completed` or `failed`, whose journal already holds its outcome. Bare
+`run` and `show` read; `answer` resolves an open checkpoint, or an open `ask` attempt, from any terminal
 or agent that holds the `run` capability.
 
-`journal` prints an open pause's question under its step. Once a checkpoint or `ask` settles with an
+`show` prints an open pause's question under its step. Once a checkpoint or `ask` settles with an
 accepted answer, it instead prints the answer value as JSON, who answered, the artifact when one was
 cited, the recorded time, and the accepted answer id. Expired pauses and ordinary steps print no
-answer line.
+answer line. A settled `race` names on its line the branch it took, and a step the race cancelled
+in a losing branch names the branch that won and the race. `answer` at such a step is refused with
+the same words. An answer the program never read
+is marked `not acted on`: its step was in a branch that lost a race, or its pause accepted it and
+was then cancelled, as a losing branch's pause is. `--json` carries the race's `winner` and, on each
+step of a losing branch, the `lostRace` it lost.
 
 A settled step is never answered twice, so a participant who changes their mind uses `amend`. It
-files a new answer beside the accepted one, naming the answer it supersedes, and `journal` prints
+files a new answer beside the accepted one, naming the answer it supersedes, and `show` prints
 each amendment under the step as an `amended` line, in the order the store committed them. The last
 line is the current position, whatever clock each amender's `at` came from. The pause stays settled
 and the run keeps the answer it acted on. A step that is still open, or that settled with no answer,
-refuses an amend. The manager records the amender from the credential, as for an answer, and a
+refuses an amend. So does a step whose answer was just accepted and is not in the run's journal
+yet, and that refusal says so. The manager records the amender from the credential, as for an answer, and a
 spawned seat may amend only an answer recorded under its own name.
+
+A program's `log(...)` lines are not journalled, so `show` does not print them. A run
+the manager hosts writes each line to the manager's log as `run <run-id>: log <text>`, which
+`cotal service logs stack-manager --space <space>` reads. A run driven with `--local` prints them in
+that terminal, and `run simulate` lists them under `Log`. A resumed run replays its program, so it
+writes the lines before the resume point again.
 
 ```bash
 cotal run start --file build.cotal.js                   # the manager starts it; the minted id is printed
-cotal run ps                                            # list run records: state, holder, lineage
-cotal run journal run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # print the durable step journal
+cotal run                                               # list run records: state, holder, lineage
+cotal run show run-3f2a90c41b7e0d5a6c884e19b02df4a1                        # print the record and its last 20 journal rows; --limit <n> prints up to 1000, --json all
 cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # the manager takes the run back
 cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"yes"'
 cotal run amend run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"no"'   # record a changed position
-cotal run migrate run-3f2a90c41b7e0d5a6c884e19b02df4a1 --local --file build-v2.cotal.js   # check an edited program against the journal
+cotal run check run-3f2a90c41b7e0d5a6c884e19b02df4a1 build-v2.cotal.js   # check an edited program against the journal
 ```
 
 A program that does not validate is refused before anything is recorded, with every problem in the
 answer as the validator would print it. The driver records the program beside the run, so `resume`
-takes the run id alone and the manager reads the source back; an edited program is a `migrate` or a
-`fork`, never a resume. `cotal run migrate <runId> --local --file <program>` is that check: it
+takes the run id alone and the manager reads the source back; an edited program is a migration or a
+`fork`, never a resume. `cotal run check <runId> <program>` is that check: it
 replays the run's journal and walks the edited program over it, prints whether the migration is
 admissible, how many journal rows the walk accounted for, every orphaned step with its verdict and
 code, and exits 0 on admissible and non-zero on not. It reads only, under the same credential
-`journal` reads on, and the commit side is not reachable yet: the report itself says what a commit
+`show` reads on, and the commit side is not reachable yet: the report itself says what a commit
 would file and that this invocation filed nothing. An answer is recorded under the answerer the
 manager knows from the caller's credential: a managed agent by its name, anyone else by their
 principal. The request
@@ -284,15 +316,84 @@ without an issuance is refused with `permission-denied` and a detail naming the 
 whose caller had no channels can still sleep, checkpoint and turn agents; its `wait` on a channel
 is refused at the effect.
 
+The manager endpoint serves `run-cancel` with `{ runId, reason }`. Call it through an issued
+credential on a handle pinned to the manager instance, retaining the Describe-derived epoch bind.
+The reason must encode to 1 through 512 UTF-8 bytes, and the request deadline is at most 30 seconds.
+There is no new CLI or MCP convenience verb in this change.
+
+A signer-holding manager accepts the original caller's owner, actor and lifecycle under a live
+issued generation. On a signerless manager, the issuing host also accepts an interactive actor of
+that owner with `run`, or an interactive admin. It must observe the caller's request itself before
+a manager can forward it. Managed-agent names and platform assignments do not grant this authority.
+
+The reply separates the durable marker from the local observation: `stopped` means a local drive
+outcome was observed; `stop-requested` means it was not observed within the request budget.
+`launch-abandoned`, `terminal` and `not-driven-here` describe their respective local states.
+`duplicate` is false for a confirmed new marker, true for a confirmed existing one, and null after
+an unknown write followed by marker readback. Preserve unknown outcomes. Neither a marker nor a
+reply proves process cleanup or that another host stopped. Revoked runs remain readable through
+`run show`, but cannot receive new drive or answering authority. The endpoint's `run-status`
+reply carries `revoked: { by, reason }` independently of the recorded run state. A running record
+with that marker is not proof of a stopped holder. `revocationUnreadable` means the marker could
+not be checked; do not read that as unrevoked or resumable. A released record without a marker can
+be resumed under its original admission; a released record with a marker cannot. The human
+`run show` view displays admission revocation separately from recorded state. An unreadable marker
+produces a partial result with exit 4, in human and JSON output, as it does in the run list.
+
+A cancellation can retain a local pending intent even after a definite no-dispatch refusal if its
+budget ends before the manager can confirm marker absence. That intent blocks a new local launch
+or resume; it does not stop an existing drive. A later cancellation that observes a marker reconciles
+the retained intent. Replaying the same request without a marker reports that it remains pending and
+does not dispatch again. A manager process restart loses the local intent, but does not settle the
+unknown write or prove cessation. An absent marker after an unknown write does not clear the intent
+in the running process. A `not-executed` write outcome therefore does not promise that a local launch
+is available.
+
+Issuer observation custody has finite lifetime budgets per caller, owner and issuer. Exhaustion
+logs the budget class once per issuer process, without caller identities or request contents.
+Repeated refusals do not repeat that diagnostic. Custody entries are not evicted to make room.
+
+Embedding hosts can call a drive's `cancel(reason)` handle to signal cooperative root cancellation.
+The language's `RootCancellation` source carries the first reason through the walker and compiled
+worker to in-flight effect contexts. It is process-local and carries no authorization. The host must
+establish permission and observe the durable revocation marker before calling it. A root cancellation
+ends the drive as `released`; the status projection can lag if its write fails. Read the recorded
+state separately. A completion or failure that wins the race keeps its actual outcome. It does not stop an agent process or preempt already-pulled tool work.
+`release(reason)` remains a separate next-effect-boundary request, used for host shutdown.
+
+The host also supplies `cancellationObserved` for channel-effect classification. A fresh revocation
+read together with an observed local cancellation intent ends that effect as cancelled, even while
+the manager is still reading the current holder before signalling the root. Pending intents alone
+never do this. An ordinary local revoke without a cancellation intent keeps its existing failure
+behavior. The shared observation neither signals the root nor replaces the holder check.
+
+If the post-marker holder read fails or exceeds the original budget, the command does not signal
+the root without that check and returns no stopped receipt. A parked checkpoint or sleep can
+remain running beside the marker. Preserve the unknown outcome. A later explicit cancellation
+request can read the same marker and a current holder, then report its own observed result.
+
 `cotal run revoke <runId> --local --by <who> --reason <text>` writes the run's revocation marker
-from the project folder. An empty `--by` or `--reason` is refused before anything is written. The
+from the project folder. An empty `--by` or `--reason` is refused `USAGE_INVALID` before anything is written, naming the empty flag. A run ID with no admission on the endpoint is refused `TARGET_NOT_FOUND`, exit 2, before anything is written. The
 admission itself is never rewritten. Every host reads the marker
 before its next channel effect, so an open `wait` refuses at its next poll, and no resume,
-takeover or manager restart continues the run. Revoking twice is not an error, and the first
-reason stands. A run whose admission is missing or revoked is left parked by the manager's boot
+takeover or manager restart continues the run. An open checkpoint or `ask` stays listed under
+`Needs an answer`, but `run answer`, hosted or `--local`, refuses it with `LIFECYCLE_BLOCKED`
+naming the revoker and the reason, and files nothing, so the run stays parked at that pause. A
+marker that cannot be read refuses the answer the same way. Revoking twice is not an error, and
+the first reason stands. A run whose admission is missing or revoked is left parked by the manager's boot
 reconcile, named in its log.
 
-`run ps`, hosted or `--local`, reads the marker beside each run record and prints `revoked` for a
+A revoke does not cancel the run. Work that touches no channel, such as a loop of `sleep` and
+`log`, keeps running until the host driving the run stops. A `--local` drive ends with the process
+driving it, which reaches no other run. A hosted run stops with its manager, and so does every
+other run that manager drives: `cotal service restart stack-manager --yes` stops them all, and its
+stop impact names the managed agents in scope. A run that reaches its next step within two seconds
+is recorded `released` and waits for `cotal run resume <runId>`; one still waiting keeps its
+`running` record, and the restarted manager takes it back unless it is revoked. `cotal down` stops
+the whole stack. The `run-cancel` endpoint above cancels one hosted run, and the CLI has no verb
+for it.
+
+Bare `cotal run`, hosted or `--local`, reads the marker beside each run record and prints `revoked` for a
 run that carries one, whatever state the record itself holds, with the revoker and the reason
 under the table. The record is display only here: a revoke writes no terminal state, because no host drove
 the run to one and the journal owns the facts. A marker the listing cannot read, whether the store
@@ -303,9 +404,100 @@ once every row is printed. The hosted `run-ps` rows carry the marker as `revoked
 
 A run whose step was refused (L5016) stays held; a
 resume on a host that can perform the step performs it live and continues from there.
-`journal` prints what an open pause asks beneath its step key, which is the address `answer` takes
+`show` prints what an open pause asks beneath its step key, which is the address `answer` takes
 back. Checkpoint expiry rides the mediated timer writer, which the delivery daemon pumps on a live
 mesh; on a bare broker a pause still resolves, it just cannot expire.
+
+A live pause that nobody answers, such as a `sleep` or a checkpoint timeout, is observed by
+polling: every 2 seconds the driver looks for the broker's timer fire, and every 2 seconds for the
+settlement that fire records. A step therefore ends after its deadline, usually by 2 to 4 seconds
+and later on a loaded host: a live `sleep("1s")` or `sleep("2s")` usually takes about 4 seconds,
+and `sleep("5s")` about 8. Timers whose deadlines fall within one poll can end on the same poll, so
+a live `race` between them is not decided by their written durations: a `sleep("2s")` branch
+declared before a `sleep("1s")` branch can win. The simulator uses virtual time and reports the
+durations as written.
+
+## Diagnostic inventory
+
+A large inventory can exceed the broker's reply limit. A host that supports page mode can return
+one bounded JSON page. Page mode is not in release 0.88.0 or earlier: the calling CLI or connector and
+the manager both need a later version.
+
+```bash
+cotal run --page --on <instance> --limit 8
+cotal run --page --on <instance> --cursor <cursor>
+```
+
+For the MCP surface, use `cotal_run` with `verb: "ps"`, `instance` and `page: { limit: 8 }`.
+Pass a returned `nextCursor` as `page.cursor` to continue. A managed session can use its existing
+manager binding. Keep the same space, endpoint filter, instance and process epoch throughout a scan.
+The CLI requires `--on`; page mode is not available with `--local` or other verbs. An older host
+refuses page mode rather than returning a truncated legacy list.
+
+Each page has at most 16 rows (default 8), and the complete reply fits 65536 bytes and the broker's
+payload limit. The reader issues at most 64 storage calls and stops issuing them after 2 seconds or
+the smaller request duration. These are application limits, not bounds on broker CPU, disk work,
+client-library retries or total elapsed time. One row that cannot fit is refused, never split.
+
+The response carries `semantics: "diagnostic"`, the observed sequence cut, responder, storage-read
+count and `stopReason`. Rows contain spec/status revisions and whether a revocation marker was
+observed. Programs, journal contents and revocation reasons are omitted. Legacy requests without
+page mode retain their existing array output.
+
+`endObserved` means the walk reached its cut or received a no-match response. It does not prove an
+atomic snapshot, absence, ownership, terminal work or worker inactivity. Cursors are unsigned
+continuation data. Deleted history and restores can be invisible. Keep partial results incomplete,
+and retain uncertain-start reservations and ownership holds. A continuation that makes no progress
+is reported as incomplete; do not retry it in a loop or use it to release work.
+
+## Keyed submission
+
+The new `run-start-keyed` command binds an envelope submission ID to one host-minted run.
+`run-submission-status` reads that binding for the authenticated caller incarnation. Both need
+fresh issued reach and a digest-verified description pinned to one manager instance and epoch.
+Legacy `run-start` is unchanged. An unsupported keyed command never falls back to it.
+
+The scheduler must persist the submission ID, semantic fingerprint, caller incarnation,
+contract digests and instance/epoch before dispatch. The client helpers prepare that snapshot
+and send one attempt at a time. They pass on only `signal` and `deadlineMs`, which a keyed
+request keeps at or below 30000. They refuse a reply that names another submission, instance,
+epoch or fingerprint, and that outcome stays unknown. They do not schedule retries, replace
+unknown work or re-pin it to another manager. Their prepared handle is process-local and WeakMap-bound: serialized JSON
+cannot be rehydrated through these helpers. Persisted scheduler recovery needs separate reviewed
+integration, not a cast or an automatic fresh Describe. Keep the original work reservation
+while reconciling any unknown outcome.
+
+The binding winner may make at most three admission-create attempts in its original callback
+deadline, with the same admission bytes and authority. Initial authorization precedes binding,
+but fresh authority rechecks before each admission attempt can fail after binding and retain
+binding-only debt. The manager refuses a start while it is stopping or already at its launch
+limit before it reads or writes a binding, so that refusal writes nothing. It says nothing about
+an earlier attempt under the same key, which may already be bound or running.
+`run-submission-status` takes no launch slot, so read the outcome there. A launch that fails after
+admission leaves `admitted` with no run, and no later call launches it. Later duplicates only
+read. A `binding-only` result is a visible reconciliation hold, not a queue or permission to repair.
+An absent admission is an observation at read time, not proof that the original callback cannot
+still write. A changed caller generation or manager epoch refuses rather than adopting the run.
+
+The receiving manager or issuing host measures the request budget on its own monotonic clock,
+and checks the caller's authority expiry on the wall clock. Wall-clock changes do not extend or
+spend the monotonic request budget. Authority expiry remains a wall-clock check. The callback
+deadline a status read returns is a wall-clock record of that window, not something a caller or
+host enforces.
+
+The original callback timer bounds waiting and starting more attempts. It does not cancel an
+already-issued broker publish, which may land later with the same frozen admission bytes.
+No new admission attempt starts after the request budget or authority window ends. Once an
+admission exists, the activation check uses only the manager's remaining monotonic request budget;
+it does not recheck the caller's wall-clock expiry. Keep the reservation even if an earlier read
+observed no admission.
+
+Submission state `activated` reports evidence of activation, including completed and failed
+runs. It is not a running-state or active-lane signal. Use native `run-status` for lifecycle
+state. Terminal submission bindings remain permanent, and duplicate starts never relaunch them.
+
+This implementation is under validation. Static native and signerless issuer paths require
+separate acceptance evidence before release or integration.
 
 ## What is on the wire
 
@@ -384,7 +576,7 @@ the compiled engine, as the engine paragraph below says. The wire
 substrate of §14 (the `WFJ_<space>` stream, the five record kinds, the activation barrier, the
 per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migrate and fork are
 `@cotal-ai/runtime` (`implementations/runtime`). The migrate check is reachable as
-`cotal run migrate <runId> --local --file <program>`; committing a migration it judged admissible
+`cotal run check <runId> <program>`; committing a migration it judged admissible
 is not reachable from any surface yet. On the mesh handler, `sleep`, `checkpoint`,
 `wait(message(...))`, `wait(idle(...))`, `wait(down(...))`, `wait(replied(...))`, `notify`,
 `spawn`, `conclave`, `ask`, `monitor` and `turn` are durable.
@@ -413,7 +605,14 @@ accepted and ignored. `supervise` is the restart policy this host asks the manag
 the duration those deaths are counted in (default `10m`). The manager restarts the process in
 place under the same name, lifecycle uid, persona, worktree and permits; `monitor` does not fire
 for a restart, and `wait(down)` fires only when the seat is gone for good. Spending the budget
-retires the seat, and the next `turn` is the catchable L4002. A policy this host cannot enforce
+retires the seat, and the next `turn` is the catchable L4002. The policy also covers the manager's
+own death. On a static mesh, when the manager ends without stopping the seat (a crash, or a pty seat
+that ended with its manager), the next manager of the same instance restarts the seat the same way
+and counts that as one restart. A turn the dead manager had accepted for the seat is served to the
+restarted seat, so the interrupted turn runs again and finished turns do not. A turn an older
+manager accepted is not served again, because its record does not name the seat's owner, and it
+ends at its deadline as L4003. A seat whose budget
+is spent, or whose persona file or credential changed or expired while no manager ran, is retired instead. A policy this host cannot enforce
 (an unknown key, a user-mode seat, or a runtime that cannot respawn a name in place) is refused
 at the spawn rather than accepted and ignored. `events: false` is the workflow form of
 `cotal spawn --no-events`: the seat starts without its AG-UI event plane. A connector that
@@ -444,10 +643,10 @@ non-conforming answer costs one attempt and its refusal reason is recorded on th
 answerer to read, exhausted attempts (default one) are the catchable L4006, and so is the one
 absolute deadline for the whole ask passing with no conforming record (its kind is `ask-deadline`),
 including one that passes before an attempt's pause is armed.
-`checkpoint` binds what it asks on its own entry, so `cotal run journal` prints the question under
+`checkpoint` binds what it asks on its own entry, so `cotal run show` prints the question under
 the step key an answer is addressed by while the pause is open: the address alone left whoever was
 asked reading the source to find out what "approve" meant. The entry also records the open
-attempt's deadline and the `onExpiry` it was armed with, which `run journal --json` reports; what
+attempt's deadline and the `onExpiry` it was armed with, which `run show --json` reports; what
 an expiry does is still decided from the program's source. An escalation's attempt records its own
 deadline, one `timeout` after it opens, and a resumed attempt keeps the deadline it recorded. After a checkpoint or `ask` accepts an
 answer, the journal prints that accepted answer's recorded value and attribution under the settled

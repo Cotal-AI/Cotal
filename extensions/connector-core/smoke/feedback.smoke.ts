@@ -10,6 +10,7 @@
 import { strict as assert } from "node:assert";
 import { createServer, type IncomingMessage } from "node:http";
 import { cotalToolSpecs } from "../src/tool-specs.js";
+import * as connectorCore from "../src/index.js";
 import type { AgentConfig } from "../src/config.js";
 
 let pass = 0;
@@ -60,6 +61,25 @@ const args = { origin: "agent", type: "bug", summary: "it broke" };
 delete process.env.COTAL_FEEDBACK_EMAIL;
 
 try {
+  // ---- exported helper: the reusable library path must exist and preserve the tool's exact result ----
+  const helperFailures: string[] = [];
+  const submitFeedback = (connectorCore as unknown as {
+    submitFeedback?: (input: Record<string, unknown>, options: { key?: string; url?: string; email?: string }) => Promise<{ text: string; isError?: boolean }>;
+  }).submitFeedback;
+  if (typeof submitFeedback !== "function") {
+    helperFailures.push("submitFeedback is not exported from connector-core");
+    helperFailures.push("the exported helper cannot preserve the keyed tool result because it is absent");
+  } else {
+    const helperResult = await submitFeedback({ ...args, source: "smoke" }, { key: "fbk_test", url });
+    if (helperResult.text !== "Feedback sent (id fb_1). Thanks!" || helperResult.isError)
+      helperFailures.push(`helper result drifted: ${JSON.stringify(helperResult)}`);
+    if (hits[0]?.auth !== "Bearer fbk_test" || hits[0]?.body.source !== "smoke")
+      helperFailures.push(`helper request drifted: ${JSON.stringify(hits[0])}`);
+  }
+  assert.deepEqual(helperFailures, [], `feedback helper acceptance cells red=${helperFailures.length}/2:\n${helperFailures.join("\n")}`);
+  hits.splice(0);
+  console.log("  ✓ feedback helper acceptance cells passed (2/2)");
+
   // ---- keyed: Bearer header, no email needed ----
   const keyed = await spec({ ...baseCfg, feedbackKey: "fbk_test" }).run(null as never, baseCfg, args);
   check("keyed send succeeds", !keyed.isError, keyed.text);

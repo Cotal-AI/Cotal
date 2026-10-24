@@ -7,9 +7,11 @@ import {
   type ConsumerConfig,
   type JetStreamClient,
   type JetStreamManager,
+  type StreamConfig,
 } from "@nats-io/jetstream";
 import { randomUUID } from "node:crypto";
-import { connect, credsAuthenticator, tokenAuthenticator, nanos, type NatsConnection } from "@nats-io/transport-node";
+import { credsAuthenticator, tokenAuthenticator, nanos, type NatsConnection } from "@nats-io/transport-node";
+import { dialerFor } from "./endpoint.js";
 import { Kvm } from "@nats-io/kv";
 import { Objm } from "@nats-io/obj";
 import {
@@ -136,9 +138,9 @@ export const MEMBERSHIP_MAX_BYTES = 64 * 1024 * 1024;
 /** The `max_bytes` a per-space artifact Object Store carried before the reservation was removed:
  *  4 GiB, the stock value every store created by that code holds. Kept for ONE purpose —
  *  {@link ensureArtifactStore} recognizes it and reconciles it to `-1`, releasing the reservation.
- *  It is not a cap this code sets on anything, and it is deliberately not exported: nothing outside
- *  the reconcile has a use for a number that is only ever a legacy value to be migrated away from. */
-const LEGACY_ARTIFACT_STORE_MAX_BYTES = 4 * 1024 * 1024 * 1024;
+ *  Schema inspection shares the value to name that native migration gate. It is never a new
+ *  quota, a generic widening rule or permission to run the migration. */
+export const LEGACY_ARTIFACT_STORE_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 
 export interface ClearSpaceHistoryResult {
   chat: number;
@@ -220,6 +222,23 @@ export function standaloneConnectOpts(auth: StandaloneAuth): Record<string, unkn
     : { ...tlsOpt };
 }
 
+/** Native message-stream creation fields shared by bootstrap and schema planning. */
+export function spaceMessageStreamConfigs(space: string) {
+  return [chatStream(space), dmStream(space), taskStream(space), inboxStream(space), dlvStream(space)]
+    .map((stream) => canonicalBackupStreamConfig(space, stream));
+}
+
+/** Native durable registry-stream creation fields. The backup inventory stays independent. */
+export function spaceRegistryStreamConfigs(space: string) {
+  return [channelBucket(space), membersBucket(space), aclBucket(space)]
+    .map((bucket) => canonicalBackupStreamConfig(space, `KV_${bucket}`));
+}
+
+/** Native derived-membership creation inputs, not evidence of observed membership. */
+export function membershipStoreDefinition(space: string) {
+  return { bucket: membershipBucket(space), createOptions: { history: 1, max_bytes: MEMBERSHIP_MAX_BYTES } };
+}
+
 /**
  * Create (idempotently) the five message streams for a space.
  *
@@ -232,8 +251,7 @@ export async function createSpaceStreams(
   jsm: JetStreamManager,
   space: string,
 ): Promise<void> {
-  for (const stream of [chatStream(space), dmStream(space), taskStream(space), inboxStream(space), dlvStream(space)])
-    await jsm.streams.add(canonicalBackupStreamConfig(space, stream));
+  for (const definition of spaceMessageStreamConfigs(space)) await jsm.streams.add(definition);
 }
 
 /**
@@ -511,7 +529,7 @@ export async function reconcileSpaceTtls(opts: {
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
 }): Promise<TtlReconciled[]> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, tls: false }) });
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, tls: false }) });
   try {
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including reconnects.
@@ -525,6 +543,12 @@ export async function reconcileSpaceTtls(opts: {
   } finally {
     await nc.drain();
   }
+}
+
+/** Native object-store creation inputs. Binding, bounds and legacy-cap checks stay
+ *  in {@link ensureArtifactStore}; SDK-derived fields are not inferred by schema planning. */
+export function artifactStoreDefinition(space: string) {
+  return { bucket: artifactBucket(space), createOptions: { max_bytes: -1 } };
 }
 
 /**
@@ -560,10 +584,11 @@ export async function reconcileSpaceTtls(opts: {
  * decision and is still refused as drift: this path never silently widens a bound it did not set.
  */
 export async function ensureArtifactStore(nc: NatsConnection, space: string): Promise<void> {
-  const bucket = artifactBucket(space);
+  const definition = artifactStoreDefinition(space);
+  const bucket = definition.bucket;
   const stream = objectStoreStream(bucket);
   const jsm = await jetstreamManager(nc);
-  await new Objm(jetstream(nc)).create(bucket, { max_bytes: -1 });
+  await new Objm(jetstream(nc)).create(bucket, definition.createOptions);
   let { config } = await jsm.streams.info(stream);
   // LEGACY RECONCILE, and only the legacy value. A store created by the code that set a 4 GiB cap is
   // still holding 4 GiB of the broker's `max_file_store` reserved against it, so leaving it alone
@@ -579,6 +604,13 @@ export async function ensureArtifactStore(nc: NatsConnection, space: string): Pr
         `broker is still reserving that capacity against its file store`,
       );
   }
+  assertArtifactStoreConfig(config, space);
+}
+
+/** Pure native artifact-store invariant checks. The legacy-cap update and broker readback
+ *  remain in {@link ensureArtifactStore}; this function never widens a bound or writes. */
+export function assertArtifactStoreConfig(config: StreamConfig, space: string): void {
+  const bucket = artifactBucket(space), stream = objectStoreStream(bucket);
   const drift: string[] = [];
   // SUBJECTS FIRST, because they decide whether this is an object store AT ALL. A stream created
   // under the right name with the right cap and the right discard, but bound to other subjects, is
@@ -592,8 +624,8 @@ export async function ensureArtifactStore(nc: NatsConnection, space: string): Pr
   if (config.mirror) drift.push("it is a MIRROR of another stream");
   if (config.sources?.length) drift.push(`it SOURCES ${config.sources.length} other stream(s)`);
   // A positive cap that is NOT the legacy stock value was set deliberately by someone else, and the
-  // reconcile above has already converged the one value this code is entitled to change. Refuse it
-  // rather than widening it: a bound this code did not set is not a bound it may remove.
+  // ensureArtifactStore reconciles only its own legacy value before calling this check. The pure
+  // checker widens nothing: a bound this code did not set is not a bound it may remove.
   if (config.max_bytes !== -1)
     drift.push(`max_bytes is ${config.max_bytes}, expected -1 (a deliberate cap is not widened by setup)`);
   // `discard: new` is what makes a full store REFUSE a put instead of evicting a live artifact whose
@@ -645,7 +677,7 @@ export async function setupSpaceStreams(opts: {
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
 }): Promise<void> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including reconnects.
@@ -658,19 +690,15 @@ export async function setupSpaceStreams(opts: {
     // channel/members/acl registries below are durable config and carry no TTL.
     const kvm = new Kvm(nc);
     for (const [bucket, ttl, storage] of ttlBuckets(opts.space)) await kvm.create(bucket, { ttl, storage });
-    await jsm.streams.add(canonicalBackupStreamConfig(opts.space, `KV_${channelBucket(opts.space)}`));
-    // Durable-membership registry (Plane-3): privileged-write, no TTL (durable config, like the
-    // channel registry). Pre-created so the delivery daemon (and open-mode self) can OPEN it; agents
-    // hold no grant. Idempotent.
-    await jsm.streams.add(canonicalBackupStreamConfig(opts.space, `KV_${membersBucket(opts.space)}`));
-    // Durable read-ACL registry (Plane-3 keystone): privileged-write, no TTL. The manager records an
-    // agent's read ACL here at mint; the delivery daemon re-auths every durable entry against it.
-    await jsm.streams.add(canonicalBackupStreamConfig(opts.space, `KV_${aclBucket(opts.space)}`));
+    // The channel, durable-membership and read-ACL registries are privileged-write durable
+    // config without TTL. Agents cannot create them; delivery re-auths against the read-ACL rows.
+    for (const definition of spaceRegistryStreamConfigs(opts.space)) await jsm.streams.add(definition);
     // Derived channel-membership feed (broker CONNZ ∪ members registry): privileged-write (the
     // `membership-rw` cred), admin/observer-read, no TTL (the daemon prunes departed agents). `history:1`
     // (only the latest record per agent matters) + a `max_bytes` cap (footprint bound). Pre-created so the
     // scoped writer holds no STREAM.CREATE. Idempotent.
-    await kvm.create(membershipBucket(opts.space), { history: 1, max_bytes: MEMBERSHIP_MAX_BYTES });
+    const membership = membershipStoreDefinition(opts.space);
+    await kvm.create(membership.bucket, membership.createOptions);
     // The two §13.12 AUTHORITY stores (records + auth): every auth-mode mesh now carries a
     // lifecycle registry — user mode's service re-ensures at its own boot, the STATIC manager's
     // start reconcile re-ensures for pre-existing spaces (Unit B) — and the up-time seed creates
@@ -705,7 +733,7 @@ export async function clearSpaceHistory(opts: {
   sentinelCreds?: string;
   includeDms?: boolean;
 }): Promise<ClearSpaceHistoryResult> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const jsm = await jetstreamManager(nc);
     const chat = (await jsm.streams.purge(chatStream(opts.space))).purged;
@@ -722,7 +750,8 @@ export async function clearSpaceHistory(opts: {
  *  registry config so it stops surfacing as an empty channel. Needs PURGE rights and the
  *  registry key delete: pass a `channel-purger` cred; a bare connection (open mode) has them by default.
  *  Throws on a wildcard channel (a subtree is not a deletable channel). A missing channel
- *  registry bucket/key is a no-op — the purge alone already emptied the channel. */
+ *  registry bucket/key is a no-op — the purge alone already emptied the channel. `removed` says
+ *  whether this call deleted the channel's registry entry. */
 export async function clearChannel(opts: {
   servers: string;
   space: string;
@@ -731,22 +760,26 @@ export async function clearChannel(opts: {
   /** User mode: a `channel-purger`-view bearer + the space's sentinel creds (instead of a creds file). */
   bearer?: string;
   sentinelCreds?: string;
-}): Promise<{ channel: string; purged: number }> {
+}): Promise<{ channel: string; purged: number; removed: boolean }> {
   if (!isConcreteChannel(opts.channel))
     throw new Error(`"${opts.channel}" is a wildcard, not a deletable channel`);
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const jsm = await jetstreamManager(nc);
     const { purged } = await jsm.streams.purge(chatStream(opts.space), {
       filter: chatSubject(opts.space, "*", "*", opts.channel),
     });
+    let removed = false;
     try {
       const registry = await new Kvm(nc).open(channelBucket(opts.space));
-      await registry.delete(opts.channel);
+      if ((await registry.get(opts.channel))?.operation === "PUT") {
+        await registry.delete(opts.channel);
+        removed = true;
+      }
     } catch {
       /* no channel registry bucket or no config for this channel — purge already emptied it */
     }
-    return { channel: opts.channel, purged };
+    return { channel: opts.channel, purged, removed };
   } finally {
     await nc.drain();
   }
@@ -775,6 +808,33 @@ export interface DeprovisionResourceAccounting {
   acls: { examined: number; deleted: number; absent: number; refused: number; disappeared: number };
   /** Durable membership entry accounting; disappeared means a competing purge won the native CAS. */
   members: { examined: number; deleted: number; absent: number; refused: number; disappeared: number };
+}
+
+/** Add `part` into `total`. A null `deleted` on either side keeps the sum null, since one
+ *  unattributable removal leaves the whole count unattributable. */
+export function addDeprovisionAccounting(total: DeprovisionResourceAccounting, part: DeprovisionResourceAccounting): void {
+  total.examined += part.examined;
+  total.deleted = total.deleted === null || part.deleted === null ? null : total.deleted + part.deleted;
+  total.absent += part.absent;
+  total.refused += part.refused;
+  total.acknowledged += part.acknowledged;
+  total.disappeared += part.disappeared;
+  total.consumers.examined += part.consumers.examined;
+  total.consumers.deleted = total.consumers.deleted === null || part.consumers.deleted === null ? null : total.consumers.deleted + part.consumers.deleted;
+  total.consumers.absent += part.consumers.absent;
+  total.consumers.refused += part.consumers.refused;
+  total.consumers.acknowledged += part.consumers.acknowledged;
+  total.consumers.disappeared += part.consumers.disappeared;
+  total.acls.examined += part.acls.examined;
+  total.acls.deleted += part.acls.deleted;
+  total.acls.absent += part.acls.absent;
+  total.acls.refused += part.acls.refused;
+  total.acls.disappeared += part.acls.disappeared;
+  total.members.examined += part.members.examined;
+  total.members.deleted += part.members.deleted;
+  total.members.absent += part.members.absent;
+  total.members.refused += part.members.refused;
+  total.members.disappeared += part.members.disappeared;
 }
 
 /** Error raised when deprovisioning encounters an unexpected failure, retaining partial deletion accounting. */
@@ -810,7 +870,7 @@ export async function deprovisionAgent(opts: {
   memberChannels?: readonly string[];
   creds?: string;
 }): Promise<DeprovisionResourceAccounting> {
-  const nc = await connect({
+  const nc = await dialerFor(opts.servers)({
     servers: opts.servers,
     ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
     // This is a detached, fire-and-forget teardown — it must FAIL FAST, never hang, so the caller's

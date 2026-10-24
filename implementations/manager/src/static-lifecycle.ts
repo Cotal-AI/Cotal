@@ -19,6 +19,7 @@
  */
 import {
   EpEnvelopeError,
+  assertOrdinaryNativeMutation,
   lifecycleBlocked,
   type LifecycleStateTransport,
   type LifecycleKvEntry,
@@ -170,19 +171,29 @@ export async function observeStaticSlot(
   return { ...projectStaticSlotObservation(slot, head), ...(sibling !== undefined ? { ownerInstanceId: sibling } : {}) };
 }
 
-/** Enumerate every nonretired durable static slot this manager instance owns, projected the same
- * way `observeStaticSlot` projects one. It reads the rows through {@link walkStaticSlots}, the
- * enumeration the boot sweep in `Manager.reconcileStaticLifecycles` also uses. Sibling-owned rows
- * ({@link ownedBySibling}) and `retired` rows are dropped BEFORE the head read, so N slot rows cost
- * N slot reads plus only the survivors' head reads. Sorted by alias. */
+/** Observe this manager's durable static slots, excluding retired rows by default. An explicit
+ * bounded name query point-reads only those slots; includeRetired exposes the native terminal
+ * and cleanup facts, not a conclusion drawn from a missing live-map entry. Each slot/head pair
+ * remains an ordered, non-atomic read. Sibling-owned rows never become this manager's evidence. */
 export async function listStaticSlotObservations(
   recordsKv: KV,
   owner: string,
   managerInstanceId: string,
+  options: { names?: readonly string[]; includeRetired?: boolean } = {},
 ): Promise<StaticSlotObservationDetail[]> {
   const t = staticLifecycleTransport(recordsKv, recordsKv);
-  const survivors = (await walkStaticSlots(recordsKv, owner))
-    .filter(({ row }) => !ownedBySibling(row, managerInstanceId) && row.phase !== "retired");
+  const names = options.names;
+  if (names !== undefined && (!names.length || names.length > 100 || new Set(names).size !== names.length)) throw new Error("slot queries require one to 100 distinct aliases");
+  const requested = names?.slice();
+  const slots = requested === undefined ? await walkStaticSlots(recordsKv, owner) : await (async () => {
+    const rows: Array<{ row: StaticManagedSlotRow; revision: number }> = [];
+    for (const name of requested) {
+      const slot = await boundedStaticRead("slot", readStaticSlot(t, owner, name));
+      if (slot) rows.push(slot);
+    }
+    return rows;
+  })();
+  const survivors = slots.filter(({ row }) => !ownedBySibling(row, managerInstanceId) && (options.includeRetired === true || row.phase !== "retired"));
   const out: StaticSlotObservationDetail[] = [];
   for (const slot of survivors) {
     const head = await boundedStaticRead("head", headCandidate(t, slot.row.owner, slot.row.actor));
@@ -358,6 +369,7 @@ export async function appendStaticCredentialRow(
   t: LifecycleStateTransport,
   args: { lifecycleUid: string; credentialId: string; holderPrincipal: string; exp: number },
 ): Promise<void> {
+  await assertOrdinaryNativeMutation(t, { lifecycleUid: args.lifecycleUid });
   const key = credRowKey(args.lifecycleUid, args.credentialId);
   const row: CredentialLedgerRow = {
     credentialId: args.credentialId,
@@ -393,6 +405,7 @@ export async function revokeStaticCredentialRows(
   credentialIds: readonly string[],
   log: (line: string) => void,
 ): Promise<string[]> {
+  await assertOrdinaryNativeMutation(t, { lifecycleUid });
   const holders = new Set<string>();
   for (const id of credentialIds) {
     const key = credRowKey(lifecycleUid, id);
@@ -419,6 +432,7 @@ export async function activateStaticLifecycle(
   t: LifecycleStateTransport,
   args: { owner: string; alias: string; actor: string; lifecycleUid: string; managerInstance: string; ownerInstanceId: string; runtime?: StaticManagedSlotRow["runtime"] },
 ): Promise<{ slotRevision: number }> {
+  await assertOrdinaryNativeMutation(t, args);
   const { revision } = await writeStaticSlotIntent(t, {
     owner: args.owner,
     alias: args.alias,
@@ -488,6 +502,7 @@ export async function runStaticTerminal(
   args: { owner: string; alias: string; actor: string; lifecycleUid: string; opId: string; managerInstance: string; managerProcessUid: string },
   hooks: { cleanup: () => Promise<void>; evict: (holderPrincipal: string) => Promise<EvictionResult>; log: (line: string) => void },
 ): Promise<"retired"> {
+  await assertOrdinaryNativeMutation(t, args);
   const slot = await readStaticSlot(t, args.owner, args.alias);
   if (slot === undefined)
     throw new EpEnvelopeError("failed-precondition", `no static slot exists for "${args.owner}/${args.alias}"; nothing to terminalize`);

@@ -1,0 +1,3 @@
+# auth mint with no mesh refuses with its next step, and doctor auth with no space is partial (exit 4)
+# with a next step in JSON and text. Broker-free; a private mesh registry.
+smoke:no-space-next

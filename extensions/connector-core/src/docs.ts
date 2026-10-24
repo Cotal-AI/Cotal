@@ -16,12 +16,19 @@ import type { ToolResult } from "./tool-specs.js";
 
 export { DOCS_VERSION } from "./docs-bundle.generated.js";
 
+/** The categories the docs index lists pages under, in its order. */
+export const DOCS_CATEGORIES = ["Start here", "Guide", "Concept", "Reference", "Project"] as const;
+export type DocsCategory = (typeof DOCS_CATEGORIES)[number];
+
 export interface DocsPage {
   /** URL-ish key, e.g. "architecture". Also the argument an agent passes as `page`. */
   slug: string;
   title: string;
-  /** The page's classification line, e.g. "Concept (informative)" or "Reference"; "" if none. */
+  /** The page's classification line, e.g. "Concept (informative)" or "Reference". */
   kind: string;
+  /** The category that line names, which the index lists the page under. The spec and lang are
+   *  `normative`, and the schema is `reference`. */
+  category: DocsCategory | "normative" | "reference";
   /** One-line summary for the index. */
   summary: string;
   /** Full Markdown. */
@@ -54,9 +61,9 @@ const REMOTE_BASE = "https://docs.cotal.ai";
  *  non-page docs; everything else matches a page slug (case-insensitive). */
 function resolvePage(page: string): DocsPage | undefined {
   const key = page.trim().toLowerCase().replace(/\.md$/, "");
-  if (key === "spec") return { slug: "spec", title: bundle().spec.title, kind: "normative", summary: "", body: bundle().spec.body };
-  if (key === "lang" || key === "cotal-lang") return { slug: "lang", title: bundle().lang.title, kind: "normative", summary: "", body: bundle().lang.body };
-  if (key === "schema") return { slug: "schema", title: bundle().schema.title, kind: "reference", summary: "", body: bundle().schema.body };
+  if (key === "spec") return { slug: "spec", title: bundle().spec.title, kind: "normative", category: "normative", summary: "", body: bundle().spec.body };
+  if (key === "lang" || key === "cotal-lang") return { slug: "lang", title: bundle().lang.title, kind: "normative", category: "normative", summary: "", body: bundle().lang.body };
+  if (key === "schema") return { slug: "schema", title: bundle().schema.title, kind: "reference", category: "reference", summary: "", body: bundle().schema.body };
   return bundle().pages.find((p) => p.slug === key);
 }
 
@@ -253,7 +260,7 @@ export function searchDocs(query: string, limit = 5): DocHit[] {
 }
 
 /** Cap a section so a single long match can't blow the context; the pointer covers the rest. */
-function capSection(text: string, maxLines = 48): string {
+export function capSection(text: string, maxLines = 48): string {
   const lines = text.split("\n");
   if (lines.length <= maxLines) return text.trim();
   return lines.slice(0, maxLines).join("\n").trimEnd() + "\n\n… (section continues; read the full page)";
@@ -273,33 +280,55 @@ function renderSearch(query: string, hits: DocHit[]): string {
   ].join("\n\n");
 }
 
-async function remoteBody(slug: string): Promise<string | null> {
+/** Why a refresh served the bundle: the version-pinned path answered with no page, or did not answer. */
+type RemoteMiss = "not-published" | "unreachable";
+
+async function remoteBody(slug: string): Promise<{ body: string } | { miss: RemoteMiss }> {
   try {
     const r = await fetch(remoteUrl(slug), { signal: AbortSignal.timeout(6000) });
-    if (!r.ok) return null;
+    if (!r.ok) return { miss: "not-published" };
     const text = await r.text();
-    return text.trim() ? text : null;
+    return text.trim() ? { body: text } : { miss: "not-published" };
   } catch {
-    return null;
+    return { miss: "unreachable" };
   }
 }
 
+/** One page as read: the bundled copy, or with `refresh` the version-pinned copy from docs.cotal.ai
+ *  when that path serves one. `refresh` says what the remote pass did, or null when none was asked. */
+export interface DocsPageRead {
+  readonly version: string;
+  readonly page: DocsPage;
+  readonly source: "bundled" | "docs.cotal.ai";
+  readonly refresh: "served" | RemoteMiss | null;
+}
+
 /**
- * Remote refresh for a page. It fetches the IMMUTABLE, version-pinned path
+ * Read one page. `refresh` fetches the IMMUTABLE, version-pinned path
  * (docs.cotal.ai/v/<installed-version>/…): a 200 body provably belongs to the installed
  * version, so there is no separate version check to race or skew against. When that path is
- * absent (version-pinned docs aren't published yet) or unreachable, it returns null and the
- * caller serves the version-exact bundle. Fail-closed: an unverifiable remote is never served.
+ * absent (version-pinned docs aren't published yet) or unreachable, the version-exact bundle is
+ * served. Fail-closed: an unverifiable remote is never served. Undefined for an unknown page.
  */
-async function refreshPage(slug: string): Promise<{ body: string | null; note: string }> {
-  const body = await remoteBody(slug);
-  if (body === null) {
-    return {
-      body: null,
-      note: `(bundled v${bundle().version}; no version-pinned copy at docs.cotal.ai/v/${bundle().version}; showing bundled docs)`,
-    };
-  }
-  return { body, note: `(refreshed from docs.cotal.ai; version-pinned copy for v${bundle().version})` };
+export async function readDocsPage(page: string, opts: { refresh?: boolean } = {}): Promise<DocsPageRead | undefined> {
+  const found = resolvePage(page);
+  if (!found) return undefined;
+  const version = bundle().version;
+  if (!opts.refresh) return { version, page: found, source: "bundled", refresh: null };
+  const remote = await remoteBody(found.slug);
+  if ("miss" in remote) return { version, page: found, source: "bundled", refresh: remote.miss };
+  return { version, page: { ...found, body: remote.body }, source: "docs.cotal.ai", refresh: "served" };
+}
+
+/** The bundled docs' version, their normative sources and their pages, for an index, the pages in
+ *  the order of their categories. */
+export function docsIndex(): { version: string; sources: { slug: string; title: string }[]; pages: Omit<DocsPage, "body">[] } {
+  const b = bundle();
+  return {
+    version: b.version,
+    sources: [{ slug: "spec", title: b.spec.title }, { slug: "lang", title: b.lang.title }, { slug: "schema", title: b.schema.title }],
+    pages: b.pages.map(({ slug, title, kind, category, summary }) => ({ slug, title, kind, category, summary })).sort((x, y) => DOCS_CATEGORIES.indexOf(x.category as DocsCategory) - DOCS_CATEGORIES.indexOf(y.category as DocsCategory)),
+  };
 }
 
 export interface DocsArgs {
@@ -314,22 +343,20 @@ export async function runDocs(args: DocsArgs): Promise<ToolResult> {
   const query = args.query?.trim();
 
   if (page) {
-    const found = resolvePage(page);
-    if (!found) {
+    const read = await readDocsPage(page, { refresh: args.refresh });
+    if (!read) {
       const names = bundle().pages.map((p) => p.slug).join(", ");
       return {
         text: `No Cotal doc page "${page}". Available: spec, lang, schema, ${names}. Call cotal_docs() for the index.`,
         isError: true,
       };
     }
-    let note = `(bundled v${bundle().version})`;
-    let body = found.body;
-    if (args.refresh) {
-      const r = await refreshPage(found.slug);
-      note = r.note;
-      if (r.body !== null) body = r.body;
-    }
-    return { text: renderPage({ ...found, body }, note) };
+    const v = read.version;
+    const note =
+      read.refresh === null ? `(bundled v${v})`
+      : read.refresh === "served" ? `(refreshed from docs.cotal.ai; version-pinned copy for v${v})`
+      : `(bundled v${v}; no version-pinned copy at docs.cotal.ai/v/${v}; showing bundled docs)`;
+    return { text: renderPage(read.page, note) };
   }
 
   // `refresh` only applies to reading a page; say so rather than silently ignore it, so an

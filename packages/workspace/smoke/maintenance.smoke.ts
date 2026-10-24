@@ -1,9 +1,10 @@
 import { strict as assert } from "node:assert";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   acquireMaintenanceLock,
+  assessRestoreClaim,
   beginMaintenanceCut,
   beginOrdinaryResume,
   bindRestoreListener,
@@ -29,6 +30,7 @@ import {
   readPreservationCommitIntent,
   writePreservationCommitIntent,
   readMaintenanceJournal,
+  readMaintenanceLockHolder,
   readMaintenanceResumeDocument,
   readPreservationPrepareIntent,
   readStoreIdentity,
@@ -58,7 +60,11 @@ import {
   type OrdinaryResumeIntentRecord,
   type ProcessOwner,
   type RestoreListenerProof,
+  type RestoreReadyRecord,
+  restoreLeftOut,
+  restoreLeftOutReason,
 } from "../src/maintenance.js";
+import { wfjStreamName } from "@cotal-ai/core";
 
 let passed = 0;
 function check(name: string, condition: unknown): void {
@@ -364,9 +370,13 @@ if (process.platform !== "win32") {
 // An active owner excludes a second writer. A dead owner may be reaped, while ambiguous death may not.
 {
   const p = project("lock-race");
-  const first = acquireMaintenanceLock(p.root);
+  const first = acquireMaintenanceLock(p.root, { operation: "backup create" });
   expectCode("live lock excludes a concurrent writer", "lock-held", () => acquireMaintenanceLock(p.root));
+  const holder = readMaintenanceLockHolder(p.root);
+  check("the refused writer can read the holder's process, start and operation",
+    holder?.owner.pid === process.pid && holder.owner.startedAt === first.owner.startedAt && holder.operation === "backup create");
   releaseMaintenanceLock(first);
+  check("no holder is read once the lock is released", readMaintenanceLockHolder(p.root) === undefined);
 
   const stale = acquireMaintenanceLock(p.root, { owner: owner("stale") });
   expectCode("unknown stale owner fails closed", "lock-owner-ambiguous", () =>
@@ -403,6 +413,23 @@ if (process.platform !== "win32") {
   const recovered = recoverStaleMaintenanceClaim(p.lock, { now: new Date(2), ownerStatus: () => "dead" });
   check("dead stale claim returns to ready with resume descriptor",
     recovered.state === "ready" && recovered.resume.sha256 === p.resume.sha256);
+  releaseMaintenanceLock(p.lock);
+}
+
+// Before its deadline a backup claim recovers only with every owner dead AND the caller's proof that
+// no process the attempt started outside its recorded owners is alive.
+{
+  const p = ready("claim-early");
+  claimMaintenanceReady(p.lock, {
+    attemptId: "backup-early", deadline: new Date(Date.now() + 60_000).toISOString(),
+    coordinator: owner("coordinator"), owners: [owner("watchdog"), owner("broker")],
+  });
+  expectCode("before the deadline, dead owners alone do not recover the claim", "claim-not-expired", () =>
+    recoverStaleMaintenanceClaim(p.lock, { ownerStatus: () => "dead" }));
+  expectCode("before the deadline, the unrecorded proof with a live broker does not either", "claim-not-expired", () =>
+    recoverStaleMaintenanceClaim(p.lock, { unrecordedOwnersDead: true, ownerStatus: (candidate) => candidate.id === "broker" ? "alive" : "dead" }));
+  const recovered = recoverStaleMaintenanceClaim(p.lock, { unrecordedOwnersDead: true, ownerStatus: () => "dead" });
+  check("every owner dead and the unrecorded proof recover the claim before its deadline", recovered.state === "ready");
   releaseMaintenanceLock(p.lock);
 }
 
@@ -1132,7 +1159,7 @@ if (process.platform !== "win32") {
   mkdirSync(p.store);
   bindRestoreTarget(p.lock);
   const target = readStoreIdentity(p.store);
-  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222" });
+  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222", restoredStreams: [wfjStreamName("space-cleanup")] });
   const proof: RestoreListenerProof = {
     attemptId: "restore-clean", serverName: "restore-clean-listener", serverNonce: "restore-clean-nonce",
     processOwner: owner("restore-clean-owner", process.pid), serverEndpoint: normalEndpoint, target,
@@ -1147,6 +1174,127 @@ if (process.platform !== "win32") {
   releaseMaintenanceLock(p.lock);
 }
 
+// An old source that also holds a file no Cotal store writes is not deleted, even when the file
+// arrived after the restore or after an interrupted cleanup set the source aside.
+{
+  const p = ready("cleanup-foreign");
+  const fallback = join(p.root, "store.fallback");
+  prepareSamePathRestore(p.lock, { attemptId: "restore-foreign", targetPath: p.store, fallbackPath: fallback, claim: restoreClaim() });
+  moveSamePathRestoreSource(p.lock);
+  mkdirSync(p.store);
+  bindRestoreTarget(p.lock);
+  const target = readStoreIdentity(p.store);
+  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222", restoredStreams: [wfjStreamName("space-cleanup-foreign")] });
+  const proof: RestoreListenerProof = {
+    attemptId: "restore-foreign", serverName: "restore-foreign-listener", serverNonce: "restore-foreign-nonce",
+    processOwner: owner("restore-foreign-owner", process.pid), serverEndpoint: normalEndpoint, target,
+  };
+  bindRestoreListener(p.lock, proof);
+  finalizeRestore(p.lock, proof);
+  mkdirSync(join(fallback, "jetstream"));
+  writeFileSync(join(fallback, "notes.txt"), "keep me");
+  expectCode("an old source with a foreign file is not deleted", "store-holds-foreign-entries", () => cleanupRestoreFallback(p.lock, "restore-foreign"));
+  check("the refused cleanup keeps the file, the old source and the active journal", readFileSync(join(fallback, "notes.txt"), "utf8") === "keep me"
+    && existsSync(join(fallback, "jetstream")) && readMaintenanceJournal(p.root)?.state === "active");
+  // An interrupted cleanup recorded its tomb, and a file put back meanwhile is still kept.
+  rmSync(join(fallback, "notes.txt"));
+  chmodSync(p.root, 0o500);
+  try { assert.throws(() => cleanupRestoreFallback(p.lock, "restore-foreign")); }
+  finally { chmodSync(p.root, 0o700); }
+  check("the interrupted cleanup recorded its tomb and left the old source in place", (readMaintenanceJournal(p.root) as { restore?: { cleanup?: { status?: string } } }).restore?.cleanup?.status === "pending" && exists(fallback));
+  writeFileSync(join(fallback, "notes.txt"), "keep me too");
+  expectCode("a foreign file found in the tomb refuses the resumed cleanup", "store-holds-foreign-entries", () => cleanupRestoreFallback(p.lock, "restore-foreign"));
+  check("the tomb goes back to the old source with the file", readFileSync(join(fallback, "notes.txt"), "utf8") === "keep me too"
+    && readdirSync(p.root).every((entry) => !entry.startsWith(".cotal-clean-")));
+  renameSync(join(fallback, "notes.txt"), join(p.root, "notes.txt"));
+  cleanupRestoreFallback(p.lock, "restore-foreign");
+  check("once the file is moved out the cleanup deletes the old source and keeps the file", !exists(fallback) && readFileSync(join(p.root, "notes.txt"), "utf8") === "keep me too"
+    && sameStoreIdentity(target, readStoreIdentity(p.store)) && readMaintenanceJournal(p.root) === undefined);
+  releaseMaintenanceLock(p.lock);
+}
+
+// A registry restore's old source holds the only copy of the history it left out, so deleting it
+// needs explicit consent.
+{
+  const p = ready("cleanup-registry");
+  const fallback = join(p.root, "store.fallback");
+  prepareSamePathRestore(p.lock, { attemptId: "restore-registry", targetPath: p.store, fallbackPath: fallback, claim: restoreClaim(), selection: "registry" });
+  check("the restore journals its selection", (readMaintenanceJournal(p.root) as { restore?: { selection?: string } }).restore?.selection === "registry");
+  moveSamePathRestoreSource(p.lock);
+  mkdirSync(p.store);
+  bindRestoreTarget(p.lock);
+  const target = readStoreIdentity(p.store);
+  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222" });
+  const proof: RestoreListenerProof = {
+    attemptId: "restore-registry", serverName: "restore-registry-listener", serverNonce: "restore-registry-nonce",
+    processOwner: owner("restore-registry-owner", process.pid), serverEndpoint: normalEndpoint, target,
+  };
+  bindRestoreListener(p.lock, proof);
+  finalizeRestore(p.lock, proof);
+  expectCode("a registry restore's old source is not deleted without discardHistory", "cleanup-forbidden", () => cleanupRestoreFallback(p.lock, "restore-registry"));
+  check("the refused cleanup keeps the old source and the active journal", exists(fallback) && readMaintenanceJournal(p.root)?.state === "active");
+  cleanupRestoreFallback(p.lock, "restore-registry", { discardHistory: true });
+  check("discardHistory deletes the old source only and retires the journal", !exists(fallback) && sameStoreIdentity(target, readStoreIdentity(p.store)) && readMaintenanceJournal(p.root) === undefined);
+  releaseMaintenanceLock(p.lock);
+}
+
+// A full restore that brought back no workflow journal, of a user-mode or older artifact, left the
+// runs only in its old source, so deleting it needs the same consent.
+{
+  const p = ready("cleanup-runs");
+  const fallback = join(p.root, "store.fallback");
+  prepareSamePathRestore(p.lock, { attemptId: "restore-runs", targetPath: p.store, fallbackPath: fallback, claim: restoreClaim(), selection: "full" });
+  moveSamePathRestoreSource(p.lock);
+  mkdirSync(p.store);
+  bindRestoreTarget(p.lock);
+  const target = readStoreIdentity(p.store);
+  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222", restoredStreams: ["KV_cotal_channels_space-cleanup-runs"] });
+  const proof: RestoreListenerProof = {
+    attemptId: "restore-runs", serverName: "restore-runs-listener", serverNonce: "restore-runs-nonce",
+    processOwner: owner("restore-runs-owner", process.pid), serverEndpoint: normalEndpoint, target,
+  };
+  bindRestoreListener(p.lock, proof);
+  finalizeRestore(p.lock, proof);
+  const active = readMaintenanceJournal(p.root) as Parameters<typeof restoreLeftOut>[0];
+  check("a full restore with no workflow journal left out the workflow runs", restoreLeftOut(active) === "workflow runs");
+  check("a full restore with its workflow journal left out nothing", restoreLeftOut({ ...active, launch: { restoredStreams: [wfjStreamName("space-cleanup-runs")] } }) === undefined);
+  check("a registry restore left out the history and the runs", restoreLeftOut({ ...active, restore: { selection: "registry" } }) === "chat and DM history and workflow runs");
+  // A full restore that replaced a cut preserved after its artifact was made left out what was
+  // written since.
+  const newer = { ...active, launch: { restoredStreams: [wfjStreamName("space-cleanup-runs")], previousCutNewer: true } };
+  check("a full restore that replaced a newer cut left out the newer history and runs", restoreLeftOut(newer) === "newer chat and DM history and workflow runs");
+  check("its reason names the older artifact", restoreLeftOutReason(newer) === "this restore's artifact was made before the state it replaced was preserved");
+  check("with no workflow journal it also left out every run", restoreLeftOut({ ...active, launch: { previousCutNewer: true } }) === "workflow runs and newer chat and DM history"
+    && restoreLeftOutReason({ ...active, launch: { previousCutNewer: true } }) === "this restore's artifact was made before the state it replaced was preserved and held no workflow runs");
+  expectCode("its old source is not deleted without discardHistory", "cleanup-forbidden", () => cleanupRestoreFallback(p.lock, "restore-runs"));
+  check("the refused cleanup keeps the old source and the active journal", exists(fallback) && readMaintenanceJournal(p.root)?.state === "active");
+  cleanupRestoreFallback(p.lock, "restore-runs", { discardHistory: true });
+  check("discardHistory deletes it and retires the journal", !exists(fallback) && sameStoreIdentity(target, readStoreIdentity(p.store)) && readMaintenanceJournal(p.root) === undefined);
+  releaseMaintenanceLock(p.lock);
+}
+
+// A disaster restore retains no old source, so its explicit cleanup only retires the journal.
+{
+  const p = ready("cleanup-disaster");
+  rmSync(p.store, { recursive: true });
+  prepareMissingSourceRestore(p.lock, { attemptId: "restore-disaster", targetPath: p.store, claim: restoreClaim() });
+  mkdirSync(p.store);
+  bindRestoreTarget(p.lock);
+  const target = readStoreIdentity(p.store);
+  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222" });
+  const proof: RestoreListenerProof = {
+    attemptId: "restore-disaster", serverName: "restore-disaster-listener", serverNonce: "restore-disaster-nonce",
+    processOwner: owner("restore-disaster-owner", process.pid), serverEndpoint: normalEndpoint, target,
+  };
+  bindRestoreListener(p.lock, proof);
+  finalizeRestore(p.lock, proof);
+  const retired = cleanupRestoreFallback(p.lock, "restore-disaster");
+  check("disaster cleanup records no old-source cleanup", retired.restore.cleanup === undefined);
+  check("disaster cleanup keeps the active target", sameStoreIdentity(target, readStoreIdentity(p.store)));
+  check("disaster cleanup retires the restore journal for a later preserve cycle", readMaintenanceJournal(p.root) === undefined);
+  releaseMaintenanceLock(p.lock);
+}
+
 // Replacing the retained source before cleanup fails closed and preserves both the replacement and target.
 {
   const p = ready("cleanup-mismatch");
@@ -1155,7 +1303,7 @@ if (process.platform !== "win32") {
   mkdirSync(targetPath);
   bindRestoreTarget(p.lock);
   const target = readStoreIdentity(targetPath);
-  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222" });
+  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222", restoredStreams: [wfjStreamName("space-cleanup-mismatch")] });
   const proof: RestoreListenerProof = {
     attemptId: "restore-mismatch", serverName: "restore-mismatch-listener", serverNonce: "restore-mismatch-nonce",
     processOwner: owner("restore-mismatch-owner", process.pid), serverEndpoint: normalEndpoint, target,
@@ -1210,6 +1358,25 @@ if (process.platform !== "win32") {
     journal?.state === "restore-ready" && journal.claim.coordinator.id === restoreCoordinator.id);
   const recovered = rollbackRestore(p.lock, { now: new Date(Date.now() + 120_000), ownerStatus: () => "dead" });
   check("a provably stale claim recovers by rollback to ready", recovered.state === "ready");
+  releaseMaintenanceLock(p.lock);
+}
+
+// Before its deadline a claim is stale only when every owner is proven dead AND the caller proves no
+// process the attempt started outside its recorded owners is alive.
+{
+  const p = ready("restore-claim-early");
+  prepareAlternateRestore(p.lock, { attemptId: "claim-early", targetPath: join(p.root, "target"), claim: restoreClaim() });
+  const record = readMaintenanceJournal(p.root) as RestoreReadyRecord;
+  check("before the deadline, dead recorded owners alone keep the claim live",
+    assessRestoreClaim(record, { ownerStatus: () => "dead" }) === "live");
+  check("before the deadline, the unrecorded proof with the coordinator alive keeps it live",
+    assessRestoreClaim(record, { unrecordedOwnersDead: true, ownerStatus: (candidate) => candidate.id === restoreCoordinator.id ? "alive" : "dead" }) === "live");
+  check("before the deadline, the unrecorded proof with an unknown owner keeps it live",
+    assessRestoreClaim(record, { unrecordedOwnersDead: true, ownerStatus: () => "unknown" }) === "live");
+  expectCode("a rollback without the unrecorded proof refuses before the deadline", "claim-live", () =>
+    rollbackRestore(p.lock, { ownerStatus: () => "dead" }));
+  const recovered = rollbackRestore(p.lock, { unrecordedOwnersDead: true, ownerStatus: () => "dead" });
+  check("every owner dead and the unrecorded proof recover before the deadline", recovered.state === "ready");
   releaseMaintenanceLock(p.lock);
 }
 

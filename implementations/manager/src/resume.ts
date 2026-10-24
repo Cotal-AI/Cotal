@@ -1,4 +1,6 @@
-import { parseShareSelection } from "@cotal-ai/core";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { parseShareSelection, writeSecretFileAtomic } from "@cotal-ai/core";
 import { z } from "zod";
 import type { ManagerResumeInventory } from "./manager.js";
 
@@ -173,4 +175,61 @@ export function parseResumeCommitArgs(value: unknown): { attemptId: string } {
 
 export function parseResumeFinalizeArgs(value: unknown): { attemptId: string; durableCommitToken: string } {
   return parseBounded("finalizeResume", MAX_RESUME_COMMIT_BYTES, finalizeArgsSchema, value);
+}
+
+/** What a successor manager needs to take back one seat this manager runs, should this manager's
+ *  process end without stopping it: the seat's resume entry, and for a supervised seat the restart
+ *  policy its spawn carried and the deaths already counted against it (#4094). One file per seat,
+ *  written by the manager that runs it. The entry carries file references and digests only, never a
+ *  secret value. */
+const seatRecord = z.strictObject({
+  version: z.literal("cotal-seat-record/v1"),
+  instanceId: z.string().min(1).max(256),
+  supervise: z.strictObject({ restarts: z.number().int().min(1), windowMs: z.number().int().min(1) }).optional(),
+  crashes: z.array(z.number().int().nonnegative()).max(1024),
+  agent,
+});
+
+export type SeatRecord = Omit<z.infer<typeof seatRecord>, "agent"> & { agent: ManagerResumeInventory["agents"][number] };
+
+export function seatRecordPath(root: string, space: string, name: string): string {
+  return join(root, ".cotal", "seat-records", space, `${name}.json`);
+}
+
+/** Replace the record atomically, so a crash mid-write leaves the previous one. */
+export function writeSeatRecord(root: string, record: SeatRecord): void {
+  const path = seatRecordPath(root, record.agent.space, record.agent.name);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeSecretFileAtomic(path, `${JSON.stringify(seatRecord.parse(record))}\n`);
+}
+
+/** Undefined when no record exists. A record that does not parse throws: it was written by this
+ *  code, so a malformed one is damage to report, never a seat to skip silently. */
+export function readSeatRecord(root: string, space: string, name: string): SeatRecord | undefined {
+  const path = seatRecordPath(root, space, name);
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw e;
+  }
+  const parsed = seatRecord.safeParse(JSON.parse(text));
+  if (!parsed.success)
+    throw new Error(`seat record ${path}: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`).join("; ")}`);
+  return parsed.data as SeatRecord;
+}
+
+/** Remove the record of one incarnation. A record of another incarnation under the same name is left. */
+export function removeSeatRecord(root: string, space: string, name: string, lifecycleUid: string): void {
+  const path = seatRecordPath(root, space, name);
+  let current: SeatRecord | undefined;
+  try {
+    current = readSeatRecord(root, space, name);
+  } catch {
+    // An unreadable record names no incarnation, so it cannot be another one's: remove it.
+    rmSync(path, { force: true });
+    return;
+  }
+  if (current?.agent.identity.lifecycleUid === lifecycleUid) rmSync(path, { force: true });
 }

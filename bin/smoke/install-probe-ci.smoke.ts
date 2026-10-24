@@ -1,7 +1,8 @@
 /**
- * The install-probe job must exist in changesets.yml and must depend on the version job.
- * The version job must contain the closure gate and the GitHub Release step. This file reads
- * the workflow text and checks structural invariants.
+ * The package-shape probe runs during preparation, before native lifecycle qualification.
+ * The publication job cuts one GitHub Release per version, and a job of its own then checks that the
+ * published CLI installs.
+ * This file reads the workflow text and checks structural invariants.
  *
  * Run: pnpm smoke:install-probe-ci
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/install-probe-ci.json
@@ -46,28 +47,15 @@ function jobs(text: string): Map<string, string> {
   return out;
 }
 
-function needsList(body: string): string[] {
-  const inline = body.match(/^\s+needs:\s*\[([^\]]*)\]/m);
-  if (inline) {
-    return inline[1].split(",").map((s) => s.trim()).filter(Boolean);
-  }
-  return [];
-}
-
 const csText = readFileSync(CHANGESETS, "utf8");
 const csJobs = jobs(csText);
 
-// A. The install-probe job exists
-const probeBody = csJobs.get("install-probe") ?? "";
-check("changesets.yml declares job install-probe", probeBody.length > 0);
+const coldJobs = jobs(readFileSync(join(ROOT, ".github/workflows/cold-setup.yml"), "utf8"));
+const probeBody = coldJobs.get("candidate") ?? "";
+check("cold setup owns the pre-publication package-shape probe", probeBody.length > 0 && !csJobs.has("install-probe"));
 
-// B. install-probe depends on version
-const probeNeeds = needsList(probeBody);
-check(
-  "install-probe needs the version job",
-  probeNeeds.includes("version"),
-  { probeNeeds },
-);
+const lifecycleNeeds = (coldJobs.get("lifecycle") ?? "").match(/^\s+needs:\s*(\S+)/m)?.[1];
+check("native qualification depends on the probed candidate", lifecycleNeeds === "candidate", { lifecycleNeeds });
 
 // C. install-probe runs the probe script
 check(
@@ -84,20 +72,26 @@ check(
   "build must come before probe",
 );
 
-// E. The version job cuts the GitHub Release
-const versionBody = csJobs.get("version") ?? "";
+// The maintained action pushes the per-package tags and creates no releases; a later step cuts one
+// release for the version once the action reports a publication.
+const publishBody = csJobs.get("publish") ?? "";
 check(
-  "the version job cuts the GitHub Release",
-  /gh release create/.test(versionBody),
-  versionBody.slice(0, 200),
+  "the publisher cuts one GitHub Release per version after a publication",
+  /uses: changesets\/action\/publish@/.test(publishBody) &&
+    /create-github-releases: false/.test(publishBody) &&
+    /if: steps\.publish\.outputs\.published == 'true'/.test(publishBody) &&
+    publishBody.indexOf("gh release create") > publishBody.indexOf("changesets/action/publish@"),
+  publishBody.slice(0, 200),
 );
-
-// F. The version job has a closure gate that invokes verify-publish-closure.mjs
+// The install check is a job of its own after publish, so it stays out of the publish queue.
+const verifyBody = csJobs.get("verify-install") ?? "";
 check(
-  "the version job verifies publish closure before the Release",
-  /node scripts\/verify-publish-closure\.mjs/.test(versionBody) &&
-    versionBody.indexOf("node scripts/verify-publish-closure") < versionBody.indexOf("gh release create"),
-  "closure gate must come before release",
+  "a successful publication is followed by a fresh install check",
+  /^\s+published: \$\{\{ steps\.publish\.outputs\.published \}\}\s*$/m.test(publishBody) &&
+    /^\s+needs: publish\s*$/m.test(verifyBody) &&
+    /if: needs\.publish\.outputs\.published == 'true'/.test(verifyBody) &&
+    /verify-release-installable\.mjs/.test(verifyBody),
+  "the install observation must follow publication",
 );
 
 const EXPECTED = 6;

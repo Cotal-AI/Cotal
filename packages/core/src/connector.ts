@@ -211,6 +211,9 @@ export interface ModelInfo {
 export interface ModelCatalog {
   source?: string;
   models: ModelInfo[];
+  /** Set by a connector whose install exposes no catalog it can list, saying why and what to pass
+   *  instead. The manager reports that connector `supported: false` rather than as a failed read. */
+  unavailable?: string;
 }
 
 export interface ModelCatalogOpts {

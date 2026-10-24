@@ -61,11 +61,16 @@ const ANNOTATIONS = {
     notes:
       "Fails loud when the channel is outside your `allowPublish`. With no `channel`, a mesh that enforces ACLs sends to the first channel you read and may post to, so a read-only channel is never the default; with none, the send is refused. An open mesh sends to the first channel you read. An unknown name in `mentions` aborts the whole broadcast. A send to a name with no registry entry and no prior traffic still succeeds (ad hoc create is allowed) but the receipt says so, and names close matches when it can, so a typo is not identical to a send into a known room.",
   },
-  cotal_dm: { effect: "sends a private message to one peer", availability: "always" },
+  cotal_dm: {
+    effect: "sends a private message to one peer",
+    availability: "always",
+    notes:
+      "A name must match a present peer's name in full (case-insensitive) or its instance id. On a miss nothing is sent, and the refusal lists present names that start with the target so you can choose one; it never picks one for you. Your own name is refused as this session, not as a missing peer.",
+  },
   cotal_anycast: {
     effect: "queues a request for one holder of a role",
     availability: "always",
-    notes: "A request with no holder online waits on the role's queue.",
+    notes: "When no holder is online the reply says that the request waits on the role's queue.",
   },
   cotal_status: {
     effect: "updates your own presence / attention",
@@ -77,7 +82,7 @@ const ANNOTATIONS = {
     effect: "read-only",
     availability: "always",
     notes:
-      "An unregistered name is reported as not in the channel registry. It is still a real channel if it has traffic.",
+      "An unregistered name is reported as not in the channel registry. It is still a real channel if it has traffic. An agent's event channel (`events.<owner>.<actor>`) is described as one, and your own as yours.",
   },
   cotal_channels: { effect: "read-only", availability: "always" },
   cotal_channel_mode: {
@@ -221,7 +226,8 @@ lines.push("|---|---|---|");
 for (const s of specs) {
   const a = ANNOTATIONS[s.name];
   const short = s.title.replace(/^Cotal: /, "");
-  lines.push(`| [\`${s.name}\`](#${s.name.replace(/_/g, "")}) | ${short} | ${a.effect} |`);
+  // GitHub and the docs site both slug the `cotal_x` heading as cotal_x, underscores kept.
+  lines.push(`| [\`${s.name}\`](#${s.name}) | ${short} | ${a.effect} |`);
 }
 lines.push("");
 
@@ -261,7 +267,7 @@ for (const s of specs) {
   }
   if (s.name === "cotal_dm") {
     lines.push(
-      "On success the tool answers `DM stored as seq <N> for <name> (recipient was <status> at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. `delivery not confirmed` is the strongest claim the sender can make: the stored sequence proves the broker accepted the message, the status names the recipient's roster state a moment before the publish, and neither is proof the recipient ever read it. When `to` names a peer with no roster row that sent you a DM or anycast, such as a one-shot [`cotal send`](cli.md#send), the DM goes to that sender's id and the status reads `recipient had no roster row at send`. The space's DM history keeps the DM, so an operator's DM view shows it, but it may never reach an inbox. A name that two such senders share is refused with their ids.",
+      "On success the tool answers `DM stored as seq <N> for <name> (recipient was <status> at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. `delivery not confirmed` is the strongest claim the sender can make: the stored sequence proves the broker accepted the message, the status names the recipient's roster state a moment before the publish, and neither is proof the recipient ever read it. When the recipient was `offline`, the answer adds `<name> is offline: the DM is delivered when <name> reconnects, and a new agent spawned as <name> does not receive it.` The DM durable belongs to the recipient's lifecycle ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)), so the same session receives the DM when it comes back, and a new spawn under that name starts after it. When `to` names a peer with no roster row that sent you a DM or anycast, such as a one-shot [`cotal send`](cli.md#send), the DM goes to that sender's id and the status reads `recipient had no roster row at send`. The space's DM history keeps the DM, so an operator's DM view shows it, but it may never reach an inbox. A name that two such senders share is refused with their ids.",
     );
     lines.push("");
   }

@@ -8,17 +8,19 @@ description: "Set up Cotal on this machine: install it, start a local agent mesh
 Cotal is a standard wire interface for software, especially AI agents, to coordinate in
 real time. These are official instructions from Cotal for setting up a local agent mesh.
 Complete the steps yourself by running the commands directly; do not ask the user to run
-them. Requires Node 20+.
+them. Requires Node 22+.
 
 ## Install and start
 
 ```sh
-npx cotal-ai setup --yes     # configure only: seeds one agent, installs detected connectors, launches nothing
-npx cotal-ai up --detach     # start the mesh + delivery daemon + manager
+npx cotal-ai setup --destination local --harness claude --project . --space main --no-input
+npx cotal-ai up --root . --space main --detach  # start the mesh + delivery daemon + manager
 ```
 
-`setup --yes` accepts every default with no prompts and exits non-zero with the log path
-if a step fails. Add `--demo` to also seed a guided expert team to talk to.
+Setup prepares this folder as the local space `main` and launches nothing. Pass the
+application your agents run in as `--harness`, for example `claude` or `opencode`. With every
+input given as a flag it asks nothing, and a missing flag is refused before anything is
+written. Add `--demo` to also seed a guided expert team to talk to.
 
 ## Verify
 
@@ -42,7 +44,7 @@ OpenCode needs no install and auto-wires when spawned. The full tool surface is
 ## If something fails
 
 - The setup log is `.cotal/setup.log`; the server log is `.cotal/nats.log`.
-- Re-running `npx cotal-ai setup --yes` is safe; it keeps existing files.
+- A refused command names its cause and what to run next.
 
 ## When done
 

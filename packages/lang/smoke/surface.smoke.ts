@@ -15,7 +15,10 @@
  * 5. every method in the curated tables is callable on its receiver, and `sort`'s total order holds;
  * 6. every ```js block in the language reference and the guide VALIDATES as written (it is not run:
  *    a block's behaviour is held by the cells above and by the differential suite, this holds only
- *    that no example uses syntax or names the language refuses).
+ *    that no example uses syntax or names the language refuses);
+ * 7. Appendix A of the reference is the error catalog, row for row;
+ * 8. the exported name and node tables and `CATALOG` are frozen, so code that imports the package
+ *    cannot change what `validate` admits or how it titles an error.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -24,9 +27,9 @@ import { validate } from "../src/grammar.js";
 import { CATALOG, LangErrors, type LangErrorCode } from "../src/errors.js";
 import { run } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
-import { BUILTINS } from "../src/primitives.js";
+import { BUILTINS, FORBIDDEN_GLOBALS, RESERVED_NAMES } from "../src/primitives.js";
 import { ADMITTED_NODES, FORBIDDEN_CHILDREN, FORBIDDEN_NODES, KNOWN_NODES, STRUCTURAL_NODES } from "../src/syntax.js";
-import { arrayMethods, builtins, numberMethods, stringMethods } from "../src/library.js";
+import { MUTATING_METHODS, arrayMethods, builtins, numberMethods, stringMethods } from "../src/library.js";
 import { NotCrossable, Prng, assertCrossable } from "../src/values.js";
 
 let pass = 0;
@@ -151,7 +154,7 @@ const CORPUS: readonly string[] = [
   // `Program` is the entry: `run` hands its body to `executeBlock` directly, so it has no case.
   const missing = [...ADMITTED_NODES].filter((t) => t !== "Program" && !labels.has(t));
   ok("every admitted node type has a case in the interpreter", missing.length === 0, missing);
-  const extra = [...labels].filter((t) => !ADMITTED_NODES.has(t) && !STRUCTURAL_NODES.has(t));
+  const extra = [...labels].filter((t) => !ADMITTED_NODES.includes(t) && !STRUCTURAL_NODES.includes(t));
   ok("and the interpreter has no case for a node type the table does not admit", extra.length === 0, extra);
 }
 
@@ -654,6 +657,17 @@ for (const rel of ["spec/cotal-lang.md", "docs/workflows.md", "docs/lang-card.md
     thrown.size >= 8 && uncataloged.length === 0,
     uncataloged.map(([code, at]) => `${code} at ${at.join(", ")}`),
   );
+}
+
+// ---- 8) the exported name and node tables and CATALOG are frozen ---------------------------------
+//
+// These were exported as plain `Set`s and an unfrozen record, and a caller's `add`, `delete` or
+// assignment changed what `validate` admitted, or how it titled an error, for the whole process.
+// `Object.freeze` does not stop a `Set`'s `add`, so none of them may be a `Set` at all.
+{
+  const tables = { ADMITTED_NODES, STRUCTURAL_NODES, RESERVED_NAMES, FORBIDDEN_GLOBALS, MUTATING_METHODS, CATALOG };
+  const open = Object.entries(tables).filter(([, t]) => t instanceof Set || !Object.isFrozen(t)).map(([n]) => n);
+  ok("the exported name and node tables and CATALOG are frozen, and none is a Set", open.length === 0, open);
 }
 
 console.log(`surface.smoke: ${pass} checks passed`);

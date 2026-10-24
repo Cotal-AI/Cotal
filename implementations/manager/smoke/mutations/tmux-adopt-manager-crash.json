@@ -1,0 +1,40 @@
+{
+  "suite": [
+    "implementations/manager/smoke/tmux-adopt-manager-crash.smoke.ts"
+  ],
+  "guard": "a tmux seat that outlives its manager's crash is adopted by the successor, keeps its pane process and serves the turn the dead manager accepted, while a seat whose pane exited is retired",
+  "command": "pnpm --filter @cotal-ai/tmux build && pnpm smoke:manager-tmux-adopt",
+  "completionMarker": "TMUX ADOPT MANAGER CRASH SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/tmux-adopt-manager-crash.json",
+  "why": [
+    "Live: real broker, real Manager in a child process SIGKILLed mid-turn, a private tmux server and a stub seat that joins presence.",
+    "Manager source is imported directly by the host through tsx; the tmux runtime is imported from its dist, so the command builds it and the tmux mutation rebuilds it after restore."
+  ],
+  "mutations": [
+    {
+      "name": "the successor retires a surviving tmux seat instead of adopting it",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "record.supervise ? await this.restartSupervisedSeat(row, record) : await this.adoptSeat(row, record);",
+      "replace": "record.supervise ? await this.restartSupervisedSeat(row, record) : \"adoption disabled\";",
+      "expectRed": "the successor adopts the surviving seat",
+      "cell": "the successor adopts the surviving seat"
+    },
+    {
+      "name": "an unsupervised tmux seat writes no record",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const adoptable = a.handle.reference !== undefined && typeof this.requiredRuntime.adopt === \"function\";",
+      "replace": "    const adoptable = false;",
+      "expectRed": "the first manager spawns two tmux seats and records both",
+      "cell": "the first manager spawns two tmux seats and records both"
+    },
+    {
+      "name": "the tmux runtime adopts a pane whose process has exited",
+      "file": "extensions/tmux/src/runtime.ts",
+      "find": "    if (tmux.paneState(paneId) !== \"running\") throw new Error(`tmux runtime: pane ${paneId} has exited`);\n    return this.handle(windowId, windowId, paneId, serverPid);",
+      "replace": "    return this.handle(windowId, windowId, paneId, serverPid);",
+      "expectRed": "a seat whose process died while no manager ran is retired, not adopted",
+      "cell": "a seat whose process died while no manager ran is retired, not adopted",
+      "afterRestore": "pnpm --filter @cotal-ai/tmux build"
+    }
+  ]
+}

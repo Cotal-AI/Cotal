@@ -371,10 +371,14 @@ export class RunHeld extends Error {
  *
  * `escalate` never arrives here. It mints an effect rather than choosing a disposition, so it is
  * hashed (design 5.12) and an edit to it diverges before any of this runs.
+ *
+ * `timeout` is the checkpoint's own option when it set one, so L4007 can say whether the deadline
+ * came from it or from the run's default.
  */
 export function applyCheckpointPolicy(
   raw: CheckpointRaw,
   onExpiry: "fail" | "proceed" | "escalate" | undefined,
+  timeout?: string,
 ): CheckpointResultValue {
   if (raw.outcome === "resolved") {
     return {
@@ -391,11 +395,44 @@ export function applyCheckpointPolicy(
   // the opposite of what the stop rule says happens.
   const disposition = onExpiry ?? "fail";
   if (disposition === "proceed" || disposition === "escalate") return { status: "expired", at: raw.at };
+  // Say where the deadline came from: the same expiry reads the same under the checkpoint's own
+  // `timeout` and under the run's default, and the fix differs between the two.
+  const source = timeout !== undefined
+    ? `The deadline came from its own timeout of ${JSON.stringify(timeout)}.`
+    : "It sets no timeout of its own, so the deadline came from the run's default.";
+  const raise = timeout !== undefined ? "raise its timeout" : "give it a timeout of its own, or start the run with a longer default";
   throw new EffectError(
     "L4007",
     "checkpoint-expired",
-    `L4007 Checkpoint expired\n\nNobody answered in time and this checkpoint's onExpiry is "fail".\n\nOptions\n  onExpiry: "proceed"    return { status: "expired" } and let the program decide\n  onExpiry: "escalate"   mint a second checkpoint addressed to someone else\n  raise the timeout`,
+    `L4007 Checkpoint expired\n\nNobody answered in time and this checkpoint's onExpiry is "fail". ${source}\n\nOptions\n  onExpiry: "proceed"    return { status: "expired" } and let the program decide\n  onExpiry: "escalate"   mint a second checkpoint addressed to someone else\n  ${raise}`,
   );
+}
+
+/** A host's latched root cancellation. Subscriptions replay a latched reason and return a remover. */
+export interface RootCancellationSource {
+  readonly reason: string | undefined;
+  subscribe(fn: (reason: string) => void): () => void;
+}
+
+/** Process-local cancellation only. It carries no admission or permission. */
+export class RootCancellation implements RootCancellationSource {
+  private why: string | undefined;
+  private readonly listeners = new Set<(reason: string) => void>();
+
+  get reason(): string | undefined { return this.why; }
+
+  cancel(reason: string): void {
+    if (this.why !== undefined) return;
+    this.why = reason;
+    for (const listener of this.listeners) listener(reason);
+    this.listeners.clear();
+  }
+
+  subscribe(fn: (reason: string) => void): () => void {
+    if (this.why !== undefined) fn(this.why);
+    else this.listeners.add(fn);
+    return () => { this.listeners.delete(fn); };
+  }
 }
 
 export interface CancelSignal {

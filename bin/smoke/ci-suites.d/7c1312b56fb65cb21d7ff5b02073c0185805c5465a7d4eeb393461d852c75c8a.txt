@@ -1,0 +1,3 @@
+# Dormant service custody writer recovery cells: lost ACKs, unknown outcomes, CAS contention,
+# sibling drivers, stamp against cancel, endpoint rechecks and held classifications.
+smoke:service-custody-recovery:auth

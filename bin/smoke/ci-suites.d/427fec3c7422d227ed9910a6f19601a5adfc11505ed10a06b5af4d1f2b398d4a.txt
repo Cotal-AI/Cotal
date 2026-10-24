@@ -1,0 +1,3 @@
+# A classified send refusal on a resolved space, such as an absent recipient or mention, begins
+# with Mesh: <space> and carries target.space in its JSON envelope.
+smoke:send-refusal-mesh

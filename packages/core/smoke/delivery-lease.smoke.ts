@@ -3,7 +3,10 @@
  * delivery, so the daemon CAS-acquires a per-shard lease BEFORE binding and refuses (loud exit) if a live
  * lease exists. Asserts: a second acquire on the same shard THROWS; the lease flips ready only after a
  * mark; a ready lease held by ANOTHER daemon does not satisfy a wait for the daemon we launched
- * (#837); release frees it so a fresh acquire succeeds.
+ * (#837); release frees it so a fresh acquire succeeds. A lease-watch bind still in flight at stop or
+ * reconnect deletes its consumer instead of installing a watch for the retired connection (#3966).
+ * A rearm binds the fan-out and reader durables a full restore recreated with their start bound,
+ * and any other existing config still conflicts.
  *
  * Run: pnpm smoke:delivery-lease:auth   (needs `nats-server` on PATH; auth/JetStream, local-only)
  */
@@ -12,10 +15,10 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, waitForDeliveryLease, chatStream, standaloneConnectOpts, deliveryBucket, leaseKey, fanoutDurableConfig, FANOUT_DURABLE, idFromCreds, deliveryLeaseHolderFor, controlServiceSubject, CONTROL_DELIVERY, DEV_OWNER } from "../src/index.js";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { Kvm } from "@nats-io/kv";
-import { jetstreamManager, AckPolicy } from "@nats-io/jetstream";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, waitForDeliveryLease, chatStream, standaloneConnectOpts, deliveryBucket, leaseKey, fanoutDurableConfig, FANOUT_DURABLE, idFromCreds, deliveryLeaseHolderFor, controlServiceSubject, CONTROL_DELIVERY, DEV_OWNER, inboxStream, INBOX_READER_DURABLE, recreateConsumerCheckpoint } from "../src/index.js";
+import { connect, credsAuthenticator, nanos } from "@nats-io/transport-node";
+import { Kvm, type KV } from "@nats-io/kv";
+import { jetstreamManager, AckPolicy, DeliverPolicy } from "@nats-io/jetstream";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -138,12 +141,12 @@ try {
     await launched.releaseDeliveryLease(1, (await launched.readDeliveryLeaseEntry(1))?.revision);
   } finally { await launched.stop(); }
 
-  // A STALE REVISION RELEASES NOTHING, AND SAYS SO TO NOBODY. The release is a compare-and-swap,
-  // and `releaseDeliveryLease` swallows every error by design (at shutdown the broker may already be
-  // gone), so a token one step behind frees nothing and reports success. The row then claims the
-  // shard for the rest of the bucket TTL with no process behind it, and the next daemon is refused
-  // outright: "a live lease already exists". That is #1318's outage with no starvation and no broker
-  // fault anywhere, reached by an ordinary stop and restart.
+  // A STALE REVISION RELEASES NOTHING, AND THE RELEASE SAYS SO. The release is a compare-and-swap,
+  // so a token one step behind frees nothing, and `releaseDeliveryLease` rejects with the broker's
+  // refusal rather than reporting success. A shutdown that catches it still leaves the row claiming
+  // the shard for the rest of the bucket TTL with no process behind it, and the next daemon is
+  // refused outright: "a live lease already exists". That is #1318's outage with no starvation and
+  // no broker fault anywhere, reached by an ordinary stop and restart.
   //
   // The token lags on ordinary interleavings, not only on faults. `markDeliveryLeaseReady` MOVES the
   // row, so between the broker applying that write and the daemon assigning the returned value the
@@ -157,10 +160,12 @@ try {
     const stReady = await st.markDeliveryLeaseReady(2, stAcquired);
     check("markReady MOVES the revision, so a token cached before it is stale", stReady !== stAcquired,
       { acquired: stAcquired, afterReady: stReady });
-    // THE DEFECT: release with the pre-markReady token, exactly what the swallowed catch leaves.
-    await st.releaseDeliveryLease(2, stAcquired);
-    check("a release arguing a STALE revision leaves the row in place, silently",
-      (await st.readDeliveryLease(2)) !== undefined);
+    // Release with the pre-markReady token.
+    let staleRefusal: string | undefined;
+    try { await st.releaseDeliveryLease(2, stAcquired); } catch (e) { staleRefusal = (e as Error).message; }
+    check("a release arguing a STALE revision rejects with the broker's refusal",
+      staleRefusal?.includes("wrong last sequence") === true, { staleRefusal });
+    check("and leaves the row in place", (await st.readDeliveryLease(2)) !== undefined);
     // ACCEPT CONTROL: the same call with the broker's current revision does free it, so the failure
     // above is the token rather than the release being broken for every input.
     await st.releaseDeliveryLease(2, (await st.readDeliveryLeaseEntry(2))?.revision);
@@ -196,7 +201,7 @@ try {
   //   W2 a row overwritten by another incarnation fires the trigger within delivery latency
   //      (bounded far under the renew period; the named bound is 5s, ~10x the measured latency);
   //   W3 a DEL on the key fires the trigger too (gone's territory, same tree);
-  //   W4 the stop handle stops it, and a later write lands unobserved.
+  //   W4 the stop handle stops it, a later write lands unobserved, and its broker consumer is deleted.
   console.log("\nW. the lease-loss watch fires on foreign writes and deletes, not on our own");
   const w1 = await mkDaemon(); w1.on("error", () => {}); await w1.start();
   try {
@@ -247,7 +252,14 @@ try {
    } finally { await taker.stop(); }
    // W4: the stop handle stops the watch; later writes land unobserved. W3 deleted the key, so a
    // fresh own-row is created (an event in itself, if the watch were still live) and then MOVED
-   // once more; both must land unobserved after the stop.
+   // once more; both must land unobserved after the stop. The handle also deletes the watch's
+   // ordered consumer, which a stop alone leaves on the broker for its five-minute inactive
+   // threshold (#3966). w1 holds the daemon's credential, so this proves its grant allows the delete.
+   const leaseNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "delivery"), tls: false }) });
+   const leaseJsm = await jetstreamManager(leaseNc);
+   const leaseConsumers = async () => (await leaseJsm.streams.info(`KV_${deliveryBucket(space)}`)).state.consumer_count;
+   const watching = await leaseConsumers();
+   check("W4 CONTROL: the bound lease watch holds a consumer on the delivery bucket", watching >= 1, { watching });
    stopWatch();
    const w4rev = await w1.acquireDeliveryLease(3);
    await w1.markDeliveryLeaseReady(3, w4rev);
@@ -257,8 +269,121 @@ try {
    await overwriteLeaseRow(w4row.revision, { ...w4row.info, since: Date.now() });
    await wait(1200);
    check("W4 after the stop handle, later writes on the key land unobserved", events.length === before, { before, after: events.length });
+   const retired = await leaseConsumers();
+   await leaseNc.close();
+   check("W4 the stop handle deletes the watch's consumer instead of leaving it to the inactive threshold", retired === watching - 1, { watching, retired });
    await w1.releaseDeliveryLease(3, (await w1.readDeliveryLeaseEntry(3))?.revision);
  } finally { await w1.stop(); }
+
+ // ---- L: A LEASE-WATCH BIND STILL IN FLIGHT WHEN THE ENDPOINT STOPS OR REBUILDS (#3966) ----
+ // A bind creates the watch's ordered consumer before it can install the iterator. A stop or a live
+ // reconnect landing in that window retires the epoch the bind belongs to, so the late bind must
+ // stop its watch and delete the consumer instead of installing it, and the stop or the rebuild must
+ // wait for that before it closes the connection the delete rides on. The window is held open at the
+ // endpoint's own KV watch: the first watch is gated AFTER it returned, so its consumer exists on the
+ // broker and the bind has not seen it. The gate opens once the stop or reconnect resolves, or after
+ // a second if it is waiting for the bind, so a stop that does not wait lands its bind late every run.
+ console.log("\nL. a lease-watch bind in flight at stop or reconnect deletes its consumer instead of installing it");
+ {
+  const lNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "delivery"), tls: false }) });
+  const lJsm = await jetstreamManager(lNc);
+  const lConsumers = async () => (await lJsm.streams.info(`KV_${deliveryBucket(space)}`)).state.consumer_count;
+  const until = async (done: () => boolean) => { for (let i = 0; i < 50 && !done(); i++) await wait(100); };
+  const holdFirstWatch = (ep: CotalEndpoint) => {
+    const reg = ep as unknown as { deliveryRegistry: () => Promise<KV> };
+    const real = reg.deliveryRegistry.bind(ep);
+    const wrapped = new WeakSet<KV>();
+    const held = { created: false };
+    let claimed = false;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => { open = resolve; });
+    reg.deliveryRegistry = async () => {
+      const kv = await real();
+      if (!wrapped.has(kv)) {
+        wrapped.add(kv);
+        const watch = kv.watch.bind(kv);
+        kv.watch = async (opts) => {
+          const first = !claimed;
+          claimed = true;
+          const iter = await watch(opts);
+          if (first) { held.created = true; await gate; }
+          return iter;
+        };
+      }
+      return kv;
+    };
+    return { held, openAfter: async (settled: Promise<unknown>) => { await Promise.race([settled, wait(1000)]); open(); } };
+  };
+  const lw = await mkDaemon(); lw.on("error", () => {}); await lw.start();
+  try {
+   const base = await lConsumers();
+
+   // CONTROLS: an INSTALLED watch is retired by an endpoint stop, and a live reconnect leaves only
+   // the rebound watch, which still delivers.
+   const ci = await mkDaemon(); ci.on("error", () => {}); await ci.start();
+   await ci.watchDeliveryLease(7, () => {});
+   const ciWatching = await lConsumers();
+   await ci.stop();
+   const ciAfter = await lConsumers();
+   check("L1 CONTROL: endpoint stop deletes an INSTALLED lease watch's consumer", ciWatching === base + 1 && ciAfter === base, { base, ciWatching, ciAfter });
+   const cr = await mkDaemon(); cr.on("error", () => {}); await cr.start();
+   const crEvents: unknown[] = [];
+   await cr.watchDeliveryLease(7, (info) => { crEvents.push(info); });
+   await cr.reconnect();
+   const crAfter = await lConsumers();
+   const crSeen = crEvents.length;
+   const crRev = await lw.acquireDeliveryLease(7);
+   await until(() => crEvents.length > crSeen);
+   check("L2 CONTROL: a live reconnect of an INSTALLED watch leaves only the rebound watch, and it delivers", crAfter === base + 1 && crEvents.length > crSeen, { base, crAfter, crSeen, events: crEvents.length });
+   await lw.releaseDeliveryLease(7, crRev);
+   await cr.stop();
+
+   // A bind in flight at stop(). The row exists, so a watch that were installed would replay it at once.
+   const sRev = await lw.acquireDeliveryLease(8);
+   const ls = await mkDaemon(); ls.on("error", () => {}); await ls.start();
+   const hs = holdFirstWatch(ls);
+   let stopping = false, afterStop = 0;
+   const sBind = ls.watchDeliveryLease(8, () => { if (stopping) afterStop++; });
+   await until(() => hs.held.created);
+   const sHeld = await lConsumers();
+   stopping = true;
+   const sStop = ls.stop();
+   await hs.openAfter(sStop);
+   await sBind.catch(() => {});
+   await sStop;
+   await wait(300);
+   const sAfter = await lConsumers();
+   check("L3 CONTROL: the held bind created its consumer before the stop", sHeld === base + 1, { base, sHeld });
+   check("L4 a bind that lands after stop() deletes its consumer instead of leaving it to the inactive threshold", sAfter === base, { base, sAfter });
+   check("L5 a bind that lands after stop() delivers no lease event to the stopped endpoint", afterStop === 0, { afterStop });
+   await lw.releaseDeliveryLease(8, sRev);
+
+   // A bind in flight at a live reconnect.
+   const lr = await mkDaemon(); lr.on("error", () => {}); await lr.start();
+   const hr = holdFirstWatch(lr);
+   const rEvents: unknown[] = [];
+   const rBind = lr.watchDeliveryLease(9, (info) => { rEvents.push(info); });
+   await until(() => hr.held.created);
+   const rHeld = await lConsumers();
+   const rRebuild = lr.reconnect();
+   await hr.openAfter(rRebuild);
+   await rBind.catch(() => {});
+   await rRebuild;
+   const rAfter = await lConsumers();
+   const rSeen = rEvents.length;
+   const rRev = await lw.acquireDeliveryLease(9);
+   await until(() => rEvents.length > rSeen);
+   check("L6 a bind that lands during a live reconnect deletes its consumer, leaving only the rebound watch", rHeld === base + 1 && rAfter === base + 1, { base, rHeld, rAfter });
+   check("L7 CONTROL: the rebound watch still delivers after the late bind retired", rEvents.length > rSeen, { rSeen, events: rEvents.length });
+   await lw.releaseDeliveryLease(9, rRev);
+   await lr.stop();
+   const rStopped = await lConsumers();
+   check("L8 stop after that reconnect leaves no lease-watch consumer", rStopped === base, { base, rStopped });
+  } finally {
+   await lw.stop();
+   await lNc.close();
+  }
+ }
 
  // ---- Q: A REARM THAT FAILS PART-WAY MUST LEAVE THE ENDPOINT QUIESCED (found in review) ----
   // `armPlane3` binds in four stages, so it can fail with some of them up. The first version of
@@ -311,6 +436,39 @@ try {
   check("Q7 REFUSING CASE: once the broker recovers, the SAME retry path resumes serving", d3.plane3IsQuiesced() === false);
   const fanoutBack = await jsmConflict.consumers.info(chat, FANOUT_DURABLE).then(() => true, () => false);
   check("Q8 and the fan-out durable is really bound again, read from the broker", fanoutBack);
+
+  // ---- R: DURABLES A FULL RESTORE RECREATED MUST BIND, AND ONLY THEIR SHAPE IS ACCEPTED ----
+  // `backup restore` recreates the fan-out and reader durables from their checkpoints with a
+  // `StartSequence` start bound, through `recreateConsumerCheckpoint`, the create the restore itself
+  // uses. A create of the canonical config meets them as `consumer already exists`. Before the fix
+  // this rearm threw, as the delivery daemon did on every restored store, and `up` reported a lost
+  // lease. Q's incompatible durable above still fails, and so does a start-bounded one whose other
+  // settings differ (R4).
+  console.log("\nR. durables recreated by a full restore bind; another config still conflicts");
+  await d3.quiescePlane3();
+  const inbox = inboxStream(space);
+  const restored = [[chat, FANOUT_DURABLE], [inbox, INBOX_READER_DURABLE]] as const;
+  for (const [stream, name] of restored) {
+    await jsmConflict.consumers.delete(stream, name).catch(() => {});
+    const state = (await jsmConflict.streams.info(stream)).state;
+    await recreateConsumerCheckpoint(conflictNc, space, { stream, name, ackFloorStreamSequence: 0, creationLowerBound: 1, streamState: { messages: state.messages, first_seq: state.first_seq, last_seq: state.last_seq } });
+  }
+  let restoredRearm: unknown;
+  try { await d3.rearmPlane3(); } catch (e) { restoredRearm = e; }
+  check("R1 a rearm over the restored fan-out and reader durables succeeds", restoredRearm === undefined, restoredRearm);
+  check("R2 and the endpoint serves again", d3.plane3IsQuiesced() === false);
+  const kept = await Promise.all(restored.map(([stream, name]) => jsmConflict.consumers.info(stream, name)));
+  check("R3 both keep the restored start bound; neither was replaced", kept.every((info) => info.config.deliver_policy === DeliverPolicy.StartSequence));
+
+  await d3.quiescePlane3();
+  await jsmConflict.consumers.delete(chat, FANOUT_DURABLE).catch(() => {});
+  await jsmConflict.consumers.add(chat, { ...fanoutDurableConfig(space), deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: 1, ack_wait: nanos(5_000) });
+  let otherAckWaitThrew = false;
+  try { await d3.rearmPlane3(); } catch { otherAckWaitThrew = true; }
+  check("R4 a start-bounded fan-out durable with another ACK wait still conflicts, and the endpoint stays quiesced", otherAckWaitThrew && d3.plane3IsQuiesced() === true);
+  await jsmConflict.consumers.delete(chat, FANOUT_DURABLE).catch(() => {});
+  await d3.rearmPlane3();
+  check("R5 CONTROL: with that durable removed, the same rearm serves over the restored reader", d3.plane3IsQuiesced() === false);
 
   // ── V. A UNIT ALREADY IN FLIGHT MUST NOT TAKE EFFECT AFTER THE QUIESCE ─────────────────
   //

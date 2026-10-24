@@ -106,10 +106,13 @@ try {
     await new Promise((done) => setTimeout(done, 3000));
     const stable = JSON.parse(run(`stable-${round}`, [inspect, installed, root, "running"]));
     check(`round ${round} Manager, delivery and broker survive startup`, first.length >= 3 && JSON.stringify(first) === JSON.stringify(stable));
+    // The human report is not a parsing target (docs/cli.md); it must still run and name its mesh.
     const ps = run(`ps-${round}`, [cli, "ps", "--space", space]);
-    check(`round ${round} native Manager control answers`, ps.trim() === "(no managed agents)");
-    const json = run(`ps-json-${round}`, [cli, "ps", "--space", space, "--json"]);
-    check(`round ${round} empty Manager roster is an empty JSONL stream`, json.trim() === "");
+    check(`round ${round} human ps names its mesh`, ps.split("\n")[0] === `Mesh: ${space}`);
+    const json = JSON.parse(run(`ps-json-${round}`, [cli, "ps", "--space", space, "--json"]));
+    const managers = json.result?.managers ?? [];
+    check(`round ${round} native Manager control answers`, json.command === "ps" && json.completeness === "complete" && managers.length === 1 && managers[0].state === "answered");
+    check(`round ${round} empty Manager roster is an empty seat list`, json.result.kind === "seats" && Array.isArray(json.result.items) && json.result.items.length === 0);
     const policy = JSON.parse(run(`policy-${round}`, [inspect, installed, root, "policy", space]));
     check(`round ${round} native shutdown policy is accepted once`, policy.nativeTokensAccepted === true && policy.oneShot === true);
     const file = join(logs, `generation-${round}.json`); writeFileSync(file, JSON.stringify(stable) + "\n");
@@ -121,7 +124,8 @@ try {
       const path = join(root, ".cotal", name);
       return { component, path, offset: readFileSync(path).length };
     }) : [];
-    run(`down-${round}`, [cli, "down", "manager", "delivery", "nats"]);
+    // A bare down stops this root's whole stack; a named down stops saved services only.
+    run(`down-${round}`, [cli, "down"]);
     for (const { component, path, offset } of cleanupLogs)
       check(`round ${round} Windows ${component} cleanup handler ran`, readFileSync(path).subarray(offset).toString("utf8").includes(`• ${component}: received local stop request, exiting`));
     run(`stopped-${round}`, [inspect, installed, root, "stopped", file]);
@@ -131,7 +135,7 @@ try {
   complete = true;
 } finally {
   if (started) {
-    try { run("cleanup", [cli, "down", "manager", "delivery", "nats"]); } catch (error) { console.error(error.message); }
+    try { run("cleanup", [cli, "down"]); } catch (error) { console.error(error.message); }
   }
   // Keep daemon diagnostics, never the adjacent credentials or other state files.
   for (const file of readdirSync(join(root, ".cotal")).filter((name) => name.endsWith(".log"))) {

@@ -30,25 +30,34 @@ observer actually hearing the bucket: if the whole watch has been silent past th
 window, the honest output is that the *view* is stale, not that every peer died in one TTL
 (real rosters do not do that). Offline peers stay in the roster for observability. An
 `activity` string rides along ("what I'm doing right now"), and a peer's **attention**
-preference is mirrored here too (below). Each instance writes *only its own* key; presence
+preference is mirrored here too (below). A connector writes a new status and its activity in one
+record, so a peer never reads the new activity beside the old status. Each instance writes *only its own* key; presence
 is where discovery lives (our equivalent of `.well-known`), not a place to describe others.
 The optional `condition` beside status relays a harness-reported cause such as `rate_limit`,
 `approval`, or `input`; missing means the harness reported none. A condition is cleared when a
 normal next turn starts. The optional `activeAt` is the epoch ms of the last work event the harness
 reported, such as a token or a tool call; missing means the connector reports none. `ts` is only the
 heartbeat, so a seat whose turn stopped advancing keeps a fresh `ts` and an old `activeAt`. The
-connector records it as events arrive and the next heartbeat carries it. `cotal ps`, `cotal status`,
+connector records it as events arrive and the next heartbeat carries it. `cotal ps`,
 `cotal endpoints`, `cotal console`, `cotal join` and `cotal_roster` print a condition with its age
 and the age of `activeAt`, such as `waiting (rate_limit for 40m) · active 40m ago`. The optional
 `statusSince` is the epoch ms when the instance entered its current status and activity. A change to
 either moves it, while a heartbeat or a repeated report does not, so an activity that outlived what
-it described reads as old. `cotal status`, `cotal endpoints`, `cotal console`, `cotal join` and
-`cotal_roster` print its age, such as `idle · unchanged for 40m`. An offline record carries none,
+it described reads as old. `cotal endpoints`, `cotal console`, `cotal join` and `cotal_roster` print
+its age, such as `idle · unchanged for 40m`. An offline record carries none,
 because an observer that derives `offline` from a stale heartbeat does not know when the peer left.
 The optional `activitySince` is when the current activity was set. A status change does not move it,
 so an activity left behind while hooks flip the status every turn still shows its age after the
 activity on the same surfaces, such as `(set 9h ago)`. A stamp that is not a finite number shows no
-age. A peer writes its own condition code and activity, so every surface above prints each on one
+age. The optional `runtime` describes the OS process holding the mesh connection. Its opaque `id`
+is minted once per process and lifecycle scope and is never reused across scopes. Its `startedAt`
+is the process's own `performance.timeOrigin`, shared by all endpoints in that process, and its
+closed `source` is `"endpoint-process"`. Status, activity, heartbeats and in-process reconnects keep
+that observation unchanged within the scope. A lifecycle registered later reports the process's
+age, not the lifecycle's age. It does not date a separately launched parent or model harness.
+An offline record retains the observation without claiming a running duration. Older publishers
+omit it, which means unknown. A runtime-only change notifies presence observers.
+A peer writes its own condition code and activity, so every surface above prints each on one
 line, shows a control character or line separator in it as a `\uXXXX` escape, and cuts it at 200
 characters.
 The optional `environment` is an opaque provider reference. Core publishes
@@ -68,7 +77,8 @@ on the same header mark it uses for a refused poll ([watch a mesh](watch-a-mesh.
 and `stale` means the watch has been silent past its liveness window. Both unsafe states carry
 `fresh: false`, so an older consumer degrades instead of treating a partial reconnect refill as a
 complete roster. `waitForPresenceSnapshot()` returns `snapshot` or `timeout`; a timeout is a bounded
-give-up, not proof that the snapshot completed.
+give-up, not proof that the snapshot completed. An observer that does not register completes its
+snapshot at once on a bucket with no keys, and its view is `current` with nobody present.
 
 A stale view under a live connection is not left to stand. The endpoint rebinds its presence watch
 from the bucket's current state once per liveness window and reports the rebind as a `warning`
@@ -90,9 +100,9 @@ condition. The condition is local diagnosis, not a new wire field.
 The same two tools also render the view's own trust state: under an `unpopulated` view they say
 the presence watch has not completed its initial snapshot, so the roster may be partial and a
 missing name is not an absence verdict, and under a `stale` view they name the silent-since instant
-and call the roster last-known. A send or DM to a name the observer cannot verify is refused with
-that condition rather than sent, instead of being reported as an unknown peer. Both tools and both
-refusals print each condition in the same words.
+and call the roster last-known. A DM to a name, or a send that @mentions a name, that the observer
+cannot verify is refused with that condition rather than sent, instead of being reported as an
+unknown peer. Both tools and both refusals print each condition in the same words.
 
 ## Plane liveness
 
@@ -201,9 +211,13 @@ inbound buffer, and late-join history. DMs and anycast are always at-least-once 
 ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)).
 
 A send result proves only that the broker accepted and stored the message at a sequence
-(`stored seq N`), not that any recipient read it: `cotal send dm` and the `cotal_dm` tool
-report that sequence together with the recipient's roster status at the moment of send
-(`idle`, `working`, or `offline`), and neither ever claims `delivered`. A `cotal_dm` reply to a
+(`stored seq N`), not that any recipient read it, and no send claims `delivered`. The `cotal_dm`
+tool reports that sequence together with the recipient's roster status at the moment of send
+(`idle`, `working`, or `offline`). When that status is `offline`, `cotal_dm`, `cotal send -t`,
+`cotal chat`, `cotal join` and the console also say the agent is offline and that the message is
+delivered when it reconnects. The DM durable belongs to the recipient's lifecycle, so the same
+session receives the message when it comes back, and a new agent spawned under that name does not.
+A `cotal_dm` reply to a
 sender that has no roster row, such as a one-shot `cotal send`, reads
 `recipient had no roster row at send` instead: the DM stream keeps it under the sender's id, and
 it may never reach an inbox. The stored sequence
@@ -230,6 +244,27 @@ fails a turn after acting, or when renewal lapsed and the broker handed the requ
 holder of the role. A stored sequence proves the broker accepted the request, not that one worker
 completed it alone. Work with side effects that must not repeat needs its own ownership or an
 idempotency key.
+
+### Reading only your own DMs
+
+A reader whose credential grants nothing but its own DM durable can still receive DMs. Construct
+`CotalEndpoint` with `dmOnly: { handler }`. The endpoint binds the existing
+`dm_<owner>-<actor>-<uid>` durable and reads nothing else: no presence, channel registry, channel
+subscription, delivery durable, history or JetStream account lookup. On the wire it sends only
+CONSUMER.INFO and MSG.NEXT for that durable and acks under its `$JS.ACK` subtree.
+
+It never creates the durable. A missing durable fails start with `dm-durable-missing`, and a
+refused bind fails with `dm-bind-refused`. No other credential is tried. Each DM passes the same
+sender check as every other durable read before the handler sees it, and the handler runs one DM at
+a time. A handler acks explicitly; a rejection leaves the copy for redelivery. `stop()` resolves
+after the running handler settles and the connection closes. When either cannot be proven, it
+throws and the caller keeps custody. After `stop()` begins, or after a reconnect replaces the
+connection, a copy the client already received never reaches the handler; it stays unacked and the
+broker redelivers it after the durable's ack wait. An ack, nak or in-progress signal from a handler
+whose connection has closed throws instead of being lost. The mode registers no presence, so the
+reader is not on the roster. Credential renewal and reconnects use the endpoint's normal paths.
+On a user-auth mesh, the `dm-reader` exchange view mints this credential
+([identity-and-auth.md](identity-and-auth.md)).
 
 ## Channel delivery
 

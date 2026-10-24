@@ -280,8 +280,14 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_auth_d32m.gate.>",
     "$KV.cotal_auth_d32m.cred.>",
     "$KV.cotal_auth_d32m.bysrc.>",
+    "$KV.cotal_auth_d32m.natkey.>",
     "$KV.cotal_records_d32m.lifecycle.>",
     "$KV.cotal_records_d32m.uid.>",
+    "$KV.cotal_auth_d32m.consent.*",
+    // Chat admission and sweep: holder index, owner quota, sweep cursor (exact arity, no `.>`).
+    "$KV.cotal_auth_d32m.chatholder.*.*",
+    "$KV.cotal_auth_d32m.chatowner.*",
+    "$KV.cotal_auth_d32m.chatsweep.cursor",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   "environment-admission-index": { publish: [
     "$JS.API.INFO", "$JS.API.STREAM.CREATE.KV_cotal_environment_managers_d32m",
@@ -297,6 +303,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.STREAM.MSG.GET.KV_cotal_auth_d32m", "$JS.API.STREAM.MSG.GET.KV_cotal_records_d32m",
     "$JS.API.DIRECT.GET.KV_cotal_records_d32m", "$JS.API.DIRECT.GET.KV_cotal_records_d32m.>",
     "$KV.cotal_auth_d32m.gate.>", "$KV.cotal_auth_d32m.cred.>", "$KV.cotal_auth_d32m.bysrc.>",
+    "$KV.cotal_auth_d32m.natkey.>",
     "$KV.cotal_records_d32m.lifecycle.>", "$KV.cotal_records_d32m.uid.>",
     "$KV.cotal_auth_d32m.epgate.manager.>", "$KV.cotal_auth_d32m.stage.*.environment-manager",
     "$KV.cotal_auth_d32m.stage.*.environment-manager-gate",
@@ -320,6 +327,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_auth_d32m.gate.>",
     "$KV.cotal_auth_d32m.cred.>",
     "$KV.cotal_auth_d32m.bysrc.>",
+    "$KV.cotal_auth_d32m.natkey.>",
     "$KV.cotal_records_d32m.lifecycle.>",
     "$KV.cotal_records_d32m.uid.>",
     "$KV.cotal_auth_d32m.epgate.manager.>",
@@ -336,15 +344,21 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.STREAM.MSG.GET.KV_cotal_sessions_d32m",
   ], subscribe: [
     "_INBOX_ibxconn0123456789.>",
-    // Read-only witness of the run-start, resume and answer requests a participant manager forwards (SPEC 14.8).
+    // Read-only witness of the run-start, resume and answer requests a participant manager forwards (SPEC 14.8),
+    // and of the keyed run-start-keyed and run-submission-status requests (SPEC 14).
     "cotal.d32m.ep.v1.inst.manager.*.run-start.>",
     "cotal.d32m.ep.v1.one.manager.run-start.>",
     "cotal.d32m.ep.v1.inst.manager.*.run-resume.>",
     "cotal.d32m.ep.v1.one.manager.run-resume.>",
     "cotal.d32m.ep.v1.inst.manager.*.run-answer.>",
     "cotal.d32m.ep.v1.one.manager.run-answer.>",
+    "cotal.d32m.ep.v1.inst.manager.*.run-start-keyed.>",
+    "cotal.d32m.ep.v1.one.manager.run-start-keyed.>",
+    "cotal.d32m.ep.v1.inst.manager.*.run-submission-status.>",
+    "cotal.d32m.ep.v1.one.manager.run-submission-status.>",
     "cotal.d32m.ep.inst.manager.*.run-answer.>",
     "cotal.d32m.ep.one.manager.run-answer.>",
+    "cotal.d32m.ep.v1.inst.manager.*.run-cancel.>",
   ] },
   "auth-barrier": { publish: [
     "$JS.API.INFO",

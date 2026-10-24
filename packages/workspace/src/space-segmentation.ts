@@ -20,9 +20,11 @@
  * directory differs, because §3 places P7's segment under `.cotal/` and P1's under `.cotal/auth/creds/`.
  */
 import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { mkSecretDir, type SecretStore } from "@cotal-ai/core";
 import { accountInventory, authDir, spaceSegment } from "./auth-paths.js";
+import { CommandFailure } from "./output.js";
+import { renewalRecordPath } from "./renewal-path.js";
 
 /** `<root>/.cotal` — the dir whose children the segment must never collide with. */
 export function cotalDir(root: string): string {
@@ -150,6 +152,18 @@ export function spaceMaterialMigrationRefusal(root: string): SpaceMaterialMigrat
   return undefined;
 }
 
+export interface MaterialMigrationReceipt {
+  readonly space: string;
+  readonly kind: string;
+  readonly from: string;
+  readonly to: string;
+}
+export interface MaterialPathOptions {
+  readonly readOnly?: boolean;
+  /** Called only after the native rename returns. Contents never cross this observation seam. */
+  readonly onMigrated?: (receipt: MaterialMigrationReceipt) => void;
+}
+
 /**
  * THE CHOKE POINT (§2 rules 1-4): resolve one kind's per-space location, migrating a legacy
  * root-scoped copy into it on first touch, or REFUSING when the move cannot be made honestly.
@@ -175,7 +189,7 @@ export function spaceMaterialMigrationRefusal(root: string): SpaceMaterialMigrat
  * rules 2-4 is the second idiom §4 forbids. `root` stays alongside it because rule 4's tenant count
  * is a property of the ROOT's account records, not of whichever directory the material sits in.
  */
-export function migrateLegacyMaterialIn(parent: string, root: string, space: string, kind: string): string {
+export function migrateLegacyMaterialIn(parent: string, root: string, space: string, kind: string, options: MaterialPathOptions = {}): string {
   const dir = parent;
   const canonical = join(dir, spaceSegment(space), kind);
   const legacyPath = join(dir, kind);
@@ -196,6 +210,7 @@ export function migrateLegacyMaterialIn(parent: string, root: string, space: str
     throw e;
   }
   if (!entries.some((e) => e.name === kind)) return canonical;
+  if (options.readOnly) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this credential observation requires a legacy material migration; no file was moved and no canonical absence was inferred", { target: { space }, remedy: "use the explicit supported mutation/update path for this root before retrying the observation" });
 
   // RULE 4 — refuse to migrate on a root holding more than one space.
   //
@@ -236,13 +251,14 @@ export function migrateLegacyMaterialIn(parent: string, root: string, space: str
   // dir to a SIBLING dir, so it never has to materialize a parent.
   mkSecretDir(join(dir, spaceSegment(space)));
   renameSync(legacyPath, canonical);
+  options.onMigrated?.({ space, kind, from: legacyPath, to: canonical });
   return canonical;
 }
 
 /** {@link migrateLegacyMaterialIn} at P7's placement — a legacy copy sitting directly under
  *  `<root>/.cotal/`. The five P7 resolvers' one entry point. */
-export function migrateLegacyCotalMaterial(root: string, space: string, kind: string): string {
-  return migrateLegacyMaterialIn(cotalDir(root), root, space, kind);
+export function migrateLegacyCotalMaterial(root: string, space: string, kind: string, options: MaterialPathOptions = {}): string {
+  return migrateLegacyMaterialIn(cotalDir(root), root, space, kind, options);
 }
 
 /**
@@ -436,8 +452,9 @@ export function assertSpaceMaterialReapable(root: string, space: string, operati
 }
 
 /**
- * `cotal space rm` STEP 7 (`per-space-lifecycle.md` §2.2): reap ONE tenant's segmented material — the
- * `$SYS` pair that step names, plus the rest of that tenant's segment, which P7 keyed alongside it.
+ * `cotal space rm` STEP 7 (`per-space-lifecycle.md` §2.2): reap ONE tenant's material — its
+ * root-level renewal audit record and segmented `$SYS` pair, plus the rest of that tenant's segment,
+ * which P7 keyed alongside it.
  *
  * IT CANNOT REFUSE, and that is a contract, not an omission. It runs past step 5's point of no
  * return, where a throw would strand the journal entry that gates every other verb on the root; §2.2
@@ -453,9 +470,11 @@ export function assertSpaceMaterialReapable(root: string, space: string, operati
  * a raw sweep of `.cotal/` to fall back on and this is not: for an INJECTED store the segment removal
  * below reaches nothing, so a kind missing from the seam loop would outlive its tenant.
  *
- * It removes only THIS space's segment. A reap spelled `.cotal/space.*` is the shape a reader reaches
- * for after seeing a directory removal, and on the multi-tenant root that is the only root this verb
- * runs on it would take every surviving tenant's live material and report success.
+ * It removes only THIS space's segment and renewal record. A reap spelled `.cotal/space.*` is the
+ * shape a reader reaches for after seeing a directory removal, and on the multi-tenant root that is
+ * the only root this verb runs on it would take every surviving tenant's live material and report
+ * success. The renewal filename is obtained from the same dependency-neutral path primitive as its
+ * writer and readers, never reconstructed here.
  */
 export async function reapSpaceMaterial(
   root: string,
@@ -476,6 +495,14 @@ export async function reapSpaceMaterial(
     } catch (e) {
       failed.push(`${key}: ${e instanceof Error ? e.message : String(e)}`);
     }
+  }
+  const renewal = renewalRecordPath(root, space);
+  try {
+    rmSync(renewal);
+    removed.push(`.cotal/${basename(renewal)}`);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT")
+      failed.push(`${basename(renewal)}: ${e instanceof Error ? e.message : String(e)}`);
   }
   const dir = spaceMaterialDir(root, space);
   try {

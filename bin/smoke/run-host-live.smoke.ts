@@ -264,6 +264,28 @@ try {
     const ps = await call("run-ps");
     const row = (ps.data as RunListRowT[] | undefined)?.find((x) => x.runId === pureId);
     c("run-ps lists it on the manager endpoint as completed", row?.endpoint === "manager" && row.state === "completed", ps.data);
+    const resumed = await call("run-resume", { runId: pureId });
+    const after = await status(pureId);
+    c("run-resume of the completed run is failed-precondition, and no new activation is recorded",
+      resumed.ok === false && resumed.error?.code === "failed-precondition" && String(resumed.error.message).includes("is already completed")
+        && after?.status?.epoch === 1 && after.journal.length === done!.journal.length, { error: resumed.error, status: after?.status });
+  }
+
+  console.log("A2b. a wait on a channel outside the ceiling fails, and run-status says why");
+  {
+    // The same caller holds no channel, so the wait is refused at the effect (SPEC 14.8). The
+    // refusal rides the status reply on its step row, through the manager's closed output schema.
+    const r = await call("run-start", { source: 'await wait(message(channel("build")), { name: "wait-build" });\n', file: "wait.cotal.js" });
+    const waitId = (r.data as { runId?: string } | undefined)?.runId ?? "";
+    const failed = await until(async () => { const v = await status(waitId); return stateOf(v) === "failed" ? v : undefined; }, 15_000);
+    const settled = failed?.journal.findLast((row) => row.kind === "step" && row.state === "settled");
+    c("the failed wait's step row carries the recorded refusal message beside its code",
+      settled?.kind === "step" && settled.errorCode === "L4000" && settled.errorMessage?.includes('is not admitted to read channel "build"') === true, failed?.journal);
+    // The run's own status records the same cause, and its run-ps row carries it through the
+    // manager's closed row schema.
+    const listed = ((await call("run-ps", undefined)).data as RunListRowT[] | undefined)?.find((row) => row.runId === waitId);
+    c("the failed run's status and its ps row record the cause",
+      failed?.status?.failure?.code === "L4000" && failed.status.failure.message.includes('is not admitted to read channel "build"') && listed?.failure?.code === "L4000", { status: failed?.status, listed });
   }
 
   console.log("A3. a checkpoint parks the hosted run; run-answer resolves it from the outside");
@@ -364,7 +386,8 @@ try {
         const parts = command.match(/(?:[^\s']+|'[^']*')+/g)?.map((p) => p.startsWith("'") ? p.slice(1, -1) : p) ?? [];
         const [binary, ...args] = parts;
         if (binary === "cotal") {
-          renderedForm = await execFile(process.execPath, [resolve("bin/dist/cotal.js"), ...args], {
+          // The rendered command as is, with `--json` added so its receipt is the CLI's result envelope.
+          renderedForm = await execFile(process.execPath, [resolve("bin/dist/cotal.js"), ...args, "--json"], {
             cwd: wsA,
             env: {
               ...process.env,
@@ -376,8 +399,14 @@ try {
               COTAL_ACCEPTED_TOKEN: asked.issued?.acceptedToken ?? "",
             },
           }).then(({ stdout }) => {
-            const reply = JSON.parse(stdout) as { token?: unknown; answerId?: unknown };
-            return typeof reply.token === "string" && typeof reply.answerId === "string"
+            const out = JSON.parse(stdout) as { command?: unknown; outcome?: unknown; target?: { run?: unknown }; result?: { kind?: unknown; action?: unknown; result?: { token?: unknown; answerId?: unknown }; answer?: { step?: unknown; value?: { estimate?: unknown }; valueGiven?: unknown } } };
+            const reply = out.result?.result;
+            const echoed = out.result?.answer;
+            // The manager's answer does not repeat the run id, so the receipt names the run the command
+            // did, and echoes the step and the value it filed.
+            return out.command === "run" && out.outcome === "ok" && out.target?.run === runId && out.result?.kind === "run-receipt" && out.result.action === "answer"
+              && typeof reply?.token === "string" && typeof reply.answerId === "string"
+              && echoed?.step === "/ask:size#0" && echoed.valueGiven === true && echoed.value?.estimate === 4
               ? { ok: true as const, token: reply.token, answerId: reply.answerId }
               : { ok: false as const, error: `the CLI returned no answer coordinate: ${stdout}` };
           }, (e: unknown) => ({ ok: false as const, error: String((e as Error).message) }));
@@ -393,7 +422,7 @@ try {
         recordedBy = (await readCheckpointAnswer(await openRecordsBucket(readNc, spaceA), "manager", renderedForm.token, renderedForm.answerId))?.by;
       } finally { await readNc.drain().catch(() => readNc.close()); }
     }
-    c("the addressed baseline seat's exact rendered command is accepted through the shipped CLI path as asked", renderedForm.ok && recordedBy === "asked", { renderedForm, recordedBy });
+    c("the addressed baseline seat's rendered command with --json is accepted through the shipped CLI path as asked", renderedForm.ok && recordedBy === "asked", { renderedForm, recordedBy });
     const answered = await until(async () => {
       const v = await status(runId);
       return v?.journal.some((row) => row.kind === "step" && row.step === "/ask:size#0" && row.state === "settled") ? v : undefined;
@@ -477,12 +506,32 @@ try {
     await mgrB.stop();
     mgrB = undefined;
     // The host on its own, as the manager composes it, so the window between "serving" and
-    // "reconciled" is held open by hand rather than raced.
+    // "reconciled" is held open by hand rather than raced. Its log is kept: a program's log lines go
+    // nowhere else.
+    const hostLog: string[] = [];
     const hosting = new RunHosting({
+      space: spaceA, servers: brokerA.servers, endpoint: "manager", instanceId: mintLifecycleUid(),
+      holder: { id: principalKey(DEV_OWNER, newIdentity().id).key, lifecycleUid: mintLifecycleUid() }, auth, log: (line: string) => void hostLog.push(line),
+    });
+    const code = (e: unknown) => (e as { code?: string })?.code;
+    // A refusal at the admission cap gives the slot back. The parked run is the subject while no host
+    // drives it: a resume claims its slot and reads its record before any drive, which is exactly
+    // where the cap refuses. A finished run is refused before that, so a second host stands in now,
+    // marked reconciled by hand so it takes nothing back and capped by hand, and nothing is driven.
+    const capped = new RunHosting({
       space: spaceA, servers: brokerA.servers, endpoint: "manager", instanceId: mintLifecycleUid(),
       holder: { id: principalKey(DEV_OWNER, newIdentity().id).key, lifecycleUid: mintLifecycleUid() }, auth, log: () => undefined,
     });
-    const code = (e: unknown) => (e as { code?: string })?.code;
+    const gate = capped as unknown as { launching: Map<symbol, string | undefined>; reconciled: boolean };
+    gate.reconciled = true;
+    for (let i = 0; i < 8; i++) gate.launching.set(Symbol(`held-${i}`), `run-held${i}`);
+    const first = await capped.resume({ runId }).then(() => undefined, (e: unknown) => e);
+    const second = await capped.resume({ runId }).then(() => undefined, (e: unknown) => e);
+    c("a resume refused at the admission cap is resource-exhausted and gives its slot back: the next attempt is refused the same way, never as a conflict on a run nobody is driving",
+      code(first) === "resource-exhausted" && code(second) === "resource-exhausted" && capped.liveCount === 0, { first: code(first), second: code(second), live: capped.liveCount });
+    c("and the refusal is not-executed and names the runs holding the launch slots",
+      (first as { outcome?: string })?.outcome === "not-executed" && /\(run-held0, run-held1, .*run-held7\); nothing was written/.test(String((first as Error)?.message)), (first as Error)?.message);
+    await capped.stop();
     // The boot gate refuses before any admission is read, so the served context here only needs
     // the shape: the issued caller on the versioned rail, as the manager's dispatcher hands it in.
     const served: EpServeContextT = {
@@ -506,21 +555,7 @@ try {
     c("an answer through the host lands", typeof (answered as { answerId?: unknown })?.answerId === "string", answered);
     const done = await until(async () => { const v = await hosting.status({ runId }).catch(() => undefined); return stateOf(v) === "completed" ? v : undefined; }, 15_000);
     c("and the run completes there", stateOf(done) === "completed", done?.status);
-    // A refusal at the admission cap gives the slot back. The completed run is the subject: a
-    // resume claims its slot and reads its record before any drive, which is exactly where the
-    // cap refuses, so nothing is driven and the only question is what the refusal leaves behind.
-    const gate = hosting as unknown as { launching: number };
-    const launchingBefore = gate.launching;
-    gate.launching = 1_000_000;
-    let first: unknown, second: unknown;
-    try {
-      first = await hosting.resume({ runId }).then(() => undefined, (e: unknown) => e);
-      second = await hosting.resume({ runId }).then(() => undefined, (e: unknown) => e);
-    } finally {
-      gate.launching = launchingBefore;
-    }
-    c("a resume refused at the admission cap is resource-exhausted and gives its slot back: the next attempt is refused the same way, never as a conflict on a run nobody is driving",
-      code(first) === "resource-exhausted" && code(second) === "resource-exhausted" && hosting.liveCount === 0, { first: code(first), second: code(second), live: hosting.liveCount });
+    c("the program's log line is written to the hosting manager's log", hostLog.includes(`run ${runId}: log resolved resolved`), hostLog.filter((line) => line.startsWith(`run ${runId}`)));
     // Revocation through the host (SPEC 14.8): the marker is written under a per-run admitter and a
     // hosted resume refuses by name, before any slot is spent on a drive.
     await hosting.revoke(runId, "operator", "withdrawn after review");
@@ -576,7 +611,7 @@ try {
       await runWorkflow({ values: { server: brokerA.servers, space: spaceA, local: true, ...values }, positionals, raw: [] });
       return LOGS.join("\n");
     };
-    let localId = "", journal = "", answer = "", finished = "";
+    let localId = "", journal = "", answer = "", finished = "", answered = "";
     try {
       // The drive holds this process until the pause is answered; it runs beside the answer below.
       // A local start names its own ceiling (SPEC 14.8): the operator's evidence, on the command line.
@@ -585,13 +620,19 @@ try {
       for (let i = 0; i < 50 && !journal.includes("asks        Ship it?"); i++) { await wait(200); journal = await cli(["journal", localId]); }
       answer = await cli(["answer", localId, "/checkpoint:approve#0"], { by: "dana", value: '"yes"' });
       finished = await driven;
+      answered = await cli(["journal", localId]);
     } finally {
       console.log = realLog;
       process.exitCode = undefined;
     }
     c("a local start on the auth broker activates under the run-driver credential it minted for itself", localId !== "", localId);
     c("a local journal read rides a one-shot run-operator READ credential", journal.includes("/checkpoint:approve#0  pending"), journal);
-    c("a local answer rides the ANSWERING form and names the answerer with --by", answer.includes('"settle": "resumed"') && answer.includes('"answerId"'), answer);
+    // The receipt names the step, the value and the answer id; the answerer `--by` named is on the
+    // journal's answered line.
+    c("a local answer rides the ANSWERING form and names the answerer with --by",
+      answer.includes("Answer accepted") && /Step:\s+\/checkpoint:approve#0/.test(answer) && /Value:\s+"yes"/.test(answer) && /Answer id:\s+\S+/.test(answer)
+        && answered.split("\n").some((l) => l.includes("/checkpoint:approve#0") && l.includes("answered") && l.includes("dana")),
+      { answer, answered });
     c("and the held local drive then completes", finished.includes(`run ${localId}: completed`), finished);
     // A revoked run is not resumed: the marker is written from the folder's trust material, the
     // resume refuses by name, and a second revoke is not an error.
@@ -668,25 +709,48 @@ try {
     return LOGS.join("\n");
   };
   // An open mesh issues no caller authority and keeps no admission store (SPEC 14.8), so it hosts
-  // no run and admits no local one: both refusals name the fact. The CLI refuses through
-  // `console.error` + `process.exit(1)`, captured here the way A7 captures them.
+  // no run and admits no local one: both refusals name the fact. The hosted one is the manager's
+  // refusal, thrown classified for the command kernel; the local one goes through `console.error` +
+  // `process.exit(1)`, captured here the way A7 captures them.
   const realError = console.error, realExit = process.exit;
   console.error = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
   process.exit = ((code?: number) => { throw new Error(`exit ${code}: ${LOGS.join("\n")}`); }) as never;
   let hostedOut = "", localOut = "", ps = "";
+  let hostedRefusal: { outcome?: unknown; code?: unknown } | undefined, unknownRun: { outcome?: unknown; code?: unknown; message?: unknown } | undefined;
+  let unknownPin: { outcome?: unknown; code?: unknown; message?: unknown; remedy?: unknown } | undefined, pinMs = -1, pinnedPs = "";
+  const madeUp = mintLifecycleUid();
   try {
-    hostedOut = await cli(["start"], { file }).then((out) => out, (e: Error) => `threw: ${e.message}`);
+    hostedOut = await cli(["start"], { file }).then((out) => out, (e: Error) => { hostedRefusal = e as typeof hostedRefusal; return `threw: ${e.message}`; });
     localOut = await cli(["start"], { file, local: true, "admit-read": "none", "admit-publish": "none" }).then((out) => out, (e: Error) => `threw: ${e.message}`);
-    ps = await cli(["ps"]);
+    // `--json` writes one result envelope straight to stdout, so the listing is read there.
+    const realWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => { LOGS.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)); return true; }) as typeof process.stdout.write;
+    try { ps = await cli(["ps"], { json: true }); } finally { process.stdout.write = realWrite; }
+    await cli(["show", "run-00000000000000000000000000000000"], { json: true }).catch((e: unknown) => { unknownRun = e as typeof unknownRun; });
+    // A pin that names no running manager is refused before any describe, so it does not wait out
+    // the describe's deadline, and it names the manager that does run.
+    const startedAt = Date.now();
+    await cli(["ps"], { on: madeUp }).catch((e: unknown) => { unknownPin = e as typeof unknownPin; });
+    pinMs = Date.now() - startedAt;
+    const named = /the one running is ([a-z0-9]+)\./.exec(String(unknownPin?.message ?? ""))?.[1];
+    if (named !== undefined) pinnedPs = await cli(["ps"], { on: named }).then(() => "ok", (e: Error) => `threw: ${e.message}`);
   } finally {
     console.log = realLog;
     console.error = realError;
     process.exit = realExit;
     process.exitCode = undefined;
   }
-  c("B1. `cotal run start` on an open mesh is refused by the manager, naming the space and that runs need a static-auth mesh", hostedOut.includes("threw: exit 1") && hostedOut.includes("an open mesh issues no caller authority") && hostedOut.includes(spaceB), hostedOut);
+  c("B1. `cotal run start` on an open mesh is refused by the manager, UNSUPPORTED, naming the space and that runs need a static-auth mesh", hostedRefusal?.outcome === "refused" && hostedRefusal.code === "UNSUPPORTED" && hostedOut.includes("an open mesh issues no caller authority") && hostedOut.includes(spaceB), hostedOut);
   c("B2. `cotal run start --local` on an open mesh is refused before any drive: no admission store stands there", localOut.includes("threw: exit 1") && localOut.includes("an open mesh keeps no admission store"), localOut);
-  c("B3. `cotal run ps` still reads there, and lists nothing", !ps.includes("run-"), ps);
+  const listed = (() => { try { return JSON.parse(ps) as { command?: unknown; outcome?: unknown; target?: { space?: unknown }; result?: { kind?: unknown; items?: unknown } }; } catch { return undefined; } })();
+  c("B3. `cotal run ps` still reads there, and lists nothing", listed?.command === "run" && listed.outcome === "ok" && listed.target?.space === spaceB
+    && listed.result?.kind === "runs" && Array.isArray(listed.result.items) && listed.result.items.length === 0, ps);
+  c("B4. `cotal run show` of a run the manager holds no record of is refused TARGET_NOT_FOUND for the command kernel", unknownRun?.outcome === "refused" && unknownRun.code === "TARGET_NOT_FOUND" && String(unknownRun.message).includes("no record"), unknownRun);
+  c("B5. `cotal run ps --on <id>` naming no running manager is refused TARGET_NOT_FOUND at once, naming the pin and the manager that runs",
+    unknownPin?.outcome === "refused" && unknownPin.code === "TARGET_NOT_FOUND" && pinMs < 5_000
+      && String(unknownPin.message).startsWith(`--on ${madeUp} names no manager running for space ${spaceB}; the one running is `) && !/ep\.v1|rail|SPEC/.test(String(unknownPin.message))
+      && /^run it again with --on [a-z0-9]+, or without --on$/.test(String(unknownPin.remedy)), { unknownPin, pinMs });
+  c("B6. and the manager it names is the running one: `run ps --on` that id reads", pinnedPs.includes("ok"), pinnedPs);
   await mgr.stop();
   mgr = undefined;
 } catch (e) {
@@ -714,7 +778,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 70;
+const EXPECTED_CELLS = 78;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

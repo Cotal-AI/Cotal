@@ -15,8 +15,41 @@
  * core's peer label, so the hook relay can reach it without pulling a tool surface in behind it, and
  * so neither surface can drift into a second convention.
  */
-import { peerLabel } from "@cotal-ai/core";
-import type { InboxItem } from "./agent.js";
+import { peerLabel } from "@cotal-ai/core/peer-label";
+import type { InboxItem, InboxSnapshot } from "./agent.js";
+
+export interface RenderedInboxPreview {
+  unread: number;
+  rows: string[];
+}
+
+/**
+ * Control characters and lone surrogates a peer can put in a preview row, apart from the newline that
+ * `fmtBody` writes before each indented continuation.
+ *
+ * A preview row is drawn in the host's own UI, so ESC and the other C0/C1 controls would reach its
+ * terminal as commands. They also break the row bound: each is one code point but JSON writes it as
+ * a six-unit `\uXXXX` escape, so three short rows of them made a wake frame larger than the feed
+ * accepts, and the throw from that send lost the recipient's wake. After this replacement every
+ * remaining code point costs at most two JSON units, which is what keeps the frame bounded.
+ */
+const PREVIEW_CONTROL = /(?!\n)[\p{Cc}\p{Cs}]/gu;
+
+/** Bound one preview row by Unicode code points, preserving its connector-authored attribution. */
+function boundedRow(row: string, maxCodePoints: number): string {
+  const points = Array.from(row);
+  return points.length <= maxCodePoints ? row : `${points.slice(0, maxCodePoints - 1).join("")}…`;
+}
+
+/** Render a non-consuming inbox snapshot with the same provenance convention as `cotal_inbox`. */
+export function renderInboxPreview(snapshot: InboxSnapshot, maxRowCodePoints = 240): RenderedInboxPreview {
+  if (!Number.isInteger(maxRowCodePoints) || maxRowCodePoints < 16 || maxRowCodePoints > 1_000)
+    throw new Error(`inbox preview row bound must be a whole number from 16 to 1000, got ${maxRowCodePoints}`);
+  return {
+    unread: snapshot.unread,
+    rows: snapshot.items.map((item) => boundedRow(fmtItem(item).replace(PREVIEW_CONTROL, "\uFFFD"), maxRowCodePoints)),
+  };
+}
 
 /**
  * What counts as a line break, which is more than what JavaScript splits on.
@@ -74,10 +107,25 @@ export function fmtBody(text: string): string {
  * validated what.
  */
 export function fmtItem(i: InboxItem): string {
+  return formatItem(i);
+}
+
+/** Full delivery metadata lets an inline recipient select the same reply as an inbox reader.
+ * JSON escaping preserves opaque IDs without allowing them to create another attribution row. */
+export function fmtDeliveryItem(i: InboxItem): string {
+  const field = (value: string) => Array.from(JSON.stringify(value), (char) =>
+    [91, 93, 133, 8232, 8233].includes(char.charCodeAt(0))
+      ? `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}` : char).join("");
+  const metadata = [`sender_id=${field(i.fromId)}`, ...(i.id ? [`message_id=${field(i.id)}`] : []),
+    ...(i.contextId ? [`context_id=${field(i.contextId)}`] : []), ...(i.replyTo ? [`reply_to=${field(i.replyTo)}`] : [])];
+  return formatItem(i, `[${metadata.join(" ")}] `);
+}
+
+function formatItem(i: InboxItem, metadata = ""): string {
   const h = i.historical ? "(history) " : ""; // backfilled on join, so it pre-dates you and is not live
   // The broker's count, so a peer cannot forge or hide it: an earlier copy outlived its ack wait.
   const r = i.deliveryCount !== undefined && i.deliveryCount > 1 ? `(redelivered, delivery ${i.deliveryCount}: an earlier delivery may already have run) ` : "";
-  const body = `${h}${r}${fmtBody(i.text)}`;
+  const body = `${metadata}${h}${r}${fmtBody(i.text)}`;
   if (i.kind === "dm") return `[DM from ${fmtFrom(i)}] ${body}`;
   if (i.kind === "anycast") return `[@${attributionSafe(i.service ?? "")} from ${fmtFrom(i)}] ${body}`;
   return `[#${attributionSafe(i.channel ?? "")}${i.mentionsMe ? " @you" : ""} ${fmtFrom(i)}] ${body}`;

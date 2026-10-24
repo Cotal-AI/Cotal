@@ -663,6 +663,16 @@ vendor_node() {
   NODE_VENDORED=1
 }
 
+# An installer from before the umask in main, run under a umask of 0002, left the install
+# group-writable, and a folder another account can write makes Cotal refuse the Node runtime in
+# it as an endpoint handler. Remove that write from this account's own entries; links are not
+# followed.
+repair_install_modes() {
+  find "$INSTALL_DIR" \( -type d -o -type f \) -user "$(id -u)" \( -perm -020 -o -perm -002 \) \
+    -exec chmod go-w {} + ||
+    warn_line "could not remove group and other write from everything in $(tildify "$INSTALL_DIR")"
+}
+
 # A directory holding node, npm and npx and nothing else. The launcher puts this on PATH,
 # so Cotal's child processes can find npm without us reordering the user's whole PATH and
 # shadowing their other tools.
@@ -1126,6 +1136,9 @@ dry_run_report() {
 ELAPSED=0
 
 main() {
+  # Nothing this installer creates is writable by group or others, even under a umask of 0002.
+  # Without a user private group, a group-writable install tree is one other accounts can change.
+  umask 022
   init_term
   parse_args "$@"
   trap 'cleanup' EXIT
@@ -1166,6 +1179,7 @@ main() {
       "  curl -fsSL https://get.cotal.ai | COTAL_INSTALL_DIR=/path/you/own sh"
   fi
   acquire_install_lock
+  repair_install_modes
   LOG="$INSTALL_DIR/install.log"
   : >"$LOG" 2>/dev/null || die "Cannot write $(tildify "$LOG")." \
     "The install directory exists but is not writable by you."

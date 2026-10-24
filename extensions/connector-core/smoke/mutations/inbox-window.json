@@ -113,8 +113,8 @@
     {
       "name": "K2 clear the whole scope up front, the order the defect was written in",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          if (!peek) agent.drainInboxDeliveries(shown.map((i) => i.recvKey));",
-      "replace": "          if (!peek) agent.drainInbox(undefined, inboxScope);",
+      "find": "          if (!keeps()) agent.drainInboxDeliveries(shown.map((i) => i.recvKey));",
+      "replace": "          if (!keeps()) agent.drainInbox(undefined, inboxScope);",
       "expectRed": "what did not fit was NOT consumed: the buffer still holds the rest",
       "cell": "what did not fit was NOT consumed: the buffer still holds the rest",
       "note": "The plausible authoring error rather than a contrived one: draining the scope is what the tool did before, and with a window in place it reads as a harmless simplification."
@@ -131,7 +131,7 @@
     {
       "name": "K4 peek clears what it shows",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          if (!peek) agent.drainInboxDeliveries(shown.map((i) => i.recvKey));",
+      "find": "          if (!keeps()) agent.drainInboxDeliveries(shown.map((i) => i.recvKey));",
       "replace": "          agent.drainInboxDeliveries(shown.map((i) => i.recvKey));",
       "expectRed": "peek clears nothing at all",
       "cell": "peek clears nothing at all",
@@ -158,7 +158,7 @@
     {
       "name": "K7 the focus drain stops honouring peek",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "        if (!peek) {\n          agent.drainInboxDeliveries(all.filter((i) => bufferedIds.has(i.recvKey)).map((i) => i.recvKey));",
+      "find": "        if (!keeps()) {\n          agent.drainInboxDeliveries(all.filter((i) => bufferedIds.has(i.recvKey)).map((i) => i.recvKey));",
       "replace": "        if (true) {\n          agent.drainInboxDeliveries(all.filter((i) => bufferedIds.has(i.recvKey)).map((i) => i.recvKey));",
       "cell": "focus + peek: the buffered lane is NOT cleared",
       "expectRed": "focus + peek: the buffered lane is NOT cleared",

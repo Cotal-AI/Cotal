@@ -1,0 +1,2 @@
+# An auth-callout connection's history-reader deletes are keyed on the connection the server assigned (#4123).
+smoke:history-reader-callout:auth

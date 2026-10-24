@@ -19,8 +19,8 @@ Two versions matter and they move independently: the **wire** version (`protocol
   it, and old and new channel clients do not interoperate (core CHANGELOG). The wire is pre-1.0 and
   may still change.
 - **Packages: pre-1.0 (the 0.x line).** core, workspace, auth, delivery, manager, web, and the
-  connectors publish in lockstep; the current line is 0.13.x. The exact version is whatever the
-  packages' `package.json` (and `cotal_docs`) report, so any number on this page is illustrative.
+  connectors publish in lockstep. The exact version is whatever the packages' `package.json` (and
+  `cotal_docs`) report, so any number on this page is illustrative.
   These are the surfaces [Embedding Cotal](embedding.md) documents.
 
 Buildable on today: the owner+actor identity grammar, the lateral chat/DM/task envelopes and

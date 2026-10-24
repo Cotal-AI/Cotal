@@ -24,15 +24,15 @@
     {
       "name": "the renderer stops reading the rail and returns to the unscoped verdict",
       "file": "implementations/cli/src/lib/control.ts",
-      "find": "      error: instanceId !== undefined\n        ? `manager instance ${instanceId} did not answer${versioned === undefined ? \"\" : ` on the ${versioned} rail`} (${detail})${skew}`\n        : versioned === undefined\n          ? `no manager reachable on the ep rails (${detail})`\n          : `no manager answered on the ${versioned} rail (${detail})${skew}`,",
-      "replace": "      error: instanceId !== undefined\n        ? `manager instance ${instanceId} did not answer (${detail})`\n        : `no manager reachable on the ep rails (${detail})`,",
+      "find": "    return instanceId !== undefined\n      ? `manager instance ${instanceId} did not answer${versioned === undefined ? \"\" : ` on the ${versioned} rail`} (${detail})${skew}`\n      : versioned === undefined\n        ? `no manager reachable on the ep rails (${detail})`\n        : `no manager answered on the ${versioned} rail (${detail})${skew}`;\n",
+      "replace": "    return instanceId !== undefined\n      ? `manager instance ${instanceId} did not answer (${detail})`\n      : `no manager reachable on the ep rails (${detail})`;\n",
       "expectRed": "versioned rail unpinned: the verdict names ep.v1 and never pronounces the mesh managerless"
     },
     {
       "name": "the describe deadline goes back to the rail-blind text and marker",
-      "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError(\"deadline-exceeded\", `no describe reply from ${endpoint}${opts.instanceId !== undefined ? ` instance ${opts.instanceId}` : \"\"} within ${deadlineMs}ms on the ${rail} rail`, [{ kind: EP_UNANSWERED, endpoint, command: \"describe\", rail }])), deadlineMs); });",
-      "replace": "    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError(\"deadline-exceeded\", `no describe reply from ${endpoint} within ${deadlineMs}ms`, [{ kind: EP_UNANSWERED, endpoint, command: \"describe\" }])), deadlineMs); });",
+      "file": "packages/core/src/endpoint-caller.ts",
+      "find": "`no describe reply from ${endpoint}${opts.instanceId !== undefined ? ` instance ${opts.instanceId}` : \"\"} within ${ms}ms on the ${rail} rail`, [{ kind: EP_UNANSWERED, endpoint, command: \"describe\", rail }]",
+      "replace": "`no describe reply from ${endpoint} within ${ms}ms`, [{ kind: EP_UNANSWERED, endpoint, command: \"describe\" }]",
       "expectRed": "live: the CLI renders the ep.v1 skew as a named refusal, not as 'no manager reachable'",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     }

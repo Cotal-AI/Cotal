@@ -1,0 +1,3 @@
+# The four deprecated daemon entries keep their pre-cut argv and print one warning naming their
+# service preset and the removal release recorded in docs/UPGRADING.md.
+smoke:deprecated-daemon-entries

@@ -1,0 +1,47 @@
+{
+  "suite": [
+    "implementations/manager/smoke/supervise-manager-crash.smoke.ts"
+  ],
+  "guard": "a supervised seat outlives its manager's crash: the successor restarts it under the same lifecycle as one restart of its policy, serves it the turn the dead manager accepted, and retires it once the budget is spent",
+  "command": "pnpm smoke:manager-supervise-crash",
+  "completionMarker": "SUPERVISE MANAGER CRASH SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/supervise-manager-crash.json",
+  "why": [
+    "Live: real broker, real Manager in a child process SIGKILLed mid-turn, real pty runtime and a stub seat that joins presence.",
+    "Manager source is imported directly by the host through tsx, so no mutation needs a build."
+  ],
+  "mutations": [
+    {
+      "name": "the successor retires a supervised seat instead of restarting it",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "          const record = this.seatRecordFor(row);\n          if (record) {",
+      "replace": "          const record = this.seatRecordFor(row);\n          if (false) {",
+      "expectRed": "the successor restarts the supervised seat as one restart of its policy",
+      "cell": "the successor restarts the supervised seat as one restart of its policy"
+    },
+    {
+      "name": "a supervised spawn writes no record",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        if (managed.restart.policy) {\n          try {\n            this.recordSeat(managed);",
+      "replace": "        if (false) {\n          try {\n            this.recordSeat(managed);",
+      "expectRed": "the first manager starts a supervised seat and records it with no restart counted",
+      "cell": "the first manager starts a supervised seat and records it with no restart counted"
+    },
+    {
+      "name": "the crash restart drops the policy it was granted under",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "crashes: supervised.crashes, recovering: false, armed: false, policy: supervised.policy } }",
+      "replace": "crashes: supervised.crashes, recovering: false, armed: false } }",
+      "expectRed": "the record counts the manager crash against the policy",
+      "cell": "the record counts the manager crash against the policy"
+    },
+    {
+      "name": "a crash restart ignores the spent budget",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (crashes.length > policy.restarts)\n      return `its supervise restart budget is spent",
+      "replace": "    if (false)\n      return `its supervise restart budget is spent",
+      "expectRed": "a crash past the budget retires the seat instead of restarting it",
+      "cell": "a crash past the budget retires the seat instead of restarting it"
+    }
+  ]
+}

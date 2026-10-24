@@ -40,15 +40,18 @@ function cotal(cfg: string, args: string[]): { status: number; stdout: string; s
 }
 
 const cfg = mkdtempSync(join(tmpdir(), "cotal-seed-migration-provenance-"));
+// The reconcile a boot runs. A read no longer seeds, and this suite's HOME is the operator's, so it
+// runs the explicit `ext seed` (the same reconcile as the gate) rather than a command with effects of its own.
+const BOOT = ["ext", "seed"];
 try {
-  const first = cotal(cfg, ["ext", "list"]);
+  const first = cotal(cfg, BOOT);
   check("fixture: a healthy seed store is established", first.status === 0, first.stderr);
   const stampPath = join(cfg, "cotal", "seed", "stamp.json");
   const currentGeneration = JSON.parse(readFileSync(join(REPO, "bin", "package.json"), "utf8")).version as string;
   const priorGeneration = "0.35.0";
   writeFileSync(stampPath, JSON.stringify({ generation: priorGeneration }));
 
-  const migrated = cotal(cfg, ["ext", "list"]);
+  const migrated = cotal(cfg, BOOT);
   const stamp = JSON.parse(readFileSync(stampPath, "utf8")) as { generation?: string; writtenBy?: string; writtenAt?: string };
   check("migration provenance: a newer binary announces the shared seed-store generation migration",
     migrated.status === 0 && migrated.stderr.includes(`migrated operator-global seed store generation ${priorGeneration} -> ${currentGeneration}`),
@@ -61,7 +64,7 @@ try {
   check("migration provenance: the notice names the durable writer and timestamp recorded in the stamp",
     migrated.stderr.includes(`written by ${stamp.writtenBy} at ${stamp.writtenAt}`) && migrated.stderr.includes(stampPath),
     migrated.stderr);
-  const steady = cotal(cfg, ["ext", "list"]);
+  const steady = cotal(cfg, BOOT);
   check("migration provenance: a current no-op boot does not claim another migration",
     !steady.stderr.includes("migrated operator-global seed store generation"), steady.stderr);
 
@@ -69,7 +72,7 @@ try {
   const newerWrittenAt = "2026-08-29T14:01:40.000Z";
   writeFileSync(stampPath, JSON.stringify({ generation: "99.0.0", writtenBy: newerWriter, writtenAt: newerWrittenAt }));
   const before = readFileSync(stampPath);
-  const refused = cotal(cfg, ["ext", "list"]);
+  const refused = cotal(cfg, BOOT);
   const said = `${refused.stdout}${refused.stderr}`;
   check("downgrade: an older binary REFUSES a store stamped newer", refused.status !== 0, refused.status);
   check("downgrade: the refusal names who wrote the newer generation and when",

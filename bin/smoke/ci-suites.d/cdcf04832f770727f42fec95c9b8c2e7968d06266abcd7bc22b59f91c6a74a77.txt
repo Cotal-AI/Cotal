@@ -1,0 +1,3 @@
+# A command that renders no TUI must not load Ink: its wasm layout engine stalled every `cotal`
+# invocation started with a few hundred KB of argv, exiting 13 before the command ran (#4088).
+smoke:large-argv

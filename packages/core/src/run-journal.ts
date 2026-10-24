@@ -66,7 +66,7 @@ import { jetstream, jetstreamManager, type ConsumerInfo, type JetStreamClient, t
 import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
 import { wfjStreamName, wfjSubject, runJournalConsumerConfig } from "./endpoint-binding.js";
 import { isCasLoss } from "./endpoint-records.js";
-import { isConsumerNotFound } from "./jetstream-missing.js";
+import { isConsumerAlreadyExists, isConsumerNotFound } from "./jetstream-missing.js";
 
 /**
  * The successor's first act, and the only record the runtime layer writes that is not a step.
@@ -327,12 +327,6 @@ export function assertReplayConsumerFresh(
   if (!replayConsumerIsFresh(info)) {
     throw new RunJournalReplayRaced(run, durable, info.delivered.consumer_seq);
   }
-}
-
-/** Measured on nats-server 2.15: a create whose config differs from the durable of that name is a
- *  `JetStreamApiError` with `code: 10148`, and the client gives it no class of its own. */
-function isConsumerAlreadyExists(e: unknown): boolean {
-  return Number((e as { code?: unknown } | null | undefined)?.code) === 10148;
 }
 
 function isObj(v: unknown): v is Record<string, unknown> {

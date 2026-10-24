@@ -13,21 +13,26 @@
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { isLoopbackLiteral, registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserCredentialsRequest } from "@cotal-ai/core";
-import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
+import { isLoopbackLiteral, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserCredentialsRequest } from "@cotal-ai/core";
+import { assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
-import { acquireLock, AgentGrantConflictError } from "@cotal-ai/core";
-import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, loadIdpSession, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
+import { resolve, sep } from "node:path";
+import { AgentGrantConflictError, EP_ERROR_CODES, EpEnvelopeError, type EpEffectOutcome, type EpErrorCode } from "@cotal-ai/core";
+import { parseServiceAuthorityEnvelope, parseServiceAuthorityRequest } from "@cotal-ai/core";
+import { readRemoteServiceAuthorityInfo, postRemoteServiceAuthority, serviceAuthorityUrl, withServiceAuthorityBudget, assertServiceViewFreshness } from "./service-authority-client.js";
+import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
-import { findActorUnified, findInteractiveActor, grantManagedActor, hashActorToken, newActorToken, revokeManagedActor, revokeManagedActorAt } from "./ledger.js";
+import { findActorUnified, findInteractiveActor, hashActorToken, newActorToken, notGrantedReason, withManagedGrantTransaction } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
+import { serviceEndpointRenewal } from "./service-endpoint-renewal.js";
 import {
   AUTH_PROVIDER_NAME,
   authCalloutKey,
+  authClientSentinelKey,
   authIssuerKey,
   authOwnerSecretKey,
   authServiceKeysKey,
+  checkPinnedIdp,
   ensureCalloutAuth,
   ensureIssuer,
   ensureOwnerSecret,
@@ -38,6 +43,31 @@ import {
   loadPinnedIdp,
   saveServiceKeys,
 } from "./store.js";
+
+/** The pre-effect half of {@link cotalAuthProvider.prepareServer}: the space segment, the IdP pin
+ *  requirement and match, and on a first enable the JWKS probe. Reads only: no directory, pin, key
+ *  or daemon is created. `prepareServer` runs this same function first and throws its message, so
+ *  the checks and their sentences cannot drift. The reason is set by which check refused, never by
+ *  matching message text. */
+async function preflightServerInput({ space, dir, idpUrl }: AuthPreflightInput): Promise<AuthPreflightVerdict> {
+  const refuse = (reason: Exclude<AuthPreflightVerdict, { ok: true }>["reason"], error: unknown): AuthPreflightVerdict => ({ ok: false, reason, message: error instanceof Error ? error.message : String(error) });
+  // Fail BEFORE mutation: a degenerate space (`.`/`..`/empty) must be refused before the IdP
+  // probe/pin below can touch anything at a caller-provided dir.
+  try { spaceSegment(space); } catch (error) { return refuse("invalid", error); }
+  // An existing pin is read first. An unreadable pin, or one the given `--idp` does not match, is
+  // a conflict with persisted state; neither is replaced here.
+  let existing;
+  try { existing = loadPinnedIdp(dir); } catch (error) { return refuse("conflict", error); }
+  let checked;
+  try { checked = checkPinnedIdp(dir, idpUrl); } catch (error) { return refuse(existing ? "conflict" : idpUrl === undefined ? "required" : "invalid", error); }
+  // On a FRESH enable, prove the IdP actually serves a JWKS before a space is provisioned around
+  // it. Skip on re-up: an already-pinned IdP was validated at first enable, and re-probing every
+  // boot would couple mesh liveness to IdP liveness.
+  if (checked.fresh) {
+    try { await probeIdpJwks(idpUrl ?? checked.pin.url); } catch (error) { return refuse("unavailable", error); }
+  }
+  return { ok: true };
+}
 
 const READY_TIMEOUT_MS = 15_000;
 /** The pid-bound extension of the readiness wait (#1931): while the daemon the caller LAUNCHED
@@ -58,9 +88,15 @@ function pidAlive(pid: number): boolean {
   return probeLiveness(pid) === "alive";
 }
 
+const deprovisionSecretKeys = (space: string) => [authCalloutKey(space), authIssuerKey(space), authOwnerSecretKey(space), authServiceKeysKey(space), authClientSentinelKey(space)];
+
 export const cotalAuthProvider: AuthProvider = {
   kind: "auth-provider",
   name: AUTH_PROVIDER_NAME,
+  async requestRemoteRunSubmission({ store, dir, request }) {
+    const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "keyed run submission");
+    return postManagerAuthority(endpoint, idpUrl, authorization, request, "keyed run submission") as Promise<import("@cotal-ai/core").RemoteRunSubmissionResult>;
+  },
   async requestRemoteRunAdmission({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteRunAdmissionRequest }): Promise<RemoteRunAdmissionResult> {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "admitting a hosted run");
     return postManagerAuthority(endpoint, idpUrl, authorization, request, "manager run admission") as Promise<RemoteRunAdmissionResult>;
@@ -68,6 +104,10 @@ export const cotalAuthProvider: AuthProvider = {
   async requestRemoteRunAttempt({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteRunAttemptRequest }): Promise<RemoteRunAttemptResult> {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "issuing hosted run credentials");
     return postManagerAuthority(endpoint, idpUrl, authorization, request, "manager run issuance") as Promise<RemoteRunAttemptResult>;
+  },
+  async requestRemoteRunCancel({ store, dir, request }) {
+    const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "cancelling a hosted run");
+    return postManagerAuthority(endpoint, idpUrl, authorization, request, "manager run cancel") as Promise<import("@cotal-ai/core").RemoteRunCancelResult>;
   },
   async requestRemoteRunRevoke({ store, dir, request }) {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "revoking a hosted run");
@@ -87,23 +127,21 @@ export const cotalAuthProvider: AuthProvider = {
   },
   hasSpaceCatalog: ({ dir, idpUrl, sub }) => hasIdpSpaceCatalog(dir, idpUrl, sub),
   removeSpaceCatalog: ({ dir, idpUrl, sub }) => deleteIdpSpaceCatalog(dir, idpUrl, sub),
+  preflightServer: preflightServerInput,
   async prepareServer(input: AuthPrepareInput): Promise<AuthPrepared> {
     const { space, store, dir, idpUrl } = input;
-    // Fail BEFORE mutation: a degenerate space (`.`/`..`/empty) must be refused before the IdP
-    // probe/pin below can touch anything at a caller-provided dir — not first at the key builders
-    // further down, which would leave a pin written at an aliased path behind the thrown error.
-    spaceSegment(space);
-    // On a FRESH enable, prove the IdP actually serves a JWKS before we pin + provision a space
-    // around it — a dead or typo'd `--idp` must fail loud here, not silently boot a broken space
-    // that only errors at the first user connect. Skip on re-up (an already-pinned IdP was validated
-    // at first enable; re-probing every boot would couple mesh liveness to IdP liveness).
-    if (idpUrl && !loadPinnedIdp(dir)) await probeIdpJwks(idpUrl);
+    // The same read-only checks a caller may already have run through `preflightServer`. They run
+    // again here because this call is authoritative: a pin written by another process between the
+    // two calls is honored by `ensurePinnedIdp` below exactly as before.
+    const verdict = await preflightServerInput({ space, dir, idpUrl });
+    if (!verdict.ok) throw new Error(verdict.message);
     // Pin the IdP FIRST, so a fresh `up --user-auth` without --idp fails on the config error before
     // any key material is generated.
     const idp = ensurePinnedIdp(dir, idpUrl);
     await ensureOwnerSecret(store, space);
     await ensureIssuer(store, space);
     const callout = await ensureCalloutAuth(store, { space, operatorSeed: input.operatorSeed, accountPub: input.account.pub });
+    await store.put(authClientSentinelKey(space), callout.sentinelCreds);
     // The daemon's ONLY signing material: the data-account user-minting seed. Written by this
     // (briefly privileged) call; the long-lived service loads this projection, never the space bundle.
     await saveServiceKeys(store, space, { dataAccount: { pub: input.account.pub, signingSeed: input.account.signingSeed } });
@@ -116,7 +154,8 @@ export const cotalAuthProvider: AuthProvider = {
       extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }],
       publicAuth: publicAuth as unknown as Record<string, unknown>,
       service: {
-        command: "auth-service",
+        // The hidden twin of `auth-service`, so `up` does not print the deprecation warning.
+        command: "__daemon-auth-service",
         // Readiness = the daemon wrote its discovery file (which it does only after the callout SUB
         // is flushed AND the HTTP listener is bound) and /health answers. Poll until timeoutMs,
         // then THROW with the reason — the caller (`up`) surfaces it loudly (U5), never records a
@@ -205,7 +244,8 @@ export const cotalAuthProvider: AuthProvider = {
           `Refusing rather than claiming it is down: verify with \`ps -p ${info.pid}\` before restarting anything.`,
       );
     if (!info || !pidAlive(info.pid))
-      throw new Error(
+      throw credentialFailure(
+        "unavailable",
         `the user-auth service for space "${space}" is not running - restart it with \`cotal up\` (or \`cotal auth-service --space ${space} --server <broker>\`)`,
       );
     // Fresh short-lived IdP proof per connect — IdP-side revocation bites HERE, at the next fetch.
@@ -219,7 +259,8 @@ export const cotalAuthProvider: AuthProvider = {
         signal: AbortSignal.timeout(15_000),
       });
     } catch (e) {
-      throw new Error(
+      throw credentialFailure(
+        "unavailable",
         `the user-auth service for space "${space}" did not answer at ${info.url} (${e instanceof Error ? e.message : String(e)}) - restart it with \`cotal up\``,
       );
     }
@@ -227,7 +268,8 @@ export const cotalAuthProvider: AuthProvider = {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       // A refused exchange is an authenticated denial with the reason (an ungranted actor names
       // the grant command); surface it verbatim — the service's copy is already operator-exact.
-      throw new Error(
+      throw credentialFailure(
+        "refused",
         `signed in, but the exchange for actor "${actor}"${view ? ` (view "${view}")` : ""} was refused: ${body.error ?? `HTTP ${res.status}`}`,
       );
     }
@@ -235,6 +277,71 @@ export const cotalAuthProvider: AuthProvider = {
     if (typeof out.token !== "string" || !out.token)
       throw new Error(`the auth service's exchange returned no token - its build may be stale; restart it with \`cotal up\``);
     return { bearer: out.token, sentinelCreds: callout.sentinelCreds };
+  },
+
+  async serviceEndpointInfo({ store, dir, space }) {
+    const target = serviceClientTarget(store, dir, space);
+    return readRemoteServiceAuthorityInfo(target.base, space);
+  },
+
+  serviceEndpointRenewal(opts) {
+    return serviceEndpointRenewal(cotalAuthProvider, opts);
+  },
+
+  async serviceEndpointAuthority({ store, dir, request: raw, proof, timeoutMs, signal }) {
+    const startedAt = performance.now(), request = parseServiceAuthorityRequest(raw);
+    return withServiceAuthorityBudget(request.operation, { timeoutMs, signal }, async (budget) => {
+      const target = serviceClientTarget(store, dir, request.space);
+      serviceAuthorityUrl(target.base);
+      if (proof !== undefined && proof.kind !== "service-renewal" && proof.kind !== "service-access")
+        throw new Error("service authority client accepts only its own login or a service proof");
+      const checked = parseServiceAuthorityEnvelope({ request, proof: proof ?? { kind: "idp", token: "pending-login" } });
+      const sentinelCreds = await target.readSentinel();
+      budget.check();
+      if (!sentinelCreds) throw new Error("service authority client has no sentinel projection; refresh the registered space before setup");
+      const actualProof = proof === undefined
+        ? { kind: "idp" as const, token: await fetchIdpJwt(target.idpUrl, requireIdpSession(homeCotalDir(), target.idpUrl).token) }
+        : checked.proof;
+      budget.check();
+      const result = await postRemoteServiceAuthority(target.base, { request, proof: actualProof }, { signal: budget.signal, timeoutMs: budget.remainingMs() });
+      budget.check();
+      assertServiceViewFreshness(result, startedAt);
+      return { result, sentinelCreds };
+    }, startedAt);
+  },
+
+  /** Client side of chat admission: a fresh IdP proof plus the holder HASH. The holder secret
+   *  itself stays with the caller. The route this open resolved is kept, in this process only, for
+   *  the session's later bearer exchanges and its retirement. */
+  async openChatSession({ store, dir, space, holderHash, label, read, post, ttlSec, expect }) {
+    const route = await resolveChatSessionRoute(store, dir, space);
+    if (expect !== undefined) assertChatRouteExpected(route, space, expect);
+    const r = (await postChatSession(route, space, "open", { holderHash, ...(label !== undefined ? { label } : {}), read, post, ttlSec })) as { actor?: unknown; lifecycleUid?: unknown; expiresAt?: unknown };
+    if (typeof r.actor !== "string" || typeof r.lifecycleUid !== "string" || typeof r.expiresAt !== "number")
+      throw new EpEnvelopeError("unavailable", `the chat-session open for space "${space}" answered without a session; a reservation it made is reclaimed by the service's sweep`, undefined, "unknown");
+    CHAT_SESSION_ROUTES.set(chatRouteKey(dir, space, r.actor), route);
+    return { actor: r.actor, lifecycleUid: r.lifecycleUid, expiresAt: r.expiresAt };
+  },
+
+  /** A fresh IdP proof plus the holder proof for one short bearer of the ACTIVE session, sent to
+   *  the route its open resolved. */
+  async chatSessionBearer({ dir, space, actor, holderProof }) {
+    const route = pinnedChatSessionRoute(dir, space, actor);
+    const r = (await postChatSession(route, space, "bearer", { actor, holderProof })) as { token?: unknown; exp?: unknown };
+    if (typeof r.token !== "string" || r.token === "" || typeof r.exp !== "number")
+      throw new EpEnvelopeError("unavailable", `the chat-session bearer exchange for space "${space}" returned no bearer - the auth service build may be stale`, undefined, "not-executed");
+    return { bearer: r.token, sentinelCreds: route.sentinelCreds, exp: r.exp };
+  },
+
+  /** Retire the session at the route its open resolved. `failed` comes back with its pending
+   *  reason and is never success; the kept route goes once the retirement is terminal. */
+  async retireChatSession({ dir, space, actor, lifecycleUid, holderProof }) {
+    const route = pinnedChatSessionRoute(dir, space, actor);
+    const r = (await postChatSession(route, space, "retire", { actor, lifecycleUid, holderProof })) as { outcome?: unknown; pending?: unknown };
+    if (r.outcome !== "retired" && r.outcome !== "alreadyRetired" && r.outcome !== "notStarted" && r.outcome !== "failed")
+      throw new EpEnvelopeError("unavailable", `the chat-session retirement for space "${space}" answered without an outcome`, undefined, "unknown");
+    if (r.outcome !== "failed") CHAT_SESSION_ROUTES.delete(chatRouteKey(dir, space, actor));
+    return { outcome: r.outcome, ...(typeof r.pending === "string" ? { pending: r.pending } : {}) };
   },
 
   async managerServiceAuthority({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerAuthorityRequest }): Promise<RemoteManagerAuthorityMaterial> {
@@ -266,10 +373,18 @@ export const cotalAuthProvider: AuthProvider = {
    *  digest of the standing actorToken — the participant wrote the plaintext at 0600 before calling
    *  — so a refused or lost response never leaks an agent's exchange secret. Redirects are refused
    *  for the same reason the retained-validation client refuses them: a 302 could walk the login
-   *  proof, and the enrollment it authorizes, onto another host. */
+   *  proof, and the enrollment it authorizes, onto another host. A host 4xx is its refusal, so it
+   *  enrolled nothing: that rejects as a `permission-denied` envelope whose outcome is `not-executed`.
+   *  A 5xx or no answer says nothing about what the host did, so that failure keeps no outcome. */
   async enrollRemoteManagedAgent({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagedAgentEnrollmentRequest }): Promise<RemoteManagedAgentEnrollmentResult> {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "enrolling a managed agent");
-    return postManagerAuthority(endpoint, idpUrl, authorization, request, "managed agent enrollment") as Promise<RemoteManagedAgentEnrollmentResult>;
+    try {
+      return await postManagerAuthority(endpoint, idpUrl, authorization, request, "managed agent enrollment") as RemoteManagedAgentEnrollmentResult;
+    } catch (error) {
+      if (error instanceof ManagerAuthorityRefusal && error.status < 500)
+        throw new EpEnvelopeError("permission-denied", error.message, undefined, "not-executed");
+      throw error;
+    }
   },
 
   /** Client half of host-owned terminal release preparation (#1972 phase P0/P1). The opId is derived
@@ -328,7 +443,9 @@ export const cotalAuthProvider: AuthProvider = {
     const body: unknown = await res.json().catch(() => ({}));
     if (!res.ok) {
       const reason = (body as { error?: string }).error ?? `HTTP ${res.status}`;
-      // 401 is the one refusal with a local remedy; everything else is the mesh's own word.
+      // 401 is the one refusal with a local remedy; everything else is the mesh's own word. The
+      // endpoint is the deployment's, and nothing pins what its refusal left behind, so no answer
+      // carries a code.
       throw new Error(
         res.status === 401
           ? `the mesh refused this login for agent provisioning: ${reason} - your session may have expired; re-run \`cotal login --idp ${idpUrl}\``
@@ -336,6 +453,32 @@ export const cotalAuthProvider: AuthProvider = {
       );
     }
     return body;
+  },
+
+  async requestConversationIdentity({ url, idpUrl, method, body }) {
+    const endpoint = new URL(url);
+    if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.hash)
+      throw new Error("conversation identity authority must use HTTPS without userinfo or a fragment");
+    const session = requireIdpSession(homeCotalDir(), idpUrl);
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method,
+        redirect: "manual",
+        credentials: "omit",
+        headers: { authorization: `Bearer ${session.token}`, ...(body ? { "content-type": "application/json" } : {}) },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch {
+      throw new Error("conversation identity request outcome is unknown; retain its saved request and retry that same lifecycle");
+    }
+    if (response.status >= 300 && response.status < 400)
+      throw new Error("conversation identity authority returned a redirect; no redirect was followed");
+    const parsed: unknown = await response.json().catch(() => undefined);
+    if (parsed === undefined)
+      throw new Error("conversation identity authority returned no JSON; retain its saved request for recovery");
+    return { status: response.status, body: parsed };
   },
 
   /** Redeem one pre-minted remote enrollment. The URL itself carries the one-time secret, so this
@@ -443,16 +586,21 @@ export const cotalAuthProvider: AuthProvider = {
    *  IdP-exchangeable by construction) carrying the agent's ACLs + the hash of a fresh per-agent
    *  secret. Upsert semantics rotate the secret on respawn — a captured old secret dies the moment
    *  its agent is respawned. */
-  async grantAgent({ store, dir, space, owner, actor, scope, allowSubscribe, allowPublish, role, parent, label, lifecycleUid, fresh }) {
+  async grantAgent({ store, dir, space, owner, actor, scope, allowSubscribe, allowPublish, role, parent, label, lifecycleUid, fresh, custody }) {
+    // Async work first: the callout material is loaded before the transaction, never inside it.
     const callout = await loadCalloutAuth(store, space);
     if (!callout)
       throw new Error(`space "${space}" has no user-auth material under ${dir} - enable it with \`cotal up --user-auth --idp <url>\` before spawning user-mode agents`);
-    const claim = acquireLock(join(dir, "managed-grant.lock"), { label: "managed grant mutation" });
-    try {
-      if (fresh && findActorUnified(dir, owner, actor) !== undefined)
+    if (custody?.kind !== "local-manager" && custody?.kind !== "foreground")
+      throw new Error("grantAgent: custody is required and is local-manager or foreground; a remote-manager row is written only by the auth service's enrollment");
+    // ONE synchronous transaction: the `fresh` occupancy read, the token mint and the write are
+    // decided under the same lock, so no other writer can land between the read and the upsert.
+    // An earlier occupancy read by the caller authorizes nothing here; this one is authoritative.
+    const actorToken = withManagedGrantTransaction(dir, (tx) => {
+      if (fresh && tx.read(owner, actor) !== undefined)
         throw new AgentGrantConflictError(actor);
-      const { actorToken, tokenHash } = newActorToken();
-      grantManagedActor(dir, {
+      const minted = newActorToken();
+      tx.grantManaged({
         owner,
         actor,
         scope,
@@ -461,30 +609,33 @@ export const cotalAuthProvider: AuthProvider = {
         ...(role ? { role } : {}),
         ...(parent ? { parent } : {}),
         ...(label ? { label } : {}),
-        tokenHash,
+        tokenHash: minted.tokenHash,
         lifecycleUid,
+        custody,
       });
-      return { actorToken, sentinelCreds: callout.sentinelCreds };
-    } finally {
-      claim.release();
-    }
+      return minted.actorToken;
+    });
+    return { actorToken, sentinelCreds: callout.sentinelCreds };
   },
 
-  async revokeAgent({ dir, owner, actor, lifecycleUid, actorToken }) {
-    const claim = acquireLock(join(dir, "managed-grant.lock"), { label: "managed grant mutation" });
-    try {
-      if (actorToken !== undefined && findActorUnified(dir, owner, actor)?.tokenHash !== hashActorToken(actorToken)) return false;
-      return lifecycleUid === undefined ? revokeManagedActor(dir, owner, actor) : revokeManagedActorAt(dir, owner, actor, lifecycleUid);
-    } finally {
-      claim.release();
-    }
+  async revokeAgent({ dir, owner, actor, lifecycleUid, actorToken, expectCustody }) {
+    if (expectCustody !== undefined && lifecycleUid === undefined)
+      throw new Error("revokeAgent: expectCustody pins an exact lifecycle, so lifecycleUid is required with it");
+    // The token check and the removal are one transaction: the row compared is the row removed.
+    return withManagedGrantTransaction(dir, (tx) => {
+      if (actorToken !== undefined && tx.read(owner, actor)?.tokenHash !== hashActorToken(actorToken)) return false;
+      if (expectCustody !== undefined) return tx.revokeManagedIf(owner, actor, { lifecycleUid: lifecycleUid!, custody: expectCustody }) === "revoked";
+      return lifecycleUid === undefined ? tx.revokeManaged(owner, actor) : tx.revokeManagedAt(owner, actor, lifecycleUid);
+    });
   },
 
-  /** The delete half of the seam pair: drop the four secret kinds from the store, attempting all
-   *  four even when one fails (idempotent deletes — a failed pass re-runs as-is), then fail loud
+  deprovisionSecretKeys,
+
+  /** The delete half of the seam pair: drop secrets and the client sentinel projection, attempting
+   *  every key even when one fails (idempotent deletes — a failed pass re-runs as-is), then fail loud
    *  with everything that failed. The caller sweeps its non-seam local state only after this. */
   async deprovisionSecrets({ store, space }) {
-    const keys = [authCalloutKey(space), authIssuerKey(space), authOwnerSecretKey(space), authServiceKeysKey(space)];
+    const keys = deprovisionSecretKeys(space);
     const failures: string[] = [];
     for (const key of keys) {
       try {
@@ -606,16 +757,23 @@ async function postManagerAuthority(
  *  version of the manager whose requests this client sends. */
 const COTAL_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
+/** A host's non-2xx answer to a manager-authority request, with the HTTP status it answered. */
+class ManagerAuthorityRefusal extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
 /** A manager-authority refusal, with the host's reason verbatim. The protocol is closed, so a host
  *  that names a field this request carries as unknown predates that field: say it is version skew
  *  and which side has to move. The field is never dropped to fit the older host. */
-function managerAuthorityRefusal(what: string, request: unknown, body: unknown, status: number): Error {
+function managerAuthorityRefusal(what: string, request: unknown, body: unknown, status: number): ManagerAuthorityRefusal {
   const reason = (body as { error?: string }).error ?? `HTTP ${status}`;
   const field = /unknown field "?([A-Za-z_$][\w$]*)"?/.exec(reason)?.[1];
   const skew = field !== undefined && carriesField(request, field)
     ? ` - version skew: this manager runs Cotal ${COTAL_VERSION} and the host's auth service predates the field "${field}" it sends; it needs a host at Cotal ${COTAL_VERSION} or later`
     : "";
-  return new Error(`signed in, but ${what} was refused: ${reason}${skew}`);
+  return new ManagerAuthorityRefusal(`signed in, but ${what} was refused: ${reason}${skew}`, status);
 }
 
 function carriesField(value: unknown, field: string): boolean {
@@ -640,6 +798,36 @@ function remoteUserAuthEntry(
     typeof ua.sentinelCredsPath === "string" &&
     resolve(ua.sentinelCredsPath).startsWith(resolve(dir) + sep);
   return bound ? (ua as UserAuthInfo & { remote: true; endpoints: { url: string }; sentinelCredsPath: string }) : undefined;
+}
+
+/** The next step after a remote space refuses an ungranted account: the spaces the same sign-in
+ *  discovered, or the sync that discovers them. */
+function discoveredSpacesRemedy(space: string, idpUrl: string): string {
+  const idp = normalizeIdpUrl(idpUrl);
+  const names = loadMeshes()
+    .filter((m) => m.origin === "catalog" && m.space !== space && m.userAuth && normalizeIdpUrl(m.userAuth.idp.url) === idp)
+    .map((m) => m.space)
+    .sort();
+  return names.length
+    ? `your account's spaces are ${names.join(", ")}; select one with \`cotal use <name>\``
+    : "run `cotal sync` to discover the spaces your account has, then select one with `cotal use <name>`";
+}
+
+/** Client-only service transport. The local arm reads a powerless sentinel projection, never
+ * the callout account document. It sends no loopback capability. Remote pins remain dir-bound. */
+function serviceClientTarget(store: SecretStore, dir: string, space: string): {
+  base: string; idpUrl: string; readSentinel(): Promise<string | undefined>;
+} {
+  const remote = remoteUserAuthEntry(dir, space);
+  if (remote) return {
+    base: remote.endpoints.url, idpUrl: remote.idp.url,
+    readSentinel: async () => readFileSync(remote.sentinelCredsPath, "utf8"),
+  };
+  const idp = loadPinnedIdp(dir);
+  const info = loadAuthServiceInfo(dir);
+  if (!idp || !info || !pidAlive(info.pid))
+    throw new Error("service authority has no live local service or pinned remote registration; configure the user-auth space before setup");
+  return { base: info.url, idpUrl: idp.url, readSentinel: () => store.get(authClientSentinelKey(space)) };
 }
 
 /** The `/exchange` body both client arms send. It names each coordinate rather than spreading the
@@ -689,7 +877,8 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{
       signal: AbortSignal.timeout(15_000),
     });
   } catch (e) {
-    throw new Error(
+    throw credentialFailure(
+      "unavailable",
       `the exchange for space "${space}" did not answer at ${exchangeUrl} (${e instanceof Error ? e.message : String(e)}) - check the network, or re-register with \`cotal meshes add ${space} --from <url>\` if the mesh moved`,
     );
   }
@@ -702,7 +891,12 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{
     // none, say so rather than presenting the bare HTTP status as if it were the reason - this
     // client cannot tell a real service sentence from a status code dressed up as one.
     const actorLabel = `actor "${actor}"${view ? ` (view "${view}")` : ""}`;
-    throw new Error(
+    // This machine holds no ledger for the space, so the operator's grant command that follows a
+    // not-granted reason is not a step this user can take. The spaces the account discovered are.
+    if (body.error?.startsWith(notGrantedReason(actor)))
+      throw credentialFailure("refused", `signed in, but space "${space}" has not granted ${actorLabel} to this account, and only that space's operator can grant it`, discoveredSpacesRemedy(space, remote.idp.url));
+    throw credentialFailure(
+      "refused",
       body.error
         ? `signed in, but the exchange for ${actorLabel} was refused: ${body.error}`
         : `signed in, but the exchange for ${actorLabel} was refused, and the exchange face withheld the reason (HTTP ${res.status})`,
@@ -712,4 +906,130 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{
   if (typeof out.token !== "string" || !out.token)
     throw new Error(`the exchange at ${exchangeUrl} returned no token - the mesh's auth service build may be stale`);
   return { bearer: out.token, sentinelCreds };
+}
+
+/** The auth service's chat-session routes are `/chat-session/<op>` (its `CHAT_SESSION_PATHS`). */
+type ChatSessionOp = "open" | "bearer" | "retire";
+
+/** Where one chat session's requests go and how this machine proves itself there, fixed at its
+ *  open. `local`: the auth service recorded under this target's own state dir, whose URL and 0600
+ *  capability are re-read from that dir per request (a restart moves them), under the IdP the open
+ *  pinned. `remote`: the exchange origin the registry entry pinned at open, capless. The sentinel
+ *  creds are read once, at open. */
+export type ChatSessionRoute =
+  | { kind: "local"; dir: string; idpUrl: string; sentinelCreds: string }
+  | { kind: "remote"; base: string; idpUrl: string; sentinelCreds: string };
+
+/** Each open session's route, by `(state dir, space, actor)`, in this process's memory only. The
+ *  holder secret lives in the same process, so no other process can use the session anyway. */
+const CHAT_SESSION_ROUTES = new Map<string, ChatSessionRoute>();
+const chatRouteKey = (dir: string, space: string, actor: string): string => `${resolve(dir)}\0${space}\0${actor}`;
+
+/** The route a later request of an open session must use. A session this process did not open
+ *  has none, and the request refuses before anything is sent. */
+function pinnedChatSessionRoute(dir: string, space: string, actor: string): ChatSessionRoute {
+  const route = CHAT_SESSION_ROUTES.get(chatRouteKey(dir, space, actor));
+  if (route === undefined)
+    throw new EpEnvelopeError("failed-precondition", `chat session "${actor}" in space "${space}" was not opened by this process; its holder secret and route exist only there - open a new session`, undefined, "not-executed");
+  return route;
+}
+
+/** Resolve a space's chat-session route once, at open: the local service when this machine hosts
+ *  the space's user-auth material, else the registry entry's pinned exchange origin. */
+async function resolveChatSessionRoute(store: SecretStore, dir: string, space: string): Promise<ChatSessionRoute> {
+  const idp = loadPinnedIdp(dir);
+  const callout = await loadCalloutAuth(store, space);
+  if (idp && callout) return { kind: "local", dir, idpUrl: idp.url, sentinelCreds: callout.sentinelCreds };
+  const remote = remoteUserAuthEntry(dir, space);
+  if (!remote)
+    throw new EpEnvelopeError("unimplemented", `space "${space}" has no user-auth material on this machine - run \`cotal up --user-auth\` where the mesh runs, or register a remote user mesh with \`cotal meshes add ${space} --from <url>\``, undefined, "not-executed");
+  const u = new URL(pinnedExchangeUrl(remote.endpoints.url, space));
+  u.pathname = u.pathname.slice(0, -"/exchange".length);
+  let sentinelCreds: string;
+  try {
+    sentinelCreds = readFileSync(remote.sentinelCredsPath, "utf8");
+  } catch (e) {
+    throw new EpEnvelopeError("unavailable", `space "${space}" is registered as a remote user mesh but its sentinel credential at ${remote.sentinelCredsPath} cannot be read (${e instanceof Error ? e.message : String(e)}) - re-register with \`cotal meshes add ${space} --from <url>\``, undefined, "not-executed");
+  }
+  return { kind: "remote", base: u.toString().replace(/\/$/, ""), idpUrl: remote.idp.url, sentinelCreds };
+}
+
+/** The open's narrowing check: the route resolved here must be the position the caller resolved.
+ *  A remote route needs the same exchange origin, a local route needs no `exchangeUrl`, and both need
+ *  the same IdP, each compared after the normalization that pinned it. Refuses before any request. */
+export function assertChatRouteExpected(route: ChatSessionRoute, space: string, expect: { idpUrl: string; exchangeUrl?: string }): void {
+  const differs = (what: string): never => {
+    throw new EpEnvelopeError("failed-precondition", `the user-auth position for space "${space}" is not the one this command resolved (${what}); nothing was sent - run the command again`, undefined, "not-executed");
+  };
+  let sameIdp: boolean;
+  try {
+    sameIdp = normalizeIdpUrl(route.idpUrl) === normalizeIdpUrl(expect.idpUrl);
+  } catch {
+    return differs("an IdP URL does not normalize");
+  }
+  if (!sameIdp) differs("its IdP changed");
+  if (route.kind === "local") {
+    if (expect.exchangeUrl !== undefined) differs("it resolved a remote mesh, and this machine hosts the space");
+    return;
+  }
+  if (expect.exchangeUrl === undefined) differs("it resolved a local mesh, and the registry names a remote one");
+  let expected: string;
+  try {
+    const u = new URL(pinnedExchangeUrl(expect.exchangeUrl as string, space));
+    u.pathname = u.pathname.slice(0, -"/exchange".length);
+    expected = u.toString().replace(/\/$/, "");
+  } catch {
+    return differs("its exchange URL does not normalize");
+  }
+  if (expected !== route.base) differs("its exchange origin changed");
+}
+
+/** The URL and authorization for one request on a route. A local route re-reads the service record
+ *  from its own state dir and refuses when that dir's pinned IdP is no longer the one the open used. */
+function chatSessionTarget(route: ChatSessionRoute, space: string, op: ChatSessionOp): { url: string; authorization?: string } {
+  if (route.kind === "remote") return { url: `${route.base}/chat-session/${op}` };
+  if (loadPinnedIdp(route.dir)?.url !== route.idpUrl)
+    throw new EpEnvelopeError("failed-precondition", `the user-auth IdP recorded for space "${space}" changed after this chat session opened; open a new session`, undefined, "not-executed");
+  const info = loadAuthServiceInfo(route.dir);
+  if (info && probeLiveness(info.pid) === "unknown")
+    throw new EpEnvelopeError("unavailable", `the user-auth service for space "${space}" records pid ${info.pid}, whose liveness cannot be determined; verify with \`ps -p ${info.pid}\` before restarting anything`, undefined, "not-executed");
+  if (!info || !pidAlive(info.pid))
+    throw new EpEnvelopeError("unavailable", `the user-auth service for space "${space}" is not running - restart it with \`cotal up\``, undefined, "not-executed");
+  return { url: `${info.url}/chat-session/${op}`, authorization: `Bearer ${info.cap}` };
+}
+
+/** POST one chat-session request with this machine's fresh IdP proof for the route's IdP. Redirects
+ *  are refused and their outcome is unknown, because whatever answered may have acted first. A
+ *  refusal keeps the service's own code and its `executed`, `not-executed` or `unknown` outcome; an
+ *  answer that states no outcome, a transport failure or an unreadable body is unknown. The holder
+ *  proof rides only the request body, never an error string. */
+async function postChatSession(route: ChatSessionRoute, space: string, op: ChatSessionOp, fields: Record<string, unknown>): Promise<object> {
+  const target = chatSessionTarget(route, space, op);
+  const session = requireIdpSession(homeCotalDir(), route.idpUrl);
+  const idpToken = await fetchIdpJwt(route.idpUrl, session.token);
+  let res: Response;
+  try {
+    res = await fetch(target.url, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/json", ...(target.authorization ? { authorization: target.authorization } : {}) },
+      body: JSON.stringify({ idpToken, ...fields }),
+      signal: AbortSignal.timeout(60_000),
+    });
+  } catch (e) {
+    throw new EpEnvelopeError("unavailable", `the chat-session ${op} for space "${space}" did not answer at ${target.url} (${e instanceof Error ? e.message : String(e)}); its outcome is unknown`, undefined, "unknown");
+  }
+  if (res.status >= 300 && res.status < 400)
+    throw new EpEnvelopeError("unavailable", `the chat-session ${op} endpoint answered ${res.status} with a redirect; redirects are refused and the request's outcome is unknown`, undefined, "unknown");
+  const body = (await res.json().catch(() => undefined)) as unknown;
+  if (!res.ok) {
+    const b = (body ?? {}) as { error?: unknown; code?: unknown; outcome?: unknown };
+    const code: EpErrorCode = typeof b.code === "string" && (EP_ERROR_CODES as readonly string[]).includes(b.code) ? (b.code as EpErrorCode) : "unavailable";
+    const outcome: EpEffectOutcome = b.outcome === "executed" || b.outcome === "not-executed" ? b.outcome : "unknown";
+    const why = typeof b.error === "string" && b.error !== "" ? b.error : `HTTP ${res.status}`;
+    throw new EpEnvelopeError(code, `signed in, but the chat-session ${op} for space "${space}" was refused: ${why}`, undefined, outcome);
+  }
+  if (body === undefined || body === null || typeof body !== "object")
+    throw new EpEnvelopeError("unavailable", `the chat-session ${op} for space "${space}" answered HTTP ${res.status} with a body that could not be read; its outcome is unknown`, undefined, "unknown");
+  return body;
 }

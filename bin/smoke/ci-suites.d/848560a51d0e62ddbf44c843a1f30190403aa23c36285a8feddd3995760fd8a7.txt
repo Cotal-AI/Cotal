@@ -1,0 +1,2 @@
+# Keyed run submission activation debt and restart on a signerless manager behind the auth service.
+smoke:keyed-submission-activation-restart:auth

@@ -31,6 +31,10 @@
  *      refusal is the public face's policy and not a broken view path. `channel-writer` is the
  *      allow-list exception: a signed-in human whose row carries `admin` mints it on the public
  *      face. Agent-secret exchanges still never mint a view.
+ *   E2. the signed-in human's own manager instance list (`POST /manager-instances`): this owner's
+ *      gates only, each with the verdict selection reads, refreshed when an instance changes, and
+ *      selection counting the same list. A browser Origin, a GET, a missing or forged proof, and a
+ *      loopback request without the capability are refused, never answered with an empty list.
  *   F. Origin rejection, JSON-only content-type and the 64 KB body bound hold VERBATIM on the
  *      public face (they are inherited by sharing handleExchange, and this proves the sharing).
  *   G. per-peer isolation, the throttling claim: peer A floods the public face with refusals until
@@ -87,7 +91,7 @@ if (SUBCOMMAND === "auth-service") {
 type ChildProcess = import("node:child_process").ChildProcess;
 
 const { spawn } = await import("node:child_process");
-const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+const { mkdirSync, mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 const { createServer } = await import("node:http");
@@ -121,7 +125,7 @@ const {
   cotalAuthProvider, establishIdpSession, grantActor, grantManagedActor, revokeManagedActor,
   loadAuthServiceInfo, loadCalloutAuth, newActorToken,
 } = await import("@cotal-ai/auth");
-const { createLocalJWKSet, jwtVerify } = await import("jose");
+const { createLocalJWKSet, decodeJwt, jwtVerify } = await import("jose");
 type DeviceLoginPrompt = import("@cotal-ai/auth").DeviceLoginPrompt;
 const { pickFreePort } = await import("./_free-port.js");
 
@@ -159,6 +163,8 @@ async function get(url: string, headers: Record<string, string> = {}): Promise<R
   const res = await fetch(url, { headers });
   return { status: res.status, body: (await res.json().catch(() => ({}))) as Record<string, unknown>, headers: res.headers };
 }
+/** The manager instance a manager-caller bearer binds: its signed `act.managerInstanceId`. */
+const boundInstance = (r: Reply) => (decodeJwt(r.body.token as string).act as { managerInstanceId?: string }).managerInstanceId;
 
 let broker: ChildProcess | undefined;
 let authChild: ChildProcess | undefined;
@@ -307,7 +313,7 @@ try {
   grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], label: "smoke operator" });
   const secret = newActorToken();
   const agentLifecycleUid = mintLifecycleUid();
-  grantManagedActor(dir, {
+  grantManagedActor(dir, { custody: { kind: "foreground" },
     owner: OWNER, actor: AGENT, scope: ["role:worker"], allowSubscribe: ["general"], allowPublish: ["general"],
     parent: `${OWNER}.cli`, tokenHash: secret.tokenHash, lifecycleUid: agentLifecycleUid,
   });
@@ -319,16 +325,18 @@ try {
   createManagerInstanceIdentity(root, SPACE, { instanceId: localManagerInstanceId, serveIdentity: localServe });
   const localManagerCall = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
   check("manager-caller re-reads a newly created local identity file and selects its live manager",
-    localManagerCall.status === 200 && localManagerCall.body.managerInstanceId === localManagerInstanceId, localManagerCall);
+    localManagerCall.status === 200 && boundInstance(localManagerCall) === localManagerInstanceId, localManagerCall);
   const explicitLocal = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller", managerInstanceId: localManagerInstanceId });
   check("the public face serves an explicit selector naming the live co-located manager",
-    explicitLocal.status === 200 && explicitLocal.body.managerInstanceId === localManagerInstanceId, explicitLocal);
+    explicitLocal.status === 200 && boundInstance(explicitLocal) === localManagerInstanceId, explicitLocal);
+  check("the agent manager-caller exchange answers only token, owner and exp",
+    Object.keys(explicitLocal.body).sort().join() === "exp,owner,token", explicitLocal.body);
 
   const remoteOne = mintLifecycleUid();
   await putManager({ instanceId: remoteOne, principal: `${OWNER}.${remoteManagerActors(remoteOne).serve}`, owner: OWNER });
   const remoteSelected = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
   check("one live remote manager takes precedence over the local candidate",
-    remoteSelected.status === 200 && remoteSelected.body.managerInstanceId === remoteOne, remoteSelected);
+    remoteSelected.status === 200 && boundInstance(remoteSelected) === remoteOne, remoteSelected);
   const parentIndependent = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller", managerInstanceId: remoteOne });
   check("the managed row's parent plays no part in manager selection", parentIndependent.status === 200, parentIndependent);
   const remoteTwo = mintLifecycleUid();
@@ -338,7 +346,7 @@ try {
     ambiguous.status === 401 && String(ambiguous.body.error).includes("2 live remote manager candidates"), ambiguous);
   const explicitRemote = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller", managerInstanceId: remoteTwo });
   check("an explicit selector chooses one live own remote manager",
-    explicitRemote.status === 200 && explicitRemote.body.managerInstanceId === remoteTwo, explicitRemote);
+    explicitRemote.status === 200 && boundInstance(explicitRemote) === remoteTwo, explicitRemote);
   const foreign = mintLifecycleUid();
   await putManager({ instanceId: foreign, principal: `${"u_" + "f".repeat(26)}.${remoteManagerActors(foreign).serve}`, owner: "u_" + "f".repeat(26) });
   const foreignSelector = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller", managerInstanceId: foreign });
@@ -352,7 +360,7 @@ try {
   const unavailableOwner = "u_" + "z".repeat(26);
   const unavailableActor = "unavailable";
   const unavailableSecret = newActorToken();
-  grantManagedActor(dir, { owner: unavailableOwner, actor: unavailableActor, scope: [], allowSubscribe: [], allowPublish: [], tokenHash: unavailableSecret.tokenHash, lifecycleUid: mintLifecycleUid() });
+  grantManagedActor(dir, { custody: { kind: "foreground" }, owner: unavailableOwner, actor: unavailableActor, scope: [], allowSubscribe: [], allowPublish: [], tokenHash: unavailableSecret.tokenHash, lifecycleUid: mintLifecycleUid() });
   const unavailableId = mintLifecycleUid();
   await putManager({ instanceId: unavailableId, principal: `${unavailableOwner}.${remoteManagerActors(unavailableId).serve}`, owner: unavailableOwner, state: "frozen" });
   const unavailable = await post(`${PUBLIC}/exchange`, { owner: unavailableOwner, actor: unavailableActor, actorToken: unavailableSecret.actorToken, view: "manager-caller" });
@@ -364,7 +372,7 @@ try {
   const wrongLocalOwner = "u_" + "y".repeat(26);
   const wrongLocalActor = "wronglocal";
   const wrongLocalSecret = newActorToken();
-  grantManagedActor(dir, { owner: wrongLocalOwner, actor: wrongLocalActor, scope: [], allowSubscribe: [], allowPublish: [], tokenHash: wrongLocalSecret.tokenHash, lifecycleUid: mintLifecycleUid() });
+  grantManagedActor(dir, { custody: { kind: "foreground" }, owner: wrongLocalOwner, actor: wrongLocalActor, scope: [], allowSubscribe: [], allowPublish: [], tokenHash: wrongLocalSecret.tokenHash, lifecycleUid: mintLifecycleUid() });
   const wrongLocalId = mintLifecycleUid();
   await putManager({ instanceId: wrongLocalId, principal: `local.${newIdentity().id}`, owner: "local" });
   const wrongLocal = await post(`${PUBLIC}/exchange`, { owner: wrongLocalOwner, actor: wrongLocalActor, actorToken: wrongLocalSecret.actorToken, view: "manager-caller", managerInstanceId: wrongLocalId });
@@ -420,7 +428,7 @@ try {
   check("a revoked row's actorToken is refused at the NEXT public exchange", afterRevoke.status === 401, afterRevoke.body);
   // Restore the row for the cells below (a fresh secret, as a real respawn would).
   const secret2 = newActorToken();
-  grantManagedActor(dir, {
+  grantManagedActor(dir, { custody: { kind: "foreground" },
     owner: OWNER, actor: AGENT, scope: ["role:worker"], allowSubscribe: ["general"], allowPublish: ["general"],
     parent: `${OWNER}.cli`, tokenHash: secret2.tokenHash, lifecycleUid: agentLifecycleUid,
   });
@@ -433,6 +441,17 @@ try {
     const { fetchIdpJwt } = await import("@cotal-ai/auth");
     return fetchIdpJwt(base, idpSessionToken);
   })();
+  const { TOOL_RESULT_HUMAN_PROOF_PATH, TOOL_RESULT_CONSENT_PATH } = await import("@cotal-ai/auth");
+  const proofBody = { idpToken: idpJwt, subject: signup.response.user.id };
+  check("consent signing is absent on the public face", (await post(`${PUBLIC}${TOOL_RESULT_CONSENT_PATH}`, {})).status === 404);
+  check("consent signing requires host capability even without signer composition", (await post(`${LOOPBACK}${TOOL_RESULT_CONSENT_PATH}`, {})).status === 401);
+  check("consent signing without private signer composition is unavailable", (await post(`${LOOPBACK}${TOOL_RESULT_CONSENT_PATH}`, {}, { authorization: `Bearer ${info!.cap}` })).status === 503);
+  check("human proof decision is absent on the public face", (await post(`${PUBLIC}${TOOL_RESULT_HUMAN_PROOF_PATH}`, proofBody)).status === 404);
+  check("human proof decision on the daemon requires the host capability", (await post(`${LOOPBACK}${TOOL_RESULT_HUMAN_PROOF_PATH}`, proofBody)).status === 401);
+  check("ordinary signed IdP proof without password provenance refuses consent on the real daemon",
+    (await post(`${LOOPBACK}${TOOL_RESULT_HUMAN_PROOF_PATH}`, proofBody, { authorization: `Bearer ${info!.cap}` })).status === 403);
+  check("real daemon refuses mixed human and agent proof fields",
+    (await post(`${LOOPBACK}${TOOL_RESULT_HUMAN_PROOF_PATH}`, { ...proofBody, actorToken: "inert-fixture" }, { authorization: `Bearer ${info!.cap}` })).status === 400);
   const viewPublic = await post(`${PUBLIC}/exchange`, { idpToken: idpJwt, actor: "cli", view: "purger" });
   check("a `view` request is REFUSED on the public face (403)", viewPublic.status === 403, viewPublic.body);
   check("…naming it as a loopback operator surface", /loopback/i.test(String(viewPublic.body.error)), viewPublic.body);
@@ -454,8 +473,48 @@ try {
   check("a channel-writer view mints on the public face when the row has admin",
     writerPublic.status === 200 && writerView === "channel-writer", { status: writerPublic.status, writerView, body: writerPublic.body });
   const humanManagerCall = await post(`${PUBLIC}/exchange`, { idpToken: idpJwt, actor: "cli", view: "manager-caller", managerInstanceId: remoteOne });
-  check("the public human exchange serves manager-caller and returns the selected instance",
-    humanManagerCall.status === 200 && humanManagerCall.body.managerInstanceId === remoteOne, humanManagerCall);
+  check("the public human exchange serves manager-caller bound to the selected instance",
+    humanManagerCall.status === 200 && boundInstance(humanManagerCall) === remoteOne, humanManagerCall);
+  check("the human manager-caller exchange answers only token, owner and exp",
+    Object.keys(humanManagerCall.body).sort().join() === "exp,owner,token", humanManagerCall.body);
+
+  // ---------- E2. the human's own manager instance list ----------
+  console.log("E2) the signed-in human's own manager instances, read-only");
+  type Listed = Array<{ instanceId: string; placement: string; state: string }>;
+  const list = async (face = PUBLIC, headers: Record<string, string> = {}) => post(`${face}/manager-instances`, { idpToken: idpJwt }, headers);
+  const listed = await list();
+  const rows = (listed.body.instances ?? []) as Listed;
+  const stateOf = (rs: Listed, id: string) => rs.find((r) => r.instanceId === id)?.state;
+  check("the public face lists the human's own manager instances (v1, this owner, complete, nothing else)",
+    listed.status === 200 && listed.body.v === 1 && listed.body.owner === OWNER && listed.body.complete === true
+      && Object.keys(listed.body).sort().join() === "complete,instances,owner,v", listed);
+  check("each own gate carries the verdict selection reads (two live remotes, one deregistered, the local manager)",
+    stateOf(rows, remoteOne) === "candidate" && stateOf(rows, remoteTwo) === "candidate" && stateOf(rows, stopped) === "not registered"
+      && rows.find((r) => r.instanceId === localManagerInstanceId)?.placement === "local", rows);
+  check("another owner's gates are not listed (a foreign remote and a frozen one)",
+    stateOf(rows, foreign) === undefined && stateOf(rows, unavailableId) === undefined, rows);
+  check("a record carries only its id, placement and verdict", rows.length > 0 && rows.every((r) => Object.keys(r).sort().join() === "instanceId,placement,state"), rows);
+  const remoteThree = mintLifecycleUid();
+  await putManager({ instanceId: remoteThree, principal: `${OWNER}.${remoteManagerActors(remoteThree).serve}`, owner: OWNER });
+  const grown = (await list()).body.instances as Listed;
+  const grownSelection = await post(`${PUBLIC}/exchange`, { ...agentBody2, view: "manager-caller" });
+  check("a newly registered instance appears, and selection counts the same three live remotes",
+    stateOf(grown, remoteThree) === "candidate" && grownSelection.status === 401 && String(grownSelection.body.error).includes("3 live remote manager candidates"), { grown, grownSelection });
+  await putManager({ instanceId: remoteThree, principal: `${OWNER}.${remoteManagerActors(remoteThree).serve}`, owner: OWNER, state: "retired" });
+  const shrunk = (await list()).body.instances as Listed;
+  const shrunkSelection = await post(`${PUBLIC}/exchange`, { ...agentBody2, view: "manager-caller" });
+  check("a retired instance stays listed as not open, and selection is back to two",
+    stateOf(shrunk, remoteThree) === "not open" && shrunkSelection.status === 401 && String(shrunkSelection.body.error).includes("2 live remote manager candidates"), { shrunk, shrunkSelection });
+  check("the list refuses a browser Origin (403)", (await list(PUBLIC, { origin: "https://evil.example" })).status === 403);
+  check("the list refuses a GET (405)", (await get(`${PUBLIC}/manager-instances`)).status === 405);
+  check("the list refuses a request with no proof (400)", (await post(`${PUBLIC}/manager-instances`, {})).status === 400);
+  const forged = await post(`${PUBLIC}/manager-instances`, { idpToken: `${idpJwt.split(".").slice(0, 2).join(".")}.${"A".repeat(86)}` });
+  check("the list refuses a forged proof (401), never an empty list", forged.status === 401 && forged.body.instances === undefined, forged);
+  check("an agent secret is no proof for the list (400)", (await post(`${PUBLIC}/manager-instances`, agentBody)).status === 400);
+  check("the loopback list demands the exchange capability (401)", (await list(LOOPBACK)).status === 401);
+  const loopbackListed = await list(LOOPBACK, { authorization: `Bearer ${info!.cap}` });
+  check("with the capability, loopback lists the same instances",
+    loopbackListed.status === 200 && JSON.stringify((loopbackListed.body.instances as Listed).map((r) => r.instanceId).sort()) === JSON.stringify(shrunk.map((r) => r.instanceId).sort()), loopbackListed);
 
   // ---------- F. inherited hardening holds verbatim ----------
   const ids = Object.fromEntries(["supervisor", "executor", "serve", "goalWriter", "sessionLedger"].map((name) => [name, { id: newIdentity().id }]));
@@ -466,6 +525,35 @@ try {
   check("the public typed manager-authority route accepts supervise scope", mgrPrepare.status === 200 && (mgrPrepare.body.credentials as Record<string, unknown>)?.supervisor !== undefined, mgrPrepare.body);
   const rawProfile = await post(`${PUBLIC}/exchange`, { idpToken: idpJwt, actor: "cli", view: "manager-service" });
   check("the public exchange still refuses raw manager-service view/profile strings", rawProfile.status === 403, rawProfile.body);
+
+  console.log("E3) a remote client refused for an ungranted actor names the account's discovered spaces");
+  {
+    // A machine with no ledger for the space: a registration from elsewhere, plus one space the same
+    // sign-in discovered. The operator's grant command is not a step this user can take.
+    const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+    const clientRoot = mkdtempSync(join(tmpdir(), "cotal-rx-client-"));
+    const remoteAuth = (space: string) => {
+      const stateDir = userAuthStateDir(clientRoot, space);
+      mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(stateDir, "sentinel.creds"), expectedCallout.sentinelCreds, { mode: 0o600 });
+      return { provider: "cotal", idp: { url: base, issuer: origin, audience: origin }, remote: true as const, endpoints: { url: PUBLIC }, sentinelCredsPath: join(stateDir, "sentinel.creds") };
+    };
+    recordMesh({ space: "rx_bootstrap", server: SERVER, root: clientRoot, mode: "user", origin: "manual", userAuth: remoteAuth("rx_bootstrap"), ts: new Date().toISOString() });
+    recordMesh({ space: "rx_team", server: SERVER, root: clientRoot, mode: "user", origin: "catalog", catalogOwner: "rx-owner", userAuth: remoteAuth("rx_team"), ts: new Date().toISOString() });
+    let refusal: (Error & { code?: unknown; remedy?: unknown }) | undefined;
+    try {
+      await cotalAuthProvider.userCredentials({ store: workspaceSecretStore(clientRoot), dir: userAuthStateDir(clientRoot, "rx_bootstrap"), space: "rx_bootstrap", actor: "ungranted_human" });
+    } catch (e) {
+      refusal = e as Error & { code?: unknown; remedy?: unknown };
+    }
+    check("the refusal names the discovered spaces and how to select one, not the operator's grant command",
+      refusal?.code === "refused" && /space "rx_bootstrap" has not granted actor "ungranted_human" to this account/.test(refusal.message) &&
+        !/cotal actor grant/.test(`${refusal.message} ${String(refusal.remedy)}`) && refusal.remedy === "your account's spaces are rx_team; select one with `cotal use <name>`",
+      { message: refusal?.message, remedy: refusal?.remedy });
+    removeMesh("rx_bootstrap");
+    removeMesh("rx_team");
+    rmSync(clientRoot, { recursive: true, force: true });
+  }
 
   console.log("F) Origin / content-type / body bound on the public face");
   const browser = await post(`${PUBLIC}/exchange`, agentBody2, { origin: "https://evil.example" });
@@ -692,6 +780,29 @@ try {
     { status: failedWhileFull.status, body: failedWhileFull.body },
   );
 
+  // An unpinned manager-caller exchange for an owner with several live remote managers is refused
+  // only after its credential verified, so it is not probing (#4213). A session that no manager
+  // launched has no pin and polls turn-pending this way every 15 s, so a host with a handful of
+  // such sessions kept its shared bucket full and every other refusal from that host read 429.
+  const ambiguousFromFull = await post(`${PUBLIC}/exchange`, { ...agentBody2, view: "manager-caller" }, victim);
+  check(
+    "an ambiguous manager selection from a throttled key keeps its own reason, not 429",
+    ambiguousFromFull.status === 401 && /live remote manager candidates/.test(String(ambiguousFromFull.body.error)),
+    { status: ambiguousFromFull.status, body: ambiguousFromFull.body },
+  );
+  const poller = asPeer("203.0.113.61");
+  let ambiguousRefusals = 0;
+  for (let i = 0; i < 40; i++) {
+    const r = await post(`${PUBLIC}/exchange`, { ...agentBody2, view: "manager-caller" }, poller);
+    if (r.status === 401 && /live remote manager candidates/.test(String(r.body.error))) ambiguousRefusals++;
+  }
+  const afterPolls = await post(`${PUBLIC}/exchange`, { ...agentBody2, actorToken: newActorToken().actorToken }, poller);
+  check(
+    "40 ambiguous selections leave the peer's refused-exchange budget untouched",
+    ambiguousRefusals === 40 && afterPolls.status === 401 && afterPolls.body.error === wrongSecret.body.error,
+    { ambiguousRefusals, status: afterPolls.status, body: afterPolls.body },
+  );
+
   // ---------- H. refresh across expiry ----------
   console.log("H) agent-bearer-style refresh yields a fresh, later-expiring bearer");
   const first = await post(`${PUBLIC}/exchange`, { ...agentBody2, ttlSec: 1 });
@@ -713,7 +824,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 95;
+const EXPECTED = 120;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);

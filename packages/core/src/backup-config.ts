@@ -6,7 +6,9 @@ import {
   type StreamConfig,
 } from "@nats-io/jetstream";
 import { nanos } from "@nats-io/transport-node";
-import { endpointPlaneStreamNames } from "./endpoint-binding.js";
+import { endpointAuthorityStoreDefinitions, endpointPlaneStreamNames, recordsKvStreamName, wfjStreamName } from "./endpoint-binding.js";
+import { recordsBucket } from "./endpoint-records.js";
+import { admissionBucket, admissionStoreDefinition } from "./run-admission.js";
 import {
   aclBucket,
   channelBucket,
@@ -27,7 +29,9 @@ import {
 } from "./subjects.js";
 
 export type SpaceBackupSelection = "full" | "registry";
-export type SpaceBackupStreamClass = "messages" | "registry" | "authorization";
+/** `workflow` is the state a workflow run resumes from: its step journal, its records and its
+ *  admission. Every other endpoint store is control state and is recreated empty. */
+export type SpaceBackupStreamClass = "messages" | "registry" | "authorization" | "workflow";
 /** Why a stream is outside the backup artifact. `artifact` is its own class deliberately: object
  *  bytes are neither transient (they outlive a session), derived (nothing can recompute them),
  *  nor a lease. Excluding them is a RETENTION decision — pin extends lifetime, not durability —
@@ -51,9 +55,9 @@ export interface SpaceBackupInventory {
   registry: readonly string[];
 }
 
-/** The complete Cotal stream inventory at a stable backup cut. Only the eight `backedUp` streams
- * enter a full artifact; excluded streams are transient, derived, leases, nonportable control state,
- * or the artifact object store. EVERY stream a space owns must appear in one list or the other:
+/** The complete Cotal stream inventory at a stable backup cut. Only the `backedUp` streams enter a
+ * full artifact; excluded streams are transient, derived, leases, nonportable control state, or the
+ * artifact object store. EVERY stream a space owns must appear in one list or the other:
  * {@link validateSpaceBackupInventory} is exact set-equality, so an unenumerated stream fails
  * validation for the WHOLE space, and a missing one fails it the same way. */
 export function spaceBackupInventory(space: string): SpaceBackupInventory {
@@ -67,13 +71,17 @@ export function spaceBackupInventory(space: string): SpaceBackupInventory {
     { name: dlvStream(space), class: "messages" },
     { name: `KV_${aclBucket(space)}`, class: "authorization" },
     { name: `KV_${membersBucket(space)}`, class: "authorization" },
+    { name: wfjStreamName(space), class: "workflow" },
+    { name: recordsKvStreamName(space), class: "workflow" },
+    { name: `KV_${admissionBucket(space)}`, class: "workflow" },
   ];
+  const workflow = new Set(backedUp.filter((s) => s.class === "workflow").map((s) => s.name));
   const excluded: SpaceBackupExcludedStream[] = [
     { name: `KV_${presenceBucket(space)}`, class: "transient" },
     { name: `KV_${membershipBucket(space)}`, class: "derived" },
     { name: `KV_${deliveryBucket(space)}`, class: "lease" },
     { name: `KV_${managerBucket(space)}`, class: "lease" },
-    ...endpointPlaneStreamNames(space).map((name) => ({ name, class: "control" as const })),
+    ...endpointPlaneStreamNames(space).filter((name) => !workflow.has(name)).map((name) => ({ name, class: "control" as const })),
     { name: objectStoreStream(artifactBucket(space)), class: "artifact" },
   ];
   return {
@@ -199,8 +207,14 @@ function baseConfig(name: string, subjects: string[]): CanonicalBackupStreamConf
   };
 }
 
-/** Current canonical config for one of the eight backed-up streams. Restore callers must use this
- * config, not the config embedded in untrusted snapshot bytes. */
+/** First-party creation baseline shared by bootstrap and backup definitions. These are desired
+ *  native fields, not defaults filled into a broker observation or authorization to create. */
+export function spaceStreamCreationBase(name: string, subjects: string[]): CanonicalBackupStreamConfig {
+  return baseConfig(name, [...subjects]);
+}
+
+/** Current canonical config for one of the backed-up streams. Restore callers must use this config,
+ * not the config embedded in untrusted snapshot bytes. */
 export function canonicalBackupStreamConfig(space: string, stream: string): CanonicalBackupStreamConfig {
   const p = spacePrefix(space);
   if (stream === chatStream(space)) {
@@ -228,6 +242,13 @@ export function canonicalBackupStreamConfig(space: string, stream: string): Cano
       duplicate_window: PLANE3_DUPLICATE_WINDOW,
     };
   }
+  if (stream === wfjStreamName(space)) return baseConfig(stream, [`${p}.wfj.*`]);
+  // The records and admission stores are KV buckets hardened after creation, as their own
+  // definitions say.
+  if (stream === recordsKvStreamName(space))
+    return { ...kvStoreConfig(stream, recordsBucket(space)), allow_direct: true, ...endpointAuthorityStoreDefinitions(space).records.hardenAfterCreate };
+  if (stream === `KV_${admissionBucket(space)}`)
+    return { ...kvStoreConfig(stream, admissionBucket(space)), ...admissionStoreDefinition(space).hardenAfterCreate };
   for (const bucket of [channelBucket(space), aclBucket(space), membersBucket(space)]) {
     if (stream === `KV_${bucket}`) {
       return {
@@ -240,6 +261,16 @@ export function canonicalBackupStreamConfig(space: string, stream: string): Cano
     }
   }
   throw new Error(`stream ${JSON.stringify(stream)} is not a backed-up stream for space ${JSON.stringify(space)}`);
+}
+
+/** A KV bucket with one value per key, as the KV client creates it. */
+function kvStoreConfig(name: string, bucket: string): CanonicalBackupStreamConfig {
+  return {
+    ...baseConfig(name, [`$KV.${bucket}.>`]),
+    max_msgs_per_subject: 1,
+    discard: DiscardPolicy.New,
+    allow_rollup_hdrs: true,
+  };
 }
 
 const INERT_CONFIG_DEFAULTS: Record<string, unknown> = {
@@ -260,6 +291,13 @@ const INERT_CONFIG_DEFAULTS: Record<string, unknown> = {
   allow_msg_counter: false,
   persist_mode: "",
 };
+
+/** Existing first-party baseline values for read-only comparison outside declared fields.
+ *  These are not inferred SDK defaults, missing-field normalization or provisioning authority.
+ *  Return fresh nested values so an inspection cannot mutate the backup validator's policy. */
+export function streamReadPolicyBaseline(name: string, subjects: string[]) {
+  return { ...baseConfig(name, [...subjects]), ...structuredClone(INERT_CONFIG_DEFAULTS) };
+}
 
 function normalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(normalize);

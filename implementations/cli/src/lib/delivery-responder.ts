@@ -36,7 +36,7 @@
  * for the rules themselves are on the core definitions.
  */
 import type { DeliveryLeaseInfo } from "@cotal-ai/core";
-import { responderFromLease, responderStateFromReader, type ResponderState } from "@cotal-ai/core";
+import { LEASE_TTL_MS, responderFromLease, responderStateFromReader, type ResponderState } from "@cotal-ai/core";
 
 /** What is known about the responder, as opposed to the process. THE definition now lives in core
  *  ({@link ResponderState}) so the liveness probe and these status surfaces grade identically; this
@@ -64,6 +64,11 @@ export type DeliveryResponderState = ResponderState;
  *  these three operations cannot complete. */
 export const RESPONDER_UNBOUND_CONSEQUENCE =
   "no spawn, no retirement, no join until it binds";
+
+/** A stale lease in plain words: the daemon that held it died, and its record stays until the lease
+ *  expires, so the three operations wait for a new daemon. */
+export const RESPONDER_STALE_TEXT =
+  `the delivery daemon died and its ${LEASE_TTL_MS / 1000} s lease has not expired yet, so spawn, retirement and join wait until a new daemon binds`;
 
 /** Classify a shard-0 lease record. `undefined` means the lease key is absent, which on a mesh that
  *  HAS a delivery daemon recorded is an unbound responder, not a missing opinion: the daemon creates
@@ -125,7 +130,7 @@ export function deliveryRowSuffix(live: boolean, state: DeliveryResponderState, 
       // NAME THE CORPSE, not just the symptom. An operator who is told "not bound" while a ready
       // record exists will reasonably go looking for a daemon that is doing something; saying the
       // record belongs to a daemon that is gone points at the actual next move.
-      return ` · RESPONDER NOT BOUND - a DEAD daemon's ready record is still in the lease (it expires on its own) - ${RESPONDER_UNBOUND_CONSEQUENCE}`;
+      return ` · RESPONDER NOT BOUND - ${RESPONDER_STALE_TEXT}`;
     case "unknown":
       return ` · responder state unchecked (${componentsHint})`;
   }

@@ -23,8 +23,8 @@
     {
       "name": "the liveness match drops the incarnation: any row under the name reads as this agent",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      if (!rows.some((p) => p.card?.name === name && p.lifecycleUid === uid)) {",
-      "replace": "      if (!rows.some((p) => p.card?.name === name)) {",
+      "find": "      if (!rows.some((p) => p.card.name === name && p.lifecycleUid === uid)) {",
+      "replace": "      if (!rows.some((p) => p.card.name === name)) {",
       "expectRed": "a live successor under the name reads as superseded: this incarnation is dead",
       "cell": "a live successor under the name reads as superseded: this incarnation is dead",
       "note": "The handle pins <name>#<lifecycleUid>; with the uid dropped, a successor keeps the DEAD incarnation looking alive forever. Measured 2026-09-02: two reds — the superseded block's wait never resolves (its bounded deadline fails) and its reason cell reads undefined; 22 passed, 2 failed."
@@ -32,7 +32,7 @@
     {
       "name": "the death check is dropped: nothing is ever down",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      if (!rows.some((p) => p.card?.name === name && p.lifecycleUid === uid)) {",
+      "find": "      if (!rows.some((p) => p.card.name === name && p.lifecycleUid === uid)) {",
       "replace": "      if (false) {",
       "expectRed": "an already-dead incarnation resolves without waiting for anything",
       "cell": "an already-dead incarnation resolves without waiting for anything",
@@ -41,8 +41,8 @@
     {
       "name": "the reason collapses to lapsed whatever the name shows",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "        const reason = rows.some((p) => p.card?.name === name) ? \"superseded\" : \"lapsed\";",
-      "replace": "        const reason = \"lapsed\";",
+      "find": "        const reason = rows.some((p) => p.card.name === name) ? \"superseded\" : \"lapsed\";",
+      "replace": "        const reason = \"lapsed\" as \"superseded\" | \"lapsed\";",
       "expectRed": "a live successor under the name reads as superseded: this incarnation is dead",
       "cell": "a live successor under the name reads as superseded: this incarnation is dead",
       "note": "The two reasons are the value's whole vocabulary; collapsed, a program cannot tell a vanished seat from a replaced one. Measured 2026-09-02: exactly one red, the superseded cell reading \"lapsed\" in the transcript; 22 passed."

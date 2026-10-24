@@ -24,7 +24,8 @@
  */
 import { SignJWT, calculateJwkThumbprint, createRemoteJWKSet, exportJWK, generateKeyPair, importJWK } from "jose";
 import type { CryptoKey, JWK, JWTVerifyGetKey } from "jose";
-import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, isLoopbackLiteral } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, isLoopbackLiteral, SERVICE_ACCESS_TTL_SECONDS, parseServiceRegistrationWitness, type ServiceRegistrationWitness } from "@cotal-ai/core";
+import { issueServiceRenewalProof, type ServiceRenewalClaims } from "./service-renewal.js";
 import { USER_TOKEN_VER, USER_TOKEN_VIEWS, assertCredentialIdClaim, assertSessionClaim, assertTransferWriterClaim, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
 
 /** The one signing algorithm — Ed25519. Pinned on both mint and verify. */
@@ -111,6 +112,16 @@ export interface IssueClaims {
   transferWriter?: UserTokenTransferWriter;
   /** Requested lifetime; capped at the view's {@link viewTtlCapSec} (an overlong ask THROWS). */
   ttlSec?: number;
+  /** Absolute expiry ceiling in unix seconds, such as the expiry of the proof the bearer rests on.
+   *  `exp` is the earlier of `now + ttlSec` and this, read at signing time, so time spent before
+   *  signing shortens the bearer instead of extending it; a ceiling at or before now THROWS. */
+  notAfter?: number;
+}
+
+/** Fixed deadline already bounded by current native root, approval and authorization. */
+export interface ServiceAccessClaims {
+  witness: ServiceRegistrationWitness;
+  expiresAt: number;
 }
 
 /** A running issuer: mints bearers with the active key, publishes the public JWKS, and rotates. */
@@ -121,6 +132,10 @@ export interface UserTokenIssuer {
   activeKid(): string;
   /** Mint a bearer for a validated (owner, actor). Returns the compact JWS. */
   issue(claims: IssueClaims): Promise<string>;
+  /** Service registration-bound renewal proof, never a connect bearer. */
+  issueServiceRenewal(claims: ServiceRenewalClaims): Promise<string>;
+  /** Signature primitive only; the dedicated host must establish current service authority. */
+  issueServiceAccess(claims: ServiceAccessClaims): Promise<string>;
   /** The public JWK Set to publish for offline verification (all live kids, public members only). */
   jwks(): { keys: JWK[] };
   /** Add a key and make it the active signer; prior keys stay published until {@link retire}. */
@@ -146,6 +161,7 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
   let active = opts.key.kid;
 
   const issue = async (claims: IssueClaims): Promise<string> => {
+    if (claims.view === "service-endpoint") throw new Error("issue: service-endpoint requires the dedicated service authority issuer");
     // Every claim is RUNTIME-shape-checked, not just TS-typed: C2 feeds this from IdP/session JSON,
     // and a mis-shaped claim must fail HERE — signing it would mint a dead bearer the validator
     // rejects, silently breaking the issuer ↔ validator inverse.
@@ -179,6 +195,8 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
     if ((claims.view === "transfer-writer") !== (claims.transferWriter !== undefined))
       throw new Error('issue: view "transfer-writer" and a transferWriter claim come together or not at all');
     if (claims.transferWriter !== undefined) assertTransferWriterClaim(claims.transferWriter);
+    if (claims.notAfter !== undefined && !Number.isSafeInteger(claims.notAfter))
+      throw new Error("issue: notAfter must be an integer unix time when present");
     const cap = viewTtlCapSec(claims.view);
     const ttl = claims.ttlSec ?? cap;
     if (typeof ttl !== "number" || !Number.isFinite(ttl) || !(ttl > 0) || ttl > cap)
@@ -186,6 +204,9 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
     const signer = keys.get(active);
     if (!signer) throw new Error("issue: no active signing key");
     const now = Math.floor(Date.now() / 1000);
+    if (claims.notAfter !== undefined && claims.notAfter <= now)
+      throw new Error(`issue: the expiry ceiling ${claims.notAfter} has passed - refusing to sign a bearer that would outlive its proof`);
+    const exp = claims.notAfter === undefined ? now + ttl : Math.min(now + ttl, claims.notAfter);
     return new SignJWT({
       scope: claims.scope ?? [],
       ver: USER_TOKEN_VER,
@@ -197,7 +218,7 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
       .setAudience(claims.space)
       .setIssuedAt(now)
       .setNotBefore(now)
-      .setExpirationTime(now + ttl)
+      .setExpirationTime(exp)
       .sign(signer.privateKey);
   };
 
@@ -205,6 +226,28 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
     issuer: opts.issuer,
     activeKid: () => active,
     issue,
+    issueServiceRenewal: (claims) => {
+      const signer = keys.get(active);
+      if (!signer) throw new Error("issue: no active signing key");
+      return issueServiceRenewalProof(signer, opts.issuer, claims);
+    },
+    issueServiceAccess: async (claims) => {
+      const witness = parseServiceRegistrationWitness(claims.witness);
+      const now = Math.floor(Date.now() / 1000), exp = claims.expiresAt;
+      if (!Number.isSafeInteger(exp) || exp <= now || exp > now + SERVICE_ACCESS_TTL_SECONDS)
+        throw new Error("service access requires a future fixed expiry within its lifetime cap");
+      const signer = keys.get(active);
+      if (!signer) throw new Error("issue: no active signing key");
+      const bearer = await new SignJWT({ ver: USER_TOKEN_VER, scope: [], act: {
+        owner: witness.principal.owner, actor: witness.principal.actor, scope: [],
+        lifecycleUid: witness.principal.lifecycleUid, credentialId: witness.rootCredentialId,
+        view: "service-endpoint", service: { duty: "serve", witness },
+      } }).setProtectedHeader({ alg: USER_TOKEN_ALG, kid: signer.kid })
+        .setIssuer(opts.issuer).setAudience(witness.space).setSubject(witness.principal.owner)
+        .setIssuedAt(now).setNotBefore(now).setExpirationTime(exp).sign(signer.privateKey);
+      if (exp <= Math.floor(Date.now() / 1000)) throw new Error("service access expired before release; its fixed expiry is not extended");
+      return bearer;
+    },
     jwks: () => ({ keys: [...keys.values()].map((k) => k.publicJwk) }),
     rotate: (key: SigningKey) => { keys.set(key.kid, key); active = key.kid; },
     retire: (kid: string) => {

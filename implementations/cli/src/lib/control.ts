@@ -1,11 +1,14 @@
+import { randomUUID } from "node:crypto";
 import {
+  assertLifecycleToken,
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
-  assertLifecycleToken,
   GOAL_BEARING_COMMANDS,
+  goalFollowRefusal,
   epProbeInstanceInterest,
   freezeExpectedSet,
   instancePinnedInstrumentCapabilities,
+  invokeCommand,
   invokeRepairingSplit,
   issuedUserCaller,
   mintCreds,
@@ -14,6 +17,7 @@ import {
   unansweredRequest,
   unansweredRail,
   registryReadFailed,
+  noLiveInstances,
   undeclaredArg,
   controlReplyFrom,
   controlReplyFromThrown,
@@ -27,16 +31,20 @@ import {
   type ControlReply,
   type EpCaller,
   type EpInstanceLiveness,
+  type EpScatterResult,
   type EpVerbTarget,
   type FlagSpec,
+  type GoalResultFact,
   type Profile,
+  type ResolvedService,
 } from "@cotal-ai/core";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { controlCaller, loadSpaceAuth, renderWorkspaceError, type ControlAuth } from "@cotal-ai/workspace";
-import { DEV_OWNER, type SpaceAuth } from "@cotal-ai/core";
-import { c, staleStoreHint } from "../ui.js";
+import { CommandFailure, controlCaller, loadSpaceAuth, oneLine, renderWorkspaceError, type ControlAuth, type RefusalCode } from "@cotal-ai/workspace";
+import { DEV_OWNER, EP_UNANSWERED, type SpaceAuth } from "@cotal-ai/core";
+import { c, staleStoreHint, stderrLine } from "../ui.js";
 import { cliVersion } from "./version.js";
+import { nativeEndpointRefusal } from "./endpoint-errors.js";
 
 /** The control auth shape and target resolver live in `@cotal-ai/workspace` (shared with every
  *  command surface that addresses the manager: this CLI, `cotal run`, the web dashboard). Re-exported
@@ -58,17 +66,19 @@ export const START_TIMEOUT_MS = 40_000;
  *  `{name}` argument becomes a §13.2 target block (resolved to the agent's principal triple via
  *  the name-keyed `inspect` read — it rides the spawn capability arm, so resolution reach equals
  *  despawn/attach reach; the wire target is (owner, actor, lifecycleUid), never an alias). */
-const EP_COMMANDS: Record<string, { command: string; targeted?: boolean }> = {
+const EP_COMMANDS: Record<string, { command: string; targeted?: boolean; self?: boolean }> = {
   managerStatus: { command: "status" },
   start: { command: "spawn" },
   resolveAgent: { command: "resolve-agent" },
   stop: { command: "despawn", targeted: true },
+  stopSelf: { command: "stop", self: true },
   attach: { command: "attach", targeted: true },
   input: { command: "input", targeted: true },
   status: { command: "inspect" },
   ps: { command: "ps" },
   slots: { command: "slots" },
   models: { command: "models" },
+  listPersonas: { command: "list-personas" },
   launch: { command: "launch" },
   purge: { command: "purge" },
   resumePreserved: { command: "resume-preserved" },
@@ -78,6 +88,10 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean }> = {
   commitPreservation: { command: "commit-preservation" },
   abortPreservation: { command: "abort-preservation" },
   transcriptReceive: { command: "transcript-receive" },
+  chatSessionOpen: { command: "chat-session-open" },
+  chatSessionRetire: { command: "chat-session-retire" },
+  runPs: { command: "run-ps" },
+  runStatus: { command: "run-status" },
 };
 
 /** Operator reach for one targeted control call: `owner` rides the caller's own-domain verb rows
@@ -112,6 +126,9 @@ async function askManagerEp(
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
   const connectOpts = standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true });
   const nc = await dialerFor(server)({ servers: server, ...connectOpts, maxReconnectAttempts: 0 });
+  let request: ManagerRequestReceipt | undefined;
+  let intent: ManagerRequestIntent | undefined;
+  let observationCause: { code?: string; outcome?: string } | undefined;
   try {
     // A logged-in user's manager view is issued at the callout (SPEC 13.15): read its generation
     // back from this connection's accepted row; a missing row refuses, never a legacy-rail retry.
@@ -120,10 +137,11 @@ async function askManagerEp(
       : auth.epCaller!;
     // P2 item 3 `--on <instance>`: pin the resolve to the exact manager instance's `inst` route so a
     // multi-manager space addresses the intended manager, never whichever wins the class anycast.
-    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000, ...(instanceId !== undefined ? { instanceId } : {}) });
+    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000, ...(instanceId !== undefined ? { instanceId } : {}), ...(pin?.signal ? { signal: pin.signal } : {}) });
     let target: EpVerbTarget | undefined;
     let sendArgs = args;
-    if (mapped.targeted) {
+    if (mapped.self) target = { mode: "self" };
+    else if (mapped.targeted) {
       const name = String(args?.name ?? "").trim();
       if (!name) return { ok: false, error: `${op} requires a name` };
       // Alias -> CURRENT principal triple via the manager's name-keyed `inspect` read (§13.2: a
@@ -134,9 +152,13 @@ async function askManagerEp(
       const info = await invokeRepairingSplit(nc, space, service, "inspect", { name }, { deadlineMs: 10_000 });
       if (info.reply.ok !== true) {
         const refused = controlReplyFrom(info.reply);
-        return { ...refused, error: `could not resolve "${name}": ${refused.error}` };
+        // Only the inspect read was published. Preserve its native error, but record the local
+        // proof that this targeted action was never submitted.
+        return { ...refused, preSubmitRefusal: true, managerInstanceId: info.responder.instanceId, managerEpoch: info.responder.epoch, error: `could not resolve "${name}": ${refused.error}` };
       }
       const row = info.reply.data as { id: string; lifecycleUid: string };
+      if (pin?.expectedTarget && (row.id !== pin.expectedTarget.id || row.lifecycleUid !== pin.expectedTarget.lifecycleUid))
+        return { ok: false, code: "not-found", error: "the selected agent incarnation changed; refresh the agent list before attaching" };
       // A STATIC row's `id` is the bare actor under the caller's own owner; a USER-mode row's `id`
       // is the composite `owner.actor` principal key - split it (an embedded dot would break the
       // target block's subject arity). Mode `any` spans owners (operator reach); mode `owner` pins
@@ -160,20 +182,49 @@ async function askManagerEp(
       const { name: _dropped, ...rest } = args ?? {};
       sendArgs = Object.keys(rest).length ? rest : undefined;
     }
-    const invokeOpts = { ...(target ? { target } : {}), deadlineMs: timeoutMs ?? 10_000 };
-    const submit = () => invokeRepairingSplit(nc, space, service, mapped.command, sendArgs, invokeOpts);
+    const followsGoal = (GOAL_BEARING_COMMANDS as readonly string[]).includes(mapped.command);
+    const blocked = followsGoal ? goalFollowRefusal(service) : undefined;
+    if (blocked) return { ...controlReplyFrom(blocked.reply), nativeOutcome: "not-executed", managerInstanceId: service.responder.instanceId, managerEpoch: service.responder.epoch };
+    const id = randomUUID();
+    intent = { requestId: id, ...(followsGoal ? { requestedGoalId: id } : {}) };
+    if (pin?.journal) await pin.journal.beforeSubmit(intent);
+    const invokeOpts = { ...(target ? { target } : {}), deadlineMs: timeoutMs ?? 10_000, id, ...(pin?.signal ? { signal: pin.signal } : {}) };
+    const submit = async (signal?: AbortSignal) => {
+      const answer = await invokeRepairingSplit(nc, space, service, mapped.command, sendArgs, { ...invokeOpts, ...(signal ? { signal } : {}) });
+      const data = answer.reply.data as { goalId?: unknown; fingerprint?: unknown; name?: unknown; owner?: unknown; actor?: unknown; uid?: unknown } | undefined;
+      request = { requestId: answer.reply.id, managerInstanceId: answer.responder.instanceId, managerEpoch: answer.responder.epoch,
+        ...(answer.reply.ok && typeof data?.goalId === "string" ? { goalId: data.goalId } : {}),
+        ...(answer.reply.ok && typeof data?.fingerprint === "string" ? { fingerprint: data.fingerprint } : {}),
+        ...(answer.reply.ok && typeof data?.goalId === "string" && typeof data.name === "string" && typeof data.owner === "string" && typeof data.actor === "string" && typeof data.uid === "string"
+          ? { allocation: { name: data.name, owner: data.owner, actor: data.actor, lifecycleUid: data.uid } } : {}),
+      };
+      if (answer.reply.ok && request.allocation && pin?.journal) await pin.journal.accepted(request);
+      return answer;
+    };
     // P2 item 2 (2b): a goal-bearing command (spawn/launch) FOLLOWS its acceptance to the goal
     // terminal, so `spawn --detach` still returns on the real outcome (join / exit / ~30s uncertain)
     // exactly like the pre-action blocking reply — UX unchanged, no --no-wait.
-    const r = (GOAL_BEARING_COMMANDS as readonly string[]).includes(mapped.command)
-      ? await submitAndFollowGoal(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, timeoutMs ?? START_TIMEOUT_MS, submit)
+    const r = followsGoal
+      ? await submitAndFollowGoal(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, timeoutMs ?? START_TIMEOUT_MS, submit, {
+        reconcile: async (goalId, accepted, context) => {
+          // A class credential keeps its class route. An accepted instance ID grants no new rail;
+          // the native follower still verifies the canonical fact against the original caller/goal.
+          const current = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, context.caller, { ...(instanceId !== undefined ? { instanceId: accepted.responder.instanceId } : {}), deadlineMs: context.deadlineMs, signal: context.signal });
+          const answer = await invokeRepairingSplit(nc, space, current, "goal-result", { goalId }, { deadlineMs: context.deadlineMs, signal: context.signal });
+          if (!answer.reply.ok) {
+            observationCause = { code: answer.reply.error?.code, outcome: answer.reply.error?.outcome };
+            throw new Error("the accepting manager did not provide a confirmed goal-result read");
+          }
+          return answer.reply.data as { goalId: string; result?: GoalResultFact };
+        },
+      })
       : await submit();
-    if (r.reply.ok !== true) return controlReplyFrom(r.reply);
+    if (r.reply.ok !== true) return { ...controlReplyFrom(r.reply), answered: true, managerInstanceId: r.responder.instanceId, managerEpoch: r.responder.epoch, ...(observationCause ? { observationCause } : {}), ...(intent ? { intent } : {}), ...(request ? { request } : {}), ...(r.reply.error?.outcome ? { nativeOutcome: r.reply.error.outcome } : {}) };
     // The ep `models` reply is normalized to `{catalogs}` — unwrap so call sites keep the ctl shape.
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
-    return { ok: true, ...(data !== undefined ? { data } : {}) };
+    return { ok: true, managerInstanceId: r.responder.instanceId, managerEpoch: r.responder.epoch, ...(observationCause ? { observationCause } : {}), ...(intent ? { intent } : {}), ...(request ? { request } : {}), ...(data !== undefined ? { data } : {}) };
   } catch (e) {
-    return epRailFailure(e, instanceId === undefined ? pin : { instanceId });
+    return { ...epRailFailure(e, instanceId === undefined ? pin : { instanceId }), ...(observationCause ? { observationCause } : {}), ...(intent ? { intent } : {}), ...(request ? { request, managerInstanceId: request.managerInstanceId, managerEpoch: request.managerEpoch } : {}), ...(e instanceof EpEnvelopeError && e.outcome ? { nativeOutcome: e.outcome } : {}) };
   } finally {
     // Drain waits for in-flight NATS work. A dead broker never finishes that, and
     // attach-auth-root hung here after spawn once nats-server exited.
@@ -189,51 +240,112 @@ async function askManagerEp(
   }
 }
 
+export interface ManagerRequestIntent {
+  requestId: string;
+  requestedGoalId?: string;
+}
+
+export interface ManagerRequestReceipt {
+  requestId: string;
+  managerInstanceId: string;
+  managerEpoch: number;
+  goalId?: string;
+  fingerprint?: string;
+  allocation?: { name: string; owner: string; actor: string; lifecycleUid: string };
+}
+
 /** {@link ControlReply} plus the one fact a caller cannot recover from the rendered message: whether
  *  the call went UNANSWERED, as core marks it (`EP_UNANSWERED`: no responder, or the reply
  *  deadline elapsed with nothing attributed to the request). `up`'s resume readiness poll keys on it;
  *  it used to key on the message prefix, which turned an operator-facing string into a control-flow
- *  predicate in another file. */
-export type ManagerReply = ControlReply & { unanswered?: boolean };
+ *  predicate in another file. `answered` marks a refusal a manager responder sent itself; one the
+ *  broker or this client raised leaves it unset. */
+export type ManagerReply = ControlReply & { unanswered?: boolean; answered?: true; preSubmitRefusal?: true; managerInstanceId?: string; managerEpoch?: number; observationCause?: { code?: string; outcome?: string }; intent?: ManagerRequestIntent; request?: ManagerRequestReceipt; nativeOutcome?: "executed" | "not-executed" | "unknown" };
+
+/** Classify only a proved pre-effect refusal as refused; a missing effect outcome is not proof.
+ *  Every message names the agent when the target carries one and ends with the manager's own
+ *  reason, kept to one line. */
+export function managerFailure(reply: ManagerReply, operation: string, target: unknown): CommandFailure {
+  const native = { code: reply.code, outcome: reply.nativeOutcome, ...(reply.preSubmitRefusal ? { detail: { phase: "target-resolution", actionSubmitted: false } } : reply.request || reply.intent ? { detail: { request: reply.request ?? null, intent: reply.intent ?? null, observation: reply.observationCause ?? null } } : {}) };
+  const code = nativeEndpointRefusal(reply.code);
+  const agent = (target as { agent?: unknown } | null)?.agent;
+  const what = typeof agent === "string" ? `${operation} for agent "${oneLine(agent)}"` : operation;
+  const reason = reply.error ? `: ${oneLine(reply.error)}` : "";
+  if (reply.preSubmitRefusal && code) return new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : `${operation} was not submitted because its target could not be resolved`, { target, native, remedy: "run cotal ps to check the selected manager and agent name" });
+  if (reply.nativeOutcome === "not-executed" && code) return new CommandFailure("refused", code, `the manager refused ${what} before execution${reason}`, { target, native, remedy: "nothing ran; fix what the manager reported, then run the command again" });
+  if (reply.nativeOutcome === "executed" && !reply.unanswered) return new CommandFailure("failed", "OPERATION_FAILED", `the manager reported that ${what} failed${reason}`, { target, native });
+  return new CommandFailure("unknown", "OPERATION_UNKNOWN", `the manager did not confirm the outcome of ${what}; it was not submitted again${reason}`, { target, native, remedy: "inspect the recorded manager, request and target before retrying" });
+}
+
+/** A describe that drew no answer means the command after it was never sent, so it is refused, as
+ *  `chat` and the run verbs refuse it, and not an unknown outcome. Undefined for any other failure. */
+export function unansweredDescribeRefusal(reply: ManagerReply, operation: string, target: unknown): CommandFailure | undefined {
+  if (!describeUnanswered(reply)) return undefined;
+  const agent = (target as { agent?: unknown } | null)?.agent;
+  const what = typeof agent === "string" ? `${operation} for agent "${oneLine(agent)}"` : operation;
+  return new CommandFailure("refused", "TARGET_UNAVAILABLE", `the manager registered for this space did not answer, so ${what} was not sent: ${oneLine(reply.error ?? "no reply")}`, { target, native: { code: reply.code }, remedy: "cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid and the way to end it" });
+}
+
+/** Whether the describe before a command drew no answer, so the command itself was never sent. */
+export function describeUnanswered(reply: ManagerReply): boolean {
+  return reply.details?.some((detail) => detail.kind === EP_UNANSWERED && detail.command === "describe") === true;
+}
 
 /** What the calling command declares about pinning. Passed ONLY by a command that offers `--on`
- *  (`ps`, `stop`, `attach`, `spawn --detach`, `models`), with `instanceId` set to what the operator
+ *  (`ps`, `models`, `stop`, `attach`, `spawn --detach`), with `instanceId` set to what the operator
  *  typed, if anything. Its presence is what lets the renderer offer `--on` as a remedy: a command
- *  without the flag (`up`, `down`) rides the same rails, splits the same way, and must not be told to
- *  type a flag it does not have. Absence of a pin therefore never means "not passed". */
+ *  without the flag (`up`, `down`) rides the same rails, splits the same way, and must not be told
+ *  to type a flag it does not have. Absence of a pin therefore never means "not passed". */
 export interface ManagerPin {
   instanceId?: string;
+  /** A picker-selected incarnation, checked after name resolution and before publication. */
+  expectedTarget?: { id: string; lifecycleUid: string };
+  /** Composite operations persist their original request before publication and the attributed
+   * allocation before following a goal. A journal refusal never triggers another submission. */
+  journal?: {
+    beforeSubmit(intent: ManagerRequestIntent): void | Promise<void>;
+    accepted(receipt: ManagerRequestReceipt): void | Promise<void>;
+  };
+  /** Stops the resolve and the request waiting, for a caller that no longer needs the answer. */
+  signal?: AbortSignal;
 }
 
 /** `--on <instance>`: address ONE manager instance instead of the class queue. Shared by
  *  ps/stop/attach/input/describe/models so they cannot drift. For stop and attach it is the seat-locality
  *  escape hatch: the manager that can act on a seat is the one HOSTING it, which is not necessarily
- *  the one that wins the class queue. */
-export const onFlag = { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space); default = class anycast; `ps`'s instance id, not the roster's `local.…` principal id" } as const satisfies FlagSpec;
+ *  the one that wins the class queue. On a user-auth mesh it also takes a manager's name or host
+ *  ({@link managerPin}). */
+export const onFlag = { name: "on", type: "string", value: "<instance>", description: "ask only this manager, by the instance id `ps` prints or, on a user-auth mesh, by its name or host" } as const satisfies FlagSpec;
 
 /** Read `--on` at the site that declares it. Absent stays absent (class rails). An EMPTY value
  *  (`--on=`, `--on ""`, or `--on "$INSTANCE"` with the variable unset) is refused here, up front:
  *  it is falsy, so every `if (on)` branch would treat it as absent and drop the pin (a `stop` would
  *  fall through to seat locality, an open-mesh `ps` to the scatter), while the mint and core's
  *  route builder treat it as PRESENT and refuse it as an invalid token. Two answers for one input;
- *  a dropped pin is a silent fallback, so neither branch gets to see it. A non-empty value is also
- *  shape-checked here now, against core's own lifecycle-token grammar: the mint's bare grammar
- *  error named neither the identifier `--on` wants nor where to read it, which cost operators
- *  spawn attempts on a format mismatch (#423). */
-export function onInstanceOrExit(on: string | undefined, verb: string): string | undefined {
+ *  a dropped pin is a silent fallback, so neither branch gets to see it. A roster principal id
+ *  (`local.…`) is refused here too, naming the identifier `--on` wants (#423). Any other value is an
+ *  instance id, name or host, which {@link managerPin} resolves to an instance id before use. */
+export function onInstance(on: string | undefined, verb: string): string | undefined {
   if (on === undefined) return undefined;
-  if (on === "") {
-    console.error(c.red(`✗ --on requires a manager instance id (the whole id, as \`cotal ps\` prints it): \`${verb} --on <instance>\`. An empty value is refused, not dropped`));
-    process.exit(1);
-  }
-  try {
-    assertLifecycleToken(on, "instanceId");
-  } catch (e) {
-    const principalClause = on.startsWith("local.") ? `; "${on}" is a principal id` : "";
-    console.error(c.red(`✗ ${(e as Error).message}. --on wants the manager INSTANCE id as \`cotal ps\` prints it (the \`manager <id>\` header in a multi-manager space, the \`instance <id>\` fact under \`cotal ps --wide\`), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it)${principalClause}: \`${verb} --on <instance>\``));
-    process.exit(1);
-  }
+  if (on === "")
+    throw new CommandFailure("refused", "USAGE_INVALID", `--on requires a manager instance id (the whole id, as \`cotal ps\` prints it), or on a user-auth mesh a manager's name or host: \`${verb} --on <instance>\`. An empty value is refused, not dropped`, { selfContained: true });
+  if (on.startsWith("local."))
+    throw new CommandFailure("refused", "USAGE_INVALID", `"${on}" is a principal id. --on wants the manager INSTANCE id as \`cotal ps\` prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it): \`${verb} --on <instance>\``, { selfContained: true });
   return on;
+}
+
+/** {@link onInstance} for an `--on` that takes only an instance id: an endpoint's instance, or a
+ *  step that runs before the mesh can be read. The value is shape-checked against core's
+ *  lifecycle-token grammar, so a malformed id is refused naming the identifier `--on` wants. */
+export function onInstanceId(on: string | undefined, verb: string): string | undefined {
+  const value = onInstance(on, verb);
+  if (value === undefined) return undefined;
+  try {
+    assertLifecycleToken(value, "instanceId");
+  } catch (e) {
+    throw new CommandFailure("refused", "USAGE_INVALID", `${(e as Error).message}. --on wants the INSTANCE id as \`cotal ps\` prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did): \`${verb} --on <instance>\``, { selfContained: true });
+  }
+  return value;
 }
 
 /** Render an ep-rail failure for the operator. Three outcomes, told apart by core's markers and never
@@ -352,10 +464,16 @@ export interface ScatterInstanceReply {
   reachable: boolean;
   data?: unknown;
   error?: string;
+  /** The endpoint's error code beside `error`, when its refusal carried one. */
+  code?: string;
   /** Set on unreachable slots only: a slot that ANSWERED needs no liveness verdict. */
   liveness?: ScatterInstanceLiveness;
+  /** The host name this instance gave in its own `status` reply, when the caller asked for it.
+   *  Display metadata the manager reports about itself: never checked and never a route. */
+  reportedHost?: string;
 }
-export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { ok: false; error: string };
+/** A failed scatter's `noLiveManager` says the registry was read and lists no live manager. */
+export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { ok: false; error: string; code?: string; unanswered?: boolean; noLiveManager?: true };
 
 /** Open one short-lived control connection under whichever of the three auth shapes this command
  *  holds (static creds / user bearer + sentinel / bare open mesh) and hand it to `fn`. Extracted so
@@ -520,6 +638,32 @@ const SCATTER_PROFILE: Profile = "control-caller-privileged";
  *  well inside the gather. */
 const PROBE_DEADLINE_MS = 5_000;
 
+/** How long the host names a census shows may take, all together. They are display metadata, so an
+ *  instance that has not answered by then is listed without one. */
+const REPORTED_HOST_BUDGET_MS = 2_000;
+const HOST_NAME = /^[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,251}[A-Za-z0-9_])?$/;
+
+/** Ask each instance that answered the census for its own `status`, on its `inst` route at the
+ *  epoch it answered with, where this credential's pinned rails reach it. One bound covers every
+ *  ask and aborts what is still out. Only a well-formed host name from that exact instance is kept;
+ *  anything else leaves the instance without one, and nothing here changes what the census found. */
+async function askReportedHosts(nc: NatsConnection, space: string, service: ResolvedService, answered: EpScatterResult["replies"], instances: ScatterInstanceReply[], reachable: ReadonlySet<string>): Promise<void> {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), REPORTED_HOST_BUDGET_MS);
+  try {
+    await Promise.all(instances.filter((slot) => slot.error === undefined && reachable.has(slot.instanceId)).map(async (slot) => {
+      const epoch = answered.get(slot.instanceId)?.responder.epoch;
+      if (epoch === undefined) return;
+      try {
+        const pinned: ResolvedService = { ...service, responder: { instanceId: slot.instanceId, epoch }, pinnedInstanceId: slot.instanceId };
+        const answer = await invokeCommand(nc, space, pinned, "status", undefined, { deadlineMs: REPORTED_HOST_BUDGET_MS, signal: abort.signal });
+        const host = answer.reply.ok === true ? (answer.reply.data as { host?: unknown } | undefined)?.host : undefined;
+        if (answer.responder.instanceId === slot.instanceId && typeof host === "string" && HOST_NAME.test(host)) slot.reportedHost = host;
+      } catch { /* display metadata only: the instance is listed without a host */ }
+    }));
+  } finally { clearTimeout(timer); }
+}
+
 /**
  * Whether the scatter's liveness probe rides a BARE connection, a freshly minted pinned instrument,
  * or nothing at all. The sixth seed reach on the attach path, made explicit.
@@ -579,6 +723,7 @@ async function askManagerScatterEp(
   auth: ControlAuth,
   spaceAuth: SpaceAuth | undefined,
   timeoutMs?: number,
+  reportHosts = false,
 ): Promise<ScatterReply> {
   const mapped = EP_COMMANDS[op];
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
@@ -595,8 +740,8 @@ async function askManagerScatterEp(
       return (await freezeExpectedSet(jsm, space, BASELINE_LIFECYCLE_ENDPOINT)).map((f) => f.instanceId);
     });
   } catch (e) {
-    const { error } = epRailFailure(e);
-    return { ok: false, error: error ?? "error" };
+    const { error, code, unanswered } = epRailFailure(e);
+    return { ok: false, error: error ?? "error", ...(code === undefined ? {} : { code }), ...(unanswered ? { unanswered } : {}), ...(noLiveInstances(e) ? { noLiveManager: true as const } : {}) };
   }
 
   // ---- the LOCAL pinned re-mint, decided by {@link scatterProbeMaterial} rather than inline.
@@ -638,17 +783,18 @@ async function askManagerScatterEp(
       const instances: ScatterInstanceReply[] = [];
       for (const [instanceId, ar] of result.replies) {
         if (ar.reply.ok === true) instances.push({ instanceId, reachable: true, data: ar.reply.data });
-        else instances.push({ instanceId, reachable: true, error: ar.reply.error?.message ?? ar.reply.error?.code ?? "error" });
+        else instances.push({ instanceId, reachable: true, error: ar.reply.error?.message ?? ar.reply.error?.code ?? "error", ...(ar.reply.error?.code ? { code: ar.reply.error.code } : {}) });
       }
       // A frozen instance that never answered is UNREACHABLE — surfaced, never silently dropped
       // (pin 3) — and now carries WHY it is silent, as far as this command could establish it.
       for (const instanceId of result.missing)
         instances.push({ instanceId, reachable: false, liveness: livenessOf(instanceId) });
+      if (reportHosts) await askReportedHosts(nc, space, service, result.replies, instances, probed);
       return { ok: true, instances };
     });
   } catch (e) {
-    const { error } = epRailFailure(e);
-    return { ok: false, error: error ?? "error" };
+    const { error, code, unanswered } = epRailFailure(e);
+    return { ok: false, error: error ?? "error", ...(code === undefined ? {} : { code }), ...(unanswered ? { unanswered } : {}) };
   }
 }
 
@@ -667,20 +813,110 @@ export async function scatterManager(
   auth: ControlAuth = {},
   spaceAuth?: SpaceAuth,
   timeoutMs?: number,
+  opts: { reportHosts?: boolean } = {},
 ): Promise<ScatterReply> {
   const who = controlCaller(auth);
   if ("refusal" in who) return { ok: false, error: who.refusal };
-  return askManagerScatterEp(space, server, op, { ...auth, epCaller: who.caller }, spaceAuth, timeoutMs);
+  return askManagerScatterEp(space, server, op, { ...auth, epCaller: who.caller }, spaceAuth, timeoutMs, opts.reportHosts === true);
+}
+
+/** The refusal `ps` gives, raised before an unpinned operator read when the registry lists no live
+ *  manager, rather than after the read's describe has waited out its whole deadline. Only the
+ *  operator instrument holds the registry rows, so a caller passes a user's manager view or a pinned
+ *  call straight to the read. Any other registry outcome, an unreadable registry included, leaves
+ *  the read to decide. `purpose` completes "no manager is running for this space to …". Returns the
+ *  live instance ids the registry listed, or undefined when it could not be read. */
+export async function refuseWithoutLiveManager(space: string, server: string, auth: ControlAuth, target: unknown, purpose: string): Promise<string[] | undefined> {
+  try {
+    return await liveManagerIds(space, server, auth);
+  } catch (e) {
+    if (!(e instanceof EpEnvelopeError) || !noLiveInstances(e)) return undefined;
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to ${purpose}`, { target, native: { code: e.code, detail: `${e.code}: ${e.message}` }, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
+  }
+}
+
+/** A pinned instance the space's registry does not list has nothing behind it to answer, so the
+ *  command is refused before it waits out the reply deadline, naming the managers that are running.
+ *  A registry this side cannot read leaves the request to settle it. */
+export async function refuseUnregisteredManager(space: string, server: string, auth: ControlAuth, on: string): Promise<void> {
+  let running: string[];
+  try {
+    running = await liveManagerIds(space, server, auth);
+  } catch (e) {
+    if (!(e instanceof EpEnvelopeError) || !noLiveInstances(e)) return;
+    running = [];
+  }
+  if (running.includes(on)) return;
+  const target = { space, requestedManagerInstance: on };
+  // With none running this is the unpinned refusal, which names the same way out.
+  if (running.length === 0)
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space, so --on ${on} names none. Nothing was sent`, { target, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
+  const which = running.length === 1 ? `the one running is ${running[0]}` : `the ones running are ${running.join(", ")}`;
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `--on ${on} names no manager running for space ${space}; ${which}. Nothing was sent`, {
+    target,
+    remedy: running.length === 1 ? `run it again with --on ${running[0]}, or without --on` : "run it again with --on naming one of them",
+  });
+}
+
+/** Whether the broker affirms that nothing is subscribed on manager `instanceId`'s own rail, so its
+ *  registration outlived its host. The probe settles on the broker's no-responders answer, so a gone
+ *  manager costs no reply deadline. A live manager never answers the probe, which then runs its whole
+ *  budget, so a caller that also asks the manager itself passes `signal` and fires it once that
+ *  answer arrives. Any other outcome, an aborted probe or one this credential cannot send included,
+ *  is `false`. */
+export async function managerRailGone(space: string, server: string, auth: ControlAuth, instanceId: string, signal?: AbortSignal): Promise<boolean> {
+  const who = controlCaller(auth);
+  if ("refusal" in who || signal?.aborted) return false;
+  const aborted = new Promise<false>((resolve) => signal?.addEventListener("abort", () => resolve(false), { once: true }));
+  try {
+    return await withControlConnection(server, auth, (nc) => Promise.race([
+      epProbeInstanceInterest(nc, space, BASELINE_LIFECYCLE_ENDPOINT, instanceId, who.caller, { deadlineMs: PROBE_DEADLINE_MS }).then((verdict) => verdict === "gone"),
+      aborted,
+    ]));
+  } catch {
+    return false;
+  }
+}
+
+/** The manager instances the space's registry lists as live, frozen as a scatter freezes them. An
+ *  empty registry throws the registry's own refusal. */
+export async function liveManagerIds(space: string, server: string, auth: ControlAuth): Promise<string[]> {
+  return withControlConnection(server, auth, async (nc) => (await freezeExpectedSet(await jetstreamManager(nc, { checkAPI: false }), space, BASELINE_LIFECYCLE_ENDPOINT)).map((f) => f.instanceId));
+}
+
+/** The stable code a refused manager READ reports, by the endpoint's catalog code. A read has no
+ *  effect, so an outcome the catalog does not classify is a failed read, never an unknown one. */
+const READ_REFUSALS: Readonly<Record<string, RefusalCode>> = {
+  unauthenticated: "AUTH_REQUIRED",
+  "permission-denied": "PERMISSION_DENIED",
+  "not-found": "TARGET_NOT_FOUND",
+  unavailable: "TARGET_UNAVAILABLE",
+  "deadline-exceeded": "TARGET_UNAVAILABLE",
+  unimplemented: "UNSUPPORTED",
+  "contract-mismatch": "UNSUPPORTED",
+  conflict: "CONFLICT",
+};
+
+/** A manager read that did not answer, as the classified failure a structured command reports: the
+ *  same sentence, the endpoint's own code under `error.cause`, and the stale-store hint as its remedy
+ *  when one applies. A request nobody answered carries `deadline-exceeded`, an unavailable target. */
+export function readFailure(reply: { error?: string; code?: string; details?: unknown }, target?: unknown): CommandFailure {
+  const message = reply.error ?? "the manager refused the read";
+  const remedy = staleStoreHint(message);
+  const native = reply.code === undefined && reply.details === undefined ? undefined : { ...(reply.code === undefined ? {} : { code: reply.code }), ...(reply.details === undefined ? {} : { detail: reply.details }) };
+  const opts = { target, ...(remedy ? { remedy } : {}), ...(native ? { native } : {}) };
+  const code = reply.code === undefined ? undefined : READ_REFUSALS[reply.code];
+  return code ? new CommandFailure("refused", code, message, opts) : new CommandFailure("failed", "OPERATION_FAILED", message, opts);
 }
 
 export function failIfNotOk(reply: ControlReply): void {
   if (!reply.ok) {
     const msg = reply.error ?? "error";
-    console.error(c.red(`✗ ${msg}`));
+    stderrLine("✗ ", msg, c.red);
     // A manager-side stale-store durable collision (e.g. `spawn --detach` into a store minted by
     // an older Cotal generation) names its reset - the reply error stays verbatim.
     const hint = staleStoreHint(msg);
-    if (hint) console.error(c.dim(`  ↳ ${hint}`));
+    if (hint) stderrLine("  ↳ ", hint, c.dim);
     process.exit(1);
   }
 }

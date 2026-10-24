@@ -39,8 +39,10 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import semver from "semver";
 import { closureFromConfig, versionUrl } from "./verify-publish-closure.mjs";
 import { isMainEntry } from "./main-entry.mjs";
+import { publicationMap, remainingBudget, withinPublicationBudget } from "./publication-budget.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_REGISTRY = "https://registry.npmjs.org";
@@ -349,6 +351,18 @@ async function hasPackageRecord(pkg, registryBase, fetchImpl) {
   throw new Error(`package record read returned ${response.status}`);
 }
 
+async function readTagVersion(pkg, tag, registryBase, fetchImpl) {
+  if (!semver.valid(pkg.version)) throw new Error("requested package version is not valid semver");
+  const response = await fetchImpl(`${registryBase}/-/package/${encodeURIComponent(pkg.name)}/dist-tags`, { method: "GET", redirect: "manual" });
+  if (response.status !== 200) throw new Error(`dist-tag read returned ${response.status}`);
+  const tags = await response.json();
+  if (!tags || typeof tags !== "object" || Array.isArray(tags)) throw new Error("dist-tag read returned malformed metadata");
+  const current = tags[tag];
+  if (current === undefined) return {};
+  if (typeof current !== "string" || !semver.valid(current)) throw new Error("published dist-tag is not valid semver");
+  return { current, stale: semver.gt(current, pkg.version) };
+}
+
 function blankCensusRow(pkg) {
   return { ...pkg, registry: "not-run", oidc: "not-run", direct: "not-run" };
 }
@@ -380,9 +394,17 @@ export async function preflightNpmPublish({
   registryBase = DEFAULT_REGISTRY,
   env = process.env,
   fetchImpl = fetch,
+  tag = "",
   log = console.log,
+  deadline = Date.now() + 60_000,
+  concurrency = 6,
 }) {
   assertNoNpmAccessToken(env);
+  if (typeof tag !== "string" || (tag && !/^[a-z][a-z0-9._-]*$/i.test(tag))) throw new Error("publication dist-tag is invalid");
+  const timedFetch = async (url, init) => {
+    const response = await withinPublicationBudget((signal) => fetchImpl(url, { ...init, signal }), deadline);
+    return { status: response.status, json: () => withinPublicationBudget(() => response.json(), deadline) };
+  };
   let packages;
   try {
     packages = validateReleaseSet(fixedPackages, workspacePackages);
@@ -395,22 +417,20 @@ export async function preflightNpmPublish({
     })), log);
     throw error;
   }
-  const rows = [];
-  const noRecord = [];
-  const unreadableRecords = [];
-  for (const pkg of packages) {
-    rows.push({
-      ...pkg,
-      registry: await readExactVersion(pkg, registryBase, fetchImpl),
-      oidc: "not-run",
-      direct: "not-run",
-    });
-    try {
-      if (!await hasPackageRecord(pkg, registryBase, fetchImpl)) noRecord.push(pkg.name);
-    } catch (error) {
-      unreadableRecords.push(`${pkg.name}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
+  const inspected = await publicationMap(packages, concurrency, async (pkg) => {
+    const [registry, record, tagVersion] = await Promise.all([
+      readExactVersion(pkg, registryBase, timedFetch),
+      hasPackageRecord(pkg, registryBase, timedFetch)
+        .then((exists) => ({ exists }))
+        .catch((error) => ({ error: `${pkg.name}: ${error instanceof Error ? error.message : String(error)}` })),
+      tag ? readTagVersion(pkg, tag, registryBase, timedFetch)
+        .catch((error) => ({ error: `${pkg.name}: ${error instanceof Error ? error.message : String(error)}` })) : Promise.resolve({}),
+    ]);
+    return { row: { ...pkg, registry, oidc: "not-run", direct: "not-run" }, record, tagVersion };
+  });
+  const rows = inspected.map(({ row }) => row);
+  const noRecord = inspected.filter(({ record }) => record.exists === false).map(({ row }) => row.name);
+  const unreadableRecords = inspected.flatMap(({ record }) => record.error ? [record.error] : []);
 
   const unknown = rows.filter((row) => isUnknownRegistry(row.registry));
   const present = rows.filter((row) => isPresentRegistry(row.registry));
@@ -445,6 +465,16 @@ export async function preflightNpmPublish({
     printPublishCensus(rows, log);
     throw new Error(`package record census was inconclusive: ${unreadableRecords.join(", ")}`);
   }
+  const unreadableTags = inspected.flatMap(({ tagVersion }) => tagVersion.error ? [tagVersion.error] : []);
+  if (unreadableTags.length) {
+    printPublishCensus(rows, log);
+    throw new Error(`dist-tag census was inconclusive: ${unreadableTags.join(", ")}`);
+  }
+  const stale = inspected.filter(({ tagVersion }) => tagVersion.stale);
+  if (stale.length) {
+    printPublishCensus(rows, log);
+    throw new Error(`publish preflight refused: would move ${tag} backwards for ${stale.map(({ row, tagVersion }) => `${row.name} (${tagVersion.current} > ${row.version})`).join(", ")}`);
+  }
   if (registryVerdict === "all-present") {
     printPublishCensus(rows, log);
     log("nothing to publish: every exact version is already on the registry");
@@ -459,12 +489,12 @@ export async function preflightNpmPublish({
       row.direct = "not-run";
     }
   } else if (hasOidcUrl) {
-    for (const row of rows) {
+    await publicationMap(rows, concurrency, async (row) => {
       try {
-        const exchanged = await exchangePackageIdentity(row, registryBase, env, fetchImpl);
+        const exchanged = await exchangePackageIdentity(row, registryBase, env, timedFetch);
         row.oidc = exchanged.oidc;
         if (exchanged.oidc === "exchanged" && exchanged.token) {
-          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, fetchImpl, env);
+          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, timedFetch, env);
         } else {
           row.direct = "not-run";
         }
@@ -472,7 +502,7 @@ export async function preflightNpmPublish({
         row.oidc = `refused:${error instanceof Error ? error.message : String(error)}`;
         row.direct = "not-run";
       }
-    }
+    });
   } else {
     for (const row of rows) {
       row.oidc = "refused:no publish credential path";
@@ -505,13 +535,17 @@ export async function preflightFromRepository({
   registryBase = process.env.npm_config_registry ?? DEFAULT_REGISTRY,
   env = process.env,
   fetchImpl = fetch,
+  tag = "",
   log = console.log,
   exec = execFileSync,
+  deadline = Date.now() + 60_000,
+  concurrency = 6,
 } = {}) {
   assertNoNpmAccessToken(env);
   const fixedPackages = closureFromConfig(readFileSync(join(root, ".changeset", "config.json"), "utf8"));
-  const workspacePackages = workspacePackagesFromPnpm(root, exec);
-  return preflightNpmPublish({ fixedPackages, workspacePackages, registryBase: registryBase.replace(/\/+$/, ""), env, fetchImpl, log });
+  const boundedExec = (file, args, options) => exec(file, args, { ...options, timeout: remainingBudget(deadline), killSignal: "SIGKILL" });
+  const workspacePackages = workspacePackagesFromPnpm(root, boundedExec);
+  return preflightNpmPublish({ fixedPackages, workspacePackages, registryBase: registryBase.replace(/\/+$/, ""), env, fetchImpl, log, deadline, concurrency, tag });
 }
 
 if (isMainEntry(import.meta.url)) {

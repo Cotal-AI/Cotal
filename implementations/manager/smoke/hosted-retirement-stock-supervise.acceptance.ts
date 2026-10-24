@@ -499,7 +499,7 @@ try {
 
   const actor = "stock_retained";
   const lifecycleUid = mintLifecycleUid();
-  const grant = await cotalAuthProvider.grantAgent({
+  const grant = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" },
     store: hostStore, dir: hostDir, space, owner, actor, scope: [], allowSubscribe: [], allowPublish: [],
     parent: `${owner}.cli`, lifecycleUid,
   });

@@ -1,4 +1,9 @@
+import { oneLine } from "@cotal-ai/workspace";
+
 export interface DetachedStatus {
+  root?: string;
+  /** The stack runs from the machine home, which bare `down` does not stop. */
+  machineHome?: boolean;
   pid: number;
   delivery: boolean;
   authService: boolean;
@@ -11,5 +16,18 @@ export function renderDetachedSummary(status: DetachedStatus): string {
   if (status.delivery) components.push("delivery daemon");
   if (status.authService) components.push("user-auth service");
   if (status.manager) components.push("manager");
-  return `✓ running in the background: ${components.join(", ")} - stop with: cotal down`;
+  // The home stack's only stop is --preserve-state, which takes its inventory from a manager.
+  const stop = !status.machineHome ? "cotal down" : status.manager ? "cotal down --preserve-state" : "cotal up to start its manager, then cotal down --preserve-state";
+  return `✓ running in the background: ${components.join(", ")} - ${status.root ? `from ${oneLine(status.root)}, stop with: ${stop}` : `stop with: ${stop}`}`;
+}
+
+/** The steps after a detached boot: launch an agent when its manager runs, and stop the stack the
+ *  way {@link renderDetachedSummary} names. */
+export function detachedNext(status: DetachedStatus, space: string): { command: string; description: string }[] {
+  const items = status.manager ? [{ command: `cotal spawn --space ${space}`, description: "Launch your default agent" }] : [];
+  const where = status.root ? ` from ${oneLine(status.root)}` : "";
+  if (!status.machineHome) items.push({ command: "cotal down", description: `Stop the stack${where}` });
+  else if (status.manager) items.push({ command: "cotal down --preserve-state", description: `Stop the stack${where}` });
+  else items.push({ command: "cotal up", description: "Start its manager, which cotal down --preserve-state needs" });
+  return items;
 }

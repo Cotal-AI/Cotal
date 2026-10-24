@@ -48,7 +48,7 @@ SPACE=frontier COTAL_SERVERS=nats://127.0.0.1:4299 node tools/studio.mjs sven da
 
 ## Quick start (tmux)
 
-Requirements: Node ≥ 20, [OpenCode](https://opencode.ai) (run `opencode auth login` once;
+Requirements: Node ≥ 22, [OpenCode](https://opencode.ai) (run `opencode auth login` once;
 the personas default to `opencode-go/glm-5.1`), and `tmux`. The mesh's `nats-server` is
 bundled by the CLI, so there's nothing else to install.
 

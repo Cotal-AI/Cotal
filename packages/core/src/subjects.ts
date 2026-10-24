@@ -26,8 +26,7 @@
  *
  * Presence lives in a JetStream KV bucket, not a subject (see presenceBucket()).
  */
-
-import { randomBytes } from "node:crypto";
+import { fromPublic } from "@nats-io/nkeys";
 
 const ILLEGAL = /[^A-Za-z0-9_-]/g;
 
@@ -158,9 +157,11 @@ export function assertValidChannel(channel: string): string {
       return;
     }
     if (s === "*") return;
+    // The wildcard segments are named only to a segment that holds one, so a refusal never offers
+    // `*` or `>` to a name that did not try a wildcard.
     if (!/^[A-Za-z0-9_-]+$/.test(s))
       throw new Error(
-        `invalid channel "${channel}": segment "${s}" must be a NATS-safe token ([A-Za-z0-9_-]), '*', or '>' - ` +
+        `invalid channel "${channel}": segment "${s}" must be a NATS-safe token ([A-Za-z0-9_-])${/[*>]/.test(s) ? ", '*', or '>'" : ""} - ` +
           `policy channel names can't contain characters the wire layer would rewrite`,
       );
   });
@@ -249,7 +250,7 @@ export function assertLifecycleToken(v: string, what = "lifecycleUid"): string {
  *  short render in-grammar without losing entropy. The UID is minted ONCE per lifecycle by the
  *  provisioning path and preserved across supervised restarts — never re-minted per process. */
 export function mintLifecycleUid(): string {
-  return assertLifecycleToken(BigInt(`0x${randomBytes(20).toString("hex")}`).toString(36).padStart(26, "0"));
+  return assertLifecycleToken(BigInt(`0x${Array.from(globalThis.crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, "0")).join("")}`).toString(36).padStart(26, "0"));
 }
 
 /** The lifecycle-scoped JetStream-name form `<owner>-<actor>-<lifecycleUid>` (SPEC §13.1 "the UID is
@@ -1012,6 +1013,13 @@ export function connzRequestSubject(accountId: string): string {
   return `$SYS.REQ.ACCOUNT.${accountId}.CONNZ`;
 }
 
+/** The account-census credential and reader share an account-qualified reply namespace. */
+export function accountCensusInboxPrefix(accountId: string): string {
+  const canonical = fromPublic(accountId).getPublicKey();
+  if (canonical !== accountId || !canonical.startsWith("A")) throw new Error("account census requires one account public key");
+  return `_INBOX.cotal-account-census.${accountId}`;
+}
+
 /** Account connection-lifecycle event subjects (`$SYS.ACCOUNT.<accountID>.CONNECT|DISCONNECT`). The
  *  observer subscribes these as **re-poll triggers** only — there is no SUB/UNSUB event, so the periodic
  *  CONNZ poll is the primary signal (these just shorten join/leave-the-mesh latency). Pinned to the one
@@ -1252,6 +1260,38 @@ export function chatDurable(owner: string, actor: string): string {
  *  per-read single `filter_subject` is what the create-time ACL pins to `allowSubscribe`. */
 export function chatHistDurable(owner: string, actor: string, lifecycleUid: string): string {
   return `chathist_${lifecycleNameKey(owner, actor, lifecycleUid)}`;
+}
+
+/** How many history reads one connection runs at once on one stream, and so how many reader
+ *  consumer names its credential may delete there. A read past this many waits for a free name. */
+export const HISTORY_READERS = 8;
+
+/** Consumer name a connection's `channelHistory` / `multiChannelHistory` / `dmHistory` read uses:
+ *  `hist_<readerId>_<slot>`, slot in `[0, HISTORY_READERS)`. The observer and admin profiles hold an
+ *  exact-name `CONSUMER.DELETE` for these names and for no other consumer on the stream (#4123), so
+ *  the reader id must name one authenticated connection. A static credential's is its nkey, which
+ *  its holder proves by signing; an auth-callout connection's is {@link calloutReaderId}. It must be
+ *  one name token. Injective: the slot is the digit after the last `_`. */
+export function historyReaderConsumer(readerId: string, slot: number): string {
+  if (typeof readerId !== "string" || !/^[A-Za-z0-9_-]{1,120}$/.test(readerId))
+    throw new Error(`history reader id ${JSON.stringify(readerId)} must match [A-Za-z0-9_-]{1,120}`);
+  if (!Number.isInteger(slot) || slot < 0 || slot >= HISTORY_READERS)
+    throw new Error(`history reader slot must be an integer in [0, ${HISTORY_READERS}), received ${slot}`);
+  return `hist_${readerId}_${slot}`;
+}
+
+/** The history-reader id of a connection the auth callout admitted: `<serverId>_<clientId>`, the
+ *  admitting server's id and the client id that server assigned the connection. The callout reads
+ *  both from its request and the client reads both from the server's INFO, and the client chooses
+ *  neither. The callout's connId is the inbox nonce the client picked, so keying reader deletes on it
+ *  would let one connection claim another's readers by naming the same nonce. A reconnect is a new
+ *  connection and so gets a new id. */
+export function calloutReaderId(serverId: string, clientId: number): string {
+  if (typeof serverId !== "string" || !/^N[A-Z2-7]{55}$/.test(serverId))
+    throw new Error(`history reader server id ${JSON.stringify(serverId)} is not a server public key`);
+  if (!Number.isSafeInteger(clientId) || clientId < 1)
+    throw new Error(`history reader client id must be a positive integer, received ${JSON.stringify(clientId)}`);
+  return `${serverId}_${clientId}`;
 }
 
 /** Durable consumer name for a lifecycle's private DM inbox — the lifecycle-scoped dash-form

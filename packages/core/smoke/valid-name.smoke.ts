@@ -106,5 +106,14 @@ acceptsChannel(
   `${"cc".repeat(MAX_CHANNEL_LENGTH / 2 - 1)}.x`,
 );
 
+// ── The segment rule names the wildcard segments only to a segment that holds `*` or `>`, so a name
+//    that never tried a wildcard is not offered one.
+refusesChannel("a segment with a space names the token rule without the wildcards", "gen eral", /^invalid channel "gen eral": segment "gen eral" must be a NATS-safe token \(\[A-Za-z0-9_-\]\) - /);
+refusesChannel("a segment with a non-ASCII letter names the token rule without the wildcards", "team.kanäle", /segment "kanäle" must be a NATS-safe token \(\[A-Za-z0-9_-\]\) - /);
+refusesChannel("a segment holding * names the whole-segment wildcards", "team.gen*", /segment "gen\*" must be a NATS-safe token \(\[A-Za-z0-9_-\]\), '\*', or '>' - /);
+refusesChannel("a segment holding > names the whole-segment wildcards", "team.ge>", /segment "ge>" must be a NATS-safe token \(\[A-Za-z0-9_-\]\), '\*', or '>' - /);
+acceptsChannel("a whole * segment and a final > segment stay valid", "team.*.x");
+acceptsChannel("a final > segment stays valid", "team.>");
+
 console.log(`valid-name smoke: ${ok} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

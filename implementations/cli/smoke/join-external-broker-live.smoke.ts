@@ -104,7 +104,7 @@ try {
   check("a public plaintext broker is refused", publicPlain.code === 1, publicPlain.out);
   // Pinned to the classifier's own words. This previously read /cannot encrypt|refused/ and
   // "cannot encrypt" is a string the classifier never emits, so it passed only on the soft arm.
-  check("  the refusal names the address, not the network", /cannot protect/i.test(publicPlain.out), publicPlain.out);
+  check("  the refusal names the address, not the network", publicPlain.out.includes("203.0.113.7 is a public address") && /so the connection must require TLS/.test(publicPlain.out), publicPlain.out);
   const publicForced = await run(["add", "hostile"], { server: "nats://203.0.113.7:4222", root: joinRoot, force: true });
   check("--force does NOT waive the dial policy", publicForced.code === 1, publicForced.out);
   check("nothing was recorded for either attempt", findMesh("hostile") === undefined);
@@ -200,12 +200,12 @@ try {
   check("a held manager-instance lease cannot be taken by another holder", sameInstanceRefused);
 
   // ── (v) local teardown on the joining machine leaves the box's mesh alone ────────────────────
-  // `cotal down` sweeps by root; `pruneMesh` is the liveness sweep. Neither may delete a record
+  // `cotal down` sweeps by root; `pruneMesh` handles mismatches. Neither may delete a record
   // describing a mesh on another machine, because nothing here could write it back.
   const swept = removeMeshesByRoot(joinRoot);
   check("a root sweep (cotal down) removes nothing", swept.length === 0, swept);
   check("  the record survives", findMesh(SPACE) !== undefined);
-  check("a liveness prune refuses to drop it", pruneMesh(SPACE) === false);
+  check("a mismatch prune refuses to drop it", pruneMesh(SPACE) === false);
   check("  the record still survives", findMesh(SPACE) !== undefined);
 
   console.log(`\njoin-external-broker: ${pass} checks passed`);

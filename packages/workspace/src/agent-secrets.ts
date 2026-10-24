@@ -27,7 +27,7 @@ import { basename, dirname, join } from "node:path";
 import { assertLifecycleToken, type SecretStore } from "@cotal-ai/core";
 import { authDir, spaceFromSegment, spaceSegment } from "./auth-paths.js";
 import {
-  migrateLegacyMaterialIn, spaceMaterialMigrationRefusal, type SpaceMaterialComposition,
+  migrateLegacyMaterialIn, spaceMaterialMigrationRefusal, type SpaceMaterialComposition, type MaterialPathOptions,
 } from "./space-segmentation.js";
 
 /** `<root>/.cotal/auth/creds` — the PARENT every space's agent-secret segment sits in, and the
@@ -153,13 +153,13 @@ function legacyAgentSecretFiles(parent: string): string[] {
  * only cost is the enumeration — and it buys a single implementation of the rule instead of a
  * sweep-shaped copy of it.
  */
-export function agentCredsDir(root: string, space: string): string {
+export function agentCredsDir(root: string, space: string, options: MaterialPathOptions = {}): string {
   const parent = agentCredsRoot(root);
   const canonical = join(parent, spaceSegment(space));
   // Cheap gate first, as the prior art does it: a root with no creds dir has nothing to weigh, and
   // one whose creds dir holds no legacy file (every root created after this series) skips straight
   // to the canonical answer without a tenant-count read.
-  for (const file of legacyAgentSecretFiles(parent)) migrateLegacyMaterialIn(parent, root, space, file);
+  for (const file of legacyAgentSecretFiles(parent)) migrateLegacyMaterialIn(parent, root, space, file, options);
   return canonical;
 }
 

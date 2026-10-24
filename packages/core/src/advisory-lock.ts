@@ -240,7 +240,7 @@ interface Attempt {
 }
 
 function newAttempt(path: string, opts: AcquireOptions): Attempt {
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const nonce = randomBytes(12).toString("hex");
   const owner: LockOwner = {
     pid: process.pid,

@@ -84,6 +84,11 @@ export class TmuxRuntime implements Runtime {
       },
     });
 
+    return this.handle(name, windowId, paneId, serverPid);
+  }
+
+  /** The handle for one seat's window. A spawn and an adoption drive the window the same way. */
+  private handle(name: string, windowId: string, paneId: string, serverPid: string): AgentHandle {
     return {
       name,
       kind: "tmux",
@@ -130,6 +135,25 @@ export class TmuxRuntime implements Runtime {
     };
   }
 
+  /** Take back a window an earlier manager opened, by the reference its handle carried (#4095). Only
+   *  the exact seat is adopted: the server that opened it still runs, the pane is still in the
+   *  recorded window, that window is still in this runtime's session, and the pane's process is still
+   *  running. Anything else throws and nothing is touched, so the caller reaps or retires instead.
+   *  The name is the reference's window id; the caller knows the seat's name. */
+  adopt(reference: RuntimeReference): AgentHandle {
+    const { serverPid, windowId, paneId } = parseReference(reference);
+    const running = tmux.serverPid();
+    if (running !== serverPid)
+      throw new Error(`tmux runtime: pane ${paneId} ran on tmux server ${serverPid}, and ${running === undefined ? "no server" : `server ${running}`} runs now`);
+    const paneAt = tmux.paneWindow(paneId);
+    if (paneAt !== windowId)
+      throw new Error(`tmux runtime: pane ${paneId} is ${paneAt === undefined ? "gone" : `in window ${paneAt}`}, not in window ${windowId}`);
+    if (!tmux.windowSessions(windowId).includes(this.session))
+      throw new Error(`tmux runtime: window ${windowId} is not in session "${this.session}"`);
+    if (tmux.paneState(paneId) !== "running") throw new Error(`tmux runtime: pane ${paneId} has exited`);
+    return this.handle(windowId, windowId, paneId, serverPid);
+  }
+
   /** Close a window an earlier manager opened, by the reference its handle carried, and prove the
    *  window and its pane gone. The window decides, not the pane: a pane that exited can leave its
    *  window open (`remain-on-exit`, or another pane split into it), so a window this runtime's
@@ -139,11 +163,7 @@ export class TmuxRuntime implements Runtime {
    *  anything about it. tmux checks the pane and the session again in the command that closes the
    *  window, so a seat whose placement changed after these listings is `absent` too. */
   async reap(reference: RuntimeReference): Promise<{ outcome: "absent" } | { outcome: "reaped"; detail: string }> {
-    if (reference.kind !== "tmux") throw new Error(`cannot reap runtime kind "${reference.kind}" with tmux`);
-    // The ids reach a tmux format and command string, so only tmux's own id shapes pass.
-    const match = /^(\d+)\.(@\d+)\.(%\d+)$/.exec(reference.id);
-    if (!match) throw new Error(`tmux runtime: malformed reference ${JSON.stringify(reference.id)}`);
-    const [, serverPid, windowId, paneId] = match;
+    const { serverPid, windowId, paneId } = parseReference(reference);
     if (tmux.serverPid() !== serverPid) {
       // Another server answers here. The seat is gone only if the server that ran it is gone too.
       try {
@@ -164,6 +184,16 @@ export class TmuxRuntime implements Runtime {
     await tmux.waitForPaneExit(paneId);
     return { outcome: "reaped", detail: `closed tmux window ${windowId}; pane ${paneId} exited` };
   }
+}
+
+/** The parts of a reference this runtime's handle carried. The ids reach a tmux format and command
+ *  string, so only tmux's own id shapes pass. */
+function parseReference(reference: RuntimeReference): { serverPid: string; windowId: string; paneId: string } {
+  if (reference.kind !== "tmux") throw new Error(`cannot address runtime kind "${reference.kind}" with tmux`);
+  const match = /^(\d+)\.(@\d+)\.(%\d+)$/.exec(reference.id);
+  if (!match) throw new Error(`tmux runtime: malformed reference ${JSON.stringify(reference.id)}`);
+  const [, serverPid, windowId, paneId] = match;
+  return { serverPid, windowId, paneId };
 }
 
 /** Self-registering runtime provider — `import "@cotal-ai/tmux"` makes the manager's

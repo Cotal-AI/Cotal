@@ -13,7 +13,13 @@
  *   - each call runs on its connection's own channels, and the advertised send default names none;
  *   - two connections of one account are independent mesh identities;
  *   - disconnect closes one connection and leaves the other working;
- *   - only the remote subset is offered, and the orientation card says so;
+ *   - only the remote subset is offered, and the orientation card says so; the docs it points to
+ *     are offered and answer; connect names the connection's own access;
+ *   - cotal_wait returns a message as soon as it arrives, at once when one is waiting, and after its
+ *     bound with none; it follows attention, counts a focus @mention that landed between waits,
+ *     ignores a run turn the gateway cannot surface, ends when its connection closes, and leaves
+ *     no listener behind; a wait or read whose client is gone clears nothing; every other tool
+ *     says when messages are waiting;
  *   - the handler answers POST with JSON and the default instructions, and every other method 405.
  *
  * Run: pnpm smoke:gateway
@@ -25,13 +31,16 @@ import { mkdtempSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { CotalEndpoint, isReachable, mintLifecycleUid, type CotalMessage, type Delivery } from "@cotal-ai/core";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
-import { GATEWAY_INSTRUCTIONS, NameTaken, handleGatewayRequest, type GatewayConnection, type GatewayHost } from "../src/gateway.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ApprovalRequired, GATEWAY_INSTRUCTIONS, NameTaken, handleGatewayRequest, registerCotalGatewayTools, serveGatewayStdio, type GatewayConnection, type GatewayHost } from "../src/gateway.js";
+import { DOCS_VERSION } from "../src/docs.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -43,6 +52,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
+// A second broker for the "severed" connection alone, so one cell can take its transport away.
+const SEVERED_PORT = await pickFreePort();
+const severedServers = `nats://127.0.0.1:${SEVERED_PORT}`;
+const severedDir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+const severedSrv = spawn("nats-server", ["-js", "-p", String(SEVERED_PORT), "-sd", join(severedDir, "js")], { stdio: "ignore" });
+const releaseSeveredBroker = teardownOnSignal(severedSrv, severedDir);
+// The bound this embedder sets for cotal_wait, short enough for a suite and long enough for a DM.
+const WAIT = 20;
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -58,7 +75,7 @@ const configFor = (name: string): AgentConfig => {
   return {
   space,
   name,
-  servers,
+  servers: name.startsWith("severed") ? severedServers : servers,
   subscribe: [channel],
   allowSubscribe: [channel],
   allowPublish: [channel],
@@ -76,15 +93,27 @@ const BEARERS: Record<string, string> = { "tok-a": "acct_a", "tok-b": "acct_b" }
 const live = new Map<string, { account: string; conn: GatewayConnection }>();
 const opened: string[] = [];
 const reserved = new Set<string>();
+const pendingApproval = { requestId: "approval-request-0123456789012345", proposed: null,
+  approval: { id: "a".repeat(26), url: `https://authority.example/approve/${"a".repeat(26)}`, expiresAt: "2099-01-01T00:00:00.000Z" } };
+const resumedApprovals: string[] = [];
 const host: GatewayHost = {
   account(auth: AuthInfo | undefined): string {
     const account = auth?.extra?.account;
     if (typeof account !== "string") throw new Error("no valid bearer");
     return account;
   },
-  async open(account, name) {
+  async open(account, name, _context, _selection, approvalId) {
     opened.push(`${account}/${name}`);
+    if (name === "approval_probe") {
+      if (approvalId) {
+        resumedApprovals.push(`${account}/${approvalId}`);
+        throw new Error("the authority has not recorded the person's approval");
+      }
+      throw new ApprovalRequired(pendingApproval);
+    }
+    if (name === "approval_collision") throw new NameTaken(name);
     if (name === "quota_probe") throw new Error("quota exceeded");
+    if (name === "business-model") throw new Error("Cloud agent names must be 1–64 lowercase letters, numbers, or underscores; dots and hyphens are not allowed.");
     if (name === "full" || name.startsWith("full_")) throw new NameTaken(name);
     const key = `${account}/${name}`;
     if (reserved.has(key)) throw new NameTaken(name);
@@ -130,7 +159,7 @@ const http = createServer(async (req, res) => {
   const token = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
   const account = token ? BEARERS[token] : undefined;
   const auth: AuthInfo | undefined = account ? { token: token!, clientId: "smoke", scopes: [], extra: { account } } : undefined;
-  await handleGatewayRequest(host, { req, res, body: req.method === "POST" ? await readBody(req) : undefined, ...(auth ? { auth } : {}) });
+  await handleGatewayRequest(host, { req, res, body: req.method === "POST" ? await readBody(req) : undefined, waitSeconds: WAIT, approvalResume: true, ...(auth ? { auth } : {}) });
 });
 const httpPort = await new Promise<number>((resolve) => http.listen(0, "127.0.0.1", () => resolve((http.address() as { port: number }).port)));
 const url = new URL(`http://127.0.0.1:${httpPort}/mcp`);
@@ -164,6 +193,7 @@ observer.on("message", (m: CotalMessage, d: Delivery) => {
 let failure: unknown;
 try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
+  await awaitBrokerReady(() => isReachable(severedServers), { servers: severedServers, attempts: 50, delayMs: 200 });
   await observer.start();
 
   const a = await clientFor("tok-a");
@@ -172,6 +202,7 @@ try {
 
   // ---- the handler ----
   check("the handler sends the default instructions", a.getInstructions() === GATEWAY_INSTRUCTIONS, a.getInstructions());
+  check("the handler's serverInfo names the loaded Cotal release", a.getServerVersion()?.name === "cotal" && a.getServerVersion()?.version === DOCS_VERSION, a.getServerVersion());
   for (const method of ["GET", "DELETE"]) {
     const r = await fetch(url, { method, headers: { authorization: "Bearer tok-a", accept: "text/event-stream, application/json" } });
     const allow = r.headers.get("allow");
@@ -190,12 +221,23 @@ try {
   // ---- the offered surface ----
   const tools = (await a.listTools()).tools;
   const names = new Set(tools.map((t) => t.name));
+  const readOnly = new Set(["cotal_orientation", "cotal_connection_status", "cotal_roster", "cotal_docs", "cotal_channel_info", "cotal_channels"]);
+  const additive = new Set(["cotal_connect", "cotal_send", "cotal_dm", "cotal_anycast", "cotal_join"]);
+  const destructive = new Set(["cotal_disconnect", "cotal_wait", "cotal_inbox", "cotal_status", "cotal_channel_mode", "cotal_leave"]);
+  check(
+    "every gateway tool declares its read and update effects",
+    tools.length === readOnly.size + additive.size + destructive.size && tools.every((t) =>
+      (readOnly.has(t.name) || additive.has(t.name) || destructive.has(t.name)) &&
+      t.annotations?.readOnlyHint === readOnly.has(t.name) &&
+      t.annotations?.destructiveHint === destructive.has(t.name)),
+    tools.map((t) => ({ name: t.name, annotations: t.annotations })),
+  );
   check("connect and disconnect are offered", names.has("cotal_connect") && names.has("cotal_disconnect"));
   check("seat authority is not offered", !["cotal_spawn", "cotal_despawn", "cotal_persona", "cotal_run", "cotal_reconnect", "cotal_yield"].some((n) => names.has(n)));
   const routed = tools.filter((t) => t.name !== "cotal_connect");
   check(
     "every routed tool requires connection_id",
-    routed.length === 14 && routed.every((t) => (t.inputSchema.required ?? []).includes("connection_id")),
+    routed.length === 16 && routed.every((t) => (t.inputSchema.required ?? []).includes("connection_id")),
     routed.map((t) => t.name),
   );
 
@@ -208,6 +250,7 @@ try {
   const first = await call(a, "cotal_connect", { name: "claude" });
   const id1 = idOf(first);
   check("the requested name is used when free", !first.isError && first.text.startsWith("Connected as claude.") && id1 !== "", first);
+  check("connect names the connection's own read, join and post access", first.text.includes("\nReads #lobby; may join #lobby; may post to #lobby."), first);
   const second = await call(a, "cotal_connect", { name: "claude" });
   const id2 = idOf(second);
   check("a taken name moves to the next one and says so", !second.isError && second.text.startsWith('Connected as claude_2 ("claude" was taken).'), second);
@@ -216,6 +259,9 @@ try {
   const quota = await call(a, "cotal_connect", { name: "quota_probe" });
   check("a non-collision failure is reported", quota.isError && quota.text.includes("quota exceeded"), quota);
   check("a non-collision failure is not retried under another name", !opened.includes("acct_a/quota_probe_2") && opened.filter((o) => o === "acct_a/quota_probe").length === 1, opened);
+  const cloudInvalid = await call(a, "cotal_connect", { name: "business-model" });
+  check("an embedder's stricter name error reaches the real MCP caller unchanged", cloudInvalid.isError && cloudInvalid.text === 'cotal_connect failed for "business-model": Cloud agent names must be 1–64 lowercase letters, numbers, or underscores; dots and hyphens are not allowed.', cloudInvalid);
+  check("an embedder's name validation refusal is neither retried nor reserved", opened.filter((o) => o === "acct_a/business-model").length === 1 && !opened.includes("acct_a/business-model_2") && !reserved.has("acct_a/business-model"), opened);
   const other = await call(b, "cotal_connect", { name: "claude" });
   check("another account's names are its own", !other.isError && other.text.startsWith("Connected as claude."), other);
   const idB = idOf(other);
@@ -232,6 +278,32 @@ try {
   const burst = await Promise.all(Array.from({ length: 4 }, () => call(a, "cotal_connect", { name: "burst" })));
   const burstNames = burst.map((r) => /^Connected as (\S+?)[. ]/.exec(r.text)?.[1] ?? "").sort();
   check("concurrent connects get distinct names", burstNames.join(",") === "burst,burst_2,burst_3,burst_4", burst);
+
+  // ---- permission requests are not connections ----
+  const beforeApproval = live.size;
+  const pendingResult = await a.callTool({ name: "cotal_connect", arguments: { name: "approval_probe" } });
+  const approvalBody = pendingResult.structuredContent as Record<string, unknown>;
+  const approvalText = (pendingResult.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("\n");
+  check("pending approval returns the person's link and no usable connection", !pendingResult.isError &&
+    approvalBody.status === "pending" && approvalBody.name === "approval_probe" &&
+    approvalBody.requestId === pendingApproval.requestId && !("connection_id" in approvalBody) &&
+    approvalText.includes(pendingApproval.approval.url) && approvalText.includes("not connected") && live.size === beforeApproval);
+  check("structured-only clients receive the same person-only approval and retry instructions", typeof approvalBody.message === "string" &&
+    approvalBody.message.includes("do not open the decision page or approve on their behalf") &&
+    approvalBody.message.includes("retry cotal_connect") && approvalBody.message.includes("Do not poll") &&
+    approvalBody.message.includes(pendingApproval.approval.id));
+  check("pending approval never renames or issues", opened.filter((o) => o === "acct_a/approval_probe").length === 1 &&
+    !opened.includes("acct_a/approval_probe_2") && !reserved.has("acct_a/approval_probe"));
+  const resume = await call(a, "cotal_connect", { name: "approval_probe", approval_id: pendingApproval.approval.id });
+  check("approval_id reaches the host but cannot approve its request", resume.isError &&
+    resume.text.includes("has not recorded") && resumedApprovals[0] === `acct_a/${pendingApproval.approval.id}` && live.size === beforeApproval);
+  const changedName = await call(a, "cotal_connect", { name: "approval_collision", approval_id: pendingApproval.approval.id });
+  check("an approval resume never renames on collision", changedName.isError && changedName.text.includes("new permission approval") &&
+    !opened.includes("acct_a/approval_collision_2"));
+  const beforeSelfApproval = opened.length;
+  const selfApproval = await call(a, "cotal_connect", { name: "approval_probe", approved: true }).catch(() => ({ isError: true, text: "schema refusal" }));
+  const foreignFlag = await call(a, "cotal_connect", { name: "approval_probe", approval_id: "INVALID" }).catch(() => ({ isError: true, text: "schema refusal" }));
+  check("self-approval flags and invalid resume handles run nothing", selfApproval.isError && foreignFlag.isError && opened.length === beforeSelfApproval);
 
   // ---- no fallback ----
   const missing = await a.callTool({ name: "cotal_roster", arguments: {} }).then(
@@ -285,6 +357,327 @@ try {
   const card = await call(a, "cotal_orientation", { connection_id: id2 });
   check("orientation names this connection", card.text.includes("claude_2"), card.text.slice(0, 400));
   check("orientation lists only offered tools", card.text.includes("cotal_inbox") && !card.text.includes("cotal_spawn") && !card.text.includes("cotal_reconnect"), card.text);
+  // The card tells every agent to call cotal_docs, so the gateway must offer it and it must answer.
+  check("orientation recommends cotal_docs and lists it as offered", card.text.includes("call cotal_docs") && /Tools — more: .*cotal_docs/.test(card.text), card.text);
+  const docs = await call(a, "cotal_docs", { connection_id: id2, page: "spec" });
+  check("cotal_docs answers through the gateway with the bundled page", !docs.isError && docs.text.includes(`(bundled v${DOCS_VERSION})`), docs.text.slice(0, 300));
+
+  // ---- listening ----
+  const listener = idOf(await call(a, "cotal_connect", { name: "listener" }));
+  const talker = idOf(await call(a, "cotal_connect", { name: "talker" }));
+  const listenerAgent = live.get(listener)!.conn.agent;
+  for (let i = 0; i < 30; i++) {
+    if ((await call(a, "cotal_roster", { connection_id: talker })).text.includes("listener")) break;
+    await sleep(200);
+  }
+  const waitTool = tools.find((t) => t.name === "cotal_wait");
+  const waitMax = ((waitTool?.inputSchema.properties as Record<string, { maximum?: number }> | undefined)?.seconds ?? {}).maximum;
+  check(
+    "cotal_wait is offered, needs connection_id and is bounded by the embedder",
+    !!waitTool && (waitTool.inputSchema.required ?? []).includes("connection_id") && waitMax === WAIT,
+    waitTool,
+  );
+  const tooLong = await call(a, "cotal_wait", { connection_id: listener, seconds: WAIT + 1 }).catch((e: unknown) => ({ isError: true, text: String(e) }));
+  check("a wait past the bound is refused", tooLong.isError, tooLong);
+  const unknownWait = await call(a, "cotal_wait", { connection_id: "not-a-connection" });
+  check("a wait on an unknown connection_id is refused", unknownWait.isError && unknownWait.text.startsWith("CONNECTION_REQUIRED"), unknownWait);
+  const anonWait = await call(anon, "cotal_wait", { connection_id: listener });
+  check("an unauthenticated wait is refused", anonWait.isError && anonWait.text.startsWith("not authenticated"), anonWait);
+  let threw = "";
+  try {
+    registerCotalGatewayTools(new McpServer({ name: "x", version: "0" }), host, "gateway", { waitSeconds: 0 });
+  } catch (e) {
+    threw = String(e);
+  }
+  check("an embedder's bound below one second is refused", threw.includes("waitSeconds"), threw);
+
+  let started = Date.now();
+  const quiet = await call(a, "cotal_wait", { connection_id: listener, seconds: 1 });
+  const quietMs = Date.now() - started;
+  check("a wait with nothing to read returns after its bound", !quiet.isError && quiet.text.startsWith("No new messages in 1 second.") && quietMs >= 900 && quietMs < 4000, { quiet, quietMs });
+  // Taken after the first wait, which starts the gateway's one lasting focus @mention listener.
+  const baseListeners = ["incoming", "mention-wake", "stopping"].map((e) => listenerAgent.listenerCount(e)).join(",");
+
+  const listening = call(a, "cotal_wait", { connection_id: listener });
+  await sleep(500);
+  started = Date.now();
+  await call(a, "cotal_dm", { connection_id: talker, to: "listener", text: "wake-up-listener" });
+  const woke = await listening;
+  const wokeMs = Date.now() - started;
+  check("a direct message ends the wait and comes back with it", !woke.isError && woke.text.includes("wake-up-listener") && wokeMs < 5000, { woke, wokeMs });
+  const cleared = await call(a, "cotal_inbox", { connection_id: listener, peek: true });
+  check("the message the wait returned was cleared", cleared.text.startsWith("Inbox empty"), cleared);
+
+  const peekFor = async (text: string): Promise<boolean> => {
+    for (let i = 0; i < 30; i++) {
+      if ((await call(a, "cotal_inbox", { connection_id: listener, peek: true })).text.includes(text)) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+  await call(a, "cotal_dm", { connection_id: talker, to: "listener", text: "already-waiting" });
+  const arrived = await peekFor("already-waiting");
+  started = Date.now();
+  const ready = await call(a, "cotal_wait", { connection_id: listener });
+  check("a message already waiting is returned at once", arrived && ready.text.includes("already-waiting") && Date.now() - started < 2000, ready);
+
+  await call(a, "cotal_dm", { connection_id: talker, to: "listener", text: "notice-probe" });
+  await peekFor("notice-probe");
+  const noticed = await call(a, "cotal_roster", { connection_id: listener });
+  check("another tool's result says a message is waiting", noticed.text.includes("1 new message waiting. Read it with cotal_inbox."), noticed);
+  await call(a, "cotal_inbox", { connection_id: listener });
+  const quietRoster = await call(a, "cotal_roster", { connection_id: listener });
+  check("the notice is gone once the message is read", !quietRoster.text.includes("new message"), quietRoster);
+
+  await call(a, "cotal_status", { connection_id: listener, attention: "dnd" });
+  const dndWait = call(a, "cotal_wait", { connection_id: listener, seconds: 2 });
+  await sleep(300);
+  await call(a, "cotal_send", { connection_id: talker, text: "lobby-chatter", channel: "lobby" });
+  const dndResult = await dndWait;
+  check("in dnd attention, channel chatter does not end the wait", dndResult.text.startsWith("No new messages"), dndResult);
+  await call(a, "cotal_status", { connection_id: listener, attention: "open" });
+  const openResult = await call(a, "cotal_wait", { connection_id: listener, seconds: 2 });
+  check("in open attention, the same chatter ends it", openResult.text.includes("lobby-chatter"), openResult);
+  await call(a, "cotal_status", { connection_id: listener, attention: "focus" });
+  const focusWait = call(a, "cotal_wait", { connection_id: listener, seconds: 5 });
+  await sleep(300);
+  started = Date.now();
+  await call(a, "cotal_send", { connection_id: talker, text: "focus-mention", channel: "lobby", mentions: ["listener"] });
+  const focusResult = await focusWait;
+  check("in focus attention, an @mention ends the wait and comes back with it", focusResult.text.includes("focus-mention") && Date.now() - started < 4000, focusResult);
+  const afterRead = await call(a, "cotal_wait", { connection_id: listener, seconds: 1 });
+  check("a read clears the focus @mentions it carried", afterRead.text.startsWith("No new messages"), afterRead);
+  await call(a, "cotal_status", { connection_id: listener, attention: "open" });
+
+  // A client that gives up on a wait closes its request, as Claude Code does at its 60 s timer. The
+  // `stopping` listener is the wait's own, so its count shows whether the wait still holds.
+  const beforeDrop = listenerAgent.listenerCount("stopping");
+  const dropping = new AbortController();
+  const dropped = fetch(url, {
+    method: "POST",
+    signal: dropping.signal,
+    headers: { authorization: "Bearer tok-a", "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 77, method: "tools/call", params: { name: "cotal_wait", arguments: { connection_id: listener } } }),
+  }).catch(() => undefined);
+  await sleep(500);
+  dropping.abort();
+  await dropped;
+  await sleep(300);
+  check("a wait its client dropped stops listening", listenerAgent.listenerCount("stopping") === beforeDrop);
+  await call(a, "cotal_dm", { connection_id: talker, to: "listener", text: "after-a-dropped-wait" });
+  check("a wait its client dropped does not take the next message", await peekFor("after-a-dropped-wait"));
+  await call(a, "cotal_inbox", { connection_id: listener });
+
+  // A client that gives up after a message woke the wait, while the read is still under way. In
+  // focus the read first fetches channel history, so the abort is made to land during that fetch.
+  await call(a, "cotal_status", { connection_id: listener, attention: "focus" });
+  const midRead = new AbortController();
+  const recall = listenerAgent.recallAmbient.bind(listenerAgent);
+  listenerAgent.recallAmbient = async (...args: Parameters<typeof recall>) => {
+    midRead.abort();
+    await sleep(300);
+    return recall(...args);
+  };
+  const abandoned = fetch(url, {
+    method: "POST",
+    signal: midRead.signal,
+    headers: { authorization: "Bearer tok-a", "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 78, method: "tools/call", params: { name: "cotal_wait", arguments: { connection_id: listener } } }),
+  }).catch(() => undefined);
+  await sleep(500);
+  await call(a, "cotal_dm", { connection_id: talker, to: "listener", text: "woke-a-dropped-read" });
+  await abandoned;
+  await sleep(800);
+  Reflect.deleteProperty(listenerAgent, "recallAmbient");
+  check("a read its client dropped clears nothing it could not hand over", await peekFor("woke-a-dropped-read"));
+  await call(a, "cotal_status", { connection_id: listener, attention: "open" });
+  await call(a, "cotal_inbox", { connection_id: listener });
+
+  // A client that leaves before the wait begins, while the host is still looking the connection up.
+  const beforeEarly = listenerAgent.listenerCount("stopping");
+  const early = new AbortController();
+  const find = host.find;
+  host.find = async (...args) => {
+    early.abort();
+    await sleep(300);
+    return find(...args);
+  };
+  await fetch(url, {
+    method: "POST",
+    signal: early.signal,
+    headers: { authorization: "Bearer tok-a", "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 79, method: "tools/call", params: { name: "cotal_wait", arguments: { connection_id: listener } } }),
+  }).catch(() => undefined);
+  await sleep(600);
+  host.find = find;
+  check("a wait whose client left before it began does not start", listenerAgent.listenerCount("stopping") === beforeEarly);
+  await call(a, "cotal_dm", { connection_id: talker, to: "listener", text: "after-an-early-drop" });
+  check("a wait whose client left before it began does not take the next message", await peekFor("after-an-early-drop"));
+  await call(a, "cotal_inbox", { connection_id: listener });
+
+  // A focus @mention is acked at ingest, so one that lands between two waits is counted by the gateway.
+  await call(a, "cotal_status", { connection_id: listener, attention: "focus" });
+  await call(a, "cotal_send", { connection_id: talker, text: "mention-between-waits", channel: "lobby", mentions: ["listener"] });
+  let between: CallResult = { isError: false, text: "" };
+  for (let i = 0; i < 30 && !between.text.includes("1 new message waiting"); i++) {
+    await sleep(100);
+    between = await call(a, "cotal_roster", { connection_id: listener });
+  }
+  check("a focus @mention between waits shows in the unread line", between.text.includes("1 new message waiting"), between);
+  // A read whose client leaves during recall clears nothing, the count included.
+  const keptRead = new AbortController();
+  const recallAgain = listenerAgent.recallAmbient.bind(listenerAgent);
+  listenerAgent.recallAmbient = async (...args: Parameters<typeof recallAgain>) => {
+    keptRead.abort();
+    await sleep(300);
+    return recallAgain(...args);
+  };
+  await fetch(url, {
+    method: "POST",
+    signal: keptRead.signal,
+    headers: { authorization: "Bearer tok-a", "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 80, method: "tools/call", params: { name: "cotal_inbox", arguments: { connection_id: listener } } }),
+  }).catch(() => undefined);
+  await sleep(800);
+  Reflect.deleteProperty(listenerAgent, "recallAmbient");
+  const stillCounted = await call(a, "cotal_roster", { connection_id: listener });
+  check("a read its client dropped keeps the focus @mention count", stillCounted.text.includes("1 new message waiting"), stillCounted);
+  const caughtAt = Date.now();
+  const caught = await call(a, "cotal_wait", { connection_id: listener, seconds: 5 });
+  check("a focus @mention between waits ends the next wait at once", caught.text.includes("mention-between-waits") && Date.now() - caughtAt < 2000, caught);
+  await call(a, "cotal_status", { connection_id: listener, attention: "open" });
+
+  // A wait on a connection whose agent already stopped refuses at once. The host still finds it, as
+  // one can between a lookup and a close that runs beside it.
+  const stoppedSeat = idOf(await call(a, "cotal_connect", { name: "stopped_seat" }));
+  await live.get(stoppedSeat)!.conn.agent.stop();
+  const stoppedAt = Date.now();
+  const stoppedWait = await call(a, "cotal_wait", { connection_id: stoppedSeat });
+  check(
+    "a wait on an already-stopped connection refuses at once",
+    stoppedWait.isError && stoppedWait.text.startsWith("CONNECTION_REQUIRED") && Date.now() - stoppedAt < 2000,
+    stoppedWait,
+  );
+  await call(a, "cotal_disconnect", { connection_id: stoppedSeat });
+
+  // Closing a connection ends a wait held on it.
+  const closer = idOf(await call(a, "cotal_connect", { name: "closer" }));
+  const closing = call(a, "cotal_wait", { connection_id: closer });
+  await sleep(500);
+  const closedAt = Date.now();
+  await call(a, "cotal_disconnect", { connection_id: closer });
+  const closed = await closing;
+  check(
+    "disconnecting ends a held wait as a closed connection",
+    closed.isError && closed.text.startsWith("CONNECTION_REQUIRED") && Date.now() - closedAt < 3000,
+    closed,
+  );
+
+  // A connection whose transport is already down when it closes still ends a wait held on it: its
+  // agent's stop then has no transport left to report going down.
+  const severedSeat = idOf(await call(a, "cotal_connect", { name: "severed_seat" }));
+  const severedAgent = live.get(severedSeat)!.conn.agent;
+  await killAndAwaitExit(severedSrv);
+  for (let i = 0; i < 50 && severedAgent.transportConnected; i++) await sleep(100);
+  check("the stopped broker takes that connection's transport down", !severedAgent.transportConnected);
+  const severedWait = call(a, "cotal_wait", { connection_id: severedSeat });
+  await sleep(500);
+  const severedAt = Date.now();
+  const severedClose = call(a, "cotal_disconnect", { connection_id: severedSeat });
+  const severedEnded = await severedWait;
+  check(
+    "disconnecting a connection whose transport is down ends its held wait",
+    severedEnded.isError && severedEnded.text.startsWith("CONNECTION_REQUIRED") && Date.now() - severedAt < 3000,
+    { ...severedEnded, ms: Date.now() - severedAt },
+  );
+  await severedClose;
+
+  // A run turn the gateway has no way to surface. Set by hand: a gateway connection cannot take one
+  // through any tool it offers, so this is the only way to hold one open here.
+  const turns = (listenerAgent as unknown as { activeTurns: Map<string, unknown> }).activeTurns;
+  turns.set("smoke-turn", { goalId: "smoke-turn", payload: {}, acceptedAt: Date.now(), deadlineAt: Date.now() + 60_000, surfaced: false });
+  const turnWait = await call(a, "cotal_wait", { connection_id: listener, seconds: 1 });
+  check(
+    "a run turn the gateway cannot surface does not end the wait",
+    listenerAgent.pendingWake() > 0 && turnWait.text.startsWith("No new messages"),
+    turnWait,
+  );
+  turns.delete("smoke-turn");
+  check(
+    "a finished wait leaves no listener on the agent",
+    ["incoming", "mention-wake", "stopping"].map((e) => listenerAgent.listenerCount(e)).join(",") === baseListeners,
+    baseListeners,
+  );
+
+  // ---- stdio ----
+  // A local client launches the gateway and speaks JSON-RPC over its pipes, with no authentication.
+  const toServer = new PassThrough();
+  const fromServer = new PassThrough();
+  const local: GatewayHost = { ...host, account: (auth) => (auth === undefined ? "acct_a" : host.account(auth)) };
+  const stdio = await serveGatewayStdio(local, { input: toServer, output: fromServer, waitSeconds: WAIT });
+  const answers = new Map<number, (m: { result?: { content?: { text: string }[]; isError?: boolean; tools?: { name: string }[] } }) => void>();
+  let pending = "";
+  fromServer.on("data", (chunk: Buffer) => {
+    pending += chunk.toString("utf8");
+    for (let at = pending.indexOf("\n"); at >= 0; at = pending.indexOf("\n")) {
+      const m = JSON.parse(pending.slice(0, at));
+      pending = pending.slice(at + 1);
+      answers.get(m.id)?.(m);
+    }
+  });
+  const send = (m: object) => toServer.write(`${JSON.stringify({ jsonrpc: "2.0", ...m })}\n`);
+  let nextId = 1;
+  // Unanswered after 10 s, a call resolves empty, so a server that never answers fails a named check.
+  const rpc = (method: string, params: object) =>
+    new Promise<Parameters<NonNullable<ReturnType<typeof answers.get>>>[0]>((resolve) => {
+      const id = nextId++;
+      const timer = setTimeout(() => resolve({}), 10_000);
+      answers.set(id, (m) => {
+        clearTimeout(timer);
+        resolve(m);
+      });
+      send({ id, method, params });
+    });
+  const tool = async (name: string, args: object) => {
+    const r = await rpc("tools/call", { name, arguments: args });
+    return { text: (r.result?.content ?? []).map((c) => c.text).join("\n"), isError: r.result?.isError === true };
+  };
+  const hello = (await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "stdio-smoke", version: "0" } })) as { result?: { instructions?: string; serverInfo?: { name?: string; version?: string } } };
+  check("the stdio server sends the default instructions", hello.result?.instructions === GATEWAY_INSTRUCTIONS, hello.result?.instructions);
+  check("the stdio server's serverInfo names the loaded Cotal release", hello.result?.serverInfo?.name === "cotal" && hello.result?.serverInfo?.version === DOCS_VERSION, hello.result?.serverInfo);
+  send({ method: "notifications/initialized" });
+  const stdioTools = (await rpc("tools/list", {})).result?.tools?.map((t) => t.name) ?? [];
+  check("the stdio server offers the gateway surface", ["cotal_connect", "cotal_wait", "cotal_inbox"].every((n) => stdioTools.includes(n)), stdioTools);
+  const seat = idOf(await tool("cotal_connect", { name: "stdio_seat" }));
+  check("a stdio call with no authentication connects as the local user", seat !== "" && live.get(seat)?.account === "acct_a", seat);
+  for (let i = 0; i < 30; i++) {
+    if ((await call(a, "cotal_roster", { connection_id: talker })).text.includes("stdio_seat")) break;
+    await sleep(200);
+  }
+  // A held wait the client cancels stops listening, so it does not take the next message.
+  const cancelledId = nextId++;
+  send({ id: cancelledId, method: "tools/call", params: { name: "cotal_wait", arguments: { connection_id: seat } } });
+  const seatAgent = live.get(seat)!.conn.agent;
+  const idle = seatAgent.listenerCount("incoming");
+  let held = false;
+  for (let i = 0; i < 25 && !held; i++) {
+    await sleep(100);
+    held = seatAgent.listenerCount("incoming") > idle;
+  }
+  send({ method: "notifications/cancelled", params: { requestId: cancelledId, reason: "smoke" } });
+  await sleep(300);
+  check("a cancelled stdio wait was listening and stopped", held && seatAgent.listenerCount("incoming") === idle, { held, idle });
+  await call(a, "cotal_dm", { connection_id: talker, to: "stdio_seat", text: "after-a-cancelled-wait" });
+  let kept = false;
+  for (let i = 0; i < 25 && !kept; i++) {
+    kept = (await tool("cotal_inbox", { connection_id: seat, peek: true })).text.includes("after-a-cancelled-wait");
+    if (!kept) await sleep(200);
+  }
+  check("a wait the stdio client cancels does not take the next message", kept);
+  const stdioWoke = await tool("cotal_wait", { connection_id: seat, seconds: 2 });
+  check("a stdio wait returns a waiting message", stdioWoke.text.includes("after-a-cancelled-wait"), stdioWoke);
+  await tool("cotal_disconnect", { connection_id: seat });
+  await stdio.close();
 
   // ---- disconnect ----
   const wrongOwner = await call(b, "cotal_disconnect", { connection_id: id2 });
@@ -311,6 +704,8 @@ try {
   await observer.stop().catch(() => {});
   await killAndAwaitExit(srv);
   releaseBroker();
+  await killAndAwaitExit(severedSrv);
+  releaseSeveredBroker();
 }
 if (failure !== undefined) {
   console.error(failure);

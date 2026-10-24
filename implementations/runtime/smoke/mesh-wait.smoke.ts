@@ -469,6 +469,12 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
   const evil = await refuse({ event: "message", channel: CHANNEL, matches: "^(a+)+$" });
   c("and a `matches` pattern outside the bounded-regex subset is refused before it is ever run",
     evil?.message.includes("bounded regular expression") === true, evil?.message?.slice(0, 70));
+  const text = await refuse("never-sent");
+  c("a value that is not an event is refused by name, not with a host TypeError",
+    text?.message.startsWith("wait() takes an event") === true && text.message.includes('"never-sent"'), text?.message?.slice(0, 160));
+  const unbuilt = await refuse({ event: "message", channel: 5 });
+  c("and so is a record written to look like an event, whose channel is not a name",
+    unbuilt?.message.startsWith("wait() takes an event") === true, unbuilt?.message?.slice(0, 160));
 }
 
 // ── 10) A BIND THAT IS REFUSED DOES NOT THROW THE MATCH AWAY ──────────────────────────────────
@@ -873,7 +879,7 @@ log("released", r.index);
     said.join(" | ").slice(0, 200));
 }
 
-const EXPECTED_CELLS = 62;
+const EXPECTED_CELLS = 64;
 const ran = ok + fail;
 console.log(`mesh-wait.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

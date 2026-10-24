@@ -204,18 +204,25 @@ export function listLedgers(root: string): Array<{ path: string; ledger: MeshLed
 
 /** {@link listLedgers} plus the files this root REFUSED, so a caller can tell "no ledger here" from
  *  "a ledger I could not read". `refused` carries the validator's own message verbatim. */
-export function listLedgerFiles(root: string): {
+export function listLedgerFiles(root: string, options: { requireReadable?: boolean } = {}): {
   valid: Array<{ path: string; ledger: MeshLedger }>;
   refused: Array<{ path: string; why: string }>;
 } {
   // Prove `.cotal/manifests` is a real (non-symlink) directory chain before reading under it — a
   // symlinked parent could redirect `down -f` to attacker-chosen ledgers.
   const dir = realDirNoSymlink(root, ".cotal", "manifests");
-  if (!dir) return { valid: [], refused: [] };
+  if (!dir) {
+    if (options.requireReadable) {
+      try { lstatSync(join(root, ".cotal", "manifests")); throw new Error("the additive ledger path is not a real directory"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+    return { valid: [], refused: [] };
+  }
   let names: string[];
   try {
     names = readdirSync(dir);
-  } catch {
+  } catch (error) {
+    if (options.requireReadable) throw error;
     return { valid: [], refused: [] };
   }
   const valid: Array<{ path: string; ledger: MeshLedger }> = [];
