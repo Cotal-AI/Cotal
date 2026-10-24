@@ -1026,7 +1026,9 @@ selected, `up` selects the space it started and says so.
 The receipt also names each service saved for the space that `up` does not start, such as one
 `cotal service add` saved, and `--json` carries their names as `result.savedServices`. Saved
 services belong to the space name, so a space forgotten under that name leaves its services to the
-next one; `cotal service show <name>` shows what one runs.
+next one. The receipt names those it left from another folder, which do not start here, with
+`cotal service remove <name> --space <space> --yes`, and `--json` carries them as
+`result.inheritedServices`. `cotal service show <name>` shows what one runs.
 
 On a controller root, `down --preserve-state` refuses `UNSUPPORTED` (exit 2) in this release, in
 every stack mode. It refuses while validating its arguments, before the confirmation and before any

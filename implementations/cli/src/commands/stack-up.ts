@@ -60,7 +60,7 @@ import { jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, storeFull
 import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { definitionListeners, exposedPlaintext, listenerRow, type StackListener } from "../lib/stack-listeners.js";
-import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
+import { definitionRootMatch, serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, serviceRecordsWriteProblem, type ServiceInstance, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { prepareKernelServiceStop, prepareProcessService, readServiceLog, removeStoppedInstanceRecords, settleExitedInstances, startProcessService, stopProcessService } from "../lib/service-process.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
@@ -441,16 +441,18 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
     const unparsable = await unparsableDaemonCreds(root, space);
     if (unparsable.length) warnings.push({ code: "DAEMON_CREDENTIAL_UNPARSABLE", target: { root, space, credentials: unparsable }, message: unparsableDaemonCredsNotice(unparsable) });
   }
-  // A space forgotten under this name leaves its saved services to this one, so the receipt names
-  // each saved service up does not start.
+  // The receipt names each saved service up does not start, and which of them a space forgotten
+  // under this name left from another root, as `cotal service` marks them inherited.
   const stackDefinitions = new Set(Object.values(STACK_DEFINITION));
-  let savedServices: string[] = [];
+  let savedServices: string[] = [], inheritedServices: string[] = [];
   try {
-    savedServices = serviceDefinitionStore(space).list().map((row) => row.name).filter((name) => !stackDefinitions.has(name));
+    const rows = serviceDefinitionStore(space).list().filter((row) => !stackDefinitions.has(row.name));
+    savedServices = rows.map((row) => row.name);
+    inheritedServices = rows.filter((row) => definitionRootMatch(row.record.value, canonicalRoot(root)) === "inherited").map((row) => row.name);
   } catch (error) {
     warnings.push({ code: "SAVED_SERVICES_NOT_READ", target: { root, space }, message: `the saved services of ${space} could not be listed: ${(error as Error).message}` });
   }
-  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, listeners: stackListeners(journal), written, savedServices, selection: { current: current ?? null, changed: current === space && before !== space } }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
+  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, listeners: stackListeners(journal), written, savedServices, inheritedServices, selection: { current: current ?? null, changed: current === space && before !== space } }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
     const members = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started", result.brokerExecutable, result.streamsRecreated);
     const exposed = result.listeners && exposedPlaintext(result.listeners);
     const listening: Report["sections"] = [{ title: "Listeners", blocks: [
@@ -469,7 +471,8 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
     const kept: Report["sections"] = selection ? [{ blocks: [{ kind: "lines", lines: [{ text: selection, tone: "hint" }] }] }] : [];
     const saved: Report["sections"] = result.savedServices.length ? [{ blocks: [{ kind: "lines", lines: [
       { text: `saved services up does not start: ${result.savedServices.join(", ")}`, tone: "hint" },
-      { text: `  a space forgotten under the name ${space} leaves its saved services to the next one; \`cotal service show <name> --space ${space}\` shows what one runs`, tone: "hint" },
+      ...(result.inheritedServices.length ? [{ text: `  ${result.inheritedServices.join(", ")} came from a space forgotten under the name ${space} in another folder and ${result.inheritedServices.length === 1 ? "does" : "do"} not start here; \`cotal service remove <name> --space ${space} --yes\` forgets one`, tone: "hint" as const }] : []),
+      { text: `  \`cotal service show <name> --space ${space}\` shows what one runs`, tone: "hint" },
     ] }] }] : [];
     const rotated: Report["sections"] = result.rotatedSystemAccount ? [{ title: "System account rotated", blocks: [
       { kind: "fields", rows: [["Generation", String(result.rotatedSystemAccount.generation)], ["$SYS creds valid to", result.rotatedSystemAccount.expiresAt?.slice(0, 10) ?? "no expiry"]] },
