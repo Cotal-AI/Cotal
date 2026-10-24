@@ -52,6 +52,7 @@ import {
   loopbackListeners,
   readProcessCommand,
   resolveMeshTarget,
+  processStopped,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
 import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
@@ -664,6 +665,12 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const stranded = registration ? undefined : strandedBroker(space);
   if (stranded)
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the stack's broker runs as pid ${stranded.process?.pid}, but the cotal up that started it stopped before it registered the space, so this up cannot finish that start; nothing was changed`, { target: { root, space, broker: stranded.instanceId, pid: stranded.process?.pid }, remedy: "stop that broker with cotal down --yes, then run cotal up again" });
+  // A broker stopped by a signal accepts connections and never answers, so every step through it would
+  // wait out its budget, and its readiness check would record a listener that serves nothing. This
+  // start refuses before any write and names the signal that resumes it.
+  const brokerPid = serviceInstances(space, STACK_DEFINITION.broker).map((row) => row.record.value).find((value) => observeServiceProcess(value) === "running")?.process?.pid;
+  if (brokerPid !== undefined && processStopped(brokerPid))
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the stack's broker, pid ${brokerPid}, is stopped, so it accepts connections at ${previous?.journal.server ?? request.server} and never answers; nothing was started or written`, { target: { root, space, pid: brokerPid }, remedy: `resume it with kill -CONT ${brokerPid} and run cotal up again` });
   // An earlier up or down that never recorded its outcome is settled from its members' process
   // evidence under the held maintenance lock. Only a preserve or resume can remain unsettled here.
   // A member stop an earlier down could not confirm in time is settled from its own receipt first.

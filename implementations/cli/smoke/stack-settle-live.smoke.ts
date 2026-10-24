@@ -62,7 +62,8 @@
  *     CONFLICT with the hand-removal step and remove nothing. A recorded store removed by hand starts
  *     empty with a STORE_MISSING warning.
  *  4. Orphan manager. With the broker suspended under a live manager, `down` refuses
- *     TARGET_UNAVAILABLE naming the broker's pid and `kill -CONT`, and stops nothing. With the broker
+ *     TARGET_UNAVAILABLE naming the broker's pid and `kill -CONT`, and stops nothing; `up` refuses the
+ *     same way before it writes the journal or records the broker's readiness again. With the broker
  *     killed under a live manager, `down` refuses before any stop
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
  *     it, `up` then `down` stop both. While the broker is live, its refusal of a seat's credential
@@ -895,7 +896,18 @@ try {
     const hungAt = Date.now();
     const hung = cli(root, "down", "--yes", "--json");
     const hungMs = Date.now() - hungAt;
+    // Up refuses the same way, before it writes the journal or records the broker's readiness again.
+    const readyAt = () => serviceInstances(space, "stack-broker")[0]?.record.value.adapterReadiness?.observedAt;
+    const readyBefore = readyAt(), journalBefore = readStackJournal(root)?.sha256;
+    const upAt = Date.now();
+    const upHung = cli(root, "up", "--json");
+    const upMs = Date.now() - upAt;
+    const readyAfter = readyAt(), journalAfter = readStackJournal(root)?.sha256;
     if (broker !== null) process.kill(broker, "SIGCONT");
+    check("up with a suspended broker refuses within 10s naming its pid and kill -CONT, and records nothing",
+      upMs < 10_000 && upHung.status === 2 && upHung.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(upHung.env.error.message.includes(`pid ${broker}`))
+        && upHung.env.error.remedy === `resume it with kill -CONT ${broker} and run cotal up again` && readyBefore !== undefined && readyAfter === readyBefore && journalAfter === journalBefore,
+      { upMs, readyBefore, readyAfter, journalChanged: journalAfter !== journalBefore, ...shown(upHung) });
     check("down with a suspended broker refuses within 10s, before any read through it", hungMs < 10_000, { hungMs });
     check("down with a suspended broker refuses naming its pid and kill -CONT, and stops nothing", hung.status === 2 && hung.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(hung.env.error.message.includes(`pid ${broker}`)) && Boolean(hung.env.error.remedy?.includes(`kill -CONT ${broker}`)) && broker !== null && alive(broker) && manager !== null && alive(manager), shown(hung));
     if (broker !== null) process.kill(broker, "SIGKILL");
