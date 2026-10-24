@@ -2718,7 +2718,10 @@ no seed block, an invalid seed, or Windows (CRLF) line endings. A file in a fold
 account can write, or below one, is refused `PERMISSION_DENIED`, exit 2, as `auth mint` refuses to
 write one there: the refusal names the folder, and its Next is one `chmod`, such as `chmod go-w <dir>`.
 A file that other accounts can read is still used, with a warning on stderr that gives the
-`chmod 600` command. `join --creds` reads its file the same way. A credential the broker rejects is `PERMISSION_DENIED`, exit 2. When the
+`chmod 600` command. `join --creds` reads its file the same way. A credential the broker rejects is `PERMISSION_DENIED`, exit 2. When this
+machine holds the space's account and that account revokes the file's key, the refusal says when it
+was revoked with `auth revoke-credential`. Its Next is a mint with a new key, which for an agent file
+names the read and post channels and the role the file held. When the
 credential's own permissions name one other space, the refusal names that space, such as
 `credentials rejected at <server>: <file> is a credential for space "<owner>", not "<space>"`, and
 its Next is `--space <owner>`. When `--server` named another broker than the one that space is
@@ -3529,7 +3532,8 @@ assumed. The report keeps `Mesh: main` and says under it that the default was as
 its permissions name, the profile it was minted with, its principal, the agent lifecycle its
 delivery and history grants are keyed to (none for the `observer` and `admin` profiles), when it was
 issued and when it expires, the channels it may read and post to, and whether it may read every DM
-in the space, only its own, or none. It reads the file as every `--creds` file is read and decodes
+in the space, only its own, or none. `revokedAt` is when the space's account on this machine revoked
+the file's key with `auth revoke-credential`, and `null` when no revocation of it is recorded here. It reads the file as every `--creds` file is read and decodes
 the claims without checking the signature or contacting the broker, which enforces them. When the
 permissions name no single space, `space`, `read`, `post` and `dms` are `null`, and the run is
 `partial` (exit 4) with `CREDENTIAL_SPACE_UNKNOWN`. `--creds` takes no `--space` or `--server`.
@@ -4987,8 +4991,9 @@ only to one byte past that limit. A pipe or a device such as `/dev/zero` has no 
 its refusal names the limit alone. A channel post the broker
 refuses was not stored, so it refuses `PERMISSION_DENIED` (exit 2): the channel does not exist in
 the space or this identity may not post to it. The remedy lists the channels this identity may post
-to, read from the grant ledger as `cotal whoami` reads it. When the ledger is on another machine it
-says so and lists the space's registered channels instead. A broker whose JetStream store holds more
+to, read from the grant ledger as `cotal whoami` reads it, or with `--creds` from an agent file's own
+claims. When the ledger is on another machine it says so and lists the space's registered channels
+instead. A broker whose JetStream store holds more
 than its cap refuses every write with JetStream error 10023 and stores nothing, so `send` refuses
 `DEPENDENCY_UNAVAILABLE` (exit 2), naming the store and the `--max-file-store` cap this machine
 recorded for it. Its Next is `cotal history clear --yes`, which purges the space's channel history;
@@ -6002,7 +6007,9 @@ are not findings. An expired one is an `EXPORTED_CREDENTIAL_EXPIRED` warning. On
 expired names `cotal auth mint <label> --identity <file> --out <file>`, which signs the same key
 again with the same grants. One whose key was revoked, or that an earlier space identity issued,
 names a mint with a new key instead, because the broker refuses that key and `auth mint --identity`
-refuses a revoked one.
+refuses a revoked one. For an agent file, that mint names the file's read and post channels and its
+role with `--allow-subscribe`, `--allow-publish` and `--role`, since a new key holds only the grants
+its mint names.
 A run with no findings says so in its heading only when nothing else is printed. While an exported
 file needs attention, or a credential is unbounded by request, the heading starts `No findings;` and
 names each, such as `2 exported credential files need attention`. The exit code stays 0.

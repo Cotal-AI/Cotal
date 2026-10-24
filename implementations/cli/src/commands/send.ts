@@ -9,6 +9,7 @@ import {
   isPublishPermissionDenied,
   parsePrincipalKey,
   resolveAuthProvider,
+  credsClaims,
   effectiveDeliveryClass,
   effectiveReplay,
   readChannelRegistry,
@@ -22,7 +23,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, spaceStreamsExpected, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, agentGrants, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, spaceStreamsExpected, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { batchedRead, openTransient } from "../lib/transient.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
@@ -327,15 +328,19 @@ function storeFullRefusal(error: unknown, root: string | undefined, space: strin
 }
 
 /** The broker refused a channel publication, so it was not stored. The remedy names what this
- *  identity may post to: its grant when this machine holds it, read as `cotal whoami` reads it, and
- *  otherwise the space's registered channels. */
-async function channelDenied(channel: string, target: { space: string }, connection: Connection, registered: readonly string[]): Promise<CommandFailure> {
+ *  identity may post to: its grant when this machine holds it, read as `cotal whoami` reads it, the
+ *  post grant in the claims of a `--creds` agent file (`credsFile`), and otherwise the space's
+ *  registered channels. */
+async function channelDenied(channel: string, target: { space: string }, connection: Connection, registered: readonly string[], credsFile?: string): Promise<CommandFailure> {
   let post: string[] | undefined;
   if (connection.mode === "user" && connection.root) {
     try {
       const status = await resolveAuthProvider().userStatus({ store: workspaceSecretStore(connection.root), dir: userAuthStateDir(connection.root, connection.space), space: connection.space, actor: CLI_USER_ACTOR });
       post = status.grant === "not-granted" ? [] : status.grant?.allowPublish;
     } catch { /* the grant stays unknown */ }
+  } else if (credsFile !== undefined) {
+    const claims = credsClaims(credsFile);
+    if (claims.name === "agent") post = agentGrants(claims.nats ?? {}, target.space).post;
   }
   const list = (channels: readonly string[]) => channels.map((name) => `#${name}`).join(", ");
   const remedy = post === undefined
@@ -453,7 +458,7 @@ export async function send(args: ParsedArgs): Promise<void> {
       } else messageId = (await ep.multicast(text, { channel: input.target, mentions })).id;
     } catch (error) {
       if (payloadRefused(error)) throw tooLarge(bytes);
-      if (input.mode === "msg" && isPublishPermissionDenied(error)) throw await channelDenied(input.target, target, connection, registered);
+      if (input.mode === "msg" && isPublishPermissionDenied(error)) throw await channelDenied(input.target, target, connection, registered, values.creds !== undefined ? connection.creds : undefined);
       const full = storeFullRefusal(error, connection.root, space, target);
       if (full) throw full;
       // No stream stores a message whose space's streams were removed, so the send stored nothing.

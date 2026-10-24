@@ -47,6 +47,8 @@ import {
   workspaceSecretStore,
   writeRenewalRecord,
   recordOperationSpace,
+  agentGrants,
+  grantMintFlags,
 } from "@cotal-ai/workspace";
 import { displayCmd } from "../lib/self-exec.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
@@ -296,7 +298,9 @@ function exportedCredentials(root: string, auth: SpaceAuth): ExportedRow[] {
     try { claims = credsClaims(bytes.toString("utf8")); } catch { rows.push(row); continue; }
     const health = inspectCredHealth(bytes.toString("utf8"));
     const profile = entry.profile === "agent" ? "" : ` --profile ${entry.profile}`;
-    const fresh = `mint a new key: \`${cmd} auth mint ${entry.label}${profile} --out <new file>\``;
+    // A new key holds only the grants its mint names, so the mint names the ones this file holds.
+    const grants = entry.profile === "agent" && claims.name === "agent" ? agentGrants(claims.nats ?? {}, auth.space) : undefined;
+    const fresh = `mint a new key${grants ? " with the grants this file holds" : ""}: \`${cmd} auth mint ${entry.label}${profile}${grants ? grantMintFlags(grants) : ""} --out <new file>\``;
     const revokedAt = claims.sub === undefined ? undefined : revocations[claims.sub];
     Object.assign(row, { state: health.state, issuedAt: claims.iat ?? null, expiresAt: claims.exp ?? null });
     if ((claims.nats?.issuer_account ?? claims.iss) !== auth.account.pub)

@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { credsClaims, dlvStream, dmStream, principalKey, resolveAuthProvider, spacePrefix, type FlagSpec, type FlagValues, type ParsedArgs, type UserAuthStatus } from "@cotal-ai/core";
-import { authDir, brokerAddressForDisplay, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, findMesh, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSpaceAuth, MeshTargetError, plainFlag, presentationOf, readCredsFile, resolveMeshTarget, serverFlag, spaceFlag, spaceInCreds, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Presentation, type Report, type Section } from "@cotal-ai/workspace";
+import { authDir, brokerAddressForDisplay, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, findMesh, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSpaceAuth, MeshTargetError, plainFlag, presentationOf, readCredsFile, recordedRevocation, resolveMeshTarget, serverFlag, spaceFlag, spaceInCreds, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Presentation, type Report, type Section } from "@cotal-ai/workspace";
 import { registryFailure } from "../lib/registry-errors.js";
 
 const credsFlag = { name: "creds", type: "string", value: "<file>", description: "report what this credential file may do, from its own claims; no broker is contacted" } as const satisfies FlagSpec;
@@ -62,6 +62,9 @@ export interface WhoamiCredentialResult {
   /** `null` when it carries no expiry. */
   readonly expiresAt: string | null;
   readonly expired: boolean;
+  /** When the space's account on this machine revokes the file's key, the revocation time, from
+   *  `auth revoke-credential`; `null` when no revocation of it is recorded here. */
+  readonly revokedAt: string | null;
   readonly read: Grant | null;
   readonly post: Grant | null;
   /** Direct-message history: every DM in the space, only its own, or none. */
@@ -80,7 +83,7 @@ export async function whoami(args: ParsedArgs): Promise<void> {
   if (v.creds !== undefined) {
     if (v.space !== undefined || v.server !== undefined)
       throw new CommandFailure("refused", "USAGE_INVALID", "--creds reports what the credential file permits in the space it names, and contacts no broker, so it takes no --space or --server", { remedy: "run `cotal whoami --creds <file>` on its own" });
-    return whoamiCredential(v.creds, presentation);
+    return await whoamiCredential(v.creds, presentation);
   }
   let t: ReturnType<typeof resolveMeshTarget>;
   try { t = resolveMeshTarget(process.cwd(), { server: v.server, space: v.space }); }
@@ -181,7 +184,7 @@ function chatChannels(rows: readonly string[], space: string): Grant {
 }
 
 /** {@link WhoamiCredentialResult} for one credential file, read as every `--creds` file is read. */
-function whoamiCredential(path: string, presentation: Presentation): void {
+async function whoamiCredential(path: string, presentation: Presentation): Promise<void> {
   const file = resolve(path);
   const creds = readCredsFile(file);
   const claims = credsClaims(creds);
@@ -205,6 +208,7 @@ function whoamiCredential(path: string, presentation: Presentation): void {
     : pub.some((row) => row.startsWith(`$JS.API.CONSUMER.MSG.NEXT.${dm}.dm_`)) ? "own"
     : "none";
   const iso = (seconds: unknown) => typeof seconds === "number" && Number.isFinite(seconds) ? new Date(seconds * 1000).toISOString() : null;
+  const revokedAt = space === null ? undefined : await recordedRevocation(space, creds);
   const result: WhoamiCredentialResult = {
     kind: "credential",
     file,
@@ -215,6 +219,7 @@ function whoamiCredential(path: string, presentation: Presentation): void {
     issuedAt: iso(claims.iat),
     expiresAt: iso(claims.exp),
     expired: typeof claims.exp === "number" && claims.exp * 1000 <= Date.now(),
+    revokedAt: iso(revokedAt),
     read: space === null ? null : chatChannels(sub, space),
     post: space === null ? null : chatChannels(pub, space),
     dms,
@@ -249,6 +254,7 @@ function credentialView(r: WhoamiCredentialResult): Report {
     ["lifecycle", r.lifecycleUid ?? { text: "none: no agent lifecycle", tone: "hint" }],
     ["issued", r.issuedAt ?? unknown],
     ["expires", r.expiresAt === null ? "never: it has no expiry" : r.expired ? { text: `${r.expiresAt} (expired)`, tone: "waiting" } : r.expiresAt],
+    ...(r.revokedAt === null ? [] : [["revoked", { text: `${r.revokedAt} with auth revoke-credential; the broker refuses this key once the stack starts after that`, tone: "waiting" }] as const]),
     ["read", grantText(r.read, "no channels")],
     ["post", grantText(r.post, "no channels")],
     ["dm history", r.dms === null ? unknown : DMS_TEXT[r.dms]],

@@ -66,6 +66,7 @@ export * from "./mesh-manifest-schema.js";
 export * from "./launch-persona.js";
 
 export * from "./protected-records.js";
+export * from "./agent-grants.js";
 export * from "./signer-export.js";
 export * from "./credential-actions.js";
 export * from "./endpoint-actions.js";

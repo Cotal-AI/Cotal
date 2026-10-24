@@ -4,7 +4,9 @@ import {
   DEFAULT_SPACE,
   DEV_OWNER,
   ROOT,
+  accountRevocations,
   assertLifecycleToken,
+  credsClaims,
   credsProblem,
   inspectCredHealth,
   instancePinnedInstrumentCapabilities,
@@ -32,7 +34,8 @@ import {
 } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "./broker-display.js";
 import { c } from "./colors.js";
-import { findCotalRoot, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
+import { findCotalRoot, getSpaceAuth, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
+import { agentGrants, grantMintFlags } from "./agent-grants.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { findMesh, movedProject, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
@@ -566,7 +569,16 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
       const ownerMesh = findMesh(owner);
       const elsewhere = flags.server !== undefined && ownerMesh !== undefined && ownerMesh.server !== server ? brokerAddressForDisplay(ownerMesh.server) ?? "its registered broker" : undefined;
       if (owner === space) {
-        if (elsewhere === undefined) throw e;
+        if (elsewhere === undefined) {
+          const revokedAt = await recordedRevocation(space, creds);
+          if (revokedAt === undefined) throw e;
+          // The account here records the revocation, so the refusal says so instead of "check your creds".
+          const claims = credsClaims(creds);
+          const message = `credentials rejected at ${at}: the key ${claims.sub} in ${flags.creds} was revoked at ${new Date(revokedAt * 1000).toISOString()} with auth revoke-credential`;
+          const mint = claims.name === "agent" ? `mint a new key with the grants it held: cotal auth mint <label>${grantMintFlags(agentGrants(claims.nats ?? {}, space))}` : `mint a new key: cotal auth mint <label>${typeof claims.name === "string" ? ` --profile ${claims.name}` : ""}`;
+          const remedy = `a revoked key is not signed again; ${mint} --out <new file>`;
+          throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path: flags.creds } });
+        }
         const message = `credentials rejected at ${at}: ${flags.creds} is a credential for space "${owner}", which is registered here at ${elsewhere}, not ${at}`;
         const remedy = `drop --server to use ${owner}'s broker at ${elsewhere}, or point --server at it`;
         throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, credentialSpace: owner, path: flags.creds, server: at } });
@@ -866,6 +878,22 @@ export function spaceInCreds(creds: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** When this machine holds `space`'s account and that account revokes the key of `creds`, the time
+ *  of the revocation, in seconds. The broker refuses a credential issued at or before it. Undefined
+ *  when the account is not here, the credential is another account's, or its key is not revoked. */
+export async function recordedRevocation(space: string, creds: string): Promise<number | undefined> {
+  let auth: SpaceAuth | undefined, claims: ReturnType<typeof credsClaims>;
+  // An account record this cannot read leaves the caller's own answer standing, such as the
+  // broker's refusal.
+  try {
+    auth = await getSpaceAuth(workspaceSecretStore(findMesh(space)?.root ?? findCotalRoot()), space);
+    claims = credsClaims(creds);
+  } catch { return undefined; }
+  if (!auth || claims.sub === undefined || (claims.nats?.issuer_account ?? claims.iss) !== auth.account.pub) return undefined;
+  const at = accountRevocations(auth.account.jwt)[claims.sub];
+  return at !== undefined && (claims.iat === undefined || claims.iat <= at) ? at : undefined;
 }
 
 /** {@link readCredsFile} with the exiting disposition. */

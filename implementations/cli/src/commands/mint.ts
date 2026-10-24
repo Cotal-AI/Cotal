@@ -12,11 +12,11 @@ import {
   protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource,
   validateCredentialMintArguments,
   writeResult, type MeshTarget, type Report,
-  recordOperationSpace,
+  recordOperationSpace, agentGrants, type AgentGrants,
 } from "@cotal-ai/workspace";
 
 import { staticMintAuthority } from "../lib/credential-authority.js";
-import { agentGrants, recordCredentialExport, type AgentGrants } from "../lib/credential-exports.js";
+import { recordCredentialExport } from "../lib/credential-exports.js";
 import { noExpiryRecordPath, noExpiryRecordText } from "../lib/no-expiry-record.js";
 import { mintEndpointCaller } from "./mint-endpoint-caller.js";
 export { resolveMintTarget } from "../lib/credential-authority.js";
