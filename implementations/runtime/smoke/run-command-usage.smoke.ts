@@ -165,10 +165,10 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const mark = (rail?: string) => [{ kind: EP_UNANSWERED, endpoint: "manager", command: "describe", ...(rail !== undefined ? { rail } : {}) }];
   const legacy = unansweredManagerRefusal(new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep rail", mark("ep")));
   c("legacy rail: the question and the --local remedy stand (one rail, and nothing answered on it)",
-    legacy.startsWith("no manager answered on the endpoint rails (") && legacy.includes("is a manager running for this mesh?") && legacy.includes("--local"), legacy);
+    legacy.startsWith("the manager registered for this space did not answer on the endpoint rails (") && legacy.includes("is a manager running for this mesh?") && legacy.includes("--local"), legacy);
   const v1 = unansweredManagerRefusal(new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep.v1 rail", mark("ep.v1")));
   c("versioned rail: the refusal names ep.v1 and states what the silence does not establish",
-    v1.startsWith("no manager answered on the ep.v1 rail (") && v1.includes("disjoint at the broker (SPEC 13.15)")
+    v1.startsWith("the manager registered for this space did not answer on the ep.v1 rail (") && v1.includes("disjoint at the broker (SPEC 13.15)")
     && v1.includes("does not tell no manager running apart from one older than ep.v1"), v1);
   c("versioned rail: neither the false question nor the --local remedy that follows from it is printed",
     !v1.includes("is a manager running for this mesh?") && !v1.includes("--local"), v1);

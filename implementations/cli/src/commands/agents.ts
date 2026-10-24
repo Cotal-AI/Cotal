@@ -29,7 +29,7 @@ import * as prompts from "../lib/prompts.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { c, presenceFacts } from "../ui.js";
-import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, resolveControlTarget, onInstance, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin } from "../lib/control.js";
+import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, unansweredDescribeRefusal, resolveControlTarget, onInstance, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
@@ -137,7 +137,7 @@ export async function stop(args: ParsedArgs): Promise<void> {
   recordOperationSpace(t.space);
   const reply = await askManager(t.space, t.server, v.self ? "stopSelf" : "stop", { ...(name ? { name } : {}), graceful: v.force !== true }, t.auth, t.auth.bearer ? "owner" : "any", undefined, { instanceId: on });
   const target = { space: t.space, managerInstanceId: reply.managerInstanceId ?? on ?? null, selection: v.self ? "verified-self" : "named", ...(name ? { agent: name } : {}) };
-  if (!reply.ok) throw managerFailure(reply, "agent stop", target);
+  if (!reply.ok) throw unansweredDescribeRefusal(reply, "agent stop", target) ?? managerFailure(reply, "agent stop", target);
   const data = reply.data as { name?: unknown; stopped?: unknown; graceful?: unknown } | undefined;
   if (!data || typeof data.name !== "string" || typeof data.stopped !== "boolean" || typeof data.graceful !== "boolean")
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the manager answered, but the stop receipt could not be read; the request was not repeated", { target, ...(reply.request ? { native: { detail: { request: reply.request } } } : {}) });
@@ -1654,7 +1654,7 @@ export async function input(args: ParsedArgs): Promise<void> {
   const reach = t.auth.bearer ? "owner" : "any";
   const reply = await askManager(t.space, t.server, "input", { name: v.name, text: v.text, enter: v["no-enter"] !== true }, t.auth, reach, undefined, { instanceId: on });
   const target = { space: t.space, managerInstanceId: reply.managerInstanceId ?? on ?? null, agent: v.name };
-  if (!reply.ok) throw managerFailure(reply, "terminal input", target);
+  if (!reply.ok) throw unansweredDescribeRefusal(reply, "terminal input", target) ?? managerFailure(reply, "terminal input", target);
   const data = reply.data as { name?: unknown; bytes?: unknown } | undefined;
   if (!data || typeof data.name !== "string" || typeof data.bytes !== "number" || !Number.isSafeInteger(data.bytes) || data.bytes < 0)
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the manager answered, but the terminal-input receipt was unreadable; the text was not sent again", { target, ...(reply.request ? { native: { detail: { request: reply.request } } } : {}) });
