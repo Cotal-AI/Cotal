@@ -666,10 +666,13 @@ export async function launchManagedPersona(
         remedy: `add it where that manager runs, such as ${extAddFor(absent)}, then restart that manager; it reads its agent applications when it starts` });
     }
     if (reply.nativeOutcome === "not-executed" && code) {
-      // A manager without the default persona: name your other live managers whose catalog has one.
-      const elsewhere = ref === "default" && managerConfigRef === undefined && reply.error?.startsWith('no persona "default"') ? await managersWithPersona(flags, reply.managerInstanceId ?? on, "default").catch((): string[] => []) : [];
+      // A manager without the persona: it is created on that manager's host, or the spawn goes to
+      // another live manager whose catalog has it.
+      const missing = managerConfigRef === undefined && reply.error?.startsWith(`no persona "${ref}"`) === true;
+      const elsewhere = missing ? await managersWithPersona(flags, reply.managerInstanceId ?? on, ref).catch((): string[] => []) : [];
       throw new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : "the manager refused the launch before execution", { target, native, remedy: elsewhere.length
-        ? `nothing was launched; ${elsewhere.length === 1 ? "this manager of yours has" : "these managers of yours have"} a default persona: ${elsewhere.map((selector) => rerunOn(process.argv.slice(2), selector)).join(" or ")}`
+        ? `nothing was launched; ${elsewhere.length === 1 ? "this manager of yours has" : "these managers of yours have"} ${ref === "default" ? "a default persona" : `persona "${ref}"`}: ${elsewhere.map((selector) => rerunOn(process.argv.slice(2), selector)).join(" or ")}`
+        : missing ? "nothing was launched; create that file on the manager's host, then run the spawn again"
         : "nothing was launched; fix what the manager reported, then run the spawn again" });
     }
     const unknown = reply.nativeOutcome !== "executed" || reply.unanswered;

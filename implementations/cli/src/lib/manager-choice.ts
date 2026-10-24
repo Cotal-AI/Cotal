@@ -1,6 +1,6 @@
 import { BASELINE_LIFECYCLE_ENDPOINT, invokeCommand, remoteManagerActors, resolveService, type Presence } from "@cotal-ai/core";
 import { CommandFailure, DEFAULT_MANAGER_NAME, instanceIdShaped, renderReport, resolveMeshTarget, terminalWidth } from "@cotal-ai/workspace";
-import { onInstance, onInstanceId } from "./control.js";
+import { askManager, liveManagerIds, onInstance, onInstanceId, resolveControlTarget } from "./control.js";
 import { openEndpointConnection } from "./endpoint-client.js";
 import { shellWord } from "./endpoint-errors.js";
 import { displayCmd } from "./self-exec.js";
@@ -118,12 +118,11 @@ export async function managerPin(values: { on?: unknown; space?: unknown; server
   throw new ManagerPinUnmatched(on, matched.length ? matched : managers, matched.length);
 }
 
-/** Your other live managers on a user-auth mesh whose catalog holds `persona`, each as the
- *  shortest `--on` value that picks it. A manager that does not answer is left out, and any other
- *  mesh gives none. */
+/** Your other live managers whose catalog holds `persona`, each as the shortest `--on` value that
+ *  picks it. A manager that does not answer is left out. */
 export async function managersWithPersona(values: { space?: unknown; server?: unknown }, exclude: string | undefined, persona: string): Promise<string[]> {
   const flags = targetFlags(values);
-  if (resolveMeshTarget(process.cwd(), flags).mode !== "user") return [];
+  if (resolveMeshTarget(process.cwd(), flags).mode !== "user") return registeredManagersWithPersona(flags, exclude, persona);
   const managers = await yourLiveManagers(flags);
   const holding: ManagerCandidate[] = [];
   for (const manager of managers.filter((m) => m.instanceId !== exclude)) {
@@ -139,6 +138,22 @@ export async function managersWithPersona(values: { space?: unknown; server?: un
     finally { await connection?.nc.close().catch(() => {}); }
   }
   return holding.map((m) => selectorFor(m, managers));
+}
+
+/** {@link managersWithPersona} on a static or open mesh, whose presence carries no instance id: the
+ *  live managers the space's registry lists, each asked pinned to its instance and named by it. */
+async function registeredManagersWithPersona(flags: { space?: string; server?: string }, exclude: string | undefined, persona: string): Promise<string[]> {
+  const t = await resolveControlTarget(flags, "control-caller-privileged", undefined, { onRefusal: "throw" });
+  const holding: string[] = [];
+  for (const instanceId of (await liveManagerIds(t.space, t.server, t.auth)).filter((id) => id !== exclude)) {
+    try {
+      const pinned = await resolveControlTarget(flags, "control-caller-privileged", instanceId, { onRefusal: "throw" });
+      const listed = await askManager(pinned.space, pinned.server, "listPersonas", undefined, pinned.auth, "owner", 5_000, { instanceId });
+      const personas = listed.ok ? (listed.data as { personas?: unknown } | undefined)?.personas : undefined;
+      if (Array.isArray(personas) && personas.some((row) => (row as { name?: unknown } | null)?.name === persona)) holding.push(instanceId);
+    } catch { /* a manager that cannot be asked is not named */ }
+  }
+  return holding;
 }
 
 /** `argv` with `--on` set to `selector`, replacing a `--on` it already holds. `--on` goes before a

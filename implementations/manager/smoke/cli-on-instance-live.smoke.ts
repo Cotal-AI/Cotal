@@ -54,6 +54,8 @@
  *
  * Cell 11 starts a manager with no agent application installed and grades the refusal a pinned and
  * an unpinned `spawn --detach` meet there: the code, the manager and host it names, and its Next.
+ * Cell 12 adds a second manager whose catalog lacks a persona the first one has, and grades the
+ * refusal of a spawn pinned to it: the manager, host and file it names, and the manager its Next pins.
  *
  * Mutation-proof target `cli-on-mint`: drop the instance from the mint (in
  * `packages/workspace/src/connect.ts`, force `pinned` to `undefined`) and cell 3's
@@ -628,6 +630,32 @@ try {
       unpinnedAppOut.includes(`no manager of yours takes unpinned launches: none has an agent application installed (${onHost}); nothing was launched`) &&
       unpinnedAppOut.includes("add one where that manager runs, such as `cotal ext add @cotal-ai/connector-claude-code`, then restart that manager"),
     { status: unpinnedApp.status, out: unpinnedAppOut.slice(-900) });
+
+  // A second manager whose catalog lacks the persona refuses a spawn pinned to it. The refusal names
+  // that manager, its host and the file to create there, and its Next pins the spawn to the live
+  // manager whose catalog has the persona. A persona no manager has gets the create step alone.
+  console.log("\n12. a pinned spawn of a persona the manager lacks names it, its host and file, and a manager that has it");
+  const root6 = mkRoot("ws6");
+  m2 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root6, installedExtensions: true });
+  await m2.start();
+  const IID6 = (m2 as unknown as MgrPriv).managerInstanceId;
+  const lacking = await cotal(["spawn", "bare", "--detach", "--on", IID6, "--harness", "claude", "--space", space, "--json"], root1);
+  mustHaveRun(lacking, "a pinned spawn of a persona that manager lacks");
+  let lackingEnv: { error?: { code?: string; message?: string; remedy?: string } } | undefined;
+  try { lackingEnv = JSON.parse(lacking.stdout); } catch { lackingEnv = undefined; }
+  check("it names the manager, its host and the catalog file to create there, and not --config or a local personas list",
+    lacking.status === 2 && lackingEnv?.error?.message === `no persona "bare" in the catalog of manager ${IID6} on host ${hostname()}: ${join(root6, ".cotal", "agents", "bare.md")} not found; create it there`,
+    { status: lacking.status, stdout: lacking.stdout.slice(-900) });
+  check("...and its Next runs the spawn again on the live manager whose catalog has it",
+    lackingEnv?.error?.remedy?.startsWith('nothing was launched; this manager of yours has persona "bare": ') === true && lackingEnv.error.remedy.includes(`--on ${IID5}`) && !lackingEnv.error.remedy.includes(IID6),
+    { remedy: lackingEnv?.error?.remedy });
+  const nowhere = await cotal(["spawn", "nowhere", "--detach", "--on", IID6, "--harness", "claude", "--space", space], root1);
+  mustHaveRun(nowhere, "a pinned spawn of a persona no manager has");
+  const nowhereOut = strip(nowhere.out);
+  check("a persona no live manager has is refused with the create step on that manager's host",
+    nowhere.status === 2 && nowhereOut.includes(`no persona "nowhere" in the catalog of manager ${IID6} on host ${hostname()}`) &&
+      nowhereOut.includes("nothing was launched; create that file on the manager's host, then run the spawn again") && !nowhereOut.includes("--config"),
+    { status: nowhere.status, out: nowhereOut.slice(-900) });
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 } finally {

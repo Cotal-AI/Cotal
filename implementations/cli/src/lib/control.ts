@@ -75,6 +75,7 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean; self?: 
   ps: { command: "ps" },
   slots: { command: "slots" },
   models: { command: "models" },
+  listPersonas: { command: "list-personas" },
   launch: { command: "launch" },
   purge: { command: "purge" },
   resumePreserved: { command: "resume-preserved" },

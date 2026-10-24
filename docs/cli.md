@@ -3250,9 +3250,10 @@ persona is refused in one line with the catalog directory or the file that was c
 line names `--file <persona.md>` for a persona file elsewhere. A missing `default` persona also
 names the command that writes one: `cotal up` in the root of a space this machine started, or
 `cotal persona create default` for any other space. `--dry-run` refuses a missing persona with
-the same text, as `TARGET_NOT_FOUND` (exit 2). When a managed launch on a
-user-auth mesh is refused because the chosen manager's catalog has no `default`, the Next gives the
-spawn again with `--on` for each of your other live managers whose catalog lists one. The launch flags
+the same text, as `TARGET_NOT_FOUND` (exit 2). When a managed launch is refused because the chosen
+manager's catalog has no such persona, the refusal names that manager, its host and the catalog file
+to create there, and the Next gives the spawn again with `--on` for each of your other live managers
+whose catalog lists it. The launch flags
 override the file. On a user-auth mesh the
 effective name is also the agent's actor token, so it must match the token grammar (no `-`); the
 spawn is refused with that explanation before any request is sent. A spawn runs the agent attached
@@ -7333,9 +7334,10 @@ that class route; an explicit `--on` or credential-bound instance stays pinned. 
 accepting instance ID does not confer an instance route or cause another launch. The native
 follower verifies the returned fact against the original caller and goal. A launch the manager
 refuses before its first effect, such as a missing persona file or connector, carries
-`not-executed`. The CLI reports it `refused` with exit 2 and prints the manager's reason, which
-names the file it looked for. A missing connector is `DEPENDENCY_UNAVAILABLE`, as it is for a spawn
-in this terminal, and the refusal names the manager's instance and the host its status reports. An
+`not-executed`. The CLI reports it `refused` with exit 2 and prints the manager's reason. A missing
+persona names the manager, its host and the file it looked for, which is created on that host. A
+missing connector is `DEPENDENCY_UNAVAILABLE`, as it is for a spawn in this terminal, and the
+refusal names the manager's instance and the host its status reports. An
 unpinned launch that no manager received is refused with `TARGET_UNAVAILABLE` and exit 2. With no
 manager running, the CLI says so before it sends and names bare `cotal up`. When every live manager
 reports `classSpawn: false`, the refusal is `DEPENDENCY_UNAVAILABLE`: it names each manager and its
