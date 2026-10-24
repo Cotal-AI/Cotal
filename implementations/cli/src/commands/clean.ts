@@ -46,7 +46,7 @@ import { displayCmd } from "../lib/self-exec.js";
 import { MissingFlags } from "../lib/missing-flags.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
-import { foreignStoreEntries, lastServedStore, listEntries, STORE_ENTRY_NAMES } from "../lib/store-dir.js";
+import { foreignStoreEntries, lastServedStore, listEntries, refuseSharedStoreRemoval, STORE_ENTRY_NAMES } from "../lib/store-dir.js";
 
 const TARGETS = ["history", "store", "all", "restore-fallback", "restore-attempt"] as const;
 /** How a removed trust record is labeled. A full backup is bound to the trust it was taken under,
@@ -394,6 +394,7 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
   if (opts.includeAuth && opts.space !== undefined) throw new Error("identity cleanup cannot take a caller-selected space");
   const space = opts.space ?? resolveSpace(root);
   const store = safeStoreCleanupPath(root, opts.storeDir);
+  if (store.identity) refuseSharedStoreRemoval(store.path, space);
   if (opts.expectedStore && (store.path !== opts.expectedStore.path || Boolean(store.identity) !== Boolean(opts.expectedStore.identity) || store.identity && (store.identity.dev !== opts.expectedStore.identity?.dev || store.identity.ino !== opts.expectedStore.identity?.ino)))
     throw new Error("store path or pinned filesystem identity changed before cleanup; no directory was removed");
   if (store.identity) {

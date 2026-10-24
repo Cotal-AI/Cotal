@@ -244,7 +244,7 @@ import { serviceSupervisorStore } from "../lib/service-supervision.js";
 import { serviceInstallIntents } from "../lib/service-install-intent.js";
 import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionStore } from "../lib/service-unit-action.js";
-import { assertStoreDirArgument, configuredStoreDir, lastServedStore, storeWriteProblem, warnForeignStoreEntries } from "../lib/store-dir.js";
+import { assertStoreDirArgument, configuredStoreDir, lastServedStore, missingStoreWarning, servedStore, sharedStoreAtStart, sharedStoreWarning, storeWriteProblem, warnForeignStoreEntries } from "../lib/store-dir.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { metadataPositionals } from "../lib/command-path.js";
@@ -1827,6 +1827,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   if (!resumeAttempt && !repairing) {
     if (values["store-dir"] === undefined) refuseUnnamedLastStore(cotalPath("nats"));
     else refuseMissingNamedStore(resolve(values["store-dir"]));
+    checkStartStore(values["store-dir"], values.space ?? folderSpace());
   }
   const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
   const boundListener: DetachOpts["boundListener"] = restored ? {
@@ -3212,6 +3213,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // Before the dry-run print and before connector preflight or any write, as the refusals above.
   if (!opts.storeDir) refuseUnnamedLastStore(cotalPath("nats"));
   else refuseMissingNamedStore(resolve(opts.storeDir));
+  checkStartStore(opts.storeDir, m.space);
 
   if (opts.dryRun) {
     // Dial-host SAN must refuse here too (S6). The real route runs assertServesDialHost after
@@ -4796,6 +4798,17 @@ function refuseMissingNamedStore(storeDir: string): void {
   const last = lastServedStore(cotalRoot(), storeDir);
   if (last !== undefined)
     throw new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and --store-dir names ${storeDir}, which does not exist, so this start would open a new empty store there; nothing was started`, { target: { root: cotalRoot(), storeDir: last, requested: storeDir }, remedy: `reopen it with --store-dir ${last}, or create ${storeDir} first to start on a new empty store` });
+}
+
+/** A start's store against the other spaces that use it. A `--store-dir` this root's last broker did
+ *  not serve refuses while another space uses it. The default or last served store starts with a
+ *  warning, and one whose folder that broker served is missing starts empty with a warning. */
+function checkStartStore(storeDir: string | undefined, space: string): void {
+  const path = storeDir === undefined ? cotalPath("nats") : resolve(storeDir);
+  const served = servedStore(cotalRoot(), path);
+  const tenants = sharedStoreAtStart(path, space, storeDir === undefined || served);
+  if (tenants.length) console.error(c.yellow(`! ${sharedStoreWarning(path, tenants)}`));
+  if (served && !existsSync(path)) console.error(c.yellow(`! ${missingStoreWarning(path)}`));
 }
 
 /**

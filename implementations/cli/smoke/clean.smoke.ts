@@ -7,7 +7,8 @@
  * only), the `all` removal set (store + auth + every derived local cred + crash residue: stale
  * pidfiles, run/), that personas/logs survive, the `--store-dir` override, the store the last broker
  * served when `.cotal/nats` holds none, the refusal of a store directory that holds anything else
- * (with nothing in it removed) and `up`'s warning about one, the dry run, the already-clean no-op,
+ * (with nothing in it removed) and `up`'s warning about one, the refusal of a store folder another
+ * space's streams or registration name, the dry run, the already-clean no-op,
  * that `clean all` drops only registry entries rooted at THIS project (a named open mesh must never
  * delete the default space's entry), and that a `clean all` removing the space trust says earlier
  * full backups no longer restore into the root.
@@ -295,6 +296,30 @@ try {
   rmSync(foreignRoot, { recursive: true, force: true });
   rmSync(shared, { recursive: true, force: true });
   rmSync(decoy, { recursive: true, force: true });
+
+  // --- a store folder another space uses is refused, and nothing in it is removed -------------
+  // nats-server takes no lock on its store folder, so another space's broker can share one. That
+  // space's streams in it, or its registration naming it, make a cleanup refuse.
+  const tenantRoot = meshRoot();
+  const tenancy = mkdtempSync(join(tmpdir(), "cotal-tenancy-"));
+  for (const [account, space] of [["ACDEMO", "demo"], ["ACOTHER", "other"]])
+    for (const stream of ["CHAT", "DM", "TASK"]) mkdirSync(join(tenancy, "jetstream", account, "streams", `${stream}_${space}`), { recursive: true });
+  for (const dryRun of [false, true])
+    await assert.rejects(
+      () => removeLocalState(tenantRoot, { includeAuth: false, space: "demo", storeDir: tenancy, dryRun }),
+      /also belongs to space other \(streams CHAT_other, DM_other, TASK_other\), and removing it would delete that data too; nothing was removed/,
+    );
+  await assert.rejects(() => removeLocalState(tenantRoot, { includeAuth: true, storeDir: tenancy }), /space other \(streams CHAT_other/);
+  check("another space's streams: clean store, its dry run and clean all refuse, naming them, and remove nothing", existsSync(join(tenancy, "jetstream", "ACOTHER")) && existsSync(join(tenantRoot, ".cotal", "auth", "auth.json")));
+  rmSync(join(tenancy, "jetstream", "ACOTHER"), { recursive: true });
+  const tenantRegistered = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-tenancy-root-")));
+  recordMesh({ space: "regd", server: "nats://127.0.0.1:1", root: tenantRegistered, mode: "auth", origin: "up", storeDir: tenancy, ts: "2026-10-24T00:00:00.000Z" });
+  await assert.rejects(() => removeLocalState(tenantRoot, { includeAuth: false, space: "demo", storeDir: tenancy }), (error: Error) => error.message.includes(`also belongs to space regd at ${tenantRegistered},`));
+  removeMesh("regd");
+  const removedOwn = await removeLocalState(tenantRoot, { includeAuth: false, space: "demo", storeDir: tenancy });
+  check("another space's registration naming the folder refuses too; a folder with only this space's streams is removed", !existsSync(tenancy) && removedOwn.length === 1, removedOwn);
+  rmSync(tenantRoot, { recursive: true, force: true });
+  rmSync(tenantRegistered, { recursive: true, force: true });
 
   // --- the broker's own ocsp folder is part of the store ----------------------------------------
   // nats-server makes `ocsp` in its store directory on every configuration reload, as a restore's
