@@ -143,6 +143,8 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   }
   for (const s of subcommands.filter((s) => !s.hidden))
     c(`the usage line names \`${s.name}\``, new RegExp(`(^|[\\s[|])${s.name}( |\\]|$)`).test(run.usage ?? ""), run.usage);
+  const revoke = subcommands.find((s) => s.name === "revoke");
+  c("the help says a revoke does not cancel work that touches no channel", revoke?.summary?.endsWith("; it does not cancel work that touches no channel") === true, revoke?.summary);
 }
 
 // Flags the HOSTED path does not take are refused by name before any plane is opened, never

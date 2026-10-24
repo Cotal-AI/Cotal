@@ -370,6 +370,8 @@ async function revoke(values: RunValues, runId: string | undefined): Promise<voi
     // them never read the marker. Saying it here means the acknowledgement and the table cannot
     // drift apart without somebody noticing at the moment of the revoke.
     console.log(`run ps now lists ${runId} as revoked; the status record is left as its driver last wrote it`);
+    // The marker is read only at a channel effect, so a run that makes none keeps computing.
+    console.log("a revoke does not cancel the run: work that touches no channel, such as sleep or log, keeps running until the host driving it stops");
   } finally {
     await nc.drain().catch(() => nc.close());
   }

@@ -556,6 +556,8 @@ let P = "";
     captured().includes("revoked by smoke-operator (broker outage)"), captured());
   c("...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",
     captured().includes(`run ps now lists ${rid} as revoked`), captured());
+  c("...and says a revoke does not cancel the run, since work that touches no channel never reads the marker",
+    captured().includes("a revoke does not cancel the run: work that touches no channel, such as sleep or log, keeps running until the host driving it stops"), captured());
 
   reset();
   await wf(["ps"]);
@@ -765,7 +767,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 81;
+const DECLARED = 82;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

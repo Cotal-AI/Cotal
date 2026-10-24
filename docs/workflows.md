@@ -427,6 +427,16 @@ marker that cannot be read refuses the answer the same way. Revoking twice is no
 the first reason stands. A run whose admission is missing or revoked is left parked by the manager's boot
 reconcile, named in its log.
 
+A revoke does not cancel the run. Work that touches no channel, such as a loop of `sleep` and
+`log`, keeps running until the host driving the run stops. A `--local` drive ends with the process
+driving it, which reaches no other run. A hosted run stops with its manager, and so does every
+other run that manager drives: `cotal service restart stack-manager --yes` stops them all, and its
+stop impact names the managed agents in scope. A run that reaches its next step within two seconds
+is recorded `released` and waits for `cotal run resume <runId>`; one still waiting keeps its
+`running` record, and the restarted manager takes it back unless it is revoked. `cotal down` stops
+the whole stack. The `run-cancel` endpoint above cancels one hosted run, and the CLI has no verb
+for it.
+
 `run ps`, hosted or `--local`, reads the marker beside each run record and prints `revoked` for a
 run that carries one, whatever state the record itself holds, with the revoker and the reason
 under the table. The record is display only here: a revoke writes no terminal state, because no host drove
