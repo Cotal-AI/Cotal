@@ -10,6 +10,7 @@ import {
   type ParsedArgs, type Presence, type SpaceAuth,
 } from "@cotal-ai/core";
 import {
+  ConfirmationRequired,
   brokerAddressForDisplay, CommandFailure, findMesh, findPreparedSpace, getSpaceAuth, localProcessPath, oneLine, presentationOf,
   renderReport, resolveNativeServiceTarget, terminalWidth, workspaceSecretStore, writeResult, type MeshEntry, type Report,
 } from "@cotal-ai/workspace";
@@ -276,7 +277,7 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
   const blocked = registered && liveStackRefusal(registered, name);
   if (blocked) throw blocked;
   if (!yes && (!canPrompt() || presentation === "json"))
-    throw new CommandFailure("refused", "USAGE_INVALID", "live space deletion requires a terminal to type the exact space name, or --yes with an exact positional name in a script", { target: { space: name }, remedy: `inspect cotal space delete ${name} --dry-run first` });
+    throw new ConfirmationRequired("live space deletion requires a terminal to type the exact space name, or --yes with an exact positional name in a script", { target: { space: name }, remedy: `inspect cotal space delete ${name} --dry-run first, then run cotal space delete ${name} --yes` });
   const initial = await readSpaceDeletion(name);
   if (!yes) {
     process.stderr.write(`${renderReport({ ...previewView(initial.result), space: name }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr))}\n`);

@@ -649,7 +649,10 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
   });
   const matches = rows.filter((row) => row.name === name || row.id === name);
   if (matches.length > 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "more than one manager reports this agent; select a manager with --on", { target: { ...census.target, name, candidates: matches.map((row) => ({ name: row.name, id: row.id, instanceId: row.instanceId ?? null })) } });
-  if (!matches.length && !census.partial) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { ...census.target, name } });
+  // `manager` and an answering manager's instance id name the manager itself, which runs no row of
+  // its own, so the refusal says where its state is read.
+  const managerItself = name === "manager" || census.managers.some((manager) => manager.state === "answered" && manager.instanceId === name);
+  if (!matches.length && !census.partial) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { ...census.target, name }, ...(managerItself ? { remedy: `${name} is this space's manager, which is answering, not an agent it runs; cotal status shows the manager's state, and cotal endpoint describe manager reads its commands` } : {}) });
   const item = matches[0] ?? null;
   const managerInstanceId = item ? [...census.rowsOf].find(([, rows]) => rows.includes(item))?.[0] ?? census.target.managerInstanceId ?? item.instanceId ?? null : null;
   let managerHint = "";

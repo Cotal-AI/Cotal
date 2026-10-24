@@ -11,7 +11,8 @@
  *     systemd stop or a system shutdown sends, stops it and it exits. `chat` then refuses at once
  *     that no manager is running, rather than wait out a request no manager can answer; `up` starts
  *     the manager again.
- *  5. `status` reports the running manager as answering. Stopped with SIGSTOP, as a hang, it reads
+ *  5. `status` reports the running manager as answering, and `status manager` names it as the
+ *     manager with that Next instead of refusing it as an agent with none. Stopped with SIGSTOP, as a hang, it reads
  *     not answering by pid, `down --yes` and `ps` refuse it by pid, and `run ps` refuses
  *     TARGET_UNAVAILABLE pointing to `status`; once that process is killed, the final
  *     `down --yes` stops the stack.
@@ -119,6 +120,12 @@ try {
   // A hung manager's process record stays running, so status asks its endpoint, and the stop
   // commands, which need its stop impact, refuse it by pid until that process is ended.
   check("status reports the running stack manager as answering", managerEndpoint() === "answered");
+  // `status manager` names the manager, not an agent it runs, and says where its state is read; an
+  // unknown agent name gets no such Next.
+  const asAgent = cli("status", "manager");
+  check("status manager refuses as no agent and points to status and the manager's commands", asAgent.status === 2 && asAgent.out.includes("TARGET_NOT_FOUND") && asAgent.out.includes("manager is this space's manager, which is answering, not an agent it runs") && asAgent.out.includes("cotal endpoint describe manager"), asAgent.out);
+  const unknownAgent = cli("status", "nosuch");
+  check("control: an unknown agent name gets no manager Next", unknownAgent.status === 2 && unknownAgent.out.includes("TARGET_NOT_FOUND") && !unknownAgent.out.includes("endpoint describe manager"), unknownAgent.out);
   hung = managerPid();
   if (hung !== undefined) process.kill(hung, "SIGSTOP");
   const hungStatus = cli("status");
