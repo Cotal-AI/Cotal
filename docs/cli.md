@@ -3241,10 +3241,10 @@ one. See [Enrollment redeem](identity-and-auth.md#enrollment-redeem) for the HTT
 
 A runtime that starts a managed seat outside the manager's filesystem hands the child a managed
 handoff instead: one `0600` file named by `COTAL_MANAGED_HANDOFF_FILE`, carrying the lifecycle the
-manager already enrolled. The runtime builds the command with `delegatedSeatCommand`:
+manager already enrolled, alongside `COTAL_MANAGER_INSTANCE` naming the launching manager. The runtime builds the command with `delegatedSeatCommand`:
 
 ```bash
-COTAL_MANAGED_HANDOFF_FILE=/run/seat/handoff.json \
+COTAL_MANAGED_HANDOFF_FILE=/run/seat/handoff.json COTAL_MANAGER_INSTANCE=<instance-id> \
   cotal spawn --config ./seat.md --space main --name <actor> --agent claude \
     --expect-owner <owner> --expect-lifecycle-uid <uid>
 ```
@@ -3254,8 +3254,14 @@ help or loads extensions, so every outcome leaves no file. Every other command d
 without reading the file and leaves the file in place. The variable is read under any letter case;
 spellings that name different files are refused after every one of them was deleted. A file spawn
 cannot take, such as a missing one, is refused `USAGE_INVALID`, naming the variable and the path,
-with `unset COTAL_MANAGED_HANDOFF_FILE` as Next. The
-spawn then refuses a malformed handoff, or one whose space, owner, actor or lifecycle UID differs
+with `unset COTAL_MANAGED_HANDOFF_FILE` as Next.
+
+`DelegatedSeatLaunch.managerInstanceId` is required. A newer CLI child under an older manager or
+runtime that omits it refuses every delegated launch, so managers and the CLI must be upgraded
+together. The spawn refuses an absent `COTAL_MANAGER_INSTANCE`
+(`COTAL_MANAGED_HANDOFF_FILE requires COTAL_MANAGER_INSTANCE`), a malformed value
+(`COTAL_MANAGER_INSTANCE "<value>" is not a valid lifecycle token ([a-z0-9]{26,32})`),
+a malformed handoff, or one whose space, owner, actor or lifecycle UID differs
 from `--space`, `--expect-owner`, `--name` and `--expect-lifecycle-uid`, before any broker
 connection or exchange request. Every refusal on this path names the field and never a value from
 the handoff. The registration's server, exchange and enforcement checks, the local state this
@@ -3268,7 +3274,7 @@ preflight's rollback then fails to remove a secret or file, that sentence is fol
 the cleanup steps that failed, without their errors. The event-plane policy
 refusals name the handoff's space field. An actor outside `[A-Za-z0-9_]` and a space that cannot
 name local state, such as `..`, are refused as malformed before any plane. A handoff conflicts with
-the enrollment variables, `--detach`, `-f` and `--creds`, and needs `--config <persona-file>`. From
+the enrollment variables, `--detach`, `-f` and `--creds`, and needs `--config <persona-file>` and `COTAL_MANAGER_INSTANCE`. From
 there it runs the enrollment consumer above without redeeming anything. See
 [Delegated seats](embedding.md#delegated-seats-outside-the-managers-filesystem).
 

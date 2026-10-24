@@ -246,7 +246,7 @@ try {
   writeFileSync(persona, "---\nname: delegated\n---\nA delegated seat.\n");
   const handoff = join(root, "handoff.json");
   const delegated = delegatedSeatCommand(
-    { agent: "claude", persona: "", role: "worker", model: "m", launchOptions: { effort: "high" }, events: false },
+    { agent: "claude", persona: "", managerInstanceId: "m".repeat(26), role: "worker", model: "m", launchOptions: { effort: "high" }, events: false },
     { space: SPACE, owner: "u_aaaaaaaaaaaaaaaaaaaaaa", actor: "delegated", lifecycleUid: "l".repeat(26) },
     { handoff, persona },
   );
