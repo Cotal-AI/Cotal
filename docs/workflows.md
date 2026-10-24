@@ -159,7 +159,9 @@ dispatch it again: it opens a hold, a checkpoint under a token derived from the 
 request id, whose prompt names that id. Answer it with
 `cotal run answer <run> <step-key> --value <json>`, and the value becomes the step's result. An
 expired hold fails the step with the catchable L4027. Only `ask` runs inside `once`, so wrap just
-the step that writes: a host restart while it is in flight costs a settle.
+the step that writes: a host restart while it is in flight costs a settle. `run validate` refuses
+another effect in the body, or in a function the body calls by name, with L2033, and the run
+refuses one it reaches any other way with L4028.
 
 ```js
 const publisher = await spawn("publisher")
@@ -199,7 +201,9 @@ The recorded pins are preserved.
 mesh, which holds each run's journal, records and admission. A run that waited at a checkpoint or a
 timer when the backup was made is back after a full restore, and the manager takes it over as after
 a restart. What the run did after the backup is not in its record. A user-mode backup, and one made
-before full backups held workflow runs, holds none ([CLI reference](cli.md#backups)).
+before full backups held workflow runs, holds none ([CLI reference](cli.md#backups)). After a
+restore from one of them, or a registry-only restore, the store the restore set aside holds the only
+copy of the runs, and `cotal backup cleanup-fallback` deletes it only with `--discard-history`.
 
 ## From an agent session
 

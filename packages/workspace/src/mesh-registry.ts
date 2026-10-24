@@ -124,6 +124,10 @@ export interface MeshEntry {
    *  rather than reading agreement out of an address. Absent means no such acceptance was given,
    *  which is every record written before the flag existed. */
   unencryptedOverlay?: boolean;
+  /** Present and true when `space add --force` wrote the record without checking the broker, so its
+   *  `mode` is what the operator gave, not what the broker was seen to enforce. Absent means it was
+   *  checked, or the record predates this field. */
+  unchecked?: boolean;
   /** ISO timestamp of when the record was written. */
   ts: string;
 }

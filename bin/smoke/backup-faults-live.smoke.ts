@@ -384,6 +384,7 @@ async function interruptedRestoreScenario(): Promise<void> {
     let recovered = run("backup", "recover", attemptId, "--yes");
     for (let i = 0; i < 50 && recovered.status !== 0; i++) { await sleep(200); recovered = run("backup", "recover", attemptId, "--yes"); }
     must("recover the interrupted restore", recovered);
+    assert.ok(/Next\s+cotal up\s+Resume the space from its preserved state\s+cotal backup restore <directory>\s+Try the restore again/.test(recovered.stdout), `the recovery receipt names resume and a retried restore as its next steps\n${recovered.stdout}`);
     assert.ok(Date.now() < Date.parse(deadline), "recovery ran before the claim deadline");
     assert.equal(journalState(root), "ready", "recovery returns the cut to ready");
     must("ordinary resume after recovery", run("up", "--detach", "--open", "--server", server, "--space", space));
@@ -459,6 +460,7 @@ async function interruptedCreateScenario(): Promise<void> {
     let recovered = run("backup", "recover", attemptId, "--yes");
     for (let i = 0; i < 50 && recovered.status !== 0; i++) { await sleep(200); recovered = run("backup", "recover", attemptId, "--yes"); }
     must("recover the interrupted create", recovered);
+    assert.ok(/Next\s+cotal backup create <directory>\s+Create a new backup from the preserved cut\s+cotal up\s+Resume the space/.test(recovered.stdout), `the release receipt names a new backup and resume as its next steps\n${recovered.stdout}`);
     assert.ok(Date.now() < Date.parse(deadline), "recovery ran before the claim deadline");
     assert.equal(journalState(root), "ready", "recovery returns the cut to ready");
     assert.equal(existsSync(destination), false, "recovery removed the partial artifact");

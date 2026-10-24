@@ -11,6 +11,7 @@ import {
   validateBackupStreamState,
   validatePersistentConsumerInventory,
   validateSpaceBackupInventory,
+  wfjStreamName,
   type ParsedArgs,
   type FlagSpec,
   type CompletionResult,
@@ -37,6 +38,7 @@ import {
   workspaceSecretStore,
   type MaintenanceReadyRecord,
   type ProcessOwner,
+  restoreLeftOut,
 } from "@cotal-ai/workspace";
 import { artifactStreams, BACKUP_MANIFEST_FORMAT, createArtifactWriter, isTrustBound, missingBackupPath, snapshotFileName, TRUST_BOUND_TEXT, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
 import { assertControllerResumeEligible } from "../lib/controller-resume.js";
@@ -59,7 +61,7 @@ const OPERATION_TIMEOUT_MS = 30 * 60 * 1000;
 export const backupFlags: FlagSpec[] = [jsonFlag, plainFlag,
   { name: "yes", short: "y", type: "boolean", description: "recover/cleanup-fallback: confirm only the exact reviewed restore attempt" },
   { name: "dry-run", type: "boolean", description: "recover/cleanup-fallback: read the original journal and paths without a lock or write" },
-  { name: "discard-history", type: "boolean", description: "cleanup-fallback: also delete a registry-only restore's previous store, the only copy of the history it left out" },
+  { name: "discard-history", type: "boolean", description: "cleanup-fallback: also delete a previous store that holds the only copy of the history or workflow runs the restore left out" },
   { name: "only", type: "string", value: "<full|registry>", description: "create: artifact selection (default full; registry is the only partial); restore: only registry, to restore just the registry (default follows the artifact)" },
   { name: "store-dir", type: "string", value: "<dir>", description: "create: preserved source store; restore: restore target (default .cotal/nats)" },
   { name: "accept-missing-source", type: "boolean", description: "restore: explicit disaster consent when the inode-bound preserved source is absent" },
@@ -105,7 +107,7 @@ function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal
   if (!record) return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "backup requires a stopped preserved cut, and this root records none", { target: { root }, remedy: "stop the stack with cotal down --preserve-state, then create the backup" });
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup requires the stopped preserved cut; maintenance state is ${record.state}`, {
     target: { root, space: record.space, state: record.state },
-    remedy: "restore" in record ? restoreNextStep(record.state, record.restore.attemptId, record.restore.selection) : "finish this root's current maintenance attempt first; check it with cotal status",
+    remedy: "restore" in record ? restoreNextStep(record.state, record.restore.attemptId, restoreLeftOut(record)) : "finish this root's current maintenance attempt first; check it with cotal status",
   });
 }
 
@@ -402,6 +404,9 @@ interface BackupCreateResult {
   readonly sourceGeneration: string;
   /** Whether it restores only into a root that still holds the trust state it was taken under. */
   readonly trustBound: boolean;
+  /** Whether it holds the workflow runs. A registry or user-mode artifact does not, so a restore
+   *  from it starts them empty. */
+  readonly workflowRuns: boolean;
   readonly restored: false;
 }
 interface BackupObservation {
@@ -484,6 +489,7 @@ export async function backup(args: ParsedArgs): Promise<void> {
 function backupCreateView(result: BackupCreateResult & { cleanupConfirmed: boolean }): Report {
   return { sections: [{ title: "Private backup artifact published", blocks: [
     { kind: "fields", rows: [["Artifact", result.directory], ["Space", result.space], ["Selection", result.selection], ...(result.trustBound ? [["Restores into", TRUST_BOUND_TEXT] as [string, string]] : []), ["Created", result.createdAt], ["Streams", String(result.streamCount)], ["Files", String(result.fileCount)], ["Original attempt", result.attemptId], ["Source generation", result.sourceGeneration], ["Maintenance cleanup", result.cleanupConfirmed ? "native cleanup completed" : { text: "not confirmed", tone: "waiting" }], ["Restore", { text: "not attempted or proved", tone: "waiting" }]] },
+    ...(result.workflowRuns ? [] : [{ kind: "lines" as const, lines: ["Workflow runs are not in this artifact, so a restore from it starts them empty."] }]),
     { kind: "lines", lines: [{ text: "The artifact's completion manifest was published from the native preserved cut. Creation does not prove restoration or future authority continuity. Snapshot bytes, checkpoint contents and credentials remain private and are not printed or uploaded.", tone: "hint" }] },
   ] }] };
 }
@@ -645,7 +651,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
       streams,
       checkpoints: checkpointName,
     }, files);
-    observed.published = { kind: "backup-created", directory: writer.directory, space: ready.space, selection: selected, createdAt: published.createdAt, streamCount: streams.length, fileCount: files.length, attemptId, sourceGeneration: ready.source.generation, trustBound: isTrustBound(selected, ready.mode), restored: false };
+    observed.published = { kind: "backup-created", directory: writer.directory, space: ready.space, selection: selected, createdAt: published.createdAt, streamCount: streams.length, fileCount: files.length, attemptId, sourceGeneration: ready.source.generation, trustBound: isTrustBound(selected, ready.mode), workflowRuns: held.includes(wfjStreamName(ready.space)), restored: false };
   } finally {
     // Ownership is surrendered ONLY once every owned resource is proven stopped and removed (or
     // published). Any cleanup failure keeps the claim so retry/stale-recovery finishes it — attempt
