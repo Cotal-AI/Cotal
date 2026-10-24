@@ -10,7 +10,8 @@
  *     any broker connection and names `cotal down` and `cotal reset store`; the dry run warns in
  *     JSON and opens with that refusal as its verdict in text. The stack still stops cleanly.
  *  3. Reset verdicts. On the live stack `reset store --dry-run` exits 0 with a refused verdict and
- *     a remedy naming `cotal down`, and `reset space --dry-run` refuses with that remedy.
+ *     a remedy naming `cotal down`, and `reset space --dry-run` refuses with that remedy. Its list
+ *     names each process once, the delivery daemon as its stack member with its pidfile's pid.
  *  4. Reset after a normal down. `reset store` is offered and removes the store, naming the
  *     workflow runs that go with it in its preview and receipt and saying why the down listed
  *     none, and `up` starts again. `reset space` is offered, its preview opens with the offered verdict and
@@ -92,7 +93,7 @@ const roots: string[] = [];
 type Envelope = {
   outcome: string;
   error?: { code: string; message: string; remedy?: string };
-  target?: { space?: string; root?: string } | null;
+  target?: { space?: string; root?: string; processes?: string[] } | null;
   warnings?: { code: string; message: string }[];
   result?: Record<string, unknown> & { applyVerdict?: { offered: boolean; code?: string; remedy?: string | null } };
 };
@@ -181,6 +182,12 @@ try {
     check("that verdict's remedy names cotal down", Boolean(storeLive.env?.result?.applyVerdict?.remedy?.includes("cotal down")), storeLive.env?.result?.applyVerdict);
     const spaceLive = cli(root, "reset", "space", space, "--dry-run", "--json");
     check("reset space --dry-run on a live stack refuses with a remedy naming cotal down", spaceLive.status === 2 && spaceLive.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(spaceLive.env.error.remedy?.includes("cotal down")), shown(spaceLive));
+    // The delivery daemon's own pidfile names the process its stack member runs, so it is listed once.
+    const processes = spaceLive.env?.target?.processes ?? [];
+    const pids = processes.flatMap((row) => /\bpid (\d+)/.exec(row)?.[1] ?? []);
+    check("the refusal lists each process once: delivery as its stack member with the pidfile's pid, and no pid twice",
+      processes.length === 2 && !processes.some((row) => row.startsWith("delivery daemon")) && /^stack-delivery, pid \d+, instance [0-9a-f-]+$/.test(processes.find((row) => row.startsWith("stack-delivery")) ?? "")
+        && processes.some((row) => /^stack-broker, instance [0-9a-f-]+$/.test(row)) && new Set(pids).size === pids.length && spaceLive.env?.error?.message.split("delivery").length === 2, processes);
 
     const stopped = cli(root, "down", "--yes", "--json");
     check("the refused delete left a stack that down --yes stops", stopped.status === 0, shown(stopped));
@@ -595,7 +602,7 @@ try {
       }
       check("the send whose block the broker cannot create exits 3 naming the logged permission failure, and its Next makes the store writable, not free disk",
         failed?.status === 3 && failed.env?.error?.code === "OPERATION_UNKNOWN" && /broker logged a store write failure at .*: permission denied/.test(failed.env.error.message) &&
-          failed.env.error.remedy === `make ${store} writable by this account again, as chmod -R u+w ${store} does, then restart the broker with cotal down and cotal up before sending again`, failed && shown(failed));
+          failed.env.error.remedy === `Make ${store} writable by this account again, as chmod -R u+w ${store} does, then restart the broker with cotal down and cotal up before sending again. The broker disabled JetStream, so if cotal down refuses because the manager's stop cannot be recorded, it names the manager process to end on this host first.`, failed && shown(failed));
       const after = cli(root, "send", "-c", "general", "after the failure", "--json");
       const message = after.env?.error?.message ?? "";
       check("a later send refuses DEPENDENCY_UNAVAILABLE naming the write failure, and does not say the space was deleted",
