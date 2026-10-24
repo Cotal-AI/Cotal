@@ -779,7 +779,7 @@ export function heldClaim(root: string, attemptId: string, claim: { readonly dea
   const [holder, remedy] = assessment === "ambiguous"
     ? [`its processes on host ${coordinator.host} cannot be proven gone from this host`, `prove its ${kind} process and brokers on ${coordinator.host} have exited, then run ${recover}`]
     : coordinatorRuns
-      ? [`its ${kind} process ${coordinator.pid} is still running`, `wait for that ${kind} to finish; if it was stopped, run ${recover} once process ${coordinator.pid} has exited`]
+      ? [`its ${kind} process ${coordinator.pid} is still running, started at ${coordinator.startedAt}`, `wait for that ${kind} to finish; if it was stopped, run ${recover} once process ${coordinator.pid} has exited`]
       : running.length
         ? [`its ${kind} process ${coordinator.pid} has exited, and its brokers (pid ${running.join(", ")}) are still stopping`, `run ${recover} again once they have exited`]
         : [`its ${kind} process ${coordinator.pid} has exited, but a broker it started cannot be proven gone`, `run ${recover} after ${deadline}`];
@@ -845,7 +845,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
   const named = resolve(flags.restore);
   const missing = missingBackupPath(named);
   if (missing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${missingBackupPathText(named, missing)}; nothing was restored`, { target: { root, directory: named, folder: dirname(named), missing }, remedy: "name an existing backup artifact folder; cotal backup verify <dir> checks one before a restore" });
-  let lock = acquireStackOperationLock(root);
+  let lock = acquireStackOperationLock(root, "restore");
   let staged: StagedArtifact | undefined;
   let transitioned = false;
   let targetBound = false;

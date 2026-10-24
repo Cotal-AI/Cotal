@@ -30,6 +30,7 @@ import {
   readPreservationCommitIntent,
   writePreservationCommitIntent,
   readMaintenanceJournal,
+  readMaintenanceLockHolder,
   readMaintenanceResumeDocument,
   readPreservationPrepareIntent,
   readStoreIdentity,
@@ -369,9 +370,13 @@ if (process.platform !== "win32") {
 // An active owner excludes a second writer. A dead owner may be reaped, while ambiguous death may not.
 {
   const p = project("lock-race");
-  const first = acquireMaintenanceLock(p.root);
+  const first = acquireMaintenanceLock(p.root, { operation: "backup create" });
   expectCode("live lock excludes a concurrent writer", "lock-held", () => acquireMaintenanceLock(p.root));
+  const holder = readMaintenanceLockHolder(p.root);
+  check("the refused writer can read the holder's process, start and operation",
+    holder?.owner.pid === process.pid && holder.owner.startedAt === first.owner.startedAt && holder.operation === "backup create");
   releaseMaintenanceLock(first);
+  check("no holder is read once the lock is released", readMaintenanceLockHolder(p.root) === undefined);
 
   const stale = acquireMaintenanceLock(p.root, { owner: owner("stale") });
   expectCode("unknown stale owner fails closed", "lock-owner-ambiguous", () =>
