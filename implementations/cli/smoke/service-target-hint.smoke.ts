@@ -10,6 +10,8 @@
  * `service add --file` of a broker definition whose server is no broker address is refused, quoting
  * it, before anything is saved. It used to be saved, and only its start refused.
  *
+ * `help service remove` lists `--instance`, which `remove` takes. It used to leave it out.
+ *
  * Driven through the built binary in a sandboxed COTAL_HOME, from a folder that is not a project and
  * from two prepared projects. No broker is started.
  *
@@ -56,6 +58,11 @@ check("the text refusal carries one mark, not two", !/✗\s*✗/.test(text.stder
 
 const refused = run(["service", "--server", "nats://127.0.0.1:4222"]);
 check("control: service does refuse --server as an unknown option", refused.status === 1 && /Unknown option '--server'/.test(refused.stderr), shown(refused));
+
+// remove takes --instance to forget one stopped instance record; its help did not list it.
+const removeHelp = run(["help", "service", "remove"]);
+check("help service remove lists --instance <full-id> in its usage and options",
+  removeHelp.status === 0 && /cotal service remove <name> \[--instance <full-id>\] \[--yes\]/.test(removeHelp.stdout) && /^ +--instance <full-id> +select one full owned service instance ID/m.test(removeHelp.stdout), shown(removeHelp));
 
 // Space a holds a service tick and is selected; a definition file for space b uses the same name.
 {
