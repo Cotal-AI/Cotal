@@ -25,10 +25,11 @@
  * session reads its own card from it. Part of the wire contract's onboarding
  * half, alongside the join link.
  */
-import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
+import { linkTarget } from "./fs-safe.js";
 import { assertValidName } from "./resolve.js";
 import { writePrivateRecord } from "./secret-fs.js";
 import { utf16Problem } from "./text-encoding.js";
@@ -436,29 +437,56 @@ export function agentFilePath(root: string, nameOrPath: string): string {
 /** One `.cotal/agents/*.md` catalog entry. A malformed file is an `error` row, not a throw —
  *  a list that crashed on one bad card could not tell the caller which names exist. */
 export interface PersonaCatalogEntry {
+  /** The filename stem (`.cotal/agents/<name>.md`), which is also the spawn name. */
   name: string;
   path: string;
+  /** Parsed definition, or undefined when the file failed to parse (see `error`). */
   def?: AgentDef;
+  /** Parse error message, if the file is malformed — surfaced rather than crashing the list. */
   error?: string;
+  /** Why the file cannot be read when it was saved as UTF-16: the one parse reason that quotes nothing
+   *  from the file, so a list that keeps `error` private can still name it. */
+  encoding?: string;
+  /** Set when the file is not a regular file, such as a FIFO, so it was not opened (see `error`). */
+  notRegular?: true;
+  /** The file a persona that is a symbolic link names, so a listing can warn about it. */
+  link?: string;
 }
 
 /** The workspace persona catalog: every `.cotal/agents/*.md` under `root`, sorted by filename
- *  stem. Filesystem-only — no mesh. Missing directory ⇒ empty catalog, not an error. */
+ *  stem. Filesystem-only — no mesh. A missing or unreadable directory ⇒ empty catalog, not an error. */
 export function listPersonaCatalog(root: string): PersonaCatalogEntry[] {
+  try {
+    return readPersonaCatalog(root);
+  } catch {
+    return []; // absent, or unreadable: this caller lists either as an empty catalog
+  }
+}
+
+/** {@link listPersonaCatalog}, except that only an absent directory is an empty catalog: one that
+ *  exists and cannot be read throws, for a report that must not show it as empty. */
+export function readPersonaCatalog(root: string): PersonaCatalogEntry[] {
   const dir = personaDir(root);
   let files: string[];
   try {
     files = readdirSync(dir).filter((f) => f.endsWith(".md"));
-  } catch {
-    return [];
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw e;
   }
   return files.sort().map((f) => {
     const name = f.slice(0, -3);
     const path = join(dir, f);
+    const link = linkTarget(path);
     try {
-      return { name, path, def: loadAgentFile(path) };
+      // A FIFO or a device would block the read, so only a regular file is opened. A link is
+      // followed, as the read follows it.
+      if (!statSync(path).isFile()) return { name, path, error: `persona is not a regular file: ${path}`, notRegular: true as const, ...(link !== undefined ? { link } : {}) };
+      return { name, path, def: loadAgentFile(path), ...(link !== undefined ? { link } : {}) };
     } catch (e) {
-      return { name, path, error: (e as Error).message };
+      let encoding: string | undefined;
+      try { encoding = utf16Problem(readFileSync(path, "utf8")); } catch { /* unreadable: `error` says so */ }
+      return { name, path, error: (e as Error).message, ...(encoding ? { encoding } : {}), ...(link !== undefined ? { link } : {}) };
     }
   });
 }

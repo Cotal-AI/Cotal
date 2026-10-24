@@ -17,7 +17,7 @@
     "path to appear: `divergent: the spawn root is named too`.",
     "",
     "The second mutation restores existence-only default reporting inside the SHIPPED status renderer.",
-    "It keeps listPersonas/loadAgentFile live but discards its error at the final capability decision,",
+    "It keeps readPersonaCatalog/loadAgentFile live but discards its error at the final capability decision,",
     "so the exact B1 file state returns: a present `default.md` that spawn rejects is painted green.",
     "The named invalid-default cell must kill it; the repaired positive control uses a loader-valid file."
   ],

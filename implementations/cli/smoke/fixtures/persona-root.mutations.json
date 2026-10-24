@@ -8,9 +8,9 @@
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/persona-root.mutations.json",
   "why": [
     "FIVE MUTATIONS cover the catalog, mint's shipped persona read, the B2 refusal, signing source,",
-    "and default credential storage. Making listPersonas ignore its required root",
-    "sends every shared reader back to process.cwd(): personas list and the completers describe the",
-    "folder the operator stands in while spawn still launches from the selected mesh's catalog.",
+    "and default credential storage. Making personas list read the catalog at process.cwd()",
+    "instead of the resolved root describes the folder the operator stands in while spawn still",
+    "launches from the selected mesh's catalog.",
     "",
     "The mutation is compile-clean and the smoke drives the real personas command before comparing",
     "its printed answer with spawn's product reader. It must redden `catalog: personas list prints the",
@@ -23,13 +23,13 @@
   ],
   "mutations": [
     {
-      "name": "the persona catalog ignores the resolved root and reads from the cwd",
-      "file": "implementations/cli/src/lib/personas.ts",
-      "find": "  const dir = personaDir(root);",
-      "replace": "  const dir = personaDir(process.cwd());",
+      "name": "personas list ignores the resolved root and reads the catalog from the cwd",
+      "file": "implementations/cli/src/commands/personas.ts",
+      "find": "  const entries = listPersonaCatalog(root);",
+      "replace": "  const entries = listPersonaCatalog(process.cwd());",
       "expectRed": "catalog: personas list prints the MESH's personas",
       "cell": "catalog: personas list prints the MESH's personas",
-      "note": "This exact substitution keeps TypeScript green while restoring the silent cwd fallback the required root argument removed."
+      "note": "This exact substitution keeps TypeScript green while restoring the silent cwd fallback the required root argument removed. The catalog reader itself is core's, which this suite loads from dist, so the mutation sits on the CLI call that hands it the root."
     },
     {
       "name": "mint reads the persona ACL from the cwd after resolving the target mesh",

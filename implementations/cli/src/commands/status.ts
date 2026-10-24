@@ -21,8 +21,10 @@ import {
   resolveAuthProvider,
   personaDir,
   presenceText,
+  readPersonaCatalog,
   type FlagValues,
   type ParsedArgs,
+  type PersonaCatalogEntry,
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
@@ -107,7 +109,6 @@ import { chatStreamGone, stackState } from "../lib/space-streams.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { defaultPersonaFix } from "../lib/default-persona.js";
 import { c } from "../ui.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
@@ -869,12 +870,12 @@ function folderPersonas(root: string, selected: Selected, values: FlagValues<typ
 }
 
 /** Summarize the catalog through the shipped loader. A file is launchable only when
- *  {@link readPersonas} parsed it with the same {@code loadAgentFile} path spawn uses. Only an absent
+ *  {@link readPersonaCatalog} parsed it with the same {@code loadAgentFile} path spawn uses. Only an absent
  *  directory is an empty catalog: one that cannot be read is a gap, not `missing`. */
 function personaCatalog(root: string, gaps: Gaps): PersonaCatalog {
-  let personas: PersonaEntry[];
+  let personas: PersonaCatalogEntry[];
   try {
-    personas = readPersonas(root);
+    personas = readPersonaCatalog(root);
   } catch (e) {
     const error = (e as Error).message;
     gaps.add("PERSONAS_UNREADABLE", `the persona catalog ${personaDir(root)} could not be read: ${error}`, { root: personaDir(root) });

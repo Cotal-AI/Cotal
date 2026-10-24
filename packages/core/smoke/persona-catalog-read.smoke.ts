@@ -10,6 +10,7 @@
  *   4. a foreign owner therefore does NOT get role/model/description (name only)
  *   5. the owner DOES get those fields, matching `cotal personas list` content
  *   6. unparseable files are listed with error, not thrown
+ *   7. a FIFO is listed as a not-regular row rather than opened, so the listing does not wait on it
  *
  * (3)+(4) are the mutation cell: flipping `personaCatalogReadable` to `return true`
  * leaks another peer's description; flipping it to `return admin` hides the owner's
@@ -17,6 +18,7 @@
  *
  * Run: pnpm smoke:persona-catalog-read
  */
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -72,6 +74,13 @@ check(
   catalog.map((e) => e.name),
 );
 check("broken is an error row, not a throw", catalog.find((e) => e.name === "broken")?.error !== undefined);
+if (process.platform !== "win32") {
+  const piped = mkdtempSync(join(tmpdir(), "cotal-persona-catalog-fifo-"));
+  mkdirSync(join(piped, ".cotal", "agents"), { recursive: true });
+  execFileSync("mkfifo", [join(piped, ".cotal", "agents", "pipe.md")]);
+  const [pipe] = listPersonaCatalog(piped);
+  check("a FIFO is a not-regular error row, not a read that waits on it", pipe?.name === "pipe" && pipe.notRegular === true && pipe.def === undefined, pipe);
+}
 const mine = catalog.find((e) => e.name === "mine")!.def!;
 const theirs = catalog.find((e) => e.name === "theirs")!.def!;
 const operator = catalog.find((e) => e.name === "operator")!.def!;

@@ -102,9 +102,10 @@
     },
     {
       "name": "an unreadable persona catalog reads as an empty one",
-      "file": "implementations/cli/src/lib/personas.ts",
+      "file": "packages/core/src/agent-file.ts",
       "find": "    if ((e as NodeJS.ErrnoException).code === \"ENOENT\") return [];\n",
       "replace": "    if (e) return [];\n",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/status-report.smoke.ts",
       "expectRed": "an unreadable persona catalog is partial with exit 4",
       "cell": "an unreadable persona catalog is partial with exit 4",
       "afterRestore": "pnpm --filter cotal-ai... build"

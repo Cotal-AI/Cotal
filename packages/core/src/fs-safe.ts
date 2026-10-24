@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, unlinkSync } from "node:fs";
+import { lstatSync, mkdirSync, readlinkSync, realpathSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -74,4 +74,16 @@ export function unlinkFileNoFollow(path: string): boolean {
   if (!st.isFile()) throw new Error(`refusing to delete "${path}": not a regular file`);
   unlinkSync(path);
   return true;
+}
+
+/** The file `path` links to when it is a symbolic link: its resolved path, or the link's own text
+ *  when that does not resolve. Undefined for anything else. */
+export function linkTarget(path: string): string | undefined {
+  try {
+    if (!lstatSync(path).isSymbolicLink()) return undefined;
+  } catch {
+    return undefined;
+  }
+  try { return realpathSync(path); } catch { /* a dangling link or a loop */ }
+  try { return readlinkSync(path); } catch { return undefined; }
 }

@@ -53,7 +53,7 @@ let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
 let resolveMeshTarget!: typeof import("@cotal-ai/workspace").resolveMeshTarget;
 let agentFilePath!: typeof import("@cotal-ai/core").agentFilePath;
 let loadAgentFile!: typeof import("@cotal-ai/core").loadAgentFile;
-let listPersonas!: typeof import("../src/lib/personas.js").listPersonas;
+let listPersonaCatalog!: typeof import("@cotal-ai/core").listPersonaCatalog;
 let personas!: typeof import("../src/commands/personas.js").personas;
 let personasComplete!: typeof import("../src/commands/personas.js").personasComplete;
 let spawnComplete!: typeof import("../src/commands/spawn.js").spawnComplete;
@@ -68,8 +68,7 @@ let commandFailureReport!: typeof import("@cotal-ai/workspace").commandFailureRe
 let renderReport!: typeof import("@cotal-ai/workspace").renderReport;
 try {
   ({ recordMesh, setCurrent, resolveMeshTarget } = await import("@cotal-ai/workspace"));
-  ({ agentFilePath, loadAgentFile } = await import("@cotal-ai/core"));
-  ({ listPersonas } = await import("../src/lib/personas.js"));
+  ({ agentFilePath, listPersonaCatalog, loadAgentFile } = await import("@cotal-ai/core"));
   ({ personas, personasComplete } = await import("../src/commands/personas.js"));
   ({ spawnComplete } = await import("../src/commands/spawn.js"));
   ({ sendComplete } = await import("../src/commands/send.js"));
@@ -99,11 +98,11 @@ function project(label: string, personas: { name: string; role: string; channel:
 }
 
 const sorted = (r: { items: { value: string }[] }) => r.items.map((i) => i.value).sort();
-const names = (root: string) => listPersonas(root).map((p) => p.name).sort();
+const names = (root: string) => listPersonaCatalog(root).map((p) => p.name).sort();
 
 /** Run `cotal personas list` for real and return everything it printed.
  *
- *  The command's answer IS its stdout, so that is what gets observed. Calling `listPersonas` with
+ *  The command's answer IS its stdout, so that is what gets observed. Calling `listPersonaCatalog` with
  *  a root the suite resolved itself would grade the suite's own arithmetic instead of the
  *  command's, and would pass against the unfixed tree — measured, not hypothesised. */
 async function captureList(values: { space?: string; server?: string }): Promise<string> {
@@ -215,14 +214,14 @@ try {
 
   // 1. CATALOG AGREEMENT.
   //
-  // Read `personas list` by CAPTURING WHAT IT PRINTS, not by calling listPersonas(target.root)
+  // Read `personas list` by CAPTURING WHAT IT PRINTS, not by calling listPersonaCatalog(target.root)
   // and comparing. That distinction decides whether this suite is a detector at all: the first
   // version of this file did the latter, and every catalog cell PASSED against the unfixed tree,
   // because the cell was re-implementing the fix instead of measuring the command. A cell that
   // cannot fail is not evidence. `personas()` writes to stdout, so stdout is the observation.
   const listedOut = await captureList({});
   const listed = personaNamesFrom(listedOut);
-  // `spawn` resolves its catalog as listPersonas(target.root) — that IS spawn's implementation,
+  // `spawn` resolves its catalog as listPersonaCatalog(target.root) — that IS spawn's implementation,
   // so calling it here is calling the product, not a replica of it.
   const launchable = names(target.root);
   check("catalog: personas list prints the MESH's personas", listed.join(",") === "mesh-default,mesh-lead", listed);
