@@ -5,10 +5,11 @@
  * returned `bash <path>` command. Exercises paneCommand directly, so it needs no cmux CLI and runs in
  * CI. Run: pnpm smoke:cmux
  */
-import { existsSync, mkdtempSync, rmSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { CmuxRuntime, paneCommand } from "./src/runtime.js";
+import type { Tab } from "@cotal-ai/core";
+import { CmuxRuntime, cmuxTerminalProvider, paneCommand } from "./src/runtime.js";
 import { waitForWorkspaceExit } from "./src/driver.js";
 
 // The cmux launcher contract is POSIX by construction: a bash script written 0o600 inside a
@@ -72,6 +73,37 @@ for (const name of ["$(touch MARKER)X", "A=B", "1A", "", "A B", "A;B", "A\nB", "
     refusal = (err as Error).message;
   }
   ok(`paneCommand refuses env var name ${JSON.stringify(name)}`, refusal === `cmux: refusing to render unsafe env var name ${JSON.stringify(name)}`);
+}
+
+// A tab's panes get their scripts written one by one, and cmux never runs them when the tab is
+// refused, so a refusal at any pane, or for a missing split, must leave no script behind. Checked
+// through the terminal provider with TMPDIR pointed at a private directory.
+const layoutTmp = mkdtempSync(join(tmpdir(), "cotal-cmux-layout-"));
+const tmpBeforeLayout = process.env.TMPDIR;
+process.env.TMPDIR = layoutTmp;
+try {
+  const refusal = (tab: Tab): string => {
+    try {
+      cmuxTerminalProvider.open("probe", tab);
+    } catch (err) {
+      return (err as Error).message;
+    }
+    return "";
+  };
+  const good = { command: "/bin/true", env: { COTAL_CONTROL_TOKEN: SECRET } };
+  const bad = { command: "/bin/true", env: { "A.B": "1" } };
+  const split = { direction: "vertical", ratio: 0.5 } as const;
+  const unsafe = `cmux: refusing to render unsafe env var name "A.B"`;
+  ok("a tab refused at its second pane leaves no launch script", refusal({ panes: [good, bad], split }) === unsafe && readdirSync(layoutTmp).length === 0);
+  ok("a tab refused at its first pane leaves no launch script", refusal({ panes: [bad, good], split }) === unsafe && readdirSync(layoutTmp).length === 0);
+  ok(
+    "a two-pane tab without a split is refused and leaves no launch script",
+    refusal({ panes: [good, good] }) === `cmux layout "probe": 2 panes need a split (direction + ratio)` && readdirSync(layoutTmp).length === 0,
+  );
+} finally {
+  if (tmpBeforeLayout === undefined) delete process.env.TMPDIR;
+  else process.env.TMPDIR = tmpBeforeLayout;
+  rmSync(layoutTmp, { recursive: true, force: true });
 }
 
 if ((process.platform as NodeJS.Platform) !== "win32") {

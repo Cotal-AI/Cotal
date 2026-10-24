@@ -64,12 +64,21 @@ function surface(command: string): unknown {
 
 /** Translate a backend-agnostic {@link Tab} into a cmux layout JSON string — the one place that
  *  knows cmux's layout shape. One pane → a bare terminal; several → a split (`direction` + `split`
- *  ratio). These panes run under a login shell. */
+ *  ratio). These panes run under a login shell. {@link paneCommand} writes each pane's script as it
+ *  renders it, and nothing runs those scripts when a later pane is refused, so a refusal removes the
+ *  ones already written. */
 function cmuxLayout(label: string, tab: Tab): string {
-  const nodes = tab.panes.map((p) => surface(paneCommand(p, true).command));
-  if (nodes.length === 1 && !tab.split) return JSON.stringify(nodes[0]);
-  if (!tab.split)
-    throw new Error(`cmux layout "${label}": ${nodes.length} panes need a split (direction + ratio)`);
+  if (tab.panes.length !== 1 && !tab.split)
+    throw new Error(`cmux layout "${label}": ${tab.panes.length} panes need a split (direction + ratio)`);
+  const launches: { command: string; dir: string }[] = [];
+  try {
+    for (const p of tab.panes) launches.push(paneCommand(p, true));
+  } catch (err) {
+    for (const { dir } of launches) rmSync(dir, { recursive: true, force: true });
+    throw err;
+  }
+  const nodes = launches.map((l) => surface(l.command));
+  if (!tab.split) return JSON.stringify(nodes[0]);
   return JSON.stringify({ direction: tab.split.direction, split: tab.split.ratio, children: nodes });
 }
 
