@@ -126,10 +126,19 @@ if (subcommand === "tool-seat") {
         name: "pinned_definition", prompt: "A persona on the selected manager.", instance: other,
         subscribe: [], allowSubscribe: [], allowPublish: [],
       }) });
+      // A peer the other manager runs: unpinned, the exchange cannot pick a manager.
+      const despawn = cotalToolSpecs(config).find((s) => s.name === "cotal_despawn")!;
+      trace({ kind: "unbound-despawn", ...await call(despawn, { name: "despawnee" }) });
       config.managerInstanceId = spawner;
       trace({ kind: "bound-persona-other", ...await call(persona, {
         name: "wrong_manager_definition", prompt: "Must not be written.", instance: other,
       }) });
+      trace({ kind: "bound-despawn-other", ...await call(despawn, { name: "despawnee", instance: other }) });
+      trace({ kind: "despawn-instance-no-name", ...await call(despawn, { instance: other }) });
+      // Each refusal above left the peer running, so naming its manager stops it.
+      config.managerInstanceId = undefined;
+      trace({ kind: "unbound-despawn-on", ...await call(despawn, { name: "despawnee", instance: other }) });
+      config.managerInstanceId = spawner;
       trace({ kind: "pin-done" });
     } else if (config.name === "toolpage") {
       trace({ kind: "tool-page", ...await tool.run(mesh, config, parseToolArgs(tool, { verb: "ps", page: { limit: 1 } })) });
@@ -464,6 +473,13 @@ try {
   before = { a: { ...onA }, b: { ...onB } };
   const pinnedRuns = await cli(["run", "ps", "--space", space, "--on", state.instanceId]);
   cell("#3959 `cotal run ps --on <instance>` succeeds against the named instance", pinnedRuns.code === 0 && onA.runs > before.a.runs && onB.runs === before.b.runs, { pinnedRuns, before, onA, onB });
+  // A seat the second manager runs, for the seat below to stop by naming that manager.
+  mkdirSync(join(rootB, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(rootB, ".cotal", "agents", "despawnee.md"), "---\nname: despawnee\nagent: u4-seat\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nSeat the second manager runs.\n");
+  assert.equal((await managerB.startAgent({ name: "despawnee" }, `${owner}.cli`)).ok, true);
+  // Its persona leaves the catalog, which a cell below reads as empty; the running seat stays.
+  rmSync(join(rootB, ".cotal", "agents", "despawnee.md"));
+  const runsOnB = (name: string) => (managerB as unknown as { agents: Map<string, unknown> }).agents.has(name);
   // A seat the first manager spawns, beside both managers.
   writeFileSync(join(root, ".cotal", "agents", "toolpin.md"), "---\nname: toolpin\nagent: u4-seat\ncapabilities: [spawn, run]\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nManaged seat beside two live managers.\n");
   assert.equal((await manager.startAgent({ name: "toolpin" }, `${owner}.cli`)).ok, true);
@@ -485,6 +501,14 @@ try {
     String(seat("bound-persona-other").text).includes("differs from this credential's instance authority") &&
     !existsSync(join(rootB, ".cotal", "agents", "wrong_manager_definition.md")) &&
     !existsSync(join(root, ".cotal", "agents", "wrong_manager_definition.md")), seat("bound-persona-other"));
+  cell("an unbound seat's cotal_despawn refuses, lists both managers and names the instance argument", seat("unbound-despawn").isError === true && namesBoth(seat("unbound-despawn").text, "instance argument"), seat("unbound-despawn"));
+  cell("cotal_despawn keeps a bound seat on its own manager", seat("bound-despawn-other").isError === true &&
+    String(seat("bound-despawn-other").text).includes("differs from this credential's instance authority"), seat("bound-despawn-other"));
+  cell("cotal_despawn with instance and no name is refused, and the seat is not stopped", seat("despawn-instance-no-name").isError === true &&
+    String(seat("despawn-instance-no-name").text).includes("instance selects the manager of a named peer") && seat("pin-done").missing !== true, seat("despawn-instance-no-name"));
+  const despawnedOnB = await (async () => { for (const end = Date.now() + 30_000; Date.now() < end; await new Promise((r) => setTimeout(r, 200))) if (!runsOnB("despawnee")) return true; return false; })();
+  cell("MCP cotal_despawn with instance stops the peer on the named manager", answered("unbound-despawn-on") &&
+    String(seat("unbound-despawn-on").text).startsWith("Stopping despawnee") && despawnedOnB, { call: seat("unbound-despawn-on"), despawnedOnB });
   cell("#3959 each seat call reached the manager it named (runs: spawner 2, other 1)", onA.runs === before.a.runs + 2 && onB.runs === before.b.runs + 1, { before, onA, onB });
   // The cells above leave one manager live and an empty trace, as the cells below expect.
   await managerB.stop({ withAgents: true });

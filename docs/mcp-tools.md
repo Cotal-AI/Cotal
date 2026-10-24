@@ -291,7 +291,7 @@ Send feedback about Cotal to its developers. With a configured feedback key it g
 
 *stop a teammate*
 
-Ask the manager to tear a teammate down: it leaves the mesh and its process/tab is closed. Graceful by default (the session exits cleanly first); pass graceful:false for a hard, immediate kill. The inverse of cotal_spawn. Omit `name` to stop yourself (self-despawn): the manager resolves the target as your own managed entry, so it can only ever stop you, never a peer.
+Ask the manager to tear a teammate down: it leaves the mesh and its process/tab is closed. Graceful by default (the session exits cleanly first); pass graceful:false for a hard, immediate kill. The inverse of cotal_spawn. Omit `name` to stop yourself (self-despawn): the manager resolves the target as your own managed entry, so it can only ever stop you, never a peer. In a multi-manager space, pass `instance` to name the manager that runs the peer.
 
 - **Side-effect:** stops a teammate (or yourself).
 - **Available:** self-despawn (no name) is granted to all; stopping a *named* peer rides the spawn capability's owner-mode reach (your own owner's agents only).
@@ -299,6 +299,7 @@ Ask the manager to tear a teammate down: it leaves the mesh and its process/tab 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string | no | Name of the peer to stop. Omit to stop yourself (self-despawn). |
+| `instance` | string | no | Optional manager instance id that runs the named peer, for a multi-manager space. Needs `name`. Omitted uses class anycast. A pin that cannot be resolved is refused without falling back to another manager. |
 | `graceful` | boolean | no | Default true: let the session exit cleanly. false = hard kill. |
 
 ## `cotal_yield`

@@ -2305,13 +2305,15 @@ export class MeshAgent extends EventEmitter {
    *  `id` is the bare actor (nkey) under the caller's own owner; a USER-mode row's `id` is the
    *  composite `owner.actor` principal key — split it, or the embedded dot breaks the target
    *  block's subject arity. The owner-mode standing mint pins the caller's OWN owner, so a
-   *  foreign-owner target is broker-denied at publish (the same own-domain boundary as ctl). */
-  private async managerTargetFor(name: string): Promise<{ target: EpVerbTarget } | { error: ControlReply }> {
-    let info = await this.managerInvoke("inspect", { name });
+   *  foreign-owner target is broker-denied at publish (the same own-domain boundary as ctl).
+   *  `instanceId` reads the row from that manager alone. */
+  private async managerTargetFor(name: string, instanceId?: string): Promise<{ target: EpVerbTarget } | { error: ControlReply }> {
+    let info = await this.managerInvoke("inspect", { name }, instanceId === undefined ? {} : { instanceId });
     // `inspect` is instance-local, and in a multi-manager space the class queue can hand it to a
     // sibling that answers with the owning instance instead of the row. A static credential cannot
     // address that instance, so the read is asked again until the queue reaches the owner (#443).
-    for (let reissues = 0; reissues < BIND_SPLIT_REISSUES && info.details?.some((d) => d.kind === STATIC_SLOT_OBSERVATION_DETAIL && d.ownerInstanceId !== undefined); reissues++)
+    // A pinned read has no queue to ask again.
+    for (let reissues = 0; instanceId === undefined && reissues < BIND_SPLIT_REISSUES && info.details?.some((d) => d.kind === STATIC_SLOT_OBSERVATION_DETAIL && d.ownerInstanceId !== undefined); reissues++)
       info = await this.managerInvoke("inspect", { name });
     if (!info.ok) return { error: info };
     const row = info.data as { id: string; lifecycleUid: string };
@@ -2327,20 +2329,25 @@ export class MeshAgent extends EventEmitter {
    *  No `name` ⇒ self-despawn: rides the self-service control subject and the manager
    *  resolves the target as the managed agent whose id == this caller — so it can only
    *  ever stop itself, never a peer. A `name` ⇒ rides the privileged control subject
-   *  (transport-gated to spawn-capable/admin); the manager refines own-child vs admin. */
-  async despawn(name?: string, opts?: { graceful?: boolean }): Promise<ControlReply> {
+   *  (transport-gated to spawn-capable/admin); the manager refines own-child vs admin.
+   *  `instance` addresses the manager that runs the named peer, under `spawn`'s pin rules. */
+  async despawn(name?: string, opts?: { graceful?: boolean; instance?: string }): Promise<ControlReply> {
     await this.requireConnected();
     const graceful = opts?.graceful ?? true;
     if (!name) {
+      if (opts?.instance !== undefined)
+        return { ok: false, error: "instance selects the manager of a named peer; omit it to stop yourself" };
       // A conversation's host is the person's own app. No manager holds it, and nothing may stop it.
       if (this.config.turnRelay === false)
         return { ok: false, error: "this connection belongs to a conversation, not a managed seat, so it has no self to stop; disconnecting retires only this connection" };
       // self-halt: the baseline `stop` command, authz-mode self (the caller triple IS the target)
       return this.managerInvoke("stop", { graceful }, { target: { mode: "self" } });
     }
-    const resolved = await this.managerTargetFor(name);
+    const pin = this.managerPin(opts?.instance);
+    if ("error" in pin) return pin.error;
+    const resolved = await this.managerTargetFor(name, pin.instanceId);
     if ("error" in resolved) return resolved.error;
-    return this.managerInvoke("despawn", { graceful }, { target: resolved.target });
+    return this.managerInvoke("despawn", { graceful }, { target: resolved.target, ...pin });
   }
 
   // ---- workflow runs (SPEC 14.3) -------------------------------------------------------------
