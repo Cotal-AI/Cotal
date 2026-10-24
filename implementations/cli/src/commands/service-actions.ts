@@ -19,6 +19,7 @@ import { followServiceJournal, readServiceJournal } from "../lib/service-journal
 import { followServiceLog } from "./service-log-follow.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { yesRequired } from "../lib/confirmation-required.js";
+import { fullStoreStopRefusal, recordedStore, storeRefusedWrite } from "../lib/broker-store-health.js";
 import { resolveServiceAdapter, sameServiceAdapterPin } from "../lib/service-adapters.js";
 import { assertDefinitionRoot, serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { stackMemberFor } from "../lib/stack-journal.js";
@@ -299,7 +300,15 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   const confirmStop = mode === "stop" || mode === "restart" && !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(selected!.record.value));
   if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired(mode, presentation === "json"), { target, remedy: `confirm with cotal svc ${mode} ${name} --yes, or preview it with --dry-run` });
   if (mode === "restart") assertRestartAdmitted(definition);
-  const nativePlan = mode === "stop" || mode === "restart" ? await prepareNativeServiceStop(definition, selected!, values["with-agents"] === true) : undefined;
+  let nativePlan: Awaited<ReturnType<typeof prepareNativeServiceStop>> | undefined;
+  try { nativePlan = mode === "stop" || mode === "restart" ? await prepareNativeServiceStop(definition, selected!, values["with-agents"] === true) : undefined; }
+  catch (error) {
+    // The stop's credential could not be recorded, so nothing was submitted, as `down` refuses it.
+    if (!storeRefusedWrite(error)) throw error;
+    let store: { path: string; cap?: number } | undefined;
+    try { store = recordedStore(root, space); } catch { store = undefined; }
+    throw fullStoreStopRefusal(oneLine(name), store, "nothing was stopped", target, `make room with cotal history clear --space ${space} --yes, then run cotal svc ${mode} ${oneLine(name)} --space ${space} --yes`);
+  }
   const kernelPlan = mode === "stop" || mode === "restart" ? await prepareKernelServiceStop(definition, selected!) : undefined;
   // The impact is the first report the operation prints, so it carries the space's Mesh line.
   const impact = [...(nativePlan ? nativeImpactView(nativePlan).sections : []), ...(kernelPlan ? kernelImpactView(kernelPlan).sections : [])];

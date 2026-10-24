@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { JetStreamApiError } from "@nats-io/jetstream";
 import { CotalEndpoint, mintCreds, newIdentity } from "@cotal-ai/core";
-import { loadMeshes, localProcessPath, type MeshTarget } from "@cotal-ai/workspace";
+import { CommandFailure, loadMeshes, localProcessPath, type MeshTarget } from "@cotal-ai/workspace";
 import { pidfileState } from "../commands/down.js";
 import { readOwnedLogTail, readServiceLog } from "./service-process.js";
 import { serviceInstances, instanceProjection } from "./service-instances.js";
@@ -32,6 +32,17 @@ export function recordedStore(root: string, space: string): { path: string; cap?
 export function storeRefusedWrite(error: unknown): boolean {
   for (let e: unknown = error; e instanceof Error; e = e.cause) if (e instanceof JetStreamApiError && e.code === 10023) return true;
   return false;
+}
+
+/** The refusal of a manager stop on a full store. Its native stop rides a control credential whose
+ *  issuance record must be stored before the credential is released (SPEC 13.15), and a store over
+ *  its cap refuses that write as every other, so the stop refuses before any signal. */
+export function fullStoreStopRefusal(stopping: string, store: { path: string; cap?: number } | undefined, outcome: string, target: Record<string, unknown>, remedy: string): CommandFailure {
+  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker's JetStream store${store ? ` ${store.path}` : ""} is full${store?.cap !== undefined ? ` at its --max-file-store cap of ${store.cap} bytes` : ""}, and stopping ${stopping} needs a credential whose issuance record the full store cannot take; ${outcome}`, {
+    target: { ...target, ...(store ? { store: store.path, ...(store.cap !== undefined ? { cap: store.cap } : {}) } : {}) },
+    native: { code: "10023" },
+    remedy,
+  });
 }
 
 /** One read of the bytes `target`'s space holds in its broker's file store, over an observer

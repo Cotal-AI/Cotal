@@ -33,9 +33,9 @@
  *     too, and one byte more starts. `status` then reads such a stack as stopped, with its last
  *     operation, and names up at the floor while the recorded cap is below it. Once a space holds
  *     more than its cap, `send` refuses `DEPENDENCY_UNAVAILABLE` naming the store and the cap,
- *     `status` shows the store full and leads Next with `history clear`, and `down` refuses the same
- *     way before any stop, because the manager's stop needs an issuance record, which its dry run
- *     predicts. After that clear `send` stores again. A project folder renamed while its stack runs: the broker names
+ *     `status` shows the store full and leads Next with `history clear`, and `down` and `service stop
+ *     stack-manager` refuse the same way before any stop, because the manager's stop needs an
+ *     issuance record, which down's dry run predicts. After that clear `send` stores again. A project folder renamed while its stack runs: the broker names
  *     its store relative to the root, so it does not create the old path again; `send`, `up` and
  *     `status --space` from the renamed folder name the move and the way back, `status` there offers
  *     no `clean store`, and after the move back `down` stops it.
@@ -544,6 +544,11 @@ try {
     const plain = cli(root, "status", "--plain");
     check("status shows a full Store row and leads Next with history clear", /Store: +full - \d+ bytes stored, over its --max-file-store cap of 70000000/.test(plain.stdout) && plain.stdout.includes(`history clear --space ${space} --yes`), plain.stdout);
     const stopRefused = `the broker's JetStream store ${store} is full at its --max-file-store cap of 70000000 bytes, and stopping the manager needs a credential whose issuance record the full store cannot take; no member was stopped`;
+    const managerStop = cli(root, "service", "stop", "stack-manager", "--space", space, "--yes", "--json");
+    const managerPid = pidOf(space, "stack-manager");
+    check("service stop stack-manager on a full store refuses DEPENDENCY_UNAVAILABLE, exit 2, naming the store and history clear, and the manager runs on",
+      managerStop.status === 2 && managerStop.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && managerStop.env.error.message === `the broker's JetStream store ${store} is full at its --max-file-store cap of 70000000 bytes, and stopping stack-manager needs a credential whose issuance record the full store cannot take; nothing was stopped`
+        && managerStop.env.error.remedy === `make room with cotal history clear --space ${space} --yes, then run cotal svc stop stack-manager --space ${space} --yes` && managerPid !== null && alive(managerPid), shown(managerStop));
     const preview = cli(root, "down", "--dry-run", "--json");
     check("down --dry-run predicts the full-store refusal of the manager's stop", preview.status === 0 && (preview.env?.result?.blockedBy as { code?: string; message?: string } | null)?.code === "DEPENDENCY_UNAVAILABLE" && (preview.env?.result?.blockedBy as { message?: string }).message === stopRefused && Boolean(preview.env?.warnings?.some((w) => w.code === "DEPENDENCY_UNAVAILABLE")), shown(preview));
     const manager = pidOf(space, "stack-manager");

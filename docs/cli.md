@@ -1280,7 +1280,9 @@ is never force killed, so `down` does not signal it. Resume a suspended broker w
 above. The manager's stop rides a control credential whose issuance record the broker stores first,
 and a store over its cap refuses that write. With a live manager, `down` then refuses
 `DEPENDENCY_UNAVAILABLE`, exit 2, before any stop, naming the store and the `--max-file-store` cap
-this machine recorded. Make room with `cotal history clear --yes`, then run `cotal down`. A dry run
+this machine recorded. Make room with `cotal history clear --yes`, then run `cotal down`.
+`cotal service stop stack-manager` and `restart` refuse the same way before submitting a stop, and
+name `cotal history clear --space <space> --yes` and then the same command again. A dry run
 names that refusal as a warning when the space holds more than the recorded cap. Controller roots refuse
 preservation and manifest flags rather than switching to the legacy launcher. Outside a terminal,
 a bare `down` that would stop a running member refuses without `--yes`, exit 1, and prints that

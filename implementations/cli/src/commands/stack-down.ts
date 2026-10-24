@@ -15,7 +15,7 @@ import {
   type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
 } from "@cotal-ai/workspace";
 import { brokerLaunchAt } from "../lib/broker-service.js";
-import { readStoredBytes, recordedStore, storeFull, storeRefusedWrite } from "../lib/broker-store-health.js";
+import { fullStoreStopRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite } from "../lib/broker-store-health.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -142,15 +142,9 @@ async function managerImpact(journal: StackJournal, members: readonly Member[], 
   }
 }
 
-/** The manager's native stop rides a control credential whose issuance record must be stored before
- *  the credential is released (SPEC 13.15), and a store over its cap refuses that write as every
- *  other, so the stop refuses before any signal. */
+/** The full-store refusal of a stack's manager stop, before any member is stopped. */
 function fullStoreStop(journal: StackJournal, manager: Member, store: { path: string; cap?: number } | undefined): CommandFailure {
-  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker's JetStream store${store ? ` ${store.path}` : ""} is full${store?.cap !== undefined ? ` at its --max-file-store cap of ${store.cap} bytes` : ""}, and stopping the manager needs a credential whose issuance record the full store cannot take; no member was stopped`, {
-    target: { root: journal.root, space: journal.space, manager: manager.instance.name, ...(store ? { store: store.path, ...(store.cap !== undefined ? { cap: store.cap } : {}) } : {}) },
-    native: { code: "10023" },
-    remedy: "make room with cotal history clear --yes, then run cotal down",
-  });
+  return fullStoreStopRefusal("the manager", store, "no member was stopped", { root: journal.root, space: journal.space, manager: manager.instance.name }, "make room with cotal history clear --yes, then run cotal down");
 }
 
 /** Everything outside the recorded members that would be cut off refuses before the first signal.
