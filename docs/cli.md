@@ -6209,8 +6209,8 @@ user-auth agents. `team remove` retires a returned deployment by its full ID wit
 ledger written by that older path is torn down with `cotal down -f <file> --run <id>`. `up -f`,
 `team deploy` and `team remove` take `--dry-run` to print the plan without mutating anything.
 `topology` validates the manifest and renders its channel / role / ACL graph. Given a folder
-instead of a manifest file, `topology view`, `up -f` and `down -f` refuse with exit 1, naming the
-path and that it is a directory. See [Define a team](define-a-team.md) and the
+instead of a manifest file, `topology view`, `up -f`, `down -f` and the `team` commands that take a
+manifest refuse with exit 1, naming the path and that it is a directory. See [Define a team](define-a-team.md) and the
 [manifest reference](manifest.md).
 
 ## ext
@@ -7534,7 +7534,9 @@ key meant. A problem in a referenced persona
 names that file and the parser's reason without quoting its contents. A persona file that does not
 exist is named at its entry's line along with the manifest's other problems, so fixing those does
 not uncover it later. A manifest file that does not exist is refused with `TARGET_NOT_FOUND`
-(exit 2), naming its path. `team boot` and
+(exit 2), naming its path. A folder given as the manifest, such as `team check .`, is refused with
+`USAGE_INVALID` (exit 1), naming the path and that it is a directory, as `topology view` refuses it,
+and `--json` gives the path as `target.file`. `team boot` and
 `team deploy` refuse a manifest they cannot resolve the same way, before they contact a broker.
 This file check does not prove live authorization, installed applications or launch readiness.
 These read views do not apply a boot, an additive deployment or a removal.
