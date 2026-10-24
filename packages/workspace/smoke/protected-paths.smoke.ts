@@ -283,6 +283,10 @@ try {
     if (prior.launcher === undefined) delete process.env.COTAL_LAUNCHER; else process.env.COTAL_LAUNCHER = prior.launcher;
     if (prior.prefix === undefined) delete process.env.npm_config_prefix; else process.env.npm_config_prefix = prior.prefix;
     chmodSync(base, 0o700);
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
 // 6. A record this account may not open is refused with the folder that withholds it, which is often
 //    a folder above the file. A link stays the no-follow refusal; an absent file is no record.
 if (process.getuid?.() !== 0) {

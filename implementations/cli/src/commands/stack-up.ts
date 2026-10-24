@@ -297,6 +297,7 @@ function membersView(journal: StackJournal, title: string, executable?: NatsServ
 export function unparsableDaemonCredsNotice(kinds: readonly string[]): string {
   const them = kinds.length === 1 ? "it" : "them";
   return `${kinds.join(" and ")} cannot be parsed, so the delivery daemon runs without ${them} and the manager cannot re-sign ${them}; stop the stack with \`cotal down\`, then run \`cotal doctor auth --fix\`, which mints ${them} again`;
+}
 
 /** The listeners the stack's running broker and manager opened, from their saved definitions. Null
  *  when the broker's configuration could not be read, so no list is given rather than a short one. */
