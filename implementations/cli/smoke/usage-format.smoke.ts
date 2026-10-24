@@ -151,6 +151,9 @@ for (const [args, message, remedy] of [
 for (const [args, message] of [
   [["stauts"], /unknown command: stauts - did you mean status\? Or run `cotal help` to list commands/],
   [["help", "stauts"], /unknown command: stauts - did you mean status\?/],
+  // Cotal's own word for a stop, which is nearer to spawn, its opposite.
+  [["despawn", "zzt1"], /unknown command: despawn - did you mean stop\? Or run `cotal help` to list commands/],
+  [["help", "despawn"], /unknown command: despawn - did you mean stop\?/],
   [["--jsno"], /unknown command: --jsno - did you mean --json\?/],
   [["--verison"], /unknown command: --verison - did you mean --version\?/],
   [["persona", "shwo"], /cotal persona has no subcommand "shwo" - did you mean show\? Or run `cotal help persona`/],

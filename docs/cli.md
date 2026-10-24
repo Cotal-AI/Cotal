@@ -47,7 +47,8 @@ command's help: `sp` (spawn), `a` (attach), `s` (status), `r` (run), `x` (ext), 
 `cotal ext rm` for `cotal ext remove`. An alias behaves the same as its command. A command or
 subcommand is never selected by a prefix, so `cotal spaw` is an unknown command. The refusal for an
 unknown command, leading flag, subcommand or option names the nearest one when it is one edit away,
-or two for a word longer than four characters, so `cotal spaw` suggests `spawn`. A command, alias,
+or two for a word longer than four characters, so `cotal spaw` suggests `spawn`. `cotal despawn`
+suggests `stop`, the command Cotal's own text calls a despawn. A command, alias,
 or extension command that would claim a word another one already claims is refused when it
 registers or installs.
 
@@ -3798,7 +3799,11 @@ pid.
 **`stop` and `attach` route by seat locality.** A seat can only be stopped or attached by the
 manager actually running it, and the class queue does not know which one that is. So on a
 static/open mesh both verbs first ask every registered instance which one hosts the named seat, then
-address that instance directly. This happens by default; you do not need `--on`.
+address that instance directly. This happens by default; you do not need `--on`. When every instance
+answers and none hosts the name, `stop`, `attach` and `input` refuse `TARGET_NOT_FOUND` (exit 2)
+before anything is sent, as they do with `--on`, naming the managers that answered, with `cotal ps`
+as Next. When an instance did not answer for itself, the seat may run there, so they refuse
+`TARGET_UNAVAILABLE` (exit 2) and name that instance. `--json` carries either refusal.
 
 `--on <instance>` remains the override, for when you already know where the seat lives or the
 lookup itself is degraded. On a **user-auth mesh**, the exchange selects one authorized manager
