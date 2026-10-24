@@ -26,7 +26,7 @@ import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefiniti
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { prepareKernelServiceStop, prepareProcessService, readServiceLog, removeStoppedInstanceRecords, settleExitedInstances, startProcessService, stopProcessService } from "../lib/service-process.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
-import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
+import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { foreignLocalProcesses, newStackOperation, readStackJournal, settleRetainedStackStops, settleStackOperation, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackSettlementNotice, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackRoleApplies, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { natsServerLabel, type NatsServer } from "../lib/nats-bin.js";
@@ -221,8 +221,18 @@ function stackPreflight(root: string, space: string, recorded: StackJournal | un
   try { ledgers = listLedgerFiles(root, { requireReadable: true }); additive = listAdditiveTeamAttempts(root); boots = listFreshTeamAttempts(root); summaries = listFreshTeamSummaries(root); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "team records under this root could not be read; no empty team state was inferred", { target: { root, space } }); }
   const settled = new Map(summaries.valid.map((summary) => [summary.deploymentId, summary]));
-  if (ledgers.valid.length || ledgers.refused.length || retainedAdditiveTeamAttempts(additive).length || additive.refused.length || boots.refused.length || summaries.refused.length || boots.valid.some((attempt) => attempt.deploymentId !== ownAttempt && !freshTeamAttemptSettled(attempt, settled.get(attempt.deploymentId))))
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "team deployments or unsettled boot records remain under this root; the controller stack did not adopt their resources", { target: { root, space } });
+  // A channel-only deployment that returned onto this recorded stack stays with it across a stop: its
+  // cards are in this broker's store, so starting the stack again adopts nothing and its records stay
+  // as they are. Any other retained deployment still blocks.
+  const carried = (attempt: AdditiveTeamAttempt) => recorded !== undefined && attempt.requestedAgents.length === 0 && additive.returned.some((row) => row.deploymentId === attempt.deploymentId)
+    && attempt.space === recorded.space && canonicalRoot(attempt.root) === canonicalRoot(root) && attempt.server === recorded.server && attempt.authMode === recorded.mode;
+  const retained = retainedAdditiveTeamAttempts(additive).filter((attempt) => !carried(attempt));
+  const unsettledBoots = boots.valid.filter((attempt) => attempt.deploymentId !== ownAttempt && !freshTeamAttemptSettled(attempt, settled.get(attempt.deploymentId)));
+  if (ledgers.valid.length || ledgers.refused.length || retained.length || additive.refused.length || boots.refused.length || summaries.refused.length || unsettledBoots.length) {
+    const ids = [...new Set([...retained.map((attempt) => attempt.deploymentId), ...ledgers.valid.map(({ ledger }) => ledger.runId), ...unsettledBoots.map((attempt) => attempt.deploymentId)])];
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "team deployments or unsettled boot records remain under this root; the controller stack did not adopt their resources", { target: { root, space, deployments: ids },
+      remedy: ids.length ? `inspect each with ${ids.map((id) => `cotal team show ${id}`).join(", ")}; nothing was started` : `list the records with cotal team in ${root}; nothing was started` });
+  }
   return maintenance.admittedRestore;
 }
 

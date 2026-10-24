@@ -6244,6 +6244,10 @@ relevant retained additive IDs and unreadable paths. The legacy bare `down`,
 `down --preserve-state`, fresh `team boot` and `reset store` refuse unsettled
 intents and unremoved agent/channel receipts before effects. A complete matched
 static agent-retirement receipt releases only its original deployment's blocker.
+A bare `up` of a stopped controller stack starts it again over a returned channel-only deployment
+made on that stack, and keeps the deployment's records and cards as they are. Any other retained
+deployment, such as an unsettled attempt or an agent deployment, still refuses the start with
+`LIFECYCLE_BLOCKED`, and its Next names `cotal team show <id>` for each one.
 This is a known-blocker guard,
 not complete broker ownership. The service records belong to the workstation's selected-space store,
 not necessarily this boot root; their recorded
@@ -6391,7 +6395,10 @@ current alias holders. No channel, broker, service or remote account is removed.
 `team remove <full-deployment-id>` also removes the registry cards of a returned channel-only
 deployment, with `--dry-run` for a read-only preview and `--yes` for scripted apply. It pins the
 original receipt, root, broker, auth mode and TLS requirement, and refuses changed card revisions,
-conflicting retained ownership or unreadable records. The preview discloses delivery and replay
+conflicting retained ownership or unreadable records. A changed card refuses `CONFLICT` naming
+each changed card. With no registration for the space, as after the stack's `cotal down`, the
+refusal names `cotal up` in the deployment's root, which registers the stack again, and then the
+same `team remove`. The preview discloses delivery and replay
 fallback to space defaults and removal of description/instructions. A derived membership feed is
 display-only and never authorizes or blocks this metadata change.
 
