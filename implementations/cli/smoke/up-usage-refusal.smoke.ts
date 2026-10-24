@@ -5,8 +5,14 @@
  * `-f` used to start a real stack. A `--max-file-store` below the 64 MiB the space's membership
  * bucket reserves is refused the same way.
  *
- * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, from an empty
- * folder outside them. Nothing is started; each refusal comes from validation. A `--server` that no
+ * The same holds where `up` would otherwise start something it cannot stand behind. A prepared root
+ * given an option the controller stack has no route for refuses UNSUPPORTED instead of starting the
+ * legacy launcher. A broker address another program holds refuses CONFLICT instead of launching a
+ * broker that exits on its bind. `up -f` on a root that holds a controller stack refuses CONFLICT
+ * instead of starting a manifest stack beside it.
+ *
+ * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, from empty
+ * folders outside them. Nothing is started; each refusal comes from validation. A `--server` that no
  * local broker can serve, a host name included, is refused the same way in an unprepared and a
  * prepared folder, as the short classified report with an example on the port passed. In the home
  * folder, whose `.cotal` holds the machine's own records, `up` refuses CONFLICT and writes nothing
@@ -14,11 +20,17 @@
  * this account cannot write, `up` refuses PERMISSION_DENIED naming the store and the `chmod` that
  * fixes it, where the broker used to exit naming the cause only in its log, and status names the same
  * step in place of `cotal up`.
+ * there, and `down` and `down --dry-run` there find no stack. Every broker address the cells after
+ * those use is held by a loopback listener that never answers NATS, so a regression still cannot
+ * start a broker there.
  *
  * Run: pnpm smoke:up-usage-refusal
  */
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { createServer, type AddressInfo } from "node:net";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -29,12 +41,15 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; error?: { code?: string; message?: string } }
+interface Envelope { outcome?: string; error?: { code?: string; message?: string; remedy?: string } }
+const { writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-up-usage-home-"));
 const folder = mkdtempSync(join(tmpdir(), "cotal-up-usage-cwd-"));
-process.on("exit", () => { rmSync(home, { recursive: true, force: true }); rmSync(folder, { recursive: true, force: true }); });
+const roots = ["unprepared", "journal"].map((name) => realpathSync(mkdtempSync(join(tmpdir(), `cotal-up-usage-${name}-`))));
+const [unprepared, journalRoot] = roots as [string, string];
+process.on("exit", () => { for (const dir of [home, folder, ...roots]) rmSync(dir, { recursive: true, force: true }); });
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
@@ -111,6 +126,41 @@ const homeDown = run(["down", "--yes"], home);
 check("down --yes in a home with no stack is TARGET_NOT_FOUND, nothing to stop", homeDown.status === 2 && /there is no stack at this folder's root, so there is nothing to stop/.test(homeDown.stderr), shown(homeDown));
 const homePreview = run(["down", "--dry-run", "--json"], home);
 check("down --dry-run in a home with no stack is TARGET_NOT_FOUND, nothing to preview", homePreview.status === 2 && homePreview.envelope?.error?.code === "TARGET_NOT_FOUND" && /nothing to preview/.test(homePreview.envelope.error.message ?? ""), shown(homePreview));
+
+// A loopback listener that accepts and never answers NATS holds every broker address below.
+const holder = createServer((socket) => socket.on("error", () => {}));
+const held = await new Promise<number>((resolve) => holder.listen(0, "127.0.0.1", () => resolve((holder.address() as AddressInfo).port)));
+const started = (root: string) => existsSync(join(root, ".cotal", "nats.pid"));
+try {
+  const rotate = run(["up", "--server", `nats://127.0.0.1:${held}`, "--rotate-sys", "--json"], prepared);
+  check("a prepared root refuses an option the controller stack has no route for, UNSUPPORTED, exit 2, naming it and why",
+    rotate.status === 2 && rotate.envelope?.outcome === "refused" && rotate.envelope.error?.code === "UNSUPPORTED"
+      && /prepared for a controller-owned stack, which has no route for --rotate-sys/.test(rotate.envelope.error.message ?? "") && /run cotal up without --rotate-sys; a first start mints the space's \$SYS creds/.test(rotate.envelope.error.remedy ?? ""), shown(rotate));
+  const tls = run(["up", "--server", `tls://127.0.0.1:${held}`, "--tls-cert", join(prepared, "c.pem"), "--tls-key", join(prepared, "k.pem"), "--json"], prepared);
+  check("…and names both TLS options and the -f route", tls.status === 2 && tls.envelope?.error?.code === "UNSUPPORTED" && /no route for --tls-cert and --tls-key/.test(tls.envelope.error.message ?? "") && /cotal up -f <cotal\.yaml>, which takes them/.test(tls.envelope.error.remedy ?? ""), shown(tls));
+  check("…without starting the legacy launcher or the controller stack", !started(prepared) && !existsSync(join(prepared, ".cotal", "stack-controller.json")), readdirSync(join(prepared, ".cotal")));
+
+  const bind = run(["up", "--server", `nats://127.0.0.1:${held}`], unprepared);
+  check("the legacy route refuses a held address CONFLICT, exit 2, naming the address, and launches nothing",
+    bind.status === 2 && /CONFLICT/.test(bind.stderr) && new RegExp(`another process holds the broker address 127\\.0\\.0\\.1:${held}`).test(bind.stderr) && !started(unprepared), shown(bind));
+
+  const now = new Date().toISOString();
+  mkdirSync(join(journalRoot, ".cotal"), { mode: 0o700 });
+  writeStackJournal(journalRoot, undefined, {
+    schemaVersion: 1, kind: "cotal-stack-controller", root: journalRoot, space: "upusagejournal", server: `nats://127.0.0.1:${held}`, mode: "auth",
+    members: (["broker", "auth", "delivery", "manager"] as const).map((role) => role === "auth" ? { role, definition: `stack-${role}`, instanceId: null, state: "not-attempted" as const } : { role, definition: `stack-${role}`, instanceId: randomUUID(), state: "stopped" as const }),
+    operation: { id: randomUUID(), kind: "down", phase: "completed", recordedAt: now, withAgents: false }, updatedAt: now,
+  });
+  writeFileSync(join(journalRoot, "cotal.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: upusagejournal\nbroker:\n  servers: nats://127.0.0.1:${held}\nchannels:\n  general:\n    subscribe: []\n`);
+  for (const args of [["up", "-f", "cotal.yaml"], ["up", "-f", "cotal.yaml", "--dry-run"]]) {
+    const beside = run(args, journalRoot);
+    check(`${args.join(" ")} on a root that holds a controller stack refuses CONFLICT, exit 2, naming team deploy and team boot`,
+      beside.status === 2 && /CONFLICT/.test(beside.stderr) && /holds the controller stack of space upusagejournal/.test(beside.stderr)
+        && /cotal team deploy cotal\.yaml/.test(beside.stderr) && /cotal team boot cotal\.yaml/.test(beside.stderr) && !started(journalRoot), shown(beside));
+  }
+} finally {
+  holder.close();
+}
 
 finish();
 process.exit(process.exitCode ?? 0);

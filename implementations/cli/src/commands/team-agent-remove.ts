@@ -207,7 +207,7 @@ async function reconcileAgentTeam(input: { root: string; space: string; deployme
     { kind: "table", columns: [{ key: "name", label: "Agent" }, { key: "uid", label: "Original lifecycle" }, { key: "state", label: "Observation" }], rows: agentSettlementRows(data.agents) },
     { kind: "lines", lines: [AGENT_RECONCILE_NOTE] },
   ] }] });
-  if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial", partial: { message: "The original manager's slots were read in order, not atomically. Nothing was recorded or stopped." } }, view); return; }
+  if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial" }, (data) => ({ sections: [...view(data).sections, { blocks: [{ kind: "lines", lines: ["The original manager's slots were read in order, not atomically. Nothing was recorded or stopped."] }] }] })); return; }
   if (!values.yes) {
     if (!canPrompt() || values.json) throw new ConfirmationRequired("scripted reconciliation needs --yes after reviewing which observations it records", { target, remedy: `review it with cotal team remove ${deploymentId} --dry-run, then run cotal team remove ${deploymentId} --yes` });
     const answer = await prompts.confirm({ message: `Record ${preview.recordable} observed retirement(s) for this unsettled removal? No stop is sent.`, initialValue: false });

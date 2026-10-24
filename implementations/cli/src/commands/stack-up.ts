@@ -21,6 +21,7 @@ import {
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
 import { brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { definitionListeners, exposedPlaintext, listenerRow, type StackListener } from "../lib/stack-listeners.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
@@ -143,8 +144,25 @@ export interface StackUpResult {
 }
 
 /** Inputs that name a legacy-only startup refuse on the controller route. They are not dropped. A
- *  recorded stack takes `rotate-sys` on a stopped start; a first start keeps the retained path. */
+ *  recorded stack takes `rotate-sys` on a stopped start; a first start refuses it, because it mints
+ *  the space's system account new. */
 const CONTROLLER_UNSUPPORTED = ["file", "dry-run", "restore", "restore-only", "accept-missing-source", "accept-stale-checkpoint", "rotate-sys", "exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url", "tls-cert", "tls-key"] as const;
+
+/** Of those, the ones `up -f <cotal.yaml>` takes on a prepared root. */
+const MANIFEST_ROUTE: readonly string[] = ["dry-run", "tls-cert", "tls-key"];
+
+/** The refusal of startup options the controller stack has no route for, before anything starts.
+ *  A prepared root that has not run a stack yet is also offered the manifest route. */
+function controllerUnsupported(root: string, options: readonly string[], prepared: boolean): CommandFailure {
+  const flags = options.map((name) => `--${name}`);
+  const named = flags.length === 1 ? flags[0]! : `${flags.slice(0, -1).join(", ")} and ${flags.at(-1)!}`;
+  const manifest = prepared && options.every((name) => MANIFEST_ROUTE.includes(name));
+  const rotation = prepared && options.includes("rotate-sys") ? "; a first start mints the space's $SYS creds, so there is nothing to rotate" : "";
+  return new CommandFailure("refused", "UNSUPPORTED", `${prepared ? "this root is prepared for a controller-owned stack" : "this root's stack is owned by the service controller"}, which has no route for ${named}; nothing was started through the legacy launcher`, {
+    target: { root, options },
+    remedy: manifest ? `run cotal up without ${named}, or start the space from a manifest with cotal up -f <cotal.yaml>, which takes ${flags.length === 1 ? "it" : "them"}` : `run cotal up without ${named}${rotation}`,
+  });
+}
 
 /** Any account record, readable or not, means the root carries static trust an open stack would bypass. */
 function holdsBrokerAccount(root: string): boolean {
@@ -158,8 +176,8 @@ export function requestedStackMode(values: ParsedArgs["values"]): StackMode | un
 }
 
 /** A root takes the controller route when it already has a stack journal, or when it is a fresh,
- *  prepared root with nothing legacy, maintenance or team-owned retained under it and the
- *  invocation names only controller-supported inputs. A static-auth request needs an `up`
+ *  prepared root with nothing legacy, maintenance or team-owned retained under it. On either, an
+ *  input the controller has no route for refuses `UNSUPPORTED`. A static-auth request needs an `up`
  *  registration in auth mode or none. An `--open` request needs an open registration or none, and
  *  a root that holds no broker account. A prepared user-auth root uses the same controller with
  *  its native auth service. Anything else keeps the retained path. */
@@ -167,15 +185,14 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   const canonical = canonicalRoot(root);
   const recorded = readStackJournal(canonical);
   const requested = requestedStackMode(values);
-  const unsupportedNow = (name: string) => values[name] !== undefined && values[name] !== false && (CONTROLLER_UNSUPPORTED as readonly string[]).includes(name);
+  const unsupported = CONTROLLER_UNSUPPORTED.filter((name) => values[name] !== undefined && values[name] !== false);
   if (recorded) {
-    const unsupported = CONTROLLER_UNSUPPORTED.filter((name) => name !== "rotate-sys" && unsupportedNow(name));
-    if (unsupported.length) throw new CommandFailure("refused", "UNSUPPORTED", "this root's stack is owned by the service controller; the requested startup option has no controller-owned route and was not applied through the legacy launcher", { target: { root: canonical, options: unsupported } });
+    const refused = unsupported.filter((name) => name !== "rotate-sys");
+    if (refused.length) throw controllerUnsupported(canonical, refused, false);
     if (requested !== undefined && requested !== recorded.journal.mode) throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is pinned to ${recorded.journal.mode === "open" ? "open" : recorded.journal.mode === "user" ? "user auth" : "static auth"}; the requested mode does not convert it`, { target: { root: canonical, recorded: recorded.journal.mode, requested }, remedy: "run bare cotal up to keep the recorded mode" });
     if (values.idp !== undefined && recorded.journal.mode !== "user") throw new CommandFailure("refused", "USAGE_INVALID", "--idp belongs to a user-auth stack", { target: { root: canonical } });
     return true;
   }
-  if (CONTROLLER_UNSUPPORTED.some(unsupportedNow)) return false;
   const wanted: StackMode = requested ?? "auth";
   if (canonical === canonicalRoot(homedir()) || wanted !== "user" && hasUserAuthState(canonical, space, { readOnly: true })) return false;
   if (wanted === "open" && holdsBrokerAccount(canonical)) return false;
@@ -187,6 +204,9 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   if (!registered && (!prepared || canonicalRoot(prepared.root) !== canonical)) return false;
   if (readMaintenanceJournal(canonical)) return false;
   if (existsSync(join(canonical, ".cotal", "nats.pid")) || liveMeshProcesses(canonical, space).length) return false;
+  // A prepared root never falls through to the legacy launcher, so an option the controller stack
+  // has no route for refuses here as it does on a root whose stack the controller owns.
+  if (unsupported.length) throw controllerUnsupported(canonical, unsupported, true);
   return true;
 }
 
@@ -282,15 +302,33 @@ function stackListeners(journal: StackJournal): StackListener[] | null {
   return listeners;
 }
 
+/** The selection a start finds: one that names a registered or prepared space, else none. */
+function usableSelection(): string | undefined {
+  const current = getCurrent();
+  return current && (findMesh(current) || findPreparedSpace(current)) ? current : undefined;
+}
+
+/** What `up` says when it selects the space it started, because nothing usable was selected. */
+export function selectedOnUp(space: string): string {
+  return `selected "${space}": a command without --space targets it, except in another space's project folder`;
+}
+
+/** What `up` says when another selected space stays selected. */
+export function keptOnUp(space: string, kept: string): string {
+  return `"${space}" up; "${kept}" stays selected for commands run outside this folder - \`cotal use ${space}\` to switch`;
+}
+
 /** `cotal up`'s controller route: start, seed the default persona into the root, then write its
  *  own receipt. The stack is up by then, so a persona that cannot be written is a warning. */
 export async function stackUp(request: StackUpRequest, native: StackUpNative): Promise<void> {
+  const before = usableSelection();
   const { journal, changed, allReused, admittedRestore, settled, brokerExecutable, streamsRecreated, rotation } = await startControllerStack(request, native);
   const { root, space, server, mode } = journal;
   const managed = journal.members.some((row) => row.role === "manager" && (row.state === "started" || row.state === "reused"));
-  // The start keeps another selected space; the receipt says so, as a legacy `up` does.
-  const current = getCurrent();
-  const keptCurrent = current && current !== space && (findMesh(current) || findPreparedSpace(current)) ? current : undefined;
+  // The receipt says when the start selected its space, and when another space stays selected.
+  const current = usableSelection();
+  const keptCurrent = current !== space ? current : undefined;
+  const selected = current === space && before !== space;
   const written: { what: string; path: string }[] = [];
   const warnings: OutputWarning[] = settled ? [{ code: "OPERATION_SETTLED", target: { root, space, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : [];
   try {
@@ -312,7 +350,8 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
       managed ? { command: `cotal spawn --space ${space}`, description: "Launch your default agent" } : { command: "cotal up", description: "Add the manager to this stack" },
       { command: "cotal down", description: "Stop every recorded member" },
     ] }] }];
-    const kept: Report["sections"] = keptCurrent ? [{ blocks: [{ kind: "lines", lines: [{ text: `"${space}" up; current is still "${keptCurrent}" - \`cotal use ${space}\` to switch`, tone: "hint" }] }] }] : [];
+    const selection = keptCurrent ? keptOnUp(space, keptCurrent) : selected ? selectedOnUp(space) : undefined;
+    const kept: Report["sections"] = selection ? [{ blocks: [{ kind: "lines", lines: [{ text: selection, tone: "hint" }] }] }] : [];
     const rotated: Report["sections"] = result.rotatedSystemAccount ? [{ title: "System account rotated", blocks: [
       { kind: "fields", rows: [["Generation", String(result.rotatedSystemAccount.generation)], ["$SYS creds valid to", result.rotatedSystemAccount.expiresAt?.slice(0, 10) ?? "no expiry"]] },
       { kind: "lines", lines: ["membership-observer.creds and connection-evictor.creds were minted against the new system account, and the broker started on a configuration rendered from it. The data account, every agent credential and the JetStream store are unchanged. Old $SYS creds are refused by any broker that loads this configuration."] },
@@ -425,7 +464,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   if (registration && (registration.origin !== "up" || canonicalRoot(registration.root) !== root || registration.server !== (previous?.journal.server ?? request.server)))
     throw new CommandFailure("refused", "CONFLICT", "the space is registered to another root, broker address or external origin; nothing was prepared or started", { target: { root, space }, remedy: `inspect it with cotal space show ${space}` });
   if (!registration && (!preparedSpace || canonicalRoot(preparedSpace.root) !== root))
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the space has no prepared or locally started registration at this root; nothing was prepared or started", { target: { root, space }, remedy: `prepare it with cotal space create ${space} --root ${root}, then run cotal up` });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the space has no prepared or locally started registration at this root; nothing was prepared or started", { target: { root, space }, remedy: `prepare it with cotal space create ${space} --root ${shellWord(root)}, then run cotal up` });
   // An earlier up or down that never recorded its outcome is settled from its members' process
   // evidence under the held maintenance lock. Only a preserve or resume can remain unsettled here.
   // A member stop an earlier down could not confirm in time is settled from its own receipt first.

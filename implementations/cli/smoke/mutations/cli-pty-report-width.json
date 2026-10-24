@@ -12,7 +12,7 @@
   "mutations": [
     {
       "name": "a report ignores the terminal's width",
-      "file": "packages/workspace/src/present.ts",
+      "file": "packages/workspace/src/text-wrap.ts",
       "find": "  return stream.isTTY && stream.columns ? stream.columns : Number.POSITIVE_INFINITY;\n",
       "replace": "  return Number.POSITIVE_INFINITY;\n",
       "expectRed": "a report on a 20-column terminal is one labeled record",

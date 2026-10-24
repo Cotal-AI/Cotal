@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootPathProblem, soleSpaceOf, stackJournalPath, userAuthSpacesOnDisk } from "./auth-paths.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
-import { recordOperationWarning } from "./output.js";
+import { recordOperationSpaceNote, recordOperationWarning } from "./output.js";
 import { parsePid, probeLiveness, readPidfile } from "./pid.js";
 import { findPreparedSpace, preparedSpaceAt } from "./prepared-spaces.js";
 import {
@@ -16,7 +16,7 @@ import {
   type MeshEntry,
   type UserAuthInfo,
 } from "./mesh-registry.js";
-import { ProtectedRecordStore } from "./protected-records.js";
+import { ProtectedRecordStore, shellPath } from "./protected-records.js";
 import { rootNamesNoSpace } from "./space.js";
 
 /**
@@ -391,7 +391,7 @@ export function stackAdoptionBlock(root: string, recordedRoot: string, space: st
   const known = journalInstanceIds(members).find((id) => instances.read(id) !== undefined);
   if (known) return { kind: "known", message: `this machine records instance ${known} of the stack that ${recordedRoot} recorded, so that stack is this machine's own`, remedy: movedRootRemedy(recordedRoot) };
   const registered = findMesh(space), recorded = registered?.root ?? findPreparedSpace(space)?.root;
-  if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with cotal space forget ${space}, then run cotal space create ${space} --adopt --root ${root}` };
+  if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with cotal space forget ${space}, then run cotal space create ${space} --adopt --root ${shellPath(root)}` };
   return undefined;
 }
 
@@ -405,7 +405,7 @@ export function stackElsewhereRemedy(root: string, recordedRoot: string, space: 
   if (existsSync(stackJournalPath(recordedRoot))) return `use the stack from ${recordedRoot}, which holds it; this copy does not`;
   let block: StackAdoptionBlock | undefined | null;
   try { block = stackAdoptionBlock(root, recordedRoot, space, members); } catch { block = null; }
-  const adopt = block === undefined ? `adopt it with cotal space create ${space} --adopt --root ${root}` : block?.kind === "recorded" ? block.remedy : undefined;
+  const adopt = block === undefined ? `adopt it with cotal space create ${space} --adopt --root ${shellPath(root)}` : block?.kind === "recorded" ? block.remedy : undefined;
   if (adopt === undefined) return movedRootRemedy(recordedRoot);
   if (rootPathProblem(recordedRoot) !== undefined) return `to run it from this folder, ${adopt}; cotal up refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`;
   return block === undefined
@@ -463,20 +463,33 @@ export function retainedLegacyBroker(root: string): { server: string; open: bool
   return server ? { server, open: true } : undefined;
 }
 
-/** The selection is the target from every folder. Inside a project whose root has registered spaces
- *  and none of them is the selection, say so before the command acts, with the `--space` that
- *  targets this folder's space instead. */
-function noteSelectionOutsideFolder(cwd: string, current: string, meshes: readonly MeshEntry[]): void {
+/** The spaces registered or prepared for the project root `cwd` is in, none outside a project. */
+function folderSpaces(cwd: string, meshes: readonly MeshEntry[]): { root: string; spaces: string[] } | undefined {
   const root = findCotalRoot(cwd);
-  if (!isGenuineSpace(root)) return;
-  const here = meshes.filter((m) => canonicalRoot(m.root) === canonicalRoot(root)).map((m) => m.space);
-  if (here.length === 0 || here.includes(current)) return;
-  const folder = here.length === 1 ? `this folder's space "${here[0]}"` : `this folder's spaces ${here.map((s) => `"${s}"`).join(", ")}`;
+  if (!isGenuineSpace(root)) return undefined;
+  const spaces = new Set(meshes.filter((m) => canonicalRoot(m.root) === canonicalRoot(root)).map((m) => m.space));
+  const prepared = preparedSpaceAt(root)?.space;
+  if (prepared !== undefined) spaces.add(prepared);
+  return { root, spaces: [...spaces].sort() };
+}
+
+/** Whether the selection is the target here. Inside a project whose root has one space, that space
+ *  is the target, and its heading says the selection applies outside the folder. A root with several
+ *  spaces, none of them the selection, keeps the selection and says so before the command acts,
+ *  with the `--space` that targets one of them instead. */
+function selectionTargetsHere(cwd: string, current: string, meshes: readonly MeshEntry[]): boolean {
+  const folder = folderSpaces(cwd, meshes);
+  if (!folder || folder.spaces.length === 0 || folder.spaces.includes(current)) return true;
+  if (folder.spaces.length === 1) {
+    recordOperationSpaceNote(folder.spaces[0]!, `this folder's space; the selected space "${current}" applies outside it`);
+    return false;
+  }
   recordOperationWarning({
     code: "SELECTION_NOT_FOLDER_SPACE",
-    target: { space: current, folderSpaces: here, root },
-    message: `this targets the selected space "${current}", not ${folder}; pass --space ${here.length === 1 ? here[0] : "<space>"} to target ${here.length === 1 ? "it" : "one of them"}`,
+    target: { space: current, folderSpaces: folder.spaces, root: folder.root },
+    message: `this targets the selected space "${current}", not this folder's spaces ${folder.spaces.map((s) => `"${s}"`).join(", ")}; pass --space <space> to target one of them`,
   });
+  return true;
 }
 
 /** The one registration recorded for `root`, if any. A broker that runs several spaces records one
@@ -496,18 +509,16 @@ function registrationAt(root: string, meshes: readonly MeshEntry[]): MeshEntry |
 
 /**
  * The space a `--creds` command that names neither `--space` nor `--server` addresses, in
- * {@link resolveMeshTarget}'s order: the selected space, else the space this folder's project is
- * registered, set up or prepared as. `undefined` leaves the caller's default. It reads no trust,
- * because the credential is the caller's own, and it never takes the only running space, because a
- * credential goes only to a broker the caller paired it with.
+ * {@link resolveMeshTarget}'s order: the selected space, unless this folder's project has one other
+ * space, else the space this folder's project is registered, set up or prepared as. `undefined`
+ * leaves the caller's default. It reads no trust, because the credential is the caller's own, and it
+ * never takes the only running space, because a credential goes only to a broker the caller paired
+ * it with.
  */
 export function credsSpace(cwd: string): { space: string; selected: boolean } | undefined {
   const meshes = loadMeshes();
   const current = getCurrent();
-  if (current) {
-    noteSelectionOutsideFolder(cwd, current, meshes);
-    return { space: current, selected: true };
-  }
+  if (current && selectionTargetsHere(cwd, current, meshes)) return { space: current, selected: true };
   const root = findCotalRoot(cwd);
   if (!isGenuineSpace(root)) return undefined;
   assertRootIsSingleTenant(root);
@@ -519,9 +530,10 @@ export function credsSpace(cwd: string): { space: string; selected: boolean } | 
  * Resolve the mesh target by precedence (first match wins):
  *  1. `--space` — registry lookup (errors if that space isn't running).
  *  2. `--server` — registry entry on that server (for creds/personas), else the local project.
- *  3. The `current` selected by `cotal use`, from any directory. It stays the target when its broker
- *     is down, and a selection that names no registration refuses rather than reaching another mesh.
- *     Inside a project whose root has a different registered space, the run warns first.
+ *  3. The `current` selected by `cotal use`, except inside a project whose root has one space other
+ *     than it, where step 4 applies. It stays the target when its broker is down, and a selection
+ *     that names no registration refuses rather than reaching another mesh. Inside a project whose
+ *     root has several spaces, none of them the selection, the run warns first.
  *  4. A genuine local project (`cwd` walks up to a real `.cotal/`).
  *  5. The registry's *running* meshes: 0 ⇒ error; 1 ⇒ use it; N ⇒ error naming
  *     each + its root. `flags.offline` (from a sweep) is excluded here; a named `--space` and
@@ -575,8 +587,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
 
   const meshes = loadMeshes();
   const current = getCurrent();
-  if (current) {
-    noteSelectionOutsideFolder(cwd, current, meshes);
+  if (current && selectionTargetsHere(cwd, current, meshes)) {
     const cur = meshes.find((m) => m.space === current);
     if (!cur) {
       notStarted(current, cwd);

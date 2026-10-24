@@ -15,7 +15,7 @@ export interface OfflineValues {
 export function sourceOf(file: string): string {
   let bytes: Buffer;
   try { bytes = readFileSync(file); }
-  catch { throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the workflow source file could not be read", { target: { file } }); }
+  catch { throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the workflow source file could not be read", { target: { file }, remedy: `check that ${file} exists and this account can read it` }); }
   if (bytes.length === 0) throw new CommandFailure("refused", "SCHEMA_INVALID", "the workflow source file is empty, and a run's source must not be empty", { target: { file }, remedy: `write the program into ${file}` });
   try { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the workflow source file is not valid UTF-8, so it was not read as a program", { target: { file }, remedy: `save ${file} as UTF-8 text` }); }

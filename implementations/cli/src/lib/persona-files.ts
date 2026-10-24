@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
   acquireLock, agentFilePath, assertValidName, hardenPrivate, MAX_NAME_LENGTH, mkSecretDir,
-  parseAgentFileSource, saveAgentFile, writeSecretFile, writeSecretFileAtomic,
+  parseAgentFileSource, saveAgentFile, utf16Problem, writeSecretFile, writeSecretFileAtomic,
   type AgentDef,
 } from "@cotal-ai/core";
 import {
   cachedPreferences, CommandFailure, inputDisabledByFlag, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, loadMeshes, movedProject,
   resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts,
 } from "@cotal-ai/workspace";
+import { shellWord } from "./endpoint-errors.js";
 
 export interface PersonaCatalog { root: string; space: string }
 export interface PersonaSource { bytes: Buffer; ino: number; dev: number; mtimeMs: number }
@@ -80,7 +81,7 @@ export function readPersonaSource(path: string): PersonaSource | undefined {
 
 export function requirePersonaSource(path: string): PersonaSource {
   const source = readPersonaSource(path);
-  if (!source) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona at ${path}`);
+  if (!source) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona at ${path}`, { remedy: "see the personas here with `cotal persona`" });
   return source;
 }
 
@@ -88,6 +89,9 @@ export function requirePersonaSource(path: string): PersonaSource {
  *  `name` is required of a new definition only. A stored one may launch under another name: the
  *  seeded `default` persona launches as `default_agent`. */
 export function validatePersona(bytes: Buffer, path: string, name?: string): AgentDef {
+  // Its encoding names no value from the file, so it is the one reason given.
+  const encoding = utf16Problem(bytes.toString("utf8"));
+  if (encoding) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition: ${path}: ${encoding}`, { remedy: `save ${path} as UTF-8` });
   let def: AgentDef;
   try { def = parseAgentFileSource(bytes.toString("utf8"), path); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition: ${path}`, { remedy: "check the agent-file frontmatter and channel declarations" }); }
@@ -103,7 +107,7 @@ function sameSource(a: PersonaSource | undefined, b: PersonaSource | undefined):
 function assertCatalogWritable(dir: string): void {
   if (!existsSync(dir)) return;
   try { accessSync(dir, constants.W_OK); }
-  catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `the persona catalog ${dir} is not writable; nothing was changed`, { remedy: `make it writable with \`chmod u+w ${dir}\` to change its personas` }); }
+  catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `the persona catalog ${dir} is not writable; nothing was changed`, { remedy: `make it writable with \`chmod u+w ${shellWord(dir)}\` to change its personas` }); }
 }
 
 /** Shared by canonical and legacy CLI writes only. Manager and external writers do not take this lock. */

@@ -59,7 +59,7 @@ type Result = {
   replay: { channel: string; replay: boolean | null }[];
   items: Item[];
 };
-type Envelope = { outcome: string; completeness: string; command: string; target: unknown; result: Result | null; warnings: { code: string }[]; error?: { code: string; message: string; remedy?: string } };
+type Envelope = { outcome: string; completeness: string; command: string; target: unknown; result: Result | null; warnings: { code: string; message: string }[]; error?: { code: string; message: string; remedy?: string } };
 
 const space = `histsmoke-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
@@ -338,6 +338,19 @@ try {
   } finally {
     inHome(() => setCurrent(space));
   }
+  // An agent's credential reads one channel at a time through its own history consumer, and a
+  // channel its grant leaves out is refused with the grant it holds.
+  const agentCreds = join(home, "agent.creds");
+  writeFileSync(agentCreds, await provisionAgent(provisioner, auth, newIdentity(), { lifecycleUid: mintLifecycleUid(), subscribe: [], allowSubscribe: ["general"], allowPublish: ["general"] }), { mode: 0o600 });
+  const byAgent = await run(["history", "general", "--json", "--creds", agentCreds]);
+  check("an agent credential whose grant names #general reads it", byAgent.status === 0 && JSON.stringify(texts(byAgent)) === JSON.stringify(["deploy started", "looks good", "deploy finished"]), shown(byAgent));
+  const outside = await run(["history", "ops", "--json", "--creds", agentCreds]);
+  check("a channel its grant leaves out is PERMISSION_DENIED, quoting the grant it holds",
+    outside.status === 2 && outside.envelope?.error?.code === "PERMISSION_DENIED" && outside.envelope.error.message === `this credential may not read #ops in ${space}: its history grant is #general`, shown(outside));
+  const everyAgent = await run(["history", "--json", "--creds", agentCreds]);
+  check("with no channel named, it reads #general and names #ops as denied, quoting the grant",
+    everyAgent.status === 4 && JSON.stringify(texts(everyAgent)) === JSON.stringify(["deploy started", "looks good", "deploy finished"]) &&
+      (everyAgent.envelope?.warnings ?? []).some((w) => w.code === "CHANNELS_DENIED" && w.message.endsWith("; its history grant is #general")), shown(everyAgent));
 
   // ── a write the broker refuses for the credential's grant applied nothing ───────────────────────
   // An observer credential may read but not write channel metadata or purge history. Each refusal
@@ -369,7 +382,7 @@ try {
   check("a message sent while following is one event record", event && records().filter((r) => r.type === "event").map((r) => r.data.text).join() === "live one", f.lines);
   f.child.kill("SIGINT");
   const code = await f.exited;
-  check("an interrupted follow ends with an end record and exit 0", code === 0 && records().at(-1)?.type === "end" && records().at(-1)?.data.reason === "interrupted", { code, last: f.lines.at(-1), stderr: f.stderr() });
+  check("an interrupted follow ends with an end record and exit 130", code === 130 && records().at(-1)?.type === "end" && records().at(-1)?.data.reason === "interrupted", { code, last: f.lines.at(-1), stderr: f.stderr() });
   check("every follow line is one parseable stream record", f.lines.every((l) => { try { const r = JSON.parse(l); return r.schemaVersion === 1 && r.stream === "history"; } catch { return false; } }), f.lines);
 
   const fp = follow(["history", "--follow", "--plain", "--grep", "plain"]);
