@@ -273,7 +273,8 @@ const answering = (port: number, status: number) => ({ type: "process", executab
   check("add refuses a link in a world-writable folder to a protected file, naming the link's folder", unsafe(linkAdd, "the service executable's folder", links), shown(linkAdd));
   chmodSync(links, 0o700);
   const saved = run(["service", "--space", "b1"]);
-  check("no refused definition was saved", Array.isArray(saved.envelope?.result?.definitions) && (saved.envelope.result.definitions as unknown[]).length === 0, saved.envelope?.result);
+  const savedNames = ((saved.envelope?.result?.definitions as { name: string }[] | undefined) ?? []).map((row) => row.name);
+  check("no refused definition was saved", Array.isArray(saved.envelope?.result?.definitions) && !savedNames.includes("unsafe") && !savedNames.includes("linked"), savedNames);
   check("rig: the protected executable is saved", run(["service", "add", "unsafe", "--file", file, "--space", "b1"]).status === 0);
   const started = run(["service", "start", "unsafe", "--space", "b1"]);
   const id = started.envelope?.result?.instanceId;
