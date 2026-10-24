@@ -4126,7 +4126,8 @@ refused with the rule it breaks.
 A direct target resolves by its full identity or an unambiguous name. A name that no participant
 can carry, such as one holding `\` or longer than 128 characters, is refused with the name rule
 before any presence lookup. A name collision refuses
-with `TARGET_AMBIGUOUS` and lists the full identities that carry the name, and a target that is not
+with `TARGET_AMBIGUOUS` and lists the full identities that carry the name, each with its kind
+(`agent`, `endpoint` or `chat session`) and the local time its process started, and a target that is not
 present refuses with `TARGET_NOT_FOUND` and points at `cotal who --all`. No fuzzy match selects an
 agent for you.
 
@@ -4147,8 +4148,14 @@ or completion. A direct send to an agent the roster shows offline also warns on 
 `CHANNEL_UNREGISTERED`: it says whether the channel already has messages or this message starts it,
 and lists the space's registered channels, so a mistyped name stands out. It reads that count as
 `cotal history` lists channels. Its native space policy still controls publication and no registry
-metadata is created. Metadata or a count it cannot read stays not checked. A message over the broker's message limit, envelope included, refuses
-`UNSUPPORTED` (exit 2) with its size and the limit, and nothing is sent. A channel post the broker
+metadata is created. Metadata or a count it cannot read stays not checked. A role send is stored
+whether or not anyone holds the role. When no present participant holds it, the send warns
+`ROLE_NOT_HELD`: the message waits on that role's queue until one takes it, and the warning names the
+closest role a present participant holds, or lists the roles present when none is close. A roster
+that is not current within two seconds adds no warning. A message over the broker's message limit, envelope included, refuses
+`UNSUPPORTED` (exit 2) with its size and the limit, and nothing is sent. A file or stdin body is read
+only to one byte past that limit. A pipe or a device such as `/dev/zero` has no size to report, so
+its refusal names the limit alone. A channel post the broker
 refuses was not stored, so it refuses `PERMISSION_DENIED` (exit 2): the channel does not exist in
 the space or this identity may not post to it. The remedy lists the channels this identity may post
 to, read from the grant ledger as `cotal whoami` reads it. When the ledger is on another machine it
@@ -4182,8 +4189,10 @@ A recipient can still answer a `send --to` or `send --role` with `cotal_dm` or f
 session. On a static or open mesh every send has its own principal under the same display name, so
 the sender's name works only while it names one principal among the senders the recipient has heard
 from and the present peers. Once the recipient has heard two sends from the same login and host, a
-reply by that name refuses with `TARGET_AMBIGUOUS` and lists the principals. Answer by the id on
-the message instead (`from.id` in `chat --stdio`), or with `/reply` in `chat`. The reply is stored
+reply by that name refuses with `TARGET_AMBIGUOUS` and lists the principals. When none of them is
+present on a current roster, the refusal says they are no longer present and names how to answer one
+message. Answer by the id on the message instead (`from.id` in `chat --stdio`, with `replyTo` set to
+the message id), or with `/reply` in `chat`. The reply is stored
 under the sender's id in the space's DM history, which an operator's DM view such as the
 dashboard's Direct messages lens shows. The `cotal send` that asked has already exited, so the reply
 never reaches that shell.
@@ -4197,7 +4206,9 @@ cotal chat [<channel>] [--name <n>] [--plain | --stdio]   [--space <s>] [--serve
 `chat` opens one live session in the selected space, under an identity of its own. Each opening is
 a new principal with its own inbox and presence, so two windows are two sessions, and leaving ends
 the session. `--name` sets its display label; the default is your OS login and host with a short
-suffix. The label carries no authority.
+suffix. The label carries no authority. When another live participant already carries the label,
+the session still opens and warns on stderr, naming that participant, because a direct message by the
+name refuses as ambiguous while both are present.
 
 The mesh is resolved once, and its recorded auth mode picks the admission. No other mode is tried.
 
@@ -4265,7 +4276,7 @@ them, so type `@<owner>.<actor>` instead. A target that parses as `<owner>.<acto
 principal whether or not it is present or was heard from, and is never matched against display
 names. A peer whose display name parses as a principal therefore cannot be reached by that name;
 `/reply` and its full principal still reach it. Typing the session's own principal refuses with
-`USAGE_INVALID`. A `--stdio` `dm` request resolves its `to` the same way.
+`USAGE_INVALID`, and so does its own name when no other participant carries it. A `--stdio` `dm` request resolves its `to` the same way.
 
 Every admission presents the session as an endpoint, so `--kind endpoint` is accepted and changes
 nothing. `--kind agent` refuses with exit 1 because a chat session never presents as an agent, and
@@ -4488,8 +4499,9 @@ many messages were read, whether older retained messages exist that the window d
 whether the window goes back to `--since`. An age outside the supported date range or a sequence
 that cannot be represented without rounding is a `USAGE_INVALID` refusal before connecting.
 The report shows each message's local time, with its date when it is not today; `result.items[].ts`
-is the ISO time. A DM row shows its recipient's name when a message in the window came from that
-principal, and the principal otherwise. `result.items[].to` is the principal.
+is the ISO time. A DM row shows its recipient's name when the roster carries that principal or a
+message in the window came from it, and the principal otherwise. `--dms` reads the roster for those
+names, waiting up to two seconds for it. `result.items[].to` is the principal.
 A line break or other control character in a message's text shows as its `\uXXXX` escape in the
 text and `--plain` reports, so a message cannot clear the screen or start a row of its own.
 `--json` carries the text as it was sent, in `result.items[].text`.
