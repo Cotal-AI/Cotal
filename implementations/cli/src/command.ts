@@ -20,6 +20,8 @@ import {
   isWorkspaceTargetError,
   operationWarnings,
   outputDeclarationProblems,
+  preferencesFolderWarning,
+  recordOperationWarning,
   renderReport,
   renderWorkspaceError,
   runOperation,
@@ -586,6 +588,12 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     }
     await prepareCatalogForCommand(cmd, parsed);
     await runOperation(scope, async () => {
+      // Preferences that another local account could change still apply, so each command that uses
+      // them says so, with the change that protects their folder.
+      if (!cmd.name.startsWith("__") && !["help", "completion", "version", "docs"].includes(cmd.name)) {
+        const folder = preferencesFolderWarning();
+        if (folder) recordOperationWarning(folder.warning);
+      }
       if (cmd.prepare) await cmd.prepare(parsed);
       await cmd.run(parsed);
     });

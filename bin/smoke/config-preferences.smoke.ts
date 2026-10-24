@@ -4,10 +4,11 @@
  * and for one space, the refusals (a read, set or unset for a space this machine does not know among
  * them), a value left for a removed space, the named environment tiers, the selected space, an invalid
  * file stopping every command but help and completion without being reset, a linked file stopping
- * them the same way, a `COTAL_HOME` that is not a directory stopping them the same way, a stale write
- * refused, a persona the space's catalog does not hold saved with a warning that names the catalog,
- * two concurrent writers both landing, and the consumers outside `spawn`: color, the `personas edit`
- * editor and the detach key.
+ * them the same way, a `COTAL_HOME` that is not a directory stopping them the same way, a folder
+ * other accounts can write refusing a write and warning on a read, a stale write refused, a persona
+ * the space's catalog does not hold saved with a warning that names the catalog, two concurrent
+ * writers both landing, and the consumers outside `spawn`: color, the `personas edit` editor and the
+ * detach key.
  * The launch consumers (harness, persona) are proved through real spawns in `smoke:persona-agent`.
  * Broker-free and offline.
  *
@@ -379,6 +380,45 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   } finally {
     chmodSync(dir, 0o700);
   }
+}
+
+// ── a preferences folder other local accounts can write: a read warns, a write is refused ─────────
+// World write is refused on every host; group write depends on whether the host proves a private group.
+if (process.platform !== "win32") {
+  const dir = join(xdg, "cotal");
+  run(["config", "set", "editor", "vi"]);
+  const before = fileText();
+  const unprotected = (w: { code: string; message: string; target?: unknown }) =>
+    w.code === "PREFERENCES_FOLDER_UNPROTECTED" && (w.target as { path?: string } | undefined)?.path === dir && w.message.includes(`${dir} is writable by every local account`) && w.message.endsWith(`chmod o-w ${dir}`);
+  chmodSync(dir, 0o757);
+  try {
+    const write = run(["config", "set", "editor", "ed", "--json"]);
+    check("a write into a world-writable preferences folder is refused with PERMISSION_DENIED, exit 2, naming the folder and its chmod",
+      write.status === 2 && write.envelope?.error?.code === "PERMISSION_DENIED" && (write.envelope.error.message ?? "").includes(`the preferences folder is not protected against other local writers: ${dir} is writable by every local account`) && write.envelope.error.remedy === `chmod o-w ${dir}`, shown(write));
+    check("and the file is left as it was", fileText() === before);
+    const read = run(["config", "--json"]);
+    check("a read applies the saved values with a PREFERENCES_FOLDER_UNPROTECTED warning naming the folder and its chmod",
+      read.status === 0 && read.envelope?.outcome === "ok" && settingOf(read, "editor")?.value === "vi" && read.envelope.warnings.filter(unprotected).length === 1 && read.stderr.includes("! the preferences folder is not protected"), shown(read));
+    const status = run(["status", "--json"]);
+    const hints = ((status.envelope?.result as { hints?: string[] } | null)?.hints ?? []);
+    check("status warns too, and its Next protects the folder", status.status === 0 && (status.envelope?.warnings ?? []).some(unprotected) && hints.includes(`protect the preferences folder: chmod o-w ${dir}`), shown(status));
+    const other = run(["ext", "root"]);
+    check("every command that uses the preferences warns", other.status === 0 && other.stderr.includes(`! the preferences folder is not protected against other local writers: ${dir}`), shown(other));
+    const version = run(["version"]);
+    check("version, which uses no preference, does not warn", version.status === 0 && !version.stderr.includes("not protected"), shown(version));
+  } finally {
+    chmodSync(dir, 0o700);
+  }
+  const quiet = run(["config", "--json"]);
+  check("a protected folder gives no warning", quiet.status === 0 && quiet.envelope?.warnings.every((w) => w.code !== "PREFERENCES_FOLDER_UNPROTECTED") === true && !quiet.stderr.includes("not protected"), shown(quiet));
+  run(["config", "unset", "editor"]);
+  // A folder not made yet is checked from the nearest folder above it, and nothing is created.
+  const open = mkdtempSync(join(home, "open-config-"));
+  chmodSync(open, 0o757);
+  const fresh = run(["config", "set", "color", "never", "--json"], { XDG_CONFIG_HOME: open });
+  check("a write whose folder would be made in a world-writable parent is refused, and nothing is created",
+    fresh.status === 2 && fresh.envelope?.error?.code === "PERMISSION_DENIED" && fresh.envelope.error.remedy === `chmod o-w ${open}` && readdirSync(open).length === 0, shown(fresh));
+  chmodSync(open, 0o700);
 }
 
 // ── a linked preferences file is refused as a private record's link is, and never replaced ──────────

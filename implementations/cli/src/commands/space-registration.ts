@@ -13,6 +13,7 @@ import {
   findPreparedSpace,
   getCurrent,
   homeCotalDir,
+  isCommandFailure,
   loadMeshes,
   pinnedFetch,
   preparedSpaceAt,
@@ -552,7 +553,9 @@ function forgotten(presentation: Presentation, r: Omit<SpaceForgotten, "kind" | 
   try {
     removedPreferences = removeSpacePreferences(r.space, preferencesRevision).removed;
   } catch (e) {
-    partial = { message: `forgot ${r.space}, but its per-space preferences were not removed: ${(e as Error).message}`, remedy: `see them with \`cotal config --space ${r.space}\` and remove each with \`cotal config unset <key> --space ${r.space}\`` };
+    // A refusal that names its own fix, such as a preferences folder to protect, comes first.
+    const first = isCommandFailure(e) && e.remedy ? `${e.remedy}; then ` : "";
+    partial = { message: `forgot ${r.space}, but its per-space preferences were not removed: ${(e as Error).message}`, remedy: `${first}see them with \`cotal config --space ${r.space}\` and remove each with \`cotal config unset <key> --space ${r.space}\`` };
   }
   const result: SpaceForgotten = { kind: "space-forgotten", ...r, selectionCleared, removedPreferences };
   writeResult(presentation, { command: "space", target: { space: r.space }, result, warnings, ...(partial ? { completeness: "partial" as const, partial } : {}) }, forgottenView);

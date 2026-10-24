@@ -26,7 +26,7 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { stoppedLoopbackListener, accountInventory, assessMaintenanceClaim, authDir, isCommandFailure, readMaintenanceJournal, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, PREFERENCE_KEYS, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MaintenanceClaim, type MeshTarget, type OutputWarning, type Report, type Section, type Tone, workspaceErrorParts, preferencesPath, type Preferences } from "@cotal-ai/workspace";
+import { stoppedLoopbackListener, accountInventory, assessMaintenanceClaim, authDir, isCommandFailure, readMaintenanceJournal, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, PREFERENCE_KEYS, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, workspaceErrorParts, preferencesPath, preferencesFolderWarning, type Cell, type LocalProcess, type LocalProcessContext, type MaintenanceClaim, type MeshEntry, type MeshTarget, type OutputWarning, type Preferences, type Report, type Section, type Tone } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -269,6 +269,9 @@ export async function status(args: ParsedArgs): Promise<void> {
   const selected = resolveSelected(cwd, values);
   const gaps = new Gaps();
   const hints: string[] = [];
+  // Every command warns about a preferences folder another account could write; status also lists its fix.
+  const preferencesFolder = preferencesFolderWarning();
+  if (preferencesFolder) hints.push(`protect the preferences folder: ${preferencesFolder.remedy}`);
   const machine = await readMachine(selected, gaps, hints);
   const extensions = readExtensions(gaps);
   // THE RESPONDER AXIS (#1576), read ONCE and threaded into the rows that would otherwise claim
