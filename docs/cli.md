@@ -2310,15 +2310,16 @@ a classified cause code, such as unsupported host observation, without native di
 import no provider and start, stop, adopt or repair nothing. `--all` extends broker checks; this
 local owned-service section retains its explicit selected-space scope.
 
-`meshes` lists the meshes this machine knows; a `*` marks the `current` default a bare
-`cotal spawn` joins. Entries learned from a signed-in account are marked `discovered`. Their
+`meshes` lists the meshes this machine knows; `(default)` after a name marks the `current` default
+a bare `cotal spawn` joins. A terminal too narrow for its columns gets one labeled record per mesh,
+as other tables do. Entries learned from a signed-in account are marked `discovered`. Their
 registration trust is stored under the account's private auth state, and the registry contains no
 session token or sentinel credential bytes. Commands resolve the catalog `slug`; a different human
 `name` is rendered only as a label.
 
 `meshes --json` prints one JSON object per recorded mesh per line: `space`, `server`, `mode`,
-`root`, `default` (the `*`), and `origin` (`up`, `manual`, or `catalog` for a discovered entry). A
-local or hand-registered entry also carries `offline`. A discovered entry is never probed, so it has
+`root`, `default` (the row marked `(default)`), and `origin` (`up`, `manual`, or `catalog` for a
+discovered entry). A local or hand-registered entry also carries `offline`. A discovered entry is never probed, so it has
 no `offline` field. `tlsRequired`, `events: "required"` and a discovered entry's `catalogName` appear
 only when the record has them. An empty registry prints nothing and exits 0. The note about a default
 that matches no record goes to stderr, so stdout carries only rows, on a first run too. The table is
@@ -3602,7 +3603,8 @@ The legacy `personas` parser remains available during migration: `list [-v] [--r
 `show`, `edit`, `new` and `rm --force`. Its `new` requires `--subscribe`, reads `--from -` from
 stdin, and overwrites an existing persona only with `--force`. Its local writes share the same
 draft validation and commit fence. Its `list` escapes control characters in the names, fields and
-bodies it prints, as `persona show` does. Its `show` does the same on a terminal, and writes the
+bodies it prints, as `persona show` does, and shows each persona's description or first prompt line
+whole, wrapped to the terminal's width. Its `show` does the same on a terminal, and writes the
 file byte for byte when its output is piped or redirected. Only its explicit `--running` overlay connects to the mesh.
 
 ## supervise
