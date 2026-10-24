@@ -45,6 +45,7 @@ import { createRunRecordHost, runRecordView } from "./run-record-host.js";
 import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer } from "./resolve-checkpoint.js";
 import type { KV } from "@nats-io/kv";
 import { listRunPage } from "./run-list-page.js";
+import { logLineText } from "./log-line.js";
 
 function outcomeOf(out: DriveOutcome): RunHostOutcome {
   if (out.status === "completed")
@@ -332,6 +333,7 @@ export const cotalLangRunHost: RunHost = {
       cancellationObserved,
       ...(req.file !== undefined ? { file: req.file } : {}),
       ...(req.resultBytes !== undefined ? { resultBytes: req.resultBytes } : {}),
+      ...(req.onLog !== undefined ? { onLog: (line: { readonly scope: string; readonly values: readonly unknown[] }) => req.onLog!(logLineText(line)) } : {}),
     };
     // A program that FAILS is rethrown by the driver after its `failed` note; the host reads it as
     // an outcome, never as its own crash.

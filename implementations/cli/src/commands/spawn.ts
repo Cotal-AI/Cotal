@@ -2,7 +2,7 @@ import { spawn as spawnProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, rmSync, statSync } from "node:fs";
 import { hostname } from "node:os";
-import { join, resolve as resolvePath } from "node:path";
+import { resolve as resolvePath } from "node:path";
 import {
   assertValidRole,
   agentFilePath,
@@ -104,8 +104,7 @@ import { askManager, failIfNotOk, liveManagerIds, onInstance, refuseWithoutLiveM
 import { managerPin, managersWithPersona, rerunOn } from "../lib/manager-choice.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
-import { callerHarness, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
-import { defaultPersonaFix } from "../lib/default-persona.js";
+import { callerHarness, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
 import { attachSeat } from "./agents.js";
@@ -1022,26 +1021,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   } catch (e) {
     if (e instanceof PersonaSourceError) throw new CommandFailure("refused", "SCHEMA_INVALID", e.message, { target: { space, path }, remedy: "use cotal team deploy <file> for a Mesh manifest; use a native persona file for spawn" });
     const code = (e as NodeJS.ErrnoException).code;
-    const fromEnv = personaFrom === undefined ? "" : ` from ${personaFrom}`;
     // The not-found text names the mesh's space and server, which for a handoff are its values.
     if (handoffText !== undefined) {
       console.error(c.red(`✗ cannot load the managed handoff persona: ${(e as Error).message}`));
-    } else if (code === "ENOENT" && path !== join(target.personaRoot, `${ref}.md`)) {
-      // A path reference opened that one file and never read the catalog, so name the file.
-      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona "${ref}"${fromEnv}: ${path} was not found`, { target: { space, path }, remedy: "check the path, or name a persona from the catalog" });
     } else if (code === "ENOENT") {
-      // A refusal that names no root is why this bug cost an hour. The old text asserted an absence
-      // ("no default persona yet") and prescribed a remedy (`cotal setup`) without saying WHERE it
-      // had looked — so when setup seeded a cwd-derived root and spawn read the resolved mesh's,
-      // the message survived running the exact command it named and pointed at nothing to check.
-      // Name the absolute directory checked and the mesh that root came from: the two facts that
-      // make the disagreement visible in one read.
-      const where = `${target.personaRoot} (mesh "${target.space}" at ${target.server}${target.source === "current" ? ", your current mesh" : target.source === "registry" ? ", the only mesh running" : ""})`;
-      const fix = defaultPersonaFix(target);
-      const write = fix.cwd ? `run \`${fix.command}\` in ${fix.cwd} to write one` : `create one with \`${fix.command}\``;
-      throw ref === "default" && personaFrom === undefined
-        ? new CommandFailure("refused", "TARGET_NOT_FOUND", `no default persona in ${where}`, { target: { space, path }, remedy: `${write}, name a persona with \`cotal spawn <name>\`, or pass a persona file with \`cotal spawn --file <persona.md>\`` })
-        : new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona "${ref}"${fromEnv} in ${where}`, { target: { space, path }, remedy: "pass a catalog name, or a persona file elsewhere with `--file <persona.md>`" });
+      const missing = missingPersona(target, ref, personaFrom, path);
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", missing.message, { target: { space, path }, remedy: missing.remedy });
     } else {
       console.error(c.red(`✗ ${(e as Error).message}`));
     }

@@ -215,6 +215,19 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("a gate scripted expired under the default onExpiry is a completed simulation whose program failed at that gate with L4007",
     expired === undefined && envelope?.outcome === "ok" && envelope.result?.outcome === "failed" && envelope.result.failure?.code === "L4007"
       && envelope.result.failure.step === "/checkpoint:go#0" && envelope.result.failure.stepOutcome === "expired" && envelope.result.effects?.some((e) => e.step === "/checkpoint:go#0") === true, { expired, envelope });
+  // A log line the program writes is printed: the language journals none, so this is where it is read.
+  writeFileSync(program, 'log("hello", 42);\n');
+  writeFileSync(join(dir, "results.json"), "{}");
+  const written: string[] = [];
+  const origWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: string | Uint8Array) => { written.push(String(chunk)); return true; }) as typeof process.stdout.write;
+  let logged: unknown;
+  try { logged = await runWorkflow({ values: { handler: join(dir, "results.json"), json: true }, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e); }
+  finally { process.stdout.write = origWrite; }
+  let logEnvelope: { result?: { log?: unknown } } | undefined;
+  try { logEnvelope = JSON.parse(written.join("")) as typeof logEnvelope; } catch { logEnvelope = undefined; }
+  c("a simulation's log line is printed, and --json carries it in result.log",
+    logged === undefined && JSON.stringify(logEnvelope?.result?.log) === JSON.stringify([{ scope: "", values: ["hello", 42] }]), written.join("").slice(0, 400));
   writeFileSync(program, 'throw "boom";\n');
   const thrown = await simulate({});
   c("a program that throws fails naming what it threw, not an unscripted effect",

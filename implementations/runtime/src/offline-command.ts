@@ -1,6 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { dryRunOutcome, Journal, journalEntryKeyString, LangErrors, validate, type SimScript } from "@cotal-ai/lang";
 import { CommandFailure, oneLine, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
+import { logLineText } from "./log-line.js";
 
 export interface OfflineValues {
   json?: boolean;
@@ -186,7 +187,7 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
   catch (error) { throw simulationFailure(error, file, journal); }
   // A program that fails under its script is a completed simulation, and the failure is its outcome.
   const failure = "fault" in report ? programFailure(report.fault, journal) : null;
-  const result = { kind: "workflow-simulation", outcome: failure ? "failed" : "completed", failure, steps: "fault" in report ? null : report.steps, elapsedMs: report.elapsedMs, effects: report.effects, agents: report.agents, waits: report.waits, checkpoints: report.checkpoints, unusedScript: report.unusedScript };
+  const result = { kind: "workflow-simulation", outcome: failure ? "failed" : "completed", failure, steps: "fault" in report ? null : report.steps, elapsedMs: report.elapsedMs, effects: report.effects, agents: report.agents, waits: report.waits, checkpoints: report.checkpoints, unusedScript: report.unusedScript, log: report.log };
   writeResult(presentation, { command: "run", target: { file }, result, warnings }, (r): Report => {
     const failed = r.failure;
     const outcome = !failed ? "completed" : failed.step !== null ? `failed at ${failed.step} (${failed.stepOutcome})` : failed.after !== null ? `failed after ${failed.after}` : "failed";
@@ -197,6 +198,7 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
         ...(failed ? [{ kind: "lines" as const, lines: [{ text: `${failed.code} ${failed.title}`, tone: "failed" as const }, ...(failed.cause !== null ? [`  ${failed.cause}`] : []), ...(failed.fix !== null ? [`  fix: ${failed.fix}`] : []), { text: "This failure is the program's own outcome under the script. Change the program, or script other results to simulate a different path.", tone: "hint" as const }] }] : []),
         { kind: "lines", lines: [{ text: "Scripted results only. No agents were launched and no broker was contacted. This does not establish live readiness.", tone: "hint" }] },
       ] },
+      ...(r.log.length ? [{ title: "Log", blocks: [{ kind: "lines" as const, lines: r.log.map(logLineText) }] }] : []),
     ] };
   });
 }

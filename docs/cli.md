@@ -106,7 +106,8 @@ typeset text, is refused naming the option it meant, rather than read as a posit
 Command output, including error lines on stderr, the guided `setup` and `meshes add` prompts and
 the `console` screen, is colored only when stdout is a terminal, so piped or redirected output is
 plain text. A terminal whose `TERM` is `dumb` gets no color either. A non-empty `NO_COLOR` turns color off on a terminal too. `FORCE_COLOR` turns color on even when output is
-piped or `TERM` is `dumb`, unless it is `0` or `false` in any letter case, and it takes precedence over `NO_COLOR`. `--no-color` turns
+piped or `TERM` is `dumb`, unless it is `0` or `false` in any letter case, and it takes precedence over `NO_COLOR`
+with no Node warning about the pair. `--no-color` turns
 color off for that run, whatever the environment says. It sets no `NO_COLOR` for the programs the
 run starts, but they are no longer forced into color by `FORCE_COLOR`.
 
@@ -162,8 +163,9 @@ one JSON document on stdout. Most commands have one, among them `cotal status`, 
 | `changed` | What a command that did not succeed changed anyway |
 
 Diagnostics stay on stderr. A usage error under `--json` is a `refused` envelope with code
-`USAGE_INVALID`, and the help it names stays off stdout. A command without a JSON output refuses
-`--json` as an unknown option.
+`USAGE_INVALID`, and the help it names stays off stdout. A word that names none of a command's
+subcommands and is near none of them is a usage error that lists the subcommands the command takes.
+A command without a JSON output refuses `--json` as an unknown option.
 
 A subcommand's help has its own `structured output` line, and only the forms that show one write a
 document. Bare `cotal ext` and `cotal ext list` do. `ext add`, `ext remove`, `ext root` and
@@ -391,11 +393,15 @@ in with `cotal login` and choose Self-hosted, because a Cloud space is registere
 
 Without a terminal, or with `--yes`, `--no-input` or `--json`, every input is a flag. A missing one
 is `USAGE_INVALID` naming each missing flag, before anything is written. The refusal prints the
-scripted form below and not the full command help:
+scripted form for the destination and not the full command help. The local form, filled in:
 
 ```bash
 cotal setup --destination local --harness claude --project ~/research --space research --no-input
 ```
+
+The `self-hosted` form also takes `--connection-file <bundle.json>`. A space name `cotal up` cannot
+start is refused with the name respelled in letters, digits, `-` and `_` as the remedy, and an
+unknown `--harness` with the known ones and `cotal ext add <npm-package>`.
 
 A local space is prepared as `cotal space create` prepares it. A self-hosted space is one already
 registered with `cotal space add` or a signed-in catalog, whose root must be `--project`, or one
@@ -3097,7 +3103,8 @@ persona file against the working directory. A missing
 persona is refused in one line with the catalog directory or the file that was checked, and the
 line names `--file <persona.md>` for a persona file elsewhere. A missing `default` persona also
 names the command that writes one: `cotal up` in the root of a space this machine started, or
-`cotal persona create default` for any other space. When a managed launch on a
+`cotal persona create default` for any other space. `--dry-run` refuses a missing persona with
+the same text, as `TARGET_NOT_FOUND` (exit 2). When a managed launch on a
 user-auth mesh is refused because the chosen manager's catalog has no `default`, the Next gives the
 spawn again with `--on` for each of your other live managers whose catalog lists one. The launch flags
 override the file. On a user-auth mesh the
@@ -3949,27 +3956,47 @@ and accepts `--role`, `--model` and `--harness`. `--allow-subscribe` sets the ch
 may read, and an omitted or empty one reads as the `--subscribe` set. `--allow-publish` sets the
 channels it may post to, and without it the persona posts nowhere. Both take a comma list, as the
 [agent file](agent-files.md) fields `allowSubscribe` and `allowPublish` do. Both refuse control
-characters with `USAGE_INVALID`. A role is an address `send -r` reaches, so a role that is not one
+characters with `USAGE_INVALID`. An empty `--model` is refused with `USAGE_INVALID` too, and so is a
+`--role` or `--model` with a control character, before any other rule reads it. A refusal that quotes
+a flag's value escapes its control characters. A role is an address `send -r` reaches, so a role
+that is not one
 token of letters, digits, `_` and `-` is refused, `USAGE_INVALID` from `--role` and `SCHEMA_INVALID`
 from a file's `role`. Each entry of `--subscribe`, `--allow-subscribe` and
 `--allow-publish` must be a valid channel name, written without `#`, and each `--subscribe` channel
 must be within `--allow-subscribe` when it is given, or creation refuses with `USAGE_INVALID`,
 naming the flag and the entry. `--harness` must name a harness this machine knows, as
 `config set harness` requires, or creation refuses with `USAGE_INVALID` and writes nothing.
-Creation refuses an existing definition. Mutation receipts contain names and paths, not bodies.
+Create and edit refuse a definition over 1 MiB with `SCHEMA_INVALID`, the bound a create on a
+manager applies to its input, and an edit keeps that draft and names it.
+Creation refuses an existing definition, and with `CONFLICT` a name that differs from an existing
+one only in case, since a case-insensitive file system holds the two as one file. Mutation receipts contain names and paths, not bodies.
+A persona file that is a symbolic link is listed with a `PERMISSION_DENIED` warning that names the
+file it links to. `spawn` reads that file, but `persona show`, `edit` and `remove` refuse the link
+with `PERMISSION_DENIED`, and the next step names the file to copy in its place.
+A `.cotal/agents` that is a file or a link that loops holds no personas, so the listings, `show`,
+`create`, `edit` and `remove` refuse it with `CONFLICT`, naming it and what it is, and the next step
+is to move it out of the way.
 Show and edit accept a definition whose `name` is not its catalog name. The seeded `default`
 persona is one: its file is `default.md` and its agents launch as `default_agent`. That name is
 reserved, so a create under it is refused with `USAGE_INVALID`.
 
 Editing opens a private draft using the editor preference (`VISUAL`, then `EDITOR`, then saved
-preferences). The value runs as a shell command, so quote a path that holds spaces. With no editor
-set, or one the shell cannot find or run, editing refuses with `DEPENDENCY_UNAVAILABLE` (exit 2)
+preferences). A value that is the path of an existing file runs as that program, spaces and all.
+Any other value runs as a shell command. With no editor set, or one that cannot be found or run,
+editing refuses with `DEPENDENCY_UNAVAILABLE` (exit 2)
 and names the setting to fix. The draft's private folder is made in the temporary directory
 (`TMPDIR`). One this account cannot write refuses with `PERMISSION_DENIED`, and one that is missing
 or not a directory with `TARGET_UNAVAILABLE`, both exit 2 and naming it before anything is made. A
 successful editor exit and valid definition are required before saving. A draft that fails
-validation is refused with `SCHEMA_INVALID` and the reason, and an editor that exits non-zero fails
-with `OPERATION_FAILED`. Both keep the draft and name its path, so the edit is not lost. A changed
+validation is refused with `SCHEMA_INVALID` and the reason, keeping the draft and naming its path,
+so the edit is not lost. An editor that exits non-zero, as vim's `:cq` does, cancels the edit: it
+exits 0 with a `USER_CANCELLED` warning, saves nothing, and keeps and names a draft it changed. An
+editor ended by a signal fails with `OPERATION_FAILED` and keeps the draft. A SIGINT, SIGTERM or
+SIGHUP that reaches the CLI while the editor is open is passed to the editor, and the CLI waits for
+it to exit. SIGTERM and SIGHUP then stop the edit, as does a Ctrl-C that ends the editor: nothing is
+saved, an unchanged draft is removed, a changed one is kept and named, and the CLI exits 130, 143 or
+129. An editor such as vim that takes Ctrl-C as a key keeps the edit going. A draft left as it was
+saves nothing and says the persona is unchanged. A changed
 or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. The
 refusal says which one happened and keeps your edited draft in its private folder, naming it, so
 the edit is not lost. Local
@@ -3977,7 +4004,8 @@ CLI create, edit and remove share a per-persona lock during comparison and commi
 editor or confirmation is open. Manager and external writes do not participate in that lock.
 Create, edit and remove refuse a catalog folder you cannot write, such as one set to mode 0500,
 with `PERMISSION_DENIED`, and leave it and its files as they were.
-`--json` and `--no-input` refuse editing before an editor opens.
+`--json` and `--no-input` refuse editing before an editor opens. That refusal, and a removal
+refused for want of `--yes`, give the fix without the command's help.
 
 A catalog file that is not a regular file, such as a FIFO, is not opened: show, edit and remove
 refuse it with `PERMISSION_DENIED`, and the list marks it unreadable and names it in a
@@ -3999,7 +4027,9 @@ draft validation and commit fence. Its `list` escapes control characters in the 
 bodies it prints, as `persona show` does, and shows each persona's description or first prompt line
 whole, wrapped to the terminal's width. Its `show` does the same on a terminal, under the file's
 path, and writes only the file, byte for byte, when its output is piped or redirected, so
-`personas show <name> > <file>` copies it. Only its explicit `--running` overlay connects to the mesh.
+`personas show <name> > <file>` copies it. It refuses a missing persona, an invalid definition and a
+name no persona can have with the codes `persona show` uses. Only its explicit `--running` overlay
+connects to the mesh.
 That overlay heads the list with the mesh it read and marks each persona `running` or `not running`.
 
 ## supervise
@@ -5900,13 +5930,18 @@ cotal docs --search <query> [--json | --plain]
 | `--search <query>` | none | Show the sections that best match a query, each naming its page |
 | `--refresh` | off | With a page: also try the version-pinned copy on docs.cotal.ai |
 | `--json` / `-j` | off | One JSON document |
-| `--plain` | off | The same report without color |
+| `--plain` | off | The same report without color, and a page as its Markdown |
 
 Reads the docs bundled with this installed version, offline: the same pages agents read with
-`cotal_docs`. Bare `docs` lists the pages by category (`Start here`, `Concept`, `Guide`, `Reference`,
-`Project`), each with its title; `result.pages` holds each page's slug, title, kind and summary, and
+`cotal_docs`. Bare `docs` lists the pages by category (`Start here`, `Guide`, `Concept`, `Reference`,
+`Project`, the order of the docs index), each with its title; `result.pages` holds each page's slug,
+title, kind (its classification line, such as `Concept (informative)`), category (the heading it
+lists under) and summary, in that order, and
 `result.sources` the normative `spec`, `lang` and `schema`. A page is named by its slug,
-ignoring case and a trailing `.md`; `result.body` holds its Markdown. An unknown page is refused with
+ignoring case and a trailing `.md`; `result.body` holds its Markdown. On a terminal a page is drawn
+for reading: each heading is a title, paragraphs and lists wrap to the terminal, a table is text that
+becomes one record per row when its columns do not fit, and a code block keeps its lines. To a pipe
+or a file, and with `--plain`, the page is its Markdown. An unknown page is refused with
 `USAGE_INVALID`, naming every page.
 
 `--refresh` fetches the page from the immutable path for this version on docs.cotal.ai.
@@ -6126,11 +6161,13 @@ the settings file. A level argument writes the file; `on` is an alias of `regula
 level the file already holds is a `no-op`. A level the environment forces still wins, and the
 report says so. Under `DO_NOT_TRACK`, `COTAL_TELEMETRY_DISABLED` or `COTAL_TELEMETRY=off` the file
 is neither read nor created, so a level argument saves nothing and is a `no-op` with an
-`ENVIRONMENT_OPT_OUT` warning. `cotal telemetry` itself sends nothing.
+`ENVIRONMENT_OPT_OUT` warning. Any other word is refused `USAGE_INVALID`, naming the levels.
+`cotal telemetry` itself sends nothing.
 
 The first interactive run at `regular` prints one notice to stderr. `COTAL_TELEMETRY` set to
-anything but a level refuses `USAGE_INVALID`, and a settings file that does not validate refuses
-`SCHEMA_INVALID` on every command until it is fixed or moved away.
+anything but a level refuses `USAGE_INVALID`. A settings file that does not validate refuses
+`SCHEMA_INVALID` on `cotal telemetry` and on every command that reports usage, until it is fixed or
+moved away. Under the environment opt-outs above nothing reads it, so it stops no command.
 
 ## run
 
@@ -6225,6 +6262,10 @@ journal row. The view says so under `Failure` and names
 `cotal service logs stack-manager --space <space>`, because a hosted run's cause is in its manager's log.
 The failure records no line or column in the program: a source position belongs to a problem
 `run validate` reports before the program runs.
+A program's `log(...)` lines are not journalled, so `show` and `journal` do not print them. A hosted
+run writes each line to its manager's log as `run <run-id>: log <text>`, which
+`cotal service logs stack-manager --space <space>` reads, and a resumed run writes the lines before
+its resume point again. `--local` prints them in the terminal that drives the run.
 `--json` on `ps` or `journal` writes one envelope on stdout, as other commands do, and nothing on
 stderr, whether the manager answers or `--local` reads. `ps` lists its rows under `result.items`.
 `journal` puts the run under `result.view`: its `runId`, `endpoint`, recorded `spec` and `status`,
@@ -6554,8 +6595,9 @@ moves the virtual clock forward.
 | `clock` | `{start, turn, ask, checkpoint, wait}`: the start time in milliseconds and how long each effect takes, such as `"5m"`. A turn takes 5 minutes and the others 1 minute unless set |
 | `faults` | `[{at, kind, code, message}]`: the step at `at`, a step key such as `turn:build#1`, fails with that error |
 
-A step with no entry, or a list shorter than the step's occurrences, stops the simulation with
-L6001 and exit 5. The failure names the table, the step's name and its step key, and the remedy
+The simulation's `log(...)` lines print under `Log`, and `--json` carries them in `result.log`, each
+with its `scope` and `values`. A step with no entry, or a list shorter than the step's occurrences,
+stops the simulation with L6001 and exit 5. The failure names the table, the step's name and its step key, and the remedy
 names the entry to add. A failure in the program itself names its code and cause.
 
 Inside a manager-launched static or open seat, `run turns` reads that seat's assigned turns and
@@ -7024,7 +7066,9 @@ A manifest it cannot resolve, such as one whose `space:` is not a name `space cr
 refused with `SCHEMA_INVALID` (exit 1). The refusal names each
 problem by file, line and column where the parser has them, the key path, and the reason, and
 `--json` lists every problem under `target.issues`. A missing required key, an empty file, a
-value of the wrong shape and one outside a key's fixed values each get a plain reason. A problem in a referenced persona
+value of the wrong shape and one outside a key's fixed values each get a plain reason. An unknown key
+that misspells a required key left out beside it, such as `chanels`, is one problem that names the
+key meant. A problem in a referenced persona
 names that file and the parser's reason without quoting its contents. A persona file that does not
 exist is named at its entry's line along with the manifest's other problems, so fixing those does
 not uncover it later. A manifest file that does not exist is refused with `TARGET_NOT_FOUND`
@@ -7551,12 +7595,16 @@ the literal `cotal team deploy <file>` remedy, before agent allocation.
 
 `spawn --dry-run` never refreshes the catalog, repairs stale registrations, imports connector code,
 connects to the broker, redeems enrollment, provisions or allocates an agent. The managed preview
-is currently partial: it retains requested selectors but cannot resolve host-local persona and
-cwd facts offline. It does not substitute the caller's files. With `--foreground`, the preview
-resolves the local persona, harness precedence and physical working directory. Binary, login,
-model-policy and live authority checks are labeled not performed. In a folder whose `.cotal/` names
-no space, as after `space forget`, the preview keeps `Mesh: main`, says under it that the held
-default was assumed, and its JSON `target` names the folder as `root` and the space as `assumed`.
+shows the request and exits 0 with `completeness` `not-checked`, because the manager resolves the
+persona, harness and working directory on its own host at launch. It does not substitute the
+caller's files. With `--foreground`, the preview resolves the local persona, harness precedence and
+physical working directory. Binary, login, model-policy and live authority checks are labeled not
+performed. Both previews say where the persona came from: `--file`, the command line, a preference
+or the default. A harness that names no connector this workstation knows is a `HARNESS_UNKNOWN`
+warning, or the `PREFERENCE_INVALID` warning `config` gives when only `COTAL_DEFAULT_AGENT` chose
+it. In a folder whose `.cotal/` names no space, as after `space forget`, the preview keeps `Mesh:
+main`, says under it that the held default was assumed, and its JSON `target` names the folder as
+`root` and the space as `assumed`.
 
 `spawn --foreground --enrollment-file <private-file> --space <name>` uses the existing one-seat
 foreground enrollment path. The file is opened with protected ownership/mode and bounded input

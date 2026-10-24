@@ -76,6 +76,10 @@ export interface RunHostDriveRequest {
   /** The host's observed local cancellation intent. Classification only: this does not signal
    *  the root or replace the current-holder check before calling the drive's cancel handle. */
   readonly cancellationObserved?: () => string | undefined;
+  /** Each `log(...)` line the program writes, as one line of text. The language does not journal a
+   *  log line, so this is the only place it goes. A resumed run replays its program and writes its
+   *  earlier lines again. */
+  readonly onLog?: (text: string) => void;
 }
 
 /** How a drive attempt ended. `released` is the driver saying the run is not its to continue (a
