@@ -103,6 +103,7 @@ import {
   rootPathProblem,
   clearCurrent,
   findMesh,
+  isMeshRegistryError,
   findPreparedSpace,
   homeCotalDir,
   getCurrent,
@@ -2001,8 +2002,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // true only for the intended shutdown `stop()` drives (Ctrl-C, SIGTERM) — everything else here
     // (a crash, an OOM kill, a signal from outside `up`) leaves the record and its store in place.
     // Both branches read the registry, where only a record naming THIS broker's server and root is its own.
-    const mine = findMesh(space);
-    const recorded = mine !== undefined && mine.server === server && mine.root === cotalRoot();
+    const ownRecord = (): MeshEntry | undefined => {
+      const mine = findMesh(space);
+      return mine?.server === server && mine.root === cotalRoot() ? mine : undefined;
+    };
     if (stopping) {
       // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
       // (a concurrent `up`, or a different-port re-up that recorded after us) may have replaced our
@@ -2011,7 +2014,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // replace it with a hand-registered one carrying the same server + root; that record outlives
       // this broker by design (it is the operator's, and only they remove it), so unrecording it on
       // our exit would delete a registration this process never owned.
-      if (recorded && mine.origin !== "manual") {
+      const mine = ownRecord();
+      if (mine && mine.origin !== "manual") {
         removeMesh(space);
         if (getCurrent() === space) clearCurrent();
       }
@@ -2024,14 +2028,19 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // are already on this terminal, above), so there is no `.cotal/nats.log` to name here.
       // A fresh boot records the mesh only once its broker serves (`serveReadyListener`), so a
       // broker that exits before then leaves no record to keep or repair, and the report says so.
+      // A registry this listener cannot read is named instead of either claim, and the exit is
+      // still reported with the broker's code.
       const detail = signal ? `signal ${signal}` : `code ${code}`;
-      console.error(
-        c.red(
-          recorded
-            ? `✗ nats-server exited unexpectedly (${detail}); the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline); log: see the terminal output above; repair: \`cotal up --server ${server} --space ${space}\``
-            : `✗ nats-server exited unexpectedly (${detail}); the mesh "${space}" is not recorded at ${server}; log: see the terminal output above`,
-        ),
-      );
+      let record: string;
+      try {
+        record = ownRecord()
+          ? `the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline); log: see the terminal output above; repair: \`cotal up --server ${server} --space ${space}\``
+          : `the mesh "${space}" is not recorded at ${server}; log: see the terminal output above`;
+      } catch (e) {
+        if (!isMeshRegistryError(e)) throw e;
+        record = `whether the mesh "${space}" is recorded is unknown: ${e.message}; log: see the terminal output above`;
+      }
+      console.error(c.red(`✗ nats-server exited unexpectedly (${detail}); ${record}`));
       // A foreground broker under `Restart=on-failure` must exit non-zero on a crash so the unit
       // restarts it; exiting 0 here (as an unconditional `code ?? 0` used to) looked like a clean
       // stop and left the unit sitting dead.

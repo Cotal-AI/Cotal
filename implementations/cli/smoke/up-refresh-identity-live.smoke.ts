@@ -32,7 +32,7 @@ const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
 
 let passed = 0;
-const EXPECTED_CHECKS = 29 + 9 + 13 + 5 + 14 + 4; // namedSpaceElsewhere + storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord + foregroundPreReadyExit
+const EXPECTED_CHECKS = 29 + 9 + 13 + 5 + 14 + 7; // namedSpaceElsewhere + storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord + foregroundPreReadyExit
 const check = (name: string, ok: boolean, detail?: unknown): void => {
   if (!ok) throw new Error(`FAIL: ${name}${detail === undefined ? "" : `\n${JSON.stringify(detail, null, 2)}`}`);
   passed++;
@@ -418,22 +418,33 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
 
 /** #3535 — a fresh foreground `up` records the mesh only once its broker serves, so a broker that
  *  exits before then leaves no record, and the report must not claim one. A nats-server first on
- *  PATH that answers `--version` and then exits 1 is that broker. {@link foregroundCrashKeepsRecord}
- *  is the control: a broker killed after it serves still reports the record it keeps. */
+ *  PATH that answers `--version` and then exits is that broker. {@link foregroundCrashKeepsRecord}
+ *  is the control: a broker killed after it serves still reports the record it keeps. The second
+ *  broker damages a registry record before it exits 23, after `up` has read the registry, so the
+ *  report can neither claim nor deny a record and must still carry the broker's exit code. */
 async function foregroundPreReadyExit(): Promise<void> {
   const fixture = await makeFixture("fg-preready");
   process.env.COTAL_HOME = fixture.home;
   process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
-  const { findMesh } = await import("@cotal-ai/workspace");
+  const { findMesh, meshesDir } = await import("@cotal-ai/workspace");
   const space = "fg-preready";
   const bin = mkdtempSync(join(scratch, "fg-preready-bin-"));
-  writeFileSync(join(bin, "nats-server"), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "nats-server: v2.15.0"; exit 0; fi\nexit 1\n', { mode: 0o755 });
+  const up = (exit: string) => {
+    writeFileSync(join(bin, "nats-server"), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "nats-server: v2.15.0"; exit 0; fi\n${exit}\n`, { mode: 0o755 });
+    return cotal({ ...fixture, env: { ...fixture.env, PATH: `${bin}${delimiter}${fixture.env.PATH}` } }, ["up", "--foreground", "--open", "--server", fixture.server, "--space", space]);
+  };
   try {
-    const up = cotal({ ...fixture, env: { ...fixture.env, PATH: `${bin}${delimiter}${fixture.env.PATH}` } }, ["up", "--foreground", "--open", "--server", fixture.server, "--space", space]);
-    check("a broker that exits before it serves makes the foreground `up` exit 1", up.status === 1, { status: up.status, stdout: up.stdout, stderr: up.stderr });
+    const fresh = up("exit 1");
+    check("a broker that exits before it serves makes the foreground `up` exit 1", fresh.status === 1, { status: fresh.status, stdout: fresh.stdout, stderr: fresh.stderr });
     check("...and leaves no record of the mesh", findMesh(space) === undefined, findMesh(space));
-    check("...which the report says", up.stderr.includes(`✗ nats-server exited unexpectedly (code 1); the mesh "${space}" is not recorded at ${fixture.server}; log: see the terminal output above`), up.stderr);
-    check("...with no kept-record claim or repair command", !/stays recorded|lists it offline|repair:/.test(up.stderr), up.stderr);
+    check("...which the report says", fresh.stderr.includes(`✗ nats-server exited unexpectedly (code 1); the mesh "${space}" is not recorded at ${fixture.server}; log: see the terminal output above`), fresh.stderr);
+    check("...with no kept-record claim or repair command", !/stays recorded|lists it offline|repair:/.test(fresh.stderr), fresh.stderr);
+
+    const damaged = join(meshesDir(), "damaged.json");
+    const unread = up(`mkdir -p '${meshesDir()}' && printf '{' > '${damaged}'\nexit 23`);
+    check("a broker that damages the registry and exits 23 before it serves makes the foreground `up` exit 23", unread.status === 23, { status: unread.status, stdout: unread.stdout, stderr: unread.stderr });
+    check("...and the report names the unreadable record", unread.stderr.includes(`✗ nats-server exited unexpectedly (code 23); whether the mesh "${space}" is recorded is unknown: ${damaged} does not parse as a mesh record`), unread.stderr);
+    check("...without claiming the mesh is or is not recorded", !/stays recorded|is not recorded|repair:/.test(unread.stderr), unread.stderr);
   } finally {
     rmSync(bin, { recursive: true, force: true });
     rmSync(fixture.home, { recursive: true, force: true });
