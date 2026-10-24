@@ -205,7 +205,7 @@ other value when it starts, naming the variable.
 | `COTAL_SPACE` | connector session | Space to join | `demo` (or the join link's) |
 | `COTAL_NAME` | connector session | Presence name / identity | required (or via `COTAL_AGENT_FILE` / `COTAL_LINK`) |
 | `COTAL_ROLE` | connector session | Role | agent file's `role:`, else none |
-| `COTAL_SERVERS` | connector session | Broker URL(s). Hand-driven sessions only: a launcher-spawned seat gets this in its launch material instead (see below) | the default local broker (or the link's) |
+| `COTAL_SERVERS` | connector session | Broker URL(s). Hand-driven sessions only: a launcher-spawned seat gets this in its launch material instead (see below). A URL with a user name or password is refused when the session starts; pass the credential in `COTAL_CREDS`, `COTAL_TOKEN` or `COTAL_LINK` | the default local broker (or the link's) |
 | `COTAL_CREDS` | connector session | Path to a NATS creds file (auth mode). Hand-driven sessions only, same as above | none (open mode) |
 | `COTAL_LINK` | connector session | `cotal://token@host/space` join link: supplies server, auth, space | none |
 | `COTAL_AGENT_FILE` | connector session | Path to a persona file: supplies name, role, kind, channels | none |
