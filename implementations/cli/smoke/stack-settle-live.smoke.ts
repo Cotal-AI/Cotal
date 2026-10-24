@@ -132,6 +132,10 @@
  *     `TARGET_UNAVAILABLE` and names `cotal status` in the root. `down` settles that up and stops the
  *     broker, `up` then starts the stack and registers the space, and `down` stops it, after which the
  *     Brokers block and `meshes.currentStopped` call it stopped.
+ * 16. A `down` interrupted while it waits on a frozen delivery daemon it signalled. It exits 130 naming
+ *     `cotal down --abandon-stop <request> --yes` with the stop's request. Once the daemon exits,
+ *     `down --yes` refuses `LIFECYCLE_BLOCKED` naming the same command, which stops the rest of the
+ *     stack.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
@@ -1422,6 +1426,35 @@ try {
     const after = cli(root, "status"), afterJson = cli(root, "status", "--json");
     check(`${space}: once a completed down stopped it, the Brokers block calls it stopped and status --json says so`,
       after.stdout.includes(`Selected space '${space}' is stopped`) && (afterJson.env?.result?.meshes as { currentStopped?: boolean } | undefined)?.currentStopped === true, { stdout: after.stdout.slice(0, 2500) });
+  }
+
+  // 16. A down interrupted while it waits on a delivery daemon it signalled.
+  {
+    const space = "abandon";
+    const root = prepare(space);
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    track(space);
+    const delivery = pidOf(space, "stack-delivery");
+    check("a manager-free stack starts", started.status === 0 && delivery !== null, shown(started));
+    // A stopped daemon holds the SIGTERM, so the down waits on its exit with the stop recorded.
+    if (delivery !== null) process.kill(delivery, "SIGSTOP");
+    assertSmokeSandboxDown(anchors.get(root), ["down", "--yes"], { cwd: root, env });
+    const stopping = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "down", "--yes"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    let downErr = "";
+    stopping.stderr!.on("data", (chunk: Buffer) => { downErr += chunk.toString(); });
+    const record = () => serviceInstances(space, "stack-delivery")[0]?.record.value;
+    const signalled = await until(() => record()?.state === "stopping", 60_000);
+    const request = record()?.requestId;
+    stopping.kill("SIGINT");
+    await exited(stopping);
+    if (delivery !== null) process.kill(delivery, "SIGCONT");
+    check("a down interrupted while the delivery it signalled is frozen exits 130 naming down --abandon-stop with that stop's request",
+      signalled && stopping.exitCode === 130 && downErr.includes("The stop of delivery is not confirmed") && downErr.includes(`cotal down --abandon-stop ${request} --yes`), { signalled, request, exitCode: stopping.exitCode, stderr: downErr.slice(-500) });
+    check("the resumed daemon exits on the signal it held", await until(() => delivery === null || !alive(delivery), 10_000), { delivery });
+    const refused = cli(root, "down", "--yes", "--json");
+    check("down --yes then refuses LIFECYCLE_BLOCKED naming the same down --abandon-stop", refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(refused.env.error.remedy?.includes(`cotal down --abandon-stop ${request} --yes`)), shown(refused));
+    const abandoned = cli(root, "down", "--abandon-stop", String(request), "--yes", "--json");
+    check("and down --abandon-stop with that request stops the rest of the stack", abandoned.status === 0 && Boolean(abandoned.env?.warnings?.some((warning) => warning.code === "STOP_ABANDONED")) && gone(space, "stack-broker"), shown(abandoned));
   }
 } finally {
   for (const root of roots) cli(root, "down", "--yes", "--json");
