@@ -47,8 +47,8 @@
  * lifecycle commands were covered "transitively" by the `ps` cells; they were not, and that
  * over-read is the same one that let the original defect ship.
  *
- * What is still NOT graded here: cells 4 and 5 prove the pin ROUTES (an absent instance deadlines
- * rather than falling through), not that a pinned `spawn`/`stop`/`attach` completes against a real
+ * What is still NOT graded here: cells 4 and 5 prove the pin ROUTES (an absent instance is refused
+ * or deadlines rather than falling through), not that a pinned `spawn`/`stop`/`attach` completes against a real
  * instance; those mutate, and a live-mutation cell is a different fixture. And this suite does not
  * grade the class-queue split itself (SPEC 13.2 behaviour, not this seam).
  *
@@ -366,15 +366,17 @@ try {
   const ghostOut = strip(ghost.out);
   check("it FAILS rather than being answered by whichever manager won the class queue",
     ghost.status !== 0, { status: ghost.status, tail: ghostOut.slice(-300) });
-  check("...and fails as an unanswered pinned describe (the no-fallbacks shape, not some other error)",
-    /no describe reply from manager( instance \S+)? within/i.test(ghostOut), ghostOut.slice(-300));
+  // The registry lists no manager with that id, so ps refuses before any describe, naming the two that run.
+  check("...and is refused before any describe, naming the managers that run (the no-fallbacks shape, not some other error)",
+    new RegExp(`--on ${absent} names no manager running for space ${space}; the ones running are `).test(ghostOut) && ghostOut.includes(IID1) && ghostOut.includes(IID2) && !/no describe reply/.test(ghostOut),
+    ghostOut.slice(-300));
   // WHAT THE HEADLINE SAYS. Two live managers answered `ps` seconds earlier; the operator typed an
   // instance that is not there. The CLI wrapper used to prefix EVERY ep-rail failure with "no
   // manager reachable", so a typo in `--on` read as an empty mesh and sent the operator to the
   // broker (measured on a live three-manager mesh in review). A pinned call that went unanswered
   // must name the instance and must not pronounce on the mesh.
-  check("...and the headline names the INSTANCE that did not answer, not an unreachable mesh",
-    new RegExp(`manager instance ${absent} did not answer`).test(ghostOut) && !/no manager reachable/i.test(ghostOut),
+  check("...and the headline names the INSTANCE that was asked for, not an unreachable mesh",
+    new RegExp(`--on ${absent} names no manager`).test(ghostOut) && !/no manager reachable/i.test(ghostOut),
     ghostOut.slice(-300));
 
   // ---- 5. THE OTHER FORWARDING SITES ----------------------------------------------------------
@@ -399,14 +401,16 @@ try {
   // cover the whole chain; neither covers it alone.
   console.log("\n5. every OTHER `--on` site forwards it too (spawn/stop/attach have their own)");
   const pinnedDescribeDeadline = /no describe reply from manager( instance \S+)? within/i;
+  const unregistered = new RegExp(`--on ${absent} names no manager running for space ${space}; the ones running are `);
   const sites: ReadonlyArray<{ what: string; argv: string[]; deadline?: RegExp }> = [
     // --on is a `--detach` flag on spawn (foreground runs in this process, not on a manager). The
     // persona ref is deliberately nonexistent so that a dropped pin cannot start anything: the
     // worst case is a manager refusal, which is a DIFFERENT message and still fails this cell.
-    // spawn reads the registry first, so an absent instance is refused naming the running ones,
-    // before any describe; a dropped pin would launch through the class queue instead.
-    { what: "spawn --detach", argv: ["spawn", `no-such-persona-${randomUUID().slice(0, 6)}`, "--detach", "--on", absent, "--space", space], deadline: new RegExp(`--on ${absent} names no manager running for space ${space}; the ones running are `) },
-    { what: "stop", argv: ["stop", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space] },
+    // spawn, stop and models read the registry first, so an absent instance is refused naming the
+    // running ones, before any describe; a dropped pin would reach the class queue instead.
+    { what: "spawn --detach", argv: ["spawn", `no-such-persona-${randomUUID().slice(0, 6)}`, "--detach", "--on", absent, "--space", space], deadline: unregistered },
+    { what: "stop", argv: ["stop", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space], deadline: unregistered },
+    { what: "models", argv: ["models", "--on", absent, "--space", space], deadline: unregistered },
     { what: "attach", argv: ["attach", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space] },
     // describe reports the read as a failed request that names the pinned instance and the native deadline.
     { what: "describe", argv: ["describe", "manager", "--on", absent, "--space", space], deadline: new RegExp(`^ +Requested instance: +${absent}\n +Native code: +deadline-exceeded$`, "m") },

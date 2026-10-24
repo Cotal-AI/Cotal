@@ -29,7 +29,7 @@ import * as prompts from "../lib/prompts.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { c, presenceFacts } from "../ui.js";
-import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, unansweredDescribeRefusal, resolveControlTarget, onInstance, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin } from "../lib/control.js";
+import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, refuseUnregisteredManager, unansweredDescribeRefusal, resolveControlTarget, onInstance, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
@@ -132,6 +132,12 @@ export async function stop(args: ParsedArgs): Promise<void> {
   } else {
     name = managedTarget(args, "stop");
     on = await pinForTarget({ ...v, name } as never, "cotal stop");
+    // A typed pin the registry does not list is refused at once, as spawn refuses it. Stop's admin
+    // instrument holds no registry read, so the check uses the one ps reads the registry with.
+    if (v.on !== undefined && on !== undefined) {
+      const reader = await resolveControlTarget(v, "control-caller-privileged", on);
+      if (!reader.auth.bearer) await refuseUnregisteredManager(reader.space, reader.server, reader.auth, on);
+    }
     t = await resolveControlTarget(v, "control-caller-admin", on);
   }
   recordOperationSpace(t.space);
@@ -743,6 +749,8 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
   // this resolve, and a credential cannot gain an instance rail after it is minted.
   const t = await resolveControlTarget(v, "control-caller-privileged", on, { onRefusal: "throw" });
   recordOperationSpace(t.space);
+  // A pin the registry does not list is refused at once, as spawn refuses it; only a registered manager is waited on.
+  if (on !== undefined && !t.auth.bearer) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
 
   // One manager instance: `--on <instance>` pins ps to its `inst` route on a multi-manager mesh,
   // and in USER MODE (bearer present) the borrowed manager view pins one authorized instance and

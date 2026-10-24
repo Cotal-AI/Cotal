@@ -1,7 +1,7 @@
 import { type CompletionResult, type ConnectorModelCatalog, type FlagSpec, type FlagValues, type ModelInfo, type ParsedArgs } from "@cotal-ai/core";
 import { jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Block, type Report, type Section } from "@cotal-ai/workspace";
 import { extensionNames } from "../ext-loader.js";
-import { askManager, onFlag, readFailure, refuseWithoutLiveManager, resolveControlTarget } from "../lib/control.js";
+import { askManager, onFlag, readFailure, refuseUnregisteredManager, refuseWithoutLiveManager, resolveControlTarget } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { completingFlagValue } from "../lib/completion.js";
 
@@ -42,6 +42,8 @@ export async function models(args: ParsedArgs): Promise<void> {
   const t = await resolveControlTarget(v, "control-caller-privileged", on, { onRefusal: "throw" });
   const target = { space: t.space, harness: v.harness ?? null, requestedInstanceId: on ?? null };
   const live = on === undefined && t.auth.bearer === undefined ? await refuseWithoutLiveManager(t.space, t.server, t.auth, target, "list its model catalogs") : undefined;
+  // A pin the registry does not list is refused at once, as spawn refuses it; only a registered manager is waited on.
+  if (on !== undefined && t.auth.bearer === undefined) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
   const reply = await askManager(t.space, t.server, "models", { agent: v.harness, refresh: v.refresh === true }, t.auth, "owner", undefined, on === undefined ? {} : { instanceId: on });
   if (!reply.ok) throw readFailure(reply, { ...target, managerInstanceId: reply.managerInstanceId ?? null });
   const items = Array.isArray(reply.data) ? reply.data as ConnectorModelCatalog[] : [reply.data as ConnectorModelCatalog];

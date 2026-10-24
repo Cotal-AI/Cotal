@@ -3387,7 +3387,7 @@ cotal models [--json | --plain] [-H | --harness <connector>] [--refresh] [--on <
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--harness <connector>`, `-H` | all registered applications | Application whose catalog to list |
-| `--on <manager-instance>` | native selection | Ask only the named manager instance, or on a user-auth mesh the manager a name or host picks, as [`ps`](#managed-seats) takes them. An unavailable or unauthorized pin refuses without choosing another. |
+| `--on <manager-instance>` | native selection | Ask only the named manager instance, or on a user-auth mesh the manager a name or host picks, as [`ps`](#managed-seats) takes them. An unavailable or unauthorized pin refuses without choosing another. On a static or open mesh an id the registry lists for no manager is refused `TARGET_NOT_FOUND` at once, naming the managers that run, as `spawn --on` does. |
 | `--refresh` | off | Ask the connector to refresh its provider cache |
 | `--json` / `-j` | off | One JSON document: `result.items` holds each catalog as returned; the requested manager ID, answering ID and answering epoch are separate, and `result.notAskedManagerInstanceIds` lists the live managers an unpinned read did not ask, or is `null` when no registry was read |
 | `--plain` | off | The same report without color |
@@ -3875,8 +3875,10 @@ On a user-auth mesh `ps` also renders each managed agent's last credential-refre
   and did not answer. It does not say the host is down, because a dead host never deregisters itself and a
   live one can be slow; if it is gone, deregister it.
   `--on <instance>` pins the read to one exact instance id instead. A wrong pin fails loud
-  rather than falling through: a well-formed id that no live manager carries is reported as
-  `manager instance <id> did not answer` (nothing else is asked), and a credential without that
+  rather than falling through. On a static or open mesh a well-formed id that the registry lists for
+  no manager is refused `TARGET_NOT_FOUND` at once, naming the managers that run, as `spawn --on`
+  does; a registered one that does not answer is reported as `manager instance <id> did not answer`
+  (nothing else is asked). A credential without that
   instance's rail is reported as refused by the broker, not as an unresponsive manager. A manager
   that answers with a refusal is shown with its own cause; "no manager reachable" is said only when
   nothing answered at all. If the scatter's own registry read fails (the freeze or the reconcile),
@@ -3909,7 +3911,9 @@ as Next. When an instance did not answer for itself, the seat may run there, so 
 `TARGET_UNAVAILABLE` (exit 2) and name that instance. `--json` carries either refusal.
 
 `--on <instance>` remains the override, for when you already know where the seat lives or the
-lookup itself is degraded. On a **user-auth mesh**, the exchange selects one authorized manager
+lookup itself is degraded. On a static or open mesh, `stop --on` with an id the registry lists for
+no manager is refused `TARGET_NOT_FOUND` at once, naming the managers that run, as `spawn --on` is.
+On a **user-auth mesh**, the exchange selects one authorized manager
 for a short-lived `manager-caller` view. `--on` requests a specific instance. Without it, a command
 run from a managed seat's shell selects the manager that launched the seat (`COTAL_MANAGER_INSTANCE`),
 and any other caller's selection must be unique. Discovery and the command use that instance route.
