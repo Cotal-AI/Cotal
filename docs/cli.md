@@ -3528,7 +3528,8 @@ select it explicitly. A missing provider or app fails loudly; there is no fallba
 Boot inventory decides whether this process takes unpinned `spawn`/`launch` on the class rail:
 if every declared connector is unavailable, those commands stay on this instance rail only
 (`status` reports `classSpawn: false`). `describe` still answers on the class rail, so an
-unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. A partial
+unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. With no member
+on the class rail, an unpinned spawn is refused and names the agent application to add. A partial
 inventory keeps the class rail and names `--on` on a harness refusal, because sibling
 inventories are not readable from the serve credential. See [control surface](control-surface.md#instance-routing).
 
@@ -6267,8 +6268,13 @@ accepting instance ID does not confer an instance route or cause another launch.
 follower verifies the returned fact against the original caller and goal. A launch the manager
 refuses before its first effect, such as a missing persona file or connector, carries
 `not-executed`. The CLI reports it `refused` with exit 2 and prints the manager's reason, which
-names the file it looked for. A failure after the manager reserved the name or wrote a launch file
-keeps its native outcome, and the CLI never reclassifies it from its message.
+names the file it looked for. An unpinned launch that no manager received is refused with
+`TARGET_UNAVAILABLE` and exit 2. With no manager running, the CLI says so before it sends and
+names bare `cotal up`. When every live manager reports `classSpawn: false`, it says none has an
+agent application installed and names the `cotal ext add` that adds one. A manager reads its
+applications when it starts, so restart it after adding one. A failure after the manager reserved
+the name or wrote a launch file keeps its native outcome, and the CLI never reclassifies it from
+its message.
 
 
 ### Stopping an agent

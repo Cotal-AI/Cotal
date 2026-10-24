@@ -774,11 +774,17 @@ export async function scatterManager(
  *  the read to decide. `purpose` completes "no manager is running for this space to …". */
 export async function refuseWithoutLiveManager(space: string, server: string, auth: ControlAuth, target: unknown, purpose: string): Promise<void> {
   try {
-    await withControlConnection(server, auth, async (nc) => freezeExpectedSet(await jetstreamManager(nc, { checkAPI: false }), space, BASELINE_LIFECYCLE_ENDPOINT));
+    await liveManagerIds(space, server, auth);
   } catch (e) {
     if (!(e instanceof EpEnvelopeError) || !noLiveInstances(e)) return;
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to ${purpose}`, { target, native: { code: e.code, detail: `${e.code}: ${e.message}` }, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
   }
+}
+
+/** The manager instances the space's registry lists as live, frozen as a scatter freezes them. An
+ *  empty registry throws the registry's own refusal. */
+export async function liveManagerIds(space: string, server: string, auth: ControlAuth): Promise<string[]> {
+  return withControlConnection(server, auth, async (nc) => (await freezeExpectedSet(await jetstreamManager(nc, { checkAPI: false }), space, BASELINE_LIFECYCLE_ENDPOINT)).map((f) => f.instanceId));
 }
 
 /** The stable code a refused manager READ reports, by the endpoint's catalog code. A read has no
