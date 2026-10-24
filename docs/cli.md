@@ -993,7 +993,9 @@ next one; `cotal service show <name>` shows what one runs.
 On a controller root, `down --preserve-state` refuses `UNSUPPORTED` (exit 2) in this release, in
 every stack mode. It refuses while validating its arguments, before the confirmation and before any
 stop, write or manager request. Plain `down` stops the stack and keeps its store, channels and
-history for the next `up`. Preserving a controller-owned stack returns in a later release.
+history for the next `up`. On a full store `down` refuses first, and [down](#down) says how to stop
+the stack there with or without purging that history. Preserving a controller-owned stack returns
+in a later release.
 `backup create`, `backup restore` and `up --restore` need a preserved cut, so they refuse the same
 way on a controller root (see [Backups](#backups)).
 
@@ -1250,11 +1252,12 @@ process that holds a reused pid is never signalled. The broker scope
 is checked again after its dependants stop. A failure stops the sequence and preserves completed and
 unattempted members. A member stopped by signal that has not exited 15 seconds after SIGTERM gets
 SIGKILL. Its row then reads `stopped with SIGKILL`, and a `STOP_ESCALATED` warning names its pid.
-Only a complete confirmed stop removes the delivery credential and local registration. When the
-delivery daemon was already gone or had to be killed, its credential stays: that daemon never
-released its lease, and
-the next `up` uses the credential to recognise the row and wait it out before it mints a new one.
-The JSON `cleanup` field then reads `registration-removed-delivery-credential-kept`. Saved
+Only a complete confirmed stop removes the delivery credential and local registration. After the
+delivery daemon stops, `down` reads its lease. When the daemon was already gone, or the lease still
+names the daemon that credential gave, as after a kill or a release a full store refused, the
+credential stays, and the next `up` uses it to recognise the row and wait it out before it mints a
+new one. When the lease cannot be read, the credential stays too, and a `DELIVERY_LEASE_UNREAD`
+warning says so. The JSON `cleanup` field then reads `registration-removed-delivery-credential-kept`. Saved
 definitions and the journal remain for the next `up`, and the space stays prepared at its root. A
 selection that names it stays, so the next command run without `--space` refuses with
 `TARGET_UNAVAILABLE`, exit 2, and names the root to start it in, rather than reach another space.
@@ -1280,7 +1283,15 @@ is never force killed, so `down` does not signal it. Resume a suspended broker w
 above. The manager's stop rides a control credential whose issuance record the broker stores first,
 and a store over its cap refuses that write. With a live manager, `down` then refuses
 `DEPENDENCY_UNAVAILABLE`, exit 2, before any stop, naming the store and the `--max-file-store` cap
-this machine recorded. Make room with `cotal history clear --yes`, then run `cotal down`. A dry run
+this machine recorded. Make room with `cotal history clear --yes`, then run `cotal down`. That
+purges all of the space's channel history. To keep it, end the manager on the stack's host with
+`kill -TERM <pid>`, using the pid the refusal names. A plain SIGTERM stops every agent that manager
+runs by its default policy, as [supervise](#supervise) describes, and it needs no credential. Then
+`cotal down` stops the other members, and `cotal up --max-file-store <bytes>` with a larger cap
+starts the stack again with its history. The signal reaches only a process on that host.
+`cotal service stop stack-manager` and `restart` refuse the same way before submitting a stop, and
+name `cotal history clear --space <space> --yes` and then the same command again. A stop also
+names `kill -TERM <pid>` as the way to keep that history. A dry run
 names that refusal as a warning when the space holds more than the recorded cap. Controller roots refuse
 preservation and manifest flags rather than switching to the legacy launcher. Outside a terminal,
 a bare `down` that would stop a running member refuses without `--yes`, exit 1, and prints that
@@ -1886,7 +1897,9 @@ On a controller root, one with a stack journal, `backup create`, `backup restore
 `up --restore` refuse `UNSUPPORTED` (exit 2) in this release. Each needs a preserved cut, and
 `down --preserve-state` cannot make one there. They refuse while validating their arguments,
 before the connector seed or any write. Plain `down` and `up` keep a controller stack's store,
-channels and history. Backup and restore of a controller-owned stack return in a later release. The
+channels and history. On a full store `down` refuses first, and [down](#down) says how to stop the
+stack there with or without purging that history. Backup and restore of a controller-owned stack
+return in a later release. The
 rest of this section applies to a root without a stack journal.
 
 Backup is offline-only. It requires the stable `ready` record from `down --preserve-state`, an exact

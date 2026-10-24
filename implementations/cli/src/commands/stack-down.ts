@@ -9,13 +9,13 @@
 import { accessSync, constants } from "node:fs";
 import { dirname } from "node:path";
 import * as prompts from "../lib/prompts.js";
-import { DEFAULT_SPACE, type ParsedArgs } from "@cotal-ai/core";
+import { CotalEndpoint, DEFAULT_SPACE, deliveryLeaseHolderFor, mintCreds, newIdentity, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, ConfirmationRequired, canonicalRoot, deliveryCredsKey, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, stackHomeRemedy, stackRunsUnderOtherHome, terminalWidth, workspaceSecretStore, writeResult,
+  CommandFailure, ConfirmationRequired, canonicalRoot, deliveryCredsKey, findMesh, getSpaceAuth, homeCotalDir, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, stackHomeRemedy, stackRunsUnderOtherHome, terminalWidth, workspaceSecretStore, writeResult,
   type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
 } from "@cotal-ai/workspace";
 import { brokerLaunchAt } from "../lib/broker-service.js";
-import { readStoredBytes, recordedStore, storeFull, storeRefusedWrite } from "../lib/broker-store-health.js";
+import { fullStoreStopRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite } from "../lib/broker-store-health.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -142,15 +142,13 @@ async function managerImpact(journal: StackJournal, members: readonly Member[], 
   }
 }
 
-/** The manager's native stop rides a control credential whose issuance record must be stored before
- *  the credential is released (SPEC 13.15), and a store over its cap refuses that write as every
- *  other, so the stop refuses before any signal. */
+/** The full-store refusal of a stack's manager stop, before any member is stopped. Making room
+ *  purges the space's channel history; a plain SIGTERM to the manager's own process needs no
+ *  credential, so it stops the stack without that loss. */
 function fullStoreStop(journal: StackJournal, manager: Member, store: { path: string; cap?: number } | undefined): CommandFailure {
-  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker's JetStream store${store ? ` ${store.path}` : ""} is full${store?.cap !== undefined ? ` at its --max-file-store cap of ${store.cap} bytes` : ""}, and stopping the manager needs a credential whose issuance record the full store cannot take; no member was stopped`, {
-    target: { root: journal.root, space: journal.space, manager: manager.instance.name, ...(store ? { store: store.path, ...(store.cap !== undefined ? { cap: store.cap } : {}) } : {}) },
-    native: { code: "10023" },
-    remedy: "make room with cotal history clear --yes, then run cotal down",
-  });
+  const pid = manager.instance.record.value.process?.pid;
+  return fullStoreStopRefusal("the manager", store, "no member was stopped", { root: journal.root, space: journal.space, manager: manager.instance.name },
+    `make room with cotal history clear --yes, which purges all of this space's channel history, then run cotal down${pid !== undefined ? `; to keep that history, end the manager on this host with kill -TERM ${pid}, which stops its agents by its default policy, then run cotal down, and cotal up --max-file-store <bytes> with a larger cap` : ""}`);
 }
 
 /** Everything outside the recorded members that would be cut off refuses before the first signal.
@@ -346,6 +344,31 @@ async function previewStackStop(root: string, values: ParsedArgs["values"], pres
   });
 }
 
+/** Whether shard 0 of the delivery lease still names the daemon this root's stored credential gave,
+ *  read over an observer credential after the daemon's stop while the broker still runs. A daemon
+ *  that was killed, or whose release write the broker refused, as a full store refuses it, leaves its
+ *  row until the lease expires. The holder is the one that credential gives, never a name or pid.
+ *  "unread" when the row could not be read. */
+async function deliveryLeaseAfterStop(root: string, space: string, server: string): Promise<"held" | "released" | "unread"> {
+  const store = workspaceSecretStore(root);
+  let ep: CotalEndpoint | undefined;
+  try {
+    const creds = await store.get(deliveryCredsKey(space, { injected: false, root }));
+    if (creds === undefined) return "released";
+    const auth = await getSpaceAuth(store, space);
+    if (!auth) return "unread";
+    const id = newIdentity();
+    ep = new CotalEndpoint({ space, servers: server, tls: readBrokerPolicy(root)?.transport.kind === "tls-required", creds: await mintCreds(auth, id, "observer"), channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false, card: { id: id.id, name: "down-delivery-lease", kind: "endpoint" } });
+    ep.on("error", () => {});
+    await ep.start();
+    return (await ep.readDeliveryLease(0))?.holder === deliveryLeaseHolderFor(creds) ? "held" : "released";
+  } catch {
+    return "unread";
+  } finally {
+    await ep?.stop().catch(() => {});
+  }
+}
+
 async function applyStackStop(root: string, values: ParsedArgs["values"], presentation: ReturnType<typeof presentationOf>, interactive: boolean, withAgents: boolean, lock: MaintenanceLock): Promise<void> {
   // A member stop an earlier down could not confirm in time is settled from its own receipt first.
   const recorded = readStackJournal(root)?.journal;
@@ -429,6 +452,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   const killed: { role: StackRole; instanceId: string; pid: number }[] = [];
   let failure: CommandFailure | undefined;
   let deliveryCredentialKept = false;
+  let deliveryLease: Awaited<ReturnType<typeof deliveryLeaseAfterStop>> | undefined;
   for (const member of members) {
     const role = member.role;
     const holds = serviceDefinitionStore(journal.space).pin(member.definition);
@@ -454,6 +478,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
       if (!stopped.noOp) changed.push(instanceProjection(stopped.instance));
       const stop = stopped.instance.record.value.processStop;
       if (!stopped.noOp && stop?.signal === "SIGKILL") killed.push({ role, instanceId: stopped.instance.record.value.instanceId, pid: stop.process.pid });
+      if (role === "delivery" && !stopped.noOp) deliveryLease = await deliveryLeaseAfterStop(journal.root, journal.space, journal.server);
     } catch (error) {
       const classified = isCommandFailure(error) ? error : undefined;
       const uncertain = classified === undefined || classified.outcome === "unknown";
@@ -469,13 +494,14 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   if (!failure) {
     // Shared cleanup only after the whole recorded set is confirmed stopped. An open stack never
     // had a delivery credential, so none is removed or claimed removed. Each step is idempotent.
-    // A delivery daemon that was already gone, or that had to be killed, never released shard 0, and
-    // its credential is how the next up recognises that row as this folder's dead daemon's and waits
-    // it out, so it stays until that up replaces it.
+    // A delivery daemon that was already gone never released shard 0, and one that was killed, or
+    // whose release a full store refused, left its row too. Its credential is how the next up
+    // recognises that row as this folder's stopped daemon's and waits it out, so it stays until that
+    // up replaces it, and it stays as well when the row could not be read.
     try {
       if (journal.mode !== "open") {
         const store = workspaceSecretStore(root), key = deliveryCredsKey(journal.space, { injected: false, root });
-        if (journal.members.find((row) => row.role === "delivery")?.state === "already-stopped" || killed.some((row) => row.role === "delivery")) deliveryCredentialKept = await store.get(key) !== undefined;
+        if (journal.members.find((row) => row.role === "delivery")?.state === "already-stopped" || deliveryLease === "held" || deliveryLease === "unread") deliveryCredentialKept = await store.get(key) !== undefined;
         else await store.delete(key);
       }
       // The stopped stack stays a prepared local space at its own root, so the next bare up
@@ -503,6 +529,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
       ...cleared.map((row) => staleWarning(root, row)),
     ] : []),
     ...killed.map(({ role, instanceId, pid }) => ({ code: "STOP_ESCALATED", target: { ...target, role, instanceId, pid }, message: `the ${role} member, pid ${pid}, did not exit within ${PROCESS_STOP_GRACE_MS / 1000} s of SIGTERM, so it was stopped with SIGKILL` })),
+    ...(deliveryLease === "unread" ? [{ code: "DELIVERY_LEASE_UNREAD", target, message: "the delivery lease could not be read after the delivery member stopped, so its credential was kept; the next up waits out a lease row that still names it" }] : []),
     ...await readinessAddressSurvivors(journal.space),
   ];
   writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, operation: journal.operation, withAgents, members: journal.members, changed, managerImpact: manager?.native ?? null, atomic: false, cleanup: failure ? "not-confirmed" : journal.mode === "open" ? "registration-removed-no-delivery-credential" : deliveryCredentialKept ? "registration-removed-delivery-credential-kept" : "delivery-credential-and-registration-removed", admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null }, ...(warnings.length ? { warnings } : {}), ...(failure ? { failure, completeness: "partial" as const } : changed.length ? {} : { noOp: true }) }, (result) => ({ sections: [...restoreNotice(admittedRestore), { title: failure ? "Controller stack stop incomplete" : changed.length ? "Controller stack stopped" : "Controller stack was not running; nothing was stopped", blocks: [
