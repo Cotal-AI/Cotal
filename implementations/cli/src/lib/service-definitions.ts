@@ -11,7 +11,10 @@ export type ServiceDefinitionSnapshot = LocalRecordSnapshot<ServiceDefinitionInp
 export function validateServiceDefinition(input: unknown, space: string, checkReferences = true): ServiceDefinitionInput {
   let value: ServiceDefinitionInput;
   try { value = parseServiceDefinitionInput(JSON.stringify(input), space); }
-  catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", error instanceof Error && error.message.startsWith("service definition:") ? error.message : "the definition does not match the approved local service schema; input values were not echoed"); }
+  catch (error) {
+    const message = error instanceof Error && error.message.startsWith("service definition:") ? error.message : "the definition does not match the approved local service schema; input values were not echoed";
+    throw new CommandFailure("refused", "SCHEMA_INVALID", message, message.startsWith("service definition: readiness") ? { remedy: "correct readiness in the definition as the message says, then add it again" } : undefined);
+  }
   if (!checkReferences) return value;
   if (value.launch.type === "adapter") resolveServiceAdapter(value.launch.adapter, value.launch.options);
   else {
