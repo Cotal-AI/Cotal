@@ -1181,7 +1181,6 @@ interface TurnNote {
   payload: string;
   deadlineAt: number;
   holdEpoch: number;
-  owner: string;
   /** The deadline hold's token. A note written before it was recorded has none: that hold's token
    *  was derived from the goal id alone, and adoption must find the hold actually minted. */
   holdToken?: string;
@@ -1194,10 +1193,10 @@ function parseTurnNote(raw: string): TurnNote | undefined {
   if (o === null || typeof o !== "object") return undefined;
   const n = o as Record<string, unknown>;
   if (typeof n.payload !== "string" || typeof n.deadlineAt !== "number"
-    || typeof n.holdEpoch !== "number" || typeof n.owner !== "string") return undefined;
+    || typeof n.holdEpoch !== "number") return undefined;
   if (n.holdToken !== undefined && typeof n.holdToken !== "string") return undefined;
   if (n.handoffFrom !== undefined && typeof n.handoffFrom !== "string") return undefined;
-  return { payload: n.payload, deadlineAt: n.deadlineAt, holdEpoch: n.holdEpoch, owner: n.owner, ...(typeof n.holdToken === "string" ? { holdToken: n.holdToken } : {}), ...(typeof n.handoffFrom === "string" ? { handoffFrom: n.handoffFrom } : {}) };
+  return { payload: n.payload, deadlineAt: n.deadlineAt, holdEpoch: n.holdEpoch, ...(typeof n.holdToken === "string" ? { holdToken: n.holdToken } : {}), ...(typeof n.handoffFrom === "string" ? { handoffFrom: n.handoffFrom } : {}) };
 }
 
 /** A goal's key in the manager's maps: the caller triple and goal id the goal plane stores the
@@ -9249,7 +9248,7 @@ export class Manager {
     const deadlineMs = deadlineAt - acceptedAt;
     const handoffFrom = raw.handoffFrom === undefined ? undefined : String(raw.handoffFrom);
     const holdToken = turnHoldToken(key);
-    const note = JSON.stringify({ payload, deadlineAt, holdEpoch: executor.epoch, owner: t.owner, holdToken, ...(handoffFrom !== undefined ? { handoffFrom } : {}) } satisfies TurnNote);
+    const note = JSON.stringify({ payload, deadlineAt, holdEpoch: executor.epoch, holdToken, ...(handoffFrom !== undefined ? { handoffFrom } : {}) } satisfies TurnNote);
 
     // A goal that already ENDED is never accepted again, whatever the retry carries: the bind is
     // create-only and outlives an unwind (the failed terminal, the cleared index), so a retry of an
@@ -9262,7 +9261,7 @@ export class Manager {
       throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" already ended ${ended.state}; a bound goal is never accepted again (SPEC 13.6)`);
     // Index-CAS-before-bind, exactly as spawn: the entry (floor + note) is the durable relay
     // record a successor rebuilds from, so it must exist before the acceptance is servable.
-    const idx = await recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name: a.name, actor: t.actor, uid: t.lifecycleUid, readinessDeadlineMs: deadlineMs }, note);
+    const idx = await recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name: a.name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid, readinessDeadlineMs: deadlineMs }, note);
     if (!idx.recorded && idx.existing.iid !== executor.lifecycleUid)
       throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted by instance "${idx.existing.iid}"; that instance owns its relay and this attempt provisions nothing (SPEC 13.6)`);
     const b = await bindGoal(gw.ctx, ref, fingerprint);
@@ -9638,8 +9637,8 @@ export class Manager {
    *  entry carrying a parseable note rebuilds its pending relay — never an `uncertain` settle,
    *  because the deadline hold IS this goal's bounded ending and it survived the restart. No
    *  liveness verdict is made here (the agents map is empty during reconcile, so absence means
-   *  "not yet re-registered", never "dead"); a garbled note or a missing floor is logged and
-   *  left, the dead-pointer honesty rule. */
+   *  "not yet re-registered", never "dead"); a garbled note or a floor that does not name the
+   *  seat's owner is logged and left, the dead-pointer honesty rule. */
   private async adoptTurnGoal(entry: { ref: GoalRef; iid: string; allocated?: GoalIndexEntry["allocated"]; note?: string }): Promise<void> {
     const gw = this.goalWriter;
     if (!gw) return;
@@ -9651,8 +9650,8 @@ export class Manager {
       return;
     }
     const parsed = entry.note !== undefined ? parseTurnNote(entry.note) : undefined;
-    if (entry.allocated === undefined || parsed === undefined) {
-      console.error(`turn reconcile ${entry.ref.goalId}: the relay record is garbled (no floor, or an unparseable note); left unsettled`);
+    if (entry.allocated?.owner === undefined || parsed === undefined) {
+      console.error(`turn reconcile ${entry.ref.goalId}: the relay record is garbled (no floor naming the seat's owner, or an unparseable note); left unsettled`);
       return;
     }
     const spec = await readGoalSpec(gw.ctx, entry.ref);
@@ -9667,7 +9666,7 @@ export class Manager {
     }
     const p: PendingTurn = {
       ref: entry.ref, goalId: entry.ref.goalId,
-      seat: { name: entry.allocated.name, owner: parsed.owner, actor: entry.allocated.actor, uid: entry.allocated.uid },
+      seat: { name: entry.allocated.name, owner: entry.allocated.owner, actor: entry.allocated.actor, uid: entry.allocated.uid },
       payload: parsed.payload,
       acceptedAt: spec.value.acceptedAt,
       deadlineAt: parsed.deadlineAt,
