@@ -323,14 +323,16 @@ export const slashHelp = `commands: ${SLASH_COMMANDS.join(", ")}. Start a messag
 const HISTORY_DEFAULT = 50;
 const HISTORY_MAX = 1000;
 
-/** Parse one slash line. Channel names are checked by the session against native policy, not here. */
+/** Parse one slash line. A channel may be written with its `#`, as the view prints it. Channel names
+ *  are checked by the session against native policy, not here. */
 export function parseSlash(line: string): { ok: true; command: SlashCommand } | { ok: false; error: string } {
   const [head, ...rest] = line.trim().split(/\s+/);
   const arg = rest[0];
+  const channel = arg?.replace(/^#/, "");
   const one = (name: "join" | "leave" | "info"): { ok: true; command: SlashCommand } | { ok: false; error: string } =>
-    arg && rest.length === 1 ? { ok: true, command: { name, channel: arg } } : { ok: false, error: `usage: /${name} <channel>` };
+    channel && rest.length === 1 ? { ok: true, command: { name, channel } } : { ok: false, error: `usage: /${name} <channel>` };
   const mode = (cmd: "quiet" | "mute" | "normal", m: ChannelMode | "normal"): { ok: true; command: SlashCommand } | { ok: false; error: string } =>
-    arg && rest.length === 1 ? { ok: true, command: { name: "channel-mode", channel: arg, mode: m } } : { ok: false, error: `usage: /${cmd} <channel>` };
+    channel && rest.length === 1 ? { ok: true, command: { name: "channel-mode", channel, mode: m } } : { ok: false, error: `usage: /${cmd} <channel>` };
   switch (head) {
     case "/who":
     case "/whoami":

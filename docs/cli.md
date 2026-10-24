@@ -4271,7 +4271,8 @@ send to it would get, and the numbered list opens. A `#<channel>`
 holding `*` or `>` is refused with the sentence `cotal send -c` gives. In the list, an empty line
 keeps the current recipient, and `/quit` leaves. `:multi` starts a message of several lines, which a line
 holding only `.` ends. A line starting with `/` runs a slash command, and `//` sends a line that
-starts with `/`. `/help` lists the slash commands, in `--plain` and in the terminal view.
+starts with `/`. `/help` lists the slash commands, in `--plain` and in the terminal view. A slash
+command that takes a channel reads it with or without its `#`.
 `/history` reads the current channel's retained messages. On an open mesh, which runs no delivery
 daemon, it reads them the way `cotal history` does.
 
