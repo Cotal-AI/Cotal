@@ -57,6 +57,7 @@ import { metadataPositionals } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
+import { workingFolderRemoved } from "./lib/paths.js";
 import { reportLostOutput } from "./lib/stdout-owner.js";
 import { managerChoiceFailure, pickManager, rosterOf } from "./lib/manager-choice.js";
 import { canPrompt } from "./commands/meshes-wizard.js";
@@ -404,17 +405,15 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   return canonical;
 }
 
+/** The commands that never read the working folder, so they run from one that was removed. */
+const FOLDERLESS = new Set(["help", "version", "completion", "docs", "telemetry"]);
+
 /** A working folder removed before this process read it fails every cwd read the command makes, and
  *  Node caches the first read that succeeds. One read refuses that case before the command's own
- *  checks, such as `up`'s, or any effect. Help, version and completion never read the folder. */
+ *  checks, such as `up`'s, or any effect, unless the command never reads the folder. */
 function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs): void {
-  if (cmd.name.startsWith("__") || ["help", "version", "completion"].includes(cmd.name)) return;
-  try {
-    process.cwd();
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
-  }
+  if (cmd.name.startsWith("__") || FOLDERLESS.has(cmd.name) || !workingFolderRemoved()) return;
+  failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
 }
 
 /** The parsed args with a subcommand alias in the first positional replaced by its name, so `run`
@@ -603,17 +602,6 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     parsed = parseOrExit(cmd, rest);
   }
   if (!cmd || !parsed) throw new Error("internal error: dispatch reached its effects without a parsed command");
-  // A working folder removed before this process read it fails every cwd read the command makes, and
-  // Node caches the first read that succeeds. One read here refuses that case before any effect.
-  // Help, version and completion never read the folder.
-  if (!cmd.name.startsWith("__") && !["help", "version", "completion"].includes(cmd.name)) {
-    try {
-      process.cwd();
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-      failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
-    }
-  }
   // A preferences file that does not validate stops every command that could act on a default, as a
   // broken config file does, so nothing runs on a default the person did not mean. Help, shell
   // completion, version and docs use no preference, and status reports the file as a warning, so they
@@ -628,7 +616,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
     // A `.cotal` that is a file in the folder the command uses, such as someone's notes, holds no
     // records, and every reader would otherwise report a different wrong cause.
-    const dirProblem = cmd.name === "version" ? undefined : cotalDirProblem(typeof parsed.values.root === "string" ? resolve(parsed.values.root) : findCotalRoot());
+    const dirProblem = cmd.name === "version" || workingFolderRemoved() ? undefined : cotalDirProblem(typeof parsed.values.root === "string" ? resolve(parsed.values.root) : findCotalRoot());
     if (dirProblem) failureExit(cmd, new CommandFailure("refused", "CONFLICT", `${dirProblem}; the command did not run`, { remedy: "rename or move that file, then run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
     if (!["version", "docs", "status"].includes(cmd.name)) {
       try {

@@ -6,7 +6,8 @@
  * (help, refusal and parse), and a word that only prefixes a command selects nothing. A short flag
  * parses as its long form, and a wrong-case short flag or a missing value is refused. `version --json`
  * writes one envelope, and a usage error under `--json` is one refusal envelope. `--no-color` and
- * `--no-input` are accepted by every command in any position before `--`.
+ * `--no-input` are accepted by every command in any position before `--`. A command an official
+ * extension adds, run or asked for help before that extension is added, names the package to add.
  *
  * The aliases and short flags come from the registry the binary composes (the same imports as
  * `bin/run.ts`), and help must list each alias, so a new alias is covered without editing this file.
@@ -153,6 +154,10 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   refused("help of a hidden internal subcommand is a usage error", cotal(["help", "ext", "__update-add"]), /cotal ext has no subcommand "__update-add"/);
   check("command help does not list a hidden subcommand", !cotal(["help", "ext"]).stdout.includes("__update-add"));
   refused("help of a hidden internal command is a usage error", cotal(["help", "__complete"]), /unknown command: __complete/);
+  // An official extension's command, before the extension is added, names the package to add.
+  const linearAdd = /^✗ no installed extension provides command "linear" - install it with `cotal ext add @cotal-ai\/linear`$/m;
+  refused("help linear without its extension names cotal ext add @cotal-ai/linear", cotal(["help", "linear"]), linearAdd);
+  refused("linear without its extension names the same package", cotal(["linear", "serve", "acct"]), linearAdd);
   // `docs` reads its page names from the bundled docs, so completion offers them offline.
   const pages = cotal(["__complete", "docs", ""], undefined, noSeed);
   check("docs completes its page names", pages.status === 0 && ["spec", "lang", "architecture"].every((page) => new RegExp(`^${page}(\\t|$)`, "m").test(pages.stdout)) && !/^--/m.test(pages.stdout), shown(pages));

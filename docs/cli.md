@@ -250,7 +250,8 @@ before it does anything, and says to `cd` to an existing folder. It prints that 
 remedy without the command's help, because the command itself was not mistyped. A command whose folder has a
 `.cotal` that is a file rather than a directory, such as a notes file, refuses with `CONFLICT`, exit
 2, before it does anything, names that file and says to rename or move it. `help`, `version` and
-`completion` still work in both.
+`completion` still work in both. `docs` and `telemetry` also work from a folder that no longer
+exists, and there `help` says the folder is gone instead of showing a space.
 
 A long-running command that SIGINT stops ends cleanly first. It stops observing, closes the
 session it holds and writes its last record, then exits 130. SIGTERM ends it the same way and exits
@@ -669,7 +670,11 @@ The generated broker configuration is owner-private (`0600`) in open and authent
 even with a group-writable umask. `up` creates `.cotal`, the broker store and the persona catalog
 `.cotal/agents` owner-private (`0700`) too, as do `space create` and `setup`. An existing directory
 keeps its mode. A `.cotal`, or a root without one, that this account cannot write refuses with
-`PERMISSION_DENIED` (exit 2), naming it and `chmod u+w`, before anything is started or written. The broker log `.cotal/nats.log` and the auth service,
+`PERMISSION_DENIED` (exit 2), naming it and `chmod u+w`, before anything is started or written. A
+broker store this account cannot write refuses the same way, naming the store's `jetstream` folder,
+or the store itself before a broker has made one, and `chmod -R u+w`. Without that check the broker
+exited and named the cause only in its log. `status` names the same step for a stopped space whose
+store `up` would refuse. The broker log `.cotal/nats.log` and the auth service,
 delivery and manager logs are created owner-private as well, and the process records `up` writes, such as
 `.cotal/nats.pid` and its identity pin, are created `0600` under a fresh name that is never opened
 through a symlink, then renamed into place. The pid record and identity pin of a native service
@@ -2217,7 +2222,9 @@ prepared the same way, before it starts anything, and names `cotal space forget`
 `space add` and `meshes add` refuse a longer name with `USAGE_INVALID`, exit 1, and write no
 record, because a space added from elsewhere is carried by the same files.
 It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
-space's root, and the home folder, whose `.cotal` holds this machine's own records. A folder this
+space's root, and the home folder, whose `.cotal` holds this machine's own records. For a folder
+another space uses, the next step names creating it in another folder with `--root <dir>`, and
+starting, selecting or forgetting the space that uses the folder. A folder this
 account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so
 does a Cotal home (`~/.cotal` or `COTAL_HOME`) it cannot write. A `.cotal` that links to a folder that
 does not exist refuses `TARGET_NOT_FOUND`, exit 2, naming the link and its target. A folder whose
@@ -4184,10 +4191,15 @@ presets this machine has, and a name it does not have is refused as `DEPENDENCY_
 marked `(required)`, and an option that takes a path shows `<dir>` or `<file>`. A missing required
 option is refused with each one named.
 
+A preset's options describe the service and never choose its space. `add` saves into the space
+`--space` names, or else the selected space or the folder's, as other commands resolve it.
+
 `add` checks the options against the preset's schema, and checks that each declared path exists
 with its required protection. It does not check that a root or credential suits the preset, such
 as a root's auth mode or which credential a file holds. Those are checked when the service starts.
-A refusal names the option or field at fault. Option values are not printed.
+A refusal names the option or field at fault. Option values are not printed, except the `broker`
+preset's `server`: `add` checks it against the address rules a start applies, and its refusal quotes
+the address unless it holds an `@`, which may be a credential.
 
 `--file` imports a version-1 definition. This one runs a program and treats it as ready once its
 loopback health URL answers 200:
@@ -5025,7 +5037,8 @@ cotal linear caller <name> --endpoint <reverse-dns-name> --out <path> [--channel
 ```
 
 Serves one Linear account as a registered Cotal endpoint that agents call with `cotal_describe` and
-`cotal_invoke`, and gives the operator a direct client for the same server. It only talks to `https://mcp.linear.app/mcp`
+`cotal_invoke`, and gives the operator a direct client for the same server. Until the extension is
+added, `cotal linear` and `cotal help linear` name the `cotal ext add` that adds it. It only talks to `https://mcp.linear.app/mcp`
 (mode `write`) or `https://mcp.linear.app/mcp/readonly` (mode `readonly`); there is no URL or header
 option. Use a separate account per Linear workspace, and prefer a `readonly` account with a
 restricted read key wherever writes are not needed.
@@ -5364,6 +5377,7 @@ cotal actor list [--json|--plain]
 | `--json`, `-j`, `--plain` | off | Print one JSON document or line-oriented text, as `auth grants`, `auth grant` and `auth revoke` do |
 
 The actor ledger is the single authorization source of a user-auth space: no row, no access.
+`cotal help actor` lists `grant`, `revoke` and `list`, and shell completion offers them.
 `actor list`, `grant` and `revoke` resolve their space and root as `auth grants`, `auth grant` and
 `auth revoke` do, and refuse the same way. With no space to resolve they refuse with a next step,
 such as `cotal up`, rather than assume one, and a root that does not hold the space's user-auth
@@ -6984,8 +6998,10 @@ prepares no trust, generates no configuration and starts no other service. Legac
 known shared registrations, maintenance and mismatched transport refuse. Its creation-pinned
 direct child writes a native ports report in a fresh private launch directory, and the readiness
 check sets that report to `0600` before it reads it. Its listener must
-match the declared IP, port and transport. DNS, wildcard and mapped-IPv6 target declarations refuse
-before launch. This reports the child's client listener, not JetStream readiness, endpoint serving
+match the declared IP, port and transport. `add` refuses a `server` that is not one `nats://` or
+`tls://` URL naming an IP literal, and DNS, wildcard and mapped-IPv6 targets, so none is saved. A
+definition saved before that check refuses on start, before launch, naming its `server` option and
+how to add it again. This reports the child's client listener, not JetStream readiness, endpoint serving
 or a fresh trust check.
 
 Broker stop has a separate kernel-exit policy, with no invented endpoint principal or epoch.
