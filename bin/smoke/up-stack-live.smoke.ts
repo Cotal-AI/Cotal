@@ -243,6 +243,8 @@ try {
   const lostOut = plain(lost.stdout + lost.stderr);
   ok("a refresh whose delivery launch loses the single-flight lease exits non-zero", lost.status !== 0, lostOut);
   ok("the refresh says the daemon it started exited without becoming ready", /exited without becoming ready/.test(lostOut), lostOut);
+  ok("the degraded line ends with the refusal's own next step and adds no remedy of its own (#3627)",
+    /\nNEXT: [^\n]*re-run\.\nUntil the control plane runs, spawn and retirement have no responder\.\n/.test(lostOut) && !lostOut.includes("start one with: cotal supervise"), lostOut);
   ok("the daemon that HOLDS the lease is left running", alive(Number(liveDelivery.trim())), liveDelivery);
   // The losing launch overwrote the record and the credential with its own; put back the ones that
   // belong to the daemon that is actually serving, which `down` needs to stop it.
