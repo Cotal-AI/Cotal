@@ -322,7 +322,7 @@ function agentUnboundedRepair(path: string, space: string, record?: string): str
   const cmd = displayCmd();
   const replace = standingReplace(path, space);
   const bound = replace ? `stop what uses it, then replace it with ${replace}` : `stop what uses it, remove ${path}${record ? ` and ${record}` : ""} and mint a replacement without --no-expiry, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time`;
-  return `native renewal skips unbounded material. Retire it, with every other credential the space issued, by rotating the space identity: \`${cmd} down\`, \`${cmd} reset space ${space}\`, then \`${cmd} up\`; the reset also removes the space's store, with its ${storeContentsText(STORE_CONTENTS)}. Or bound it: ${bound}; a copy made before stays valid until that rotation. This diagnosis does not prove the agent is stopped or authorize a blind respawn`;
+  return `native renewal skips unbounded material. Revoke it and keep the store: \`${cmd} down\`, \`${cmd} auth revoke-credential ${path} --yes\`, then \`${cmd} up\`. Or bound it: ${bound}; a copy made before stays valid until it is revoked. To retire every credential the space issued, rotate the space identity: \`${cmd} down\`, \`${cmd} reset space ${space}\`, then \`${cmd} up\`; the reset also removes the space's store, with its ${storeContentsText(STORE_CONTENTS)}. This diagnosis does not prove the agent is stopped or authorize a blind respawn`;
 }
 
 /** Classify every `agent` file by alias family, so a superseded incarnation is never reported as a
@@ -505,7 +505,7 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
       // bytes, is reported with the same ways out, but someone chose it, so it is no finding.
       const requestedAt = kind === "agent" && live?.role !== "superseded" && space !== undefined && bytes ? noExpiryRequestedAt(path, bytes) : undefined;
       if (requestedAt !== undefined) {
-        r.warning = `unbounded by request (auth mint --no-expiry, recorded ${requestedAt}) - a copy stays valid until the space identity rotates`;
+        r.warning = `unbounded by request (auth mint --no-expiry, recorded ${requestedAt}) - a copy stays valid until it is revoked or the space identity rotates`;
         r.repair = agentUnboundedRepair(path, space!, noExpiryRecordPath(path));
         break;
       }
@@ -513,7 +513,7 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
       // so it is a finding even where no renewal owner bounds it.
       r.problem = standing
         ? "unbounded standing credential (minted before the renewal slice) - a copied cred never dies"
-        : "unbounded credential (no expiry claim) - a copy stays valid until the space identity rotates";
+        : "unbounded credential (no expiry claim) - a copy stays valid until it is revoked or the space identity rotates";
       r.repair = kind === "agent" && live?.role !== "superseded" && space !== undefined ? agentUnboundedRepair(path, space) : repair;
       break;
     }

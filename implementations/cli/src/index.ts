@@ -3,7 +3,7 @@ import "./lib/broker-service.js";
 import { serviceUnitEntry } from "./commands/service-unit-entry.js";
 import { registry, type Command } from "@cotal-ai/core";
 import {
-  CommandFailure, credentialMintFlags, jsonFlag, plainFlag, presentationOf, serverFlag, spaceFlag, targetFlags, validateCredentialMintArguments,
+  CommandFailure, credentialMintFlags, jsonFlag, plainFlag, presentationOf, serverFlag, spaceFlag, targetFlags, validateCredentialMintArguments, validateCredentialRevokeArguments,
   type CredentialAction, type LocalProcess,
 } from "@cotal-ai/workspace";
 import { MANAGER_PROCESS } from "./lib/manager-proc.js";
@@ -29,6 +29,7 @@ import { completion, completionComplete, completionFlags, complete, validateComp
 import { config, configComplete, configFlags, configSubcommands } from "./commands/config.js";
 import { telemetry, telemetryFlags, validateTelemetryArguments } from "./commands/telemetry.js";
 import { mint } from "./commands/mint.js";
+import { revokeCredential } from "./commands/revoke-credential.js";
 import { channels, channelArguments, channelComplete, channelFlags } from "./commands/channels.js";
 import { history, historyComplete, historyFlags, historySubcommands, validateHistoryArguments } from "./commands/history.js";
 import { clean, cleanComplete } from "./commands/clean.js";
@@ -862,7 +863,8 @@ const baseProcesses: LocalProcess[] = [
 ];
 
 const credentialMintAction: CredentialAction = { kind: "credential-action", name: "mint", validate: validateCredentialMintArguments, run: mint };
-registry.register(...baseCommands, ...baseProcesses, credentialMintAction);
+const credentialRevokeAction: CredentialAction = { kind: "credential-action", name: "revoke-credential", validate: validateCredentialRevokeArguments, run: revokeCredential };
+registry.register(...baseCommands, ...baseProcesses, credentialMintAction, credentialRevokeAction);
 
 export { runCli } from "./command.js";
 export { stdoutError } from "./lib/stdout-owner.js";

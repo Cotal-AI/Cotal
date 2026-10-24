@@ -1,8 +1,9 @@
 /**
  * `cotal doctor auth` reports a local credential with no expiry claim as a finding, whatever its
- * kind, since a copy of it stays valid until its signer rotates. An unbounded agent credential is
- * listed under "Credential findings" with guidance that retires it by rotating the space identity or
- * bounds it with `cotal auth mint <label> --replace`, and the run ends failed (exit 5). One `cotal
+ * kind, since a copy of it stays valid until it is revoked or its signer rotates. An unbounded agent
+ * credential is listed under "Credential findings" with guidance that revokes it with `cotal auth
+ * revoke-credential`, bounds it with `cotal auth mint <label> --replace`, or retires every credential
+ * by rotating the space identity, and the run ends failed (exit 5). One `cotal
  * auth mint --no-expiry` asked for, whose record beside it names its bytes, is a warning with the same
  * ways out and the run ends ok (exit 0); a record that names other bytes covers nothing. An
  * incarnation file, which is no label's standing credential, is bounded by removing it instead. An
@@ -87,8 +88,9 @@ try {
     const bob = envelope.result.items.find((item) => item.label === "bob.creds");
     assert.equal(alice?.state, "unbounded", "fixture: alice.creds carries no expiry claim");
     assert.match(alice?.problem ?? "", /^unbounded credential \(no expiry claim\)/, "the unbounded agent credential is a finding");
-    assert.match(alice?.problem ?? "", /a copy stays valid until the space identity rotates$/, "the finding says how long a copy lives");
-    assert.match(alice?.repair ?? "", new RegExp(`reset space ${SPACE}\``), "its guidance retires it by rotating the space identity");
+    assert.match(alice?.problem ?? "", /a copy stays valid until it is revoked or the space identity rotates$/, "the finding says how long a copy lives");
+    assert.ok(alice?.repair?.startsWith(`native renewal skips unbounded material. Revoke it and keep the store: \`${displayCmd()} down\`, \`${displayCmd()} auth revoke-credential ${unbounded} --yes\`, then \`${displayCmd()} up\``), "its guidance first revokes that one credential and keeps the store");
+    assert.match(alice?.repair ?? "", new RegExp(`reset space ${SPACE}\``), "and names rotating the space identity as the way to retire every credential");
     assert.ok(alice?.repair?.includes(`Or bound it: stop what uses it, then replace it with ${replaceFor("alice")}`), "and bounds it with auth mint --replace for its label");
     assert.ok(!alice?.repair?.includes(`remove ${unbounded}`), "  rather than a hand removal inside .cotal");
     assert.equal(bob?.state, "healthy", "fixture: bob.creds is bounded and healthy");
@@ -123,7 +125,7 @@ try {
     const carol = envelope.result.items.find((item) => item.label === "carol.creds");
     assert.equal(carol?.state, "unbounded", "fixture: carol.creds carries no expiry claim");
     assert.equal(carol?.problem, null, "a requested unbounded credential is no finding");
-    assert.match(carol?.warning ?? "", /^unbounded by request \(auth mint --no-expiry, recorded [0-9T:.-]+Z\) - a copy stays valid until the space identity rotates$/, "it is a warning that says it was asked for");
+    assert.match(carol?.warning ?? "", /^unbounded by request \(auth mint --no-expiry, recorded [0-9T:.-]+Z\) - a copy stays valid until it is revoked or the space identity rotates$/, "it is a warning that says it was asked for");
     assert.ok(carol?.repair?.includes(`then replace it with ${replaceFor("carol")}`), "with the same ways out: --replace also drops its record");
     assert.deepEqual(envelope.warnings.map((w) => [w.code, w.target.path]), [["CREDENTIAL_UNBOUNDED_BY_REQUEST", requested]], "the envelope carries one warning naming the file");
     assert.equal(envelope.result.findings, 0, "no findings");

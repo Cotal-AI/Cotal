@@ -5423,7 +5423,9 @@ refuses `PERMISSION_DENIED`, naming the folder. None of them writes anything.
 `--identity` reuses the native nkey. The out-of-band agent mint reports its newly allocated
 lifecycle UID, with a warning that it did not reuse the old inbox/delivery footprint. Use that
 reported UID for the resulting client; do not infer it from the label or assume the old UID was
-preserved. No private nkey or JWT appears in a receipt.
+preserved. No private nkey or JWT appears in a receipt. A key revoked with `auth revoke-credential`
+refuses `CONFLICT`, because a credential signed now would postdate the revocation and the broker
+would accept the key again; mint a fresh key without `--identity`.
 
 Without `--provision`, fixed-profile minting writes credentials only. `--provision` uses one native provisioner
 connection to pre-create that lifecycle's bind-only DM/delivery and role footprint. It performs
@@ -5442,13 +5444,13 @@ one finite document; plain output uses the same public receipt. Signing material
 [auth signer](#account-signer-export), not a signer flag on mint. The old top-level `mint` spelling
 is refused with the literal namespace replacement.
 
-A minted credential cannot be revoked on its own, and `auth retire` refuses. It stays valid until it
-expires, and one minted with `--no-expiry` until the space identity rotates: `cotal down`, then
-`cotal reset space <space>` (or `cotal clean all --force` from the root when `down` left no
-registration), then `cotal up`. That stops every credential the space issued. The reset also
-removes the space's store, with its workflow runs and their journals, channel history and stored
-messages, so the space starts again with no history. `cotal reset space <space> --dry-run` lists
-what the store holds first. It also stops every
+A minted credential stays valid until it expires, and one minted with `--no-expiry` until it is
+revoked or the space identity rotates. [auth revoke-credential](#auth-revoke-credential) stops one
+credential and keeps the store. Rotating the space identity stops every credential the space issued:
+`cotal down`, then `cotal reset space <space>` (or `cotal clean all --force` from the root when
+`down` left no registration), then `cotal up`. That reset also removes the space's store, with its
+workflow runs and their journals, channel history and stored messages, so the space starts again
+with no history. `cotal reset space <space> --dry-run` lists what the store holds first. It also stops every
 earlier full backup of the space from restoring into this root: only its registry restores, and
 chat and DM history start empty (see [Backups](#backups)).
 
@@ -5516,6 +5518,31 @@ explicit file selection instead of switching back to the normal operator instrum
 
 Arbitrary raw files, issued-generation files and different native profiles are not interpreted as
 this standalone caller. User-auth issuance and managed static launch are not supported.
+
+## auth revoke-credential
+
+```bash
+cotal auth revoke-credential <public-key | creds-file> [--space <space>] [--yes] [--json|--plain]
+```
+
+It stops one credential that `auth mint` wrote and keeps the space's store and every other
+credential. Name the credential by its user public key, which the mint receipt reports as its
+identity, or by its creds file, which must be private to you and issued by this space's account. A
+file from another account refuses `CONFLICT`. The command records the key in the space's account,
+re-signed by the space's operator, and the broker refuses that key from its next start.
+
+The broker loads a revocation only when it starts, so the space must be stopped: run
+`cotal down --yes`, then this command, then `cotal up`. On a running space it refuses
+`LIFECYCLE_BLOCKED` and names that route, and it refuses the same way while the root records a
+maintenance attempt. A connection held with the credential ends at the `down` and is refused after
+the `up`. It asks before it revokes, or takes `--yes`; `--json` without `--yes` refuses. A key
+already revoked reports the time it was first revoked and changes nothing. `--json` reports
+`publicKey`, `revokedAt` in Unix seconds, `alreadyRevoked` and `takesEffect`.
+
+`auth mint --identity` refuses a revoked key. A credential the stack renews itself, such as its
+daemons' or a managed agent's, is signed again for the same key at renewal, and the broker accepts
+that newer credential, so stop or despawn that agent instead. A per-user-auth space refuses
+`UNSUPPORTED` and names `auth revoke <actor>`, and an open space issues no credentials to revoke.
 
 ## Login
 
@@ -5631,17 +5658,18 @@ Once the root holds the space's trust, a missing `membership-observer` or `conne
 credential is a finding too, with `cotal down` then `cotal up --rotate-sys` as its repair, because
 nothing else mints that pair again. A missing delivery or membership-rw credential is only noted,
 since `cotal up` mints it.
-A credential with no expiry claim is a finding whatever its kind, since a copy stays valid until its
-signer rotates. `--fix` re-signs only the static daemon credentials, so an unbounded agent credential
+A credential with no expiry claim is a finding whatever its kind, since a copy stays valid until it
+is revoked or its signer rotates. `--fix` re-signs only the static daemon credentials, so an unbounded agent credential
 stays a finding until its file is gone. The exception is one `auth mint --no-expiry` wrote, whose
 record beside it still names the file's bytes: someone asked for it, so it is a
 `CREDENTIAL_UNBOUNDED_BY_REQUEST` warning instead, and the run ends ok, exit 0. Both get guidance that
-names both ways out. Rotating the space identity (`cotal down`, `cotal reset space <space>`, then
-`cotal up`) retires it with every other credential the space issued and removes the file, and the
-reset removes the space's store with its history. Replacing
+names the ways out. `cotal auth revoke-credential <file> --yes` between `cotal down` and `cotal up`
+stops that credential and keeps the store. Replacing
 a label's file with `cotal auth mint <label> --replace` once nothing uses it bounds it from then on,
 and so does removing any other file and its record and minting a replacement without `--no-expiry`;
-a copy made before stays valid until that rotation. An expired label's file is a finding too, and
+a copy made before stays valid until it is revoked. Rotating the space identity (`cotal down`,
+`cotal reset space <space>`, then `cotal up`) retires every credential the space issued and removes
+the file, and the reset removes the space's store with its history. An expired label's file is a finding too, and
 its guidance names that same `--replace`, next to the managed renewal that re-signs an agent a
 manager runs. `doctor auth` reads only the
 space's credential store, so a credential minted with `--out` is not listed, whatever its expiry.
@@ -7804,8 +7832,9 @@ the selected auth target. A lifecycle UID is 26 to 32 lowercase letters and digi
 endpoint accepts retirement only from the requester's own current serve identity and gate, which this
 CLI does not have. It neither borrows a manager identity nor substitutes the interactive or managed
 loopback host doors. `--yes` cannot create authority, and no retirement request is sent. The refusal
-names the lever that works, rotating the space identity, which stops every credential the space issued
-and removes the space's store with its history (see [auth mint](#auth-mint)). The rotation also leaves
+names the levers that work: [auth revoke-credential](#auth-revoke-credential) for one minted
+credential, which keeps the store, and rotating the space identity, which stops every credential the
+space issued and removes the space's store with its history (see [auth mint](#auth-mint)). The rotation also leaves
 earlier full backups of the space restoring only their registry.
 
 `auth redeem <private-handle-file> [--space <space>]` selects the existing local auth target and
