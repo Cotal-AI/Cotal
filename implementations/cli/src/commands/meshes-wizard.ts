@@ -146,7 +146,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
           validate: (v) => {
             if (!v) return "Required - this is the address the mesh's broker listens on.";
             const r = checkServer(v, "--server");
-            if (!r.ok) return r.message.replace(/^✗ (--server )?/, "");
+            if (!r.ok) return [r.message.replace(/^✗ (--server )?/, ""), r.remedy].filter(Boolean).join("; ");
             // The same safety gate the flag form applies, asked here so a refused address is
             // caught at the prompt instead of after the operator has answered three more
             // questions. Both front ends must agree; that is what this module exists for.

@@ -1,0 +1,1 @@
+smoke:auth-revoke-credential:live

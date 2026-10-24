@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import * as p from "../lib/prompts.js";
-import { registry, writePrivateRecord, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
+import { registry, token, writePrivateRecord, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
 import {
   CommandFailure,
   OFFICIAL_CONNECTORS,
@@ -199,6 +199,9 @@ interface SetupCancelled {
 
 const usage = (message: string, remedy?: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message, remedy ? { remedy } : {});
 const SCRIPTED_FORM = "cotal setup --destination local --harness <connector> --project <dir> --space <name> [--runtime <name>]";
+const SELF_HOSTED_FORM = "cotal setup --destination self-hosted --harness <connector> --project <dir> --space <name> [--connection-file <bundle.json>] [--runtime <name>]";
+/** What to do about a harness setup cannot set up. */
+const HARNESS_REMEDY = "pass one of them with --harness, or install another connector with `cotal ext add <npm-package>`";
 
 /** Input-only validation before connector seeding or preparation writes. */
 export function validateSetupArguments(args: ParsedArgs): void {
@@ -276,7 +279,7 @@ function destinationOf(value: string): Destination {
  *  `--runtime` sets up no runtime beyond `pty`. */
 function scriptedInputs(v: SetupValues, choices: readonly RuntimeChoice[]): SetupInputs {
   const missing = REQUIRED.filter((flag) => v[flag] === undefined);
-  if (missing.length > 0) throw new MissingFlags(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, SCRIPTED_FORM);
+  if (missing.length > 0) throw new MissingFlags(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, v.destination === "self-hosted" ? SELF_HOSTED_FORM : SCRIPTED_FORM);
   const project = resolve(v.project!);
   if (!isDir(project)) throw usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one");
   return { destination: destinationOf(v.destination!), harness: v.harness!, runtimes: runtimeFlags(v.runtime ?? [], choices), project, createProject: false, space: v.space!, ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }) };
@@ -471,7 +474,7 @@ function bundleSpace(file: string): string {
 async function harnessCandidates(harness?: string): Promise<SetupConnectorCandidate[]> {
   const candidates = await setupConnectorCandidates(await setupConnectorSurface());
   if (candidates.length > 0) return candidates;
-  if (harness !== undefined && !Object.hasOwn(OFFICIAL_CONNECTORS, harness)) throw usage(`no harness ${JSON.stringify(harness)}; the official connectors are ${Object.keys(OFFICIAL_CONNECTORS).join(", ")}`);
+  if (harness !== undefined && !Object.hasOwn(OFFICIAL_CONNECTORS, harness)) throw usage(`no harness ${JSON.stringify(harness)}; the official connectors are ${Object.keys(OFFICIAL_CONNECTORS).join(", ")}`, HARNESS_REMEDY);
   const seeds = seedWriterKind() === "released" || process.env.COTAL_ALLOW_CHECKOUT_SEED === "1";
   throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no connector is installed, so there is no application to set up", {
     remedy: seeds ? "run `cotal ext seed`" : "this cotal is not a released install, so it does not seed connectors; run setup from an installed cotal-ai, or for a sandboxed release test set COTAL_ALLOW_CHECKOUT_SEED=1 and run `cotal ext seed`",
@@ -516,10 +519,12 @@ interface SetupPlan {
 async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]): Promise<SetupPlan> {
   const target = { space: inputs.space };
   const problem = preferenceSpaceProblem(inputs.space);
-  if (problem) throw usage(problem);
+  // A name with a letter or digit left after the others are replaced is offered as it would be spelled.
+  const spelled = token(inputs.space);
+  if (problem) throw usage(problem, /[A-Za-z0-9]/.test(spelled) ? `pass --space ${spelled}, or another name of letters, digits, - and _` : "pass a --space name of letters, digits, - and _");
   const candidates = await harnessCandidates(inputs.harness);
   const candidate = candidates.find((c) => c.value === inputs.harness);
-  if (!candidate) throw usage(`no harness ${JSON.stringify(inputs.harness)}; known harnesses: ${candidates.map((c) => c.value).join(", ")}`);
+  if (!candidate) throw usage(`no harness ${JSON.stringify(inputs.harness)}; known harnesses: ${candidates.map((c) => c.value).join(", ")}`, HARNESS_REMEDY);
   assertPreferencesFolderProtected();
   if (inputs.destination === "self-hosted") return { inputs, runtimes, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile) };
   if (inputs.connectionFile !== undefined) throw usage("--connection-file registers a self-hosted space", "pass --destination self-hosted, or drop --connection-file");

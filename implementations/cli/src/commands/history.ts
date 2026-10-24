@@ -603,7 +603,11 @@ function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string,
   // A bare number is a sequence, so a year such as 2026 reads as one; the note says how it was read.
   if (since?.kind === "seq")
     notes.push({ text: `--since ${since.input} is chat stream sequence ${since.seq}; only messages after it are shown${yearShaped(since.input) ? `. For a date, write it in full, such as ${since.input}-01-01` : ""}`, tone: "hint" });
-  if (r.window.olderRetained === true) notes.push({ text: "older retained messages are not shown; raise --limit (up to 1000) to read further back", tone: "hint" });
+  // At the cap no larger window exists, so the note names none.
+  if (r.window.olderRetained === true) notes.push({ text: r.window.limit < MAX_LIMIT ? `older retained messages are not shown; raise --limit (up to ${MAX_LIMIT}) to read further back` : `older retained messages are not shown; history reads at most the newest ${MAX_LIMIT}`, tone: "hint" });
+  // The filters run on the messages read, so a sender or text found only further back is not found.
+  const filters = [r.window.from !== null ? `--from ${r.window.from}` : null, r.window.grep !== null ? `--grep ${r.window.grep}` : null].filter((flag) => flag !== null);
+  if (filters.length && r.window.olderRetained !== false) notes.push({ text: `${filters.join(" and ")} searched only the ${r.window.read} read; older retained messages were not searched`, tone: "hint" });
   if (r.window.olderRetained === null) notes.push({ text: "whether older retained messages exist is unknown", tone: "waiting" });
   if (r.window.reachesSince === false) notes.push({ text: `the window does not reach back to --since ${r.window.since}; messages between them are not shown`, tone: "waiting" });
   if (r.retention) {

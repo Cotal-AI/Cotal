@@ -18,6 +18,7 @@ import {
   deleteSpaceAuth,
   localProcessPath,
   localMeshesForRoot,
+  presentationOf,
   readMaintenanceJournal,
   releaseMaintenanceLock,
   renewalRecordPath,
@@ -33,6 +34,7 @@ import {
   userAuthSpacesOnDisk,
 } from "@cotal-ai/workspace";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
+import { reportOnInterrupt } from "../lib/interrupt-report.js";
 import { c, stderrLine } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { pidfileState, pidfileTargets } from "./down.js";
@@ -82,7 +84,12 @@ export async function clean(args: ParsedArgs): Promise<void> {
   const dryRun = values["dry-run"] === true;
   if (dryRun && target !== "store" && target !== "all")
     throw new CommandFailure("refused", "USAGE_INVALID", `--dry-run previews clean store and clean all only, not clean ${target}`);
-  if (!values.force && !dryRun) throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} deletes without prompting, so it requires --force`, { remedy: `cotal clean ${target} --force` });
+  if (!values.force && !dryRun) {
+    // The restore verbs act on one attempt, so the command to run names it, as given or as a placeholder.
+    const attempt = target === "restore-attempt" || target === "restore-fallback" ? ` --attempt ${values.attempt || "<id>"}` : "";
+    const discard = target === "restore-fallback" && values["discard-history"] ? " --discard-history" : "";
+    throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} deletes without prompting, so it requires --force`, { remedy: `cotal clean ${target}${attempt} --force${discard}` });
+  }
   if (target === "history") return purgeHistory(values);
 
   // Everything below acts on the SHARED broker, never one space: `store`/`all` delete the single
@@ -118,7 +125,17 @@ export async function clean(args: ParsedArgs): Promise<void> {
     try {
       // A restore that left something out set its old store aside as the only copy of it.
       const journal = readMaintenanceJournal(root);
-      const active = journal?.state === "active" && journal.restore.attemptId === values.attempt && !journal.restore.cleanup ? journal : undefined;
+      // A completed fallback cleanup retires the journal, so a repeat finds no record of its attempt.
+      if (!journal || !("restore" in journal) || journal.restore.attemptId !== values.attempt) {
+        const recorded = journal ? maintenanceNextStep(root, journal) : undefined;
+        throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no maintenance record at this root names restore attempt ${values.attempt}; nothing was deleted`, {
+          target: { root, attemptId: values.attempt },
+          remedy: journal && recorded
+            ? `this root's maintenance record names attempt ${recorded.attemptId} (state ${journal.state})${recorded.next ? `; ${recorded.next}` : ""}`
+            : "this root holds no restore attempt: a completed restore-fallback retires its journal, so the restore has settled and a repeat has nothing to remove; `cotal status` shows the root's maintenance state",
+        });
+      }
+      const active = journal.state === "active" && journal.restore.attemptId === values.attempt && !journal.restore.cleanup ? journal : undefined;
       const leftOut = active ? restoreLeftOut(active) : undefined;
       const onlyCopy = leftOut ? active?.restore.previousSource?.identity.path : undefined;
       if (onlyCopy && !values["discard-history"])
@@ -134,9 +151,17 @@ export async function clean(args: ParsedArgs): Promise<void> {
   // store | all: the JetStream store delete, plus (for `all`) the space identity. The broker-wide
   // refusal already ran above, before this branch could take the lock. A dry run writes nothing,
   // the lock included, so it reads the same state without one.
-  const lock = dryRun ? undefined : acquireMaintenanceLock(root);
+  // From here an interrupt says what the clean left, and releases the lock so the next run does not find it held.
+  // The handler is in place before the lock is taken: without one, an interrupt ends the process with the lock held.
+  let lock: ReturnType<typeof acquireMaintenanceLock> | undefined;
+  const progress: string[] = [];
+  const stopReporting = dryRun ? undefined : reportOnInterrupt(presentationOf(args.values), "clean", () => progress.length
+    ? new CommandFailure("unknown", "OPERATION_UNKNOWN", `clean ${target} was interrupted after it removed ${progress.join(", ")}; the rest may remain`, { target: { root }, changed: progress, remedy: `see what remains with cotal clean ${target} --dry-run, then run cotal clean ${target} --force again` })
+    : new CommandFailure("failed", "OPERATION_FAILED", `clean ${target} was interrupted before it removed anything`, { target: { root }, remedy: `run cotal clean ${target} --force again` }),
+  () => { if (lock) releaseMaintenanceLock(lock); });
   let removed: string[];
   try {
+    lock = dryRun ? undefined : acquireMaintenanceLock(root);
     const maintenance = readMaintenanceJournal(root);
     if (maintenance) {
       // The store holds the attempt's preserved or restored data, so the step that moves the attempt
@@ -161,12 +186,13 @@ export async function clean(args: ParsedArgs): Promise<void> {
     // store the last broker served is this root's store, and a bare `up` refuses and names it.
     const defaultStore = join(root, ".cotal", "nats");
     const storeDir = values["store-dir"] ?? (existsSync(join(defaultStore, "jetstream")) ? undefined : lastServedStore(root, defaultStore));
-    removed = await removeLocalState(root, { includeAuth: target === "all", storeDir, dryRun });
+    removed = await removeLocalState(root, { includeAuth: target === "all", storeDir, dryRun, onRemoved: (label) => progress.push(label) });
     // Keep registry/current-pointer cleanup in the same lock transaction as local identity removal.
     if (target === "all" && dryRun) removed.push(...localMeshesForRoot(root).map((mesh) => `the registration of space ${mesh.space}`));
     else if (target === "all") removeMeshesByRoot(root);
   } finally {
     if (lock) releaseMaintenanceLock(lock);
+    stopReporting?.();
   }
   if (removed.length === 0) {
     console.log(c.dim("nothing to clean - no local state found"));

@@ -11,6 +11,7 @@ import {
 } from "@cotal-ai/workspace";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
 import { batchedRead } from "../lib/transient.js";
+import { MAX_BUFFER } from "../chat/engine.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { channelMembers } from "./channel-members.js";
@@ -198,9 +199,12 @@ function savedRow([key, value]: [string, unknown]): [string, string] {
 }
 
 function policyFields(config: ChannelConfig | undefined, defaults: ChannelRegistryFile["defaults"]): [string, string][] {
+  const replay = effectiveReplay(config, defaults);
   return [
-    ["Replay", `${effectiveReplay(config, defaults) ? "on" : "off"}${config?.replay === undefined ? " · inherited" : ""}`],
+    ["Replay", `${replay ? "on" : "off"}${config?.replay === undefined ? " · inherited" : ""}`],
     ["Window", config?.replayWindow ?? defaults?.replayWindow ?? "retained history"],
+    // A chat session holds its replay in an inbox of MAX_BUFFER messages, so it keeps the newest.
+    ...(replay ? [["Chat replay", `the newest ${MAX_BUFFER} messages in the window`] as [string, string]] : []),
     ["Delivery", effectiveDeliveryClass(config, defaults)],
   ];
 }

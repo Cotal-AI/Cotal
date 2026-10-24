@@ -22,9 +22,13 @@
  *    (e.g. `stop --model` was accepted-and-ignored, now a usage error); the dead `--drive` flag
  *    is gone.
  *
+ * It also checks the Commands table in docs/cli.md against the registry: one row per command
+ * `cotal help --all` lists, under the section help lists it in.
+ *
  * Run: pnpm smoke:flag-inventory
  */
 import nodeAssert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { commandUsage, registry, type Command, type Subcommand } from "@cotal-ai/core";
 import { GLOBAL_FLAGS } from "@cotal-ai/workspace";
@@ -491,6 +495,17 @@ for (const cmd of commands) {
   }
 }
 
+// The Commands table in docs/cli.md has one row per command `cotal help --all` lists, under the
+// section it lists it in. The composition root also registers `daemon`, which GOLDEN leaves out, so
+// it is imported only after the golden check above.
+await import("../daemon/command.js");
+const helpAll = registry.all<Command>("command").filter((cmd) => !cmd.name.startsWith("__"));
+const doc = readFileSync(new URL("../../docs/cli.md", import.meta.url), "utf8");
+const tableStart = doc.indexOf("\n## Commands\n");
+const table = doc.slice(tableStart, doc.indexOf("\n## ", tableStart + 1));
+const rows = [...table.matchAll(/^\| ([^|]+?) \| \[`([^`]+)`\]\(#[^)]+\) \|/gm)].map((match) => ({ section: match[1]!, name: match[2]! }));
+assert.deepEqual(rows.map((row) => row.name).sort(), helpAll.map((cmd) => cmd.name).sort(), "the docs Commands table has one row per command help --all lists");
+for (const row of rows) assert.equal(row.section, helpAll.find((cmd) => cmd.name === row.name)?.group ?? "Commands", `the docs Commands table puts \`${row.name}\` under its help section`);
 // Help: every listed command's usage and every listed subcommand's starts with its whole `cotal …`
 // path, and a subcommand of a command with flags names its own, so `help channel set` neither drops
 // the channel name nor offers `--purge`.

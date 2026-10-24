@@ -1354,11 +1354,16 @@ if (process.platform === "linux") {
     check(`space show of another space beside that record (${label}) succeeds`, other.status === 0 && other.env?.outcome === "ok", shown(other));
     if (label === "unparsed") {
       const report = await json(["status"], folder);
-      check("status names that record under meshes.unreadable, exit 4",
-        report.status === 4 && Boolean(report.env?.result?.meshes?.unreadable?.some((u: { file: string }) => u.file === damaged)), shown(report));
+      check("status names that record under meshes.unreadable, exit 4, with one warning for it",
+        report.status === 4 && Boolean(report.env?.result?.meshes?.unreadable?.some((u: { file: string }) => u.file === damaged)) &&
+          (report.env?.warnings ?? []).filter((w: { target?: { file?: string } }) => w.target?.file === damaged).length === 1, shown(report));
+      const text = await run(["status"], {}, folder);
+      check("status text says the record is skipped once on stderr", text.status === 4 && text.stderr.replace(/\n\s+/g, " ").split("so it is skipped").length === 2, shown(text));
     }
     const own = await json(["use", "pf"], folder);
-    check(`use pf with its own record damaged (${label}) refuses SCHEMA_INVALID, exit 1, naming that file`, refused(own, 1, "SCHEMA_INVALID") && own.env?.target?.file === damaged, shown(own));
+    check(`use pf with its own record damaged (${label}) refuses SCHEMA_INVALID, exit 1, naming that file and the forget that removes it`,
+      refused(own, 1, "SCHEMA_INVALID") && own.env?.target?.file === damaged && own.env.error?.message === `${damaged} is not a usable prepared space record` &&
+        own.env.error?.remedy === "remove it with `cotal space forget pf`", shown(own));
     const forget = await json(["space", "forget", "pf"], folder);
     check(`space forget pf removes its damaged record (${label}), with no root`,
       forget.status === 0 && forget.env?.result?.kind === "space-forgotten" && forget.env.result.root === null && !existsSync(damaged), shown(forget));

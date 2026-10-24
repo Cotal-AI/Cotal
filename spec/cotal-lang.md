@@ -277,7 +277,10 @@ as Orc's `otherwise`.
 
 A duration is a string of a whole number and one unit: `ms`, `s`, `m`, `h`, `d` (`"30s"`, `"10m"`,
 `"4h"`, `"2d"`). Nothing else parses; there is no bare number and no default unit. `duration(text)`
-converts one to milliseconds.
+converts one to milliseconds. A validator MUST refuse a literal that is not a duration, with L2034,
+where the language reads one: the argument of `sleep` and `duration`, the second argument of `idle`,
+the `deadline` of `turn` and `ask`, the `timeout` of `checkpoint` and `wait`, and the `every` and
+`deadline` of `waitUntil`. A value computed at run time is refused where it is used.
 
 ## 5. The library
 
@@ -1196,6 +1199,7 @@ time, L5xxx durability, L6xxx simulation.
 | L2031 | Mutation of a frozen value |
 | L2032 | Write from a concurrent branch to something declared outside it |
 | L2033 | Effect not admitted inside `once` |
+| L2034 | Literal is not a duration |
 | L3011 | Unknown option key |
 | L3012 | Missing required step name |
 | L3013 | Step name is not a literal |
@@ -1314,3 +1318,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-10-18 | A `waitUntil` probe and its `terminal` may not write outside themselves (L2032, §7.7): both engines already call them one level deeper and refuse the write at run time, and the validator now walks them as it walks a `once` body. Measured before it: a probe that assigned an outer `let` or pushed onto an outer array, and a `terminal` that assigned an outer `let`, passed `validate` and then failed with L2032 after the first observation of every run. |
 | 2026-10-20 | Clarification with no change in meaning: §6.1 lists `spawn`'s `cwd` and `placement`, and §6.4 states that each is hashed only when the option bag carries it, `placement` as `{ endpoint, instanceId }`. A spawn that omits both keeps its six-key hash. The reference has hashed this way since lang 0.50.0. |
 | 2026-10-24 | An effect `once` does not admit, called in its body or in a function the body calls by name, is refused by the validator with L2033 (§7.8), and L4028 stays the run's refusal of one the validator could not see. Measured before it: `once(async () => { await sleep("1s") })`, directly and through a named helper, passed `validate` and a hosted start and then failed every run with L4028. |
+| 2026-10-24 | A literal that is not a duration, written where the language reads one, is refused by the validator with L2034 (§4.6). Measured before it: `sleep("5")`, `sleep(5000)`, `sleep("1.5s")`, `sleep("")`, a `checkpoint` `timeout` of `"PT5M"`, a `waitUntil` `every` of `"1.5s"` and `duration("5")` passed `validate` and a hosted start, and each run then failed when it reached the call. |

@@ -24,7 +24,7 @@ export const credentialMintFlags = [
 /** A local operator action, not a wire command or a grant. Implementations communicate via registry. */
 export interface CredentialAction extends Extension {
   readonly kind: "credential-action";
-  readonly name: "mint";
+  readonly name: "mint" | "revoke-credential";
   validate(args: ParsedArgs): void;
   run(args: ParsedArgs): Promise<void>;
 }
@@ -38,6 +38,17 @@ function assertExpiryInRange(values: ParsedArgs["values"]): void {
   const expiresAt = values["expires-at"] !== undefined ? Number(values["expires-at"])
     : values["expires-in"] !== undefined ? Math.floor(Date.now() / 1000) + Number(values["expires-in"]) : undefined;
   if (expiresAt !== undefined && expiresAt > LAST_EXPIRY_SECONDS) throw new CommandFailure("refused", "USAGE_INVALID", `the credential would expire after ${new Date(LAST_EXPIRY_SECONDS * 1000).toISOString()}, the last date Cotal can represent; nothing was written`, { remedy: "give a shorter --expires-in or an earlier --expires-at, in seconds" });
+}
+
+/** `auth revoke-credential <public-key | creds-file>`: one user key or one private creds file, and
+ *  only the confirmation, space and output flags. */
+export function validateCredentialRevokeArguments(args: ParsedArgs): void {
+  presentationOf(args.values);
+  const [subject, ...extra] = args.positionals;
+  if (!subject || extra.length || Object.keys(args.values).some((key) => !["space", "yes", "json", "plain", "no-color", "no-input"].includes(key)))
+    throw new CommandFailure("refused", "USAGE_INVALID", "use auth revoke-credential <public-key | creds-file> [--space <space>] [--yes]");
+  if (subject.length > 4096 || /[\u0000-\u001f\u007f]/u.test(subject))
+    throw new CommandFailure("refused", "USAGE_INVALID", "the credential must be a user public key or a creds file path with no terminal controls");
 }
 
 export function validateCredentialMintArguments(args: ParsedArgs): void {

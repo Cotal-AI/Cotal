@@ -424,6 +424,20 @@ accepts(
   'const r = await waitUntil(async () => { let own = "x"; own = own + "y"; return own; }, { name: "c", every: "1m", deadline: "1h", terminal: (o) => o === "xy" });\nlog(r);',
 );
 
+// ---- 5f) a literal written where a duration goes must be one (L2034) --------------------------
+
+// Each passed validate and a hosted start, then failed its run at the call with the same text.
+for (const lit of ['""', '"-1s"', '"1.5s"', '"PT5M"', '"5"', "5000", '" 5s"', '"5S"', '"5sec"', '"5m30s"', '"1w"', "null", "-1000", "`5`"])
+  rejects(`sleep(${lit}) is refused before the run`, "L2034", `await sleep(${lit});`);
+rejects("a checkpoint timeout is checked", "L2034", 'await checkpoint("gate", "Go?", { timeout: "PT5M" });');
+rejects("a wait timeout is checked", "L2034", 'await wait(replied(await spawn("x")), { timeout: "5" });');
+rejects("an idle duration is checked", "L2034", 'await wait(idle(channel("team"), "10 min"), { timeout: "1h" });');
+rejects("a turn deadline is checked", "L2034", 'const a = await spawn("x");\nawait turn(a, { name: "t", deadline: "1.5h" });');
+rejects("an ask deadline is checked", "L2034", 'const a = await spawn("x");\nawait ask(a, { name: "q", schema: { n: "number" }, deadline: 60 });');
+rejects("a waitUntil cadence is checked", "L2034", 'await waitUntil(async () => true, { name: "w", every: "1.5s", deadline: "1h" });');
+rejects("and so is duration()", "L2034", 'log(duration("5"));');
+accepts("a well-formed duration, a template one and a computed one are fine", 'const d = "1m";\nawait sleep("5s");\nawait sleep(`0ms`);\nawait sleep(d);\nawait checkpoint("gate", "Go?", { timeout: null });\nlog(duration("10m"));');
+
 // ---- 6) the Jessie diff --------------------------------------------------------------------
 
 rejects("no classes", "L1001", "class Foo { }");

@@ -27,7 +27,7 @@ import {
   primitiveDoc,
 } from "./primitives.js";
 import { KEY_RESERVED_RE, scopeTraits } from "./keys.js";
-import { isDuration, parseDuration } from "./duration.js";
+import { DurationError, isDuration, parseDuration } from "./duration.js";
 import { ADMITTED_NODES, FORBIDDEN_NODES, STRUCTURAL_NODES } from "./syntax.js";
 import { MUTATING_METHODS } from "./library.js";
 
@@ -932,10 +932,49 @@ const unawaitedCause = (name: string): string =>
 const unawaitedFix = (name: string): string =>
   `Await it (\`await ${name}(...)\`), return it, or make it a branch of \`parallel\`, \`race\` or \`fanOut\`.`;
 
+/** Where the language reads a duration (§4.6): an argument by its index, and option keys. */
+const DURATION_ARGUMENT: Readonly<Record<string, number>> = Object.freeze({ sleep: 0, idle: 1, duration: 0 });
+const DURATION_OPTIONS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  turn: ["deadline"], ask: ["deadline"], checkpoint: ["timeout"], wait: ["timeout"], waitUntil: ["every", "deadline"],
+});
+
+/**
+ * A literal written where a duration goes must be one (L2034). The call refuses it with the same
+ * text, but only once a run reaches it; a value computed at run time is checked only there. An
+ * option written as `null` is the option left out, so it is not a literal duration.
+ */
+function checkDurations(node: AnyNode, name: string, v: Validator): void {
+  const args = (node.arguments as AnyNode[]) ?? [];
+  const at = DURATION_ARGUMENT[name];
+  if (at !== undefined && args[at] !== undefined) checkDurationLiteral(args[at], name, v);
+  const keys = DURATION_OPTIONS[name];
+  const bag = keys === undefined ? undefined : args[PRIMITIVES[name]!.optionsAt];
+  if (keys === undefined || bag?.type !== "ObjectExpression") return;
+  for (const p of (bag.properties as AnyNode[]) ?? []) {
+    const value = p.value as AnyNode | undefined;
+    if (p.type !== "Property" || value === undefined || !keys.includes(propertyKeyName(p) ?? "")) continue;
+    if (!(value.type === "Literal" && value.value === null)) checkDurationLiteral(value, name, v);
+  }
+}
+
+function checkDurationLiteral(node: AnyNode, name: string, v: Validator): void {
+  const argument = node.argument as AnyNode | undefined;
+  const written =
+    node.type === "Literal" ? { value: node.value }
+    : node.type === "TemplateLiteral" && (node.expressions as AnyNode[]).length === 0
+      ? { value: ((node.quasis as AnyNode[])[0]?.value as { cooked?: string } | undefined)?.cooked }
+    : node.type === "UnaryExpression" && (node.operator === "-" || node.operator === "+") && argument?.type === "Literal" && typeof argument.value === "number"
+      ? { value: node.operator === "-" ? -argument.value : argument.value }
+    : undefined;
+  if (written === undefined || isDuration(written.value)) return;
+  v.fail("L2034", node, new DurationError(String(written.value)).message, 'Write a duration string here, such as "30s", "10m" or "4h".', name);
+}
+
 function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
   const callee = node.callee;
   if (!isNode(callee) || callee.type !== "Identifier") return;
   const name = callee.name as string;
+  checkDurations(node, name, v);
   const spec = PRIMITIVES[name];
   if (spec === undefined) {
     // L2013's other half: a USER function declared `async` (or a const bound to an async function

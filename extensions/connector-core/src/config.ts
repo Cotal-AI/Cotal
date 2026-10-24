@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, resolveReadAcl, type AgentDef, type ChannelMode, type EndpointKind } from "@cotal-ai/core";
+import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, brokerUrlHasUserinfo, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, resolveReadAcl, type AgentDef, type ChannelMode, type EndpointKind } from "@cotal-ai/core";
 import { readMaterial } from "./session-env.js";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
@@ -251,6 +251,10 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   // BROKEN LAUNCH, not a precedence question: two sources of identity for one session is exactly
   // the ambiguity that ends with a seat connected as something nobody chose, so it throws.
   const material = readMaterial(env);
+  // The client would drop a user and password from the URL, and the session would then fail
+  // authorization with nothing saying why, or print them back in a not-connected line.
+  if (env.COTAL_SERVERS?.trim() && brokerUrlHasUserinfo(env.COTAL_SERVERS))
+    throw new Error("COTAL config: COTAL_SERVERS must not embed credentials; name the broker URL without user:password@, and pass the credential in COTAL_CREDS, COTAL_TOKEN or a COTAL_LINK");
   const credsPath = material?.creds ?? env.COTAL_CREDS?.trim();
   // Read once to pin the connection identity at boot, then preserve the FILE as the endpoint's
   // standing-renewal source. Every later read is checked against this id by CotalEndpoint, so a
