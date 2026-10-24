@@ -122,7 +122,7 @@ export async function space(args: ParsedArgs): Promise<void> {
   if (values["dry-run"] !== undefined) throw usage("--dry-run belongs to space delete");
   if (sub === "add") return spaceAdd(rest, values, presentation);
   const addOnly = ADD_FLAGS.find((flag) => values[flag] !== undefined && !(sub === "create" && flag === "root"));
-  if (addOnly) throw usage(`--${addOnly} is taken by \`cotal space add\` only`);
+  if (addOnly) throw usage(addOnly === "yes" ? "--yes is taken by `cotal space add` and `cotal space delete` only" : `--${addOnly} is taken by \`cotal space add\` only`);
   if (sub === "forget") return spaceForget(rest, presentation);
   if (sub === "create") return spaceCreate(rest, values.root, values.adopt === true, presentation);
   if (sub !== undefined && sub !== "show") throw usage(`cotal space has no subcommand "${sub}" - run \`cotal help space\``);
