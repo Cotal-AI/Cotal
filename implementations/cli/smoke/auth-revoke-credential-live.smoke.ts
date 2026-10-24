@@ -44,16 +44,16 @@ const anchors = new Map<string, SmokeSandboxAnchor>();
 const roots: string[] = [];
 
 type Envelope = { outcome: string; error?: { code: string; message: string; remedy?: string }; result?: Record<string, unknown> };
-type Run = { status: number | null; stdout: string; stderr: string; env?: Envelope };
+type Run = { status: number | null; signal: NodeJS.Signals | null; spawnError: string | null; stdout: string; stderr: string; env?: Envelope };
 const cli = (cwd: string, ...args: string[]): Run => {
   const options = { cwd, env, encoding: "utf8" as const, timeout: 180_000 };
   assertSmokeSandboxDown(anchors.get(cwd), args, options);
   const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
   let parsed: Envelope | undefined;
   try { parsed = JSON.parse(run.stdout) as Envelope; } catch { parsed = undefined; }
-  return { status: run.status, stdout: run.stdout, stderr: run.stderr, env: parsed };
+  return { status: run.status, signal: run.signal, spawnError: run.error?.message ?? null, stdout: run.stdout, stderr: run.stderr, env: parsed };
 };
-const shown = (run: Run) => ({ status: run.status, error: run.env?.error, out: run.stdout.slice(-1000), err: run.stderr.slice(-1500) });
+const shown = (run: Run) => ({ status: run.status, signal: run.signal, spawnError: run.spawnError, error: run.env?.error, out: run.stdout.slice(-1000), err: run.stderr.slice(-1500) });
 const accountDigest = (root: string) => {
   const dir = join(root, ".cotal", "auth");
   if (!existsSync(dir)) return "absent";
