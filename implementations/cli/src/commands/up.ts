@@ -234,6 +234,7 @@ import {
   type RestoreFlags,
 } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
+import { brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
 
 const pendingRestores = new Map<string, PreparedRestore>();
 
@@ -1669,6 +1670,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     }
   }
 
+  await assertBrokerAddressFree(server, "cotal up");
   // A repair keeps its own store rules above, and a resume or restore names its store.
   if (!resumeAttempt && !repairing) {
     if (values["store-dir"] === undefined) refuseUnnamedLastStore(cotalPath("nats"));
@@ -3044,6 +3046,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     console.error(c.red(`✗ ${brokerAddressForDisplay(server) ?? "selected address"} already has a broker - a fresh boot will not adopt it. Stop the owned stack or select another address; team deploy supports only all-new channel cards, not agent apply.`));
     process.exit(1);
   }
+  await assertBrokerAddressFree(server, `cotal up -f ${file}`);
   // Connectors + their required binaries must exist before any mutation (no fallback).
   const conn = await preflightConnectors(prepared);
   if (conn) {
@@ -3641,6 +3644,19 @@ export async function startMeshDetached(
     delivery: useAuth && deliveryUp(space),
     manager: managerUp(space),
   };
+}
+
+/** Refuse a broker address another program holds without answering NATS, such as a web server, as
+ *  the controller stack refuses it. nats-server would exit on its bind with only a log line, and the
+ *  readiness probe would wait on that program instead. `command` is the start the remedy reruns. */
+async function assertBrokerAddressFree(server: string, command: string): Promise<void> {
+  const bindError = await listenerBindError(server);
+  if (bindError === undefined || bindError === "timeout" || bindError.code !== "EADDRINUSE") return;
+  const { host, port } = brokerListenAddress(server), address = new URL(server);
+  throw new CommandFailure("refused", "CONFLICT", `another process holds the broker address ${host}:${port} (bind failed: address already in use); no broker was launched`, {
+    target: { root: cotalRoot(), server, bindError: bindError.code },
+    remedy: `start it at another address with ${command} --server ${address.protocol}//${address.hostname}:<port>, or stop the process listening on ${host}:${port} and run ${command} again`,
+  });
 }
 
 /** THE FLIP, open-boot edition: `--open` must never boot a credless broker over a root whose

@@ -6,7 +6,8 @@
  *
  * The same holds where `up` would otherwise start something it cannot stand behind. A prepared root
  * given an option the controller stack has no route for refuses UNSUPPORTED instead of starting the
- * legacy launcher.
+ * legacy launcher. A broker address another program holds refuses CONFLICT instead of launching a
+ * broker that exits on its bind.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, from empty
  * folders outside them. Nothing is started; each refusal comes from validation. A `--server` that no
@@ -21,7 +22,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createServer, type AddressInfo } from "node:net";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -37,7 +38,8 @@ interface Envelope { outcome?: string; error?: { code?: string; message?: string
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-up-usage-home-"));
 const folder = mkdtempSync(join(tmpdir(), "cotal-up-usage-cwd-"));
-process.on("exit", () => { rmSync(home, { recursive: true, force: true }); rmSync(folder, { recursive: true, force: true }); });
+const unprepared = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-unprepared-")));
+process.on("exit", () => { for (const dir of [home, folder, unprepared]) rmSync(dir, { recursive: true, force: true }); });
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
@@ -109,6 +111,10 @@ try {
   const tls = run(["up", "--server", `tls://127.0.0.1:${held}`, "--tls-cert", join(prepared, "c.pem"), "--tls-key", join(prepared, "k.pem"), "--json"], prepared);
   check("…and names both TLS options and the -f route", tls.status === 2 && tls.envelope?.error?.code === "UNSUPPORTED" && /no route for --tls-cert and --tls-key/.test(tls.envelope.error.message ?? "") && /cotal up -f <cotal\.yaml>, which takes them/.test(tls.envelope.error.remedy ?? ""), shown(tls));
   check("…without starting the legacy launcher or the controller stack", !started(prepared) && !existsSync(join(prepared, ".cotal", "stack-controller.json")), readdirSync(join(prepared, ".cotal")));
+
+  const bind = run(["up", "--server", `nats://127.0.0.1:${held}`], unprepared);
+  check("the legacy route refuses a held address CONFLICT, exit 2, naming the address, and launches nothing",
+    bind.status === 2 && /CONFLICT/.test(bind.stderr) && new RegExp(`another process holds the broker address 127\\.0\\.0\\.1:${held}`).test(bind.stderr) && !started(unprepared), shown(bind));
 } finally {
   holder.close();
 }
