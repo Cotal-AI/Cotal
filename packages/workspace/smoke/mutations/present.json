@@ -12,7 +12,7 @@
   "mutations": [
     {
       "name": "width counts code units",
-      "file": "packages/workspace/src/present.ts",
+      "file": "packages/workspace/src/text-wrap.ts",
       "find": "  return stringWidth(text);\n",
       "replace": "  return text.length;\n",
       "expectRed": "a CJK character is 2 column(s) wide",
@@ -102,7 +102,7 @@
     },
     {
       "name": "long text never wraps",
-      "file": "packages/workspace/src/present.ts",
+      "file": "packages/workspace/src/text-wrap.ts",
       "find": "    if (line && displayWidth(next) > width) {\n",
       "replace": "    if (false) {\n",
       "expectRed": "wrapWords breaks at spaces within the width",
@@ -112,7 +112,7 @@
     },
     {
       "name": "a first word wider than the line leaves an empty line",
-      "file": "packages/workspace/src/present.ts",
+      "file": "packages/workspace/src/text-wrap.ts",
       "find": "    if (line && displayWidth(next) > width) {\n",
       "replace": "    if (displayWidth(next) > width) {\n",
       "expectRed": "a word wider than the line keeps a line of its own, unsplit",
@@ -122,7 +122,7 @@
     },
     {
       "name": "narrow widths wrap",
-      "file": "packages/workspace/src/present.ts",
+      "file": "packages/workspace/src/text-wrap.ts",
       "find": "  if (!(width >= 20) || displayWidth(words.join(\" \")) <= width) return [words.join(\" \")];\n",
       "replace": "  if (displayWidth(words.join(\" \")) <= width) return [words.join(\" \")];\n",
       "expectRed": "below 20 columns nothing is wrapped",
@@ -132,7 +132,7 @@
     },
     {
       "name": "given words are split at their spaces",
-      "file": "packages/workspace/src/present.ts",
+      "file": "packages/workspace/src/text-wrap.ts",
       "find": "  const words = typeof text === \"string\" ? text.split(\" \") : text;\n",
       "replace": "  const words = (typeof text === \"string\" ? text : text.join(\" \")).split(\" \");\n",
       "expectRed": "given words are kept whole",
@@ -202,7 +202,7 @@
     },
     {
       "name": "a pipe's columns are read as a terminal width",
-      "file": "packages/workspace/src/present.ts",
+      "file": "packages/workspace/src/text-wrap.ts",
       "find": "  return stream.isTTY && stream.columns ? stream.columns : Number.POSITIVE_INFINITY;\n",
       "replace": "  return stream.columns ? stream.columns : Number.POSITIVE_INFINITY;\n",
       "expectRed": "a long warning to a pipe stays one line",
@@ -213,7 +213,7 @@
     {
       "name": "plain keeps the punctuation glyphs",
       "file": "packages/workspace/src/present.ts",
-      "find": "  return style === \"plain\" ? text.replace(/[\u00b7\u2026\u2192\u21b3\u2014\u2013]/g, (glyph) => PLAIN_PUNCTUATION[glyph]!).replace(/\u00a7 ?/g, \"section \") : text;\n",
+      "find": "  return style === \"plain\" ? text.replace(/[·…→↳—–]/g, (glyph) => PLAIN_PUNCTUATION[glyph]!).replace(/§ ?/g, \"section \") : text;\n",
       "replace": "  return text;\n",
       "expectRed": "plain draws the report's punctuation in ASCII",
       "cell": "plain draws the report's punctuation in ASCII",
@@ -233,8 +233,8 @@
     {
       "name": "plain marks a partial result with a glyph",
       "file": "packages/workspace/src/present.ts",
-      "find": "      say({ text: `${presentation === \"plain\" ? \"!\" : \"\u2717\"} ${error.message}`, tone: outcome === \"partial\" || outcome === \"unknown\" ? \"waiting\" : \"failed\" }, 2);\n",
-      "replace": "      say({ text: `\u2717 ${error.message}`, tone: outcome === \"partial\" || outcome === \"unknown\" ? \"waiting\" : \"failed\" }, 2);\n",
+      "find": "      say({ text: `${presentation === \"plain\" ? \"!\" : \"✗\"} ${error.message}`, tone: outcome === \"partial\" || outcome === \"unknown\" ? \"waiting\" : \"failed\" }, 2);\n",
+      "replace": "      say({ text: `✗ ${error.message}`, tone: outcome === \"partial\" || outcome === \"unknown\" ? \"waiting\" : \"failed\" }, 2);\n",
       "expectRed": "plain writes a partial result's line and remedy in ASCII",
       "cell": "plain writes a partial result's line and remedy in ASCII",
       "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",

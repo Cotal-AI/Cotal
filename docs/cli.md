@@ -153,7 +153,8 @@ Under a locale whose character set is not UTF-8, as `LC_ALL`, then `LC_CTYPE`, t
 reports and error lines draw their marks and punctuation as plain does, and keep their color. With
 none of the three set, the marks are drawn in UTF-8. Windows consoles are always treated as UTF-8.
 Pass one of `--json` and `--plain`; both is a `USAGE_INVALID` refusal. A table that does not fit the
-terminal is written as one labeled record per row, so no value is cut off.
+terminal is written as one labeled record per row, so no value is cut off. A warning on stderr wraps
+to the terminal at spaces, each continuation line under its text.
 
 Shared human reports for a resolved space begin with `Mesh: <space>`, including
 empty `ps` results, manager inventories, the impact a command shows before it

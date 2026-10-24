@@ -19,7 +19,9 @@ import {
   outputDeclarationProblems,
   outputFlags,
   plainFlag,
+  recordOperationWarning,
   renderReport,
+  runOperation,
   streamRecord,
   USAGE_CODES,
   type Envelope,
@@ -120,6 +122,21 @@ check("a plain output needs --plain", outputDeclarationProblems({ name: "a", out
 // No command may declare a global flag's name.
 check("a command that declares --no-color or --no-input is refused", globalFlagDeclarationProblems({ name: "a", flags: [{ name: "no-color", type: "string" }, { name: "no-input", type: "boolean" }] }).length === 2);
 check("a command with other flags is accepted", globalFlagDeclarationProblems({ name: "a", flags: [jsonFlag, plainFlag] }).length === 0);
+
+// A warning on stderr wraps to the terminal like the report it precedes, each continuation line
+// under its text. It used to be one line however wide the message was.
+{
+  const err = process.stderr as unknown as { isTTY?: boolean; columns?: number; write: (chunk: string) => boolean };
+  const saved = { isTTY: err.isTTY, columns: err.columns, write: err.write };
+  let written = "";
+  Object.assign(err, { isTTY: true, columns: 40, write: (chunk: string) => { written += chunk; return true; } });
+  try {
+    await runOperation({}, async () => recordOperationWarning({ code: "SELECTION_NOT_FOLDER_SPACE", target: null, message: 'this targets the selected space "b", not this folder\'s space "a"; pass --space a to target it' }));
+  } finally { Object.assign(err, saved); }
+  const lines = written.replace(/\n$/, "").split("\n");
+  check("a warning wraps to a 40-column terminal, its first line marked and the rest under its text",
+    lines.length > 1 && lines.every((line) => line.length <= 40) && lines[0]!.startsWith("! this targets") && lines.slice(1).every((line) => line.startsWith("  ") && line[2] !== " "), lines);
+}
 
 if (failed) {
   console.log(`OUTPUT SMOKE: ${failed} failed`);
