@@ -4425,6 +4425,8 @@ broker accepts its credential until then unless its eviction was verified. Once 
 ended by itself and before the `end` record, a request refuses with `LIFECYCLE_BLOCKED` and
 `the session is ending; no new requests are accepted`. When the reader closes stdout, stderr says
 `stdout closed by the reader; ending the session`, and no later record is written, `end` included.
+Any other failed write, such as to a full disk, says `stdout could not be written; ending the
+session` and the one line about lost output, and the session ends the same way with exit 3.
 
 ## channel
 
