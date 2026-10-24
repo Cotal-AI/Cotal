@@ -46,6 +46,11 @@
  *
  * `service remove` of a controller stack member's definition refuses UNSUPPORTED and keeps it.
  *
+ * `add` saves a definition with its space's root, and refuses a file that sets `root` itself. After
+ * `space forget`, a space of that name prepared in another folder lists the definition as inherited
+ * from that root, and `start`, `restart` and `install` of it refuse CONFLICT, naming the root and
+ * `service remove`. A definition with no recorded root, as an earlier release saved, starts as before.
+ *
  * A Linear service whose definition gives the child its own HOME, with COTAL_HOME unset, refuses
  * before a child in two isolated homes: with the account only in the child's home and only in the
  * controller's. Its space is registered in both homes as `up` records a started one, with static
@@ -405,6 +410,53 @@ if (process.platform === "linux") {
   chmodSync(script, 0o700);
   check("rig: its instance stops", run(["service", "stop", "unsafe", "--instance", String(id), "--space", "b1", "--yes"]).status === 0);
   check("rig: the definition is forgotten", run(["service", "remove", "unsafe", "--space", "b1", "--yes"]).status === 0);
+}
+
+// A definition records the root it was added in. After a forget, a space of the same name prepared
+// in another folder lists it as inherited and refuses to launch it; one with no recorded root, as an
+// earlier release saved, starts as before.
+{
+  const [rootA, rootB] = ["alt-", "neu-"].map((prefix) => realpathSync(mkdtempSync(join(home, prefix))));
+  const tickFile = join(home, "tick.json");
+  const tick = (extra: Record<string, unknown> = {}) => JSON.stringify({ schemaVersion: 1, space: "inh", launch: { type: "process", executable: "/bin/sh", args: ["-c", "exec sleep 30"], cwd: rootA }, readiness: { type: "process", timeoutMs: 5000 }, ...extra });
+  type Definition = { name: string; root: string | null; rootMatch: string };
+  const definitionsOf = () => (run(["service", "--space", "inh"]).envelope?.result?.definitions ?? []) as Definition[];
+  const prepared = run(["space", "create", "inh", "--root", rootA]);
+  writeFileSync(tickFile, tick({ root: rootB }));
+  const claimed = run(["service", "add", "claimed", "--file", tickFile, "--space", "inh"]);
+  check("a definition file that sets root is refused SCHEMA_INVALID, exit 1, and nothing is saved",
+    prepared.status === 0 && claimed.status === 1 && claimed.envelope?.error?.code === "SCHEMA_INVALID" && /sets root/.test(claimed.envelope.error.message) && !definitionsOf().some((row) => row.name === "claimed"), shown(claimed));
+  writeFileSync(tickFile, tick());
+  const added = run(["service", "add", "tick", "--file", tickFile, "--space", "inh"]);
+  const saved = run(["service", "show", "tick", "--space", "inh"]);
+  check("add saves the definition with the space's root", added.status === 0 && saved.envelope?.result?.root === rootA && saved.envelope.result.rootMatch === "this-root", shown(saved));
+  const forgot = run(["space", "forget", "inh"]);
+  const again = run(["space", "create", "inh", "--root", rootB]);
+  check("rig: the space is forgotten and prepared again in another folder", forgot.status === 0 && again.status === 0, { forgot: shown(forgot), again: shown(again) });
+  const inherited = definitionsOf().find((row) => row.name === "tick");
+  check("the other folder's space lists it as inherited, with the root it was added in", inherited?.root === rootA && inherited.rootMatch === "inherited", inherited);
+  const text = spawnSync(process.execPath, [BIN, "service", "--space", "inh"], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+  check("  and its text marks it inherited from that root", text.status === 0 && text.stdout.includes(`inherited from ${rootA}`), text.stdout.slice(-1500));
+  for (const [mode, extra] of [["start", []], ["restart", ["--yes"]], ["install", ["--dry-run"]]] as const) {
+    const r = run(["service", mode, "tick", "--space", "inh", ...extra]);
+    check(`${mode} of it refuses CONFLICT, exit 2, naming that root and service remove`,
+      r.status === 2 && r.envelope?.error?.code === "CONFLICT" && r.envelope.error.message.includes(`added in ${rootA}, not in this space's root ${rootB}`)
+        && r.envelope.error.remedy?.includes("cotal service remove tick --space inh --yes") === true, shown(r));
+  }
+  const after = run(["service", "--space", "inh"]);
+  check("  and no instance of it is recorded", ((after.envelope?.result?.instances ?? []) as { definition: string }[]).every((row) => row.definition !== "tick"), shown(after));
+  const dir = join(home, ".cotal", "services", spaceKey("inh"), "definitions");
+  const record = JSON.parse(readFileSync(join(dir, `${spaceKey("tick")}.json`), "utf8")) as { value: Record<string, unknown> };
+  delete record.value.root;
+  writeFileSync(join(dir, `${spaceKey("old")}.json`), JSON.stringify(record), { mode: 0o600 });
+  const old = definitionsOf().find((row) => row.name === "old");
+  const started = run(["service", "start", "old", "--space", "inh"]);
+  check("a definition with no recorded root is listed as root not recorded and starts as before",
+    old?.root === null && old.rootMatch === "not-recorded" && started.status === 0 && started.envelope?.outcome === "ok", { old, started: shown(started) });
+  const stopped = run(["service", "stop", "old", "--space", "inh", "--yes"]);
+  check("rig: that start is stopped", stopped.status === 0, shown(stopped));
+  const removed = run(["service", "remove", "tick", "--space", "inh", "--yes"]);
+  check("the remove the refusal names forgets the inherited definition", removed.status === 0 && !definitionsOf().some((row) => row.name === "tick"), shown(removed));
 }
 
 // A Linear service whose envRefs give the child HOME from SERVICE_HOME. With COTAL_HOME unset, each

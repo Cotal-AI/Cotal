@@ -2,7 +2,7 @@
  *  creation-pinned direct `nats-server` child, launch-bound listener readiness and an exact
  *  kernel-exit stop. Planning prepares no trust, writes no broker config and starts nothing else. */
 import { createHash } from "node:crypto";
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createServer, isIP } from "node:net";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
@@ -161,6 +161,29 @@ export async function listenerBindError(server: string): Promise<NodeJS.ErrnoExc
   clearTimeout(timer);
   await new Promise<void>((resolve) => probe.close(() => resolve()));
   return error;
+}
+
+/** What a refusal says holds a broker address whose bind failed in use, and what frees it. The
+ *  kernel's TCP table (Linux only) can show that nothing listens on the port: then a connection's
+ *  local end holds it, and one in TIME-WAIT frees itself within a minute, so the next step is to wait
+ *  rather than to stop a process that does not exist. Anywhere else, or with a listener on the port,
+ *  it names another process. */
+export function addressHolder(what: string, host: string, port: number): { says: string; frees: string } {
+  const states: string[] = [];
+  for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    let text: string;
+    try { text = readFileSync(table, "utf8"); } catch { continue; }
+    for (const row of text.split("\n").slice(1)) {
+      const [, local, , state] = row.trim().split(/\s+/);
+      if (local && state && Number.parseInt(local.slice(local.lastIndexOf(":") + 1), 16) === port) states.push(state);
+    }
+  }
+  const address = `${what} ${host}:${port}`;
+  // 0A is LISTEN and 06 is TIME_WAIT in the kernel's table.
+  if (!states.length || states.includes("0A")) return { says: `another process holds ${address}`, frees: `stop the process listening on ${host}:${port}` };
+  return states.every((state) => state === "06")
+    ? { says: `nothing listens at ${address}, but a closed connection in TIME-WAIT still holds its port`, frees: "wait up to a minute for the TIME-WAIT to clear" }
+    : { says: `nothing listens at ${address}, but an open connection's local end holds its port`, frees: `close the connection that holds ${host}:${port}` };
 }
 
 /** Bind the declared client listener once and release it. nats-server exits on a bind failure with

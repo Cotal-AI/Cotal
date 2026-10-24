@@ -91,7 +91,7 @@ import { additiveTeamRecordedState, listAdditiveTeamAttempts, retainedAdditiveTe
 import { service, serviceComplete, validateServiceArguments } from "./service-registry.js";
 import { stopNamedServiceSet } from "./service-set-stop.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
-import { assertBareDownServicesVerified, assertNoServicesForPreserve, bareDownServicesView, planBareDownServices, stopBareDownServices, type BareDownService } from "./down-services.js";
+import { assertNoLiveServices, bareDownServicesView, liveServicesRefusal, planBareDownServices, type BareDownService } from "./down-services.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
@@ -193,7 +193,7 @@ function previewWholeStack(args: ParsedArgs): void {
   let mesh: NonNullable<ReturnType<typeof findMesh>>;
   let maintenance: ReturnType<typeof readMaintenanceJournal>;
   let components: Array<{ name: string; label: string; pidfile: string; recorded: boolean; liveness: "alive" | "dead" | "unknown"; pid: number | null; note: string | null }>;
-  let services: ReturnType<typeof readLocalServiceCensus>, serviceStops: BareDownService[];
+  let services: ReturnType<typeof readLocalServiceCensus>, serviceChecks: BareDownService[];
   let additiveRecords: ReturnType<typeof listLedgerFiles>, additiveAttempts: ReturnType<typeof listAdditiveTeamAttempts>;
   let bootAttempts: ReturnType<typeof listFreshTeamAttempts>, bootSummaries: ReturnType<typeof listFreshTeamSummaries>;
   let otherBrokerRegistrations: Array<{ space: string; root: string; origin: string }>;
@@ -221,7 +221,7 @@ function previewWholeStack(args: ParsedArgs): void {
       return { name: component.name, label: component.label, pidfile, recorded: processRecorded(component, context), liveness: state.liveness, pid: state.pid ?? null, note: state.note ?? null };
     });
     services = readLocalServiceCensus(mesh.space);
-    serviceStops = planBareDownServices(mesh.space);
+    serviceChecks = planBareDownServices(mesh.space);
     additiveRecords = listLedgerFiles(root, { requireReadable: true });
     additiveAttempts = listAdditiveTeamAttempts(root);
     bootAttempts = listFreshTeamAttempts(root); bootSummaries = listFreshTeamSummaries(root);
@@ -232,9 +232,11 @@ function previewWholeStack(args: ParsedArgs): void {
   const homeRuns = home && components.some((row) => row.liveness !== "dead");
   const byBootId = new Map(bootSummaries.valid.map((summary) => [summary.deploymentId, summary]));
   const unsettledBootAttempts = bootAttempts.valid.filter((attempt) => !freshTeamAttemptSettled(attempt, byBootId.get(attempt.deploymentId)));
+  // A preview reports the service refusal the real stop would give instead of refusing itself.
+  const refusal = liveServicesRefusal(mesh.space, serviceChecks, "down");
   const result = { kind: "whole-stack-local-preview", space: mesh.space, root, recordedBroker: brokerAddressForDisplay(mesh.server) ?? null,
     maintenance: maintenance?.state ?? "none-recorded", withAgentsRequested: args.values["with-agents"] === true,
-    components, ...services, serviceStops, otherBrokerRegistrations,
+    components, ...services, serviceChecks, otherBrokerRegistrations,
     additiveLedgers: additiveRecords.valid.map(({ ledger }) => ({ deploymentId: ledger.runId, space: ledger.space, agents: ledger.created.agents.length, channels: ledger.created.channels.length })),
     unreadableAdditiveLedgers: additiveRecords.refused.map(({ path }) => path),
     retainedAdditiveAttempts: additiveAttempts.valid.map((attempt) => ({ deploymentId: attempt.deploymentId, space: attempt.space, server: brokerAddressForDisplay(attempt.server) ?? "not displayable", createdAt: attempt.createdAt, recordedState: additiveTeamRecordedState(attempt, additiveAttempts) })),
@@ -244,6 +246,7 @@ function previewWholeStack(args: ParsedArgs): void {
     brokerSharing: "exact recorded address matches only; aliases and live tenants not checked", agentImpact: "not-established", serviceInstanceScope: "selected-space workstation records only; root ownership and live state not established",
     dryRun: true, effectAttempted: false, reserved: false };
   writeResult(presentationOf(args.values), { command: "down", target: { root, space: mesh.space }, result,
+    ...(refusal ? { warnings: [{ code: refusal.code, target: refusal.target, message: `the real stop would refuse: ${refusal.message}${refusal.remedy ? `; ${refusal.remedy}` : ""}` }] } : {}),
     completeness: "partial", partial: { message: "Pidfiles, additive ledgers, service records, supervisor receipts and retained attempts are not a complete owned stack or native agent-impact plan. No process identity, service root ownership, broker sharing or stop authority was established." } }, (data): Report => ({ sections: [
     { title: "Whole-stack local inspection", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Root", data.root], ["Maintenance", data.maintenance], ["Saved service definitions", String(data.serviceDefinitions.length)], ["Saved service instances", String(data.serviceRecords.length)], ["Supervisor receipts", String(data.supervisors.length)], ["Retained native attempts", String(data.nativeAttempts.length)], ["Other exact-address registrations", String(data.otherBrokerRegistrations.length)], ["Additive ledgers", String(data.additiveLedgers.length)], ["Unreadable additive ledgers", String(data.unreadableAdditiveLedgers.length)], ["Retained additive deployments", String(data.retainedAdditiveAttempts.length)], ["Unreadable additive attempts", String(data.unreadableAdditiveAttempts.length)], ["Unsettled fresh attempts", String(data.unsettledBootAttempts.length)], ["Unreadable fresh records", String(data.unreadableBootRecords.length)], ["Deprovision agents", data.withAgentsRequested ? "requested; impact unknown" : "not requested; process impact unknown"], ["Stop authority", "not established"]] }, { kind: "lines", lines: [{ text: "This is a read of local records, not a stop plan. Liveness does not prove identity, and service, broker-sharing and agent consequences are not checked. No process was signalled.", tone: "waiting" }] }] },
     { title: "Recorded broker address matches", blocks: [data.otherBrokerRegistrations.length ? { kind: "table", columns: [{ key: "space", label: "Other space" }, { key: "root", label: "Recorded root" }, { key: "origin", label: "Registration" }], rows: data.otherBrokerRegistrations.slice(0, 100) } : { kind: "lines", lines: ["No other registration uses this exact broker address in the local workstation registry."] }, { kind: "lines", lines: [...(data.otherBrokerRegistrations.length > 100 ? ["Additional exact-address matches are in JSON."] : []), "An exact-address match is a sharing warning. No match is not proof of an exclusive broker: aliases, remote tenants and live attachments were not checked."] }] },
@@ -253,7 +256,7 @@ function previewWholeStack(args: ParsedArgs): void {
     { title: "Local process records", blocks: [data.components.length ? { kind: "table", columns: [{ key: "name", label: "Component" }, { key: "state", label: "Pidfile probe" }, { key: "record", label: "Recorded" }, { key: "pid", label: "PID" }], rows: data.components.map((row) => ({ name: row.label, state: row.liveness, record: row.recorded ? "yes" : "no", pid: row.pid === null ? "not pinned" : String(row.pid) })) } : { kind: "lines", lines: ["No local process descriptors were found."] }] },
     { title: "Selected-space service definitions", blocks: [data.serviceDefinitions.length ? { kind: "table", columns: [{ key: "name", label: "Definition" }, { key: "launch", label: "Launch type" }, { key: "instances", label: "Instance records" }], rows: data.serviceDefinitions.slice(0, 100).map((row) => ({ name: row.name, launch: row.launch, instances: String(row.instanceRecords) })) } : { kind: "lines", lines: ["No saved service definitions in this space's workstation store."] }, ...(data.serviceDefinitions.length > 100 ? [{ kind: "lines" as const, lines: ["Additional definitions are in JSON."] }] : [])] },
     { title: "Selected-space service instances", blocks: [data.serviceRecords.length ? { kind: "table", columns: [{ key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Recorded state" }, { key: "host", label: "Recorded host" }], rows: data.serviceRecords.slice(0, 100).map((row) => ({ definition: row.definition, instance: row.instanceId, state: row.recordedState, host: row.host })) } : { kind: "lines", lines: ["No saved service instances in this space's workstation store."] }, { kind: "lines", lines: [...(data.serviceRecords.length > 100 ? ["Additional service records are in JSON."] : []), "These records are scoped by space, not proven owned by this project root. Their recorded state is not live process or supervisor status; the next section observes each process on this host."] }] },
-    ...(data.serviceStops.length ? bareDownServicesView(data.space, data.serviceStops).sections : [{ title: "Services bare down stops first", blocks: [{ kind: "lines" as const, lines: ["No saved service instance in this space, so bare down stops no service first."] }] }]),
+    ...(data.serviceChecks.length ? bareDownServicesView(data.space, data.serviceChecks).sections : [{ title: "Services bare down checks first", blocks: [{ kind: "lines" as const, lines: ["No saved service instance in this space, so none blocks bare down."] }] }]),
     { title: "Recorded native supervisors", blocks: [data.supervisors.length ? { kind: "table", columns: [{ key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "mechanism", label: "Mechanism" }, { key: "unit", label: "Recorded unit" }], rows: data.supervisors.slice(0, 100).map((row) => ({ definition: row.definition, instance: row.instanceId, mechanism: row.mechanism, unit: row.unit })) } : { kind: "lines", lines: ["No supervisor receipts in this space's workstation store."] }, { kind: "lines", lines: [...(data.supervisors.length > 100 ? ["Additional supervisor receipts are in JSON."] : []), "A receipt is not a live unit observation or authority to stop it. No native service status request was made."] }] },
     { title: "Retained native attempts", blocks: [data.nativeAttempts.length ? { kind: "table", columns: [{ key: "kind", label: "Action" }, { key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "step", label: "Step" }, { key: "position", label: "Position" }], rows: data.nativeAttempts.slice(0, 100).map((row) => ({ kind: row.kind, definition: row.definition, instance: row.instanceId, step: row.step, position: row.position })) } : { kind: "lines", lines: ["No retained install, uninstall or unit-action attempts in this space's workstation store."] }, { kind: "lines", lines: [...(data.nativeAttempts.length > 100 ? ["Additional attempts and their full IDs are in JSON."] : []), "A submitted or unknown step may already have changed native state. This preview neither reconciles nor retries it."] }] },
     ...(!home ? [] : homeRuns
@@ -322,10 +325,10 @@ function noOwnedStack(root: string): CommandFailure {
   return absent;
 }
 
-/** Keep the retained pidfile sweep from crossing an exact recorded broker-sharing boundary, and
- *  return the space's service instances it stops first, each one verified. This is not a complete
- *  live ownership or agent-impact proof. */
-function guardLegacyBareDown(): { space: string; services: BareDownService[] } {
+/** Keep the retained pidfile sweep from crossing an exact recorded broker-sharing boundary or
+ *  stopping the broker under a saved service that still runs. This is not a complete live ownership
+ *  or agent-impact proof. */
+function guardLegacyBareDown(): { space: string } {
   const root = canonicalRoot(cotalRoot());
   const target = { root };
   if (root === canonicalRoot(homedir())) {
@@ -374,9 +377,8 @@ function guardLegacyBareDown(): { space: string; services: BareDownService[] } {
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a fresh boot attempt is unsettled or a boot record unreadable; legacy bare down did not stop a process whose original launch outcome is unknown", { target: { ...scoped, unsettledIds: unsettled.map((row) => row.deploymentId), unreadable: [...attempts.refused, ...summaries.refused].map(({ path }) => path) }, remedy: "inspect the original boot and process custody before any stop; the pidfile sweep is not recovery" });
   const other = loadMeshes().filter((row) => row.space !== mesh.space && row.server === mesh.server);
   if (other.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registered space names this exact broker address; bare down did not stop its shared listener", { target: { ...scoped, otherSpaces: other.map((row) => row.space) }, remedy: "inspect both registrations and their native ownership; an exact-address match is a blocker, while no match does not prove exclusivity" });
-  const services = planBareDownServices(mesh.space);
-  assertBareDownServicesVerified(mesh.space, services);
-  return { space: mesh.space, services };
+  assertNoLiveServices(mesh.space, "down");
+  return { space: mesh.space };
 }
 
 /** Bare down reads each process record it stops where the record lies, as the stopped-stack census
@@ -485,8 +487,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   // The stop's lines follow the space they stop, as every other report of down begins.
   console.log(`${renderReport({ space: guarded.space, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
   // Every dry run returned or was refused above, so from here on this is the whole-stack stop of
-  // this folder's root. Its services stop first, through the service controller.
-  await stopBareDownServices(guarded.space, guarded.services, { style: "rich", withAgents: values["with-agents"] === true });
+  // this folder's root.
 
   let any = false;
   let allStopped = true;
@@ -653,9 +654,9 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
       console.log(c.dim(`state for "${mesh.space}" is already preserved and offline`));
       return;
     }
-    // A saved service depends on the broker, so the cut does not stop the broker under one. Plain
-    // down stops them first; a preserve leaves that to the operator and stops nothing.
-    assertNoServicesForPreserve(mesh.space);
+    // A saved service depends on the broker, so the cut does not stop the broker under one. It
+    // refuses and stops nothing, as bare down does.
+    assertNoLiveServices(mesh.space, "down --preserve-state");
 
     let attemptId: string;
     let resume;

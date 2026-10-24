@@ -34,19 +34,18 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
-## Manager instance in the exchange response after 0.100.2
+## Service definitions record their root after 0.100.2
 
-`POST /exchange` no longer answers a `manager-caller` exchange with `managerInstanceId`. Both the
-human and the agent exchange answer with `token`, `owner` and `exp`. The instance a bearer may
-address is its signed `act.managerInstanceId` claim, which the callout enforces and the CLI reads.
+`cotal service add` now saves each definition with the root of the space it is added in. A
+definition added in another folder, such as one a forgotten space of the same name left, refuses to
+start, restart or install there `CONFLICT`, naming that root and `cotal service remove <name>
+--space <space> --yes`. Definitions saved before the upgrade have no recorded root: they start as
+before, and `cotal service` lists them as `root not recorded`.
 
-### What stops working
-
-Code of your own that reads `managerInstanceId` from an exchange response reads `undefined`.
-
-### Before the upgrade
-
-Read the instance from the bearer's `act.managerInstanceId` claim.
+An earlier release refuses a definition that records a root `SCHEMA_INVALID`, and with it the
+commands that read the space's definitions. Before you downgrade, remove each service this release
+added with `cotal service remove <name> --space <space> --yes`, and add it again after the
+downgrade.
 
 ## Missing $SYS credentials after 0.100.2
 
@@ -100,6 +99,33 @@ as before. Nothing on a running mesh changes.
 - `SELECTION_NOT_FOLDER_SPACE` is reported only in a folder whose root has several spaces, none of
   them the selection.
 - `cotal up` says when it selects the space it started.
+
+## Bare down beside a running service after 0.100.2
+
+On a legacy root, bare `cotal down` refuses `LIFECYCLE_BLOCKED`, exit 2, while a saved service in
+the space still runs or cannot be verified, and stops nothing. Before, it stopped those services
+first through the service controller. A controller stack's `down` already refused this way, and
+`down --preserve-state` refuses the same way on both.
+
+- Stop each service the refusal names with
+  `cotal service stop <name> --instance <id> --space <space> --yes`, then run `cotal down` again.
+  A stopped service does not block.
+- `cotal down --dry-run` warns with that refusal. Its JSON lists the instances as `serviceChecks`,
+  where `stop-first` marks one that blocks; `serviceStops` is gone.
+
+## Manager instance in the exchange response after 0.100.2
+
+`POST /exchange` no longer answers a `manager-caller` exchange with `managerInstanceId`. Both the
+human and the agent exchange answer with `token`, `owner` and `exp`. The instance a bearer may
+address is its signed `act.managerInstanceId` claim, which the callout enforces and the CLI reads.
+
+### What stops working
+
+Code of your own that reads `managerInstanceId` from an exchange response reads `undefined`.
+
+### Before the upgrade
+
+Read the instance from the bearer's `act.managerInstanceId` claim.
 
 ## Endpoint caller files after 0.99.0
 

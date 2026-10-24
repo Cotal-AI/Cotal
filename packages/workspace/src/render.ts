@@ -1,7 +1,7 @@
 import { brokerAddressForDisplay } from "./broker-display.js";
 import { userCotalDir } from "./mesh-registry.js";
 import { shellPath } from "./protected-records.js";
-import type { MeshTarget, MeshTargetError } from "./mesh-target.js";
+import { MIN_FILE_STORE, type MeshTarget, type MeshTargetError } from "./mesh-target.js";
 import type { PreflightFailure } from "./preflight.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS } from "./preflight.js";
 
@@ -86,7 +86,11 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         ? d.stackRemedy !== undefined
           ? parts(`"${d.space}" is prepared in ${d.root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there`, d.stackRemedy)
           : parts(`"${d.space}" is prepared in ${d.root}, which no longer exists`, `forget it with \`cotal space forget ${d.space}\`, then prepare it again with \`cotal space create ${d.space} --root <dir>\``)
-        : parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
+        : d.stopped !== undefined
+          ? parts(`"${d.space}" is stopped; its last operation, ${d.stopped.operation}, ${d.stopped.outcome}`, d.stopped.storeCap !== undefined && d.stopped.storeCap < MIN_FILE_STORE
+            ? `start it with \`cotal up --max-file-store ${MIN_FILE_STORE}\` or more in ${d.root}: its recorded store cap of ${d.stopped.storeCap} bytes is below the least the space's streams start on`
+            : `start it again with \`cotal up\` in ${d.root}`)
+          : parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
       const broker = d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`;
       if (d.home === undefined && d.recordedRoot !== undefined && d.stackRemedy !== undefined)
         return parts(`the stack journal in ${d.root} was recorded at ${d.recordedRoot}, so this folder is a copy or was moved from there`, d.stackRemedy);

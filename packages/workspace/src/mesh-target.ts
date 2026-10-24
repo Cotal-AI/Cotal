@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readFileSync, type Stats } from "node:fs";
 import { join } from "node:path";
-import { DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
+import { DEFAULT_SERVER, DEFAULT_SPACE, MEMBERSHIP_MAX_BYTES, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootPathProblem, soleSpaceOf, stackJournalPath, userAuthSpacesOnDisk } from "./auth-paths.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
 import { recordOperationSpaceNote, recordOperationWarning } from "./output.js";
@@ -148,7 +148,15 @@ export interface MeshTargetErrorDetails {
   /** For `not-started` on a root with no registration: `server` is the broker its last start
    *  configured, which a bare `cotal up` there starts again. */
   lastRun?: boolean;
+  /** For `not-started` on a prepared space whose controller stack launched a member and was
+   *  stopped: its last recorded operation, and the file store cap it recorded, if any. */
+  stopped?: { operation: string; outcome: string; storeCap?: number };
 }
+
+/** The smallest JetStream file store cap a stack starts on: the bytes the space's membership bucket
+ *  reserves, plus one. nats-server creates a stream with no byte limit only while at least one byte
+ *  of the cap is unreserved, so a cap equal to the reservation fails every later stream with 10047. */
+export const MIN_FILE_STORE = MEMBERSHIP_MAX_BYTES + 1;
 
 const WORKSPACE_TARGET_ERROR = "cotal:workspace:mesh-target-error";
 
@@ -344,7 +352,28 @@ function notStarted(space: string, cwd?: string): void {
     const moved = stack?.stackSpace === space && stack.recordedRoot === prepared.root ? stack.stackRemedy : undefined;
     throw new MeshTargetError("not-started", `"${space}" is prepared in ${prepared.root}, which no longer exists${moved ? ", and this folder's stack journal was recorded there, so this folder was moved from there" : ""}`, { space, root: prepared.root, rootMissing: true, ...(moved ? { stackRemedy: moved } : {}) });
   }
+  const stopped = stoppedStack(prepared.root, space);
+  if (stopped) throw new MeshTargetError("not-started", `"${space}" is stopped; its last operation, ${stopped.operation}, ${stopped.outcome}`, { space, root: prepared.root, stopped });
   throw new MeshTargetError("not-started", `"${space}" is prepared but not started`, { space, root: prepared.root });
+}
+
+const OPERATION: Record<string, string> = { up: "cotal up", down: "cotal down", preserve: "a preserving cotal down", resume: "a resume" };
+const OUTCOME: Record<string, string> = { completed: "completed", failed: "failed", refused: "was refused", partial: "applied in part", unknown: "has an unknown outcome", applying: "did not finish", planned: "did not finish" };
+
+/** The last operation and recorded store cap of `space`'s controller stack at `root`, when its
+ *  journal names a member it launched. Undefined for a stack that never launched one, or a journal
+ *  this read cannot use; the commands that act on the journal check it fully. */
+export function stoppedStack(root: string, space: string): MeshTargetErrorDetails["stopped"] {
+  try {
+    const path = stackJournalPath(root), file = lstatSync(path);
+    if (!file.isFile() || file.size > 64 * 1024) return undefined;
+    const journal = JSON.parse(readFileSync(path, "utf8")) as { space?: unknown; members?: unknown; operation?: { kind?: unknown; phase?: unknown }; broker?: { maxFileStore?: unknown } } | null;
+    if (journal?.space !== space || !Array.isArray(journal.members) || !journal.members.some((row) => typeof (row as { instanceId?: unknown } | null)?.instanceId === "string")) return undefined;
+    const operation = OPERATION[String(journal.operation?.kind)], outcome = OUTCOME[String(journal.operation?.phase)];
+    if (operation === undefined || outcome === undefined) return undefined;
+    const cap = journal.broker?.maxFileStore;
+    return { operation, outcome, ...(Number.isSafeInteger(cap) && Number(cap) > 0 ? { storeCap: Number(cap) } : {}) };
+  } catch { return undefined; }
 }
 
 /** Whether `root`'s stack journal names member instances of which this Cotal home holds no record,

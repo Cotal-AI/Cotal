@@ -30,11 +30,12 @@
  *     refusal says the stack started no member. A running broker keeps its file store cap; a stopped
  *     one takes a new `--max-file-store`, and a recorded cap too small for the space's streams fails
  *     naming that cap and the flag. A cap equal to the membership bucket's reservation fails that way
- *     too, and one byte more starts. Once a space holds more than its cap, `send` refuses
- *     `DEPENDENCY_UNAVAILABLE` naming the store and the cap, `status` shows the store full and leads
- *     Next with `history clear`, and `down` refuses the same way before any stop, because the
- *     manager's stop needs an issuance record, which its dry run predicts. After that clear `send`
- *     stores again. A project folder renamed while its stack runs: the broker names
+ *     too, and one byte more starts. `status` then reads such a stack as stopped, with its last
+ *     operation, and names up at the floor while the recorded cap is below it. Once a space holds
+ *     more than its cap, `send` refuses `DEPENDENCY_UNAVAILABLE` naming the store and the cap,
+ *     `status` shows the store full and leads Next with `history clear`, and `down` refuses the same
+ *     way before any stop, because the manager's stop needs an issuance record, which its dry run
+ *     predicts. After that clear `send` stores again. A project folder renamed while its stack runs: the broker names
  *     its store relative to the root, so it does not create the old path again; `send`, `up` and
  *     `status --space` from the renamed folder name the move and the way back, `status` there offers
  *     no `clean store`, and after the move back `down` stops it.
@@ -43,6 +44,12 @@
  *     With its journal removed after `down`, as the way out of a damaged one says, `up` starts at the
  *     address its saved broker definition names and warns; with no definition either, it refuses and
  *     asks for `--server`.
+ *     A store folder belongs to one space. A first `up --store-dir` on a folder another space's
+ *     journal records refuses CONFLICT and writes no journal. A folder that already holds another
+ *     space's streams, as an earlier release allowed, still starts from the recorded store with a
+ *     STORE_SHARED warning, and `reset store`, its dry run, `reset space` and `clean store` refuse it
+ *     CONFLICT with the hand-removal step and remove nothing. A recorded store removed by hand starts
+ *     empty with a STORE_MISSING warning.
  *  4. Orphan manager. With the broker suspended under a live manager, `down` refuses
  *     TARGET_UNAVAILABLE naming the broker's pid and `kill -CONT`, and stops nothing. With the broker
  *     killed under a live manager, `down` refuses before any stop
@@ -118,13 +125,15 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, MIN_FILE_STORE, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
 // One process per command, so a SIGKILL reaches the CLI itself and not a wrapper.
 const TSX_IMPORT = import.meta.resolve("tsx");
 const home = mkdtempSync(join(tmpdir(), "cotal-stack-settle-"));
+// A --store-dir outside the Cotal home, which is a control directory.
+const storeDirs = mkdtempSync(join(tmpdir(), "cotal-stack-settle-stores-"));
 const configDir = join(home, "xdg");
 // The CLI children must not inherit a managed session's mesh identity from whatever runs this
 // suite; they get only the private home and the values set below.
@@ -134,7 +143,6 @@ process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { readStackJournal } = await import("../src/lib/stack-journal.js");
-const { MIN_FILE_STORE } = await import("../src/commands/stack-up.js");
 const { serviceDefinitionStore } = await import("../src/lib/service-definitions.js");
 // Registers the broker adapter, which a definition saved from this process is checked against.
 await import("../src/lib/broker-service.js");
@@ -209,6 +217,7 @@ const prepare = (space: string): string => {
 process.on("exit", () => {
   for (const pid of owned) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
   rmSync(home, { recursive: true, force: true });
+  rmSync(storeDirs, { recursive: true, force: true });
 });
 
 try {
@@ -313,7 +322,7 @@ try {
       word.status === 1 && word.env?.error?.code === "USAGE_INVALID" && word.env.error.message === '--server "hallo welt": the broker address must be one nats:// or tls:// URL; nothing was saved' && serviceDefinitionStore(space).read("bad-word") === undefined, shown(word));
     const credential = addBroker("bad-cred", "nats://user:secret@127.0.0.1:4999");
     check("an address with a credential is refused without printing it",
-      credential.status === 1 && credential.env?.error?.code === "USAGE_INVALID" && /^--server \(not printed/.test(credential.env.error.message) && !`${credential.stdout}${credential.stderr}`.includes("secret") && serviceDefinitionStore(space).read("bad-cred") === undefined, shown(credential));
+      credential.status === 1 && credential.env?.error?.code === "USAGE_INVALID" && credential.env.error.message === "--server must not embed credentials; the command did not run" && !`${credential.stdout}${credential.stderr}`.includes("secret") && serviceDefinitionStore(space).read("bad-cred") === undefined, shown(credential));
     const brokerFile = (server: string) => ({ schemaVersion: 1 as const, space, launch: { type: "adapter" as const, adapter: "nats-broker", options: { root, config: brokerConfig, binary: brokerBinary, server } }, readiness: { type: "adapter" as const, timeoutMs: 30_000 } });
     const badFile = join(home, "bad-server.json");
     writeFileSync(badFile, JSON.stringify(brokerFile("nats://127.0.0.1:4999x")));
@@ -471,10 +480,20 @@ try {
     const reserved = cli(root, "up", "--no-manager", "--json");
     track(space);
     check(`a recorded cap of ${MIN_FILE_STORE - 1}, the membership bucket's reservation, fails OPERATION_FAILED, exit 5, naming ${MIN_FILE_STORE} as the least`, reserved.status === 5 && reserved.env?.error?.code === "OPERATION_FAILED" && Boolean(reserved.env.error.remedy?.includes(`with at least ${MIN_FILE_STORE} bytes`)), shown(reserved));
+    const capped = cli(root, "status", "--json");
+    const cappedSelected = capped.env?.result?.selected as { message?: string; storeCap?: number } | undefined;
+    check("status then says the stack is stopped after a failed up, shows the recorded cap and names up --max-file-store at the floor, not a bare up",
+      capped.status === 0 && Boolean(cappedSelected?.message?.includes(`"${space}" is stopped; its last operation, cotal up, failed`)) && cappedSelected?.storeCap === MIN_FILE_STORE - 1
+        && ((capped.env?.result?.hints ?? []) as string[]).some((hint) => hint.startsWith(`start it with \`cotal up --max-file-store ${MIN_FILE_STORE}\` or more in `)), shown(capped));
     const floor = cli(root, "up", "--no-manager", "--max-file-store", String(MIN_FILE_STORE), "--json");
     track(space);
     check(`up --max-file-store ${MIN_FILE_STORE} starts the stack`, floor.status === 0, shown(floor));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+    const stoppedStatus = cli(root, "status", "--json");
+    const stoppedSelected = stoppedStatus.env?.result?.selected as { message?: string; storeCap?: number } | undefined;
+    check("status then says the stack is stopped after a completed down, not prepared but not started, and names a bare up",
+      stoppedStatus.status === 0 && Boolean(stoppedSelected?.message?.includes(`"${space}" is stopped; its last operation, cotal down, completed`)) && stoppedSelected?.storeCap === undefined
+        && ((stoppedStatus.env?.result?.hints ?? []) as string[]).some((hint) => hint.startsWith("start it again with `cotal up` in ")), shown(stoppedStatus));
   }
 
   // 3f. A space over its file store cap. The broker refuses every write and stores nothing.
@@ -588,6 +607,52 @@ try {
       return result?.folder?.storedState === false && Array.isArray(result.hints) && !result.hints.some((hint) => hint.includes("clean store"));
     };
     check("status in the moved folder and in a copy offers no clean store for the stack's store", offersNoReset(status) && offersNoReset(copyStatus), { moved: shown(status), copy: shown(copyStatus) });
+  }
+
+  // 3g. A store folder belongs to one space. The shared pair an earlier release allowed is made here
+  // by copying a stopped broker's account tree into another space's recorded store.
+  {
+    const shared = join(storeDirs, "shared");
+    const owner = "storeowner", other = "storeother", late = "storelate";
+    const ownerRoot = prepare(owner), otherRoot = prepare(other), lateRoot = prepare(late);
+    const first = cli(ownerRoot, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--store-dir", shared, "--json");
+    track(owner);
+    check("up --store-dir starts on a folder no other space uses", first.status === 0, shown(first));
+    check("down --yes stops it", cli(ownerRoot, "down", "--yes", "--json").status === 0);
+    const refused = cli(lateRoot, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--store-dir", shared, "--json");
+    check("a first up --store-dir on that folder refuses CONFLICT, exit 2, naming the space, its root and its streams, and writes no journal",
+      refused.status === 2 && refused.env?.error?.code === "CONFLICT" && refused.env.error.message.includes(`is the store of space ${owner} at ${ownerRoot} (streams CHAT_${owner}, DM_${owner}, TASK_${owner})`) && !existsSync(join(lateRoot, ".cotal", "stack-controller.json")), shown(refused));
+    const second = cli(otherRoot, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    track(other);
+    check("another space starts on its own store", second.status === 0, shown(second));
+    check("down --yes stops it", cli(otherRoot, "down", "--yes", "--json").status === 0);
+    const accounts = join(otherRoot, ".cotal", "nats", "jetstream");
+    for (const account of readdirSync(accounts)) spawnSync("cp", ["-a", join(accounts, account), join(shared, "jetstream", account)]);
+    const tenants = `space ${other} (streams CHAT_${other}, DM_${other}, TASK_${other})`;
+    const warned = cli(ownerRoot, "up", "--no-manager", "--json");
+    track(owner);
+    const sharedWarning = warned.env?.warnings?.find((warning) => warning.code === "STORE_SHARED");
+    check("bare up on its recorded store, which holds another space's streams, starts and warns STORE_SHARED, naming them",
+      warned.status === 0 && Boolean(sharedWarning?.message?.startsWith(`the store ${shared} also belongs to ${tenants}; a store folder belongs to one space`)), shown(warned));
+    check("down --yes stops it", cli(ownerRoot, "down", "--yes", "--json").status === 0);
+    const handRemoval = `once neither does, stop both with cotal down and remove ${shared} by hand`;
+    const preview = cli(ownerRoot, "reset", "store", owner, "--dry-run", "--json");
+    const verdict = preview.env?.result?.applyVerdict as { offered?: boolean; code?: string; reason?: string; remedy?: string } | undefined;
+    check("reset store --dry-run does not offer it: CONFLICT, naming the other space's streams and the hand removal",
+      preview.status === 0 && verdict?.offered === false && verdict.code === "CONFLICT" && Boolean(verdict.reason?.includes(`also belongs to ${tenants}`) && verdict.remedy?.endsWith(handRemoval)), shown(preview));
+    const removals = [cli(ownerRoot, "reset", "store", owner, "--yes", "--json"), cli(ownerRoot, "reset", "space", owner, "--dry-run", "--json"), cli(ownerRoot, "reset", "space", owner, "--yes", "--json")];
+    check("reset store --yes, reset space --dry-run and reset space --yes refuse CONFLICT, exit 2, with the hand removal",
+      removals.every((run) => run.status === 2 && run.env?.error?.code === "CONFLICT" && run.env.error.message.includes(`also belongs to ${tenants}`) && Boolean(run.env.error.remedy?.endsWith(handRemoval))), removals.map(shown));
+    const cleaned = [cli(ownerRoot, "clean", "store", "--dry-run", "--store-dir", shared), cli(ownerRoot, "clean", "store", "--force", "--store-dir", shared)];
+    check("clean store and its dry run refuse CONFLICT, exit 2, naming the other space",
+      cleaned.every((run) => run.status === 2 && run.stderr.includes(`also belongs to ${tenants}`)), cleaned.map(shown));
+    check("both spaces' account trees are still in the folder", readdirSync(join(shared, "jetstream")).length === 2, readdirSync(shared, { recursive: true }));
+    rmSync(shared, { recursive: true, force: true });
+    const missing = cli(ownerRoot, "up", "--no-manager", "--json");
+    track(owner);
+    check("with its recorded store removed by hand, bare up starts it empty and warns STORE_MISSING",
+      missing.status === 0 && Boolean(missing.env?.warnings?.some((warning) => warning.code === "STORE_MISSING" && warning.message === `the recorded store ${shared} is missing, so the broker opens a new empty store there and this space's history starts empty`)), shown(missing));
+    check("down --yes stops it", cli(ownerRoot, "down", "--yes", "--json").status === 0);
   }
 
   // 3b. A first up refused at a port another program holds pins nothing.

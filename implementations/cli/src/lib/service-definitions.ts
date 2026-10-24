@@ -56,7 +56,10 @@ export const serviceDefinitionStore = (space: string) => new ProtectedRecordStor
 export function importServiceDefinition(path: string, space: string): ServiceDefinitionInput {
   const bytes = readLocalRecordSource(path);
   if (!bytes) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the service input file ${oneLine(path)} was not found`, { target: { path } });
-  return validateServiceDefinition(pinnedExecutable(validateServiceDefinition(decodeLocalJson(bytes), space, false)), space);
+  const value = validateServiceDefinition(decodeLocalJson(bytes), space, false);
+  // `add` records the root itself, so a file cannot claim another project's.
+  if (value.root !== undefined) throw new CommandFailure("refused", "SCHEMA_INVALID", "the definition sets root, which service add records itself as the space's root; nothing was saved", { remedy: "remove root from the file, then add it again" });
+  return validateServiceDefinition(pinnedExecutable(value), space);
 }
 
 /** A bare executable name is looked up on this PATH once, as the definition is saved, and saved as
@@ -72,11 +75,29 @@ function pinnedExecutable(value: ServiceDefinitionInput): ServiceDefinitionInput
   return { ...value, launch: { ...value.launch, executable: found } };
 }
 
+/** Where a saved definition stands against `root`, the root of the space it is read in: added there,
+ *  inherited from a space of the same name that another root forgot, or saved by an earlier release
+ *  that recorded no root. */
+export function definitionRootMatch(value: ServiceDefinitionInput, root: string): "this-root" | "inherited" | "not-recorded" {
+  return value.root === undefined ? "not-recorded" : value.root === root ? "this-root" : "inherited";
+}
+
+/** A definition launches only in the root it was added in. One a forgotten space of the same name
+ *  left in another root refuses, naming that root and the command that forgets it. */
+export function assertDefinitionRoot(row: ServiceDefinitionSnapshot, space: string, root: string, action: "start" | "restart" | "install"): void {
+  const added = row.record.value.root;
+  if (added === undefined || added === root) return;
+  throw new CommandFailure("refused", "CONFLICT", `${row.name} was added in ${added}, not in this space's root ${root}; an earlier space named ${space} left it, and it was not ${action === "install" ? "installed" : `${action}ed`}`, {
+    target: { space, name: row.name, addedIn: added, root },
+    remedy: `forget it with cotal service remove ${row.name} --space ${space} --yes, then add it again here if this project needs it`,
+  });
+}
+
 /** Public reports omit argument bodies, adapter option values and all credential contents. */
 export function serviceDefinitionProjection(row: ServiceDefinitionSnapshot) {
   const value = row.record.value;
   return {
-    name: row.name, revision: row.record.revision, space: value.space, executionHost: "this-machine" as const,
+    name: row.name, revision: row.record.revision, space: value.space, executionHost: "this-machine" as const, root: value.root ?? null,
     launch: value.launch.type === "process" ? { type: "process" as const, executable: value.launch.executable, argumentCount: value.launch.args.length, cwd: value.launch.cwd }
       : { type: "adapter" as const, adapter: value.launch.adapter, optionCount: Object.keys(value.launch.options).length },
     readiness: value.readiness.type === "http" ? { type: value.readiness.type, timeoutMs: value.readiness.timeoutMs, expectedStatus: value.readiness.expectedStatus, url: "omitted from public reports" } : value.readiness, environmentReferences: value.envRefs ?? {}, credentialRef: value.credentialRef,

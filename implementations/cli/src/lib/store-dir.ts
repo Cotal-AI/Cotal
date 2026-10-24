@@ -1,6 +1,8 @@
 import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve, sep, isAbsolute } from "node:path";
-import { authDir, c, CommandFailure, homeCotalDir, protectedLocalDirectory } from "@cotal-ai/workspace";
+import { token } from "@cotal-ai/core";
+import { authDir, c, CommandFailure, homeCotalDir, loadMeshes, loadPreparedSpaces, protectedLocalDirectory } from "@cotal-ai/workspace";
+import { readStackJournal } from "./stack-journal.js";
 
 /** What a store directory holds: the broker's `jetstream` tree, Cotal's generation marker, and the
  *  `ocsp` folder nats-server makes in its store directory on every configuration reload. */
@@ -19,18 +21,114 @@ export function foreignStoreEntries(dir: string): string[] {
 /** The names of the store entries, the only entries a store cleanup removes. */
 export const STORE_ENTRY_NAMES: readonly string[] = [...STORE_ENTRIES.keys()];
 
-/** The store `root`'s last broker served, when it differs from `storeDir` and still holds JetStream
- *  data. `down` drops the record that named a custom or restored store, but each real start writes
- *  its `store_dir` into the broker config it renders, and that file outlives `down`. */
-export function lastServedStore(root: string, storeDir: string): string | undefined {
+/** The stores the broker configurations `root`'s starts rendered name. */
+function renderedStores(root: string, resolveFrom?: string): string[] {
+  const stores: string[] = [];
   for (const conf of [join(authDir(root), "server.conf"), join(root, ".cotal", "server-open.conf")]) {
     if (!existsSync(conf)) continue;
     // The core renderer writes the path as a JSON string.
     const named = /jetstream \{ store_dir: ("(?:[^"\\]|\\.)*")/.exec(readFileSync(conf, "utf8"))?.[1];
-    const last = named === undefined ? undefined : resolve(JSON.parse(named) as string);
-    if (last !== undefined && last !== resolve(storeDir) && existsSync(join(last, "jetstream"))) return last;
+    if (named !== undefined) stores.push(resolveFrom === undefined ? resolve(JSON.parse(named) as string) : resolve(resolveFrom, JSON.parse(named) as string));
   }
-  return undefined;
+  return stores;
+}
+
+/** The store `root`'s last broker served, when it differs from `storeDir` and still holds JetStream
+ *  data. `down` drops the record that named a custom or restored store, but each real start writes
+ *  its `store_dir` into the broker config it renders, and that file outlives `down`. */
+export function lastServedStore(root: string, storeDir: string): string | undefined {
+  return renderedStores(root).find((last) => last !== resolve(storeDir) && existsSync(join(last, "jetstream")));
+}
+
+/** Whether a broker configuration `root`'s last start rendered names the store `storeDir`. */
+export function servedStore(root: string, storeDir: string): boolean {
+  return renderedStores(root, root).some((path) => samePath(path, storeDir));
+}
+
+/** Another space whose record names a store folder, or whose streams are in it. */
+export interface StoreTenant {
+  space: string;
+  /** The root its record names, when a record names the folder. */
+  root?: string;
+  /** Its CHAT_, DM_ and TASK_ streams in the folder. */
+  streams: string[];
+}
+
+const SPACE_STREAM = /^(?:CHAT|DM|TASK)_(.+)$/;
+
+const realOrResolved = (path: string): string => { try { return realpathSync.native(path); } catch { return resolve(path); } };
+const samePath = (a: string, b: string): boolean => realOrResolved(a) === realOrResolved(b);
+
+/** The spaces other than `space` that use the store folder `dir`. One uses it when its registration,
+ *  or its prepared root's stack journal or rendered broker configuration, names the folder, or when
+ *  its streams are under any account in the folder's `jetstream` tree, whether or not a broker runs
+ *  there: nats-server takes no lock on its store folder, so a broker of another space starts on it,
+ *  and a reset or clean of the folder removes that space's data too. A record that cannot be read
+ *  is not counted; its streams still are. */
+export function otherStoreTenants(dir: string, space: string): StoreTenant[] {
+  const tenants = new Map<string, StoreTenant>();
+  const tenant = (name: string): StoreTenant => tenants.get(name) ?? tenants.set(name, { space: name, streams: [] }).get(name)!;
+  const own = token(space);
+  let meshes: ReturnType<typeof loadMeshes> = [];
+  try { meshes = loadMeshes(); } catch { meshes = []; }
+  for (const mesh of meshes) {
+    const store = mesh.storeDir ?? (mesh.origin === "up" ? join(mesh.root, ".cotal", "nats") : undefined);
+    if (mesh.space !== space && store !== undefined && samePath(store, dir)) tenant(mesh.space).root = mesh.root;
+  }
+  let prepared: ReturnType<typeof loadPreparedSpaces> = [];
+  try { prepared = loadPreparedSpaces(); } catch { prepared = []; }
+  for (const row of prepared) {
+    if (row.space === space) continue;
+    let recorded: string | undefined;
+    try { const journal = readStackJournal(row.root)?.journal; recorded = journal?.space === row.space ? journal.broker?.storeDir : undefined; } catch { recorded = undefined; }
+    let named: boolean;
+    try { named = recorded !== undefined ? samePath(resolve(row.root, recorded), dir) : servedStore(row.root, dir); } catch { named = false; }
+    if (named) tenant(row.space).root = row.root;
+  }
+  const jetstream = join(dir, "jetstream");
+  let accounts: string[] = [];
+  try { accounts = readdirSync(jetstream); } catch { accounts = []; }
+  for (const account of accounts) {
+    let streams: string[] = [];
+    try { streams = readdirSync(join(jetstream, account, "streams")); } catch { streams = []; }
+    for (const stream of streams) {
+      const name = SPACE_STREAM.exec(stream)?.[1];
+      if (name !== undefined && name !== own) tenant(name).streams.push(stream);
+    }
+  }
+  return [...tenants.values()].map((row) => ({ ...row, streams: row.streams.sort() })).sort((a, b) => a.space.localeCompare(b.space));
+}
+
+/** The tenants as one clause: each space, the root a record names and its streams in the folder. */
+export function storeTenantsText(tenants: readonly StoreTenant[]): string {
+  return tenants.map((row) => `space ${row.space}${row.root ? ` at ${row.root}` : ""}${row.streams.length ? ` (streams ${listEntries(row.streams)})` : ""}`).join("; ");
+}
+
+/** Refuse a start of `space` on the store folder `dir` while another space uses it, unless `recorded`
+ *  says it is this space's own recorded or default store, which starts with a warning. Returns the
+ *  other spaces for that warning. */
+export function sharedStoreAtStart(dir: string, space: string, recorded: boolean): StoreTenant[] {
+  const tenants = otherStoreTenants(dir, space);
+  if (tenants.length && !recorded)
+    throw new CommandFailure("refused", "CONFLICT", `the --store-dir ${dir} is the store of ${storeTenantsText(tenants)}, and a store folder belongs to one space; nothing was started`, { target: { space, storeDir: dir, otherSpaces: tenants }, remedy: "name a folder no other space uses with --store-dir, or omit it to use this root's .cotal/nats" });
+  return tenants;
+}
+
+/** The warning for a start on its recorded store that another space also uses. */
+export function sharedStoreWarning(dir: string, tenants: readonly StoreTenant[]): string {
+  return `the store ${dir} also belongs to ${storeTenantsText(tenants)}; a store folder belongs to one space, and cotal reset store, cotal reset space and cotal clean store refuse it while both use it`;
+}
+
+/** The warning for a start whose recorded store is missing. */
+export function missingStoreWarning(dir: string): string {
+  return `the recorded store ${dir} is missing, so the broker opens a new empty store there and this space's history starts empty`;
+}
+
+/** Refuse to remove the store folder `path` of `space` while another space uses it. */
+export function refuseSharedStoreRemoval(path: string, space: string): void {
+  const tenants = otherStoreTenants(path, space);
+  if (tenants.length)
+    throw new CommandFailure("refused", "CONFLICT", `the store ${path} also belongs to ${storeTenantsText(tenants)}, and removing it would delete that data too; nothing was removed`, { target: { space, storeDir: path, otherSpaces: tenants }, remedy: `keep it while either space needs its history; once neither does, stop both with cotal down and remove ${path} by hand` });
 }
 
 /** Up to five entry names, then how many more there are. */

@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { type ParsedArgs } from "@cotal-ai/core";
+import { isCommandFailure } from "@cotal-ai/workspace";
 import { loadManifest, renderTopology, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
 import { c, stderrLine } from "../ui.js";
 
@@ -43,6 +44,9 @@ export function failManifest(e: unknown): never {
   if (e instanceof ManifestError) console.error(c.red(e.message));
   else if ((e as NodeJS.ErrnoException)?.code === "ENOENT")
     stderrLine("✗ ", `manifest file not found: ${(e as NodeJS.ErrnoException).path ?? ""}`, c.red);
-  else stderrLine("✗ ", `${(e as Error).message}`, c.red);
+  else {
+    stderrLine("✗ ", `${(e as Error).message}`, c.red);
+    if (isCommandFailure(e) && e.remedy) stderrLine("  ↳ ", e.remedy, c.dim);
+  }
   process.exit(1);
 }

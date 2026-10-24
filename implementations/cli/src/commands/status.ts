@@ -43,6 +43,8 @@ import {
   DELIVERY_PIDFILE,
   extensionsDir,
   findCotalRoot,
+  MIN_FILE_STORE,
+  stoppedStack,
   hasUserAuthState,
   homeCotalDir,
   cachedPreferences,
@@ -262,6 +264,8 @@ export interface StatusResult {
     currentRecorded: boolean;
     /** Whether the selection names a space `cotal space create` prepared and no `cotal up` started. */
     currentPrepared: boolean;
+    /** Whether that prepared space's controller stack ran and was stopped. */
+    currentStopped: boolean;
     unreadable: { file: string; error: string }[];
     items: {
       space: string;
@@ -298,7 +302,13 @@ export interface StatusResult {
 }
 
 type SelectedResult =
-  | { resolved: false; code: string; message: string }
+  | {
+      resolved: false;
+      code: string;
+      message: string;
+      /** A stopped stack's recorded file store cap, when it is below {@link MIN_FILE_STORE}. */
+      storeCap?: number;
+    }
   | {
       resolved: true;
       space: string;
@@ -1025,7 +1035,7 @@ async function readMeshes(selected: Selected, all: boolean, gaps: Gaps): Promise
     })),
   );
   // The prepared spaces folder, or a record in it, that cannot be read is named the same way.
-  let currentPrepared = false;
+  let currentPrepared = false, currentStopped = false;
   try {
     const prepared = readPreparedSpaces();
     // Named with the warning a command that skips it gives, so a run that also skipped it says it once.
@@ -1034,7 +1044,9 @@ async function readMeshes(selected: Selected, all: boolean, gaps: Gaps): Promise
       unreadable.push({ file: e.file, error: e.message });
       gaps.add(skipped.code, skipped.message, skipped.target);
     }
-    currentPrepared = current !== null && !entries.some((m) => m.space === current) && prepared.spaces.some((p) => p.space === current);
+    const selected = current !== null && !entries.some((m) => m.space === current) ? prepared.spaces.find((p) => p.space === current) : undefined;
+    currentPrepared = selected !== undefined;
+    currentStopped = selected !== undefined && stoppedStack(selected.root, selected.space) !== undefined;
   } catch (e) {
     if (!isMeshRegistryError(e)) throw e;
     unread(e.file, e.message);
@@ -1043,6 +1055,7 @@ async function readMeshes(selected: Selected, all: boolean, gaps: Gaps): Promise
     current,
     currentRecorded: current === null || entries.some((m) => m.space === current),
     currentPrepared,
+    currentStopped,
     unreadable,
     items,
     catalogs: preparedCatalogDiagnostics().map((r) => ({ idp: r.account.idpUrl, state: r.state, error: r.state === "failed" ? (r.error ?? "refresh failed") : null })),
@@ -1095,7 +1108,8 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     // the store's, as `up` names it.
     const store = e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing ? rootStoreProblem(e.details.root) : undefined;
     hints.push(store ? `${store.message}; ${store.remedy}` : remedy ?? message);
-    return { resolved: false, code: e.code, message };
+    const storeCap = e.code === "not-started" ? e.details.stopped?.storeCap : undefined;
+    return { resolved: false, code: e.code, message, ...(storeCap !== undefined && storeCap < MIN_FILE_STORE ? { storeCap } : {}) };
   }
   const target = selected.target;
   const base = {
@@ -1390,7 +1404,7 @@ function meshesSections(m: StatusResult["meshes"]): Section[] {
         ].filter(Boolean).join("  "),
       })),
     });
-  if (!m.currentRecorded) blocks.push({ kind: "lines", lines: [cell(`note: current mesh "${m.current}" is ${m.currentPrepared ? "prepared, not started" : "not recorded"}`, "hint")] });
+  if (!m.currentRecorded) blocks.push({ kind: "lines", lines: [cell(`note: current mesh "${m.current}" is ${m.currentStopped ? "stopped" : m.currentPrepared ? "prepared, not started" : "not recorded"}`, "hint")] });
   if (m.unreadable.length) blocks.push({ kind: "lines", lines: m.unreadable.map((u) => cell(`unreadable: ${u.error}`, "failed")) });
   const sections: Section[] = [{ title: "Recorded Meshes", blocks }];
   if (m.catalogs.length)
@@ -1533,7 +1547,7 @@ function brokerOverview(r: StatusResult): Section {
   }
   for (const unreadable of r.meshes.unreadable) blocks.push({ kind: "lines", lines: [stateCell(`Registration could not be read: ${unreadable.error}`, "failed")] });
   for (const account of r.meshes.catalogs) if (account.error) blocks.push({ kind: "lines", lines: [stateCell(`Space catalog for ${account.idp}: ${account.error}`, "failed")] });
-  if (!r.meshes.currentRecorded) blocks.push({ kind: "lines", lines: [cell(`Selected space '${r.meshes.current}' is ${r.meshes.currentPrepared ? "prepared, not started" : "not recorded"}`, "waiting")] });
+  if (!r.meshes.currentRecorded) blocks.push({ kind: "lines", lines: [cell(`Selected space '${r.meshes.current}' is ${r.meshes.currentStopped ? "stopped" : r.meshes.currentPrepared ? "prepared, not started" : "not recorded"}`, "waiting")] });
   return { title: "Brokers", blocks };
 }
 
@@ -1543,7 +1557,10 @@ const NOTHING_SELECTED = new Set(["no-meshes", "not-started", "unregistered-root
 function selectedOverview(r: StatusResult): Section | undefined {
   const s = r.selected;
   // Nothing running or selected is a state to start from, so it does not carry the mark of a live connection.
-  if (!s.resolved) return { title: "Selected space", blocks: [{ kind: "lines", lines: [stateCell(s.message, NOTHING_SELECTED.has(s.code) ? "hint" : "failed")] }] };
+  if (!s.resolved) return { title: "Selected space", blocks: [
+    { kind: "lines", lines: [stateCell(s.message, NOTHING_SELECTED.has(s.code) ? "hint" : "failed")] },
+    ...(s.storeCap !== undefined ? [{ kind: "fields" as const, rows: [["Store cap", cell(`${s.storeCap} bytes recorded, below the ${MIN_FILE_STORE} the space's streams start on`, "failed")] as [string, Cell]] }] : []),
+  ] };
   // A broker named with `--server` is reported even when nothing on this machine is registered.
   if (s.source !== "flag-server" && !r.meshes.items.length && !r.meshes.currentPrepared && r.folder.auth.state === "none" && !r.folder.processes?.some((item) => item.pid !== null)) return undefined;
   const responder = responderText(s.deliveryResponder, s.mode);
