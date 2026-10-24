@@ -310,6 +310,20 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("the text view prints the last 20 rows by default and the last n under --limit n",
     bare.includes("last 20 of 30") && rows(bare) === 20 && limited.includes("last 25 of 30") && rows(limited) === 25 && limited.includes("epoch 29") && !limited.split("\n").some((line) => line.trimEnd().endsWith("epoch 4")),
     { bare: rows(bare), limited: rows(limited) });
+  // A failure raised outside any step is in no journal row. When the status recorded its cause, the
+  // view prints the cause and does not also say that nothing records why.
+  const failed = (failure?: { message: string }): string => {
+    const out: string[] = [];
+    const origLog = console.log;
+    console.log = (...a: unknown[]) => { out.push(a.map(String).join(" ")); };
+    try { printRunDetail("usage", { ...view, journal: [], status: { state: "failed", ...(failure ? { failure } : {}) } as RunStatusView["status"] }, { plain: true }); } finally { console.log = origLog; process.exitCode = 0; }
+    return out.join("\n");
+  };
+  const caused = failed({ message: "the program gave up outside any step" }), uncaused = failed();
+  c("a failure outside any step whose cause the status recorded prints that cause and not that no row records why",
+    caused.includes("the program gave up outside any step") && !caused.includes("No journal row records why") && caused.includes("cotal service logs stack-manager --space usage"), caused);
+  c("one whose status recorded no cause says no journal row records why, and names the manager's log",
+    uncaused.includes("No journal row records why this run failed") && uncaused.includes("cotal service logs stack-manager --space usage"), uncaused);
 }
 
 // A source file that cannot be read is refused with the path to check.

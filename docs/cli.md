@@ -6326,8 +6326,9 @@ escape. A run that failed records its cause on its status. Its recorded state re
 view prints the message under `Failure`. When a step's error is the run's failure, `Failure` names
 that step and the message stays under `Step errors`. A run that failed before its status recorded a
 cause shows only `failed`. A failure raised by program code outside any step is recorded in no
-journal row. The view says so under `Failure` and names
-`cotal service logs stack-manager --space <space>`, because a hosted run's cause is in its manager's log.
+journal row. When the status recorded no cause either, the view says so under `Failure`. Either way
+it names `cotal service logs stack-manager --space <space>`, because a hosted run's cause is in its
+manager's log.
 The failure records no line or column in the program: a source position belongs to a problem
 `run validate` reports before the program runs.
 A program's `log(...)` lines are not journalled, so `show` and `journal` do not print them. A hosted
