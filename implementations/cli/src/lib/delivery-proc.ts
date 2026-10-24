@@ -194,10 +194,11 @@ export function startDeliveryDetached(o: Opts = {}): number {
   if (o.onDeliveryExit) child.on("exit", o.onDeliveryExit);
   child.unref();
   const pidPath = canonicalLocalProcessPath(DELIVERY_PIDFILE, ctx(space)); // canonical, never a pre-upgrade name
-  if (!child.pid) throw new Error("delivery daemon spawned with no pid");
+  const pid = child.pid;
+  if (!pid) throw new Error("delivery daemon spawned with no pid");
   // #969/#1238: publish the pair by rename so a later teardown never sees a torn pairing.
-  writePidPair(pidPath, child.pid);
-  return child.pid ?? 0;
+  writePidPair(pidPath, pid);
+  return pid;
 }
 
 /** The `✗` failure lines a daemon wrote to its log from byte `from` on, without the shard-release

@@ -223,15 +223,16 @@ export function startManagerDetached(
   // CANONICAL path, never a pre-upgrade one: a start that kept writing the root-scoped name would
   // keep minting the very records this change ends.
   const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, ctx(space));
-  if (!child.pid) throw new Error("manager spawned with no pid");
+  const pid = child.pid;
+  if (!pid) throw new Error("manager spawned with no pid");
   // #969/#1238: publish the pair by rename (pidfile + sibling start-token pin), so a crash never
   // leaves a torn pairing; a platform that cannot produce a start token still gets the legacy shape.
-  writePidPair(pidPath, child.pid);
+  writePidPair(pidPath, pid);
   // Mark this manager as delivery-aware (non-hosting) so the delivery preflight can tell it apart from
   // an old Plane-3-hosting manager. Written next to the pid, removed by `down` or clearManagerArtifacts.
   // Owner-private, and never through a symlink at the marker name.
-  writePrivateRecord(canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx(space)), String(child.pid));
-  return child.pid ?? 0;
+  writePrivateRecord(canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx(space)), String(pid));
+  return pid;
 }
 
 /** Refuse to stand a manager up OVER a record we cannot read or attribute.
