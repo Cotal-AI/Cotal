@@ -1,7 +1,8 @@
 /**
  * `cotal up` refuses an invalid flag value or combination as usage, exit 1, before anything runs.
  * `--max-sessions 0`, `--max-sessions abc` and an unknown `--restore-only` value used to exit 3,
- * "Outcome unconfirmed", which tells a script the run may have had an effect.
+ * "Outcome unconfirmed", which tells a script the run may have had an effect. `--dry-run` without
+ * `-f` used to start a real stack.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, from an empty
  * folder outside them. Nothing is started; each refusal comes from validation. A `--server` that no
@@ -47,6 +48,9 @@ const cases: { args: string[]; message: RegExp }[] = [
   { args: ["--max-file-store", "0"], message: /--max-file-store must be a positive integer/ },
   { args: ["--restore", join(folder, "nonexistent"), "--restore-only", "full"], message: /--restore-only takes registry/ },
   { args: ["--restore-only", "registry"], message: /require --restore/ },
+  // Without -f there is no plan to print, and the launch used to start a real stack.
+  { args: ["--dry-run"], message: /--dry-run previews a manifest launch and needs -f/ },
+  { args: ["--server", "nats://127.0.0.1:1", "--dry-run"], message: /--dry-run previews a manifest launch and needs -f/ },
 ];
 for (const { args, message } of cases) {
   const json = run(["up", ...args, "--json"]);
