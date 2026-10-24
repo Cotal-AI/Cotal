@@ -52,8 +52,8 @@ check("control: a parser usage error has the documented shape", usageShape(parse
 // after a space, and an option typed with a typographic dash is named with hyphens.
 const dashWord = run(["send", "-c", "general", "-n is a flag here"]);
 check("an unknown option names -- for a word that starts with -", usageShape(dashWord, /Unknown option '-n'/) && /put -- before it/.test(dashWord.stderr), shown(dashWord));
-const dashValue = run(["history", "--limit", "-1"]);
-check("an option value that starts with - is given its --name=value form", usageShape(dashValue, /the value of --limit starts with "-"/) && /write it as --limit=-1/.test(dashValue.stderr), shown(dashValue));
+const dashValue = run(["history", "--from", "-bob"]);
+check("an option value that starts with - is given its --name=value form", usageShape(dashValue, /the value of --from starts with "-"/) && /write it as --from=-bob/.test(dashValue.stderr), shown(dashValue));
 const shortEquals = run(["send", "-c=general", "hello"]);
 check("-c=value is refused naming the value it would give", usageShape(shortEquals, /-c=general gives -c the value "=general"/) && /write -c general or --channel=general/.test(shortEquals.stderr), shown(shortEquals));
 for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
