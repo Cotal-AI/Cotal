@@ -33,6 +33,18 @@ the full `up` orchestration are **not** public runners: `up` also does broker br
 process and registry management, and lifecycle work, and `supervise`'s orchestration is private (see
 [Supervisor signing authority](#supervisor-signing-authority)).
 
+## Workspace registry liveness
+
+`@cotal-ai/workspace` exports `pruneStaleMeshes()` for a liveness sweep. It keeps every
+registration and returns a `MeshSweep` containing only `offline: string[]`; catalog entries
+are not probed. The former always-empty `pruned` field is removed.
+
+Call `pruneMesh(space)` only after a credentials, mode, or on-disk space mismatch. It removes
+an `up` or pre-origin record and returns whether it was removed. Manual and catalog records
+stay registered. The reason argument and `PruneReason` type are removed. Callers that passed
+`"gone"` must report the target offline without calling `pruneMesh`; callers that passed
+`"mismatch"` omit the argument.
+
 ## Interactive Manager primary
 
 A trusted composition can pass `{ interactiveManagerSelection: "local-primary" }` as the third
