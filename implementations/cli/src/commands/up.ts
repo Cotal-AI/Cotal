@@ -236,6 +236,7 @@ import {
   type RestoreFlags,
 } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
+import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 
 const pendingRestores = new Map<string, PreparedRestore>();
 
@@ -870,6 +871,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         if (values.runtime && runtimes[0] && values.runtime !== runtimes[0])
           throw new Error(`--runtime ${values.runtime} contradicts the preserved agent runtime ${runtimes[0]}; omit it to resume the same principals`);
         const resumeRuntime = values.runtime ?? runtimes[0] ?? "pty";
+        // The resumed broker binds this address, so another listener there would leave the resume
+        // degraded. It is refused here, before anything is journalled or started, as backup create does.
+        await assertEndpointUnreachable(resumeServer).catch((error: Error) => {
+          throw new CommandFailure("refused", "CONFLICT", `${error.message}; the resumed broker needs that address, so nothing was started`, { target: { root, space: journal.space, server: resumeServer }, remedy: `stop the process that listens on ${resumeServer}, then run cotal up again` });
+        });
         // Admit every seat checkpoint the cut wrote and take custody, BEFORE the resume attempt is
         // journalled and long before a manager starts. A refusal here costs nothing because
         // nothing has been started; the same refusal after a launch would be a second writer.

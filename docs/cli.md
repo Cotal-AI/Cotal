@@ -1586,7 +1586,9 @@ rest of this section applies to a root without a stack journal.
 Backup is offline-only. It requires the stable `ready` record from `down --preserve-state`, an exact
 store match (`--store-dir` defaults to the cut's recorded source store), no recorded process that may still be running (the same test `clean` uses), and an
 unreachable exact endpoint from the recorded cut. That endpoint is probed immediately before cloning, so a live broker with a missing or stale pidfile
-is still refused. It claims the cut, reflink/copies the stopped source to a
+is still refused. `backup restore`, `up --restore` and a bare `up` that resumes the cut probe the
+broker address they will bind before they move or start anything. While another process listens
+there they refuse `CONFLICT` (exit 2), name the address and leave the cut unchanged. It claims the cut, reflink/copies the stopped source to a
 private attempt clone, and opens only that clone on a random loopback bootstrap broker with an
 independent parent/deadline watchdog. A bootstrap broker that does not accept connections within
 15 seconds fails the command. Creation returns one JSON/plain receipt after cleanup.

@@ -89,6 +89,7 @@ import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, connectIsolatedBroker, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
 import { displayCmd } from "./self-exec.js";
+import { assertEndpointUnreachable } from "./endpoint-cut.js";
 import { acquireStackOperationLock } from "./stack-journal.js";
 import { admitAndRestoreSeatCheckpoints } from "./seat-resume.js";
 import { assertControllerRestorable, reconfigureControllerBroker, rollbackRestoreWithBroker } from "./controller-restore.js";
@@ -947,6 +948,13 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     if (JSON.stringify(authorityBeforeMutation) !== JSON.stringify(currentAuthority))
       throw new Error("current trust state changed during restore validation");
     await validateManifest(artifact.manifest, flags, journal, authorityBeforeMutation);
+    const resumeLaunch = (resume.launch ?? {}) as { server?: unknown };
+    const effectiveServer = canonicalServerEndpoint(controller ? journal.cut.launch.server : flags.server ?? (typeof resumeLaunch.server === "string" ? resumeLaunch.server : "nats://127.0.0.1:4222"));
+    // The restored broker binds this address after commit intent, so another listener there would
+    // leave the attempt degraded. It is refused here, before anything moves, as backup create does.
+    await assertEndpointUnreachable(effectiveServer).catch((error: Error) => {
+      throw new CommandFailure("refused", "CONFLICT", `${error.message}; the restored broker needs that address, so the preserved cut was not changed`, { target: { root, space: journal.space, server: effectiveServer }, remedy: `stop the process that listens on ${effectiveServer}, then run the restore again` });
+    });
     const sourceExists = (() => {
       try { lstatSync(journal.source.path); return true; }
       catch (error) {
@@ -1079,8 +1087,6 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     // A controller alternate restore rewrites the broker definition to the target before commit
     // intent, so a failure up to here still rolls the definition back first.
     if (controller && sourceExists && targetPath !== journal.source.path) reconfigureControllerBroker(lock);
-    const resumeLaunch = (resume.launch ?? {}) as { server?: unknown };
-    const effectiveServer = canonicalServerEndpoint(controller ? journal.cut.launch.server : flags.server ?? (typeof resumeLaunch.server === "string" ? resumeLaunch.server : "nats://127.0.0.1:4222"));
     const effectiveHost = controller ? new URL(effectiveServer).hostname : flags.host ?? (() => {
       try { return new URL(effectiveServer).hostname; } catch { return "127.0.0.1"; }
     })();
