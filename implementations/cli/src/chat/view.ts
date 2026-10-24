@@ -388,8 +388,8 @@ export interface Row {
 
 const shortUid = (uid: string): string => uid.slice(-6);
 
-export function recipientLabel(r: Recipient | undefined): string {
-  if (!r) return "no recipient (Tab)";
+export function recipientLabel(r: Recipient | undefined, choose = "Tab"): string {
+  if (!r) return `no recipient (${choose})`;
   if (r.kind === "channel") return `#${oneLine(r.channel)}`;
   if (r.kind === "role") return `role ${oneLine(r.role)}`;
   if (r.kind === "peer") return `DM ${oneLine(r.name)} (${oneLine(r.principal)})${r.replyTo ? " (reply)" : ""}`;
@@ -439,8 +439,8 @@ export function endingNotice(identity: SessionIdentity): { readonly at: number; 
 }
 
 /** The header: the mesh first, as every command's report opens, then who this session is and under
- *  which mode's guarantees. Never a credential. */
-export function headerRows(state: ChatState): Row[] {
+ *  which mode's guarantees. Never a credential. `choose` names how a recipient is chosen. */
+export function headerRows(state: ChatState, choose = "Tab"): Row[] {
   const id = state.identity;
   const until = id.expiresAt === undefined ? undefined : shownTime(id.expiresAt);
   const mode =
@@ -455,7 +455,7 @@ export function headerRows(state: ChatState): Row[] {
     { text: `Mesh: ${oneLine(id.space)}`, tone: "label" },
     { text: `${oneLine(id.label)} · ${oneLine(id.principal)} · session …${shortUid(id.lifecycleUid)} · ${mode}`, tone: "label" },
     conn,
-    { text: `to ${recipientLabel(state.recipient)} · attention ${state.attention}`, tone: "selected" },
+    { text: `to ${recipientLabel(state.recipient, choose)} · attention ${state.attention}`, tone: "selected" },
   ];
 }
 

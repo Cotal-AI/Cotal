@@ -4255,7 +4255,10 @@ diagnostics on stderr. Closing stdin ends the session. `--stdio` does not combin
 and `chat` has no `--json`. Under `--no-input` only `--stdio` runs.
 
 In `--plain`, a line you type becomes the draft, and it is sent only when you answer `y` to the
-question that follows. `:to` lists the recipients by number, and `:to <target>` sets one directly:
+question that follows. Any other answer keeps the draft unsent. A slash command typed as the answer
+runs, and the question is asked again. A new draft that replaces a kept one says so, with the kept
+draft's length. At the end of input an unsent draft or an unfinished `:multi` message is reported
+by its length and never sent. `:to` lists the recipients by number, and `:to <target>` sets one directly:
 `#<channel>`, `@<name>`, `@<owner>.<actor>` or `role:<role>`. A target in another form, such as a
 name without `@`, is refused with that list of forms, and the numbered list opens. An `@<name>`
 that names no present peer and no sender the session heard from is refused there with the reason a
