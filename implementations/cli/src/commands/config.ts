@@ -47,9 +47,9 @@ export const configFlags = [
 ] as const satisfies readonly FlagSpec[];
 
 export const configSubcommands = [
-  { name: "get", summary: "show one key's value, where it comes from and what it outranks", usage: "cotal config get <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"], reads: true },
-  { name: "set", summary: "save a value for you, or for one space with --space", usage: "cotal config set <key> <value> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
-  { name: "unset", summary: "remove a saved value", usage: "cotal config unset <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
+  { name: "get", flagNames: ["user", "space", "json", "plain"], summary: "show one key's value, where it comes from and what it outranks", usage: "cotal config get <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"], reads: true },
+  { name: "set", flagNames: ["user", "space", "json", "plain"], summary: "save a value for you, or for one space with --space", usage: "cotal config set <key> <value> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
+  { name: "unset", flagNames: ["user", "space", "json", "plain"], summary: "remove a saved value", usage: "cotal config unset <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
 ] as const satisfies readonly Subcommand[];
 
 /** Complete the subcommand, the key, and a value from the closed sets a write checks: color's and the

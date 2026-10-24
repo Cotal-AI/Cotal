@@ -221,7 +221,7 @@ import { serviceSupervisorStore } from "../lib/service-supervision.js";
 import { serviceInstallIntents } from "../lib/service-install-intent.js";
 import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionStore } from "../lib/service-unit-action.js";
-import { assertStoreDirArgument, configuredStoreDir, warnForeignStoreEntries } from "../lib/store-dir.js";
+import { assertStoreDirArgument, lastServedStore, warnForeignStoreEntries, configuredStoreDir } from "../lib/store-dir.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { metadataPositionals } from "../lib/command-path.js";
@@ -4677,25 +4677,11 @@ function validateRecorded(
   return transport;
 }
 
-/** The store this root's last broker served, when it differs from `storeDir` and still holds
- *  JetStream data. `down` drops the record that named a custom or restored store, but each real start
- *  writes its `store_dir` into the broker config it renders, and that file outlives `down`. */
-function lastServedStore(storeDir: string): string | undefined {
-  for (const conf of [join(authDir(cotalRoot()), "server.conf"), cotalPath("server-open.conf")]) {
-    if (!existsSync(conf)) continue;
-    // The core renderer writes the path as a JSON string.
-    const named = /jetstream \{ store_dir: ("(?:[^"\\]|\\.)*")/.exec(readFileSync(conf, "utf8"))?.[1];
-    const last = named === undefined ? undefined : resolve(cotalRoot(), JSON.parse(named) as string);
-    if (last !== undefined && last !== resolve(storeDir) && existsSync(join(last, "jetstream"))) return last;
-  }
-  return undefined;
-}
-
 /** A start that names no store would open an empty second store and leave the data where it was:
  *  while the last served store holds data and the default store holds none, refuse and name it. */
 function refuseUnnamedLastStore(storeDir: string): void {
   if (existsSync(join(storeDir, "jetstream"))) return;
-  const last = lastServedStore(storeDir);
+  const last = lastServedStore(cotalRoot(), storeDir);
   if (last !== undefined)
     throw new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and this start names no store, so it would open a new empty one at ${storeDir}; nothing was started`, { target: { root: cotalRoot(), storeDir: last }, remedy: `reopen it with --store-dir ${last}, or move that store away to start empty` });
 }
@@ -4705,7 +4691,7 @@ function refuseUnnamedLastStore(storeDir: string): void {
  *  new store on purpose. */
 function refuseMissingNamedStore(storeDir: string): void {
   if (existsSync(storeDir)) return;
-  const last = lastServedStore(storeDir);
+  const last = lastServedStore(cotalRoot(), storeDir);
   if (last !== undefined)
     throw new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and --store-dir names ${storeDir}, which does not exist, so this start would open a new empty store there; nothing was started`, { target: { root: cotalRoot(), storeDir: last, requested: storeDir }, remedy: `reopen it with --store-dir ${last}, or create ${storeDir} first to start on a new empty store` });
 }
