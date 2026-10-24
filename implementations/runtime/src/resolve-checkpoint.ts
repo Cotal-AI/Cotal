@@ -190,7 +190,7 @@ async function readSpecPastTheMintWindow(
  *  revoked, or its marker could not be read. */
 export class RunAnswerBlocked extends EpEnvelopeError {
   constructor(message: string) {
-    super("failed-precondition", `${message}; no answer was filed (SPEC 14.8)`, undefined, "not-executed");
+    super("failed-precondition", `${message}; no answer was filed`, undefined, "not-executed");
     this.name = "RunAnswerBlocked";
   }
 }

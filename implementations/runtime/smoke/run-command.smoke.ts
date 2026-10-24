@@ -597,7 +597,7 @@ let P = "";
   reset();
   const answered = await wf(["answer", rid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).then(() => undefined, (e: Error) => e);
   c("an answer to the revoked run's open checkpoint is refused LIFECYCLE_BLOCKED, naming who revoked it and why",
-    isCommandFailure(answered) && answered.code === "LIFECYCLE_BLOCKED" && answered.message.includes("revoked by smoke-operator (broker outage)") && answered.message.includes("no answer was filed"), answered?.message ?? captured());
+    isCommandFailure(answered) && answered.code === "LIFECYCLE_BLOCKED" && answered.message.includes("revoked by smoke-operator (broker outage)") && answered.message.endsWith("; no answer was filed"), answered?.message ?? captured());
   const parked: string[] = [];
   for (const r of (await journal(rid)).records) {
     if (r.record.kind !== "step") continue;

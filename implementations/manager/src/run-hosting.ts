@@ -703,7 +703,7 @@ export class RunHosting {
         // re-admits under the resuming caller, and a revoked run is not continued.
         const admission = await readRunAdmission(planes.jsm, this.ctx.space, this.ctx.endpoint, args.runId);
         if (admission.revoked !== undefined)
-          throw new EpEnvelopeError("permission-denied", `run ${args.runId} was revoked by ${admission.revoked.by} (${admission.revoked.reason}); a revoked run is not resumed (SPEC 14.8)`);
+          throw new EpEnvelopeError("permission-denied", `run ${args.runId} was revoked by ${admission.revoked.by} (${admission.revoked.reason}); a revoked run is not resumed`);
         return { status: record.status?.value, program, admission };
       });
       if (found === undefined)
