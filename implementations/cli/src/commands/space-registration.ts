@@ -422,7 +422,7 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   const tooLong = spaceNameTooLong(name);
   if (tooLong) throw refuse("USAGE_INVALID", `${tooLong}; nothing was written`, target, `choose a name of at most ${SPACE_NAME_MAX} characters`);
   if (token(name) !== name)
-    throw refuse("USAGE_INVALID", `a space name is 1 to ${SPACE_NAME_MAX} letters, digits, underscores or hyphens, which \`cotal up\` needs to start it`, target);
+    throw refuse("USAGE_INVALID", `a space name is 1 to ${SPACE_NAME_MAX} letters, digits, underscores or hyphens, which \`cotal up\` needs to start it`, target, "choose a name of only letters, digits, underscores and hyphens");
   take(checkSpaceName(name), target);
   if (resolve(root, ".cotal") === resolve(homeCotalDir()) || canonicalRoot(root) === canonicalRoot(homedir()))
     throw refuse("CONFLICT", `${root} is your home folder, whose .cotal holds this machine's own records`, target, `create the space in a project folder, or pass ${flag} <dir>`);

@@ -755,7 +755,8 @@ if (process.platform === "linux") {
   check("an add flag other than --root on create is USAGE_INVALID", refused(await json(["space", "create", "other", "--server", LIVE], spare), 1, "USAGE_INVALID"));
   for (const name of ["a b", "dot.name", "é"]) {
     const bad = await json(["space", "create", name], spare);
-    check(`a name cotal up cannot start (${name.length > 20 ? `${name.length} characters` : name}) is USAGE_INVALID`, refused(bad, 1, "USAGE_INVALID") && /1 to 64 letters, digits, underscores or hyphens/.test(bad.env?.error?.message ?? ""), shown(bad));
+    check(`a name cotal up cannot start (${name.length > 20 ? `${name.length} characters` : name}) is USAGE_INVALID, with the remedy in its envelope`,
+      refused(bad, 1, "USAGE_INVALID") && /1 to 64 letters, digits, underscores or hyphens/.test(bad.env?.error?.message ?? "") && bad.env?.error?.remedy === "choose a name of only letters, digits, underscores and hyphens", shown(bad));
   }
   const dashed = await json(["space", "create", "--", "-x"], spare);
   check("a name that starts with - is USAGE_INVALID, saying it cannot be passed as a flag value",
