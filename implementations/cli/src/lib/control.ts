@@ -276,10 +276,15 @@ export function managerFailure(reply: ManagerReply, operation: string, target: u
 /** A describe that drew no answer means the command after it was never sent, so it is refused, as
  *  `chat` and the run verbs refuse it, and not an unknown outcome. Undefined for any other failure. */
 export function unansweredDescribeRefusal(reply: ManagerReply, operation: string, target: unknown): CommandFailure | undefined {
-  if (!reply.details?.some((detail) => detail.kind === EP_UNANSWERED && detail.command === "describe")) return undefined;
+  if (!describeUnanswered(reply)) return undefined;
   const agent = (target as { agent?: unknown } | null)?.agent;
   const what = typeof agent === "string" ? `${operation} for agent "${oneLine(agent)}"` : operation;
   return new CommandFailure("refused", "TARGET_UNAVAILABLE", `the manager registered for this space did not answer, so ${what} was not sent: ${oneLine(reply.error ?? "no reply")}`, { target, native: { code: reply.code }, remedy: "cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid and the way to end it" });
+}
+
+/** Whether the describe before a command drew no answer, so the command itself was never sent. */
+export function describeUnanswered(reply: ManagerReply): boolean {
+  return reply.details?.some((detail) => detail.kind === EP_UNANSWERED && detail.command === "describe") === true;
 }
 
 /** What the calling command declares about pinning. Passed ONLY by a command that offers `--on`
@@ -789,6 +794,29 @@ export async function refuseWithoutLiveManager(space: string, server: string, au
     if (!(e instanceof EpEnvelopeError) || !noLiveInstances(e)) return;
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to ${purpose}`, { target, native: { code: e.code, detail: `${e.code}: ${e.message}` }, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
   }
+}
+
+/** A pinned instance the space's registry does not list has nothing behind it to answer, so the
+ *  command is refused before it waits out the reply deadline, naming the managers that are running.
+ *  A registry this side cannot read leaves the request to settle it. */
+export async function refuseUnregisteredManager(space: string, server: string, auth: ControlAuth, on: string): Promise<void> {
+  let running: string[];
+  try {
+    running = await liveManagerIds(space, server, auth);
+  } catch (e) {
+    if (!(e instanceof EpEnvelopeError) || !noLiveInstances(e)) return;
+    running = [];
+  }
+  if (running.includes(on)) return;
+  const target = { space, requestedManagerInstance: on };
+  // With none running this is the unpinned refusal, which names the same way out.
+  if (running.length === 0)
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space, so --on ${on} names none. Nothing was sent`, { target, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
+  const which = running.length === 1 ? `the one running is ${running[0]}` : `the ones running are ${running.join(", ")}`;
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `--on ${on} names no manager running for space ${space}; ${which}. Nothing was sent`, {
+    target,
+    remedy: running.length === 1 ? `run it again with --on ${running[0]}, or without --on` : "run it again with --on naming one of them",
+  });
 }
 
 /** The manager instances the space's registry lists as live, frozen as a scatter freezes them. An

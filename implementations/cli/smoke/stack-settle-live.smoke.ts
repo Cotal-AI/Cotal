@@ -356,9 +356,23 @@ try {
     check("up after a broker crash restarts the broker from its records", repaired.status === 0 && replacement !== null && replacement !== crashed && alive(replacement), shown(repaired));
     // A killed manager leaves its pidfile behind; the relaunched one claims the slot once that
     // process is proven gone.
+    const census = cli(root, "ps", "--json");
+    const managerId = (census.env?.result?.managers as { instanceId?: string }[] | undefined)?.[0]?.instanceId;
+    check("rig: ps names the stack manager's instance", typeof managerId === "string", shown(census));
     const crashedManager = pidOf(space, "stack-manager");
     if (crashedManager !== null) process.kill(crashedManager, "SIGKILL");
     await until(() => gone(space, "stack-manager"), 10_000);
+    // Its record outlives it. A pin to it waits out the describe and nothing was sent, so the launch
+    // is refused; a pin the registry does not list is refused before any describe.
+    const deadPin = cli(root, "spawn", "nobody", "-d", "--on", String(managerId), "--json");
+    check("spawn -d --on the killed manager refuses TARGET_UNAVAILABLE, exit 2, saying nothing was launched, with the rail's detail as its cause",
+      deadPin.status === 2 && deadPin.env?.error?.code === "TARGET_UNAVAILABLE" && deadPin.env.error.message === `manager instance ${managerId} did not answer, so the launch was not sent and nothing was launched`
+        && Boolean(deadPin.env.error.cause?.detail?.includes("no describe reply")), shown(deadPin));
+    const absent = "abcdefghijklmnopqrstuvwxyz12";
+    const absentPin = cli(root, "spawn", "nobody", "-d", "--on", absent, "--json");
+    check("spawn -d --on an id no manager registered refuses TARGET_NOT_FOUND before any describe, naming the one running",
+      absentPin.status === 2 && absentPin.env?.error?.code === "TARGET_NOT_FOUND" && absentPin.env.error.message === `--on ${absent} names no manager running for space ${space}; the one running is ${managerId}. Nothing was sent`
+        && absentPin.env.error.remedy === `run it again with --on ${managerId}, or without --on` && absentPin.env.error.cause === undefined, shown(absentPin));
     const relaunched = cli(root, "up", "--json");
     track(space);
     const manager = pidOf(space, "stack-manager");
