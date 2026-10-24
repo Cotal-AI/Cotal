@@ -764,7 +764,10 @@ or an access list, and does not refuse a link: a symlink or junction is followed
 record schema, the regular-file check and the refusal of a link inside a record store's own
 directories still apply. When a service path check refuses a path, the refusal names the option
 and each path that failed once, with its reason and one `chmod` that fixes every writable one. A
-whole-stack failure shows that sentence as its native detail.
+whole-stack failure shows that sentence as its native detail. On POSIX, a credential file a command
+is given, such as a `<private-file>` argument, and a saved private record must be a regular file this
+account owns with no group or other access. One that is not, or that this account cannot open,
+refuses `PERMISSION_DENIED` (exit 2) and names the file.
 
 A fresh prepared static-auth, open or plain-loopback user-auth root starts through the service
 controller. It records its mode, definitions and full instance IDs in the private
@@ -1949,7 +1952,9 @@ interrupted before it wrote a file is still an incomplete artifact. A path that 
 restores only into a root that still holds the trust state it was taken under, so it cannot move to
 another machine or a fresh root. `backup create`, `backup inspect` and `backup verify` say so in a
 `Restores into` row, and their JSON carries `trustBound`. A registry restore does not check the trust
-state, so `--only registry` still restores such an artifact's channel settings.
+state, so `--only registry` still restores such an artifact's channel settings. When a full restore
+refuses `CONFLICT` because the trust state moved, its Next names that `--only registry` restore for an
+artifact that holds the registry.
 
 File integrity is not a signature or a restore proof. Matching a manifest does not authenticate
 its author, verify snapshot semantics or prove existing trust will accept a restore. `backup
@@ -2026,7 +2031,8 @@ target says in `missing` whether the folder that should hold the artifact (`fold
 artifact (`artifact`) is missing. A path that is not an artifact, or is an incomplete one, refuses
 there too, as `backup verify` refuses it. A path that is, holds or sits inside the preserved store
 or `.cotal/maintenance`, such as `.` in this folder, refuses `USAGE_INVALID` (exit 1) there, naming
-that store or folder. A restore that fails after it
+that store or folder. The restore checks the path again once it holds the maintenance lock, because a
+link in it may name another folder by then, and refuses the same way. A restore that fails after it
 began names its attempt in the text and in the JSON target, which also carries `journalState`, and
 its remedy gives the next step for that state. `up --restore`
 remains as the equivalent startup form. After its startup lines it names the restore attempt and
@@ -6772,8 +6778,10 @@ moves the virtual clock forward.
 
 The simulation's `log(...)` lines print under `Log`, and `--json` carries them in `result.log`, each
 with its `scope` and `values`. A step with no entry, or a list shorter than the step's occurrences,
-stops the simulation with L6001 and exit 5. The failure names the table, the step's name and its step key, and the remedy
-names the entry to add. A failure in the program itself names its code and cause.
+stops the simulation with L6001 and exit 5. The failure names the table, the step's name and its step key,
+and the remedy names the entry to add. For a list that is too short, it also says which result the step
+needs, counted from 1, while the step key counts occurrences from 0. A failure in the program itself
+names its code and cause.
 
 Inside a manager-launched static or open seat, `run turns` reads that seat's assigned turns and
 `run yield <turn-id> --status <done|blocked|handoff>` reports an outcome. Handoff also requires

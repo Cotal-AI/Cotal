@@ -67,6 +67,7 @@ import {
   replaceDeadRestoreListener,
   repairRestoreDegradedToActive,
   releaseMaintenanceLock,
+  shellPath,
   workspaceSecretStore,
   writeRestoreCommitIntent,
   type AttemptOwnedPath,
@@ -324,6 +325,21 @@ function contains(parent: string, child: string): boolean {
   return path === "" || (path !== ".." && !path.startsWith(`..${separator}`) && !isAbsolute(path));
 }
 
+/** The refusal for a restore artifact that is, holds or sits inside the store the restore replaces
+ *  or this root's maintenance folder, where it stages its attempt, or `undefined` when it is clear
+ *  of both. `artifact` and `store` are real paths. */
+function artifactOverlapRefusal(root: string, artifact: string, store: string): CommandFailure | undefined {
+  for (const [path, what, why] of [
+    [store, "the preserved store", " it would replace"],
+    [realpathSync.native(join(root, ".cotal", "maintenance")), "this root's maintenance folder", ", where it stages its attempt"],
+  ] as const) {
+    if (!contains(path, artifact) && !contains(artifact, path)) continue;
+    const relation = artifact === path ? "is" : contains(path, artifact) ? "is inside" : "holds";
+    return new CommandFailure("refused", "USAGE_INVALID", `the restore artifact ${artifact} ${relation} ${what}${relation === "is" ? "" : ` ${path}`}${why}; nothing was restored`, { target: { root, directory: artifact, overlaps: path }, remedy: `name a backup artifact folder outside ${path}`, selfContained: true });
+  }
+  return undefined;
+}
+
 /** An explicit `--store-dir` names the directory a restore creates and owns for its rollback, so it
  *  must not exist yet and its parent must. Either mistake is a usage refusal before anything is
  *  staged. The preserved source itself is the same-path restore. */
@@ -405,15 +421,20 @@ async function validateManifest(
       // counting on during a disaster.
       // Checked before any transition, as the space is above: a refusal, not an unknown outcome.
       const sameAccount = manifest.authority?.account !== undefined && manifest.authority.account === currentAuthority.account;
+      // A registry restore does not check the trust state, so an artifact that holds the registry
+      // still restores that here, and the Next says how.
+      const registry = spaceBackupInventory(manifest.space).registry.every((stream) => held.includes(stream))
+        ? `; its channel registry still restores here with cotal backup restore ${shellPath(resolve(flags.restore))} --only registry, and chat and DM history and workflow runs then start empty`
+        : "";
       throw new CommandFailure("refused", "CONFLICT",
         sameAccount
           ? "backup authority fingerprint does not match current trust state: the data account is unchanged, so the OPERATOR/SYSTEM half of the trust chain moved - this artifact predates a system-account rotation (`cotal up --rotate-sys`) and is bound to the retired chain; the preserved cut was not changed"
           : "backup authority fingerprint does not match current trust state: this full artifact was taken under another trust state, such as another machine's or a reset root's; the preserved cut was not changed",
         {
           target: { space: ready.space },
-          remedy: sameAccount
+          remedy: (sameAccount
             ? "restore it into a root holding that chain, or use a backup taken after the rotation"
-            : "a full backup restores only into a root that still holds the trust state it was taken under: restore it there, or use a full backup taken on this root",
+            : "a full backup restores only into a root that still holds the trust state it was taken under: restore it there, or use a full backup taken on this root") + registry,
         });
     }
   }
@@ -867,14 +888,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
   // So is a path that cannot be an artifact, saying what it is: one that is, holds or sits inside
   // the store the restore replaces or the folder it stages in, a file, or a folder no create wrote.
   const namedPath = realpathSync.native(named);
-  for (const [path, what, why] of [
-    [recorded.source.path, "the preserved store", " it would replace"],
-    [realpathSync.native(join(root, ".cotal", "maintenance")), "this root's maintenance folder", ", where it stages its attempt"],
-  ] as const) {
-    if (!contains(path, namedPath) && !contains(namedPath, path)) continue;
-    const relation = namedPath === path ? "is" : contains(path, namedPath) ? "is inside" : "holds";
-    throw new CommandFailure("refused", "USAGE_INVALID", `the restore artifact ${namedPath} ${relation} ${what}${relation === "is" ? "" : ` ${path}`}${why}; nothing was restored`, { target: { root, directory: namedPath, overlaps: path }, remedy: `name a backup artifact folder outside ${path}`, selfContained: true });
-  }
+  const overlap = artifactOverlapRefusal(root, namedPath, recorded.source.path);
+  if (overlap) throw overlap;
   const notArtifact = notAnArtifactRefusal(root, namedPath, "nothing was restored", { root });
   if (notArtifact) throw notArtifact;
   let lock = acquireStackOperationLock(root, "restore");
@@ -932,10 +947,9 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     const currentAuthority = await authorityFingerprint(root, journal.space, journal.mode);
     const stageParent = ensurePrivateAttemptsDir(root).path;
     const artifactPath = realpathSync.native(resolve(flags.restore));
-    if (contains(journal.source.path, artifactPath) || contains(artifactPath, journal.source.path))
-      throw new Error("restore artifact must not overlap the preserved source store");
-    if (contains(stageParent, artifactPath) || contains(artifactPath, stageParent))
-      throw new Error("restore artifact must not overlap the maintenance attempt directory");
+    // Again under the lock: a link in the path may name another folder now, and the journal is reread.
+    const lockedOverlap = artifactOverlapRefusal(root, artifactPath, journal.source.path);
+    if (lockedOverlap) throw lockedOverlap;
     // The cut records its source by real path, so a default .cotal/nats that links there is that
     // source and is restored in place, not taken for an alternate target.
     const defaultStore = join(root, ".cotal", "nats");

@@ -121,12 +121,12 @@ export function readLocalRecordSource(path: string, limit = LOCAL_INPUT_LIMIT, p
       const folder = unsearchableFolder(path);
       throw new CommandFailure("refused", "PERMISSION_DENIED", folder ? `${folder} cannot be read by this account (${code}), so ${path} was not read` : `${path} cannot be read by this account (${code})`, { target: { path, ...(folder ? { folder } : {}) }, remedy: folder ? `make it readable by you, for example with chmod u+rx ${folder}` : `make it readable by you, for example with chmod u+r ${path}` });
     }
-    throw new CommandFailure("refused", "PERMISSION_DENIED", posix ? "the local record source could not be opened without following links" : "the local record source could not be opened", { target: { path } });
+    throw new CommandFailure("refused", "PERMISSION_DENIED", posix ? `the local record source ${path} could not be opened without following links` : `the local record source ${path} could not be opened`, { target: { path } });
   }
   try {
     const before = fstatSync(fd);
     if (!before.isFile()) throw new CommandFailure("refused", "SCHEMA_INVALID", "local record input must be a regular file", { target: { path } });
-    if (privateFile && posix && (before.uid !== process.getuid!() || (before.mode & 0o077) !== 0)) throw new CommandFailure("refused", "PERMISSION_DENIED", "the saved local record is not owned and private", { target: { path } });
+    if (privateFile && posix && (before.uid !== process.getuid!() || (before.mode & 0o077) !== 0)) throw new CommandFailure("refused", "PERMISSION_DENIED", `the saved local record ${path} is not owned and private`, { target: { path } });
     if (before.size > limit) throw new CommandFailure("refused", "SCHEMA_INVALID", "local record input exceeds its byte limit", { target: { path } });
     const bytes = Buffer.alloc(limit + 1);
     let length = 0;
@@ -410,10 +410,10 @@ export function protectedCredentialReference(path: string): void {
   const access = requireLocalRecordAccess();
   try {
     if (access === "windows-acl") {
-      if (!statSync(path).isFile()) throw new CommandFailure("refused", "PERMISSION_DENIED", "the referenced credential must be a regular file; its bytes were not read");
+      if (!statSync(path).isFile()) throw new CommandFailure("refused", "PERMISSION_DENIED", `the referenced credential ${path} must be a regular file; its bytes were not read`, { target: { path } });
     } else {
       const stat = lstatSync(path);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0) throw new CommandFailure("refused", "PERMISSION_DENIED", "the referenced credential must be an owned private regular file; its bytes were not read");
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0) throw new CommandFailure("refused", "PERMISSION_DENIED", `the referenced credential ${path} must be an owned private regular file; its bytes were not read`, { target: { path } });
     }
     protectedLocalDirectory(dirname(path), "the credential reference");
   } catch (error) {
