@@ -1,6 +1,7 @@
 import { writeSync } from "node:fs";
 import { CotalEndpoint, chatWildcard, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { colorEnabled, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, recordOperationSpace, streamRecord, writeStreamRecord, userViewAuth, targetFlags } from "@cotal-ai/workspace";
+import { completingFlagValue } from "../lib/completion.js";
 import { connectOrExit, connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { watchViews, type WatchFilter } from "../watch-data.js";

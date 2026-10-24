@@ -18,7 +18,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, loadMeshes, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { openTransient } from "../lib/transient.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
@@ -26,6 +26,7 @@ import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { mentionsIn } from "../lib/mentions.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { UnusableFile } from "../lib/unusable-file.js";
 
 /**
  * One explicit --to, --channel or --role chooses the native delivery mode. The command
@@ -121,17 +122,22 @@ function bodyOf(input: SendInput, values: Values): string {
   if (input.source === "argument") return input.text!;
   if (input.source === "stdin" && process.stdin.isTTY)
     throw new CommandFailure("refused", "USAGE_INVALID", "pipe the message to --stdin, or use a quoted body or --file");
+  const file = input.source === "file" ? values.file! : undefined;
   let bytes: Buffer;
-  try { bytes = readFileSync(input.source === "file" ? values.file! : 0); }
+  try { bytes = readFileSync(file ?? 0); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    throw new CommandFailure("refused", code === "EACCES" || code === "EPERM" ? "PERMISSION_DENIED" : code === "ENOENT" ? "TARGET_NOT_FOUND" : "USAGE_INVALID",
-      input.source === "file" ? `the message file ${JSON.stringify(values.file)} could not be read` : "the message on stdin could not be read",
-      input.source === "file" ? { target: { file: values.file } } : {});
+    if (file === undefined) throw new CommandFailure("refused", "USAGE_INVALID", "the message on stdin could not be read");
+    if (code === "EACCES" || code === "EPERM" || code === "ENOENT")
+      throw new CommandFailure("refused", code === "ENOENT" ? "TARGET_NOT_FOUND" : "PERMISSION_DENIED", `the message file ${JSON.stringify(file)} could not be read`, { target: { file } });
+    throw new UnusableFile(`the message file ${JSON.stringify(file)} ${code === "EISDIR" ? "is a directory; --file reads one file" : `could not be read (${code ?? "no error code"})`}`, file);
   }
   let text: string;
   try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
-  catch { throw new CommandFailure("refused", "USAGE_INVALID", "the message input is not valid UTF-8"); }
+  catch {
+    if (file !== undefined) throw new UnusableFile(`the message file ${JSON.stringify(file)} is not valid UTF-8`, file);
+    throw new CommandFailure("refused", "USAGE_INVALID", "the message input is not valid UTF-8");
+  }
   if (!text.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "the explicit message input is empty");
   return text;
 }
@@ -305,7 +311,6 @@ export async function send(args: ParsedArgs): Promise<void> {
 export function sendComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, sendFlags);
   if (flag?.name === "creds" || flag?.name === "file") return { items: [], directive: "default" };
-  if (flag?.name === "space") return { items: loadMeshes().map((mesh) => ({ value: mesh.space })), directive: "nofiles" };
   if (flag?.name === "channel") return { items: declaredFrom(argv, listDeclaredChannels).map((value) => ({ value })), directive: "nofiles" };
   if (flag?.name === "role") return { items: declaredFrom(argv, listDeclaredRoles).map((value) => ({ value })), directive: "nofiles" };
   return { items: [], directive: "nofiles" };

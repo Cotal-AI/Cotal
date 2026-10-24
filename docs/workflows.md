@@ -246,7 +246,8 @@ The manager hosts runs. `cotal run start` hands the program to the manager of th
 it in its own process, and answers with the id once the run is recorded. The terminal is free the
 moment the id prints; the run continues on the manager through every pause, and a manager restart
 takes back every run it had recorded running, from the journal, under the next epoch. `resume`
-names a run the manager recorded and is refused while the manager is already driving it. `ps` and
+names a run the manager recorded and is refused while the manager is already driving it, and for
+a run recorded `completed` or `failed`, whose journal already holds its outcome. `ps` and
 `journal` read; `answer` resolves an open checkpoint, or an open `ask` attempt, from any terminal
 or agent that holds the `run` capability.
 
@@ -260,7 +261,8 @@ files a new answer beside the accepted one, naming the answer it supersedes, and
 each amendment under the step as an `amended` line, in the order the store committed them. The last
 line is the current position, whatever clock each amender's `at` came from. The pause stays settled
 and the run keeps the answer it acted on. A step that is still open, or that settled with no answer,
-refuses an amend. The manager records the amender from the credential, as for an answer, and a
+refuses an amend. So does a step whose answer was just accepted and is not in the run's journal
+yet, and that refusal says so. The manager records the amender from the credential, as for an answer, and a
 spawned seat may amend only an answer recorded under its own name.
 
 ```bash

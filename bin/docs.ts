@@ -115,6 +115,13 @@ function searchView(r: DocsSearchResult): Report {
   };
 }
 
+/** Complete the page name from the bundled index. Its module loads only on this <TAB>, as in `run`. */
+async function docsComplete(argv: string[]): Promise<CompletionResult> {
+  if (argv.slice(0, -1).some((word) => word === "--search" || !word.startsWith("-"))) return { items: [], directive: "nofiles" };
+  const index = (await import("@cotal-ai/connector-core/docs")).docsIndex();
+  return { items: [...index.pages, ...index.sources].map((page) => ({ value: page.slug, description: page.title })), directive: "nofiles" };
+}
+
 const docsCommand: Command = {
   kind: "command",
   name: "docs",

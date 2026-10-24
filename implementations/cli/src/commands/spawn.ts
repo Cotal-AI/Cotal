@@ -62,7 +62,6 @@ import {
   cachedPreferences,
   credsFlag,
   launchFlags,
-  loadMeshes,
   findMesh,
   getSpaceAuth,
   materializeSecretToFile,
@@ -277,8 +276,6 @@ async function registerEnrollmentMesh(stock: UserBundle, root: string, refusals?
  *  personas, not the cwd's. */
 export function spawnComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, spawnFlags);
-  if (flag?.name === "space")
-    return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
   if (flag?.name === "agent" || flag?.name === "harness")
     return { items: registry.all<Connector>("connector").map((c) => ({ value: c.name })), directive: "nofiles" };
   if (flag?.name === "role")

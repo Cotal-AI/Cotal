@@ -49,6 +49,7 @@ import { metadataPositionals } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
 import { ConfirmationRequired } from "./lib/confirmation-required.js";
 import { MissingFlags } from "./lib/missing-flags.js";
+import { UnusableFile } from "./lib/unusable-file.js";
 import { reportLostOutput } from "./lib/stdout-owner.js";
 import { managerChoiceFailure, pickManager, rosterOf } from "./lib/manager-choice.js";
 import { canPrompt } from "./commands/meshes-wizard.js";
@@ -122,8 +123,8 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   recordTelemetryFailure(failure.outcome, failure.code, failure);
   // A command's own usage refusal reads as the parser's: the error, its remedy, then the help. A
   // missing --yes or a missing scripted input is not a grammar mistake, and its remedy says the
-  // whole fix.
-  if (failure.code === "USAGE_INVALID" && !json) {
+  // whole fix. A file the command cannot use is reported like one that does not exist.
+  if (failure.code === "USAGE_INVALID" && !json && !(failure instanceof UnusableFile)) {
     stderrLine("✗ ", failure.message, c.red);
     if (failure.remedy) stderrLine("  ", failure.remedy, c.dim);
     if (!(failure instanceof ConfirmationRequired) && !(failure instanceof MissingFlags)) printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));

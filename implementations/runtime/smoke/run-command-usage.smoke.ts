@@ -135,6 +135,12 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   reset();
   const got4 = await attempt(["answer", "run-0", "/checkpoint:approve#0"], { by: "dana" });
   c("hosted `answer --by` is refused: the manager records the caller", usageRefusal(got4, "--by is only for the local path"), got4);
+  // Revoke is local only and needs --by, so a hosted one names that requirement with or without --by.
+  for (const by of [{}, { by: "dana" }, { by: "dana", reason: "why" }] as Record<string, string>[]) {
+    reset();
+    const got5 = await attempt(["revoke", "run-0"], by);
+    c(`hosted \`revoke\` ${JSON.stringify(by)} names what revoke requires`, usageRefusal(got5, "run revoke requires --local --by <actor> --reason <text>"), got5);
+  }
   const flags = registry.resolve<Command>("command", "run").flags ?? [];
   const help = (name: string) => flags.find((f) => f.name === name)?.description ?? "";
   c("and the declared flag help places `--file` on resume and `--by` on answer and amend only beside `--local`",
@@ -177,10 +183,10 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const dir = mkdtempSync(join(tmpdir(), "run-simulate-script-"));
   const program = join(dir, "p.cotal.js");
   writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
-  const simulate = (script: unknown) => {
+  const simulate = (script: unknown, values: Record<string, string | boolean> = {}) => {
     const handler = join(dir, "results.json");
     writeFileSync(handler, JSON.stringify(script));
-    return runWorkflow({ values: { handler }, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e);
+    return runWorkflow({ values: { handler, ...values }, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e);
   };
   const scriptRefusal = (got: unknown, says: string) =>
     isCommandFailure(got) && got.code === "SCHEMA_INVALID" && exitCode(got.outcome, got.code) === 1 && got.message.includes(says);
@@ -190,14 +196,29 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const at = await simulate({ checkpoints: { go: { status: "resolved", at: 5 } } });
   c("a scripted checkpoint at is refused, since the simulator stamps it from virtual time",
     scriptRefusal(at, "at is stamped from virtual time"), at);
-  // A step the script does not cover stops the simulation, and the failure names which one.
-  const unscripted = await simulate({});
-  c("an unscripted checkpoint fails naming its table, name and step key, with the entry to add as the remedy",
-    isCommandFailure(unscripted) && unscripted.code === "OPERATION_FAILED" && unscripted.message.includes('no checkpoints entry for "go" (step /checkpoint:go#0)') && Boolean(unscripted.remedy?.includes('{ checkpoints: { "go": <result> } }')), unscripted);
+  // A simulation that stops says why and where: a missing entry is the script's gap, named with the
+  // entry to add. An expired gate under the default onExpiry is a completed simulation whose program
+  // failed with L4007 at that gate.
+  const missing = await simulate({});
+  c("a script with no result for an effect names the step and the entry to add",
+    isCommandFailure(missing) && missing.code === "OPERATION_FAILED" && missing.message.includes('no checkpoints entry for "go" (step /checkpoint:go#0)')
+      && (missing.detail().remedy ?? "").includes('{ checkpoints: { "go": <result> } }') && (missing.target as { step?: string } | undefined)?.step === "/checkpoint:go#0", missing);
+  writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s" });\n');
+  const out: string[] = [];
+  const write = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => { out.push(String(chunk)); return true; }) as typeof process.stdout.write;
+  let expired: unknown;
+  try { expired = await simulate({ checkpoints: { go: { status: "expired" } } }, { json: true }); }
+  finally { process.stdout.write = write; }
+  let envelope: { outcome?: string; result?: { outcome?: string; failure?: { code?: string; step?: string; stepOutcome?: string }; effects?: { step: string }[] } } | undefined;
+  try { envelope = JSON.parse(out.join("")); } catch { envelope = undefined; }
+  c("a gate scripted expired under the default onExpiry is a completed simulation whose program failed at that gate with L4007",
+    expired === undefined && envelope?.outcome === "ok" && envelope.result?.outcome === "failed" && envelope.result.failure?.code === "L4007"
+      && envelope.result.failure.step === "/checkpoint:go#0" && envelope.result.failure.stepOutcome === "expired" && envelope.result.effects?.some((e) => e.step === "/checkpoint:go#0") === true, { expired, envelope });
   writeFileSync(program, 'throw "boom";\n');
   const thrown = await simulate({});
   c("a program that throws fails naming what it threw, not an unscripted effect",
-    isCommandFailure(thrown) && thrown.code === "OPERATION_FAILED" && thrown.message.includes('the program threw "boom"') && !thrown.message.includes("unscripted"), thrown);
+    isCommandFailure(thrown) && thrown.code === "OPERATION_FAILED" && thrown.message.includes('boom') && !thrown.message.includes("unscripted"), thrown);
   rmSync(dir, { recursive: true, force: true });
 }
 
@@ -263,6 +284,25 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("the text view prints the last 20 rows by default and the last n under --limit n",
     bare.includes("last 20 of 30") && rows(bare) === 20 && limited.includes("last 25 of 30") && rows(limited) === 25 && limited.includes("epoch 29") && !limited.split("\n").some((line) => line.trimEnd().endsWith("epoch 4")),
     { bare: rows(bare), limited: rows(limited) });
+}
+
+// A source file that is empty or not UTF-8 is refused by validate and by a hosted start alike,
+// before anything is checked or sent. Validate used to pass an empty file that start then broke on,
+// and Latin-1 text used to be stored with U+FFFD in place of its bytes.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-source-bytes-"));
+  const empty = join(dir, "e.cotal.js"), latin1 = join(dir, "l.cotal.js");
+  writeFileSync(empty, "");
+  writeFileSync(latin1, Buffer.from('const d = await checkpoint("go", "Weiter mit \xe4nderung?");\n', "latin1"));
+  for (const [file, says] of [[empty, "is empty"], [latin1, "is not valid UTF-8"]] as const) {
+    reset();
+    const validated = await runWorkflow({ values: {}, positionals: ["validate", file], raw: [] }).then(() => undefined, (e: Error) => e);
+    c(`validate refuses a source file that ${says}, SCHEMA_INVALID, exit 1`, isCommandFailure(validated) && validated.code === "SCHEMA_INVALID" && exitCode(validated.outcome, validated.code) === 1 && validated.message.includes(says), validated);
+    reset();
+    const started = await attempt(["start"], { file });
+    c(`a hosted start refuses a source file that ${says} the same way, before any connect`, isCommandFailure(started) && started.code === "SCHEMA_INVALID" && started.message.includes(says), started);
+  }
+  rmSync(dir, { recursive: true, force: true });
 }
 
 restore();

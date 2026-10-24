@@ -5,7 +5,6 @@ import {
   divergentCwdAnchor,
   isWorkspaceTargetError,
   jsonFlag,
-  loadMeshes,
   oneLine,
   renderReport,
   terminalWidth,
@@ -77,7 +76,6 @@ export const inputFlags = [
 
 export function managedAgentComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, attachFlags);
-  if (flag?.name === "space") return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
   if (flag?.name === "creds") return { items: [], directive: "default" };
   if (flag?.name === "name") return { items: [], directive: "nofiles" };
   if (argv.length <= 1)
@@ -571,8 +569,10 @@ function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, rea
     : result.kind === "slots" ? slotBlocks(rows as SlotRow[])
     : seatBlocks(rows as AgentRow[], wide);
   // A single manager that answered is the common case: a flat list, no per-manager grouping noise.
+  // Its instance id is still shown, with or without agents, because it is what `--on` takes.
   if (result.managers.length <= 1 && result.managers.every((m) => m.state === "answered")) return { sections: [
     { title: result.kind === "slots" ? "Static slots" : "Agents", blocks: blocksFor(result.items) },
+    ...result.managers.map((m): Section => ({ title: "Manager", blocks: [{ kind: "fields", rows: [["instance", m.instanceId]] }] })),
     { title: "Next", blocks: [{ kind: "commands", items: result.items.length ? [
       { command: "cotal attach <name>", description: "Return to an agent's terminal" },
       { command: "cotal stop <name>", description: "Stop one agent" },

@@ -152,8 +152,8 @@ export interface Command extends Extension {
    *  completed, possibly empty), returns the candidates for that position. Runs on every <TAB>
    *  via the hidden `__complete` dispatcher, so it MUST be import-light and side-effect-free —
    *  no network, no spawns. Omit it to offer no argument completion for this command.
-   *  Flag-name candidates are generated from {@link Command.flags} by the dispatcher; this hook
-   *  only supplies positional/value candidates. */
+   *  Flag-name candidates are generated from {@link Command.flags} by the dispatcher, which also
+   *  completes every `--space` value; this hook supplies the other positional and value candidates. */
   complete?(argv: string[]): CompletionResult | Promise<CompletionResult>;
 }
 

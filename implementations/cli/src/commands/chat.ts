@@ -9,7 +9,7 @@ import {
   oneLine, readChannelRegistry, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, connectTargetOrThrow, credsFlag, isConnectRefusal, loadMeshes, plainFlag, preflightOrThrow, resolveTargetOrThrow, serverFlag, spaceFlag,
+  CommandFailure, connectTargetOrThrow, credsFlag, isConnectRefusal, plainFlag, preflightOrThrow, resolveTargetOrThrow, serverFlag, spaceFlag,
   type MeshTarget,
 } from "@cotal-ai/workspace";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -233,11 +233,10 @@ export async function chat(args: ParsedArgs): Promise<void> {
   process.exitCode ??= closeExitCode(close);
 }
 
-/** Complete `--space` from the registry and the channel from the target mesh's persona catalog,
- *  offline. Other values have nothing to offer. */
+/** Complete the channel from the target mesh's persona catalog, offline. Other values have nothing
+ *  to offer. */
 export function chatComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, chatFlags);
-  if (flag?.name === "space") return { items: loadMeshes().map((mesh) => ({ value: mesh.space })), directive: "nofiles" };
   if (!flag && positionalsForCompletion(argv, chatFlags).length === 1)
     return { items: declaredFrom(argv, listDeclaredChannels).map((value) => ({ value })), directive: "nofiles" };
   return { items: [], directive: "nofiles" };

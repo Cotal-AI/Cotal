@@ -5,6 +5,7 @@ import {
   ROOT,
   assertLifecycleToken,
   credsProblem,
+  inspectCredHealth,
   instancePinnedInstrumentCapabilities,
   isReachable,
   jwtFromCreds,
@@ -23,6 +24,7 @@ import {
   type AuthProvider,
   type EpCaller,
   type MintOpts,
+  type ProbeResult,
   type Profile,
   type SpaceAuth,
 } from "@cotal-ai/core";
@@ -826,7 +828,9 @@ export function readCredsFileOrExit(path: string): string {
  *  stale-entry message and never a prune. Used by the `--creds` escape hatch and `join`'s explicit
  *  (link/token/creds) path, both of which connect to a broker the user named, not the registry. */
 export async function reachableOrThrow(server: string, auth: RawAuth = {}): Promise<void> {
-  let probe = await probeConnect(server, auth);
+  // A credential past its own expiry is dead, and no endpoint presents it, but the broker still
+  // accepts it until its last second ends. So it is refused without a dial.
+  let probe: ProbeResult = auth.creds !== undefined && inspectCredHealth(auth.creds).state === "expired" ? { ok: false, reason: "stale-auth" } : await probeConnect(server, auth);
   // CONFIRM BEFORE CONDEMNING, same reason as the registry path's re-probe (preflight.ts:100-110):
   // the default budget is 1s, a real link can need more, and the raw door never got the second try —
   // #709. `timeout`/`unreachable` are both inconclusive misses; `auth-required`/`stale-auth` are

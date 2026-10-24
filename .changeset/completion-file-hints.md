@@ -2,5 +2,4 @@
 "@cotal-ai/cli": patch
 ---
 
-`space add --root` and `space add --file` complete from the shell's file names, and `channel set
---window`, `--desc` and `--instructions` no longer offer file names for a duration or free text.
+Shell completion now offers file names for `space add --root` and `--file`, and no longer offers them for `channel set --window`, `--desc` and `--instructions`, which take a duration or text.
