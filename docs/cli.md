@@ -2589,9 +2589,11 @@ space, this folder's space or the default space, and a space other than the defa
 The file is read and checked with the NATS client's own parser before anything is dialed, and the
 refusal names the file. A missing file is `TARGET_NOT_FOUND`, exit 2. A directory, an empty file and
 a file the client cannot parse are `SCHEMA_INVALID`, exit 1, with the cause: no complete JWT block,
-no seed block, an invalid seed, or Windows (CRLF) line endings. A file that other accounts can read
-is still used, with a warning on stderr that gives the `chmod 600` command. `join --creds` reads its
-file the same way. A credential the broker rejects is `PERMISSION_DENIED`, exit 2. When the
+no seed block, an invalid seed, or Windows (CRLF) line endings. A file in a folder that another
+account can write, or below one, is refused `PERMISSION_DENIED`, exit 2, as `auth mint` refuses to
+write one there: the refusal names the folder, and its Next is the `chmod`, such as `chmod o-w <dir>`.
+A file that other accounts can read is still used, with a warning on stderr that gives the
+`chmod 600` command. `join --creds` reads its file the same way. A credential the broker rejects is `PERMISSION_DENIED`, exit 2. When the
 credential's own permissions name one other space, the refusal names that space, such as
 `credentials rejected at <server>: <file> is a credential for space "<owner>", not "<space>"`, and
 its Next is `--space <owner>`. When `--server` named another broker than the one that space is
