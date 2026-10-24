@@ -9,7 +9,7 @@ import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { isReachable, registry, writeSecretFileCreateOnly } from "@cotal-ai/core";
 import {
   CommandFailure, assertRecordIdentity, assertSingleSpaceBroker, authDir, canonicalRoot, decodeLocalJson,
-  findMesh, findPreparedSpace, listSpaceAccounts, loadMeshes, localMeshesForRoot, localProcessPath,
+  findMesh, findPreparedSpace, listSpaceAccounts, loadMeshes, localMeshesForRoot, localProcessPath, oneLine,
   parsePid, probeLiveness, readBrokerPolicy, readLocalRecordSource, readMaintenanceJournal, readPidfile,
   controllerAttemptBroker, cutController, maintenanceAdmitsStackWork, serviceAdapterAttempt,
   serviceMetadataDigest, type LocalProcess, type ProcessIdentityRecord, type ServiceAdapterContext,
@@ -78,8 +78,9 @@ function restoreAdmits(root: string, space: string, server: string): boolean {
 
 /** The address rules the broker service applies before any launch: one nats:// or tls:// URL
  *  without credentials, path, query or fragment, one concrete TCP port and one concrete IP literal.
- *  `cotal up` runs them before it writes anything, so an address the service would refuse never
- *  becomes a stack's recorded address. The host is returned URL-shaped. */
+ *  `cotal up` runs them before it writes anything, and `service add` before it saves a broker
+ *  definition, so an address the service would refuse never becomes a stack's recorded address or a
+ *  saved definition's. The host is returned URL-shaped. */
 export function brokerListenAddress(server: string): { protocol: string; host: string; port: number } {
   let url: URL;
   try { url = new URL(server); } catch { return refuse("UNSUPPORTED", "the broker address must be one nats:// or tls:// URL"); }
@@ -98,6 +99,16 @@ export function brokerListenAddress(server: string): { protocol: string; host: s
   return { protocol: url.protocol, host: new URL(`nats://${family === 6 ? `[${host}]` : host}:${port}`).hostname, port };
 }
 
+/** Why `server` cannot be a broker definition's address, as {@link brokerListenAddress} refuses it,
+ *  led by the value; undefined when it can. A value that may carry a credential is not printed. */
+export function brokerServerProblem(server: string): string | undefined {
+  try { brokerListenAddress(server); return undefined; }
+  catch (error) {
+    if (!(error instanceof CommandFailure)) throw error;
+    return `${server.includes("@") ? "(not printed, as it may hold a credential)" : JSON.stringify(server)}: ${error.message}`;
+  }
+}
+
 /** The declared root, space, broker address, configuration and binary, checked against the local
  *  registrations. Registry absence never proves that a broker is exclusive, so every known
  *  sharing, maintenance and legacy-custody record refuses instead of being reconciled here. */
@@ -111,6 +122,8 @@ function brokerTarget(context: ServiceAdapterContext, purpose: BrokerPurpose = "
   if (!controlStat?.isDirectory() || controlStat.isSymbolicLink()) refuse("TARGET_UNAVAILABLE", "the broker root has no physical .cotal control directory; prepare it first", { root });
   const inside = relative(control, config);
   if (!inside || inside.startsWith(`..${sep}`) || inside === ".." || isAbsolute(inside)) refuse("CONFLICT", "the broker configuration is not inside the selected root's .cotal directory; another root's configuration was not used", { root, config });
+  const problem = brokerServerProblem(server);
+  if (problem) refuse("UNSUPPORTED", `the definition's server option ${problem}`, undefined, `remove it with cotal service remove ${oneLine(context.definition)} --space ${oneLine(context.space)} --yes, then add it again with the one address its configuration serves, such as --server nats://127.0.0.1:<port>`);
   const { protocol, host, port } = brokerListenAddress(server);
   let policy;
   try { policy = readBrokerPolicy(root); }

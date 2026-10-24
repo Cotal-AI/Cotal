@@ -48,7 +48,7 @@ agent file as for any connector ([agent-files.md](agent-files.md)).
 ## Choose a model
 
 ```bash
-cotal models --agent codex               # ids + reasoning-effort variants, via app-server model/list
+cotal models --harness codex             # ids + reasoning-effort variants, via app-server model/list
 cotal spawn --agent codex --model gpt-5.6-sol --variant high
 ```
 

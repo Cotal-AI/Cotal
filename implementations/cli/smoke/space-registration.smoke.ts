@@ -21,7 +21,8 @@
  * no installed provider, ones naming a missing or invalid channels file, and one with an invalid
  * default channels file, have refused and left the root as it was; a default channels file that
  * begins with a UTF-8 byte-order mark seeds as the JSON after it, and one saved as UTF-16 is refused
- * by its encoding. Create and a later `up` write the
+ * by its encoding. That `up` reads its `--channels` seed once, from a FIFO written once, and seeds
+ * the channel from it. Create and a later `up` write the
  * default persona when the root has none, and leave an edited one byte-identical. Under umask 0002,
  * create makes `.cotal` and its persona catalog 0700. A registration
  * whose root is not an absolute path is refused at the space claim on the controller route and on the
@@ -913,6 +914,12 @@ if (process.platform === "linux") {
   check("an invalid default .cotal/channels.json refuses the same way, with a remedy to fix or remove it, before a store or a registration",
     refused(badDefault, 1, "SCHEMA_INVALID") && (badDefault.env?.error?.message ?? "").includes(defaultSeed) && badDefault.env?.error?.remedy === `fix or remove ${defaultSeed}` &&
       !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(badDefault));
+  // So does one that is not JSON at all: the default file's content is invalid, not the command line.
+  writeFileSync(defaultSeed, '{"channels":');
+  const unparsedDefault = await json(["up", "--open", "--server", server], fresh);
+  check("a default .cotal/channels.json that is not JSON refuses USAGE_INVALID, with the same remedy, before a store or a registration",
+    refused(unparsedDefault, 1, "USAGE_INVALID") && (unparsedDefault.env?.error?.message ?? "").includes(defaultSeed) && unparsedDefault.env?.error?.remedy === `fix or remove ${defaultSeed}` &&
+      !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(unparsedDefault));
   unlinkSync(defaultSeed);
   // A FIFO there would block the read, so it is refused by its file type before it is opened.
   if (process.platform !== "win32") {
@@ -927,11 +934,23 @@ if (process.platform === "linux") {
   // as the JSON after it.
   writeFileSync(defaultSeed, '\uFEFF{"channels":{"bomseed":{"description":"saved with a BOM"}}}');
 
+  // Its seed comes through a FIFO written once, which a second open would wait on forever.
+  const seedFifo = join(home, "channels-seed.fifo");
+  spawnSync("mkfifo", ["-m", "600", seedFifo]);
+  const feeder = spawn("sh", ["-c", 'printf %s "$1" > "$2"', "sh", '{"channels":{"news":{"description":"Neuigkeiten"}}}', seedFifo], { stdio: "ignore" });
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");
   check("up in its root starts it under its name, and the prepared record goes", up.status === 0 && started?.root === fresh && started.server === server && started.origin === "up" && findPreparedSpace("demo") === undefined, shown(up));
-  check("the selection still names it", getCurrent() === "demo", getCurrent());
   const bomSeeded = await json(["channel", "show", "bomseed", "--space", "demo"]);
+  // An explicit --channels replaces the default file, and only a start seeds, so the FIFO seed is
+  // read by the next start after a down.
+  check("down --yes stops it for the FIFO start", (await json(["down", "--yes"], fresh)).status === 0);
+  const fifoUp = await run(["up", "--detach", "--open", "--no-manager", "--server", server, "--channels", seedFifo], {}, fresh);
+  feeder.kill();
+  unlinkSync(seedFifo);
+  const seeded = await run(["channel", "--space", "demo", "--plain"], {}, fresh);
+  check("it reads a --channels FIFO written once a single time and seeds the channel from it", fifoUp.status === 0 && seeded.status === 0 && seeded.stdout.includes("Neuigkeiten"), { up: shown(fifoUp), seeded: shown(seeded) });
+  check("the selection still names it", getCurrent() === "demo", getCurrent());
   check("a default channels file that begins with a UTF-8 byte-order mark seeds its channels",
     bomSeeded.status === 0 && JSON.stringify(bomSeeded.env?.result ?? null).includes("saved with a BOM"), shown(bomSeeded));
   unlinkSync(defaultSeed);

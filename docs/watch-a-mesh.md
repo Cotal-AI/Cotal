@@ -54,7 +54,7 @@ tiles strip, and toggleable lenses:
 | `?` · `b` · `q` | help · back to overview · quit |
 
 **Operator control.** Watching stays read-only, but the console can also drive the
-[manager](architecture.md#manager-agent-supervisor). The observer endpoint never carries
+[manager](architecture.md#manager-supervision). The observer endpoint never carries
 control: each action is one call through the same per-action path `cotal stop`, `cotal ps`, and
 `cotal spawn --detach` take. It resolves the mesh, mints a one-shot instrument (or connects bare
 on an open mesh, or rides your bearer on a user-auth mesh), calls the manager over the endpoint
