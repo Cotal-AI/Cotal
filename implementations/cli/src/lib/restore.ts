@@ -59,7 +59,7 @@ import {
   prepareAlternateRestore,
   prepareMissingSourceRestore,
   prepareSamePathRestore,
-  localProcessOwnerStatus, readMaintenanceJournal,
+  localProcessOwnerStatus, readMaintenanceJournal, restoreLeftOut,
   readMaintenanceResumeDocument,
   recordRestoreAttemptResources,
   recordRestoreManagerCommit,
@@ -730,12 +730,13 @@ const USER_MODE_NO_RUNS = "A user-mode backup holds no workflow runs, because th
 const OLDER_FORMAT_NO_RUNS = "This backup was made before full backups held workflow runs, so it holds none; the workflow run stores were recreated empty.";
 
 /** The step that moves a full restore attempt on from `state`, for a refusal to name. A committed or
- *  degraded attempt goes forward through bare `up`, which continues it. */
-export function restoreNextStep(state: string, attemptId: string, selection?: string): string {
+ *  degraded attempt goes forward through bare `up`, which continues it. `leftOut` is what the restore
+ *  left only in its previous store ({@link restoreLeftOut}). */
+export function restoreNextStep(state: string, attemptId: string, leftOut?: string): string {
   if (state === "restore-ready") return `roll the pre-commit attempt back with cotal backup recover ${attemptId} --yes; preview it first with --dry-run`;
-  // A registry restore's cleanup also deletes the store that holds the only copy of the history it
-  // left out, so it runs only with --discard-history.
-  if (state === "active" && selection === "registry") return `the registry restore completed: cotal backup cleanup-fallback ${attemptId} --yes --discard-history retires its journal and deletes the previous store, the only copy of the chat and DM history it left out; preview it first with --dry-run`;
+  // That restore's cleanup also deletes the store that holds the only copy of what it left out, so
+  // it runs only with --discard-history.
+  if (state === "active" && leftOut) return `the restore completed: cotal backup cleanup-fallback ${attemptId} --yes --discard-history retires its journal and deletes the previous store, the only copy of the ${leftOut} it left out; preview it first with --dry-run`;
   if (state === "active") return `the restore completed: retire its journal with cotal backup cleanup-fallback ${attemptId} --yes; preview it first with --dry-run`;
   return `recover forward with bare cotal up from this root, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
 }
@@ -762,7 +763,7 @@ function claimedNextStep(root: string, claim: MaintenanceClaim): string {
  *  shows it and a command that refuses over that journal names it. */
 export function maintenanceNextStep(root: string, journal: NonNullable<ReturnType<typeof readMaintenanceJournal>>): { attemptId: string; next: string | null } {
   const attemptId = "restore" in journal ? journal.restore.attemptId : journal.state === "claimed" ? journal.claim.attemptId : journal.cut.attemptId;
-  const next = "restore" in journal ? restoreNextStep(journal.state, attemptId, journal.restore.selection)
+  const next = "restore" in journal ? restoreNextStep(journal.state, attemptId, restoreLeftOut(journal))
     : journal.state === "ready" ? readyNextStep(root, journal.source)
     : journal.state === "claimed" ? claimedNextStep(root, journal.claim) : null;
   return { attemptId, next };
@@ -785,22 +786,27 @@ export function heldClaim(root: string, attemptId: string, claim: { readonly dea
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${command} is refused: ${kind} attempt ${attemptId} holds this root until ${deadline}, and ${holder}; nothing was changed`, { target: { root, attemptId, deadline, holderPid: coordinator.pid }, remedy });
 }
 
-/** The store a same-path restore set aside, as its maintenance journal records it. */
-export function retainedPreviousStore(root: string, attemptId: string): string | undefined {
+/** What a restore attempt left only in the store it set aside ({@link restoreLeftOut}), and that
+ *  store, as the root's journal records them. Undefined when it left nothing out or the journal no
+ *  longer names the attempt. */
+export function restoreOnlyCopy(root: string, attemptId: string): { leftOut: string; previousStore?: string } | undefined {
   try {
     const journal = readMaintenanceJournal(root);
-    return journal && "restore" in journal && journal.restore.attemptId === attemptId ? journal.restore.previousSource?.identity.path : undefined;
+    if (!journal || !("restore" in journal) || journal.restore.attemptId !== attemptId) return undefined;
+    const leftOut = restoreLeftOut(journal);
+    return leftOut ? { leftOut, ...(journal.restore.previousSource ? { previousStore: journal.restore.previousSource.identity.path } : {}) } : undefined;
   } catch { return undefined; }
 }
 
-/** What a registry-only restore says about history: it brings back channel settings only, and every
- *  other stream, chat and DM history included, starts empty. The store it set aside holds the only
- *  copy of that history, which cleanup-fallback deletes only with `--discard-history`. */
-export function registryRestoreNotes(attemptId: string, previousStore: string | undefined): [string, string] {
-  return [
-    "A registry-only restore brings back channel settings only, so chat and DM history start empty.",
-    previousStore ? `The previous store at ${previousStore} holds the only copy of that history. \`cotal backup cleanup-fallback ${attemptId}\` deletes it only with --discard-history.` : "No previous store was retained.",
-  ];
+/** What a restore's receipt says about what it left out. A registry-only restore brings back channel
+ *  settings only, and every other stream starts empty; a full restore of an artifact with no runs has
+ *  a composition note that says why. The store it set aside holds the only copy, which
+ *  cleanup-fallback deletes only with `--discard-history`. */
+export function leftOutNotes(attemptId: string, selection: string, onlyCopy: ReturnType<typeof restoreOnlyCopy>): string[] {
+  if (!onlyCopy) return [];
+  const kept = onlyCopy.previousStore ? `The previous store at ${onlyCopy.previousStore} holds the only copy of ${selection === "registry" ? "them" : "the workflow runs"}. \`cotal backup cleanup-fallback ${attemptId}\` deletes it only with --discard-history.` : undefined;
+  if (selection !== "registry") return kept ? [kept] : [];
+  return ["A registry-only restore brings back channel settings only, so chat and DM history and workflow runs start empty.", kept ?? "No previous store was retained."];
 }
 
 /** The restore attempt the root's journal holds, with the step that moves it on, so a failure can
@@ -809,13 +815,13 @@ export function heldRestoreAttempt(root: string): { attemptId: string; journalSt
   let journal: ReturnType<typeof readMaintenanceJournal>;
   try { journal = readMaintenanceJournal(root); } catch { return undefined; }
   if (!journal || !("restore" in journal)) return undefined;
-  return { attemptId: journal.restore.attemptId, journalState: journal.state, remedy: restoreNextStep(journal.state, journal.restore.attemptId, journal.restore.selection) };
+  return { attemptId: journal.restore.attemptId, journalState: journal.state, remedy: restoreNextStep(journal.state, journal.restore.attemptId, restoreLeftOut(journal)) };
 }
 
 /** A root with no stopped preserved cut to restore into. Nothing was staged, moved or claimed. */
 function notRestorable(root: string, journal: ReturnType<typeof readMaintenanceJournal>): CommandFailure {
   const remedy = !journal ? "restore needs the stopped preserved cut from `cotal down --preserve-state` on this root"
-    : "restore" in journal ? restoreNextStep(journal.state, journal.restore.attemptId, journal.restore.selection)
+    : "restore" in journal ? restoreNextStep(journal.state, journal.restore.attemptId, restoreLeftOut(journal))
     : "this root's maintenance attempt must finish first; check it with cotal status";
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore requires stable ready maintenance state, found ${journal?.state ?? "none"}`, { target: { root, ...(journal ? { state: journal.state } : {}) }, remedy });
 }

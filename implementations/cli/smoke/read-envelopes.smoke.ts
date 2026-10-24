@@ -95,16 +95,16 @@ const ansi = /\x1b\[/;
   check("the human report exits 4 and names the failure on stderr", human.status === 4 && /broken\s+● installed · load failed/.test(human.stdout) && /1 installed runtime provider could not be loaded/.test(human.stderr), shown(human));
 }
 
-// ── ps and models: no mesh to read is refused before any request ─────────────────────────────────
+// ── ps, models and run ps: no mesh to read is refused before any request ─────────────────────────
 {
   const run = sandbox();
-  for (const command of ["ps", "models"]) {
-    const json = run([command, "--json"]);
+  for (const words of [["ps"], ["models"], ["run", "ps"], ["run", "ps", "--local"]]) {
+    const command = words.join(" "), json = run([...words, "--json"]);
     check(`${command} --json with no mesh is one TARGET_NOT_FOUND envelope, exit 2`,
-      json.status === 2 && json.envelope?.outcome === "refused" && json.envelope.command === command && json.envelope.error?.code === "TARGET_NOT_FOUND" && /no mesh running/.test(json.envelope.error.message), shown(json));
+      json.status === 2 && json.envelope?.outcome === "refused" && json.envelope.command === words[0] && json.envelope.error?.code === "TARGET_NOT_FOUND" && /no mesh running/.test(json.envelope.error.message), shown(json));
     check(`${command} --json with no mesh gives the remedy apart from the message`,
       json.envelope?.error?.message === "no mesh running" && json.envelope.error.remedy === "run `cotal up` in a project, or pass `--server`", json.envelope?.error);
-    const human = run([command]);
+    const human = run(words);
     check(`${command} with no mesh exits 2 with the sentence on stderr and nothing on stdout`, human.status === 2 && human.stdout === "" && /no mesh running/.test(human.stderr), shown(human));
   }
   const named = run(["models", "--json", "--space", "nope"]);

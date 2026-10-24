@@ -2005,6 +2005,7 @@ function teardownPermissions(space: string, pr: MintPrincipal, transferStreams: 
   const CHAT = chatStream(space);
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
   const MSHIP = `KV_${membershipBucket(space)}`;
+  const RECORDS = `KV_${recordsBucket(space)}`;
   // The deletion path and the exact per-stream grants use one target list. Reject any caller-
   // supplied transfer name that is not this space's transfer bucket before minting the grant.
   for (const name of transferStreams)
@@ -2030,6 +2031,9 @@ function teardownPermissions(space: string, pr: MintPrincipal, transferStreams: 
         // only `membership-rw` writes the feed.
         `$JS.API.CONSUMER.CREATE.${MSHIP}.>`,
         `$JS.API.CONSUMER.INFO.${MSHIP}.>`,
+        // Space deletion names the workflow runs it removes by their status records: a non-fencing
+        // direct get confined to run status keys (§13.9), on a stream this grant may already delete.
+        `$JS.API.DIRECT.GET.${RECORDS}.$KV.${recordsBucket(space)}.run.*.*.status`,
         "$JS.FC.>", // ordered-consumer flow control
         // Stop the managed agents over the v0.4 ep rails only (ps + any-mode despawn) — the admin
         // instrument set. The manager `ctl` rail is deleted.
