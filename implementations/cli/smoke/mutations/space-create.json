@@ -76,8 +76,8 @@
     {
       "name": "create does not make the root's .cotal",
       "file": "implementations/cli/src/commands/space-registration.ts",
-      "find": "  mkdirSync(join(root, \".cotal\"), { recursive: true, mode: 0o700 });\n",
-      "replace": "",
+      "find": "  try { made = mkdirSync(dir, { recursive: true, mode: 0o700 }); }",
+      "replace": "  try { made = undefined; }",
       "expectRed": "create prepares the space in this folder and makes its .cotal: ok, nothing registered",
       "cell": "create prepares the space in this folder and makes its .cotal: ok, nothing registered",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -94,8 +94,8 @@
     {
       "name": "forget leaves a prepared space recorded",
       "file": "implementations/cli/src/commands/space-registration.ts",
-      "find": "    removePreparedSpace(name);\n",
-      "replace": "",
+      "find": "    removePreparedSpace(name);\n    return forgotten(presentation, { space: name, server: null, root: p.root",
+      "replace": "    return forgotten(presentation, { space: name, server: null, root: p.root",
       "expectRed": "a prepared space is forgotten; the .cotal create made stays",
       "cell": "a prepared space is forgotten; the .cotal create made stays",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -166,7 +166,7 @@
     {
       "name": "--space does not refuse a prepared space",
       "file": "packages/workspace/src/mesh-target.ts",
-      "find": "      notStarted(flags.space);\n",
+      "find": "      notStarted(flags.space, cwd);\n",
       "replace": "",
       "expectRed": "a command naming it with --space is TARGET_UNAVAILABLE, naming its root",
       "cell": "a command naming it with --space is TARGET_UNAVAILABLE, naming its root",
@@ -175,7 +175,7 @@
     {
       "name": "the selection does not refuse a prepared space",
       "file": "packages/workspace/src/mesh-target.ts",
-      "find": "      notStarted(current);\n",
+      "find": "      notStarted(current, cwd);\n",
       "replace": "",
       "expectRed": "a command that targets it is TARGET_UNAVAILABLE, naming cotal up in its root",
       "cell": "a command that targets it is TARGET_UNAVAILABLE, naming cotal up in its root",
@@ -211,8 +211,8 @@
     {
       "name": "up starts a prepared space from another root",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "  if (prepared && canonicalRoot(prepared.root) !== canonicalRoot(root))\n",
-      "replace": "  if (prepared && space === \"\")\n",
+      "find": "  if (prepared && canonicalRoot(prepared.root) !== canonicalRoot(root)) {\n",
+      "replace": "  if (prepared && space === \"\") {\n",
       "expectRed": "up --space for it from another folder refuses, naming its root, and makes nothing there",
       "cell": "up --space for it from another folder refuses, naming its root, and makes nothing there",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -274,8 +274,8 @@
     {
       "name": "an up that wrote the persona still reports a no-op",
       "file": "implementations/cli/src/commands/stack-up.ts",
-      "find": "...(allReused && written.length === 0 ? { noOp: true } : {})",
-      "replace": "...(allReused ? { noOp: true } : {})",
+      "find": "...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {})",
+      "replace": "...(allReused && !streamsRecreated ? { noOp: true } : {})",
       "expectRed": "up of the running space writes back a missing default persona and lists the write",
       "cell": "up of the running space writes back a missing default persona and lists the write",
       "afterRestore": "pnpm --filter cotal-ai... build"

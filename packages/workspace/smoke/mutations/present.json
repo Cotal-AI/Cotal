@@ -93,7 +93,7 @@
     {
       "name": "warnings are dropped from text output",
       "file": "packages/workspace/src/present.ts",
-      "find": "    for (const warning of out.warnings ?? []) say(",
+      "find": "    for (const warning of warnings) say(",
       "replace": "    for (const warning of [] as OutputWarning[]) say(",
       "expectRed": "plain writes each warning on stderr",
       "cell": "plain writes each warning on stderr",
@@ -193,8 +193,8 @@
     {
       "name": "a warning continues at the line start",
       "file": "packages/workspace/src/present.ts",
-      "find": "    for (const warning of out.warnings ?? []) say({ text: `! ${warning.message}`, tone: \"waiting\" }, 2);\n",
-      "replace": "    for (const warning of out.warnings ?? []) say({ text: `! ${warning.message}`, tone: \"waiting\" }, 0);\n",
+      "find": "    for (const warning of warnings) say({ text: `! ${warning.message}`, tone: \"waiting\" }, 2);\n",
+      "replace": "    for (const warning of warnings) say({ text: `! ${warning.message}`, tone: \"waiting\" }, 0);\n",
       "expectRed": "its continuation lines start under the text",
       "cell": "its continuation lines start under the text",
       "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
@@ -213,7 +213,7 @@
     {
       "name": "plain keeps the punctuation glyphs",
       "file": "packages/workspace/src/present.ts",
-      "find": "  return style === \"plain\" ? text.replace(/[·…→↳—–]/g, (glyph) => PLAIN_PUNCTUATION[glyph]!).replace(/§ ?/g, \"section \") : text;\n",
+      "find": "  return text.replace(/[·…→↳—–]/g, (glyph) => PLAIN_PUNCTUATION[glyph]!).replace(/§ ?/g, \"section \");\n",
       "replace": "  return text;\n",
       "expectRed": "plain draws the report's punctuation in ASCII",
       "cell": "plain draws the report's punctuation in ASCII",
@@ -233,8 +233,8 @@
     {
       "name": "plain marks a partial result with a glyph",
       "file": "packages/workspace/src/present.ts",
-      "find": "      say({ text: `${presentation === \"plain\" ? \"!\" : \"✗\"} ${error.message}`, tone: outcome === \"partial\" || outcome === \"unknown\" ? \"waiting\" : \"failed\" }, 2);\n",
-      "replace": "      say({ text: `✗ ${error.message}`, tone: outcome === \"partial\" || outcome === \"unknown\" ? \"waiting\" : \"failed\" }, 2);\n",
+      "find": "      say({ text: `${marks(presentation) ? \"✗\" : \"!\"} ${error.message}`",
+      "replace": "      say({ text: `✗ ${error.message}`",
       "expectRed": "plain writes a partial result's line and remedy in ASCII",
       "cell": "plain writes a partial result's line and remedy in ASCII",
       "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",

@@ -76,8 +76,8 @@
     {
       "name": "the NATS row prints the raw source value",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "cell(m.nats === \"path\" ? \"nats-server on PATH\" : \"bundled nats-server\", \"ok\")",
-      "replace": "cell(m.nats, \"ok\")",
+      "find": "cell(brokerExecutable(m), m.natsProblem ? \"failed\" : \"ok\")]",
+      "replace": "cell(m.nats, m.natsProblem ? \"failed\" : \"ok\")]",
       "expectRed": "the NATS row says where nats-server comes from in words",
       "cell": "the NATS row says where nats-server comes from in words",
       "afterRestore": "pnpm --filter cotal-ai... build"

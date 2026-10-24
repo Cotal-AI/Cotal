@@ -21,8 +21,8 @@
     {
       "name": "The --on refusal drops the identifier guidance and reverts to the mint's bare grammar sentence",
       "file": "implementations/cli/src/lib/control.ts",
-      "find": "    throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `${(e as Error).message}. --on wants the manager INSTANCE id as \\`cotal ps\\` prints it (the \\`manager <id>\\` header in a multi-manager space, the \\`instance\\` field of \\`cotal ps --wide\\`), not the roster's principal id (\\`local.U…\\`, as \\`cotal endpoints\\` shows it)${principalClause}: \\`${verb} --on <instance>\\``);",
-      "replace": "    throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `${(e as Error).message}`);",
+      "find": "    throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `\"${on}\" is a principal id. --on wants the manager INSTANCE id as \\`cotal ps\\` prints it (the \\`instance\\` it lists for a manager that answered, or the \\`manager <id>\\` header when several did), not the roster's principal id (\\`local.U…\\`, as \\`cotal endpoints\\` shows it): \\`${verb} --on <instance>\\``, { selfContained: true });",
+      "replace": "    throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `\"${on}\" is a principal id`, { selfContained: true });",
       "expectRed": "ps --on <roster principal id> is refused with the identifier --on wants and where ps prints it (#423)",
       "cell": "ps --on <roster principal id> is refused with the identifier --on wants and where ps prints it (#423)",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"

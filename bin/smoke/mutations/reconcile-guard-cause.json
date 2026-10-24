@@ -14,8 +14,8 @@
     {
       "name": "drop the guard's sentence from the pre-effect refusal",
       "file": "implementations/manager/src/commands.ts",
-      "find": " native: { code: error.condition, detail: error.message },",
-      "replace": "",
+      "find": " native: { code: error.condition, detail: error.message }, remedy: \"inspect the selected gate",
+      "replace": " remedy: \"inspect the selected gate",
       "expectRed": "CLI (live holder): the refusal names the live principal and says what to do",
       "cell": "CLI (live holder): the refusal names the live principal and says what to do",
       "afterRestore": "pnpm --filter cotal-ai... build"

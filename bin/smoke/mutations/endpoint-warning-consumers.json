@@ -109,9 +109,9 @@
     },
     {
       "name": "app identity provisioner loses its explicit warning disposition",
-      "file": "implementations/cli/src/commands/app-identity.ts",
-      "find": "  prov.on(\"warning\", ignoreProvisionerWarning);",
-      "replace": "  void ignoreProvisionerWarning;",
+      "file": "implementations/cli/src/lib/app-user-identity.ts",
+      "find": "      provisioner.on(\"warning\", () => {});",
+      "replace": "      void provisioner;",
       "cell": "app identity provisioner deliberately ignores recoverable side-channel warnings",
       "expectRed": "app identity provisioner deliberately ignores recoverable side-channel warnings",
       "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
@@ -150,7 +150,7 @@
     {
       "name": "plain console stops subscribing to MeshView warnings",
       "file": "implementations/cli/src/render.ts",
-      "find": "  view.on(\"warning\", (e: Error) => console.error(c.yellow(\"! \" + e.message)));",
+      "find": "  view.on(\"warning\", (e: Error) => report(c.yellow(\"! \" + oneLine(e.message))));",
       "replace": "  void view;",
       "cell": "plain console renders MeshView warnings",
       "expectRed": "plain console renders MeshView warnings",

@@ -40,8 +40,8 @@
     {
       "name": "--force replaces a space this machine started",
       "file": "implementations/cli/src/commands/space-registration.ts",
-      "find": "  if (existing.origin !== \"manual\")\n",
-      "replace": "  if (name === \"\")\n",
+      "find": "  if (existing && existing.origin !== \"manual\") {\n",
+      "replace": "  if (existing && name === \"\") {\n",
       "expectRed": "--force does not replace a space this machine started",
       "cell": "--force does not replace a space this machine started",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -49,8 +49,8 @@
     {
       "name": "a refusal loses the rule's code",
       "file": "implementations/cli/src/commands/space-registration.ts",
-      "find": "  throw new CommandFailure(\"refused\", check.code, check.message.replace(/^\u2717 /, \"\"), { target });\n",
-      "replace": "  throw new CommandFailure(\"refused\", \"CONFLICT\", check.message.replace(/^\u2717 /, \"\"), { target });\n",
+      "find": "  throw new CommandFailure(\"refused\", check.code, check.message.replace(/^\u2717 /, \"\"), { target, ",
+      "replace": "  throw new CommandFailure(\"refused\", \"CONFLICT\", check.message.replace(/^\u2717 /, \"\"), { target, ",
       "expectRed": "a broker that does not answer is TARGET_UNAVAILABLE, exit 2",
       "cell": "a broker that does not answer is TARGET_UNAVAILABLE, exit 2",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -94,7 +94,7 @@
     {
       "name": "a user-auth broker's refusal is not checked",
       "file": "implementations/cli/src/commands/space-registration.ts",
-      "find": "  take(checkEnforcement(\"user\", await probeEnforcement(server), server, space, root), spaceTarget);\n",
+      "find": "  take(await checkEnforcementAt(\"user\", server, space, root, v.server === undefined ? \"the bundle's server\" : \"--server\"), spaceTarget);\n",
       "replace": "",
       "expectRed": "a bundle whose broker accepts a bare connect is CONFLICT",
       "cell": "a bundle whose broker accepts a bare connect is CONFLICT",

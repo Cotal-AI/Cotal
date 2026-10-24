@@ -35,8 +35,8 @@
     {
       "name": "persona remove asks a raw readline question again",
       "file": "implementations/cli/src/commands/persona.ts",
-      "find": "        confirmed = (await prompts.askLine(`Remove '${name}' at ${path}?\\n1) Cancel\\n2) Remove\\nChoice [1]: `))?.trim() === \"2\";\n",
-      "replace": "        const io = (await import(\"node:readline/promises\")).createInterface({ input: process.stdin, output: process.stderr });\n        try { confirmed = (await io.question(`Remove '${name}' at ${path}?\\n1) Cancel\\n2) Remove\\nChoice [1]: `)).trim() === \"2\"; }\n        finally { io.close(); }\n",
+      "find": "        confirmed = (await prompts.askLine(`${question}\\n1) Cancel\\n2) Remove\\nChoice [1]: `))?.trim() === \"2\";\n",
+      "replace": "        const io = (await import(\"node:readline/promises\")).createInterface({ input: process.stdin, output: process.stderr });\n        try { confirmed = (await io.question(`${question}\\n1) Cancel\\n2) Remove\\nChoice [1]: `)).trim() === \"2\"; }\n        finally { io.close(); }\n",
       "expectRed": "no CLI source asks a readline question directly; a plain line question goes through askLine",
       "cell": "no CLI source asks a readline question directly; a plain line question goes through askLine",
       "afterRestore": "pnpm --filter cotal-ai... build",

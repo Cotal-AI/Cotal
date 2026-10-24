@@ -51,8 +51,8 @@
     {
       "name": "bare status greens a live manager pid without asking its rail (#2073)",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "    if (noService)\n      return { name: \"manager\", state: \"not-serving\",",
-      "replace": "    if (false)\n      return { name: \"manager\", state: \"not-serving\",",
+      "find": "  if (endpoint === \"not-answering\")\n    return { name: \"manager\", state: \"not-serving\",",
+      "replace": "  if (false)\n    return { name: \"manager\", state: \"not-serving\",",
       "expectRed": "bare status says not serving for a live pid whose rail does not answer (#2073)",
       "cell": "bare status says not serving for a live pid whose rail does not answer (#2073)",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
