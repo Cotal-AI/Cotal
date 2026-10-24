@@ -21,6 +21,7 @@ import {
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
 import { brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
@@ -439,7 +440,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   if (registration && (registration.origin !== "up" || canonicalRoot(registration.root) !== root || registration.server !== (previous?.journal.server ?? request.server)))
     throw new CommandFailure("refused", "CONFLICT", "the space is registered to another root, broker address or external origin; nothing was prepared or started", { target: { root, space }, remedy: `inspect it with cotal space show ${space}` });
   if (!registration && (!preparedSpace || canonicalRoot(preparedSpace.root) !== root))
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the space has no prepared or locally started registration at this root; nothing was prepared or started", { target: { root, space }, remedy: `prepare it with cotal space create ${space} --root ${root}, then run cotal up` });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the space has no prepared or locally started registration at this root; nothing was prepared or started", { target: { root, space }, remedy: `prepare it with cotal space create ${space} --root ${shellWord(root)}, then run cotal up` });
   // An earlier up or down that never recorded its outcome is settled from its members' process
   // evidence under the held maintenance lock. Only a preserve or resume can remain unsettled here.
   // A member stop an earlier down could not confirm in time is settled from its own receipt first.

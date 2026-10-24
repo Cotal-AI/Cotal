@@ -11,6 +11,7 @@ import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
+import { shellWord } from "./endpoint-errors.js";
 import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, removableServiceInstances, removeStoppedInstanceRecords, resumableSignalStop, retainedStopMaySettle, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
@@ -199,7 +200,7 @@ export function adoptStackJournal(root: string, space: string): string {
   const lock = acquireLock(`${path}.lock`, { label: "stack journal", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds the stack journal") });
   try {
     const found = journalRecordedElsewhere(canonical);
-    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${canonical} holds no stack journal another folder recorded, so there is nothing to adopt; nothing was written`, { target: { root: canonical, space }, remedy: `run cotal space create ${space} --root ${canonical} without --adopt` });
+    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${canonical} holds no stack journal another folder recorded, so there is nothing to adopt; nothing was written`, { target: { root: canonical, space }, remedy: `run cotal space create ${space} --root ${shellWord(canonical)} without --adopt` });
     if (found.journal.space !== space) throw new CommandFailure("refused", "CONFLICT", `the stack journal in ${canonical} is for "${found.journal.space}", not "${space}"; nothing was written`, { target: { root: canonical, space, journalSpace: found.journal.space }, remedy: `adopt it with cotal space create ${found.journal.space} --adopt --root ${canonical}` });
     const block = stackAdoptionBlock(canonical, found.recordedRoot, space, found.journal.members);
     if (block) throw new CommandFailure("refused", "CONFLICT", `${block.message}; it was not adopted and nothing was written`, { target: { root: canonical, recordedRoot: found.recordedRoot, space }, remedy: block.remedy });
