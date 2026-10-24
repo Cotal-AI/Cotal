@@ -133,8 +133,8 @@
     {
       "name": "given words are split at their spaces",
       "file": "packages/workspace/src/text-wrap.ts",
-      "find": "  const words = typeof text === \"string\" ? text.split(\" \") : text;\n",
-      "replace": "  const words = (typeof text === \"string\" ? text : text.join(\" \")).split(\" \");\n",
+      "find": "  const words = typeof text === \"string\" ? wrapUnits(text) : text;\n",
+      "replace": "  const words = typeof text === \"string\" ? wrapUnits(text) : text.join(\" \").split(\" \");\n",
       "expectRed": "given words are kept whole",
       "cell": "given words are kept whole",
       "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",

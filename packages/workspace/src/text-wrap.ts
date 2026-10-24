@@ -6,11 +6,29 @@ export function displayWidth(text: string): number {
   return stringWidth(text);
 }
 
+/** `text` split at spaces into the words {@link wrapWords} breaks between. A command a sentence
+ *  names in backticks after other words, from its `cotal` to its closing backtick, is one word, so
+ *  no line holds part of it, whatever words its arguments are. A line that starts with a command, as
+ *  a usage line or a code line does, wraps at its spaces. */
+function wrapUnits(text: string): string[] {
+  const parts = text.split(" "), words: string[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    let end = i;
+    if (i > 0 && /^[("']*`(cotal|pnpm|npx)$/.test(parts[i]!)) {
+      const close = parts.findIndex((part, j) => j > i && part.includes("`"));
+      if (close > 0) end = close;
+    }
+    words.push(parts.slice(i, end + 1).join(" "));
+    i = end;
+  }
+  return words;
+}
+
 /** `text` in lines of at most `width` display columns, broken at spaces, or only between the given
  *  words. A word wider than `width` keeps a line of its own, so an identity, path or command is never
  *  split. Below 20 columns, and when the output is not a terminal, nothing is wrapped. */
 export function wrapWords(text: string | readonly string[], width: number): string[] {
-  const words = typeof text === "string" ? text.split(" ") : text;
+  const words = typeof text === "string" ? wrapUnits(text) : text;
   if (!(width >= 20) || displayWidth(words.join(" ")) <= width) return [words.join(" ")];
   const lines: string[] = [];
   let line = "";

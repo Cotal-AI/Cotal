@@ -202,8 +202,9 @@ function renderCommands(block: Commands, style: Style, width: number, indent: st
   const stacked = width - indent.length - pad - 2 < 30;
   return block.items.flatMap((item, index) => {
     const description: Cell = { text: item.description, tone: "hint" };
+    // A command is never split, so a copied line is a whole command; one too wide keeps its own line.
     if (stacked) return [
-      ...drawWrapped(commands[index]!, style, width - indent.length).map((line) => indent + line),
+      indent + draw(commands[index]!, style).shown,
       ...drawWrapped(description, style, width - indent.length - 2).map((line) => indent + "  " + line),
     ];
     const [first = "", ...rest] = drawWrapped(description, style, width - indent.length - pad - 2);

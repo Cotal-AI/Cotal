@@ -214,7 +214,10 @@ output scrolls.
 On a terminal, a long value, line, warning or failure wraps at spaces, and each continuation line
 starts under the text it continues. A labeled value with a word too wide to fit beside its label,
 such as an identity, starts on the line under the label. A word wider than the line, such as a path,
-keeps a line of its own and is never split. Help wraps the same way, including the title of `cotal help --all`.
+keeps a line of its own and is never split. A command wraps as one word, so a copied line never holds
+part of one: a command under Next, and a command a sentence names in backticks after other words,
+from its `cotal` to its closing backtick, whatever words its arguments are. A line that starts with a
+command, such as a usage line, wraps at its spaces. Help wraps the same way, including the title of `cotal help --all`.
 
 A question that defaults to No, such as the one before `history clear`, `down`, `channel remove` or
 `persona remove`, is answered by typing: `y` or `yes`, in any case, then Enter confirms it. Enter
@@ -2625,7 +2628,9 @@ with that refusal's reason and remedy, or it is offered, with `cotal space delet
 Next. `--json` carries the refusal as `applyBlockedBy` and as a `LIFECYCLE_BLOCKED` warning.
 
 Bare `space delete <name>` displays that impact on an interactive terminal and requires
-typing the exact space name. A script supplies the exact positional name with `--yes`;
+typing the exact space name. Its question, and the message under a wrong answer, wrap to the
+terminal with each continuation line under the prompt's bar. A script supplies the exact
+positional name with `--yes`;
 `--json` without `--yes` refuses before a connection. After confirmation the command
 reads the broker again and refuses if the stream states, transfer names, presence
 identities, registration, trust or broker identity changed. After a typed confirmation it also
