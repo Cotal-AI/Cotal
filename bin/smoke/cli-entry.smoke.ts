@@ -302,6 +302,19 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("persona show reads the seeded default persona", shownDefault.status === 0 && JSON.parse(shownDefault.stdout).result?.definition?.name === "default_agent", shown(shownDefault));
   const editedDefault = cotal(["persona", "edit", "default"], seeded, editor);
   check("persona edit saves the seeded default persona", editedDefault.status === 0 && editedDefault.stdout.includes("Persona saved"), shown(editedDefault));
+  // A catalog file that is a FIFO would block a read, so the list marks it unreadable and names it
+  // rather than waiting on it.
+  if (process.platform !== "win32") {
+    const fifo = (home: string) => {
+      seeded(home);
+      spawnSync("mkfifo", [join(home, "..", ".cotal", "agents", "x.md")]);
+    };
+    const listed = cotal(["persona", "--json"], fifo, noSeed);
+    const doc = (() => { try { return JSON.parse(listed.stdout) as { result?: { items?: { name: string; valid: boolean }[] }; warnings?: { code: string; message: string }[] }; } catch { return {}; } })();
+    check("persona lists a FIFO in its catalog as unreadable, naming it, without waiting on it",
+      listed.status === 4 && doc.result?.items?.some((item) => item.name === "x" && !item.valid) === true && doc.result.items.some((item) => item.name === "default" && item.valid) &&
+        doc.warnings?.some((w) => w.code === "PERMISSION_DENIED" && /^persona is not a regular file: \S+\/x\.md; it was not read$/.test(w.message)) === true, shown(listed));
+  }
   for (const sub of ["list", "show", "edit", "new", "rm"]) {
     const help = cotal(["help", "personas", sub]);
     check(`help personas ${sub} prints that subcommand's help`, help.status === 0 && help.stdout.includes(`cotal personas ${sub}`), shown(help));

@@ -782,6 +782,15 @@ if (process.platform === "linux") {
     refused(badDefault, 1, "SCHEMA_INVALID") && (badDefault.env?.error?.message ?? "").includes(defaultSeed) && badDefault.env?.error?.remedy === `fix or remove ${defaultSeed}` &&
       !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(badDefault));
   unlinkSync(defaultSeed);
+  // A FIFO there would block the read, so it is refused by its file type before it is opened.
+  if (process.platform !== "win32") {
+    spawnSync("mkfifo", [defaultSeed]);
+    const fifoDefault = await json(["up", "--open", "--server", server], fresh);
+    check("a default .cotal/channels.json that is a FIFO refuses naming it, without waiting on it, before a store or a registration",
+      refused(fifoDefault, 1, "USAGE_INVALID") && fifoDefault.env?.error?.message === `the channels file ${defaultSeed} is not a regular file, such as a FIFO; it was not read` &&
+        !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(fifoDefault));
+    unlinkSync(defaultSeed);
+  }
 
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");

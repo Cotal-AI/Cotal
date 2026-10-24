@@ -1,4 +1,4 @@
-import { readdirSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { loadAgentFile, personaDir, type AgentDef } from "@cotal-ai/core";
 
@@ -33,6 +33,8 @@ export interface PersonaEntry {
   def?: AgentDef;
   /** Parse error message, if the file is malformed — surfaced rather than crashing the list. */
   error?: string;
+  /** Set when the file is not a regular file, such as a FIFO, so it was not opened (see `error`). */
+  notRegular?: true;
 }
 
 /** List the persona files, each parsed (a malformed file becomes an entry with `error`, not a
@@ -60,6 +62,9 @@ export function readPersonas(root: string): PersonaEntry[] {
     const name = f.slice(0, -3);
     const path = join(dir, f);
     try {
+      // A FIFO or a device would block the read, so only a regular file is opened. A link is
+      // followed, as the read follows it.
+      if (!statSync(path).isFile()) return { name, path, error: `persona is not a regular file: ${path}`, notRegular: true as const };
       return { name, path, def: loadAgentFile(path) };
     } catch (e) {
       return { name, path, error: (e as Error).message };

@@ -4361,6 +4361,8 @@ function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
 function readChannelsFile(path: string, explicit = true): ChannelRegistryFile {
   const remedy = explicit ? "fix the file, or omit --channels" : `fix or remove ${path}`;
   let text: string;
+  // A FIFO or a device would block the read, so only a regular file is opened.
+  if (statSync(path, { throwIfNoEntry: false })?.isFile() === false) throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is not a regular file, such as a FIFO; it was not read`, { remedy });
   try { text = readFileSync(path, "utf8"); }
   catch { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is missing or unreadable`, { remedy: explicit ? "name an existing channels file with --channels <path>, or omit --channels" : remedy }); }
   let value: unknown;
