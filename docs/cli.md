@@ -6077,7 +6077,8 @@ because the manager may already have recorded the run, and exits 130 or 143. Lis
 `cotal run ps` before starting it again.
 `resume` asks the manager to take an existing run back and continue it from its step journal; the
 source is the recorded program, so no `--file` is taken. A run recorded `completed` or `failed` is
-refused `LIFECYCLE_BLOCKED` (exit 2) and gets no new activation, because nothing is left to continue. Neither takes `--endpoint`: the manager records
+refused `LIFECYCLE_BLOCKED` (exit 2) and gets no new activation, because nothing is left to continue;
+the next step is `cotal run show <runId>`. Neither takes `--endpoint`: the manager records
 its runs under its own endpoint, and naming another is refused. `ps` lists the run records and
 `journal` renders one run's durable records; both only inspect. `show` and `journal` read the
 journal from the manager in pages, each one reply, so a journal larger than the broker's payload

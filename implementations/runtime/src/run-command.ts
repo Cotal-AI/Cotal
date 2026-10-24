@@ -664,15 +664,19 @@ const localJournal = (args: Record<string, unknown> | undefined): string => `cot
 
 /** A manager refusal under the CLI's outcome table, with the manager's own sentence. Any other code
  *  leaves a read failed and a start, resume or answer unconfirmed, because the manager may have
- *  recorded it. */
-function managerRefusal(command: string, space: string, args: Record<string, unknown> | undefined, err: EpError | undefined): CommandFailure {
+ *  recorded it. `on` is the caller's explicit manager pin, which a suggested command keeps. */
+export function managerRefusal(command: string, space: string, args: Record<string, unknown> | undefined, err: EpError | undefined, on?: string): CommandFailure {
   const message = renderLifecycleBlocked(err?.message ?? err?.code ?? "the manager refused", err);
   const options = { target: { space }, native: { code: err?.code ?? "unreported" } };
   // A manager at its launch limit refuses `resource-exhausted` before writing anything, and says
   // so with `not-executed`.
   const busy = err?.code === "resource-exhausted" && err.outcome === "not-executed";
   const code = err?.code === undefined ? undefined : busy ? "LIFECYCLE_BLOCKED" : REFUSED_BEFORE_EFFECT[err.code];
+  // A resume refused as a precondition, such as of a completed or failed run, appended nothing, so
+  // the run's recorded state is what to read next.
+  const resumeBlocked = command === "run-resume" && err?.code === "failed-precondition" && typeof args?.runId === "string";
   const remedy = busy ? { remedy: `wait until one of them has activated, then run ${command === "run-resume" ? "the resume" : "the start"} again; cotal run ps lists a run once it has` }
+    : resumeBlocked ? { remedy: `read the run's recorded state with cotal run show ${args.runId}${on ? ` --on ${on}` : ""}` }
     : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" ? `read the run's open requests with cotal run show ${args.runId}` : "list the recorded runs with cotal run ps" };
   if (code) return new CommandFailure("refused", err!.details?.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND) ? "SCHEMA_INVALID" : code, message, { ...options, ...remedy });
   // A reply too large for the broker changed nothing; the local read takes no reply.
@@ -764,7 +768,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
       // A validation refusal carries every problem as the language's own records; print them the
       // way the validator would, so the fix is the same edit either way.
       for (const d of err?.details ?? []) if (d.kind === LANG_PROBLEM_DETAIL_KIND) console.error(renderLangProblem(d));
-      throw managerRefusal(command, t.space, args, err);
+      throw managerRefusal(command, t.space, args, err, values.on);
     }
     return r.reply.data;
   } catch (e) {

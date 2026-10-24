@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { EpEnvelopeError, EP_UNANSWERED, registry, type Command, type RunStatusView } from "@cotal-ai/core";
 import { CommandFailure, exitCode, isCommandFailure } from "@cotal-ai/workspace";
 import { runWorkflow } from "../src/index.js";
-import { unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
+import { managerRefusal, unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
 import { printRunDetail } from "../src/workflow-views.js";
 
 let ok = 0, fail = 0;
@@ -357,6 +357,16 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("a refusal other than TARGET_NOT_FOUND is left as it was", await withMatchingKeys(other, "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "A?"))) === other);
   const escaped = await withMatchingKeys(notFound(), "run-1", "fr\x1b[2Jage", {}, view(row("/checkpoint:fr\x1b[2Jage#0", "pending", "A?")));
   c("a step name from the program is escaped before the terminal shows it", escaped instanceof CommandFailure && !escaped.remedy?.includes("\x1b") && escaped.remedy?.includes("\\u001b") === true, escaped instanceof CommandFailure ? escaped.remedy : escaped);
+}
+
+// A resume the manager refuses as a precondition, as of a completed run, appended nothing, so the
+// next step reads the run's recorded state, keeping an explicit pin.
+{
+  const finished = { code: "failed-precondition", message: "run run-1 is already completed, so there is nothing to resume; a resume continues a run that is running or released" };
+  const blocked = managerRefusal("run-resume", "s", { runId: "run-1" }, finished);
+  c("a resume of a completed run is LIFECYCLE_BLOCKED with the manager's sentence, and Next reads the run", blocked.code === "LIFECYCLE_BLOCKED" && blocked.message === finished.message && blocked.remedy === "read the run's recorded state with cotal run show run-1", blocked);
+  c("the Next keeps an explicit --on", managerRefusal("run-resume", "s", { runId: "run-1" }, finished, "mgr-1").remedy === "read the run's recorded state with cotal run show run-1 --on mgr-1");
+  c("a start refused as a precondition gets no run show Next", managerRefusal("run-start", "s", { source: "log(1)" }, { code: "failed-precondition", message: "no" }).remedy === undefined);
 }
 
 restore();
