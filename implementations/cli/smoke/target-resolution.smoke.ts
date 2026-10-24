@@ -153,7 +153,7 @@ const QUESTION = "Which one?";
   const unstarted = run(["who"], deltaPrepared);
   check("a refusal in a folder prepared for another space keeps the note under its heading",
     prepared.status === 0 && unstarted.status === 2 && /TARGET_UNAVAILABLE/.test(unstarted.stderr) &&
-      /^Mesh: deltaPrepared\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(unstarted.stderr), { prepared: shown(prepared), unstarted: shown(unstarted) });
+      /^Mesh: delta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(unstarted.stderr), { prepared: shown(prepared), unstarted: shown(unstarted) });
   run(["space", "forget", "delta"], deltaPrepared);
   // A root with several spaces, none of them selected, keeps the selection and warns first.
   recordMesh({ space: "gamma", server: B, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString() });
