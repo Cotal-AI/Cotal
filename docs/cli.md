@@ -7448,12 +7448,16 @@ the literal `cotal team deploy <file>` remedy, before agent allocation.
 
 `spawn --dry-run` never refreshes the catalog, repairs stale registrations, imports connector code,
 connects to the broker, redeems enrollment, provisions or allocates an agent. The managed preview
-is currently partial: it retains requested selectors but cannot resolve host-local persona and
-cwd facts offline. It does not substitute the caller's files. With `--foreground`, the preview
-resolves the local persona, harness precedence and physical working directory. Binary, login,
-model-policy and live authority checks are labeled not performed. In a folder whose `.cotal/` names
-no space, as after `space forget`, the preview keeps `Mesh: main`, says under it that the held
-default was assumed, and its JSON `target` names the folder as `root` and the space as `assumed`.
+shows the request and exits 0 with `completeness` `not-checked`, because the manager resolves the
+persona, harness and working directory on its own host at launch. It does not substitute the
+caller's files. With `--foreground`, the preview resolves the local persona, harness precedence and
+physical working directory. Binary, login, model-policy and live authority checks are labeled not
+performed. Both previews say where the persona came from: `--file`, the command line, a preference
+or the default. A harness that names no connector this workstation knows is a `HARNESS_UNKNOWN`
+warning, or the `PREFERENCE_INVALID` warning `config` gives when only `COTAL_DEFAULT_AGENT` chose
+it. In a folder whose `.cotal/` names no space, as after `space forget`, the preview keeps `Mesh:
+main`, says under it that the held default was assumed, and its JSON `target` names the folder as
+`root` and the space as `assumed`.
 
 `spawn --foreground --enrollment-file <private-file> --space <name>` uses the existing one-seat
 foreground enrollment path. The file is opened with protected ownership/mode and bounded input

@@ -2,11 +2,28 @@ import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { agentFilePath, token, type AgentDef, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, presentationOf, resolveAgentType, resolveMeshTarget, targetErrorCode, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, presentationOf, resolveAgentType, resolveMeshTarget, resolvePreference, targetErrorCode, writeResult, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { callerHarness, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
+import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import type { spawnFlags } from "./spawn.js";
 
 type Values = FlagValues<typeof spawnFlags>;
+
+/** Where the persona came from, in words. */
+const sourceText = (source: string): string =>
+  source === "file" ? "a persona file (--file)" : source === "argument" ? "named on the command line" : source === "default" ? "the default persona" : source;
+
+/** A harness this workstation has no connector for, as a warning: the refusal `config set` gives
+ *  it. One that only the environment chose is named the way `config` and `status` name it. */
+function unknownHarness(harness: string | undefined, explicit: boolean, space: string, refusal: string): OutputWarning[] {
+  if (harness === undefined) return [];
+  try { checkHarness(harness); return []; }
+  catch (error) {
+    if (!isCommandFailure(error)) throw error;
+    const fromEnv = explicit ? [] : invalidEnvironmentValues([resolvePreference("harness", { space, preferences: cachedPreferences() })]);
+    return fromEnv.length ? fromEnv : [{ code: "HARNESS_UNKNOWN", target: { harness }, message: `${error.message}; ${refusal}` }];
+  }
+}
 
 /** An offline preview never probes a broker, materializes a connector or allocates an agent. */
 export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> & { values: Values }): Promise<void> {
@@ -29,14 +46,17 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   }
   recordOperationSpace(space);
   const { ref, from } = spawnPersona(values.config, args.positionals, { space, preferences: cachedPreferences() });
-  const requested = { persona: ref, source: values.file ? "file" : from ?? "explicit-or-product-default", harness: values.agent ?? null, name: values.name ?? null, model: values.model ?? null, cwd: values.cwd ?? null, instanceId: values.on ?? null, restarts: values.restarts === undefined ? null : Number(values.restarts), restartWindowMs: values["restart-window"] === undefined ? null : Number(values["restart-window"]) };
+  const requested = { persona: ref, source: values.file ? "file" : values.config !== undefined || args.positionals.length ? "argument" : from ?? "default", harness: values.agent ?? null, name: values.name ?? null, model: values.model ?? null, cwd: values.cwd ?? null, instanceId: values.on ?? null, restarts: values.restarts === undefined ? null : Number(values.restarts), restartWindowMs: values["restart-window"] === undefined ? null : Number(values["restart-window"]) };
   // A folder whose records name no space was given the held default only to preview it, so the
   // target names the folder and the space it assumed, and the report says so under that heading.
   const target = assumed ? { root, assumed: space, broker, authMode: targetMode } : { space, broker, authMode: targetMode };
   const heading = (report: Report): Report => assumed ? { ...report, space, sections: [{ blocks: [{ kind: "lines", lines: [{ text: `this folder names no space; the held default ${space} was assumed`, tone: "hint" }] }] }, ...report.sections] } : report;
   if (spawnUsesManager(values)) {
-    writeResult(presentationOf(values), { command: "spawn", target, result: { kind: "managed-launch-preview", dryRun: true, requested, executionHost: "manager-selected-at-launch", personaValidation: "not-checked-on-execution-host", effectiveHarness: null, effectiveCwd: null, enrollment: "not-read-or-redeemed", allocated: false, launched: false }, completeness: "partial", partial: { message: "Offline managed preview retains the requested selectors only. The selected manager's persona, effective harness and working directory were not read, so this is not a fully resolved launch plan.", remedy: "do not treat the caller's local files as the manager's files; execution-host validation still applies at launch" } }, (result): Report => heading({ sections: [
-      { title: "Managed launch preview", blocks: [{ kind: "fields", rows: [["Space", space], ["Broker", broker ?? "not checked"], ["Persona request", result.requested.persona], ["Persona source", result.requested.source], ["Manager pin", result.requested.instanceId ?? "not selected"], ["Harness request", result.requested.harness ?? "manager/persona precedence; not checked"], ["Working-directory request", result.requested.cwd ?? "manager default; not read"], ["View", values.detach ? "return after readiness" : "attach after readiness"], ["Execution-host validation", { text: "not performed", tone: "waiting" }]] }, { kind: "lines", lines: ["No broker request, connector import, file upload, enrollment redemption, provisioning, identity allocation or launch occurred. No local file was substituted for an unreadable remote persona."] }] },
+    // The manager resolves the persona, harness and working directory on its own host at launch, so
+    // the preview shows the request and says what it did not read.
+    const warnings = unknownHarness(values.agent ?? callerHarness(space), values.agent !== undefined, space, "the launch is refused unless the selected manager has that connector");
+    writeResult(presentationOf(values), { command: "spawn", target, result: { kind: "managed-launch-preview", dryRun: true, requested, executionHost: "manager-selected-at-launch", personaValidation: "not-checked-on-execution-host", effectiveHarness: null, effectiveCwd: null, enrollment: "not-read-or-redeemed", allocated: false, launched: false }, completeness: "not-checked", warnings }, (result): Report => heading({ sections: [
+      { title: "Managed launch preview", blocks: [{ kind: "fields", rows: [["Space", space], ["Broker", broker ?? "not checked"], ["Persona request", result.requested.persona], ["Persona source", sourceText(result.requested.source)], ["Manager pin", result.requested.instanceId ?? "not selected"], ["Harness request", result.requested.harness ?? "manager/persona precedence; not checked"], ["Working-directory request", result.requested.cwd ?? "manager default; not read"], ["View", values.detach ? "return after readiness" : "attach after readiness"], ["Execution-host validation", { text: "not performed", tone: "waiting" }]] }, { kind: "lines", lines: ["The selected manager reads its own persona, harness and working directory at launch and validates them there; your local files are not used.", "No broker request, connector import, file upload, enrollment redemption, provisioning, identity allocation or launch occurred."] }] },
     ] }));
     return;
   }
@@ -56,7 +76,8 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the direct launch's local working directory is unavailable; no directory was created"); }
   const harness = resolveAgentType({ flag: values.agent, pin: definition.agent, callerDefault: callerHarness(space) });
   const result = { kind: "direct-launch-preview", dryRun: true, space, executionHost: hostname(), persona: { path, source: requested.source }, requestedName: values.name ?? definition.name, harness, cwd, role: values.role ?? definition.role ?? null, model: values.model ?? definition.model ?? null, variant: values.variant ?? definition.variant ?? null, promptProvided: values.prompt !== undefined, enrollment: "not-read-or-redeemed", connectorAvailability: "not-checked", authorization: "not-checked", allocated: false, launched: false };
-  writeResult(presentationOf(values), { command: "spawn", target, result }, (data): Report => heading({ sections: [
-    { title: "Direct launch preview", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Execution host", data.executionHost], ["Persona file", data.persona.path], ["Source", data.persona.source], ["Requested name", data.requestedName], ["Harness", data.harness], ["Working directory", data.cwd], ["Role", data.role ?? "not declared"], ["Model", data.model ?? "application default; not checked"], ["Variant", data.variant ?? "not declared"], ["Enrollment", "not read or redeemed"], ["Binary/login/authority checks", "not performed"]] }, { kind: "lines", lines: ["Local selection and file validation only. No broker connection, connector import, provisioning, identity allocation or launch occurred. Native foreground execution is not a detachable Cotal view."] }] },
+  const warnings = unknownHarness(harness, values.agent !== undefined || definition.agent !== undefined, space, "the launch refuses it");
+  writeResult(presentationOf(values), { command: "spawn", target, result, warnings }, (data): Report => heading({ sections: [
+    { title: "Direct launch preview", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Execution host", data.executionHost], ["Persona file", data.persona.path], ["Source", sourceText(data.persona.source)], ["Requested name", data.requestedName], ["Harness", data.harness], ["Working directory", data.cwd], ["Role", data.role ?? "not declared"], ["Model", data.model ?? "application default; not checked"], ["Variant", data.variant ?? "not declared"], ["Enrollment", "not read or redeemed"], ["Binary/login/authority checks", "not performed"]] }, { kind: "lines", lines: ["Local selection and file validation only. No broker connection, connector import, provisioning, identity allocation or launch occurred. Native foreground execution is not a detachable Cotal view."] }] },
   ] }));
 }

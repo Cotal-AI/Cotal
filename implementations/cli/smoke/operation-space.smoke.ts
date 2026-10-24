@@ -12,7 +12,8 @@
  * names the field and the reason, as does a role token `send -r` would refuse. An edit that is not
  * saved keeps its draft and names it, a malformed `--on` names the command to rerun, and no create
  * takes the seeded default's launch name. Removing the seeded default says so, and a launch preview
- * refuses a missing persona as the launch does. No broker is started.
+ * refuses a missing persona as the launch does. A managed preview exits 0, and both previews name
+ * the persona's source in words and warn about an unknown harness. No broker is started.
  *
  * Run: pnpm smoke:operation-space
  */
@@ -184,6 +185,25 @@ check("spawn --dry-run of a missing --file names the file it checked",
 const noDefault = cotal("spawn", "--dry-run", "--plain");
 check("spawn --dry-run with no default persona names cotal up in the space's root",
   noDefault.status === 2 && noDefault.stderr.includes(`no default persona in ${catalog} (mesh "opsp")`) && noDefault.stderr.includes(`run \`cotal up\` in ${root} to write one`) && !noDefault.stderr.includes("team deploy"), shown(noDefault));
+
+// A managed preview shows the request and exits 0. Both previews say where the persona came from in
+// words, and warn about a harness no connector here provides.
+interface Preview { requested?: { source?: string }; persona?: { source?: string } }
+const managed = cotal("spawn", "-d", "nosuch", "--dry-run", "--json");
+const managedResult = (managed.envelope as unknown as { result?: Preview; completeness?: string } | undefined);
+check("a managed spawn --dry-run exits 0, not-checked, with the name's source as argument",
+  managed.status === 0 && managed.envelope?.outcome === "ok" && managedResult?.completeness === "not-checked" && managedResult.result?.requested?.source === "argument", shown(managed));
+const managedHarness = cotal("spawn", "-d", "--harness", "nosuch", "--dry-run", "--plain");
+check("a managed preview warns about an unknown harness and labels the default persona in words",
+  managedHarness.status === 0 && managedHarness.stderr.includes('! no harness "nosuch"; known harnesses:') && managedHarness.stdout.includes("Persona source:            the default persona") && !managedHarness.stdout.includes("explicit-or-product-default"), shown(managedHarness));
+writeFileSync(join(root, "pv.md"), "---\nname: pv\nrole: reviewer\nsubscribe: []\n---\n");
+const direct = cotal("spawn", "--file", "pv.md", "--harness", "nosuch", "--dry-run", "--json");
+const warnings = (direct.envelope as unknown as { warnings?: { code: string }[]; result?: Preview } | undefined);
+check("a direct preview of an unknown --harness exits 0 with a HARNESS_UNKNOWN warning and the file's source",
+  direct.status === 0 && same(warnings?.warnings?.map((w) => w.code), ["HARNESS_UNKNOWN"]) && warnings?.result?.persona?.source === "file", shown(direct));
+const fromEnv = outcome(spawnSync(process.execPath, [BIN, "spawn", "--file", "pv.md", "--dry-run", "--plain"], { cwd: root, env: { ...env, COTAL_DEFAULT_AGENT: "nosuch" }, encoding: "utf8", timeout: 120_000 }));
+check("a harness only COTAL_DEFAULT_AGENT chose gets the warning config gives",
+  fromEnv.status === 0 && fromEnv.stderr.includes('! COTAL_DEFAULT_AGENT: no harness "nosuch"') && fromEnv.stdout.includes("a persona file (--file)"), shown(fromEnv));
 
 finish();
 process.exit(process.exitCode ?? 0);
