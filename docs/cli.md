@@ -5777,7 +5777,8 @@ source is the recorded program, so no `--file` is taken. A run recorded `complet
 refused `LIFECYCLE_BLOCKED` (exit 2) and gets no new activation, because nothing is left to continue. Neither takes `--endpoint`: the manager records
 its runs under its own endpoint, and naming another is refused. `ps` lists the run records and
 `journal` renders one run's durable records; both only inspect. An open pause prints its question
-under `Needs an answer`, and only then does Next offer `answer`. A pause counts as open while its
+under `Needs an answer`, and only then does Next offer `answer`. A checkpoint with a `to` prints
+beside its question whom it escalates to, and once it has escalated, until when that attempt is open. A pause counts as open while its
 last journal row is pending, so a settled or expired one is not listed there.
 A pause settled with an accepted answer prints its value as JSON plus the recorded answerer,
 artifact when present, time, and answer id, then one `amended` line per later amendment, in the
@@ -5799,8 +5800,10 @@ with its `code` and `message`, and `revoked` or `revocationUnreadable` when the 
 step row carries its `step` key, the `effect` kind and its `name`, `state`, `outcome`, the recorded
 `status` and `errorCode` once settled, the recorded `errorMessage` of a failed or refused step,
 and `startedAt` and `endedAt` in epoch milliseconds. An open
-pause adds its `asks`, its `deadlineAt`, and for a checkpoint the `onExpiry` it was armed with; a
-settled pause adds its `answer` and its `amendments`, as the text view prints them. A field the
+pause adds its `asks`, its `deadlineAt`, and for a checkpoint the `onExpiry` it was armed with and
+the `addressee` its `to` names. A checkpoint's escalation is armed with `proceed`, so it never
+escalates again. A settled pause adds its `answer` and its `amendments`, as the text view prints
+them. A field the
 journal does not record is absent: a checkpoint opened before `onExpiry` was recorded carries none.
 The run header goes to stderr, so stdout carries only rows; an unreadable revocation marker
 prints its reason there and still exits 1. The text view is presentation and is not a stable

@@ -13,10 +13,11 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EpEnvelopeError, EP_UNANSWERED, registry, type Command } from "@cotal-ai/core";
+import { EpEnvelopeError, EP_UNANSWERED, registry, type Command, type RunStatusView } from "@cotal-ai/core";
 import { exitCode, isCommandFailure } from "@cotal-ai/workspace";
 import { runWorkflow } from "../src/index.js";
 import { unansweredManagerRefusal, workflowArguments } from "../src/run-command.js";
+import { printRunDetail } from "../src/workflow-views.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -255,6 +256,28 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     c(`a hosted start refuses a source file that ${says} the same way, before any connect`, isCommandFailure(started) && started.code === "SCHEMA_INVALID" && started.message.includes(says), started);
   }
   rmSync(dir, { recursive: true, force: true });
+}
+
+// An open checkpoint with a `to` shows beside its question whom it escalates to, and once it has
+// escalated, until when that attempt is open. The escalation's attempt is armed with `proceed`.
+{
+  const detail = (journal: object[]) => {
+    const out: string[] = [];
+    const log = console.log, error = console.error;
+    console.log = console.error = (...args: unknown[]) => { out.push(args.map(String).join(" ")); };
+    try { printRunDetail("s", { runId: "run-1", endpoint: "manager", status: { state: "running" }, journal } as unknown as RunStatusView, {}); }
+    finally { console.log = log; console.error = error; }
+    return out.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  };
+  const open = (name: string, more: object) => ({ n: 1, kind: "step", step: `/checkpoint:${name}#0`, effect: "checkpoint", name, state: "pending", outcome: "pending", startedAt: 0, asks: `${name}?`, ...more });
+  const shown = detail([
+    open("first", { addressee: "dana", deadlineAt: 0, onExpiry: "escalate" }),
+    open("second", { addressee: "erik", deadlineAt: Date.UTC(2026, 9, 24, 6, 0, 0), onExpiry: "proceed" }),
+    open("third", { onExpiry: "fail" }),
+  ]);
+  c("an open checkpoint names whom it escalates to, and an escalated one its addressee and deadline",
+    /Step\s+Request\s+Escalation/.test(shown) && /first\?\s+to dana if it expires/.test(shown) && shown.includes("second?  escalated to erik, open until 2026-10-24T06:00:00.000Z"), shown);
+  c("with no checkpoint addressed, the table has no Escalation column", !detail([open("third", { onExpiry: "fail" })]).includes("Escalation"));
 }
 
 restore();
