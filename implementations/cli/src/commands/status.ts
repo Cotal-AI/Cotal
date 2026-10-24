@@ -1429,8 +1429,12 @@ function meshesSections(m: StatusResult["meshes"]): Section[] {
  *  state it, so an operator on a manager host away from the broker's folder still sees it. An open
  *  mesh runs no delivery daemon, so with no lease recorded its row says the responder is not used
  *  rather than unbound. */
-function responderText(state: DeliveryResponderState | null, mode: MeshTarget["mode"], stackBlocked = false): { text: string; tone: Tone } | undefined {
+function responderText(state: DeliveryResponderState | null, mode: MeshTarget["mode"], stackBlocked = false, deliveryPid?: number): { text: string; tone: Tone } | undefined {
   if (state === null && mode === "open") return { text: "not used - an open mesh runs no delivery daemon", tone: "hint" };
+  // A running delivery member with no lease is starting or not responding. Status cannot ask it which,
+  // and `up` starts no second daemon beside it.
+  if (state === "unbound" && deliveryPid !== undefined)
+    return { text: `no lease · stack-delivery pid ${deliveryPid} is alive but holds no lease, so it is starting or not responding`, tone: "failed" };
   // While this folder's stack is blocked, `up` refuses, so the row names the block Next clears.
   if (state === "unbound")
     return { text: `NOT BOUND - ${RESPONDER_UNBOUND_CONSEQUENCE} · ${stackBlocked ? `\`${displayCmd()} up\` refuses until the stack block is cleared, as Next shows` : `start it with \`${displayCmd()} up\``}`, tone: "failed" };
@@ -1443,7 +1447,12 @@ function responderText(state: DeliveryResponderState | null, mode: MeshTarget["m
   return undefined;
 }
 
-function selectedSection(s: SelectedResult, folder: StatusResult["folder"]): Section {
+/** The pid of the selected space's running stack delivery member, from its owned service record. */
+function stackDeliveryPid(r: StatusResult): number | undefined {
+  return r.services?.instances?.find((item) => item.definition === STACK_DEFINITION.delivery && item.observedProcess === "running")?.pid ?? undefined;
+}
+
+function selectedSection(s: SelectedResult, folder: StatusResult["folder"], deliveryPid?: number): Section {
   if (!s.resolved) return { title: "Selected Mesh", blocks: [{ kind: "fields", rows: [["target", cell(s.code, "failed")]] }] };
   const rows: [string, Cell][] = [
     ["space", s.space],
@@ -1471,7 +1480,7 @@ function selectedSection(s: SelectedResult, folder: StatusResult["folder"]): Sec
     }
   } else {
     rows.push(["connection", s.connection === "ok" ? cell("ok", "ok") : cell(`${s.connection}${s.staleRecord ? " (stale registry entry)" : ""}`, "failed")]);
-    const responder = responderText(s.deliveryResponder, s.mode, Boolean(servedStack(folder, s) && folder.stackBlock));
+    const responder = responderText(s.deliveryResponder, s.mode, Boolean(servedStack(folder, s) && folder.stackBlock), deliveryPid);
     if (responder) rows.push(["delivery responder", cell(responder.text, responder.tone)]);
   }
   if (s.snapshot.state === "unavailable" || (s.mode === "user" && s.snapshot.state === "skipped")) rows.push(["live snapshot", cell(`${s.snapshot.state === "unavailable" ? "unavailable" : "not read"} (${s.snapshot.reason})`, s.snapshot.state === "unavailable" ? "failed" : "hint")]);
@@ -1578,7 +1587,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
   ] };
   // A broker named with `--server` is reported even when nothing on this machine is registered.
   if (s.source !== "flag-server" && !r.meshes.items.length && !r.meshes.currentPrepared && r.folder.auth.state === "none" && !r.folder.processes?.some((item) => item.pid !== null)) return undefined;
-  const responder = responderText(s.deliveryResponder, s.mode, Boolean(servedStack(r.folder, s) && r.folder.stackBlock));
+  const responder = responderText(s.deliveryResponder, s.mode, Boolean(servedStack(r.folder, s) && r.folder.stackBlock), stackDeliveryPid(r));
   const rows: [string, Cell][] = [
     ["Broker", s.server ?? stateCell("address unavailable", "failed")],
     ["Connection", connectionCell(s)],
@@ -1706,6 +1715,14 @@ function nextActions(r: StatusResult): Section {
   // A stack whose folder was deleted stops only from this machine's records.
   if (r.selected.resolved && r.selected.rootGone) items.unshift({ command: `${cmd} down --space ${r.selected.space} --yes`, description: "Stop the stack whose folder is gone and free its name" });
   if (r.selected.resolved && r.selected.mode === "user" && r.selected.login && !r.selected.login.subject) items.unshift({ command: `${cmd} login --idp ${r.selected.login.idp}`, description: "Sign in to the selected space" });
+  // A delivery member that runs with no lease is not replaced by `up`; `down` kills one that does not exit.
+  const deliveryPid = stackDeliveryPid(r);
+  if (r.selected.resolved && r.selected.deliveryResponder === "unbound" && deliveryPid !== undefined)
+    items.unshift(
+      { command: `${cmd} service status stack-delivery${own ? "" : ` --space ${r.selected.space}`}`, description: `Read the delivery member's record: pid ${deliveryPid} is alive but holds no lease, so it is starting or not responding` },
+      { command: own ? `${cmd} down --yes` : `${cmd} down --space ${r.selected.space} --yes`, description: "If it stays that way, stop the stack; down kills a member that does not exit on SIGTERM" },
+      { command: own ? `${cmd} up` : `${cmd} up --root ${shellWord(r.selected.root)}`, description: "Then start the stack again" },
+    );
   // A manager that does not answer cannot report its stop impact, so no stop route reaches it.
   if (r.stackManager?.endpoint === "not-answering")
     items.unshift({ command: `kill -KILL ${r.stackManager.pid}`, description: `The stack manager does not answer, so ${cmd} down cannot stop it. If it stays that way, end its process; ${cmd} down --yes then records it stopped` });
@@ -1774,7 +1791,7 @@ export function statusView(r: StatusResult, verbose = false): Report {
   const attempts = bootAttemptOverview(r.bootAttempts);
   const maintenance = maintenanceOverview(r.maintenance);
   const sections = [machineOverview(r), brokerOverview(r), ...(selected ? [selected] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
-  if (verbose) sections.push(machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected, r.folder));
+  if (verbose) sections.push(machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected, r.folder, stackDeliveryPid(r)));
   sections.push(nextActions(r));
   return { sections };
 }

@@ -2963,6 +2963,11 @@ the row, as after a kill. The row expires on its own within 30 seconds. The deli
 then says the delivery daemon died and its lease has not expired yet, that spawn, retirement and join
 wait until a new daemon binds, and that `cotal up` restarts it, since `up` waits out the lease first.
 
+When a controller stack's delivery member runs but holds no delivery lease, `deliveryResponder` is
+`unbound`, and the delivery responder line names the member's pid and says it is starting or not
+responding. `status` cannot ask the daemon which. Next names `cotal service status stack-delivery`,
+then `cotal down --yes`, which kills a member that does not exit, and `cotal up`.
+
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. An open mesh runs no delivery daemon, so when it records no delivery lease its
 delivery responder row says the responder is not used and suggests no command. A controller stack
