@@ -78,8 +78,8 @@ interface MeshSnapshot {
   a deterministic `id` (the first message's), `ts` (the earliest), `count` (the multiplicity), and
   parallel `toIds`/`toNames` arrays so renderers keep identity separate from labels.
 - **Roster.** A status-sorted snapshot plus an id→name map; agents split from other endpoints.
-- **Topology identity.** Agent nodes use endpoint ids as keys and names only as labels, so two
-  principals with the same display name keep separate traffic and membership links.
+- **Topology identity.** Agent nodes use endpoint ids as keys and the roster's `name/role` label only
+  for display, so two principals with the same display name keep separate traffic and membership links.
 - **History prefill.** A one-shot per-channel backlog (multicast; plus DM backlog when DMs are
   visible), deduped against the live tap by `id`.
 - **Windowing.** The feed is capped (~300 entries) with a rolling `msgs/s` rate.
