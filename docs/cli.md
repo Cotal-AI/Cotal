@@ -478,6 +478,11 @@ claims the already-running process changed. From a source checkout, the `update 
 local reconcile without reinstalling it. Each npm install it runs starts with 022 added to your
 umask, so a umask of 0002 does not leave the installed tree group-writable.
 
+Run through the installer's `cotal` launcher, `update` first removes group and other write from the
+folders and files you own in Cotal's install root, without following links. An installer from before
+it set its own umask, run under a umask of 0002, left that tree group-writable. Running the installer
+again repairs it the same way.
+
 Third-party extensions are listed with their installed version and recorded spec but are not
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
 a future follow-up. A failed connector/extension install, npm metadata check, or requested global
@@ -3117,7 +3122,9 @@ absolute protected regular file, with argv supplied separately. A symlink on the
 executable path refuses, because a link could be repointed after the check, and the refusal names
 the physical path to use instead, such as `/usr/bin/python3.14` for `/usr/bin/python3`. There is no shell, PATH lookup,
 implicit installation, account switch or open/user-auth credential fallback. For a Node handler,
-select the Node executable and pass the script path in `--handler-args`. That JSON array has at
+select the Node executable and pass the script path in `--handler-args`. The runtime Node in
+Cotal's install root qualifies; if an earlier installer left its folders group-writable, the
+refusal names `cotal update`, which removes that write. That JSON array has at
 most 64 fixed nonsecret strings and its serialized form has at most 8192 characters. The handler
 runs in the contract directory with an empty environment. It is trusted local code with the
 operator's OS permissions, not a sandbox; it must not daemonize or leave independent children.
@@ -7098,7 +7105,10 @@ follow the [`space create`](#selecting-a-space) rule for other local writers; a 
 owner-only. One refusal names the option's entry and every unsafe directory above it, with one
 `chmod` that fixes them all. `npm i -g` under umask 0002, an ordinary Ubuntu user's default, leaves the bundled
 `nats-server` and its directories group-writable, so where the private-group proof is unavailable,
-`up` refuses the broker's `binary` path and names that `chmod g-w`.
+`up` refuses the broker's `binary` path and names that `chmod g-w`. When every unsafe folder is
+inside Cotal's own install root, as it is for the runtime Node an earlier installer left
+group-writable, the refusal says the folders belong to Cotal's own install and names `cotal update`
+as the fix.
 
 The provider declares foreground, multi-instance and log capabilities. An explicit start records
 its definition revision, full instance, launch request and adapter package/version/declaration

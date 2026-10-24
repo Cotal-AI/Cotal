@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 /** The cotal machine-home dir, overridable via `COTAL_HOME`.
  *
@@ -26,4 +26,12 @@ export function userCotalDir(): string {
   if (process.platform === "win32" && process.env.LOCALAPPDATA)
     return join(process.env.LOCALAPPDATA, "Cotal");
   return join(homedir(), ".cotal");
+}
+
+/** The root the get.cotal.ai launcher runs Cotal from, or undefined outside it. The launcher exports
+ *  `COTAL_LAUNCHER=1` and points npm's prefix at this root, which holds the Node runtime the
+ *  installer vendored, the `cotal-ai` package and its bin. */
+export function launcherInstallRoot(): string | undefined {
+  const prefix = process.env.npm_config_prefix;
+  return process.env.COTAL_LAUNCHER === "1" && prefix && isAbsolute(prefix) ? prefix : undefined;
 }
