@@ -1,5 +1,286 @@
 # @cotal-ai/runtime
 
+## 0.101.0
+
+### Patch Changes
+
+- 71e8b88: `cotal run amend` for a run ID that no run is recorded under now says no run is recorded under that
+  ID. With `--local`, an amend that finds no answer to amend is refused `TARGET_NOT_FOUND`, exit 2, as
+  the hosted amend is, where it reported an unknown outcome although nothing was written.
+- b3738e8: `cotal run amend` sent right after an accepted answer, before the run has recorded it, now says the answer was accepted and is not recorded yet, and to amend once the step lists it. Before, it said the step was "still open, so answer it instead", which sent the caller to a pause that had already taken their answer.
+- c22bcff: `cotal run answer` for a run ID that no run is recorded under now says no run is recorded under
+  that ID, where it said no step is recorded under that key. With `--local` it is refused
+  `TARGET_NOT_FOUND`, exit 2, as the hosted answer is, where it reported an unknown outcome although
+  nothing was written.
+- 6d8d964: `cotal run answer` and `cotal run amend` now refuse a `--value` whose record would differ from what was typed, with `SCHEMA_INVALID` and nothing sent. That covers an object that names a key twice (JSON kept only the last), a number outside the range JSON carries such as `1e999` (recorded as null before), and a value nested more than 1000 levels deep. A value nested a few thousand levels deep failed before with a raw "Maximum call stack size exceeded", exit 1, and no `--json` envelope.
+- 0c9e498: A refusal that repeats an over-long argument, such as an unknown command or subcommand, a space name given to `use` or `--space`, or a run id, now shows its first 128 characters and its length. A 100000-character value used to print a line as long as itself. The command still checks and uses the whole value.
+- 0282994: `run start --file`, `run simulate --handler`, `auth mint --out` and `--identity`, and `--creds` on a
+  command with no completer of its own complete from the shell's file names. A flag declares that with
+  the new optional `FlagSpec.completion: "files"`. `spawn` completes the personas of a prepared space
+  that is not started, as `persona show` does.
+- 9e0b1c5: `run validate` and `run start` now refuse a literal that is not a duration where a program reads
+  one, such as `sleep("5")`, `sleep(5000)` or a checkpoint `timeout` of `"PT5M"`, with L2034 and the
+  same text the call gives. Such a program used to validate and start, then fail its run at the call.
+  `run start` and `run resume` refuse a `--timeout` that is not a duration longer than zero with
+  `USAGE_INVALID`, where it used to start a run whose checkpoints then failed.
+- 50e13e5: `ps` and the hosted `run` verbs now say what to do when the space's manager runs but does not
+  answer. `ps` waited out its deadline and refused "no manager reachable" with no Next, although this
+  root's stack manager was running. It now names that manager's pid and gives as Next ending that
+  process, so bare `cotal up` starts the manager again. `run start`, `run ps` and the other hosted
+  verbs exited 1, the usage code, with only the rail paragraph. They now refuse `TARGET_UNAVAILABLE`
+  (exit 2) with the same sentence, and their Next is `cotal status`, which names a stack manager that
+  runs but does not answer, with its pid.
+- 44193ff: `--json` or `--plain` on `cotal run revoke`, `run check`, `run start --local` and
+  `run resume --local` now names a form that takes the flag, or the same command without it where
+  there is none, and prints no help. It used to say to use the hosted form, which revoke and check do
+  not have.
+- b432707: A step that a race cancelled in a losing branch now says so. `run show` labels its row
+  `cancelled, <branch> won <race>`, and `run answer` at that step is refused with `that step was
+  cancelled because branch <branch> won the race <race>` instead of `that step has already settled`.
+- 66af07b: `run show` names the branch a settled `race` took, and marks `not acted on` an answer whose step was in a losing branch, or whose pause was cancelled after accepting it. Such an answer used to be listed as acted on, or not at all. The journal rows carry the race's `winner` and each losing step's `lostRace` in `--json`.
+- 985f634: Refusals that named no next step now carry a remedy, in the JSON envelope's `error.remedy` and under Next in the text report: an unknown or missing `config` key, a `config` value, space name or `--space` it refuses, `persona show` and `persona remove` for a persona that does not exist, `persona create` for one that does, `run validate` of a file that cannot be read, and `service show` or `service remove` of a definition that is not saved. The envelope reference now says that `remedy` is present when a refusal names a step.
+- c3f6d9b: `cotal run revoke`, its help and the workflow docs now say that a revoke does not cancel the run:
+  work that touches no channel, such as a `sleep` and `log` loop, keeps running until the host driving
+  it stops. The docs name each way to stop that host and what else it stops.
+- 64e45c8: `cotal run revoke --local` with an empty or blank `--by` or `--reason` now names that flag, says
+  nothing was written and gives the command to run, without printing the whole `run` help.
+- 5961162: `cotal run revoke --local` of a run ID with no admission on the endpoint is now refused
+  `TARGET_NOT_FOUND`, exit 2, before anything is written, with `cotal run` as the next step. It used
+  to write a revocation marker for that ID and then exit 1 with a refusal citing a spec section.
+- e5ddaed: A revoked workflow run no longer takes an answer. `cotal run answer`, hosted or `--local`, refuses an open checkpoint or `ask` of a revoked run with `LIFECYCLE_BLOCKED`, naming who revoked it and why, and files nothing, so the run stays parked instead of completing. A revocation marker that cannot be read refuses the answer the same way. `cotal run show` still lists the open request, says that it takes no answer, and no longer offers the answer command. SPEC §14.8 states the rule.
+- 1d2da78: The refusals a revoked run gets, on `cotal run resume` and on `cotal run answer`, no longer end in
+  a spec section reference.
+- 5a4267c: `run start --local` refuses an `--admit-read` or `--admit-publish` entry that is not a channel or a
+  pattern, such as `a b`, with `USAGE_INVALID` naming it. It used to be admitted as the channel the
+  wire layer rewrote it to, `a_b`.
+- 8722113: `run answer` and `run amend` refuse an empty or blank `--artifact` with `USAGE_INVALID` naming the
+  flag. An empty one used to print the manager's raw schema error, and a blank one was recorded.
+- cc3ec77: `cotal run answer --local` and `cotal run amend --local` now print the same receipt as the hosted path: the step, the value filed or that none was given, any artifact and the answer id, with `result.answer` under `--json`, and a Next of `cotal r show <run> --local`. Before, they printed the raw answer record as unlabelled JSON.
+- 2538025: When `run answer` is given a checkpoint's name instead of its step key, the refusal now names the
+  open step key that matches.
+- 1533e53: The receipt of a hosted `cotal run answer` and `cotal run amend` now names the step, the value it filed and the answer id, and says "no value; --value was not given" when no `--value` was passed. With `--json` the same is in `result.answer`, with `valueGiven`. Before, the receipt said only "Answer accepted", so an answer sent without `--value` settled the step with no value and nothing said so. The CLI reference now says what an answer without a value records.
+- 8554325: Repeating `cotal run answer` right after it was accepted now gets the same `TARGET_NOT_FOUND` refusal as a later repeat, with a next step. Before, until the run recorded the first answer, a few seconds later, it got the checkpoint plane's raw conflict, with an opaque token, an epoch time and a spec section.
+- 720c959: The `run` command's usage line, receipts and next steps, and the run docs, now name the canonical
+  forms: bare `cotal run` to list runs, `run show` and `run check`. `ps` (or `list`), `journal` and
+  `migrate` still work, and the CLI reference lists them as compatibility aliases.
+- acac7de: `run check` and `run migrate` on an edited program that does not validate print each problem's
+  code, position, cause and fix instead of only the problem count. `run show` on a run that failed
+  outside any step says no journal row records why and names the stack manager's log.
+- 5fc1af5: `run show` and the text journal now show beside an open checkpoint's question whom its `to` escalates
+  it to, and once it has escalated, until when that attempt is open.
+- b3426bb: A failed workflow run now records why it failed. The run driver writes the error's language code, when it has one, and its message (bounded to 4000 characters) on the failed run status as `failure`. `cotal run ps` and `cotal run show` print the state as `failed (<code>)`, the run view prints the message under `Failure`, and the JSON status and `ps` rows carry `failure`. Before, a thrown error, an L4010 null access, an L4013 step budget or an L4023 deadline showed only "failed", and the cause was only in the manager's log. SPEC §13.7 adds the optional field.
+- c4fc7f7: `run show` on a run that failed outside any step no longer follows the cause its status recorded
+  with a line saying no journal row records why. That line now shows only when the status recorded
+  no cause either.
+- 80e389f: A hosted `cotal run` verb (`answer`, `show`, `ps` and the others the manager serves) refuses a raw `--creds` file `UNSUPPORTED`, exit 2, with one refusal envelope under `--json`. Its next step is to run the verb again without `--creds`, where the CLI mints the one-shot caller from the project folder or the `--space` registration. Before, it printed an unformatted line and exited 1, and `--json` printed nothing.
+- 0ba68ef: A malformed run ID is now one usage refusal on every `cotal run` verb that takes one. `show`, `journal`, `answer`, `amend`, `resume`, `revoke` and `check` refuse an ID that is not 1 to 64 letters, digits, `_` or `-` with `USAGE_INVALID`, exit 1, naming the format, before anything is contacted. Before, the same local check came back as exit 5 on `show` and `journal`, exit 3 "Outcome unconfirmed" on `answer`, `amend` and `resume`, and an unformatted error on `revoke` and `check`.
+- e2f5e0d: `cotal run show` and `cotal run journal` take `--limit <n>`, from 1 to 1000, for how many of the
+  last journal rows the text view prints. The view printed only the last 20, and the only way to read
+  more was `--json`. `--limit` with `--json` is refused, since the JSON result holds the whole journal.
+- cc023f7: `cotal run show` and `cotal run journal` read a run whose journal is larger than the broker's
+  payload limit. They read the journal from the manager in pages, each one reply, through a new
+  `journal: { offset }` input on `run-status` that answers the rows from that offset that fit, with
+  `journalTotal`. A record or a single row too large for one reply now refuses `UNSUPPORTED` and
+  names `cotal run journal <run-id> --local`, instead of failing with the broker's payload error.
+- fc38933: A `cotal run start` or `resume` past the manager's limit of 8 runs activating at once is now a clean refusal. The manager refuses before it writes the run's admission, marks the refusal `not-executed`, and names the runs still activating, and the CLI reports it as `LIFECYCLE_BLOCKED`, exit 2, with the next step to wait until one has activated and run it again. Before, the manager wrote the admission first, and the CLI reported the refusal as exit 3 "Outcome unconfirmed" with a "retry" hint it then told the caller not to follow. The limit is now in the run docs.
+- 598e00f: A hosted `cotal run` command whose `--on` names none of the space's running managers is now refused
+  `TARGET_NOT_FOUND` at once, naming the pin and the managers that run, with nothing sent. It used to
+  wait out the ten-second describe deadline and then refuse `TARGET_UNAVAILABLE`, saying the registered
+  manager did not answer on the versioned rail.
+- 45e73eb: `cotal run ps` now prints who revoked each revoked run and why under the table, as the workflow
+  docs say it does. The table itself still shows the run as `admission revoked`.
+- cebc2c9: `run ps --endpoint <endpoint>` that matches no run now says that no run record lives under that
+  endpoint and names the endpoints runs are recorded under, with an `ENDPOINT_HAS_NO_RUNS` warning.
+  It used to print an empty list with no hint.
+- d69fea2: A `run resume` refused because the run is already completed or failed now names
+  `cotal run show <runId>` as the next step.
+- 01defbe: A hosted `cotal run revoke` now gets one refusal whether or not it passes `--by`: it names `--local --by <actor> --reason <text>`, which revoke requires. Before, `run revoke <id> --by <who>` was told that `--by` is only for the local path, while `run revoke <id>` was told it requires `--by`.
+- ec3da5d: `cotal run show` no longer prints a long answer value whole in its Answers table. A value longer than 120 characters is cut, and a line says so and points to `--json`, which carries it whole. Before, one 100 KB answer padded every row of the table to its width, and the view printed about 300 KB for three rows.
+- 8d8c6e7: A `run` verb given a workflow source it cannot read now names the path and the cause: it does not
+  exist, it is a link whose target does not exist (`TARGET_NOT_FOUND`), it is a directory
+  (`USAGE_INVALID`), or it is not readable (`PERMISSION_DENIED`). `-` is read as a path, and its
+  refusal says that it does not mean standard input.
+- ba9b70e: `cotal run validate` and a hosted `cotal run start` now refuse an empty program file the same way, `SCHEMA_INVALID` with a next step, and `--json` gets its envelope. Before, validate passed the file, and start printed a raw input-schema line on stderr and exited 1 with no JSON.
+- 571fe68: The `cotal run` verbs that read a program file now refuse one that is not valid UTF-8 with `SCHEMA_INVALID`. Before, its bytes were replaced with U+FFFD, so a Latin-1 checkpoint question was stored and shown corrupted, with no warning.
+- e382f0c: A hosted `cotal run start` interrupted with Ctrl-C or `SIGTERM` after its request went out now says the manager may already have recorded the run, with outcome `unknown` and a pointer to `cotal run ps`, and still exits 130 or 143. Before, it exited silently while the manager went on to record the run, so a retry started a second one.
+- 90ed4a4: A hosted `cotal run start` of a program larger than the broker's message limit is now refused `UNSUPPORTED`, naming the program's size and the limit, with a next step. Before, it was reported as an unconfirmed outcome with exit 3, although nothing was sent and no run was created.
+- efe931a: A hosted `run start` refused for a program that does not validate now prints each problem with its
+  control characters escaped, as `run validate` does, so a step name cannot write terminal escapes.
+- 86bfcdb: `cotal run` refuses a mesh it cannot resolve or connect to under the refusal's own code, before any request, hosted or `--local`. With no mesh running, `cotal run ps` is refused `TARGET_NOT_FOUND`, exit 2, with one refusal envelope under `--json`, as `cotal ps` is. Before, it printed a plain line and exited 1 with no envelope.
+- 02c327b: A `run simulate` that stops names why: an unscripted effect names its table, step name and step
+  key with the entry to add, and a program fault names its code and cause. The `--handler` file
+  format is documented.
+- 761c861: `cotal run simulate` now tells a program that fails under its script apart from a script that does not cover the program. A program failure, such as a checkpoint scripted `expired` under the default `onExpiry: "fail"` (L4007), is a completed simulation, exit 0, whose program outcome is failed: it shows the step and that step's outcome with the language's error, and the JSON result carries `outcome` and `failure` beside the effects that ran. A script with no result for an effect (L6001) still does not complete, exit 5, and now names the step and the entry to add. Before, both printed "the offline simulation did not complete; unscripted effects are not invented" with a null result. `dryRunOutcome` returns a failed program's report with its fault, and `dryRun` takes an optional `journal`, so a caller can read the step a dry run that did not complete stopped at.
+- 531b374: When a space's streams are gone from a broker that still runs, `cotal status` says so and names the
+  way back, and `send`, `history` and `run ps` refuse with that cause. On an open space that another
+  machine deleted under a running stack, status showed the space as reachable, `send` exited 3 with
+  "may have been stored", `history` reported an empty conversation and `run ps` printed a raw
+  contract-store error. Status now shows `Space streams: not on the broker` and leads its Next with
+  `cotal down --yes`, then `cotal up`, or with `cotal up` when the stack's other members are stopped.
+  The three commands refuse `TARGET_UNAVAILABLE` with the same remedy.
+- 58b025c: Every subcommand's help now gives its whole usage, from `cotal` through its arguments, such as
+  `cotal channel set <name>` and `cotal persona create <name>`, and lists only the options that
+  subcommand takes. `help history clear` no longer prints a usage without `cotal history`, and the
+  usages of `meshes`, `personas`, `spawn`, `backup`, `describe`, `invoke`, `actor`, `agent-bearer`
+  and `service-endpoint` now start with `cotal`.
+- b12b86b: When a registered manager does not answer, as after a crash, `input` and `stop` refuse
+  `TARGET_UNAVAILABLE` because nothing was sent, instead of reporting an unconfirmed outcome. That
+  refusal, and the one `cotal run`'s hosted verbs give, now leads with "the manager registered for this
+  space did not answer".
+- 8294fdb: `cotal run validate` now names the broker's message limit among what it did not check, and the CLI
+  docs say a valid program over that limit is still refused by a hosted `start`.
+- 22e7127: A refusal of a value that names its own fix no longer prints the command's whole help after it. An
+  `--on` that is empty, a principal id or not an instance id, a `spawn --on` that needs a terminal or
+  `-d`, `attach` with no name and no terminal, and a `run` command given no run id now print the
+  refusal and its next step only. The `run` refusal names `cotal run ps`, or `cotal run turns` for
+  `yield`.
+- 78a2035: A workflow's `log(...)` lines are no longer discarded. A run the manager hosts writes each line to
+  the manager's log as `run <run-id>: log <text>`, a `--local` drive prints them, and `run simulate`
+  lists them under `Log`, with `result.log` in `--json`. The lines stay out of the journal, as the
+  language defines.
+- Updated dependencies [ff99364]
+- Updated dependencies [71e8b88]
+- Updated dependencies [b3738e8]
+- Updated dependencies [c22bcff]
+- Updated dependencies [39e0c7a]
+- Updated dependencies [fc17f8f]
+- Updated dependencies [e7cb03f]
+- Updated dependencies [0d1dfc3]
+- Updated dependencies [c74a853]
+- Updated dependencies [fff2909]
+- Updated dependencies [b0257f2]
+- Updated dependencies [0c9e498]
+- Updated dependencies [1e75421]
+- Updated dependencies [b58bf37]
+- Updated dependencies [0af0377]
+- Updated dependencies [b926504]
+- Updated dependencies [ea76a77]
+- Updated dependencies [9736397]
+- Updated dependencies [0282994]
+- Updated dependencies [dbbd7f5]
+- Updated dependencies [7d489d2]
+- Updated dependencies [cfeaddd]
+- Updated dependencies [afec9b6]
+- Updated dependencies [7c8564e]
+- Updated dependencies [66d2f93]
+- Updated dependencies [5cc55a7]
+- Updated dependencies [3a12438]
+- Updated dependencies [60cb005]
+- Updated dependencies [54f044f]
+- Updated dependencies [f0d97cd]
+- Updated dependencies [b8fa243]
+- Updated dependencies [09d905f]
+- Updated dependencies [286bccd]
+- Updated dependencies [4b2eb30]
+- Updated dependencies [855e595]
+- Updated dependencies [1c978f9]
+- Updated dependencies [f0d3143]
+- Updated dependencies [5703dfb]
+- Updated dependencies [a62d32d]
+- Updated dependencies [2ed3641]
+- Updated dependencies [9aa4be8]
+- Updated dependencies [35ec68e]
+- Updated dependencies [9e0b1c5]
+- Updated dependencies [e5ea994]
+- Updated dependencies [e53c3a3]
+- Updated dependencies [0b638b8]
+- Updated dependencies [817f353]
+- Updated dependencies [b7d985d]
+- Updated dependencies [957b8d8]
+- Updated dependencies [77c915a]
+- Updated dependencies [2dcc119]
+- Updated dependencies [75476c5]
+- Updated dependencies [71e91d8]
+- Updated dependencies [5521d3f]
+- Updated dependencies [d4afe89]
+- Updated dependencies [b6cfff1]
+- Updated dependencies [332d20e]
+- Updated dependencies [9901303]
+- Updated dependencies [2895911]
+- Updated dependencies [b8304ce]
+- Updated dependencies [e264d3c]
+- Updated dependencies [af0a0bc]
+- Updated dependencies [71eeb1c]
+- Updated dependencies [608f2d0]
+- Updated dependencies [00db0a6]
+- Updated dependencies [0decd7a]
+- Updated dependencies [240dbf4]
+- Updated dependencies [1de8abb]
+- Updated dependencies [62c4874]
+- Updated dependencies [b3f0edd]
+- Updated dependencies [b8ef19b]
+- Updated dependencies [94207f0]
+- Updated dependencies [788bf15]
+- Updated dependencies [2093a48]
+- Updated dependencies [7b97877]
+- Updated dependencies [b2fcd9c]
+- Updated dependencies [2f7657c]
+- Updated dependencies [9323110]
+- Updated dependencies [101e4f1]
+- Updated dependencies [70e9a65]
+- Updated dependencies [ea1b582]
+- Updated dependencies [998477a]
+- Updated dependencies [062cdfd]
+- Updated dependencies [e3979fe]
+- Updated dependencies [b5017a7]
+- Updated dependencies [b1397f4]
+- Updated dependencies [3a3d489]
+- Updated dependencies [4f1ade7]
+- Updated dependencies [b432707]
+- Updated dependencies [66af07b]
+- Updated dependencies [b77865a]
+- Updated dependencies [8c019ae]
+- Updated dependencies [985f634]
+- Updated dependencies [2f4f747]
+- Updated dependencies [0abbc55]
+- Updated dependencies [5e02acd]
+- Updated dependencies [3fc0d8e]
+- Updated dependencies [4725a7f]
+- Updated dependencies [4dcdc62]
+- Updated dependencies [d5e1e1f]
+- Updated dependencies [e5ddaed]
+- Updated dependencies [b3426bb]
+- Updated dependencies [cc023f7]
+- Updated dependencies [789de43]
+- Updated dependencies [6a9b881]
+- Updated dependencies [eabc54d]
+- Updated dependencies [440ce81]
+- Updated dependencies [aa3ff60]
+- Updated dependencies [9c86a40]
+- Updated dependencies [761c861]
+- Updated dependencies [ce05dbf]
+- Updated dependencies [f2e0c06]
+- Updated dependencies [73930b2]
+- Updated dependencies [c63f6d8]
+- Updated dependencies [6682bcb]
+- Updated dependencies [d205ad2]
+- Updated dependencies [7aa9d14]
+- Updated dependencies [531b374]
+- Updated dependencies [88c64a0]
+- Updated dependencies [48431ca]
+- Updated dependencies [83c2b1b]
+- Updated dependencies [aef1cf1]
+- Updated dependencies [26f407a]
+- Updated dependencies [ff650ba]
+- Updated dependencies [a8c3461]
+- Updated dependencies [a923eaa]
+- Updated dependencies [b505ad6]
+- Updated dependencies [457d771]
+- Updated dependencies [d6f9f7a]
+- Updated dependencies [03858ae]
+- Updated dependencies [d0d885a]
+- Updated dependencies [447b7eb]
+- Updated dependencies [8e35b7c]
+- Updated dependencies [d74686f]
+- Updated dependencies [24769e9]
+- Updated dependencies [d407e4b]
+- Updated dependencies [89f14f2]
+- Updated dependencies [b6681bc]
+- Updated dependencies [78a2035]
+  - @cotal-ai/workspace@0.101.0
+  - @cotal-ai/lang@0.101.0
+  - @cotal-ai/core@0.101.0
+
 ## 0.100.2
 
 ### Patch Changes
