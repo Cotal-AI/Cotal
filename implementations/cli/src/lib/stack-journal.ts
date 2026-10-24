@@ -96,12 +96,13 @@ function recordedElsewhere(root: string, recordedRoot: string, space: string, me
 
 /** A journal whose bytes are not JSON, as an interrupted write or a full disk can leave it. Removing it
  *  is the way out once no member of its stack runs, so the remedy names any running member's stop
- *  first, from the service records of the spaces at this root. */
+ *  first, from the service records of the spaces at this root. With no space recorded here, as after
+ *  `space forget`, there are no saved definitions to start from either. */
 function unreadable(root: string): never {
   const path = stackJournalPath(root);
-  let running: { space: string; name: string; instanceId: string }[] | undefined;
+  let running: { space: string; name: string; instanceId: string }[] | undefined, spaces = new Set<string>();
   try {
-    const spaces = new Set([...loadMeshes().filter((mesh) => canonicalRoot(mesh.root) === root).map((mesh) => mesh.space), ...[preparedSpaceAt(root)?.space].filter((space): space is string => space !== undefined)]);
+    spaces = new Set([...loadMeshes().filter((mesh) => canonicalRoot(mesh.root) === root).map((mesh) => mesh.space), ...[preparedSpaceAt(root)?.space].filter((space): space is string => space !== undefined)]);
     running = [...spaces].flatMap((space) => [...STACK_ROLES].reverse().flatMap((role) => serviceInstances(space, STACK_DEFINITION[role])
       .filter((row) => observeServiceProcess(row.record.value) === "running")
       .map((row) => ({ space, name: STACK_DEFINITION[role], instanceId: row.record.value.instanceId }))));
@@ -113,7 +114,9 @@ function unreadable(root: string): never {
     remedy: running === undefined
       ? `stop any running member of this stack with cotal service stop <name> --instance <id> --yes, manager first and broker last, then remove ${path} and run cotal up from ${root}`
       : running.length === 0
-        ? `no member of this stack is running, so remove ${path}; the next cotal up from ${root} starts the stack again from its saved definitions`
+        ? spaces.size
+          ? `no member of this stack is running, so remove ${path}; the next cotal up from ${root} starts the stack again from its saved definitions`
+          : `no space is recorded at this root, so remove ${path} and run cotal up from ${root}`
         : `stop its running members with ${running.map((row) => `cotal service stop ${row.name} --instance ${row.instanceId} --space ${row.space} --yes`).join(", then ")}, then remove ${path} and run cotal up from ${root}`,
   });
 }

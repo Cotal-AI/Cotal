@@ -10,8 +10,9 @@
  * print the `✗` mark under `--plain` and the `!` warning mark under such a locale.
  *
  * A folder whose `.cotal` is a file refuses every command with `CONFLICT`, naming that file, before
- * anything runs. A removed working folder refuses every command but help and version the same way,
- * `up`, `down` and `backup create` included, which crashed with Node's stack trace.
+ * anything runs. A removed working folder refuses every command but help and version with its line
+ * and the `cd` remedy and no help, as a missing --yes does, `up`, `down` and `backup create` included,
+ * which crashed with Node's stack trace.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME. Nothing is
  * started or deleted.
@@ -82,6 +83,32 @@ check("help with an unknown subcommand names it and lists the command's subcomma
 const subcommand = run(["service", "frob"]);
 check("control: the parser's unknown subcommand has the same words", usageShape(subcommand, /cotal service has no subcommand "frob"/), shown(subcommand));
 
+// --help after a word that names no subcommand refuses as `cotal help` does, with the nearest one.
+// After a real subcommand, history's channel word or a leaf's argument it still prints the help.
+for (const args of [["space", "nosuch", "--help"], ["persona", "nosuch", "--help"], ["config", "nosuch", "--help"], ["channel", "nosuch", "--help"], ["team", "nosuch", "-h"]] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} refuses the unknown subcommand`, usageShape(r, new RegExp(`cotal ${args[0]} has no subcommand "nosuch"`)), shown(r));
+}
+const nearHelp = run(["space", "creat", "--help"]);
+check("space creat --help names the nearest subcommand", usageShape(nearHelp, /cotal space has no subcommand "creat" - did you mean create\?/), shown(nearHelp));
+for (const args of [["space", "create", "--help"], ["history", "general", "--help"], ["team", "show", "anything", "--help"]] as const) {
+  const r = run([...args]);
+  check(`control: ${args.join(" ")} prints its help`, r.status === 0 && /Usage/.test(r.stdout), shown(r));
+}
+
+// A subcommand's help gives its whole usage, name argument included, and only its own options.
+for (const [args, usage, foreign] of [
+  [["help", "channel", "set"], "cotal channel set <name> ", /--purge|--follow/],
+  [["help", "channel", "show"], "cotal channel show <name> ", /--purge|--desc/],
+  [["help", "persona", "create"], "cotal persona create <name> ", /--yes/],
+  [["help", "history", "clear"], "cotal history clear ", /--grep|--follow/],
+  [["help", "meshes"], "cotal meshes ", undefined],
+  [["help", "personas"], "cotal personas ", undefined],
+] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} prints the usage ${usage.trim()} and no other subcommand's options`, r.status === 0 && r.stdout.includes(`Usage\n  ${usage}`) && !foreign?.test(r.stdout), shown(r));
+}
+
 // No mark at all: the report names the outcome in words, and `!` stays the warning mark.
 const reportShape = (r: ReturnType<typeof run>, message: RegExp) =>
   r.status === 1 && r.stdout === "" && /^Request refused$/m.test(r.stderr) && /Code: +USAGE_INVALID/.test(r.stderr) && message.test(r.stderr) && /Usage/.test(r.stderr) && !/[✗↳]|^! /m.test(r.stderr);
@@ -141,8 +168,10 @@ if (process.platform !== "win32") {
     const r = spawnSync("/bin/sh", ["-c", 'cd "$1" && rmdir "$1" && shift && exec "$@"', "sh", gone, process.execPath, BIN, ...args], { cwd: neutral, env, encoding: "utf8", timeout: 120_000 });
     return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   };
+  // Two lines and no help: the folder is not a grammar mistake, and the remedy is the whole fix.
+  const removedShape = (r: ReturnType<typeof run>) => r.status === 1 && r.stdout === "" && r.stderr === "✗ this folder no longer exists\n  cd to an existing folder and run the command again\n";
   const removed = fromRemoved(["status"]);
-  check("a command run from a removed folder has the usage shape and says the folder is gone", usageShape(removed, /this folder no longer exists/) && /cd to an existing folder/.test(removed.stderr), shown(removed));
+  check("a command run from a removed folder says the folder is gone and to cd elsewhere, with no help", removedShape(removed), shown(removed));
   const removedJson = fromRemoved(["status", "--json"]);
   const envelope = removedJson.stdout.startsWith("{") ? JSON.parse(removedJson.stdout) : undefined;
   check("with --json it is a USAGE_INVALID refusal, not an unknown outcome", removedJson.status === 1 && envelope?.outcome === "refused" && envelope.error?.code === "USAGE_INVALID", shown(removedJson));
@@ -152,7 +181,7 @@ if (process.platform !== "win32") {
   // instead of crashing with Node's stack trace.
   for (const args of [["up"], ["down", "--yes"], ["down", "--dry-run"], ["backup", "create", "bk"]]) {
     const r = fromRemoved(args);
-    check(`${args.join(" ")} from a removed folder refuses the same way, with no stack trace`, usageShape(r, /this folder no longer exists/) && !/uv_cwd|\n\s+at /.test(r.stderr), shown(r));
+    check(`${args.join(" ")} from a removed folder refuses the same way, with no stack trace`, removedShape(r), shown(r));
   }
   const upJson = fromRemoved(["up", "--json"]);
   const upEnvelope = upJson.stdout.startsWith("{") ? JSON.parse(upJson.stdout) : undefined;

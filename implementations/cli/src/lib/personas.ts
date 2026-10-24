@@ -1,6 +1,6 @@
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { loadAgentFile, personaDir, type AgentDef } from "@cotal-ai/core";
+import { loadAgentFile, personaDir, utf16Problem, type AgentDef } from "@cotal-ai/core";
 
 /**
  * The persona catalog: the local `.cotal/agents/*.md` files an operator manages with
@@ -33,6 +33,9 @@ export interface PersonaEntry {
   def?: AgentDef;
   /** Parse error message, if the file is malformed — surfaced rather than crashing the list. */
   error?: string;
+  /** Why the file cannot be read when it was saved as UTF-16: the one parse reason that quotes nothing
+   *  from the file, so a list that keeps `error` private can still name it. */
+  encoding?: string;
   /** Set when the file is not a regular file, such as a FIFO, so it was not opened (see `error`). */
   notRegular?: true;
 }
@@ -67,7 +70,9 @@ export function readPersonas(root: string): PersonaEntry[] {
       if (!statSync(path).isFile()) return { name, path, error: `persona is not a regular file: ${path}`, notRegular: true as const };
       return { name, path, def: loadAgentFile(path) };
     } catch (e) {
-      return { name, path, error: (e as Error).message };
+      let encoding: string | undefined;
+      try { encoding = utf16Problem(readFileSync(path, "utf8")); } catch { /* unreadable: `error` says so */ }
+      return { name, path, error: (e as Error).message, ...(encoding ? { encoding } : {}) };
     }
   });
 }

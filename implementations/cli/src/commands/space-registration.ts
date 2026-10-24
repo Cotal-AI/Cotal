@@ -27,6 +27,8 @@ import {
   removeMesh,
   removePreparedSpace,
   removeSpacePreferences,
+  SPACE_NAME_MAX,
+  spaceNameTooLong,
   stackHomeRemedy,
   stackRunsUnderOtherHome,
   writeResult,
@@ -411,9 +413,11 @@ export type LocalSpaceState = "created" | "prepared" | "started";
 export function checkLocalSpace(name: string, root: string, flag: "--root" | "--project", again: boolean, adopting = false): LocalSpaceState {
   const target = { space: name };
   // `cotal up` starts a space only under a name that is one native routing token, short enough for
-  // the files it names after the space to stay within the file-name limit.
-  if (name.length > 64 || token(name) !== name)
-    throw refuse("USAGE_INVALID", "a space name is 1 to 64 letters, digits, underscores or hyphens, which `cotal up` needs to start it", target);
+  // the file names that carry it.
+  const tooLong = spaceNameTooLong(name);
+  if (tooLong) throw refuse("USAGE_INVALID", `${tooLong}; nothing was written`, target, `choose a name of at most ${SPACE_NAME_MAX} characters`);
+  if (token(name) !== name)
+    throw refuse("USAGE_INVALID", `a space name is 1 to ${SPACE_NAME_MAX} letters, digits, underscores or hyphens, which \`cotal up\` needs to start it`, target);
   if (resolve(root, ".cotal") === resolve(homeCotalDir()) || canonicalRoot(root) === canonicalRoot(homedir()))
     throw refuse("CONFLICT", `${root} is your home folder, whose .cotal holds this machine's own records`, target, `create the space in a project folder, or pass ${flag} <dir>`);
   // Such a space could be prepared but never started: its first `up` would refuse to record the root.
@@ -436,7 +440,9 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   // A stack this home cannot see runs here under another Cotal home; a space prepared over it could
   // not start, and the root's status would stop naming that home.
   let journal: Parameters<typeof stackRunsUnderOtherHome>[1] | undefined;
-  try { journal = readStackJournal(root)?.journal; } catch { journal = undefined; }
+  // A journal that is not JSON or has an unsupported shape is named with its way out. The trust it
+  // leaves would otherwise read as a space that already holds this root.
+  try { journal = readStackJournal(root)?.journal; } catch (error) { if (error instanceof CommandFailure && error.code === "SCHEMA_INVALID") throw error; journal = undefined; }
   if (journal && stackRunsUnderOtherHome(root, journal))
     throw refuse("TARGET_UNAVAILABLE", `the controller stack in ${root} runs under another Cotal home; ${homeCotalDir()} holds no record of its members`, target, stackHomeRemedy());
   // A stack journal another folder recorded, as a copy or a moved folder keeps it, is taken over only

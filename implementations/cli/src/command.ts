@@ -139,9 +139,9 @@ function debugStacks(failure: Error): void {
 function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, warnings: readonly OutputWarning[] = operationWarnings()): never {
   recordTelemetryFailure(failure.outcome, failure.code, failure);
   // A command's own usage refusal reads as the parser's: the error, its remedy, then the help. A
-  // missing --yes or a missing scripted input is not a grammar mistake, and its remedy says the
-  // whole fix. A file the command cannot use is reported like one that does not exist, and a refused
-  // flag value names its corrected value, so it gets the classified report.
+  // missing --yes, a missing scripted input or a removed working folder is not a grammar mistake,
+  // and its remedy says the whole fix. A file the command cannot use is reported like one that does
+  // not exist, and a refused flag value names its corrected value, so it gets the classified report.
   if (failure.code === "USAGE_INVALID" && !json && !(failure instanceof UnusableFile) && !(failure instanceof FlagValueRefusal)) {
     usageRefusal(failure, plain, failure.selfContained ? undefined : cmd);
     debugStacks(failure);
@@ -413,7 +413,7 @@ function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs): void {
     process.cwd();
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
+    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
   }
 }
 
@@ -441,6 +441,9 @@ function printHelpFor(cmd: Command, rest: readonly string[]): void {
   const path: string[] = [];
   for (const word of words) {
     const sub: Subcommand | undefined = findSubcommand(surface, word);
+    // A word where a subcommand belongs that names none refuses as `cotal help` does, so a mistyped
+    // subcommand never gets its group's help. History's own first word may be a channel.
+    if (!sub && surface.subcommands?.length && !(surface === cmd && cmd.name === "history")) return printHelpPath(cmd, [...path, word]);
     if (!sub || sub.hidden) break;
     path.push(sub.name); surface = sub;
     if (!sub.subcommands?.length) break;
@@ -608,7 +611,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       process.cwd();
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-      failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
+      failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
     }
   }
   // A preferences file that does not validate stops every command that could act on a default, as a

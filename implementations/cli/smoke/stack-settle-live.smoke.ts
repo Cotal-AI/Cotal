@@ -5,9 +5,13 @@
  *     operation. `down --dry-run` exits 0 and names the settlement, `down --yes` settles it and stops
  *     the broker, and a second `down --yes` is a no-op. `ps` on the `--no-manager` stack is a known
  *     refusal.
- *  2. Broker crash after start. The next `up` restarts the broker from its records. After a manager
- *     crash, the next `up` relaunches the manager over the pidfile the killed process left. Once
- *     delivery is killed, `status` reads its ready row as stale instead of bound.
+ *  2. Broker crash after start. The `up` that adds the manager and `service status` list the broker's
+ *     client and websocket listeners and the manager's console; a wildcard configuration lists them
+ *     on every interface and names the plaintext ones. The next `up` restarts the broker from its
+ *     records. After a manager crash, the next `up` relaunches the manager over the pidfile the
+ *     killed process left. Once delivery is killed, `status` reads its ready row as stale instead of
+ *     bound. The `down --yes` that stops it prints one receipt: the mesh once, the members in stop
+ *     order with their results, and `cotal up` as the next step.
  *  2b. A `ps` while an `up` is still starting the manager says it is starting. Once that `up` is
  *     killed, `ps` gives the no-manager refusal again.
  *  3. Busy port on a first `up`. It refuses CONFLICT naming the address and the bind error and
@@ -24,6 +28,10 @@
  *     its store relative to the root, so it does not create the old path again; `send` and `up` from
  *     the renamed folder name the move and the way back, and after the move back `down` stops it.
  *     Stopped and moved again, `up`, `send`, `history` and `status` there all name moving it back.
+ *     Status there, and in a copy, does not offer `clean store`, which refuses in both.
+ *     With its journal removed after `down`, as the way out of a damaged one says, `up` starts at the
+ *     address its saved broker definition names and warns; with no definition either, it refuses and
+ *     asks for `--server`.
  *  4. Orphan manager. With the broker suspended under a live manager, `down` refuses
  *     TARGET_UNAVAILABLE naming the broker's pid and `kill -CONT`, and stops nothing. With the broker
  *     killed under a live manager, `down` refuses before any stop
@@ -115,6 +123,7 @@ const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTA
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { readStackJournal } = await import("../src/lib/stack-journal.js");
 const { serviceDefinitionStore } = await import("../src/lib/service-definitions.js");
+const { definitionListeners, exposedPlaintext, listenerRow } = await import("../src/lib/stack-listeners.js");
 
 const { check, finish } = createSuite();
 const anchors = new Map<string, SmokeSandboxAnchor>();
@@ -122,7 +131,7 @@ const roots: string[] = [];
 const owned = new Set<number>();
 
 type Envelope = { outcome: string; target?: Record<string, unknown>; result?: Record<string, unknown>; warnings?: { code: string; target?: Record<string, unknown> }[]; error?: { code: string; message: string; remedy?: string; cause?: { code?: string; detail?: string } } };
-type Run = { status: number | null; signal: NodeJS.Signals | null; ms: number; stderr: string; env?: Envelope };
+type Run = { status: number | null; signal: NodeJS.Signals | null; ms: number; stdout: string; stderr: string; env?: Envelope };
 const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run => {
   const options = { cwd, env: childEnv, encoding: "utf8" as const, timeout: 180_000 };
   assertSmokeSandboxDown(anchors.get(cwd), args, options);
@@ -130,7 +139,7 @@ const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run
   const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
   let parsed: Envelope | undefined;
   try { parsed = JSON.parse(run.stdout) as Envelope; } catch { parsed = undefined; }
-  return { status: run.status, signal: run.signal, ms: Date.now() - began, stderr: run.stderr, env: parsed };
+  return { status: run.status, signal: run.signal, ms: Date.now() - began, stdout: run.stdout, stderr: run.stderr, env: parsed };
 };
 const cli = (cwd: string, ...args: string[]): Run => cliAs(env, cwd, ...args);
 /** `cli` without blocking this process, so a watcher in it can act while the command runs. */
@@ -146,7 +155,7 @@ const cliAsync = (cwd: string, ...args: string[]): Promise<Run> => {
     clearTimeout(timer);
     let parsed: Envelope | undefined;
     try { parsed = JSON.parse(stdout) as Envelope; } catch { parsed = undefined; }
-    done({ status, signal, ms: Date.now() - began, stderr, env: parsed });
+    done({ status, signal, ms: Date.now() - began, stdout, stderr, env: parsed });
   }));
 };
 const shown = (run: Run) => ({ status: run.status, signal: run.signal, ms: run.ms, outcome: run.env?.outcome, error: run.env?.error, stderr: run.stderr.slice(-1500) });
@@ -227,6 +236,25 @@ try {
     const added = cli(root, "up", "--json");
     track(space);
     check("bare up adds the manager to the running stack", added.status === 0 && pidOf(space, "stack-manager") !== null, shown(added));
+    // The receipt and service status name every listener the stack opened: the broker's client and
+    // websocket listeners and the manager's console, here all on loopback.
+    type Listed = Parameters<typeof exposedPlaintext>[0];
+    const listed = added.env?.result?.listeners as Listed | null | undefined;
+    const brokerListed = cli(root, "service", "status", "stack-broker", "--space", space, "--json").env?.result?.listeners as Listed | undefined;
+    const consoleListed = cli(root, "service", "status", "stack-manager", "--space", space, "--json").env?.result?.listeners as Listed | undefined;
+    check("up's receipt and service status list the broker's client and websocket listeners and the manager's console, on loopback",
+      JSON.stringify(listed?.map((l) => [l.name, l.host, l.name === "client" ? l.port : typeof l.port, l.reach, l.encrypted])) === JSON.stringify([["client", "127.0.0.1", port, "loopback", false], ["websocket", "127.0.0.1", "number", "loopback", false], ["console", "127.0.0.1", "object", "loopback", false]])
+        && JSON.stringify(brokerListed) === JSON.stringify(listed?.slice(0, 2)) && JSON.stringify(consoleListed) === JSON.stringify(listed?.slice(2)), { listed, brokerListed, consoleListed });
+    // A wildcard bind, as `up --host 0.0.0.0` renders it, reaches every interface, and the report says
+    // which listeners are plaintext there. No socket is opened for this.
+    const wildConfig = join(home, "wildcard-server.conf");
+    writeFileSync(wildConfig, "host: 0.0.0.0\nport: 4999\nmax_control_line: 1\nwebsocket {\n  host: 0.0.0.0\n  port: 5000\n  no_tls: true\n}\n");
+    const definitionOf = (adapter: string, options: Record<string, unknown>) => ({ name: "x", record: { revision: 1, value: { launch: { type: "adapter", adapter, options } } } }) as unknown as Parameters<typeof definitionListeners>[0];
+    const wild = [...definitionListeners(definitionOf("nats-broker", { config: wildConfig })) ?? [], ...definitionListeners(definitionOf("manager-service", { "console-host": "0.0.0.0" })) ?? []];
+    check("a wildcard bind lists every listener on every interface and names the plaintext ones",
+      JSON.stringify(wild.map(listenerRow)) === JSON.stringify([["Broker client", "0.0.0.0:4999 · every interface · plaintext"], ["Broker websocket", "0.0.0.0:5000 · every interface · plaintext"], ["Manager console", "0.0.0.0, on a port the manager picks when it starts · every interface · plaintext HTTP"]])
+        && exposedPlaintext(wild) === "The broker client, broker websocket and manager console listeners are plaintext and reachable from other machines, so what crosses them is not encrypted."
+        && exposedPlaintext(listed ?? []) === undefined, wild);
     check("...and status no longer reports the stack as manager-less", noManager() === false);
 
     const crashed = pidOf(space, "stack-broker");
@@ -254,8 +282,15 @@ try {
     await until(() => gone(space, "stack-delivery"), 10_000);
     const deadResponder = responder();
     check("status reads the live daemon's ready row as bound and a killed daemon's as stale", killedDelivery !== null && liveResponder === "bound" && deadResponder === "stale", { killedDelivery, liveResponder, deadResponder });
-    const finalDown = cli(root, "down", "--yes", "--json");
+    const finalDown = cli(root, "down", "--yes", "--plain");
     check("down --yes stops the repaired stack", finalDown.status === 0 && (replacement === null || !alive(replacement)), shown(finalDown));
+    // The receipt names the mesh once, lists the members in the stop order with their results, and
+    // ends with one Next; --yes prints no plan, impact or broker scope ahead of it.
+    const rows = finalDown.stdout.split("\n").filter((line) => /^ {2}(manager|delivery|broker) /.test(line)).map((line) => line.trim().split(/\s+/));
+    check("down --yes prints one receipt: the mesh once, members in stop order with results, and cotal up as the Next",
+      finalDown.stdout.startsWith(`Mesh: ${space}\n`) && finalDown.stdout.split("Mesh: ").length === 2 && !/stop plan|stop impact|stop scope/.test(finalDown.stdout)
+        && JSON.stringify(rows.map((row) => [row[0], row.slice(2).join(" ")])) === JSON.stringify([["manager", "stopped"], ["delivery", "already stopped"], ["broker", "stopped"]])
+        && finalDown.stdout.trimEnd().endsWith("Next\n  cotal up  Start the stack again from its journal and saved definitions"), finalDown.stdout);
   }
 
   // 2b. A ps while an up is still starting the manager. Delivery is frozen once pinned, so the up
@@ -360,6 +395,36 @@ try {
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
   }
 
+  // 3e. A journal removed after `down` dropped the registration, as the way out of a damaged one
+  // says. The saved broker definition names the address; with none, a root that ran refuses.
+  {
+    const space = "unjournaled";
+    const root = prepare(space);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const first = cli(root, "up", "--server", server, "--no-manager", "--json");
+    track(space);
+    check("up --no-manager starts the stack to unjournal", first.status === 0, shown(first));
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+    const journalPath = join(root, ".cotal", "stack-controller.json");
+    rmSync(journalPath);
+    const recovered = cli(root, "up", "--no-manager", "--json");
+    track(space);
+    check("bare up with no journal or registration starts at the address its saved broker definition names, and warns STACK_ADDRESS_RECOVERED",
+      recovered.status === 0 && readStackJournal(root)?.journal.server === server && Boolean(recovered.env?.warnings?.some((warning) => warning.code === "STACK_ADDRESS_RECOVERED")), shown(recovered));
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+    rmSync(journalPath);
+    const records = join(home, "services", Buffer.from(space).toString("hex"));
+    for (const row of serviceInstances(space, "stack-broker")) rmSync(join(records, "instances", `${Buffer.from(row.record.value.instanceId).toString("hex")}.json`));
+    rmSync(join(records, "definitions", `${Buffer.from("stack-broker").toString("hex")}.json`));
+    const refused = cli(root, "up", "--no-manager", "--json");
+    check("with no saved broker definition either, bare up refuses USAGE_INVALID, exit 1, and asks for --server",
+      refused.status === 1 && refused.env?.error?.code === "USAGE_INVALID" && refused.env.error.remedy === "run cotal up --server <url> with the address it ran at" && !existsSync(journalPath), shown(refused));
+    const named = cli(root, "up", "--server", server, "--no-manager", "--json");
+    track(space);
+    check("up --server with that address starts it", named.status === 0, shown(named));
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+  }
+
   // 3d. A project folder renamed while its stack runs.
   {
     const space = "renamed";
@@ -387,8 +452,18 @@ try {
     const routes = [cli(moved, "up", "--json"), cli(moved, "send", "--space", space, "-c", "general", "after the stop", "--json"), cli(moved, "history", "general", "--space", space, "--json")];
     const status = cli(moved, "status", "--space", space, "--json");
     renameSync(moved, root);
+    // A copy keeps the journal too. Clean store refuses in both, so status does not offer it there.
+    const copy = `${root}-copy`;
+    spawnSync("cp", ["-a", root, copy]);
+    const copyStatus = cli(copy, "status", "--space", space, "--json");
+    rmSync(copy, { recursive: true, force: true });
     check("stopped and moved, up, send and history there all name moving the folder back", routes.every((r) => r.status === 2 && r.env?.error?.remedy === way), routes.map(shown));
     check("status --space there names the same step", ((status.env?.result?.hints as string[] | undefined) ?? []).includes(way), shown(status));
+    const offersNoReset = (r: Run) => {
+      const result = r.env?.result as { folder?: { storedState?: boolean }; hints?: string[] } | undefined;
+      return result?.folder?.storedState === false && Array.isArray(result.hints) && !result.hints.some((hint) => hint.includes("clean store"));
+    };
+    check("status in the moved folder and in a copy offers no clean store for the stack's store", offersNoReset(status) && offersNoReset(copyStatus), { moved: shown(status), copy: shown(copyStatus) });
   }
 
   // 3b. A first up refused at a port another program holds pins nothing.

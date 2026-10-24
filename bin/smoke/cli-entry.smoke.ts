@@ -139,7 +139,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`help lists alias ${alias} beside ${cmd.name}`, new RegExp(`^\\s+${cmd.name}(, [^ ]+)*, ${alias}(,|\\s)`, "m").test(all.stdout), shown(all));
   const spawnHelp = cotal(["help", "spawn"]);
   local("help spawn writes nothing", spawnHelp);
-  check("command help shows the usage and the aliases", /^Usage\n  spawn /m.test(spawnHelp.stdout) && /^Shorthands\n  cotal sp$/m.test(spawnHelp.stdout), shown(spawnHelp));
+  check("command help shows the usage and the aliases", /^Usage\n  cotal spawn /m.test(spawnHelp.stdout) && /^Shorthands\n  cotal sp$/m.test(spawnHelp.stdout), shown(spawnHelp));
   check("help sp, spawn --help and sp -h print the same help", same(spawnHelp, cotal(["help", "sp"])) && same(spawnHelp, cotal(["spawn", "--help"])) && same(spawnHelp, cotal(["sp", "-h"])));
   const subHelp = cotal(["help", "ext", "remove"]);
   local("help ext remove writes nothing", subHelp);
@@ -305,6 +305,19 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("persona show reads the seeded default persona", shownDefault.status === 0 && JSON.parse(shownDefault.stdout).result?.definition?.name === "default_agent", shown(shownDefault));
   const editedDefault = cotal(["persona", "edit", "default"], seeded, editor);
   check("persona edit saves the seeded default persona", editedDefault.status === 0 && editedDefault.stdout.includes("Persona saved"), shown(editedDefault));
+  // A catalog file saved as UTF-16 is named by its encoding, with the step to save it as UTF-8.
+  const utf16 = (home: string) => {
+    seeded(home);
+    writeFileSync(join(home, "..", ".cotal", "agents", "w16.md"), Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(DEFAULT_AGENT, "utf16le")]));
+  };
+  const saved = "it is saved as UTF-16, and Cotal reads only UTF-8";
+  const listed16 = cotal(["persona", "--json"], utf16, noSeed);
+  check("persona names a UTF-16 catalog file by its encoding", listed16.status === 4 && listed16.stdout.includes(`w16.md: ${saved}; save it as UTF-8`), shown(listed16));
+  const shown16 = cotal(["persona", "show", "w16", "--json"], utf16, noSeed);
+  check("persona show refuses a UTF-16 file by its encoding and says to save it as UTF-8",
+    shown16.status === 1 && shown16.stdout.includes(`w16.md: ${saved}`) && /"remedy":"save \S+w16\.md as UTF-8"/.test(shown16.stdout), shown(shown16));
+  const old16 = cotal(["personas", "list"], utf16, noSeed);
+  check("personas list names it by its encoding too", old16.stdout.includes(`w16.md: ${saved}; save it as UTF-8`), shown(old16));
   // A catalog file that is a FIFO would block a read, so the list marks it unreadable and names it
   // rather than waiting on it.
   if (process.platform !== "win32") {
@@ -474,6 +487,16 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   refused("a prefix of a command selects nothing", cotal(["spaw"]), /unknown command: spaw/);
   refused("a prefix of an aliased command selects nothing", cotal(["hist"]), /unknown command: hist/);
   refused("help for a seeded command that is not installed yet seeds nothing", cotal(["web", "--help"]), /unknown command: web - run `cotal help`/);
+}
+
+// ── A `✗` line shows the control characters of an argument it repeats as escapes ─────────────────
+{
+  const utf8 = { ...noSeed, LC_ALL: "C.UTF-8" };
+  for (const [what, args] of [["an unknown command", ["c\u001b[2J"]], ["an unknown docs page", ["docs", "d\u001b[2J"]], ["an unknown preference", ["config", "get", "k\u001b[2J"]], ["an invalid channel", ["send", "-c", "c\u001b[2J", "x"]]] as const) {
+    const r = cotal([...args], undefined, utf8);
+    check(`${what} is refused on a ✗ line that shows its escape sequence escaped`,
+      r.status === 1 && r.stderr.startsWith("✗ ") && r.stderr.includes("\\u001b[2J") && !/[\u0000-\u0009\u000b-\u001f\u007f]/u.test(r.stdout + r.stderr), shown(r));
+  }
 }
 
 // ── Every alias is its command: same help, same refusal ───────────────────────────────────────────

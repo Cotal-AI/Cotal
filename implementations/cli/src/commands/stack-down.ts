@@ -19,7 +19,7 @@ import { yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { canPrompt } from "./meshes-wizard.js";
-import { kernelImpactView, nativeImpactView } from "./service-actions.js";
+import { nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { abandonableSignalStop, assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, resumableSignalStop, retainedStopRequest, settleExitedInstance, stopProcessService } from "../lib/service-process.js";
@@ -346,11 +346,12 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
       manager.native = await managerImpact(journal0, members, manager, withAgents);
       if (!manager.native) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the manager's native agent impact could not be established; no member was stopped", { target: instanceProjection(manager.instance) });
     } else if (withAgents) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's live manager and its native impact; no member was stopped", { target });
-    if (presentation !== "json") {
-      console.log(renderReport(planView(journal0, members, withAgents, settlement), presentation, terminalWidth(process.stdout)));
-      if (manager?.native) console.log(renderReport(nativeImpactView(manager.native), presentation, terminalWidth(process.stdout)));
-    }
     if (!values.yes) {
+      // What the prompt asks to confirm. The receipt names the mesh, so the plan does not.
+      if (presentation !== "json") {
+        console.log(renderReport({ sections: planView(journal0, members, withAgents, settlement).sections }, presentation, terminalWidth(process.stdout)));
+        if (manager?.native) console.log(renderReport(nativeImpactView(manager.native), presentation, terminalWidth(process.stdout)));
+      }
       const answer = await prompts.confirm({ message: `Stop every displayed member of ${oneLine(journal0.space)}'s controller stack with only the displayed native impact?`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) {
         putBack();
@@ -401,7 +402,6 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
         // Recheck the whole scope now that earlier members are confirmed stopped.
         scopeRefusals(journal);
         kernel = await prepareKernelServiceStop(member.definition, current);
-        if (kernel && presentation !== "json") console.log(renderReport(kernelImpactView(kernel), presentation, terminalWidth(process.stdout)));
       }
       const stopped = await stopProcessService(member.definition, current, holds, { plan: role === "manager" ? member.native : undefined, withAgents: role === "manager" && withAgents }, { plan: kernel });
       mark(role, { state: stopped.noOp ? "already-stopped" : "stopped" });
@@ -441,7 +441,6 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   }
   settle(failure ? (failure.outcome === "unknown" ? "unknown" : failure.outcome === "partial" ? "partial" : failure.outcome === "failed" ? "failed" : "refused") : "completed");
   writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, operation: journal.operation, withAgents, members: journal.members, changed, managerImpact: manager?.native ?? null, atomic: false, cleanup: failure ? "not-confirmed" : journal.mode === "open" ? "registration-removed-no-delivery-credential" : deliveryCredentialKept ? "registration-removed-delivery-credential-kept" : "delivery-credential-and-registration-removed", admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null }, ...(settled || abandoned || stranded ? { warnings: [...abandonWarnings, ...(settled ? [{ code: "OPERATION_SETTLED", target: { ...target, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : []), ...(stranded ? [strandedNotice(journal0, stranded.previous)] : [])] } : {}), ...(failure ? { failure, completeness: "partial" as const } : changed.length ? {} : { noOp: true }) }, (result) => ({ sections: [...restoreNotice(admittedRestore), { title: failure ? "Controller stack stop incomplete" : changed.length ? "Controller stack stopped" : "Controller stack was not running; nothing was stopped", blocks: [
-    { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Result" }], rows: result.members.filter((row) => row.instanceId !== null).map((row) => ({ role: row.role, instance: row.instanceId ?? "none", state: { text: row.state.replaceAll("-", " "), tone: ["stopped", "already-stopped"].includes(row.state) ? "ok" as const : ["refused", "failed"].includes(row.state) ? "failed" as const : "waiting" as const } })) },
-    { kind: "lines", lines: ["A returned native manager stop and an observed broker exit are not proof of authority, lease, store or descendant cleanup. A member already gone was recorded without a signal. The stack journal and the saved definitions remain; the next bare cotal up reuses them."] },
-  ] }] }));
+    { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Result" }], rows: result.members.filter((row) => row.instanceId !== null).sort((a, b) => STOP_ORDER.indexOf(a.role) - STOP_ORDER.indexOf(b.role)).map((row) => ({ role: row.role, instance: row.instanceId ?? "none", state: { text: row.state.replaceAll("-", " "), tone: ["stopped", "already-stopped"].includes(row.state) ? "ok" as const : ["refused", "failed"].includes(row.state) ? "failed" as const : "waiting" as const } })) },
+  ] }, ...(failure ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: "cotal up", description: "Start the stack again from its journal and saved definitions" }] }] }])] }));
 }
