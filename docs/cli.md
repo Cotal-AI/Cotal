@@ -6069,9 +6069,9 @@ run-token shape. Keep the pin on later status, answer and resume calls.
 A run ID that is not 1 to 64 letters, digits, `_` or `-` is refused as `USAGE_INVALID`, exit 1,
 on every verb that takes one, before anything is contacted.
 A hosted verb the manager refuses reports the outcome and code as other commands do, and with
-`--json` as one refusal envelope on stdout. A refusal the manager makes before acting, such as a
-denied credential, a step in the wrong state or a program that does not validate, is refused, exit
-2. A run or step it holds no record of is `TARGET_NOT_FOUND`, with `cotal run ps` or
+`--json` as one refusal envelope on stdout. A refusal the manager makes before acting is refused: a
+denied credential or a step in the wrong state exits 2, and a program that does not validate is
+`SCHEMA_INVALID`, exit 1, like other invalid input. A run or step it holds no record of is `TARGET_NOT_FOUND`, with `cotal run ps` or
 `cotal run show <runId>` as the next step. A manager activates at most 8 runs at once, counting
 each `start` or `resume` until its run is recorded. One more is refused `LIFECYCLE_BLOCKED`, exit 2,
 before anything is written; the refusal names the runs still activating, and the next step is to
@@ -6089,14 +6089,16 @@ exit 2, and with `--json` one refusal envelope on stdout.
 
 `start` hands the program to the mesh's manager, which validates it, mints the run id (the record
 never takes a caller-supplied one), drives it in its own process, and answers with the id once the
-run is recorded; a program that does not validate is refused with every problem listed. A program
+run is recorded; a program that does not validate is refused with every problem listed, each
+control character in it shown as its `\uXXXX` escape. A program
 file that cannot be read is refused with `TARGET_NOT_FOUND`, exit 2, by every verb that takes one.
 A `start` interrupted with Ctrl-C or `SIGTERM` after its request went out reports outcome `unknown`,
 because the manager may already have recorded the run, and exits 130 or 143. List the runs with
 `cotal run ps` before starting it again.
 `resume` asks the manager to take an existing run back and continue it from its step journal; the
 source is the recorded program, so no `--file` is taken. A run recorded `completed` or `failed` is
-refused `LIFECYCLE_BLOCKED` (exit 2) and gets no new activation, because nothing is left to continue. Neither takes `--endpoint`: the manager records
+refused `LIFECYCLE_BLOCKED` (exit 2) and gets no new activation, because nothing is left to continue;
+the next step is `cotal run show <runId>`. Neither takes `--endpoint`: the manager records
 its runs under its own endpoint, and naming another is refused. `ps` lists the run records and
 `journal` renders one run's durable records; both only inspect. `show` and `journal` read the
 journal from the manager in pages, each one reply, so a journal larger than the broker's payload
@@ -6121,6 +6123,8 @@ that step and the message stays under `Step errors`. A run that failed before it
 cause shows only `failed`. A failure raised by program code outside any step is recorded in no
 journal row. The view says so under `Failure` and names
 `cotal service logs stack-manager --space <space>`, because a hosted run's cause is in its manager's log.
+The failure records no line or column in the program: a source position belongs to a problem
+`run validate` reports before the program runs.
 `--json` on `ps` or `journal` writes one envelope on stdout, as other commands do, and nothing on
 stderr, whether the manager answers or `--local` reads. `ps` lists its rows under `result.items`.
 `journal` puts the run under `result.view`: its `runId`, `endpoint`, recorded `spec` and `status`,
@@ -6150,7 +6154,10 @@ required ([workflows](workflows.md)).
 checkpoint through the manager, presenting as the holder that armed it; the manager records the
 answerer from your credential, so no `--by` is taken there. A settled step refuses a second
 `answer` with `TARGET_NOT_FOUND`, also when it is sent before the run records the first, and a
-revoked run refuses every answer with `LIFECYCLE_BLOCKED` and files nothing. An
+revoked run refuses every answer with `LIFECYCLE_BLOCKED` and files nothing. A step the run holds no
+open request at is also `TARGET_NOT_FOUND`; when an open checkpoint or `ask` has the name you typed,
+as `frage` names `/checkpoint:frage#0`, the next step gives its full key, and several matches are
+listed for you to pick from. An
 answer without `--value` carries no value: the step settles as answered, and the
 program's checkpoint result has no `value`. `--value` is refused with `SCHEMA_INVALID` before
 anything is sent when the record would not hold what you typed: an object that names a key twice,
