@@ -101,6 +101,7 @@ import {
   putSpaceAuth,
   canonicalRoot,
   rootPathProblem,
+  rootControlProblem,
   clearCurrent,
   findMesh,
   findPreparedSpace,
@@ -450,6 +451,10 @@ export function validateUpArguments(args: ParsedArgs): void {
     // A path with a control character or a bidirectional formatting mark is refused before any write.
     const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
     if (pathProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${pathProblem}; nothing was started or written`, { target: { root }, remedy: "rename the folder without those characters, then run cotal up there" });
+    const control = rootControlProblem(root);
+    if (control) throw new CommandFailure("refused", "CONFLICT", `${control.message}; nothing was started or written`, { target: { root, controlDirectory: control.controlDirectory }, remedy: control.project === undefined
+      ? "prepare a project folder with cotal space create <space> --root <dir>, then run cotal up there"
+      : `run cotal up from the project folder ${shellWord(control.project)}` });
     assertUpRootWritable(root);
     // A restore and a manifest name their own store.
     if (args.values.restore === undefined && args.values.file === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : undefined);
