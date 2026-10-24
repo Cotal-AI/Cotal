@@ -4,11 +4,12 @@
  * and for one space, the refusals (a read, set or unset for a space this machine does not know among
  * them), a value left for a removed space, the named environment tiers, the selected space, an invalid
  * file stopping every command but help and completion without being reset, a linked file stopping
- * them the same way, a `COTAL_HOME` that is not a directory stopping them the same way, a folder
- * other accounts can write refusing a write and warning on a read, a stale write refused, a persona
- * the space's catalog does not hold saved with a warning that names the catalog, two concurrent
- * writers both landing, and the consumers outside `spawn`: color, the `personas edit` editor and the
- * detach key.
+ * them the same way, a `COTAL_HOME` that is not a directory stopping them the same way, a config
+ * folder that is a file stopping every command but help, version, docs and completion, a folder other
+ * accounts can write refusing a write and warning on a read, a stale write refused, a persona the
+ * space's catalog does not hold saved with a warning that names the catalog, two concurrent writers
+ * both landing, and the consumers outside `spawn`: color, the `personas edit` editor and the detach
+ * key.
  * The launch consumers (harness, persona) are proved through real spawns in `smoke:persona-agent`.
  * Broker-free and offline.
  *
@@ -504,6 +505,39 @@ if (process.platform !== "win32") {
   const help = run(["help"], { COTAL_HOME: notHome });
   check("help still works", help.status === 0 && help.stdout !== "", shown(help));
   check("and the file is left as it was", readFileSync(notHome, "utf8") === "a file\n");
+}
+
+// ── a config folder that is a file stops every command but help, version, docs and completion ────
+{
+  const fileXdg = join(home, "xdg-file");
+  const folder = join(fileXdg, "cotal");
+  mkdirSync(fileXdg);
+  writeFileSync(folder, "a file\n");
+  const env = { XDG_CONFIG_HOME: fileXdg };
+  for (const args of [["config", "--json"], ["status", "--json"], ["ext", "list", "--json"], ["config", "set", "harness", "claude", "--json"]]) {
+    const r = run(args, env);
+    check(`\`${args.join(" ")}\` is refused with SCHEMA_INVALID naming the folder that is a file, with moving it as Next`,
+      r.status === 1 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "SCHEMA_INVALID" &&
+        r.envelope.error.message.startsWith(`the Cotal config folder ${folder} is a file, not a folder;`) &&
+        r.envelope.error.remedy?.startsWith(`move ${folder} aside, for example \`mv ${folder} ${folder}.old\``) === true, shown(r));
+  }
+  const status = run(["status"], env);
+  check("the text refusal names the folder, not a corrupt extensions manifest or ENOTDIR",
+    status.status === 1 && status.stderr.includes(`the Cotal config folder ${folder} is a file`) && !/ENOTDIR|corrupt extensions manifest/.test(status.stdout + status.stderr), shown(status));
+  const seed = run(["ext", "seed"], env);
+  check("`ext seed` is refused the same way before it reads the seed state",
+    seed.status === 1 && seed.stderr.includes(`the Cotal config folder ${folder} is a file`) && !/ENOTDIR/.test(seed.stderr), shown(seed));
+  for (const args of [["help"], [], ["config", "--help"], ["version"], ["docs"]]) {
+    const r = run(args, env);
+    check(`\`cotal ${args.join(" ")}\` still runs`, r.status === 0 && r.stdout !== "" && !/ENOTDIR|corrupt extensions manifest/.test(r.stderr), shown(r));
+  }
+  const version = run(["version", "--json"], env);
+  check("`version --json` is complete with no installed extensions, since that folder can hold none",
+    version.status === 0 && version.envelope?.outcome === "ok" && version.envelope.completeness === "complete" && JSON.stringify(version.envelope.result?.extensions) === "[]", shown(version));
+  check("and the file is left as it was", readFileSync(folder, "utf8") === "a file\n");
+  const r = run(["config", "--json"], { XDG_CONFIG_HOME: folder });
+  check("a config home that is itself a file names that file",
+    r.status === 1 && r.envelope?.error?.code === "SCHEMA_INVALID" && r.envelope.error.message.startsWith(`the Cotal config folder ${join(folder, "cotal")} cannot be made: ${folder} is a file, not a folder;`), shown(r));
 }
 
 finish();

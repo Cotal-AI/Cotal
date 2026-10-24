@@ -455,7 +455,9 @@ that home prepared a space at the same root. `up`, `down` and `space create` for
 ### Configuration files
 
 Distinct from `~/.cotal`. Location: `$XDG_CONFIG_HOME/cotal`, else `~/.config/cotal` on POSIX, or
-`%APPDATA%\Cotal` on Windows.
+`%APPDATA%\Cotal` on Windows. A file at that path, or at a folder above it, stops every command except
+help, version, docs and shell completion with `SCHEMA_INVALID`, naming the file: move it aside, and
+Cotal makes the folder when it next saves there.
 
 | Path | What it is |
 |---|---|
