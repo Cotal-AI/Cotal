@@ -2378,7 +2378,9 @@ the space instead, run `cotal down --yes` in its root, then `space forget`. On a
 project folder. It changes only the selection:
 it starts nothing and does not check the broker, so a stopped or prepared space can be selected and
 the command that targets it reports that. Selecting the selected space again is a `no-op`. A name that is not
-registered is refused with `TARGET_NOT_FOUND`, exit 2, and the selection stays. Bare `use` reports
+registered or prepared is refused with `TARGET_NOT_FOUND`, exit 2, naming the known spaces, and the
+selection stays. That refusal has no `Mesh:` heading, and its remedy names `cotal use --clear` only
+while a space is selected. Bare `use` reports
 the selection. Inside a project whose root has one registered or prepared space other than the
 selection, `use` also says that commands in the folder target that space, and `--json` gives it as
 `folder`. A selection that names a space no longer registered is reported with a
