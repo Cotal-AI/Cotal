@@ -104,8 +104,8 @@
     {
       "name": "the failed read is not reported at all",
       "file": "implementations/runtime/src/workflow-views.ts",
-      "find": "    warnings: unread.map((row) => ({ code: \"REVOCATION_NOT_CHECKED\"",
-      "replace": "    warnings: ([] as typeof unread).map((row) => ({ code: \"REVOCATION_NOT_CHECKED\"",
+      "find": "    warnings: [...unread.map((row) => ({ code: \"REVOCATION_NOT_CHECKED\"",
+      "replace": "    warnings: [...([] as typeof unread).map((row) => ({ code: \"REVOCATION_NOT_CHECKED\"",
       "cell": "...warns on stderr, and the JSON names that run, the failed read and the record's own state",
       "expectRed": "...warns on stderr, and the JSON names that run, the failed read and the record's own state",
       "note": "A bare `unchecked` with no reason sends the operator elsewhere to learn whether the store is down or the marker is newer than this build."

@@ -96,8 +96,8 @@
       "afterRestore": "pnpm --filter cotal-ai... build",
       "name": "install writes the stub before it checks the rc's directory",
       "file": "implementations/cli/src/lib/completion-install.ts",
-      "find": "    try { lstatSync(dirname(paths.rc)); }\n    catch { throw new CommandFailure(\"refused\", \"TARGET_NOT_FOUND\"",
-      "replace": "    try { lstatSync(dirname(paths.rc)); }\n    catch { if (false) throw new CommandFailure(\"refused\", \"TARGET_NOT_FOUND\"",
+      "find": "      throw new CommandFailure(\"refused\", \"TARGET_NOT_FOUND\", `the shell startup folder ${dir}",
+      "replace": "      if (false) throw new CommandFailure(\"refused\", \"TARGET_NOT_FOUND\", `the shell startup folder ${dir}",
       "expectRed": "install refuses a ZDOTDIR that does not exist, exit 2, with nothing written",
       "cell": "install refuses a ZDOTDIR that does not exist, exit 2, with nothing written"
     },

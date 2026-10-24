@@ -210,8 +210,8 @@
     {
       "name": "the hosted run command mints an operator instrument inside a managed seat",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "  const t = await resolveRunControlTarget(values);",
-      "replace": "  const t = await resolveControlTarget(values, \"control-caller-privileged\");",
+      "find": "  const { target: t, seat } = await resolveRunControlTarget(values);",
+      "replace": "  const { target: t, seat } = { target: await resolveControlTarget(values, \"control-caller-privileged\"), seat: false };",
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "the addressed baseline seat's rendered command with --json is accepted through the shipped CLI path as asked",
       "cell": "the addressed baseline seat's rendered command with --json is accepted through the shipped CLI path as asked"

@@ -18,8 +18,8 @@
     {
       "name": "infrastructure endpoints are listed by default",
       "file": "implementations/cli/src/commands/who.ts",
-      "find": "const listed = roster.filter((p) => v.all || p.card.kind !== \"endpoint\");",
-      "replace": "const listed = roster.filter((p) => true || p.card.kind !== \"endpoint\");",
+      "find": "const listed = roster.filter((p) => v.all || p.card.kind !== \"endpoint\" || isChatSession(p));",
+      "replace": "const listed = roster.filter((p) => true || p.card.kind !== \"endpoint\" || isChatSession(p));",
       "expectRed": "every agent is listed and the infrastructure endpoint is not",
       "cell": "every agent is listed and the infrastructure endpoint is not",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
@@ -108,8 +108,8 @@
     {
       "name": "a signer's identity is reported as an open mesh",
       "file": "implementations/cli/src/commands/whoami.ts",
-      "find": "? { ...base, identity: { kind: \"space-signer\", ...none },",
-      "replace": "? { ...base, identity: { kind: \"open\", ...none },",
+      "find": "t.auth\n      ? { ...base, identity: { kind: \"space-signer\", ...none },",
+      "replace": "t.auth\n      ? { ...base, identity: { kind: \"open\", ...none },",
       "expectRed": "whoami on a signer's mesh is one complete envelope naming the signer",
       "cell": "whoami on a signer's mesh is one complete envelope naming the signer",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
@@ -135,8 +135,8 @@
     {
       "name": "an unsigned user identity is called a cached login",
       "file": "implementations/cli/src/commands/whoami.ts",
-      "find": "    [\"identity\", id.kind === \"user\" && !id.subject ? \"not signed in\" : KIND_TEXT[id.kind]],",
-      "replace": "    [\"identity\", KIND_TEXT[id.kind]],",
+      "find": "[\"identity\", id.kind === \"user\" && !id.subject ? \"not signed in\" : ",
+      "replace": "[\"identity\", ",
       "expectRed": "a remote registration without a cached login says not signed in",
       "cell": "a remote registration without a cached login says not signed in",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"

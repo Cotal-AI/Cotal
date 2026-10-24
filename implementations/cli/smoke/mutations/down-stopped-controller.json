@@ -15,7 +15,7 @@
     {
       "name": "a stack its own down stopped takes the full stop again",
       "file": "implementations/cli/src/commands/stack-down.ts",
-      "find": "  if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents);\n",
+      "find": "  if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && !journal0.operation.withAgents, [...abandonWarnings, ...await readinessAddressSurvivors(journal0.space)]);\n",
       "replace": "",
       "expectRed": "a second bare down without --yes says the stack is not running, names cotal up, and exits 0",
       "cell": "a second bare down without --yes says the stack is not running, names cotal up, and exits 0",
@@ -24,8 +24,8 @@
     {
       "name": "the missing --yes refusal prints the command help again",
       "file": "implementations/cli/src/command.ts",
-      "find": "if (!(failure instanceof ConfirmationRequired)) printCommandHelp(",
-      "replace": "if (failure) printCommandHelp(",
+      "find": "    usageRefusal(failure, plain, failure.selfContained ? undefined : cmd);",
+      "replace": "    usageRefusal(failure, plain, cmd);",
       "expectRed": "a bare down of the running stack outside a terminal refuses for --yes, with its remedy and without the command help",
       "cell": "a bare down of the running stack outside a terminal refuses for --yes, with its remedy and without the command help",
       "afterRestore": "pnpm --filter cotal-ai... build"

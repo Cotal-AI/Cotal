@@ -16,7 +16,7 @@
     {
       "name": "a stopped legacy root is refused instead of answered",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": "    if (stopped) return nothingRunning(presentationOf(args.values), stopped, values[\"with-agents\"] === true && values[\"dry-run\"] !== true);\n",
+      "find": "      return nothingRunning(presentationOf(args.values), target, values[\"with-agents\"] === true && values[\"dry-run\"] !== true && started);\n",
       "replace": "",
       "expectRed": "a second bare down of a stopped legacy root says its stack is not running, names cotal up, and exits 0",
       "cell": "a second bare down of a stopped legacy root says its stack is not running, names cotal up, and exits 0",
@@ -43,7 +43,7 @@
     {
       "name": "a folder with no rendered broker configuration counts as stopped",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": "  if (!prepared && !existsSync(join(root, \".cotal\", \"server-open.conf\")) && !existsSync(join(authDir(root), \"server.conf\"))) return undefined;\n",
+      "find": "  if (!prepared && !started) return undefined;\n",
       "replace": "",
       "expectRed": "a folder that never had a stack refuses TARGET_NOT_FOUND and names where to run down",
       "cell": "a folder that never had a stack refuses TARGET_NOT_FOUND and names where to run down",
