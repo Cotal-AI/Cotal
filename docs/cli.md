@@ -550,8 +550,8 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--restore-only registry` | artifact selection | Restore only the registry component |
 | `--accept-missing-source` | off | Explicit disaster consent when the inode-bound preserved source is absent |
 | `--accept-stale-checkpoint` | off | Explicit consent to resume a seat whose checkpoint was captured outside its recorded recency horizon |
-| `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs |
-| `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger |
+| `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs. A root whose first `up` recorded another mode refuses it |
+| `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger. A root whose first `up` recorded another mode refuses it |
 | `--idp <url>` | none | With `--user-auth`: the IdP auth base URL to pin on first enable. A later run may omit it or pass any spelling that normalizes to the pinned URL, such as one with a trailing slash; a different IdP is refused. With `-f`, overrides the manifest's `broker.idp` under the same rules: https (or http on a loopback IP literal), with no credentials, query or fragment |
 | `--exchange-public-port <n>` | none | With `--user-auth`: add the public exchange face on this loopback port, for an HTTPS reverse proxy to forward to |
 | `--exchange-public-url <https://…>` | none | With `--exchange-public-port`: advertise the reverse proxy's HTTPS URL in discovery |
@@ -680,7 +680,9 @@ keeps its mode. A `.cotal`, or a root without one, that this account cannot writ
 broker store this account cannot write refuses the same way, naming the store's `jetstream` folder,
 or the store itself before a broker has made one, and `chmod -R u+w`. Without that check the broker
 exited and named the cause only in its log. `status` names the same step for a stopped space whose
-store `up` would refuse. The broker log `.cotal/nats.log` and the auth service,
+store `up` would refuse. A service record folder of the space, under `services/` in the Cotal home,
+that this account cannot write refuses `up` the same way, naming the folder and `chmod u+w`, before
+any member starts. The broker log `.cotal/nats.log` and the auth service,
 delivery and manager logs are created owner-private as well, and the process records `up` writes, such as
 `.cotal/nats.pid` and its identity pin, are created `0600` under a fresh name that is never opened
 through a symlink, then renamed into place. The pid record and identity pin of a native service
@@ -721,7 +723,12 @@ whole-stack failure shows that sentence as its native detail.
 
 A fresh prepared static-auth, open or plain-loopback user-auth root starts through the service
 controller. It records its mode, definitions and full instance IDs in the private
-`.cotal/stack-controller.json` journal. Static-auth startup prepares trust and configuration, starts
+`.cotal/stack-controller.json` journal. The root keeps the mode its first `up` recorded: a later `--open` or
+`--user-auth` that names another mode refuses `CONFLICT`, exit 2, whether the stack runs or not.
+`reset store`, `reset space`, `clean all` and `space forget` all keep the journal, so none of them
+changes the mode. To run another mode, run `cotal space create <space>` in another folder, then
+`cotal up --open` or `cotal up --user-auth` there.
+Static-auth startup prepares trust and configuration, starts
 the broker, initializes native streams, then starts delivery and the optional manager. Open startup
 prepares an unauthenticated broker and streams, then the optional manager; it creates no delivery
 service or credential. Each member reports its own readiness; the result does not prove agent or
@@ -1192,8 +1199,10 @@ preservation and manifest flags rather than switching to the legacy launcher. Ou
 a bare `down` that would stop a running member refuses without `--yes`, exit 1, and prints that
 line and its remedy without the command help. A stop records each step in the stack journal in the root's
 `.cotal`. When this account cannot write that folder, `down` refuses `PERMISSION_DENIED`, exit 2,
-before the plan, names the folder and the `chmod u+w` that fixes it, and stops nothing. A dry run
-names it as a refusal the real stop would hit.
+before the plan, names the folder and the `chmod u+w` that fixes it, and stops nothing. Each
+member's stop is also recorded in the space's service instance records, under `services/` in the
+Cotal home, and a folder there this account cannot write refuses the same way. A dry run names
+either as a refusal the real stop would hit.
 
 A controller stack's members are stopped through the registration `cotal up` wrote for it. When an
 older `meshes rm --force` dropped it, or an older `meshes add --force` replaced it with one added by
@@ -1627,7 +1636,8 @@ cotal reset space <space> [--dry-run] [-y|--yes] [--json|--plain]
 Both routes select a space this machine started. A space with a locally started registration is
 selected by it. A controller stack that a completed `down` stopped has no registration; its
 prepared record and stack journal at the same root name its broker address, store and mode, and a
-reset keeps both, so a later `up` starts it again. After `reset space` of a user-auth space, that
+reset keeps both, so a later `up` starts it again in the same mode. No reset changes a stack's mode;
+[up](#up) names the way to run another one. After `reset space` of a user-auth space, that
 `up` needs `--user-auth --idp <auth base URL>`, as described below. A stack none of whose members ever started has
 no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. A stack whose last
 operation is not a completed `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each
@@ -2523,6 +2533,8 @@ there. Prepare the intended folder first with
 `space create <space> --root .`; `up --root .` then names it.
 
 Owned services use the saved controller definitions and instance records for the selected space.
+Instances are listed by definition name, then instance ID, in the text and in
+`result.services.instances`, so their order holds from one start to the next.
 Full instance IDs and execution hosts stay visible. Process observations and historical readiness
 are separate columns; neither a saved serving state nor a supervisor receipt becomes a fresh
 endpoint response or OS unit-state check. Legacy PID-file rows are labeled separately. On a root

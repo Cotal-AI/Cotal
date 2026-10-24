@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { accessSync, constants, existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { hostname } from "node:os";
-import { assertRecordIdentity, CommandFailure, homeCotalDir, identityRecord, localRecordAccess, oneLine, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { assertRecordIdentity, CommandFailure, homeCotalDir, identityRecord, localRecordAccess, oneLine, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord, spaceKey } from "@cotal-ai/workspace";
 import { serviceSupervisorProjection } from "./service-supervision.js";
 import type { ServiceAdapterPin } from "./service-adapters.js";
 import { localRecordObject, localRecordText, ProtectedRecordStore, type LocalRecordSnapshot } from "./protected-records.js";
@@ -136,6 +136,23 @@ function validateInstance(input: unknown, space: string): ServiceInstance {
 }
 
 export const serviceInstanceStore = (space: string) => new ProtectedRecordStore("services", space, (value) => validateInstance(value, space), "instances");
+
+/** The first of `space`'s service record folders in `families` that this account cannot write, or,
+ *  for one still to be made, the nearest existing folder above it; undefined when it can write them
+ *  all. A stack records each member's start and stop there, so `up` and `down` check before any effect
+ *  instead of failing at the first record with no cause named. */
+export function serviceRecordsWriteProblem(space: string, families: readonly ("definitions" | "instances")[]): string | undefined {
+  for (const family of families) {
+    let dir = join(homeCotalDir(), "services", spaceKey(space), family);
+    while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
+    try { accessSync(dir, constants.W_OK | constants.X_OK); }
+    catch (error) {
+      if (!["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      return dir;
+    }
+  }
+  return undefined;
+}
 
 export function serviceInstances(space: string, definition?: string): ServiceInstanceSnapshot[] {
   const rows = serviceInstanceStore(space).list();
