@@ -31,10 +31,16 @@ export function brokerUrlHasUserinfo(servers: string): boolean {
   return servers.split(",").some((entry) => /^[^:/?#]+:\/\/[^/?#]*@/.test(entry.includes("://") ? entry.trim() : `nats://${entry.trim()}`));
 }
 
-/** The refusal of a broker URL with a user name or password in it, before the command runs. The NATS
- *  client keeps only a broker URL's host and port, so those credentials would be dropped in silence.
- *  `what` names where the URL came from, such as `--server` or `COTAL_SERVER`; the value is never
- *  repeated. */
+/** Why a broker URL with a user name or password in it is refused, and the step that replaces it. The
+ *  NATS client keeps only a broker URL's host and port, so those credentials would be dropped in
+ *  silence. `what` names where the URL came from, such as `--server`, `COTAL_SERVER` or a bundle's
+ *  server; the value is never repeated. Every such refusal takes its words from here. */
+export function brokerUrlCredentialProblem(what: string): { message: string; remedy: string } {
+  return { message: `${what} must not embed credentials`, remedy: "name the broker URL without user:password@, and pass the credential with --creds, a login or the space's own trust" };
+}
+
+/** {@link brokerUrlCredentialProblem} as the refusal of a command before it runs. */
 export function brokerUrlCredentialRefusal(what: string): CommandFailure {
-  return new CommandFailure("refused", "USAGE_INVALID", `${what} must not embed credentials; the command did not run`, { remedy: "name the broker URL without user:password@, and pass the credential with --creds, a login or the space's own trust", selfContained: true });
+  const { message, remedy } = brokerUrlCredentialProblem(what);
+  return new CommandFailure("refused", "USAGE_INVALID", `${message}; the command did not run`, { remedy, selfContained: true });
 }

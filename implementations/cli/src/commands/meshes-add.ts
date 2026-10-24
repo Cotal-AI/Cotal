@@ -5,6 +5,8 @@ import { mkSecretDir, probeConnect, writeSecretFileAtomic, type SpaceAuth } from
 import {
   assertPinnedFetchUrl,
   authDir,
+  brokerUrlCredentialProblem,
+  brokerUrlHasUserinfo,
   canonicalRoot,
   checkUserBundle,
   classifyJoinTarget,
@@ -92,13 +94,19 @@ export function checkSpaceName(space: string): Check<string> {
  *
  * Credentials embedded in the URL are refused for the same reason a manifest refuses them
  * (`validateBroker`): this record is written to disk and echoed back by `add` and `meshes`, so an
- * inline password would be copied into the registry and onto the operator's screen. No message
- * here repeats the input — the commonest malformed broker URL is a half-typed credential one.
+ * inline password would be copied into the registry and onto the operator's screen. They are
+ * checked first, in the words every broker-URL credential refusal uses, so a value that does not
+ * parse as a broker URL is not echoed in part either. No message here repeats the input — the
+ * commonest malformed broker URL is a half-typed credential one.
  *
  * `what` names where the URL came from (`--server`, or the document that carried it), because a
  * refusal that blames a flag the operator never typed sends them looking in the wrong place.
  */
 export function checkServer(raw: string, what: string): Check<string> {
+  if (brokerUrlHasUserinfo(raw)) {
+    const { message, remedy } = brokerUrlCredentialProblem(what);
+    return { ok: false, message: `✗ ${message}`, code: "USAGE_INVALID", remedy };
+  }
   let u: URL;
   try {
     u = new URL(raw);
@@ -107,8 +115,6 @@ export function checkServer(raw: string, what: string): Check<string> {
   }
   if (!["nats:", "tls:", "ws:", "wss:"].includes(u.protocol))
     return bad(`✗ ${what} scheme "${u.protocol.replace(":", "")}" is not a broker scheme - use nats://, tls://, ws:// or wss://`, "USAGE_INVALID");
-  if (u.username || u.password)
-    return bad(`✗ ${what} must not embed credentials - the registry records this URL and prints it back; pass trust material under --root instead`, "USAGE_INVALID");
   if (u.search || u.hash)
     return bad(`✗ ${what} must be a bare broker URL - drop its ${u.search ? "query string" : "fragment"}`, "USAGE_INVALID");
   // A path is refused on nats:// and tls:// because the NATS wire protocol has no notion of one,
