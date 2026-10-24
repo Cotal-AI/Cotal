@@ -15,7 +15,7 @@
  * official extension adds, run or asked for help before that extension is added, names the package
  * to add. FORCE_COLOR with NO_COLOR prints no Node warning about the pair. A failing command prints
  * its stack under COTAL_DEBUG, and an empty value, `0`, `false` or `off`, in any case, leaves it off.
- * A folder given to `topology view -f` or `up -f` is refused by its path as a directory.
+ * A folder given to `topology view -f`, `up -f` or `down -f` is refused by its path as a directory.
  *
  * The aliases and short flags come from the registry the binary composes (the same imports as
  * `bin/run.ts`), and help must list each alias, so a new alias is covered without editing this file.
@@ -752,7 +752,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
 {
   const dir = mkdtempSync(join(tmpdir(), "cotal-entry-manifest-dir-"));
   cleanup.push(dir);
-  for (const [what, args] of [["topology view -f", ["topology", "view", "-f", dir]], ["up -f --dry-run", ["up", "-f", dir, "--dry-run"]]] as const) {
+  for (const [what, args] of [["topology view -f", ["topology", "view", "-f", dir]], ["up -f --dry-run", ["up", "-f", dir, "--dry-run"]], ["down -f --yes", ["down", "-f", dir, "--yes"]]] as const) {
     const r = cotal([...args], undefined, { ...noSeed, LC_ALL: "C.UTF-8" });
     check(`${what} of a folder is refused with exit 1, naming the path and that it is a directory`,
       r.status === 1 && r.stdout === "" && r.stderr.includes(`✗ the manifest file ${JSON.stringify(dir)} is a directory; a manifest is one file`)

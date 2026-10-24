@@ -19,18 +19,23 @@ export { prepareAgent } from "./prepare.js";
 export { renderTopology, renderWarnings, renderInherited } from "./render.js";
 export { ManifestError, formatIssue, type ManifestIssue } from "./errors.js";
 
-/** Read + fully resolve a manifest file (absolute path recommended). Throws {@link ManifestError}
- *  with located problems, an {@link UnusableFile} for a directory, or a filesystem error if the
- *  manifest itself cannot be read. */
-export function loadManifest(path: string): PreparedManifest {
-  const abs = resolve(path);
-  let src: string;
-  try { src = readFileSync(abs, "utf8"); }
+/** The text of the manifest file at `abs`. A directory is refused as an {@link UnusableFile} naming
+ *  it; any other read error is thrown as it is. */
+export function readManifestSource(abs: string): string {
+  try { return readFileSync(abs, "utf8"); }
   catch (e) {
     if ((e as NodeJS.ErrnoException).code === "EISDIR")
       throw new UnusableFile(`the manifest file ${JSON.stringify(abs)} is a directory; a manifest is one file`, { file: abs }, "name the manifest file in it, such as its cotal.yaml");
     throw e;
   }
+}
+
+/** Read + fully resolve a manifest file (absolute path recommended). Throws {@link ManifestError}
+ *  with located problems, an {@link UnusableFile} for a directory, or a filesystem error if the
+ *  manifest itself cannot be read. */
+export function loadManifest(path: string): PreparedManifest {
+  const abs = resolve(path);
+  const src = readManifestSource(abs);
   try { return preparePersonas(resolveManifest(src, abs)); }
   catch (e) {
     if (e instanceof ManifestError) throw new ManifestError(e.file, withMissingPersonas(e.issues, src, abs));
