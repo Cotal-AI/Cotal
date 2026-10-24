@@ -50,7 +50,7 @@ import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries 
 import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { preservedSourceState, restoreNextStep, maintenanceNextStep } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
-import { readStackJournal, stackOperationBlock, STACK_DEFINITION, type StackJournal, type StackOperationBlock } from "../lib/stack-journal.js";
+import { journalRecordedElsewhere, readStackJournal, stackOperationBlock, STACK_DEFINITION, type StackJournal, type StackOperationBlock } from "../lib/stack-journal.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
@@ -684,7 +684,11 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   // why and the way out their refusal names. A refusal of another kind is left to them.
   let stackBlock: StackOperationBlock | null = null;
   if (journal && controllerStack) try { stackBlock = stackOperationBlock(journal) ?? null; } catch { stackBlock = null; }
-  const storedState = !controllerStack && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
+  // A copy or a moved folder keeps the stack journal another folder recorded, and its store is that
+  // stack's. Clean store refuses there with the step the journal's refusal names.
+  let copiedStack = false;
+  if (!controllerStack) try { copiedStack = journalRecordedElsewhere(root)?.journal.space === space; } catch { copiedStack = false; }
+  const storedState = !controllerStack && !copiedStack && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
   // While a maintenance journal holds the store, clean store refuses, so it is not offered.
   let maintained = false;
   try { maintained = readMaintenanceJournal(root) !== undefined; } catch { maintained = true; }

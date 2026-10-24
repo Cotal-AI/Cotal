@@ -26,6 +26,7 @@
  *     its store relative to the root, so it does not create the old path again; `send` and `up` from
  *     the renamed folder name the move and the way back, and after the move back `down` stops it.
  *     Stopped and moved again, `up`, `send`, `history` and `status` there all name moving it back.
+ *     Status there, and in a copy, does not offer `clean store`, which refuses in both.
  *     With its journal removed after `down`, as the way out of a damaged one says, `up` starts at the
  *     address its saved broker definition names and warns; with no definition either, it refuses and
  *     asks for `--server`.
@@ -403,8 +404,18 @@ try {
     const routes = [cli(moved, "up", "--json"), cli(moved, "send", "--space", space, "-c", "general", "after the stop", "--json"), cli(moved, "history", "general", "--space", space, "--json")];
     const status = cli(moved, "status", "--space", space, "--json");
     renameSync(moved, root);
+    // A copy keeps the journal too. Clean store refuses in both, so status does not offer it there.
+    const copy = `${root}-copy`;
+    spawnSync("cp", ["-a", root, copy]);
+    const copyStatus = cli(copy, "status", "--space", space, "--json");
+    rmSync(copy, { recursive: true, force: true });
     check("stopped and moved, up, send and history there all name moving the folder back", routes.every((r) => r.status === 2 && r.env?.error?.remedy === way), routes.map(shown));
     check("status --space there names the same step", String((status.env?.result?.selected as { message?: string } | undefined)?.message ?? "").endsWith(way), shown(status));
+    const offersNoReset = (r: Run) => {
+      const result = r.env?.result as { folder?: { storedState?: boolean }; hints?: string[] } | undefined;
+      return result?.folder?.storedState === false && Array.isArray(result.hints) && !result.hints.some((hint) => hint.includes("clean store"));
+    };
+    check("status in the moved folder and in a copy offers no clean store for the stack's store", offersNoReset(status) && offersNoReset(copyStatus), { moved: shown(status), copy: shown(copyStatus) });
   }
 
   // 3b. A first up refused at a port another program holds pins nothing.
