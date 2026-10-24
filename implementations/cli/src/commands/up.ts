@@ -273,7 +273,7 @@ import {
 } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
-import { brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
+import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
 
 const pendingRestores = new Map<string, PreparedRestore>();
 
@@ -3858,9 +3858,10 @@ async function assertBrokerAddressFree(server: string, command: string): Promise
   const bindError = await listenerBindError(server);
   if (bindError === undefined || bindError === "timeout" || bindError.code !== "EADDRINUSE") return;
   const { host, port } = brokerListenAddress(server), address = new URL(server);
-  throw new CommandFailure("refused", "CONFLICT", `another process holds the broker address ${host}:${port} (bind failed: address already in use); no broker was launched`, {
+  const { says, frees } = addressHolder("the broker address", host, port);
+  throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
     target: { root: cotalRoot(), server, bindError: bindError.code },
-    remedy: `start it at another address with ${command} --server ${address.protocol}//${address.hostname}:<port>, or stop the process listening on ${host}:${port} and run ${command} again`,
+    remedy: `start it at another address with ${command} --server ${address.protocol}//${address.hostname}:<port>, or ${frees} and run ${command} again`,
   });
 }
 
