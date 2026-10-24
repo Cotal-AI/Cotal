@@ -7,7 +7,8 @@
  * The same holds where `up` would otherwise start something it cannot stand behind. A prepared root
  * given an option the controller stack has no route for refuses UNSUPPORTED instead of starting the
  * legacy launcher. A broker address another program holds refuses CONFLICT instead of launching a
- * broker that exits on its bind.
+ * broker that exits on its bind. `up -f` on a root that holds a controller stack refuses CONFLICT
+ * instead of starting a manifest stack beside it.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, from empty
  * folders outside them. Nothing is started; each refusal comes from validation. A `--server` that no
@@ -21,8 +22,9 @@
  * Run: pnpm smoke:up-usage-refusal
  */
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createServer, type AddressInfo } from "node:net";
-import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -34,12 +36,14 @@ if (!existsSync(BIN)) {
 }
 
 interface Envelope { outcome?: string; error?: { code?: string; message?: string; remedy?: string } }
+const { writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-up-usage-home-"));
 const folder = mkdtempSync(join(tmpdir(), "cotal-up-usage-cwd-"));
-const unprepared = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-unprepared-")));
-process.on("exit", () => { for (const dir of [home, folder, unprepared]) rmSync(dir, { recursive: true, force: true }); });
+const roots = ["unprepared", "journal"].map((name) => realpathSync(mkdtempSync(join(tmpdir(), `cotal-up-usage-${name}-`))));
+const [unprepared, journalRoot] = roots as [string, string];
+process.on("exit", () => { for (const dir of [home, folder, ...roots]) rmSync(dir, { recursive: true, force: true }); });
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
@@ -115,6 +119,21 @@ try {
   const bind = run(["up", "--server", `nats://127.0.0.1:${held}`], unprepared);
   check("the legacy route refuses a held address CONFLICT, exit 2, naming the address, and launches nothing",
     bind.status === 2 && /CONFLICT/.test(bind.stderr) && new RegExp(`another process holds the broker address 127\\.0\\.0\\.1:${held}`).test(bind.stderr) && !started(unprepared), shown(bind));
+
+  const now = new Date().toISOString();
+  mkdirSync(join(journalRoot, ".cotal"), { mode: 0o700 });
+  writeStackJournal(journalRoot, undefined, {
+    schemaVersion: 1, kind: "cotal-stack-controller", root: journalRoot, space: "upusagejournal", server: `nats://127.0.0.1:${held}`, mode: "auth",
+    members: (["broker", "auth", "delivery", "manager"] as const).map((role) => role === "auth" ? { role, definition: `stack-${role}`, instanceId: null, state: "not-attempted" as const } : { role, definition: `stack-${role}`, instanceId: randomUUID(), state: "stopped" as const }),
+    operation: { id: randomUUID(), kind: "down", phase: "completed", recordedAt: now, withAgents: false }, updatedAt: now,
+  });
+  writeFileSync(join(journalRoot, "cotal.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: upusagejournal\nbroker:\n  servers: nats://127.0.0.1:${held}\nchannels:\n  general:\n    subscribe: []\n`);
+  for (const args of [["up", "-f", "cotal.yaml"], ["up", "-f", "cotal.yaml", "--dry-run"]]) {
+    const beside = run(args, journalRoot);
+    check(`${args.join(" ")} on a root that holds a controller stack refuses CONFLICT, exit 2, naming team deploy and team boot`,
+      beside.status === 2 && /CONFLICT/.test(beside.stderr) && /holds the controller stack of space upusagejournal/.test(beside.stderr)
+        && /cotal team deploy cotal\.yaml/.test(beside.stderr) && /cotal team boot cotal\.yaml/.test(beside.stderr) && !started(journalRoot), shown(beside));
+  }
 } finally {
   holder.close();
 }

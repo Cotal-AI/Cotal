@@ -1176,6 +1176,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // CLI flags override the manifest (flag > manifest > default) so the same file runs at a different
   // port / runtime / auth without editing it. Its space is its target: `--space` may only repeat it.
   if (values.file) {
+    // A manifest start takes the legacy launcher, which never runs beside a controller stack, running
+    // or stopped, so a dry run refuses as the start would.
+    const controller = freshTeamBoot ? undefined : readStackJournal(meshRoot);
+    if (controller) throw new CommandFailure("refused", "CONFLICT", `this root holds the controller stack of space ${controller.journal.space}, and up -f does not start a manifest beside it; nothing was started`, {
+      target: { root: meshRoot, space: controller.journal.space },
+      remedy: `add the manifest's channels and agents to the running stack with cotal team deploy ${values.file}, or stop it with cotal down --yes and start the manifest through the controller with cotal team boot ${values.file}`,
+    });
     if (values["dry-run"]) {
       await upManifest(values.file, {
         transport,
