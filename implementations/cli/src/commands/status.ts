@@ -1042,6 +1042,14 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       hints.push(e.message);
       return { resolved: false, code: "registry-unreadable", message: e.message };
     }
+    // `up` and `down` refuse a root whose `.cotal` is a link, so the step that would start it there is
+    // the one their refusal names.
+    const unstarted = e instanceof UnregisteredRoot ? e.root : isWorkspaceTargetError(e) && e.code === "not-started" ? e.details.root : undefined;
+    const link = unstarted === undefined ? undefined : cotalDirLink(unstarted);
+    if (unstarted !== undefined && link !== undefined) {
+      hints.push(linkedCotalRemedy(unstarted, link));
+      return { resolved: false, code: e instanceof UnregisteredRoot ? "unregistered-root" : "not-started", message: `${join(unstarted, ".cotal")} is a link to ${link}, and a stack runs only from a folder whose .cotal is its own directory, so \`${cmd} up\` and \`${cmd} down\` refuse it there` };
+    }
     if (e instanceof UnregisteredRoot) {
       const message = `no space is registered or prepared here for ${e.root}`;
       // A bare `up` in a folder whose records name no space starts the default space there, which
