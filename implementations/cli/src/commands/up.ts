@@ -225,7 +225,7 @@ import { serviceSupervisorStore } from "../lib/service-supervision.js";
 import { serviceInstallIntents } from "../lib/service-install-intent.js";
 import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionStore } from "../lib/service-unit-action.js";
-import { assertStoreDirArgument, lastServedStore, warnForeignStoreEntries, configuredStoreDir } from "../lib/store-dir.js";
+import { assertStoreDirArgument, configuredStoreDir, lastServedStore, storeWriteProblem, warnForeignStoreEntries } from "../lib/store-dir.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { metadataPositionals } from "../lib/command-path.js";
@@ -428,6 +428,8 @@ export function validateUpArguments(args: ParsedArgs): void {
     const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
     if (pathProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${pathProblem}; nothing was started or written`, { target: { root }, remedy: "rename the folder without those characters, then run cotal up there" });
     assertUpRootWritable(root);
+    // A restore and a manifest name their own store.
+    if (args.values.restore === undefined && args.values.file === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : undefined);
   }
 }
 
@@ -443,6 +445,16 @@ function assertUpRootWritable(root: string): void {
     if (code !== "EACCES" && code !== "EPERM" && code !== "EROFS") throw error;
     throw new CommandFailure("refused", "PERMISSION_DENIED", `${path} is not writable by this account (${code}); nothing was started or written`, { target: { root, path }, remedy: `make it writable by you, for example with chmod u+w ${shellWord(path)}` });
   }
+}
+
+/** The broker exits when it cannot write its store, naming the cause only in its own log. The store
+ *  a start here opens, as `--store-dir` names it, as the stack journal recorded it, or `.cotal/nats`,
+ *  is refused here, by name, when this account cannot write it. */
+function assertUpStoreWritable(root: string, storeDir: string | undefined): void {
+  let recorded: string | undefined;
+  try { recorded = readStackJournal(root)?.journal.broker?.storeDir; } catch { recorded = undefined; }
+  const problem = storeWriteProblem(storeDir !== undefined ? resolve(storeDir) : recorded ?? join(root, ".cotal", "nats"));
+  if (problem) throw new CommandFailure("refused", "PERMISSION_DENIED", `${problem.message}; nothing was started or written`, { target: { root, path: problem.path }, remedy: problem.remedy });
 }
 
 /** Why `--server` cannot be the address a local broker listens on, or undefined when it can. Both

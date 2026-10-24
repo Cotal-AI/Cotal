@@ -255,7 +255,8 @@ before it does anything, and says to `cd` to an existing folder. It prints that 
 remedy without the command's help, because the command itself was not mistyped. A command whose folder has a
 `.cotal` that is a file rather than a directory, such as a notes file, refuses with `CONFLICT`, exit
 2, before it does anything, names that file and says to rename or move it. `help`, `version` and
-`completion` still work in both.
+`completion` still work in both. `docs` and `telemetry` also work from a folder that no longer
+exists, and there `help` says the folder is gone instead of showing a space.
 
 A long-running command that SIGINT stops ends cleanly first. It stops observing, closes the
 session it holds and writes its last record, then exits 130. SIGTERM ends it the same way and exits
@@ -675,7 +676,11 @@ The generated broker configuration is owner-private (`0600`) in open and authent
 even with a group-writable umask. `up` creates `.cotal`, the broker store and the persona catalog
 `.cotal/agents` owner-private (`0700`) too, as do `space create` and `setup`. An existing directory
 keeps its mode. A `.cotal`, or a root without one, that this account cannot write refuses with
-`PERMISSION_DENIED` (exit 2), naming it and `chmod u+w`, before anything is started or written. The broker log `.cotal/nats.log` and the auth service,
+`PERMISSION_DENIED` (exit 2), naming it and `chmod u+w`, before anything is started or written. A
+broker store this account cannot write refuses the same way, naming the store's `jetstream` folder,
+or the store itself before a broker has made one, and `chmod -R u+w`. Without that check the broker
+exited and named the cause only in its log. `status` names the same step for a stopped space whose
+store `up` would refuse. The broker log `.cotal/nats.log` and the auth service,
 delivery and manager logs are created owner-private as well, and the process records `up` writes, such as
 `.cotal/nats.pid` and its identity pin, are created `0600` under a fresh name that is never opened
 through a symlink, then renamed into place. The pid record and identity pin of a native service
@@ -2226,7 +2231,9 @@ prepared the same way, before it starts anything, and names `cotal space forget`
 `space add` and `meshes add` refuse a longer name with `USAGE_INVALID`, exit 1, and write no
 record, because a space added from elsewhere is carried by the same files.
 It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
-space's root, and the home folder, whose `.cotal` holds this machine's own records. A folder this
+space's root, and the home folder, whose `.cotal` holds this machine's own records. For a folder
+another space uses, the next step names creating it in another folder with `--root <dir>`, and
+starting, selecting or forgetting the space that uses the folder. A folder this
 account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so
 does a Cotal home (`~/.cotal` or `COTAL_HOME`) it cannot write. A `.cotal` that links to a folder that
 does not exist refuses `TARGET_NOT_FOUND`, exit 2, naming the link and its target. A folder whose
@@ -2314,14 +2321,19 @@ files. Open-mode impact and receipt label that any broker client can delete the 
 `space forget` is not a substitute for live deletion.
 
 The receipt's Next names the route back. On a space this machine started, the broker keeps running
-without the streams. Until they are created again, `cotal history` and `cotal send` on a recorded
-auth or user space refuse `TARGET_UNAVAILABLE`, exit 2: the streams are not on the broker, and the
-remedy names `cotal up` in the space's root. On a controller stack, a bare `cotal up` in its root creates them again, empty,
-on that broker, the way a broker start does, and starts the other members. Its receipt says
+without the streams. Until they are created again, `cotal history`, `cotal send` and `cotal run ps`
+refuse `TARGET_UNAVAILABLE`, exit 2, on an auth or user space and on an open space this machine
+started: the streams are not on the broker, and the remedy names `cotal up` in the space's root.
+`cotal status` shows `Space streams: not on the broker` and puts the same step first in its Next.
+On a controller stack whose other members are stopped, a bare `cotal up` in its root creates them
+again, empty, on that broker, the way a broker start does, and starts the other members. Its receipt says
 `Space streams: created again, empty, on the running broker`, and `--json` sets
 `result.streamsRecreated`. It does so only when every one of the space's streams is gone. A broker
 that lost only some of them keeps them as they are, and `up` refuses `TARGET_NOT_FOUND`, exit 2,
-naming `cotal down --yes`, then `cotal up`, whose broker start creates the missing ones. To drop
+naming `cotal down --yes`, then `cotal up`, whose broker start creates the missing ones. While the
+other members run, as when another machine deleted an open space under the stack, a bare `cotal up`
+finds the stack running and changes nothing. The refusals and `status` then say the space was
+deleted under its running stack and name `cotal down --yes`, then `cotal up`. To drop
 the space instead, run `cotal down --yes` in its root, then `space forget`. On a legacy root, run
 `cotal down`, then `cotal up` to start it again with empty streams.
 
@@ -2476,7 +2488,15 @@ saw that process exit, `up` and `down` refuse until that stop is abandoned. `sta
 under the selected space, names the member, and offers `cotal down --abandon-stop <request-id> --yes`
 with the request ID their refusal names, and the member's `service status`, in place of `up --root`.
 `--json` carries the same as `folder.stackBlock`. A manager stop is decided by the manager's own
-receipts, which only `up` and `down` read, so `status` does not name it.
+receipts, which only `up` and `down` read, so `status` does not name it. An `up` or `down` that was
+interrupted before it recorded an outcome, and left some members running and others stopped, is
+named under the selected space as `Half started` or `Half stopped`, with the members on each side.
+Next then offers the command that finishes it first: `cotal up --root <root>` for an `up`, or
+`cotal down --yes` for a `down`, followed by `cotal up --root <root>` to restart instead. `--json`
+carries it as `folder.stackUnfinished`, with `kind`, `id`, `running` and `stopped`. The next bare
+`up` or `down` settles the interrupted operation with an `OPERATION_SETTLED` warning. When the
+stack reached that operation's end anyway, every member running after an `up` or stopped after a
+`down`, the warning says it was interrupted and where the stack stands, without calling it failed.
 A running `stack-manager` gets one
 probe of its manager endpoint, and the selected space's `Manager` row reads `answering`,
 `not answering · stack-manager pid <pid>`, or `endpoint not checked` when the probe could not be
@@ -2669,7 +2689,7 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `extensions` | `root` and `items`, each `{package, label, version}` |
 | `folder` | `root`, `auth` (`state`: `space`, `spaces`, `none` or `unreadable`), `personas` (`root`, `default`: `valid`, `invalid`, `missing` or `unreadable`, `demo` and `error`), `launches` (whether a bare spawn launches from this folder's catalog; `null` when no mesh resolves), `processes` (each `{name, state, pid, detail}`, `state` one of `running`, `stopped`, `not-serving`, `unknown` or `unreadable`), `storedState` and `noManager` (whether this root's controller stack was started with `--no-manager`) |
 | `meshes` | `current`, `unreadable` (the registry directory, a record, the current-mesh pointer, or the prepared spaces folder or a record in it, that could not be read, or a pointer that is empty, each as `{file, error}`), `items` (each with `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`, `current` and `check`: `reachable`, `unreachable` or `not-checked`) and `catalogs` (each `{idp, state, error}`) |
-| `selected` | `{resolved: false, code, message}` when no mesh resolves, where `message` states why and `hints` carries the step (`code` is `registry-unreadable` when the registry directory or a record could not be read); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels` and `membershipFeed` |
+| `selected` | `{resolved: false, code, message}` when no mesh resolves, where `message` states why and `hints` carries the step (`code` is `registry-unreadable` when the registry directory or a record could not be read); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels`, `membershipFeed` and `spaceStreams`. `spaceStreams.state` is `present`, `absent` or `not-checked`; it is read for an auth or user space and an open space this machine started. When `absent`, `root` is this machine's stack of the space and `stack` is `running` or `stopped`, each `null` when unknown |
 | `services` | Selected-space local owned records: `space`, `state` (`read`, `partial` or `not-checked`), non-atomic `observedAt`, public definition/instance projections and explicit scope. An unreadable family is `null`; stored readiness is historical. Older serialized snapshots may omit this observation, which is not an empty inventory. |
 | `stackManager` | The selected space's running stack manager: `instanceId`, `pid` and `endpoint`, which is `answered`, `not-answering` or `unchecked`. Absent when no stack manager runs |
 | `store` | What the selected space's running local broker logged about writing its JetStream store: `state` `write-failed` with `pid`, `log`, `at`, `cause` and `path`; `none-recorded` with `pid` and `log`; or `not-checked` with a `reason`. Absent when no space resolves |
@@ -4182,10 +4202,15 @@ presets this machine has, and a name it does not have is refused as `DEPENDENCY_
 marked `(required)`, and an option that takes a path shows `<dir>` or `<file>`. A missing required
 option is refused with each one named.
 
+A preset's options describe the service and never choose its space. `add` saves into the space
+`--space` names, or else the selected space or the folder's, as other commands resolve it.
+
 `add` checks the options against the preset's schema, and checks that each declared path exists
 with its required protection. It does not check that a root or credential suits the preset, such
 as a root's auth mode or which credential a file holds. Those are checked when the service starts.
-A refusal names the option or field at fault. Option values are not printed.
+A refusal names the option or field at fault. Option values are not printed, except the `broker`
+preset's `server`: `add` checks it against the address rules a start applies, and its refusal quotes
+the address unless it holds an `@`, which may be a credential.
 
 `--file` imports a version-1 definition. This one runs a program and treats it as ready once its
 loopback health URL answers 200:
@@ -5023,7 +5048,8 @@ cotal linear caller <name> --endpoint <reverse-dns-name> --out <path> [--channel
 ```
 
 Serves one Linear account as a registered Cotal endpoint that agents call with `cotal_describe` and
-`cotal_invoke`, and gives the operator a direct client for the same server. It only talks to `https://mcp.linear.app/mcp`
+`cotal_invoke`, and gives the operator a direct client for the same server. Until the extension is
+added, `cotal linear` and `cotal help linear` name the `cotal ext add` that adds it. It only talks to `https://mcp.linear.app/mcp`
 (mode `write`) or `https://mcp.linear.app/mcp/readonly` (mode `readonly`); there is no URL or header
 option. Use a separate account per Linear workspace, and prefer a `readonly` account with a
 restricted read key wherever writes are not needed.
@@ -5362,6 +5388,7 @@ cotal actor list [--json|--plain]
 | `--json`, `-j`, `--plain` | off | Print one JSON document or line-oriented text, as `auth grants`, `auth grant` and `auth revoke` do |
 
 The actor ledger is the single authorization source of a user-auth space: no row, no access.
+`cotal help actor` lists `grant`, `revoke` and `list`, and shell completion offers them.
 `actor list`, `grant` and `revoke` resolve their space and root as `auth grants`, `auth grant` and
 `auth revoke` do, and refuse the same way. With no space to resolve they refuse with a next step,
 such as `cotal up`, rather than assume one, and a root that does not hold the space's user-auth
@@ -6984,8 +7011,10 @@ prepares no trust, generates no configuration and starts no other service. Legac
 known shared registrations, maintenance and mismatched transport refuse. Its creation-pinned
 direct child writes a native ports report in a fresh private launch directory, and the readiness
 check sets that report to `0600` before it reads it. Its listener must
-match the declared IP, port and transport. DNS, wildcard and mapped-IPv6 target declarations refuse
-before launch. This reports the child's client listener, not JetStream readiness, endpoint serving
+match the declared IP, port and transport. `add` refuses a `server` that is not one `nats://` or
+`tls://` URL naming an IP literal, and DNS, wildcard and mapped-IPv6 targets, so none is saved. A
+definition saved before that check refuses on start, before launch, naming its `server` option and
+how to add it again. This reports the child's client listener, not JetStream readiness, endpoint serving
 or a fresh trust check.
 
 Broker stop has a separate kernel-exit policy, with no invented endpoint principal or epoch.

@@ -2,12 +2,15 @@
  * LIVE: a controller stack is settled from process evidence instead of wedging its root.
  *
  *  1. Crash mid-start. An `up` killed while delivery waits for readiness leaves an applying
- *     operation. `down --dry-run` exits 0 and names the settlement, `down --yes` settles it and stops
+ *     operation. `status` names the half-started stack and leads Next with the `up --root
+ *     <root> --no-manager` that finishes it. `down --dry-run` exits 0 and names the settlement, `down --yes` settles it and stops
  *     the broker, and a second `down --yes` is a no-op. `ps` on the `--no-manager` stack is a known
  *     refusal.
  *  2. Broker crash after start. The `up` that adds the manager and `service status` list the broker's
  *     client and websocket listeners and the manager's console; a wildcard configuration lists them
- *     on every interface and names the plaintext ones. The next `up` restarts the broker from its
+ *     on every interface and names the plaintext ones. `service add` refuses a broker `--server`
+ *     that is no broker address, by preset or `--file`, quoting it unless it may hold a credential, and
+ *     starting such a definition saved earlier names its `server` option. The next `up` restarts the broker from its
  *     records. After a manager crash, the next `up` relaunches the manager over the pidfile the
  *     killed process left. Once delivery is killed, `status` reads its ready row as stale instead of
  *     bound. The `down --yes` that stops it prints one receipt: the mesh once, the members in stop
@@ -63,7 +66,8 @@
  *  6. An interrupted redefinition. An `up` whose `--max-sessions` redefines the manager is killed
  *     while the replacement manager is frozen before its readiness is recorded. The next bare `down`
  *     adopts the journaled replacement and stops it; in a second stack the next bare `up` adopts it
- *     and reuses it. After a `down`, a bare `up` there keeps the `--max-sessions` that redefined it.
+ *     and reuses it, and its notice says the earlier up was interrupted with every member running.
+ *     After a `down`, a bare `up` there keeps the `--max-sessions` that redefined it.
  *  8. An upgrade. Each member record pins its built-in adapter at the release that wrote it. With
  *     every pin set to an earlier release and the declarations unchanged, `down` stops the running
  *     stack, `up` starts it again and a later `down` stops it.
@@ -123,6 +127,8 @@ const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTA
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { readStackJournal } = await import("../src/lib/stack-journal.js");
 const { serviceDefinitionStore } = await import("../src/lib/service-definitions.js");
+// Registers the broker adapter, which a definition saved from this process is checked against.
+await import("../src/lib/broker-service.js");
 const { definitionListeners, exposedPlaintext, listenerRow } = await import("../src/lib/stack-listeners.js");
 
 const { check, finish } = createSuite();
@@ -130,7 +136,7 @@ const anchors = new Map<string, SmokeSandboxAnchor>();
 const roots: string[] = [];
 const owned = new Set<number>();
 
-type Envelope = { outcome: string; target?: Record<string, unknown>; result?: Record<string, unknown>; warnings?: { code: string; target?: Record<string, unknown> }[]; error?: { code: string; message: string; remedy?: string; cause?: { code?: string; detail?: string } } };
+type Envelope = { outcome: string; target?: Record<string, unknown>; result?: Record<string, unknown>; warnings?: { code: string; message?: string; target?: Record<string, unknown> }[]; error?: { code: string; message: string; remedy?: string; cause?: { code?: string; detail?: string } } };
 type Run = { status: number | null; signal: NodeJS.Signals | null; ms: number; stdout: string; stderr: string; env?: Envelope };
 const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run => {
   const options = { cwd, env: childEnv, encoding: "utf8" as const, timeout: 180_000 };
@@ -214,6 +220,12 @@ try {
     if (delivery !== null) process.kill(delivery, "SIGKILL");
     await until(() => gone(space, "stack-delivery"), 10_000);
     check("the killed up left its operation applying", readStackJournal(root)?.journal.operation.phase === "applying", readStackJournal(root)?.journal.operation);
+    const half = cli(root, "status", "--json");
+    const unfinished = (half.env?.result?.folder as { stackUnfinished?: { kind?: string; running?: string[]; stopped?: string[]; noManager?: boolean } | null } | undefined)?.stackUnfinished;
+    check("status names the half-started stack: the broker runs and delivery did not start", half.status === 0 && unfinished?.kind === "up" && unfinished.running?.join() === "broker" && unfinished.stopped?.join() === "delivery" && unfinished.noManager === true, shown(half));
+    const halfShown = cli(root, "status");
+    const halfNext = halfShown.stdout.slice(halfShown.stdout.indexOf("\nNext\n") + 6).split("\n")[0] ?? "";
+    check("its first Next finishes that up, keeping --no-manager", halfShown.stdout.includes("Half started · the last up ended before delivery started; broker runs") && halfNext.includes(`up --root ${root} --no-manager`) && halfNext.includes("Finish starting the stack: the last up ended before delivery started"), { next: halfNext, ...shown(halfShown) });
 
     const preview = cli(root, "down", "--dry-run", "--json");
     check("down --dry-run on the unsettled root exits 0 and names the settlement", preview.status === 0 && preview.env?.outcome === "ok" && preview.env.result?.settlesOperation !== null, shown(preview));
@@ -256,6 +268,33 @@ try {
         && exposedPlaintext(wild) === "The broker client, broker websocket and manager console listeners are plaintext and reachable from other machines, so what crosses them is not encrypted."
         && exposedPlaintext(listed ?? []) === undefined, wild);
     check("...and status no longer reports the stack as manager-less", noManager() === false);
+
+    // A broker definition's address is checked when it is added, as its paths are. A start applied
+    // the address rules only after it recorded an instance, and named neither the option nor the value.
+    // The stack's own broker configuration and binary, which pass the path checks.
+    const stackLaunch = serviceDefinitionStore(space).read("stack-broker")?.record.value.launch;
+    const [brokerConfig, brokerBinary] = stackLaunch?.type === "adapter" ? [String(stackLaunch.options.config), String(stackLaunch.options.binary)] : ["", ""];
+    const addBroker = (name: string, server: string) => cli(root, "service", "add", name, "--preset", "broker", "--root", root, "--config", brokerConfig, "--binary", brokerBinary, "--server", server, "--json");
+    const word = addBroker("bad-word", "hallo welt");
+    check('service add --preset broker refuses --server "hallo welt" USAGE_INVALID, exit 1, quoting it, and saves nothing',
+      word.status === 1 && word.env?.error?.code === "USAGE_INVALID" && word.env.error.message === '--server "hallo welt": the broker address must be one nats:// or tls:// URL; nothing was saved' && serviceDefinitionStore(space).read("bad-word") === undefined, shown(word));
+    const credential = addBroker("bad-cred", "nats://user:secret@127.0.0.1:4999");
+    check("an address with a credential is refused without printing it",
+      credential.status === 1 && credential.env?.error?.code === "USAGE_INVALID" && /^--server \(not printed/.test(credential.env.error.message) && !`${credential.stdout}${credential.stderr}`.includes("secret") && serviceDefinitionStore(space).read("bad-cred") === undefined, shown(credential));
+    const brokerFile = (server: string) => ({ schemaVersion: 1 as const, space, launch: { type: "adapter" as const, adapter: "nats-broker", options: { root, config: brokerConfig, binary: brokerBinary, server } }, readiness: { type: "adapter" as const, timeoutMs: 30_000 } });
+    const badFile = join(home, "bad-server.json");
+    writeFileSync(badFile, JSON.stringify(brokerFile("nats://127.0.0.1:4999x")));
+    const imported = cli(root, "service", "add", "bad-file", "--file", badFile, "--json");
+    check("service add --file refuses that address SCHEMA_INVALID, exit 1, naming launch.options.server and the value",
+      imported.status === 1 && imported.env?.error?.code === "SCHEMA_INVALID" && imported.env.error.message.startsWith(`the definition's launch.options.server "nats://127.0.0.1:4999x": `) && serviceDefinitionStore(space).read("bad-file") === undefined, shown(imported));
+    // Saved as an older CLI saved it, before the check.
+    serviceDefinitionStore(space).commit("old-broker", undefined, brokerFile("hallo welt"));
+    const oldStart = cli(root, "service", "start", "old-broker", "--json");
+    check("starting a definition saved before the check refuses UNSUPPORTED, exit 2, naming its server option and value and how to add it again",
+      oldStart.status === 2 && oldStart.env?.error?.code === "UNSUPPORTED" && oldStart.env.error.message.includes(`the definition's server option "hallo welt": the broker address must be one nats:// or tls:// URL`)
+        && Boolean(oldStart.env.error.remedy?.startsWith(`remove it with cotal service remove old-broker --space ${space} --yes, then add it again`)), shown(oldStart));
+    const oldRemoved = cli(root, "service", "remove", "old-broker", "--yes", "--json");
+    check("rig: the old definition and its failed instance are removed", oldRemoved.status === 0 && serviceDefinitionStore(space).read("old-broker") === undefined, shown(oldRemoved));
 
     const crashed = pidOf(space, "stack-broker");
     if (crashed !== null) process.kill(crashed, "SIGKILL");
@@ -788,6 +827,8 @@ try {
     const recovered = cli(root, "up", "--json");
     track("redefup");
     const journal = readStackJournal(root)?.journal, row = journal?.members.find((member) => member.role === "manager");
+    const notice = recovered.env?.warnings?.find((warning) => warning.code === "OPERATION_SETTLED")?.message ?? "";
+    check("its notice says the earlier up was interrupted with every member running, not that it failed", /^the earlier up \S+ was interrupted before it recorded an outcome; every member is running \(broker, delivery, manager\)$/.test(notice), recovered.env?.warnings);
     check("bare up after the interrupted redefinition adopts the journaled replacement and reuses it", recovered.status === 0 && row?.instanceId === replacement && row?.state === "reused" && journal?.operation.phase === "completed" && serviceInstances("redefup", "stack-manager").length === 1, shown(recovered));
     const stopped = cli(root, "down", "--yes", "--json");
     check("down then stops the recovered stack", stopped.status === 0 && gone("redefup", "stack-manager"), shown(stopped));

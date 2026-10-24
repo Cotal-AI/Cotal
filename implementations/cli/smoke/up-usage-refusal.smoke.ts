@@ -16,7 +16,10 @@
  * local broker can serve, a host name included, is refused the same way in an unprepared and a
  * prepared folder, as the short classified report with an example on the port passed. In the home
  * folder, whose `.cotal` holds the machine's own records, `up` refuses CONFLICT and writes nothing
- * there, and `down` and `down --dry-run` there find no stack. Every broker address the cells after
+ * there, and `down` and `down --dry-run` there find no stack. In a prepared folder whose broker store
+ * this account cannot write, `up` refuses PERMISSION_DENIED naming the store and the `chmod` that
+ * fixes it, where the broker used to exit naming the cause only in its log, and status names the same
+ * step in place of `cotal up`. Every broker address the cells after
  * those use is held by a loopback listener that never answers NATS, so a regression still cannot
  * start a broker there.
  *
@@ -25,7 +28,7 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer, type AddressInfo } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -95,6 +98,22 @@ check("space create prepares a folder", created.status === 0, shown(created));
 const named = run(["up", "--server", "nats://localhost:43131", "--json"], prepared);
 check("in a prepared folder a host name is the same USAGE_INVALID refusal, exit 1, naming 127.0.0.1", named.status === 1 && named.envelope?.error?.code === "USAGE_INVALID" && /names the host localhost/.test(named.envelope.error.message ?? "") && named.stdout.includes("--server nats://127.0.0.1:43131"), shown(named));
 check("it wrote no stack journal", !existsSync(join(prepared, ".cotal", "stack-controller.json")), readdirSync(join(prepared, ".cotal")));
+// A broker store this account cannot write is named before anything starts; the broker named it only
+// in its own log. Status names the same step in place of starting the space.
+if (process.platform !== "win32" && process.getuid?.() !== 0) {
+  const jetstream = join(prepared, ".cotal", "nats", "jetstream");
+  mkdirSync(jetstream, { recursive: true, mode: 0o700 });
+  chmodSync(jetstream, 0o500);
+  const blocked = run(["up", "--server", "nats://127.0.0.1:1", "--json"], prepared), status = run(["status", "--json"], prepared);
+  chmodSync(jetstream, 0o700);
+  const step = `make it writable by you, for example with chmod -R u+w ${jetstream}`;
+  check("up over a broker store it cannot write refuses PERMISSION_DENIED, exit 2, naming the store and chmod",
+    blocked.status === 2 && blocked.envelope?.error?.code === "PERMISSION_DENIED" && blocked.envelope.error.message === `the broker store ${jetstream} is not writable by this account (EACCES), so the broker cannot start JetStream there; nothing was started or written` && blocked.stdout.includes(step), shown(blocked));
+  check("it wrote no stack journal there either", !existsSync(join(prepared, ".cotal", "stack-controller.json")));
+  const hints = (JSON.parse(status.stdout || "{}") as { result?: { hints?: string[] } }).result?.hints ?? [];
+  check("status there names the store and the same step, not cotal up",
+    hints.includes(`the broker store ${jetstream} is not writable by this account (EACCES), so the broker cannot start JetStream there; ${step}`) && !hints.some((hint) => hint.includes("start it with `cotal up`")), shown(status));
+}
 
 // Port 1 cannot be bound, so a regression here starts no usable broker.
 const homeUp = run(["up", "--server", "nats://127.0.0.1:1", "--json"], home);
