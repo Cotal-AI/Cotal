@@ -2,10 +2,12 @@ import { accessSync, constants, lstatSync, readdirSync, realpathSync, statSync, 
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { c, CommandFailure, homeCotalDir, protectedLocalDirectory } from "@cotal-ai/workspace";
 
-/** What a store directory holds: the broker's `jetstream` tree and Cotal's generation marker. */
+/** What a store directory holds: the broker's `jetstream` tree, Cotal's generation marker, and the
+ *  `ocsp` folder nats-server makes in its store directory on every configuration reload. */
 const STORE_ENTRIES = new Map<string, (stat: Stats) => boolean>([
   ["jetstream", (stat) => stat.isDirectory()],
   [".cotal-store-id", (stat) => stat.isFile()],
+  ["ocsp", (stat) => stat.isDirectory()],
 ]);
 
 /** The entries of the directory `dir` that are not part of a store, sorted. A store entry of the

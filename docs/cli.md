@@ -620,7 +620,8 @@ writers, so a group- or world-writable directory in it refuses `PERMISSION_DENIE
 is written. A path still to create needs its nearest existing directory to be writable by this
 account, or it refuses `PERMISSION_DENIED` (exit 2) before anything is written. A non-empty
 directory is accepted, since it may hold an existing store. When it holds anything besides a
-store's `jetstream` directory and `.cotal-store-id` marker, `up` warns and names those entries,
+store's `jetstream` directory, its `.cotal-store-id` marker and the `ocsp` folder nats-server makes
+there when it reloads its configuration, `up` warns and names those entries,
 because `clean store` and `reset store` refuse such a directory. A control
 directory refuses `USAGE_INVALID` too, before anything is written: a root's `.cotal` or a path in it,
 other than that root's own `.cotal/nats`, and the machine home's `.cotal`. A store there would mix
@@ -1400,7 +1401,8 @@ One configurable cleanup verb; every target requires `--force`, except a `--dry-
 - `store` deletes the **stopped** mesh's JetStream store (`.cotal/nats`): streams, durable
   consumers, and messages. This is the reset for stale on-disk broker state, e.g. durables
   minted by an older, incompatible Cotal generation surviving a `down`/`up` cycle. It removes the
-  store's `jetstream` directory and `.cotal-store-id` marker, then the empty store directory. A
+  store's `jetstream` directory, its `.cotal-store-id` marker and the broker's `ocsp` folder, then
+  the empty store directory. A
   store directory that holds anything else refuses `CONFLICT` (exit 2), names those entries and
   removes nothing; move them out and run it again.
 - `all` is `store` plus the space identity (`.cotal/auth`), the local creds and markers tied to

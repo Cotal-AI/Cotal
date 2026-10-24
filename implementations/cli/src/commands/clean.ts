@@ -502,8 +502,9 @@ export function safeStoreCleanupPath(root: string, override: string | undefined)
   return { path: target, identity: { dev: stat.dev, ino: stat.ino } };
 }
 
-/** A store directory holds only the broker's `jetstream` tree and the generation marker, so a
- *  directory that holds anything else may be someone's folder; nothing in it is removed. */
+/** A store directory holds only the broker's `jetstream` tree, the generation marker and the
+ *  broker's `ocsp` folder, so a directory that holds anything else may be someone's folder; nothing
+ *  in it is removed. */
 function refuseForeignStoreEntries(path: string, foreign: readonly string[]): void {
   if (foreign.length)
     throw new CommandFailure("refused", "CONFLICT", `the store directory ${path} also holds ${listEntries(foreign)}, which no Cotal store writes; nothing was removed`, { target: { storeDir: path, entries: [...foreign] }, remedy: `move ${foreign.length === 1 ? "it" : "them"} out of ${path}, then run this command again` });
