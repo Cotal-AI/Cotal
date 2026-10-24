@@ -1,6 +1,7 @@
 import { hostname, userInfo } from "node:os";
 import { closeSync, fstatSync, openSync, read } from "node:fs";
 import { promisify } from "node:util";
+import { JetStreamApiError } from "@nats-io/jetstream";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   resolvePeer,
@@ -27,7 +28,7 @@ import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { batchedRead, openTransient } from "../lib/transient.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
-import { brokerStoreWrite } from "../lib/broker-store-health.js";
+import { brokerStoreWrite, recordedStore } from "../lib/broker-store-health.js";
 import { chatStreamGone, streamsAbsent } from "../lib/space-streams.js";
 import { mentionsIn } from "../lib/mentions.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
@@ -312,6 +313,19 @@ function payloadRefused(error: unknown): boolean {
   return false;
 }
 
+/** JetStream answers 10023, insufficient resources, to a write while its file store holds more than
+ *  its cap, and stores nothing. The refusal names the store and cap this machine records for the
+ *  space's broker. */
+function storeFullRefusal(error: unknown, root: string | undefined, space: string, target: unknown): CommandFailure | undefined {
+  if (!(error instanceof JetStreamApiError) || error.code !== 10023) return undefined;
+  let store: ReturnType<typeof recordedStore> | undefined;
+  try { store = root ? recordedStore(root, space) : undefined; } catch { store = undefined; }
+  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker's JetStream store${store ? ` ${store.path}` : ""} is full${store?.cap !== undefined ? ` at its --max-file-store cap of ${store.cap} bytes` : ""}, so it refused the message; nothing was stored`, {
+    target, native: { code: String(error.code) },
+    remedy: `make room with cotal history clear --yes, which purges this space's channel history (--dms also purges its direct messages), then send again${store?.cap !== undefined ? "; to raise the cap afterwards, run cotal down and cotal up --max-file-store <bytes>" : ""}`,
+  });
+}
+
 /** The broker refused a channel publication, so it was not stored. The remedy names what this
  *  identity may post to: its grant when this machine holds it, read as `cotal whoami` reads it, and
  *  otherwise the space's registered channels. */
@@ -440,6 +454,8 @@ export async function send(args: ParsedArgs): Promise<void> {
     } catch (error) {
       if (payloadRefused(error)) throw tooLarge(bytes);
       if (input.mode === "msg" && isPublishPermissionDenied(error)) throw await channelDenied(input.target, target, connection, registered);
+      const full = storeFullRefusal(error, connection.root, space, target);
+      if (full) throw full;
       // No stream stores a message whose space's streams were removed, so the send stored nothing.
       if (spaceStreamsExpected(space, connection.mode) && await chatStreamGone(ep)) throw streamsAbsent(connection);
       // A broker sends nothing back for a stream it cannot write, so its own log here may name why.

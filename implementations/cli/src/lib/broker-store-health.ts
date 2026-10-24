@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { localProcessPath } from "@cotal-ai/workspace";
+import { loadMeshes, localProcessPath } from "@cotal-ai/workspace";
 import { pidfileState } from "../commands/down.js";
 import { readOwnedLogTail, readServiceLog } from "./service-process.js";
 import { serviceInstances, instanceProjection } from "./service-instances.js";
@@ -9,11 +9,31 @@ import { readStackJournal, STACK_DEFINITION } from "./stack-journal.js";
  *  reports a stream's write error natively only through `healthz`, which needs a system-account
  *  user, so this reads the log the broker writes on this machine: a bounded tail, and only lines
  *  tagged with the running broker's process id since its last start. A broker whose log is not on
- *  this machine is not checked. */
+ *  this machine is not checked. `full` is {@link storeFull}'s reading instead. */
 export type StoreWriteObservation =
   | { state: "write-failed"; pid: number; log: string; at: string; cause: string; path: string | null }
+  | { state: "full"; used: number; cap: number; path: string }
   | { state: "none-recorded"; pid: number; log: string }
   | { state: "not-checked"; reason: string };
+
+/** The store a space's broker started from `root` runs on, and its `--max-file-store` cap, as this
+ *  machine records them: the stack journal's broker inputs, else the space's registration, else the
+ *  default `.cotal/nats` with no cap. */
+export function recordedStore(root: string, space: string): { path: string; cap?: number } {
+  const stack = readStackJournal(root)?.journal;
+  const recorded = stack?.space === space && stack.broker ? stack.broker : loadMeshes().find((mesh) => mesh.space === space && mesh.root === root);
+  return { path: recorded?.storeDir ?? join(root, ".cotal", "nats"), ...(recorded?.maxFileStore !== undefined ? { cap: recorded.maxFileStore } : {}) };
+}
+
+/** A space holding more JetStream file storage than its broker's recorded cap. nats-server refuses
+ *  every write once its stored bytes exceed `max_file_store`, so nothing more is stored until room is
+ *  made. Undefined when no cap is recorded, as nats-server then sizes the store from the free disk at
+ *  start, or while the space is under its cap. */
+export function storeFull(root: string, space: string, used: number): Extract<StoreWriteObservation, { state: "full" }> | undefined {
+  let store: ReturnType<typeof recordedStore>;
+  try { store = recordedStore(root, space); } catch { return undefined; }
+  return store.cap !== undefined && used > store.cap ? { state: "full", used, cap: store.cap, path: store.path } : undefined;
+}
 
 /** The newest `Critical write error` the running broker logged since it started. */
 export function brokerStoreWrite(root: string, space: string): StoreWriteObservation {
