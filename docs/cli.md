@@ -5749,7 +5749,10 @@ last observations and reports the gap instead of showing them as current. When t
 comes back, after a broker restart too, the feed resumes and reports the transition as a gap.
 
 `--plain` or a noninteractive invocation uses the attributed line stream. Interactive filters
-are not supported by that stream. Authenticated observer views keep direct messages out of
+are not supported by that stream. A line carries at most 16,384 code units of a message's text, the
+observer stream's row bound. A longer message is cut there, and its line ends with the count not
+shown and the read that shows it whole: `cotal history <channel>`, or `cotal history --dms` for a
+direct message. Authenticated observer views keep direct messages out of
 the channel tap. Opening this view never launches, stops or attaches an agent. If the reader
 of the stream closes it, as `| head` does, the observer stops the same way.
 
@@ -5944,7 +5947,7 @@ message publications or proof of task completion. No global sequence is invented
 
 The feed has a 300-entry window and bounded per-channel prefill, not a complete history export.
 Window loss, connection transitions and text beyond the 16,384-code-unit row bound produce gap
-records. Identity fields are not clipped. The stream does not claim that arbitrary publisher
+records, and a cut row carries `textTruncated` and `omittedCodeUnits`. Identity fields are not clipped. The stream does not claim that arbitrary publisher
 content is secret-redacted. Leaving the observer stops its own connection and sends no agent
 control request. Connection or authorization failure is an error, not an empty conversation.
 

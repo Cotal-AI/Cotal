@@ -31,7 +31,7 @@ export async function runWatchStream(ep: CotalEndpoint, space: string, tapSubjec
       else if (type === "snapshot" && currentSnapshot && !isFeedView(filter)) {
         const report = renderReport({ ...watchReport(currentSnapshot, filter), space }, "plain", terminalWidth(process.stdout));
         if (report !== lastReport) { lastReport = report; console.log(report); }
-      } else if (type === "event" && data && typeof data === "object" && "row" in data) console.log(oneLine(`[${space}] ${feedLine(data.row as FeedEntry)}`));
+      } else if (type === "event" && data && typeof data === "object" && "row" in data) console.log(oneLine(`[${space}] ${feedLine(data.row as FeedEntry & { omittedCodeUnits?: number })}`));
       else if (type === "gap" || type === "error") {
         const message = data && typeof data === "object" && ("reason" in data || "message" in data) ? String("reason" in data ? data.reason : "message" in data ? data.message : "") : "observation incomplete";
         console.error(oneLine(`[${space}] Observer ${type}: ${message}`));

@@ -31,7 +31,10 @@ export function scriptLine(ts: number | string, sender: string, destination: str
   return oneLine(`${feedTime(ts)}  ${sender}  ${destination}  ${text}`);
 }
 
-export function feedLine(entry: FeedEntry): string {
+/** One feed entry as a line. Text past {@link WATCH_TEXT_LIMIT} is cut, and the line says how much
+ *  was not shown and which `cotal history` read shows it whole. A stream row whose text was already
+ *  cut carries that count as `omittedCodeUnits`. */
+export function feedLine(entry: FeedEntry & { omittedCodeUnits?: number }): string {
   const time = feedTime(entry.ts);
   const sender = entry.from.name || entry.from.id;
   const destination = entry.channel ? `#${entry.channel}` : entry.toService ? `role ${entry.toService}` : `DM to ${entry.toIds?.join(", ") || "not attributed"}`;
@@ -42,7 +45,9 @@ export function feedLine(entry: FeedEntry): string {
       if (event && typeof event === "object" && "type" in event && typeof event.type === "string") return oneLine(`${time}  ${sender}  reported ${event.type.toLowerCase().replaceAll("_", " ")}`);
     } catch { /* A non-JSON event remains attributed text. */ }
   }
-  return scriptLine(entry.ts, sender, destination, `${body.text}${body.omittedCodeUnits ? ` [${body.omittedCodeUnits} text code units not shown]` : ""}`);
+  const notShown = body.omittedCodeUnits + (entry.omittedCodeUnits ?? 0);
+  const whole = entry.channel && !entry.events ? `; cotal history ${entry.channel} shows it whole` : entry.delivery === "unicast" ? "; cotal history --dms shows it whole" : "";
+  return scriptLine(entry.ts, sender, destination, `${body.text}${notShown ? ` [${notShown} text code units not shown${whole}]` : ""}`);
 }
 
 /** Read views use facts already normalized by MeshView, without inferring task or membership state. */
