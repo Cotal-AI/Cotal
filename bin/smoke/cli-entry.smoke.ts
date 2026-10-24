@@ -22,7 +22,7 @@
  * Run: pnpm smoke:cli-entry
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseCommandArgs, registry, type Command } from "@cotal-ai/core";
@@ -521,6 +521,31 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   }, noSeed);
   check("personas list -v prints a body's first line once, with or without a matching description",
     verbose.status === 0 && verbose.stdout.split("Reviews pull requests.").length === 2 && verbose.stdout.includes("    Then it reports.") && verbose.stdout.split(/^ +hi$/m).length === 2, shown(verbose));
+  // A persona file that is a link lists with a warning naming the file it links to, and show, edit
+  // and remove refuse it with that file as the next step, leaving the link in place.
+  {
+    const outside = mkdtempSync(join(tmpdir(), "cotal-entry-link-"));
+    cleanup.push(outside);
+    const target = join(outside, "linked.md");
+    writeFileSync(target, "---\nname: linked\nsubscribe: []\n---\nI am linked.\n");
+    const real = realpathSync(target);
+    let link = "";
+    const linked = (home: string) => { persona(home); link = join(home, "..", ".cotal", "agents", "linked.md"); symlinkSync(target, link); };
+    const listed = cotal(["persona", "--json"], linked, noSeed);
+    const envelope = (() => { try { return JSON.parse(listed.stdout) as { completeness?: string; warnings?: { code: string; target: { name?: string; link?: string }; message: string }[] }; } catch { return undefined; } })();
+    const warned = envelope?.warnings?.find((w) => w.target.name === "linked");
+    check("persona --json warns on a linked persona, naming the file it links to, and the listing stays complete",
+      listed.status === 0 && envelope?.completeness === "complete" && warned?.code === "PERMISSION_DENIED" && warned.target.link === real && warned.message.includes(`is a link to ${real}; persona show, edit and remove refuse a link`), shown(listed));
+    const plain = cotal(["persona", "--plain"], linked, noSeed);
+    const legacy = cotal(["personas", "list"], linked, noSeed);
+    check("persona and personas list name the link and its file in their text listings",
+      plain.status === 0 && plain.stderr.includes(`is a link to ${real}`) && legacy.status === 0 && legacy.stdout.includes(`linked.md is a link to ${real}; persona show, edit and remove refuse a link`), { plain: shown(plain), legacy: shown(legacy) });
+    for (const argv of [["persona", "show", "linked"], ["personas", "show", "linked"], ["persona", "edit", "linked"], ["persona", "remove", "linked", "--yes"]]) {
+      const r = cotal(argv, linked, argv[1] === "edit" ? editor : noSeed);
+      check(`${argv.join(" ")} refuses a linked persona with the file it links to as Next`,
+        r.status === 2 && r.stderr.includes("PERMISSION_DENIED") && r.stderr.includes(`is a link to ${real}; replace the link with a copy of that file`) && lstatSync(link).isSymbolicLink(), shown(r));
+    }
+  }
   // A definition over 1 MiB is refused by create and edit with one refusal, and nothing is saved.
   {
     const big = mkdtempSync(join(tmpdir(), "cotal-entry-big-"));

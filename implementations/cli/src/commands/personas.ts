@@ -159,6 +159,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
       .filter(Boolean)
       .join("  ");
     console.log(`${c.bold(name)}  ${meta}`.trimEnd());
+    if (e.link !== undefined) console.log(c.yellow(`  ! ${oneLine(e.path)} is a link to ${oneLine(e.link)}; persona show, edit and remove refuse a link`));
     const desc = d.description ?? firstLine(d.persona);
     // The preview wraps under its indent at the terminal's width, so none of it is cut off. Verbose
     // prints the whole body next, so a summary that is its first line is not printed twice.

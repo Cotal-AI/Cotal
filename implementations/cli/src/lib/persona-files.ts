@@ -14,6 +14,7 @@ import {
 import { DEFAULT_AGENT_NAME } from "./default-persona.js";
 import { shellWord } from "./endpoint-errors.js";
 import { exitInterrupted, INTERRUPT_SIGNALS, type InterruptSignal } from "./interrupt-notice.js";
+import { linkTarget } from "./personas.js";
 
 export interface PersonaCatalog { root: string; space: string }
 export interface PersonaSource { bytes: Buffer; ino: number; dev: number; mtimeMs: number }
@@ -78,7 +79,10 @@ export function personaPath(root: string, name: string): string {
 export function readPersonaSource(path: string): PersonaSource | undefined {
   try {
     const stat = lstatSync(path);
-    if (!stat.isFile()) throw new CommandFailure("refused", "PERMISSION_DENIED", `persona is not a regular file: ${path}`);
+    if (!stat.isFile()) {
+      const link = stat.isSymbolicLink() ? linkTarget(path) : undefined;
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `persona is not a regular file: ${path}`, link === undefined ? {} : { remedy: `${path} is a link to ${link}; replace the link with a copy of that file` });
+    }
     return { bytes: readFileSync(path), ino: stat.ino, dev: stat.dev, mtimeMs: stat.mtimeMs };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;

@@ -3895,6 +3895,9 @@ Create and edit refuse a definition over 1 MiB with `SCHEMA_INVALID`, the bound 
 manager applies to its input, and an edit keeps that draft and names it.
 Creation refuses an existing definition, and with `CONFLICT` a name that differs from an existing
 one only in case, since a case-insensitive file system holds the two as one file. Mutation receipts contain names and paths, not bodies.
+A persona file that is a symbolic link is listed with a `PERMISSION_DENIED` warning that names the
+file it links to. `spawn` reads that file, but `persona show`, `edit` and `remove` refuse the link
+with `PERMISSION_DENIED`, and the next step names the file to copy in its place.
 Show and edit accept a definition whose `name` is not its catalog name. The seeded `default`
 persona is one: its file is `default.md` and its agents launch as `default_agent`. That name is
 reserved, so a create under it is refused with `USAGE_INVALID`.

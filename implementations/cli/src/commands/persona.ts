@@ -168,11 +168,16 @@ function list(catalog: PersonaCatalog, presentation: Presentation): void {
   catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona catalog: ${catalog.root}`); }
   const items = entries.map(entry => ({ name: entry.name, path: entry.path, role: entry.def?.role ?? null, model: entry.def?.model ?? null, description: entry.def?.description ?? null, harness: entry.def?.agent ?? null, valid: !entry.error }));
   const malformed = entries.filter(entry => entry.error);
+  // A linked persona still lists and launches, but show, edit and remove refuse it.
+  const linked = entries.filter(entry => entry.link !== undefined);
   writeResult(presentation, {
     command: "persona", target: catalog, result: { kind: "personas", items }, completeness: malformed.length ? "partial" : "complete",
-    warnings: malformed.map(entry => entry.notRegular
-      ? { code: "PERMISSION_DENIED", target: { name: entry.name, path: entry.path }, message: `${entry.error}; it was not read` }
-      : { code: "SCHEMA_INVALID", target: { name: entry.name, path: entry.path }, message: `cannot parse persona '${entry.name}' at ${entry.path}${entry.encoding ? `: ${entry.encoding}; save it as UTF-8` : ""}` }),
+    warnings: [
+      ...malformed.map(entry => entry.notRegular
+        ? { code: "PERMISSION_DENIED", target: { name: entry.name, path: entry.path }, message: `${entry.error}; it was not read` }
+        : { code: "SCHEMA_INVALID", target: { name: entry.name, path: entry.path }, message: `cannot parse persona '${entry.name}' at ${entry.path}${entry.encoding ? `: ${entry.encoding}; save it as UTF-8` : ""}` }),
+      ...linked.map(entry => ({ code: "PERMISSION_DENIED", target: { name: entry.name, path: entry.path, link: entry.link }, message: `persona '${entry.name}' at ${entry.path} is a link to ${entry.link}; persona show, edit and remove refuse a link` })),
+    ],
     ...(malformed.length ? { partial: { message: "some persona definitions could not be read" } } : {}),
   }, result => ({ sections: [
     { title: "Personas", blocks: [

@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { loadAgentFile, personaDir, utf16Problem, type AgentDef } from "@cotal-ai/core";
 
@@ -38,6 +38,21 @@ export interface PersonaEntry {
   encoding?: string;
   /** Set when the file is not a regular file, such as a FIFO, so it was not opened (see `error`). */
   notRegular?: true;
+  /** The file a persona that is a symbolic link names. `persona show`, `edit` and `remove` refuse
+   *  a link, so a listing warns about it. */
+  link?: string;
+}
+
+/** The file `path` links to when it is a symbolic link: its resolved path, or the link's own text
+ *  when that does not resolve. Undefined for anything else. */
+export function linkTarget(path: string): string | undefined {
+  try {
+    if (!lstatSync(path).isSymbolicLink()) return undefined;
+  } catch {
+    return undefined;
+  }
+  try { return realpathSync(path); } catch { /* a dangling link or a loop */ }
+  try { return readlinkSync(path); } catch { return undefined; }
 }
 
 /** List the persona files, each parsed (a malformed file becomes an entry with `error`, not a
@@ -64,15 +79,16 @@ export function readPersonas(root: string): PersonaEntry[] {
   return files.sort().map((f) => {
     const name = f.slice(0, -3);
     const path = join(dir, f);
+    const link = linkTarget(path);
     try {
       // A FIFO or a device would block the read, so only a regular file is opened. A link is
       // followed, as the read follows it.
-      if (!statSync(path).isFile()) return { name, path, error: `persona is not a regular file: ${path}`, notRegular: true as const };
-      return { name, path, def: loadAgentFile(path) };
+      if (!statSync(path).isFile()) return { name, path, error: `persona is not a regular file: ${path}`, notRegular: true as const, ...(link !== undefined ? { link } : {}) };
+      return { name, path, def: loadAgentFile(path), ...(link !== undefined ? { link } : {}) };
     } catch (e) {
       let encoding: string | undefined;
       try { encoding = utf16Problem(readFileSync(path, "utf8")); } catch { /* unreadable: `error` says so */ }
-      return { name, path, error: (e as Error).message, ...(encoding ? { encoding } : {}) };
+      return { name, path, error: (e as Error).message, ...(encoding ? { encoding } : {}), ...(link !== undefined ? { link } : {}) };
     }
   });
 }
