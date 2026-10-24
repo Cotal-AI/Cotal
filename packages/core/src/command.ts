@@ -169,8 +169,31 @@ export function parseCommandArgs(cmd: Command, argv: string[]): ParsedArgs {
       ...(f.multiple ? { multiple: true } : {}),
     };
   }
+  // A value such as `-1` reads as an option to `parseArgs`, which refuses it as ambiguous. No option
+  // name starts with a digit, so a dash and a digit after a string option is that option's value.
+  // `origin` keeps each word's raw index for `positionalIndices`.
+  const args: string[] = [];
+  const origin: number[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const word = argv[i]!;
+    if (word === "--") {
+      for (let j = i; j < argv.length; j++) { args.push(argv[j]!); origin.push(j); }
+      break;
+    }
+    const long = /^--([^=]+)$/.exec(word)?.[1];
+    const short = /^-([^-])$/.exec(word)?.[1];
+    const name = long ?? (short === undefined ? undefined : Object.keys(options).find((key) => options[key]!.short === short));
+    const next = argv[i + 1];
+    if (name !== undefined && options[name]?.type === "string" && next !== undefined && /^-\d/.test(next)) {
+      args.push(long !== undefined ? `${word}=${next}` : `${word}${next}`);
+      origin.push(i++);
+      continue;
+    }
+    args.push(word);
+    origin.push(i);
+  }
   const { values, positionals, tokens } = parseArgs({
-    args: [...argv],
+    args,
     options,
     allowPositionals: cmd.positionals !== undefined,
     strict: true,
@@ -189,7 +212,7 @@ export function parseCommandArgs(cmd: Command, argv: string[]): ParsedArgs {
     }
     seen.add(t.name);
   }
-  return { values: values as ParsedArgs["values"], positionals, raw: argv, positionalIndices: tokens.filter((token) => token.kind === "positional").map((token) => token.index) };
+  return { values: values as ParsedArgs["values"], positionals, raw: argv, positionalIndices: tokens.filter((token) => token.kind === "positional").map((token) => origin[token.index]!) };
 }
 
 /** The command `word` names on a surface, by exact name or alias. A prefix never matches. */

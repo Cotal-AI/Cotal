@@ -1,4 +1,4 @@
-/** Live full/registry backup, restore, isolation, checkpoint, and ordinary-resume lifecycle. */
+/** Live full/registry backup, restore, isolation, checkpoint, and ordinary-resume lifecycle, the `up -f` refusal while a restore is active, and the refusal of any `up` while its broker runs. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -328,7 +328,26 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       const previous = active.restore.previousSource?.identity.path;
       assert.ok(previous && restored.stdout.includes(`The previous store at ${previous} holds the only copy of them. \`cotal backup cleanup-fallback ${active.restore.attemptId}\` deletes it only with --discard-history.`), `${mode} registry restore names the previous store\n${restored.stdout}`);
     } else assert.doesNotMatch(restored.stdout, /history start empty/);
+    // `up -f` boots a fresh mesh, so it refuses while the restore is active and names the way out.
+    const manifest = join(root, "cotal.yaml");
+    writeFileSync(manifest, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  servers: ${server}\n${mode === "open" ? "  auth: false\n" : ""}channels:\n  general:\n    subscribe: []\n`);
+    const running = run("up", "-f", "cotal.yaml");
+    assert.equal(running.status, 2, `${mode} up -f while the restored stack runs refuses, exit 2\n${running.stdout}\n${running.stderr}`);
+    assert.match(running.stderr, /Code: +CONFLICT/);
+    assert.ok(running.stderr.includes(`stop the restored stack with cotal down, retire the restore with cotal backup cleanup-fallback ${active.restore.attemptId} --yes, then run cotal up -f cotal.yaml again`), `${mode} up -f names the way out\n${running.stderr}`);
+    // Any other `up` over the restored broker refuses before it touches the journal, which stays active.
+    for (const args of [["up"], ["up", "--server", server]]) {
+      const again = run(...args);
+      assert.equal(again.status, 2, `${mode} ${args.join(" ")} while the restored stack runs refuses, exit 2\n${again.stdout}\n${again.stderr}`);
+      assert.ok(/Code: +CONFLICT/.test(again.stderr) && again.stderr.includes("stop the restored stack with cotal down, then run cotal up again"), `${mode} ${args.join(" ")} names the way out\n${again.stderr}`);
+      assert.equal((JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as { state: string }).state, "active", `${mode} ${args.join(" ")} leaves the restore journal active`);
+    }
     must("down", run("down"));
+    const stopped = run("up", "-f", "cotal.yaml");
+    assert.equal(stopped.status, 2, `${mode} up -f after the restored stack stopped refuses, exit 2\n${stopped.stdout}\n${stopped.stderr}`);
+    assert.match(stopped.stderr, /Code: +LIFECYCLE_BLOCKED/);
+    assert.ok(stopped.stderr.includes(`retire the restore with cotal backup cleanup-fallback ${active.restore.attemptId} --yes, then run cotal up -f cotal.yaml again`), `${mode} up -f names the cleanup\n${stopped.stderr}`);
+    rmSync(manifest);
     if (mode === "open") {
       // The committed journal survives the broker's death; a later bare `up` relaunches over the
       // exact recorded active target (a different --store-dir is refused) without retiring it.

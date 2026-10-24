@@ -114,7 +114,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   }
   if (mode === "show") {
     const row = store.read(suppliedName!);
-    if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName } });
+    if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName }, remedy: "see the saved definitions with `cotal service`" });
     writeResult(presentation, { command: "service", target: { ...target, name: row.name }, result: serviceDefinitionProjection(row) }, (result): Report => ({ sections: [
       { title: "Service definition", blocks: [{ kind: "fields", rows: [["Name", result.name], ["Space", result.space], ["Execution host", "this machine"], ["Revision", result.revision], ["Launch", result.launch.type], ...(result.launch.type === "process" ? [["Executable", result.launch.executable], ["Arguments", `${result.launch.argumentCount} declared; values omitted`], ["Working directory", result.launch.cwd]] as const : [["Adapter", result.launch.adapter], ["Options", `${result.launch.optionCount} declared; values omitted`]] as const), ["Readiness policy", result.readiness.type], ["Readiness deadline", `${result.readiness.timeoutMs} ms`], ["Environment references", Object.entries(result.environmentReferences).map(([destination, source]) => `${destination} from ${source}`).join(", ") || "none"], ["Caller reference", result.credentialRef ? "protected file reference; not checked" : "none"], ["Live state", "not checked"]] }, { kind: "lines", lines: [{ text: "Saved policy is not proof of process ownership, OS supervision or endpoint registration. Argument bodies, adapter option values and credential contents are omitted.", tone: "hint" }] }] },
     ] }));
@@ -122,7 +122,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   }
   if (mode === "remove") {
     const row = store.read(suppliedName!);
-    if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName } });
+    if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName }, remedy: "see the saved definitions with `cotal service`" });
     if (args.values.instance !== undefined) {
       // One stopped instance record goes; the definition, its other instances and the logs stay.
       const id = String(args.values.instance), at = { ...target, name: row.name, instanceId: id };
@@ -137,6 +137,8 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       writeResult(presentation, { command: "service", target: at, result: { kind: "service-instance-record-removed", name: row.name, instanceId: id, processesChanged: false, supervisorChanged: false } }, (): Report => ({ sections: [{ title: "Instance record forgotten", blocks: [{ kind: "fields", rows: [["Name", row.name], ["Instance", id], ["Space", space]] }, { kind: "lines", lines: ["Only this stopped instance record was removed. Its logs, the definition and the other instances were kept, and no process or OS unit was changed."] }] }] }));
       return;
     }
+    // A stack member's definition is the stack's: `up` and `down` read it, so it goes with the space.
+    if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's definition stays with its stack, whose up and down read it; nothing was removed", { target: { ...target, name: row.name }, remedy: `it goes with the stack: cotal down --yes, then cotal space forget ${space}` });
     removableServiceInstances(space, row.name);
     if (!args.values.yes) {
       if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing a service definition outside interactive input requires --yes", { target: { ...target, name: row.name }, remedy: `confirm with cotal svc remove ${row.name} --yes` });
@@ -154,19 +156,23 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     if (prompts.isCancel(answer)) return cancelled("Service creation cancelled");
     name = localRecordName(answer);
   }
-  if (store.read(name)) throw new CommandFailure("refused", "CONFLICT", "this service definition already exists; it was not overwritten", { target: { ...target, name }, remedy: `to change it, stop its instances, forget it with cotal service remove ${name} --space ${oneLine(space)} --yes, then add it again` });
   const named = { ...target, name };
   /** A refusal while the definition is built names the space and name it was for. */
   const forName = <T>(build: () => T): T => {
     try { return build(); }
     catch (error) { throw isCommandFailure(error) && error.target === null ? new CommandFailure(error.outcome, error.code, error.message, { target: named, remedy: error.remedy, native: error.native, changed: error.changed }) : error; }
   };
+  // A file names its space, so a definition for another space is refused before its name is looked
+  // up in the selected one, whose service of that name it does not concern.
+  const file = args.values.file;
+  const imported = typeof file === "string" ? forName(() => importServiceDefinition(resolve(file), space)) : undefined;
+  if (store.read(name)) throw new CommandFailure("refused", "CONFLICT", "this service definition already exists; it was not overwritten", { target: named, remedy: `to change it, stop its instances, forget it with cotal service remove ${name} --space ${oneLine(space)} --yes, then add it again` });
   let definition: ServiceDefinitionInput, chosenPreset: string | undefined;
   if (typeof args.values.preset === "string") {
     chosenPreset = args.values.preset;
     const preset = chosenPreset;
     definition = forName(() => servicePresetDefinition(resolveServicePreset(preset), space, args.values));
-  } else if (typeof args.values.file === "string") { const file = args.values.file; definition = forName(() => importServiceDefinition(resolve(file), space)); }
+  } else if (imported !== undefined) definition = imported;
   else {
     const available = servicePresets();
     const choice = available.length ? await prompts.select({ message: "Definition source", options: [{ value: "file:", label: "Import a version-1 definition file" }, ...available.map((row) => ({ value: `preset:${row.preset.name}`, label: oneLine(row.preset.name), hint: oneLine(row.preset.summary) }))] }) : "file:";

@@ -100,12 +100,12 @@ export async function runLog(ep: CotalEndpoint, space: string, tapSubject?: stri
   view.on("entry", (e) => print(feedLine(e as FeedEntry, ascii)));
   await view.start();
   console.log(c.dim(`watching space ${c.bold(space)} - Ctrl-C to stop\n`));
-  const shutdown = async () => {
+  const shutdown = async (code: number) => {
     await view.stop();
-    process.exit(0);
+    process.exit(code);
   };
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown(130));
+  process.on("SIGTERM", () => void shutdown(143));
   const refusal = await ending;
   await view.stop();
   throw refusal.failure();

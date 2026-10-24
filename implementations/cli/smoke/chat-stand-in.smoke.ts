@@ -111,6 +111,31 @@ if (mode === "plain" || mode === "stdio") {
     check("--plain prints the header and messages with no non-ASCII punctuation", !/[^\x00-\x7F]/.test(printed) && /^me - local\.k3j2 - session \.\.\.[A-Z0-9]+ - /m.test(printed) && /hello 1/.test(printed), printed.slice(0, 600));
   }
 
+  console.log("1c. --plain drafts: a slash command at the question runs, and a replaced or unfinished draft is named");
+  {
+    const transcript = async (lines: readonly string[], initialRecipient?: { kind: "channel"; channel: string }): Promise<string> => {
+      const { session } = standIn({ retirement: "retired", connectionClosed: "confirmed", message: "" });
+      const input = new PassThrough();
+      const output = new PassThrough();
+      let printed = "";
+      output.setEncoding("utf8").on("data", (d: string) => { printed += d; });
+      const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY, ...(initialRecipient ? { initialRecipient } : {}) });
+      for (const line of lines) input.write(`${line}\n`);
+      input.end();
+      await run;
+      return printed;
+    };
+    // /help at the question used to be the answer that kept the draft, so it never ran.
+    const drafts = await transcript(["draft line one", "/help", "n", "second draft", "n", ":multi", "multi a", "multi b"], { kind: "channel", channel: "general" });
+    const asks = drafts.split("\n").filter((l) => l.startsWith("send to #general?")).length;
+    check("a slash command at the question runs and the question is asked again", drafts.includes("commands: /who") && asks === 3, drafts);
+    check("a new draft that replaces a kept one says so, with the kept one's length", drafts.includes("this replaces the kept draft (14 characters)"), drafts);
+    check("an unfinished :multi at end of input is reported with its size",
+      drafts.includes("unfinished multi-line draft discarded at end of input (2 lines, 15 characters; content not repeated)") && drafts.includes("unsent draft discarded at end of input (12 characters"), drafts);
+    const none = await transcript([]);
+    check("with no recipient, line mode names :to, not the Tab key", none.includes("to no recipient (:to)") && !none.includes("(Tab)"), none);
+  }
+
   console.log("2. a reader that closes the output still closes the session");
   /** Run one front end as a child and close its stdout pipe at once. Its stdin stays open. */
   const run = (frontEnd: "plain" | "stdio"): Promise<{ code: number | null; stderr: string }> =>
@@ -144,6 +169,7 @@ if (mode === "plain" || mode === "stdio") {
     const session = (read: string[], post: string[]) => new NativeChatSession({
       endpoint, identity: { ...identity, mode: "static", allowSubscribe: read, allowPublish: post },
       retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "" }),
+      reopen: (channel) => `cotal chat ${channel} --stdio`,
     });
     const none = session([], []);
     const sent = await none.send("hi", "review", []);
@@ -151,7 +177,7 @@ if (mode === "plain" || mode === "stdio") {
     const moded = await none.setChannelMode("review", "quiet");
     check("a session opened on no channel refuses a send, a join and a channel mode as permission denials",
       [sent, joined, moded].every((r) => r.outcome === "refused" && r.code === "PERMISSION_DENIED"), [sent, joined, moded]);
-    check("...says it was opened on no channel", sent.outcome === "refused" && /opened on no channel/.test(sent.message), sent);
+    check("...says it was opened on no channel and names the session's reopen command", sent.outcome === "refused" && /opened on no channel/.test(sent.message) && sent.message.includes("run cotal chat review --stdio to open"), sent);
     check("...and never called the endpoint", calls.length === 0, calls);
     const general = session(["general"], ["general"]);
     const other = await general.join("other");
@@ -172,7 +198,7 @@ if (mode === "plain" || mode === "stdio") {
       presenceView: () => ({ state: "current" }),
       unicastAttributed: async (to: string) => { sent.push(to); return { msg: { id: `d${sent.length}` }, ack: { seq: sent.length, duplicate: false } }; },
     } as unknown as CotalEndpoint;
-    const session = new NativeChatSession({ endpoint, identity, retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "" }) });
+    const session = new NativeChatSession({ endpoint, identity, retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "" }), reopen: (channel) => `cotal chat ${channel}` });
     const typed = parseRecipient("@u_z.alice");
     const viaView = typed.ok ? await publish(session, typed.recipient, "for alice") : undefined;
     check("an @ target that parses as a principal is sent to that principal, absent and unheard",
@@ -190,7 +216,7 @@ if (mode === "plain" || mode === "stdio") {
     const consumerGone = new JetStreamApiError({ code: 404, err_code: 10014, description: "consumer not found" });
     const lostSession = () => {
       const endpoint = Object.assign(new EventEmitter(), { stop: async () => {} }) as unknown as CotalEndpoint;
-      const session = new NativeChatSession({ endpoint, identity: { ...identity, mode: "static" }, retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "retired" }) });
+      const session = new NativeChatSession({ endpoint, identity: { ...identity, mode: "static" }, retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "retired" }), reopen: (channel) => `cotal chat ${channel}` });
       const events: SessionEvent[] = [];
       session.subscribe((e) => events.push(e));
       return { endpoint: endpoint as unknown as EventEmitter, session, events };
@@ -299,10 +325,10 @@ if (mode === "plain" || mode === "stdio") {
       readHistory: async () => { reads.push("readHistory"); return page; },
     }) as unknown as CotalEndpoint;
     const retire = async (): Promise<CloseReport> => ({ retirement: "retired", connectionClosed: "confirmed", message: "" });
-    const open = await new NativeChatSession({ endpoint, identity: { ...identity, mode: "open" }, retire }).history("general", 50);
+    const open = await new NativeChatSession({ endpoint, identity: { ...identity, mode: "open" }, retire, reopen: (channel) => `cotal chat ${channel}` }).history("general", 50);
     check("an open session's /history reads the channel's stream, which needs no delivery daemon", open.outcome === "ok" && reads.join() === "channelHistoryPage", { open, reads });
     reads.length = 0;
-    const admitted = await new NativeChatSession({ endpoint, identity: { ...identity, mode: "static" }, retire }).history("general", 50);
+    const admitted = await new NativeChatSession({ endpoint, identity: { ...identity, mode: "static" }, retire, reopen: (channel) => `cotal chat ${channel}` }).history("general", 50);
     check("a static session's /history still reads through the delivery daemon", admitted.outcome === "ok" && reads.join() === "readHistory", { admitted, reads });
   }
 

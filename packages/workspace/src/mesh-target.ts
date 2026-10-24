@@ -1,9 +1,9 @@
 import { existsSync, lstatSync, readFileSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
-import { accountInventory, authDir, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, soleSpaceOf, stackJournalPath, userAuthSpacesOnDisk } from "./auth-paths.js";
+import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootPathProblem, soleSpaceOf, stackJournalPath, userAuthSpacesOnDisk } from "./auth-paths.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
-import { recordOperationWarning } from "./output.js";
+import { recordOperationSpaceNote, recordOperationWarning } from "./output.js";
 import { parsePid, probeLiveness, readPidfile } from "./pid.js";
 import { findPreparedSpace, preparedSpaceAt } from "./prepared-spaces.js";
 import {
@@ -16,7 +16,7 @@ import {
   type MeshEntry,
   type UserAuthInfo,
 } from "./mesh-registry.js";
-import { ProtectedRecordStore } from "./protected-records.js";
+import { ProtectedRecordStore, shellPath } from "./protected-records.js";
 import { rootNamesNoSpace } from "./space.js";
 
 /**
@@ -137,6 +137,12 @@ export interface MeshTargetErrorDetails {
   stackSpace?: string;
   /** For `not-started`: the Cotal home in use, when the root's stack runs under another one. */
   home?: string;
+  /** For `not-started` on a stack root whose journal another folder recorded, as a copy or a moved
+   *  folder keeps it: that folder. */
+  recordedRoot?: string;
+  /** For `not-started` in a folder whose stack journal another folder recorded: the next step that
+   *  `up` and `down` name there too, from {@link stackElsewhereRemedy}. */
+  stackRemedy?: string;
   /** For `not-started` on a prepared space: its root no longer exists, so `up` cannot start it there. */
   rootMissing?: boolean;
   /** For `not-started` on a root with no registration: `server` is the broker its last start
@@ -327,11 +333,16 @@ export function isGenuineSpace(root: string): boolean {
 }
 
 /** Refuses `space` when it is prepared and not started, before anything dials the address it would
- *  have: another broker may answer there. */
-function notStarted(space: string): void {
+ *  have: another broker may answer there. Run from `cwd` in the folder its missing root was moved to,
+ *  whose stack journal names that root, it names the next step `up` and `down` name there. */
+function notStarted(space: string, cwd?: string): void {
   const prepared = findPreparedSpace(space);
   if (!prepared) return;
-  if (!existsSync(prepared.root)) throw new MeshTargetError("not-started", `"${space}" is prepared in ${prepared.root}, which no longer exists`, { space, root: prepared.root, rootMissing: true });
+  if (!existsSync(prepared.root)) {
+    const stack = cwd === undefined ? undefined : stackRecord(findCotalRoot(cwd));
+    const moved = stack?.stackSpace === space && stack.recordedRoot === prepared.root ? stack.stackRemedy : undefined;
+    throw new MeshTargetError("not-started", `"${space}" is prepared in ${prepared.root}, which no longer exists${moved ? ", and this folder's stack journal was recorded there, so this folder was moved from there" : ""}`, { space, root: prepared.root, rootMissing: true, ...(moved ? { stackRemedy: moved } : {}) });
+  }
   throw new MeshTargetError("not-started", `"${space}" is prepared but not started`, { space, root: prepared.root });
 }
 
@@ -356,19 +367,67 @@ export function stackRunsUnderOtherHome(root: string, journal: { space?: unknown
   }
 }
 
+/** Why `space create --adopt` may not take over a stack journal another folder recorded. */
+export interface StackAdoptionBlock { kind: "link" | "copy" | "known" | "recorded"; message: string; remedy: string }
+
+/** The member instance IDs a stack journal names, replacements included. */
+function journalInstanceIds(members: unknown): string[] {
+  if (!Array.isArray(members)) return [];
+  return members.flatMap((row) => {
+    const member = row as { instanceId?: unknown; replacement?: { instanceId?: unknown } } | null;
+    return [member?.instanceId, member?.replacement?.instanceId];
+  }).filter((id): id is string => typeof id === "string");
+}
+
+/** Why `space create --adopt` may not take over, at `root`, the stack journal that `recordedRoot`
+ *  recorded for `space` with these members: this folder's `.cotal` links to another's, the recorded
+ *  root still holds the journal, this home records one of its member instances, or the space is
+ *  prepared or registered on this machine. Undefined when it may. */
+export function stackAdoptionBlock(root: string, recordedRoot: string, space: string, members: unknown): StackAdoptionBlock | undefined {
+  const link = cotalDirLink(root);
+  if (link !== undefined) return { kind: "link", message: `${join(root, ".cotal")} is a link to ${link}, so this folder has no records of its own to adopt`, remedy: `use the stack from ${recordedRoot}, which holds it` };
+  if (existsSync(stackJournalPath(recordedRoot))) return { kind: "copy", message: `${recordedRoot} still holds the stack journal of "${space}", so this folder is a copy of a stack that runs from there`, remedy: `use the stack from ${recordedRoot}, which holds it` };
+  const instances = new ProtectedRecordStore("services", space, (value) => value, "instances");
+  const known = journalInstanceIds(members).find((id) => instances.read(id) !== undefined);
+  if (known) return { kind: "known", message: `this machine records instance ${known} of the stack that ${recordedRoot} recorded, so that stack is this machine's own`, remedy: movedRootRemedy(recordedRoot) };
+  const registered = findMesh(space), recorded = registered?.root ?? findPreparedSpace(space)?.root;
+  if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with cotal space forget ${space}, then run cotal space create ${space} --adopt --root ${shellPath(root)}` };
+  return undefined;
+}
+
+/** The next step in `root`, whose stack journal `recordedRoot` recorded for `space`, which every
+ *  command run there names. A linked `.cotal`, and a copy whose recorded folder still holds the
+ *  journal, use the stack from there. A moved folder moves back when this machine records its stack
+ *  or its space, and is adopted with `space create --adopt` when it records neither, because moving
+ *  it back would then not start it. A recorded path that `cotal up` refuses is never the way back. */
+export function stackElsewhereRemedy(root: string, recordedRoot: string, space: string, members: unknown): string {
+  if (cotalDirLink(root) !== undefined) return `use the stack from ${recordedRoot}, which holds it; this folder only links to its records`;
+  if (existsSync(stackJournalPath(recordedRoot))) return `use the stack from ${recordedRoot}, which holds it; this copy does not`;
+  let block: StackAdoptionBlock | undefined | null;
+  try { block = stackAdoptionBlock(root, recordedRoot, space, members); } catch { block = null; }
+  const adopt = block === undefined ? `adopt it with cotal space create ${space} --adopt --root ${shellPath(root)}` : block?.kind === "recorded" ? block.remedy : undefined;
+  if (adopt === undefined) return movedRootRemedy(recordedRoot);
+  if (rootPathProblem(recordedRoot) !== undefined) return `to run it from this folder, ${adopt}; cotal up refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`;
+  return block === undefined
+    ? `${adopt}; this machine records neither "${space}" nor an instance of its stack, so moving the folder back would not start it`
+    : `${movedRootRemedy(recordedRoot)}; or, to run it from this folder, ${adopt}`;
+}
+
 /** The broker and space a root's own stack journal recorded, when the root has one, and the Cotal
  *  home in use when the stack runs under another one. A journal that cannot be read still proves a
  *  broker was recorded here, so it returns neither rather than nothing. The server is only shown,
  *  never dialed. */
-function stackRecord(root: string): { server?: string; stackSpace?: string; home?: string } | undefined {
+function stackRecord(root: string): { server?: string; stackSpace?: string; home?: string; recordedRoot?: string; stackRemedy?: string } | undefined {
   const path = stackJournalPath(root);
   let file: Stats;
   try { file = lstatSync(path); } catch { return undefined; }
   if (!file.isFile() || file.size > 64 * 1024) return {};
   try {
-    const journal = JSON.parse(readFileSync(path, "utf8")) as { server?: unknown; space?: unknown; members?: unknown } | null;
+    const journal = JSON.parse(readFileSync(path, "utf8")) as { server?: unknown; space?: unknown; members?: unknown; root?: unknown } | null;
     if (!journal) return {};
-    return { ...(typeof journal.server === "string" ? { server: journal.server } : {}), ...(typeof journal.space === "string" ? { stackSpace: journal.space } : {}), ...(stackRunsUnderOtherHome(root, journal) ? { home: homeCotalDir() } : {}) };
+    const elsewhere = typeof journal.root === "string" && journal.root !== canonicalRoot(root) ? journal.root : undefined;
+    return { ...(typeof journal.server === "string" ? { server: journal.server } : {}), ...(typeof journal.space === "string" ? { stackSpace: journal.space } : {}), ...(stackRunsUnderOtherHome(root, journal) ? { home: homeCotalDir() } : {}),
+      ...(elsewhere !== undefined ? { recordedRoot: elsewhere, stackRemedy: stackElsewhereRemedy(canonicalRoot(root), elsewhere, typeof journal.space === "string" ? journal.space : "<space>", journal.members) } : {}) };
   } catch {
     return {};
   }
@@ -404,20 +463,33 @@ export function retainedLegacyBroker(root: string): { server: string; open: bool
   return server ? { server, open: true } : undefined;
 }
 
-/** The selection is the target from every folder. Inside a project whose root has registered spaces
- *  and none of them is the selection, say so before the command acts, with the `--space` that
- *  targets this folder's space instead. */
-function noteSelectionOutsideFolder(cwd: string, current: string, meshes: readonly MeshEntry[]): void {
+/** The spaces registered or prepared for the project root `cwd` is in, none outside a project. */
+function folderSpaces(cwd: string, meshes: readonly MeshEntry[]): { root: string; spaces: string[] } | undefined {
   const root = findCotalRoot(cwd);
-  if (!isGenuineSpace(root)) return;
-  const here = meshes.filter((m) => canonicalRoot(m.root) === canonicalRoot(root)).map((m) => m.space);
-  if (here.length === 0 || here.includes(current)) return;
-  const folder = here.length === 1 ? `this folder's space "${here[0]}"` : `this folder's spaces ${here.map((s) => `"${s}"`).join(", ")}`;
+  if (!isGenuineSpace(root)) return undefined;
+  const spaces = new Set(meshes.filter((m) => canonicalRoot(m.root) === canonicalRoot(root)).map((m) => m.space));
+  const prepared = preparedSpaceAt(root)?.space;
+  if (prepared !== undefined) spaces.add(prepared);
+  return { root, spaces: [...spaces].sort() };
+}
+
+/** Whether the selection is the target here. Inside a project whose root has one space, that space
+ *  is the target, and its heading says the selection applies outside the folder. A root with several
+ *  spaces, none of them the selection, keeps the selection and says so before the command acts,
+ *  with the `--space` that targets one of them instead. */
+function selectionTargetsHere(cwd: string, current: string, meshes: readonly MeshEntry[]): boolean {
+  const folder = folderSpaces(cwd, meshes);
+  if (!folder || folder.spaces.length === 0 || folder.spaces.includes(current)) return true;
+  if (folder.spaces.length === 1) {
+    recordOperationSpaceNote(folder.spaces[0]!, `this folder's space; the selected space "${current}" applies outside it`);
+    return false;
+  }
   recordOperationWarning({
     code: "SELECTION_NOT_FOLDER_SPACE",
-    target: { space: current, folderSpaces: here, root },
-    message: `this targets the selected space "${current}", not ${folder}; pass --space ${here.length === 1 ? here[0] : "<space>"} to target ${here.length === 1 ? "it" : "one of them"}`,
+    target: { space: current, folderSpaces: folder.spaces, root: folder.root },
+    message: `this targets the selected space "${current}", not this folder's spaces ${folder.spaces.map((s) => `"${s}"`).join(", ")}; pass --space <space> to target one of them`,
   });
+  return true;
 }
 
 /** The one registration recorded for `root`, if any. A broker that runs several spaces records one
@@ -437,18 +509,16 @@ function registrationAt(root: string, meshes: readonly MeshEntry[]): MeshEntry |
 
 /**
  * The space a `--creds` command that names neither `--space` nor `--server` addresses, in
- * {@link resolveMeshTarget}'s order: the selected space, else the space this folder's project is
- * registered, set up or prepared as. `undefined` leaves the caller's default. It reads no trust,
- * because the credential is the caller's own, and it never takes the only running space, because a
- * credential goes only to a broker the caller paired it with.
+ * {@link resolveMeshTarget}'s order: the selected space, unless this folder's project has one other
+ * space, else the space this folder's project is registered, set up or prepared as. `undefined`
+ * leaves the caller's default. It reads no trust, because the credential is the caller's own, and it
+ * never takes the only running space, because a credential goes only to a broker the caller paired
+ * it with.
  */
 export function credsSpace(cwd: string): { space: string; selected: boolean } | undefined {
   const meshes = loadMeshes();
   const current = getCurrent();
-  if (current) {
-    noteSelectionOutsideFolder(cwd, current, meshes);
-    return { space: current, selected: true };
-  }
+  if (current && selectionTargetsHere(cwd, current, meshes)) return { space: current, selected: true };
   const root = findCotalRoot(cwd);
   if (!isGenuineSpace(root)) return undefined;
   assertRootIsSingleTenant(root);
@@ -460,9 +530,10 @@ export function credsSpace(cwd: string): { space: string; selected: boolean } | 
  * Resolve the mesh target by precedence (first match wins):
  *  1. `--space` — registry lookup (errors if that space isn't running).
  *  2. `--server` — registry entry on that server (for creds/personas), else the local project.
- *  3. The `current` selected by `cotal use`, from any directory. It stays the target when its broker
- *     is down, and a selection that names no registration refuses rather than reaching another mesh.
- *     Inside a project whose root has a different registered space, the run warns first.
+ *  3. The `current` selected by `cotal use`, except inside a project whose root has one space other
+ *     than it, where step 4 applies. It stays the target when its broker is down, and a selection
+ *     that names no registration refuses rather than reaching another mesh. Inside a project whose
+ *     root has several spaces, none of them the selection, the run warns first.
  *  4. A genuine local project (`cwd` walks up to a real `.cotal/`).
  *  5. The registry's *running* meshes: 0 ⇒ error; 1 ⇒ use it; N ⇒ error naming
  *     each + its root. `flags.offline` (from a sweep) is excluded here; a named `--space` and
@@ -477,7 +548,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
   if (flags.space) {
     const m = findMesh(flags.space);
     if (!m) {
-      notStarted(flags.space);
+      notStarted(flags.space, cwd);
       throw new MeshTargetError("unknown-space", `no mesh named "${flags.space}" is running`, {
         requested: flags.space,
       });
@@ -516,11 +587,10 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
 
   const meshes = loadMeshes();
   const current = getCurrent();
-  if (current) {
-    noteSelectionOutsideFolder(cwd, current, meshes);
+  if (current && selectionTargetsHere(cwd, current, meshes)) {
     const cur = meshes.find((m) => m.space === current);
     if (!cur) {
-      notStarted(current);
+      notStarted(current, cwd);
       throw new MeshTargetError("unknown-space", `the selected space "${current}" is not registered here`, { requested: current, selected: true });
     }
     // A selected space whose broker is down is still the target: the preflight reports it not

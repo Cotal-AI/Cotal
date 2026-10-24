@@ -80,12 +80,13 @@ const refusedUsage = (message: string) => ({ outcome: "refused" as const, code: 
 /**
  * Refuse a channel outside the session's read or post grant before any effect, so the broker's
  * refusal and its subject never reach the caller. A session opened on no channel holds no grant,
- * and the refusal says how to open one that does. The broker remains the enforcement point.
+ * and the refusal names `reopen`'s command, which opens one that does. The broker remains the
+ * enforcement point.
  */
-export function grantRefusal(grant: readonly string[], channel: string, use: "read" | "post"): Refused | undefined {
+export function grantRefusal(grant: readonly string[], channel: string, use: "read" | "post", reopen: (channel: string) => string): Refused | undefined {
   if (channelInAllow([...grant], channel)) return undefined;
   const message = grant.length === 0
-    ? `this session was opened on no channel, so it cannot ${use === "read" ? "read" : "post to"} #${channel}. Leave and run cotal chat ${channel} to open a session on it`
+    ? `this session was opened on no channel, so it cannot ${use === "read" ? "read" : "post to"} #${channel}. Leave and run ${reopen(channel)} to open a session on it`
     : `#${channel} is outside this session's ${use} grant`;
   return { outcome: "refused", code: "PERMISSION_DENIED", message };
 }
@@ -147,6 +148,8 @@ export interface NativeSessionInputs {
   readonly identity: SessionIdentity;
   /** The admission adapter's own retirement call. This module only invokes it. */
   readonly retire: () => Promise<CloseReport>;
+  /** The command that opens a session on a channel with the flags this one was started with. */
+  readonly reopen: (channel: string) => string;
 }
 
 export class NativeChatSession implements AdmittedChatSession {
@@ -217,7 +220,7 @@ export class NativeChatSession implements AdmittedChatSession {
 
   async send(text: string, channel: string, mentions: readonly string[]): Promise<PublishResult> {
     if (!isConcreteChannel(channel)) return refusedUsage("a send needs a concrete channel");
-    const outside = grantRefusal(this.inputs.identity.allowPublish, channel, "post");
+    const outside = grantRefusal(this.inputs.identity.allowPublish, channel, "post", this.inputs.reopen);
     if (outside) return outside;
     let registered: boolean;
     try {
@@ -285,7 +288,7 @@ export class NativeChatSession implements AdmittedChatSession {
 
   async setChannelMode(channel: string, mode: "quiet" | "muted" | "normal"): Promise<Result<void>> {
     if (!isConcreteChannel(channel)) return refusedUsage("a channel mode needs a concrete channel");
-    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read");
+    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read", this.inputs.reopen);
     if (outside) return outside;
     // Local first, as for attention; the presence mirror is advisory (endpoint.ts:2874-2877).
     this.engine.setChannelMode(channel, mode);
@@ -293,7 +296,7 @@ export class NativeChatSession implements AdmittedChatSession {
   }
 
   async join(channel: string): Promise<Result<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }>> {
-    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read");
+    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read", this.inputs.reopen);
     if (outside) return outside;
     return this.call(() => this.inputs.endpoint.joinChannel(channel));
   }

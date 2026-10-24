@@ -54,12 +54,12 @@ type Item = { seq: number | null; id: string; ts: string; channel: string | null
 type Result = {
   kind: string;
   channels: string[];
-  window: { limit: number; read: number; olderRetained: boolean | null; reachesSince: boolean | null };
+  window: { limit: number; read: number; olderRetained: boolean | null; since: string | null; reachesSince: boolean | null };
   retention: { perSender: number | null; gaps: { channel: string; name: string | null; retained: number }[] } | null;
   replay: { channel: string; replay: boolean | null }[];
   items: Item[];
 };
-type Envelope = { outcome: string; completeness: string; command: string; target: unknown; result: Result | null; warnings: { code: string }[]; error?: { code: string; message: string; remedy?: string } };
+type Envelope = { outcome: string; completeness: string; command: string; target: unknown; result: Result | null; warnings: { code: string; message: string }[]; error?: { code: string; message: string; remedy?: string } };
 
 const space = `histsmoke-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
@@ -96,9 +96,9 @@ for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_") || key ===
 // Usage telemetry is off: in a fresh home on a terminal it would also print its one-time notice.
 const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
 
-const run = (args: string[], cwd = shell): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
+const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
   new Promise((resolve) => {
-    execFile(process.execPath, [BIN, ...args], { cwd, env: isolatedEnv, timeout: 120_000 }, (err, stdout, stderr) => {
+    execFile(process.execPath, [BIN, ...args], { cwd, env: { ...isolatedEnv, ...extra }, timeout: 120_000 }, (err, stdout, stderr) => {
       const lines = stdout.split("\n").filter(Boolean);
       const envelope = lines.length === 1 && lines[0]!.startsWith("{") ? (JSON.parse(lines[0]!) as Envelope) : undefined;
       resolve({ status: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr, envelope });
@@ -203,10 +203,28 @@ try {
 
   const bySeq = await run(["history", "general", "--since", String(items[0]?.seq), "--json"]);
   check("--since a sequence keeps only later messages", JSON.stringify(texts(bySeq)) === JSON.stringify(["looks good", "deploy finished"]) && bySeq.envelope?.result?.window.reachesSince === true, texts(bySeq));
+  // A bare number is a sequence, so a year reads as one; the report used to name no filter at all,
+  // and a year past the newest sequence read as an empty window.
+  const [seqPlain, yearJson] = await Promise.all([run(["history", "general", "--since", String(items[0]?.seq), "--plain"]), run(["history", "general", "--since", "2026", "--json"])]);
+  check("a sequence --since is named in the report", seqPlain.stdout.includes(`--since ${items[0]?.seq} is chat stream sequence ${items[0]?.seq}; only messages after it are shown\n`), shown(seqPlain));
+  check("a bare number past the newest sequence is refused USAGE_INVALID with that sequence and how to write a date",
+    yearJson.status === 1 && /^--since 2026 is past the chat stream's newest sequence, \d+, so it names no message$/.test(yearJson.envelope?.error?.message ?? "") && /^give a sequence up to \d+, or write a date in full, such as 2026-01-01$/.test(yearJson.envelope?.error?.remedy ?? ""), shown(yearJson));
   const byTime = await run(["history", "general", "--since", midpoint, "--json"]);
   check("--since a time keeps only messages after it", JSON.stringify(texts(byTime)) === JSON.stringify(["deploy finished"]), texts(byTime));
+  // A bare date is local midnight. ECMAScript reads it as UTC, so east of UTC it dropped the day's
+  // first hours. Etc/GMT-14 is UTC+14.
+  const east = { TZ: "Etc/GMT-14" };
+  const [dayJson, dayPlain] = await Promise.all([run(["history", "general", "--since", "2026-01-15", "--json"], shell, east), run(["history", "general", "--since", "2026-01-15", "--plain"], shell, east)]);
+  check("--since a bare date is local midnight, and the report names the instant it resolved to",
+    dayJson.envelope?.result?.window.since === "2026-01-14T10:00:00.000Z" && dayPlain.stdout.includes("--since 2026-01-15 is ") && dayPlain.stdout.includes("local time (2026-01-14T10:00:00.000Z); only messages after it are shown"), { json: dayJson.envelope?.result?.window, plain: shown(dayPlain) });
   const narrow = await run(["history", "general", "--limit", "1", "--since", String(items[0]?.seq), "--json"]);
   check("a window that does not reach back to --since says so", narrow.envelope?.result?.window.reachesSince === false, narrow.envelope?.result?.window);
+  const hashed = await run(["history", "#general", "--json"]);
+  check("#general reads the same channel as general", JSON.stringify(texts(hashed)) === JSON.stringify(texts(general)) && hashed.envelope?.result?.channels[0] === "general", shown(hashed));
+  // A channel the space lacks used to report the space's replay default as if it existed.
+  const lacking = await run(["history", "nosuch", "--json"]);
+  check("a channel with no messages and no saved entry warns CHANNEL_NOT_FOUND, shows no replay policy, and is still complete",
+    lacking.status === 0 && lacking.envelope?.completeness === "complete" && lacking.envelope.warnings.some((w) => w.code === "CHANNEL_NOT_FOUND") && lacking.envelope.result?.replay.length === 0, shown(lacking));
   const fromBob = await run(["history", "--from", "bob", "--json"]);
   check("--from keeps one sender's messages", JSON.stringify(texts(fromBob)) === JSON.stringify(["looks good", "paging ops"]), texts(fromBob));
   const grep = await run(["history", "--grep", "DEPLOY", "--json"]);
@@ -236,6 +254,16 @@ try {
   const unavailable = `nats://127.0.0.1:${await pickFreePort()}`;
   const tooOld = await run(["history", "--since", "999999999999999999999999999999999999999999999999d", "--server", unavailable, "--json"]);
   check("an unrepresentable --since age is a usage error before connecting", tooOld.status === 1 && tooOld.envelope?.error?.code === "USAGE_INVALID", shown(tooOld));
+  // A value that starts with a dash used to be refused by the parser as "ambiguous", and a channel
+  // with `*` or a leading `#` got the subject grammar's reason.
+  const [negLimit, negSince, starred] = await Promise.all([["--limit", "-1"], ["--since", "-5"], ["gen*"]].map((args) => run(["history", ...args, "--server", unavailable, "--json"])));
+  check("a negative --limit or --since gets the flag's own rule, before connecting",
+    negLimit.status === 1 && negLimit.envelope?.error?.message === '--limit takes a whole number from 1 to 1000, not "-1"'
+      && negSince.status === 1 && negSince.envelope?.error?.message === '--since takes a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence, not "-5"', { negLimit: shown(negLimit), negSince: shown(negSince) });
+  check("a channel holding * is refused with the wildcard sentence, before connecting",
+    starred.status === 1 && starred.envelope?.error?.message === "name one concrete channel, without wildcards", shown(starred));
+  const notADay = await run(["history", "--since", "2026-02-30", "--server", unavailable, "--json"]);
+  check("a --since date that is not on the calendar is a usage error before connecting", notADay.status === 1 && notADay.envelope?.error?.message === "--since 2026-02-30 is not a calendar date", shown(notADay));
   const unsafeSequence = await run(["history", "--since", "9007199254740993", "--server", unavailable, "--json"]);
   check("an inexact --since sequence is a usage error before connecting", unsafeSequence.status === 1 && unsafeSequence.envelope?.error?.code === "USAGE_INVALID", shown(unsafeSequence));
 
@@ -310,6 +338,24 @@ try {
   } finally {
     inHome(() => setCurrent(space));
   }
+  // An agent's credential reads one channel at a time through its own history consumer, and a
+  // channel its grant leaves out is refused with the grant it holds.
+  const agentCreds = join(home, "agent.creds");
+  writeFileSync(agentCreds, await provisionAgent(provisioner, auth, newIdentity(), { lifecycleUid: mintLifecycleUid(), subscribe: [], allowSubscribe: ["general"], allowPublish: ["general"] }), { mode: 0o600 });
+  const byAgent = await run(["history", "general", "--json", "--creds", agentCreds]);
+  check("an agent credential whose grant names #general reads it", byAgent.status === 0 && JSON.stringify(texts(byAgent)) === JSON.stringify(["deploy started", "looks good", "deploy finished"]), shown(byAgent));
+  const outside = await run(["history", "ops", "--json", "--creds", agentCreds]);
+  check("a channel its grant leaves out is PERMISSION_DENIED, quoting the grant it holds",
+    outside.status === 2 && outside.envelope?.error?.code === "PERMISSION_DENIED" && outside.envelope.error.message === `this credential may not read #ops in ${space}: its history grant is #general`, shown(outside));
+  const everyAgent = await run(["history", "--json", "--creds", agentCreds]);
+  check("with no channel named, it reads #general and names #ops as denied, quoting the grant",
+    everyAgent.status === 4 && JSON.stringify(texts(everyAgent)) === JSON.stringify(["deploy started", "looks good", "deploy finished"]) &&
+      (everyAgent.envelope?.warnings ?? []).some((w) => w.code === "CHANNELS_DENIED" && w.message.endsWith("; its history grant is #general")), shown(everyAgent));
+  const ungranted = join(home, "agent-none.creds");
+  writeFileSync(ungranted, await provisionAgent(provisioner, auth, newIdentity(), { lifecycleUid: mintLifecycleUid(), subscribe: [], allowSubscribe: [], allowPublish: ["general"] }), { mode: 0o600 });
+  const none = await run(["history", "general", "--json", "--creds", ungranted]);
+  check("an agent credential whose grant names no channel is refused with that grant, before any read names a subject",
+    none.status === 2 && none.envelope?.error?.code === "PERMISSION_DENIED" && none.envelope.error.message === `this credential may not read #general in ${space}: its history grant is no channel`, shown(none));
 
   // ── a write the broker refuses for the credential's grant applied nothing ───────────────────────
   // An observer credential may read but not write channel metadata or purge history. Each refusal
@@ -341,7 +387,7 @@ try {
   check("a message sent while following is one event record", event && records().filter((r) => r.type === "event").map((r) => r.data.text).join() === "live one", f.lines);
   f.child.kill("SIGINT");
   const code = await f.exited;
-  check("an interrupted follow ends with an end record and exit 0", code === 0 && records().at(-1)?.type === "end" && records().at(-1)?.data.reason === "interrupted", { code, last: f.lines.at(-1), stderr: f.stderr() });
+  check("an interrupted follow ends with an end record and exit 130", code === 130 && records().at(-1)?.type === "end" && records().at(-1)?.data.reason === "interrupted", { code, last: f.lines.at(-1), stderr: f.stderr() });
   check("every follow line is one parseable stream record", f.lines.every((l) => { try { const r = JSON.parse(l); return r.schemaVersion === 1 && r.stream === "history"; } catch { return false; } }), f.lines);
 
   const fp = follow(["history", "--follow", "--plain", "--grep", "plain"]);
@@ -351,8 +397,14 @@ try {
   const shownLine = await fp.until((l) => l.includes("a plain line"));
   fp.child.kill("SIGINT");
   await fp.exited;
-  check("--follow --plain appends each matching message as a line", shownLine && fp.lines.some((l) => /#ops\s+bob: a plain line/.test(l)) && !fp.lines.some((l) => l.includes("filtered out")), fp.lines.slice(-4));
-  check("a followed line shows the local time, not the ISO time", fp.lines.some((l) => /bob: a plain line/.test(l) && !/^\d{4}-\d\d-\d\dT/.test(l)), fp.lines.slice(-4));
+  // A followed line is written as watch --plain writes one: [space] time, sender, destination, text.
+  const scriptShape = (l: string, sender: string, destination: string, text: string) => new RegExp(`^\\[${space}\\] \\d\\d:\\d\\d:\\d\\d  ${sender}  ${destination}  ${text}$`).test(l);
+  check("--follow --plain appends each matching message as a line in watch --plain's form", shownLine && fp.lines.some((l) => scriptShape(l, "bob", "#ops", "a plain line")) && !fp.lines.some((l) => l.includes("filtered out")), fp.lines.slice(-4));
+  const prefill = follow(["history", "general", "--follow", "--plain", "--limit", "1"]);
+  const prefilled = await prefill.until((l) => /replay to new members/.test(l));
+  prefill.child.kill("SIGINT");
+  await prefill.exited;
+  check("a follow prints its window in the same form as its live lines", prefilled && prefill.lines.some((l) => scriptShape(l, "\\S+", "#general", ".+")) && !prefill.lines.some((l) => /^TIME\s+WHERE/.test(l)), prefill.lines);
 
   // A follow whose credential expires ends on its own, with the refusal a one-shot read of that file gets.
   const brief = join(home, "brief.creds");
@@ -477,12 +529,24 @@ try {
   {
     const bare = await run(["history", "general", "--space", bareSpace, "--json"]);
     const r = bare.envelope?.result;
-    check("a space with no channel registry has the built-in replay policy, and the read is complete", bare.status === 0 && bare.envelope?.completeness === "complete" && JSON.stringify(r?.replay) === JSON.stringify([{ channel: "general", replay: true, window: null }]) && r?.items.length === 0, shown(bare));
+    // The missing registry bucket reads as the built-in policy with no REPLAY_UNREAD. With no messages
+    // and no saved entry, #general is a channel this space lacks, so no policy is shown for it.
+    check("a space with no channel registry reads cleanly, and its empty #general is CHANNEL_NOT_FOUND with no replay policy",
+      bare.status === 0 && bare.envelope?.completeness === "complete" && JSON.stringify(r?.replay) === "[]" && r?.items.length === 0
+        && JSON.stringify(bare.envelope.warnings.map((w) => w.code)) === JSON.stringify(["CHANNEL_NOT_FOUND"]), shown(bare));
   }
 
   // ── channel remove says whether it removed a saved entry, and refuses a name the space lacks ──
   {
     const removedOf = (r: { envelope?: Envelope }) => (r.envelope?.result as { removed?: boolean } | null | undefined)?.removed;
+    // The receipt used to print the stored values raw: `Replay: false` and `DeliveryClass: durable`.
+    const saved = await run(["channel", "set", "general", "--no-replay", "--delivery", "durable", "--space", space, "--plain"]);
+    check("a channel set receipt says replay on or off and labels the delivery class as channel show does",
+      saved.status === 0 && /^\s+Replay:\s+off$/m.test(saved.stdout) && /^\s+Delivery:\s+durable$/m.test(saved.stdout) && !saved.stdout.includes("DeliveryClass") && !/Replay:\s+false/.test(saved.stdout), shown(saved));
+    // The same set again used to rewrite the entry and report it saved.
+    const [resetJson, resetPlain] = await Promise.all(["--json", "--plain"].map((format) => run(["channel", "set", "general", "--no-replay", "--delivery", "durable", "--space", space, format])));
+    check("repeating a channel set whose values already hold is a no-op that says nothing was written",
+      resetJson.status === 0 && resetJson.envelope?.outcome === "no-op" && resetPlain.stdout.includes("Channel unchanged - #general") && resetPlain.stdout.includes("#general already holds every value given, so nothing was written."), { json: shown(resetJson), plain: shown(resetPlain) });
     const removed = await run(["channel", "remove", "ops", "--yes", "--space", space, "--json"]);
     check("removing a saved channel is ok and says it removed the entry", removed.status === 0 && removed.envelope?.outcome === "ok" && removedOf(removed) === true, shown(removed));
     // history clear above left #ops with no retained message, so with its entry gone the space lacks it.
@@ -543,7 +607,7 @@ try {
   check("a user naming a channel outside the grant is refused with PERMISSION_DENIED", refused === "PERMISSION_DENIED", refused);
   const dmRefused = await readWindow(ep, conn, { ...req, dms: true }).then(() => undefined, (e: { code?: string }) => e.code);
   check("a user asking for DMs is refused with PERMISSION_DENIED", dmRefused === "PERMISSION_DENIED", dmRefused);
-  const seqRefused = await readWindow(ep, conn, { ...req, since: { kind: "seq", seq: 3, text: "3" } }).then(() => undefined, (e: { code?: string }) => e.code);
+  const seqRefused = await readWindow(ep, conn, { ...req, since: { kind: "seq", seq: 3, text: "3", input: "3" } }).then(() => undefined, (e: { code?: string }) => e.code);
   check("a user asking for --since a sequence is refused with UNSUPPORTED", seqRefused === "UNSUPPORTED", seqRefused);
 }
 

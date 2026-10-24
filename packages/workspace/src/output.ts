@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { FlagSpec, OutputMode } from "@cotal-ai/core";
+import { terminalWidth, wrapWords } from "./text-wrap.js";
 
 /**
  * The structured output contract every command surface shares: one version 1 envelope per finite
@@ -166,9 +167,10 @@ export function isCommandFailure(e: unknown): e is CommandFailure {
   return typeof e === "object" && e !== null && (e as { [FAILURE_BRAND]?: unknown })[FAILURE_BRAND] === true;
 }
 
-/** The space one command run resolved, as {@link recordOperationSpace} set it, and the warnings
+/** The space one command run resolved, as {@link recordOperationSpace} set it, the note
+ *  {@link recordOperationSpaceNote} recorded on how it was chosen, and the warnings
  *  {@link recordOperationWarning} recorded. */
-export interface OperationScope { space?: string; warnings?: OutputWarning[] }
+export interface OperationScope { space?: string; spaceNote?: { space: string; text: string }; warnings?: OutputWarning[] }
 
 // Kept on a global key so two copies of this module share one scope, as the failure brand does.
 const operationScope = ((globalThis as { [key: symbol]: unknown })[Symbol.for("cotal.operationScope")] ??= new AsyncLocalStorage<OperationScope>()) as AsyncLocalStorage<OperationScope>;
@@ -186,6 +188,19 @@ export function recordOperationSpace(space: string): void {
   if (scope) scope.space = space;
 }
 
+/** Record how this command's operation chose `space`, for its `Mesh:` heading to show under the
+ *  name. Outside {@link runOperation} it does nothing. */
+export function recordOperationSpaceNote(space: string, text: string): void {
+  const scope = operationScope.getStore();
+  if (scope) scope.spaceNote = { space, text };
+}
+
+/** The note this run recorded for `space`, if any. */
+export function operationSpaceNote(space: string): string | undefined {
+  const note = operationScope.getStore()?.spaceNote;
+  return note?.space === space ? note.text : undefined;
+}
+
 /** Record a warning about what this command's operation resolved. It is printed on stderr at once,
  *  before the command acts on it, and every envelope of the run carries it. A warning already
  *  recorded in this run is not repeated. Outside {@link runOperation} it does nothing. */
@@ -193,7 +208,9 @@ export function recordOperationWarning(warning: OutputWarning): void {
   const scope = operationScope.getStore();
   if (!scope || scope.warnings?.some((w) => w.code === warning.code && w.message === warning.message)) return;
   (scope.warnings ??= []).push(warning);
-  process.stderr.write(`! ${warning.message}\n`);
+  // Wrapped to the terminal like the report it precedes, each continuation line under the text.
+  const lines = wrapWords(warning.message, terminalWidth(process.stderr) - 2);
+  process.stderr.write(`${lines.map((line, i) => `${i === 0 ? "!" : " "} ${line}`).join("\n")}\n`);
 }
 
 /** The warnings this command run recorded so far, none outside {@link runOperation}. */

@@ -74,7 +74,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
   }
   if (sub === "create") {
     const expected = readPersonaSource(path);
-    if (expected !== undefined) throw new CommandFailure("refused", "CONFLICT", `persona '${name}' already exists`);
+    if (expected !== undefined) throw new CommandFailure("refused", "CONFLICT", `persona '${name}' already exists`, { remedy: `change it with cotal persona edit ${name}, or remove it with cotal persona remove ${name} first` });
     const bytes = createSource(name!, path, values);
     commitPersona(path, expected, bytes);
     return receipt(presentation, catalog, name!, path, "created");
@@ -148,7 +148,9 @@ function list(catalog: PersonaCatalog, presentation: Presentation): void {
   const malformed = entries.filter(entry => entry.error);
   writeResult(presentation, {
     command: "persona", target: catalog, result: { kind: "personas", items }, completeness: malformed.length ? "partial" : "complete",
-    warnings: malformed.map(entry => ({ code: "SCHEMA_INVALID", target: { name: entry.name, path: entry.path }, message: `cannot parse persona '${entry.name}' at ${entry.path}` })),
+    warnings: malformed.map(entry => entry.notRegular
+      ? { code: "PERMISSION_DENIED", target: { name: entry.name, path: entry.path }, message: `${entry.error}; it was not read` }
+      : { code: "SCHEMA_INVALID", target: { name: entry.name, path: entry.path }, message: `cannot parse persona '${entry.name}' at ${entry.path}${entry.encoding ? `: ${entry.encoding}; save it as UTF-8` : ""}` }),
     ...(malformed.length ? { partial: { message: "some persona definitions could not be read" } } : {}),
   }, result => ({ sections: [
     { title: "Personas", blocks: [

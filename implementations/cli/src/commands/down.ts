@@ -81,7 +81,7 @@ import {
 } from "@cotal-ai/core";
 import { localProcessSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
-import { cotalRoot } from "../lib/paths.js";
+import { cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
 import { parsePid, probeLiveness, readPidfile } from "@cotal-ai/workspace";
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
@@ -147,6 +147,9 @@ export function validateDownArguments(args: ParsedArgs): void {
     for (const name of args.positionals) validateServiceArguments({ ...args, positionals: ["stop", name] });
     return;
   }
+  // A `.cotal` that is a link, or leads nowhere, is refused before anything reads through it.
+  const linked = linkedCotalRefusal("down");
+  if (linked) throw linked;
   if (args.values.instance !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--instance needs one explicit service definition name");
   if (goneRootDown(args.values)) return validateGoneRootDownArguments(args.values);
   if (controllerStackRecorded(cotalRoot())) return validateStackDownArguments(cotalRoot(), args.values);

@@ -1,5 +1,6 @@
 import { brokerAddressForDisplay } from "./broker-display.js";
 import { userCotalDir } from "./mesh-registry.js";
+import { shellPath } from "./protected-records.js";
 import type { MeshTarget, MeshTargetError } from "./mesh-target.js";
 import type { PreflightFailure } from "./preflight.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS } from "./preflight.js";
@@ -79,13 +80,19 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
       // and `up` there refuses until `space create` prepares the journal's space at that root again. A
       // stack running under another Cotal home names the home in use, because `up` there refuses. A
       // root whose last start configured a broker names that broker, and `up` there starts it again.
+      // A folder moved from a prepared space's missing root, or holding a journal another folder
+      // recorded, names the next step `up` and `down` name there.
       if (d.space !== undefined) return d.rootMissing
-        ? parts(`"${d.space}" is prepared in ${d.root}, which no longer exists`, `forget it with \`cotal space forget ${d.space}\`, then prepare it again with \`cotal space create ${d.space} --root <dir>\``)
+        ? d.stackRemedy !== undefined
+          ? parts(`"${d.space}" is prepared in ${d.root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there`, d.stackRemedy)
+          : parts(`"${d.space}" is prepared in ${d.root}, which no longer exists`, `forget it with \`cotal space forget ${d.space}\`, then prepare it again with \`cotal space create ${d.space} --root <dir>\``)
         : parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
       const broker = d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`;
+      if (d.home === undefined && d.recordedRoot !== undefined && d.stackRemedy !== undefined)
+        return parts(`the stack journal in ${d.root} was recorded at ${d.recordedRoot}, so this folder is a copy or was moved from there`, d.stackRemedy);
       if (d.lastRun) return parts(`the mesh in ${d.root} last ran at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid address"}, and no space is registered for it here`, `start it again with \`cotal up\` in ${d.root}`);
       return d.home === undefined
-        ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with \`cotal space create ${d.stackSpace ?? "<space>"} --root ${d.root}\`, then start it with \`cotal up\` there`)
+        ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with \`cotal space create ${d.stackSpace ?? "<space>"} --root ${shellPath(d.root!)}\`, then start it with \`cotal up\` there`)
         : parts(`the stack in ${d.root} recorded ${broker} and runs under another Cotal home; ${d.home} holds no record of its members`, stackHomeRemedy());
     }
     case "user-auth-unrecorded":
@@ -110,7 +117,7 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       // Nothing records the default space that was assumed for a folder whose records name no
       // space, so the folder is what to name, with the step that prepares a space in it again.
       if (t.namesNoSpace)
-        return parts(`no space is registered or prepared here for ${t.root}`, `prepare one there with \`cotal space create <name> --root ${t.root}\`, or select one with \`cotal use <name>\``);
+        return parts(`no space is registered or prepared here for ${t.root}`, `prepare one there with \`cotal space create <name> --root ${shellPath(t.root)}\`, or select one with \`cotal use <name>\``);
       // An operator-registered mesh usually runs on ANOTHER machine, so `cotal up` is the wrong
       // remedy here — this machine can only wait for it or stop pointing at it.
       if (t.origin === "manual" || t.origin === "catalog")

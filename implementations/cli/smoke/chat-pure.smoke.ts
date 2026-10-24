@@ -283,6 +283,12 @@ check("/history 0, 1001, 2.5 and abc are refused", ["/history 0", "/history 1001
 check("/inbox --peek peeks; /inbox x is refused", (sl("/inbox --peek") as { command: { peek: boolean } }).command.peek === true && !sl("/inbox x").ok);
 check("/who takes no arguments", !sl("/who x").ok);
 check("/join needs exactly one channel", !sl("/join").ok && !sl("/join a b").ok && sl("/join a").ok);
+{
+  // The view prints a channel as #name, so a channel slash command reads it with or without the #.
+  const channelOf = (l: string) => (sl(l) as { command?: { channel?: string } }).command?.channel;
+  check("a channel slash command strips one leading #", ["/join #bad", "/leave #bad", "/info #bad", "/quiet #bad", "/mute #bad", "/normal #bad"].every((l) => channelOf(l) === "bad"));
+  check("a bare # names no channel", !sl("/join #").ok && !sl("/quiet #").ok);
+}
 check("/status keeps a multi-word activity", (sl("/status working on it") as { command: { activity?: string } }).command.activity === "on it");
 check("/help is a command, takes no arguments and runs while disconnected",
   (sl("/help") as { command: { name: string } }).command?.name === "help" && !sl("/help x").ok && runsOffline({ name: "help" }));
@@ -463,17 +469,18 @@ const heardOnChannel = (...senders: readonly (readonly [string, string])[]): Par
 // ---- 8. a channel outside the grant --------------------------------------------------------------
 console.log("8. a channel outside the session's grant refuses before any effect");
 {
-  const none = grantRefusal([], "review", "post");
+  const reopen = (channel: string) => `cotal chat ${channel} --stdio --space a2`;
+  const none = grantRefusal([], "review", "post", reopen);
   check("a session opened on no channel refuses a post as a permission denial",
     none?.outcome === "refused" && none.code === "PERMISSION_DENIED", none);
-  check("...says so and names the command that opens a session on the channel",
-    /opened on no channel/.test(none?.message ?? "") && (none?.message ?? "").includes("cotal chat review"), none);
-  const read = grantRefusal(["general"], "other", "read");
+  check("...says so and names the command that opens a session on the channel with this session's flags",
+    /opened on no channel/.test(none?.message ?? "") && (none?.message ?? "").includes("Leave and run cotal chat review --stdio --space a2 to open"), none);
+  const read = grantRefusal(["general"], "other", "read", reopen);
   check("a channel outside a read grant refuses as a permission denial", read?.code === "PERMISSION_DENIED" && read.message === "#other is outside this session's read grant", read);
   check("no refusal shows a broker subject or calls the session an agent",
     [none, read].every((r) => !/cotal\.|subject|agent/i.test(r?.message ?? "")), [none, read]);
   check("a granted channel, a matching wildcard and an open grant pass",
-    grantRefusal(["general"], "general", "post") === undefined && grantRefusal(["team.>"], "team.a", "read") === undefined && grantRefusal([">"], "review", "post") === undefined);
+    grantRefusal(["general"], "general", "post", reopen) === undefined && grantRefusal(["team.>"], "team.a", "read", reopen) === undefined && grantRefusal([">"], "review", "post", reopen) === undefined);
 }
 
 // ---- 9. times -------------------------------------------------------------------------------------

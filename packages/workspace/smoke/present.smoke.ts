@@ -150,6 +150,14 @@ check(
   stacked[2] === "server" && stacked.slice(3).every((line) => /^ {2}\S/.test(line)) && stacked.length > 4 && fits(stacked.join("\n"), 40),
   stacked,
 );
+// An identity beside a long label used to run past the line; it starts under its label instead.
+const identity = "local.UAAONG2N3PW6ELUSJILJICOMJTEZ3JQST25C7LF6YBYRAGXU3YQBGDSP";
+const wideWord = renderReport({ sections: [{ blocks: [{ kind: "fields", rows: [["observed membership", "live subscription"], ["identity", identity]] }] }] }, "plain", 80).split("\n");
+check(
+  "a value with a word too wide beside its label starts on the line under it, and a value that fits stays beside its label",
+  wideWord.includes("identity:") && wideWord.includes(`  ${identity}`) && wideWord.includes("observed membership: live subscription") && fits(wideWord.join("\n"), 80),
+  wideWord,
+);
 const longLine = renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [{ text: "working on a task with a description long enough to wrap", tone: "ok", mark: "●" }, { text: "    a note indented by four spaces, long enough to wrap", tone: "hint" }] }] }] }, "rich", 30).replace(/\x1b\[[0-9;]*m/g, "");
 check("a long line fits the width", fits(longLine, 30), longLine);
 const [markLine, ...afterMark] = longLine.split("\n");

@@ -81,6 +81,22 @@ try {
   await seedChannelRegistry({ servers, space, file: { channels: { review: { description: "Critique v2" } } } });
   const reg2 = await readChannelRegistry({ servers, space });
   check("merge-on-write keeps other fields", reg2.channels?.review.description === "Critique v2" && reg2.channels?.review.instructions === "Be specific.");
+  // A write whose every value already holds is not written, so repeating a set changes no revision.
+  {
+    const nc = await connect({ servers });
+    try {
+      const kv = await openChannelRegistry(nc, space);
+      const before = (await kv.get("review"))?.revision;
+      const same = await seedChannelRegistry({ servers, space, file: { channels: { review: { description: "Critique v2", instructions: "Be specific." } } } });
+      const after = (await kv.get("review"))?.revision;
+      const changed = await writeChannelConfig(kv, "review", { description: "Critique v2", instructions: "Be precise." });
+      const last = (await kv.get("review"))?.revision;
+      check("a write whose values already hold writes nothing and resolves false; one changed value writes and resolves true",
+        same === false && before !== undefined && after === before && changed === true && last !== undefined && last > before, { before, after, last });
+    } finally {
+      await nc.drain();
+    }
+  }
   // Writers setting different fields at once all land: a write that loses the revision race reads
   // the entry again and merges again.
   {
