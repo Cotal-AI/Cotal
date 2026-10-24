@@ -88,6 +88,7 @@ import {
   type Report,
   type Section,
   type Tone,
+  movedProject,
   spaceStreamsAbsent,
   spaceStreamsExpected,
 } from "@cotal-ai/workspace";
@@ -774,12 +775,14 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   // an older Cotal generation) is otherwise invisible until a spawn fails on it. The restart is
   // deliberately "your usual flags", never a bare `up` (mode/name/store-dir aren't recorded).
   // A controller stack's broker has no legacy pidfile, so that heuristic says nothing about it.
-  let controllerStack = false, journal: StackJournal | undefined;
+  let controllerStack = false, journal: StackJournal | undefined, elsewhere = false;
   try { journal = readStackJournal(root)?.journal; controllerStack = journal?.space === space; }
   catch (error) {
     controllerStack = false;
     // A journal no command can use is named with its way out; the rest of the report still stands.
     if (isCommandFailure(error) && error.code === "SCHEMA_INVALID") gaps.add("STACK_JOURNAL_INVALID", error.remedy ? `${error.message}; ${error.remedy}` : error.message, { root });
+    // A journal another folder recorded, as a copy or a moved folder keeps it: clean store refuses here.
+    elsewhere = isCommandFailure(error) && error.code === "CONFLICT";
   }
   const noManager = journal !== undefined && controllerStack && stackStartedWithoutManager(journal);
   // An operation cut off with no recorded outcome can keep up and down from settling it; status names
@@ -793,7 +796,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   // stack's. Clean store refuses there with the step the journal's refusal names.
   let copiedStack = false;
   if (!controllerStack) try { copiedStack = journalRecordedElsewhere(root)?.journal.space === space; } catch { copiedStack = false; }
-  const storedState = !controllerStack && !copiedStack && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
+  const storedState = !controllerStack && !elsewhere && !copiedStack && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
   // While a maintenance journal holds the store, clean store refuses, so it is not offered.
   let maintained = false;
   try { maintained = readMaintenanceJournal(root) !== undefined; } catch { maintained = true; }
@@ -1085,6 +1088,13 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     if (!live) return { ...result, snapshot: { state: "skipped", reason: "broker unreachable" } };
     if (!granted) return { ...result, snapshot: { state: "skipped", reason: "needs a signed-in, granted login" } };
     return { ...result, ...(await readSnapshot(() => userSnapshotEndpoint(target, stateDir), target.space, true, gaps)) };
+  }
+  // A project folder moved after its stack started there keeps the seed under its new path, where a
+  // probe without it reads as authentication required. Name the move and the way back, as send does.
+  const moved = target.mode === "auth" && !target.auth ? movedProject(target.space, target.root) : undefined;
+  if (moved) {
+    hints.push(moved.remedy);
+    return { resolved: false, code: "moved-folder", message: moved.message };
   }
   const preflight = await preflightTarget(target);
   if (!preflight.ok) return { ...base, connection: preflight.kind, ...(preflight.pid === undefined ? {} : { brokerPid: preflight.pid }), staleRecord: preflight.prune, snapshot: { state: "skipped", reason: "broker not connected" } };
