@@ -302,7 +302,7 @@ function stackPreflight(root: string, space: string, recorded: StackJournal | un
   if (held.length && held.length === legacy.length)
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${held.map((row) => `the ${row.definition} service of this space runs this root's ${row.record.name} (pid ${row.record.pid}, instance ${row.instanceId})`).join("; ")}, outside the controller stack, which neither adopts nor replaces it`, {
       target: { root, space, processes: legacy, services: held.map((row) => ({ definition: row.definition, instanceId: row.instanceId })) },
-      remedy: `stop ${held.length === 1 ? "it" : "each"} with ${held.map((row) => `cotal svc stop ${row.definition} --instance ${row.instanceId} --space ${space} --yes`).join(", ")}, then run cotal up again`,
+      remedy: `stop ${held.length === 1 ? "it" : "each"} with ${held.map((row) => `\`cotal svc stop ${row.definition} --instance ${row.instanceId} --space ${space} --yes\``).join(", ")}, then run \`cotal up\` again`,
     });
   if (legacy.length || existsSync(join(root, ".cotal", "nats.pid"))) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "legacy pidfile-owned processes or records remain under this root; the controller stack neither adopts nor replaces them", { target: { root, space, processes: legacy } });
   if (localMeshesForRoot(root).some((mesh) => mesh.space !== space)) throw new CommandFailure("refused", "CONFLICT", "another locally started space uses this root; a single-space controller stack cannot share its broker", { target: { root, space } });

@@ -10,9 +10,9 @@
  *
  * Prepares a space at a sandboxed root (`space create`), starts it with `up --detach --no-manager`,
  * then saves and starts `service add mgr --preset manager --runtime pty` there. No agent is launched.
- * Teardown is `cotal down --yes`; if the suite fails before it, every running instance the
- * sandbox's own `service --json` inventory lists is sent SIGTERM by pid. Linux only, since the
- * native manager child is. Needs `nats-server` on PATH.
+ * Teardown uses the preset's instance-pinned stop, then `cotal down --yes`. Uncertain cleanup keeps
+ * the private roots for inspection rather than signalling raw pids or deleting live state.
+ * Linux only, since the native manager child is. Needs `nats-server` on PATH.
  *
  * Run: pnpm smoke:no-manager-preset:live
  */
@@ -83,7 +83,7 @@ try {
   check("bare up refuses LIFECYCLE_BLOCKED, exit 2, naming the service, its instance and its exact stop",
     refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED"
       && refused.env.error.message.startsWith(`the mgr service of this space runs this root's manager (pid ${mgr?.pid}, instance ${id})`)
-      && refused.env.error.remedy === `stop it with cotal svc stop mgr --instance ${id} --space ${space} --yes, then run cotal up again`
+      && refused.env.error.remedy === `stop it with \`cotal svc stop mgr --instance ${id} --space ${space} --yes\`, then run \`cotal up\` again`
       && JSON.stringify(refused.env.target?.services) === JSON.stringify([{ definition: "mgr", instanceId: id }]), shown(refused));
 
   const stopped = cotal("svc", "stop", "mgr", "--instance", id, "--space", space, "--yes");
@@ -99,12 +99,23 @@ try {
 } catch (error) {
   check("scenario completed", false, (error as Error).stack ?? String(error));
 } finally {
-  for (const row of instances()) {
-    if (row.observedProcess !== "running" || typeof row.pid !== "number") continue;
-    try { process.kill(row.pid, "SIGTERM"); } catch { /* already gone */ }
-  }
-  rmSync(home, { recursive: true, force: true });
-  rmSync(root, { recursive: true, force: true });
+  // Before the anchor is written, no process-starting command has run.
+  let clean = anchor === undefined, detail: unknown;
+  if (anchor) try {
+    const preset = running("mgr");
+    if (preset) cotal("svc", "stop", "mgr", "--instance", preset.instanceId, "--space", space, "--yes");
+    const stopped = cotal("down", "--yes");
+    const inventory = cotal("service", "--space", space, "--json");
+    const remaining = inventory.env?.result?.instances as Instance[] | undefined;
+    clean = stopped.status === 0 && inventory.status === 0 && Array.isArray(remaining)
+      && remaining.every((row) => row.observedProcess === "gone" || row.observedProcess === "previous-boot");
+    detail = { stopped: shown(stopped), inventory: shown(inventory) };
+  } catch (error) { detail = (error as Error).message; }
+  check("fixture cleanup confirms the owned processes stopped before removing their roots", clean, detail);
+  if (clean) {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  } else console.error(`Private fixture retained for inspection: ${home} and ${root}`);
 }
 
 finish();
