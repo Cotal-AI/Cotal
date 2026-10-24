@@ -5735,7 +5735,10 @@ The default credential is created through its canonical secret-store kind. An ex
 not overwritten. Use another label or an explicit private output. `--replace` replaces the label's
 standing credential when it has expired or has no expiry claim, under a new identity unless
 `--identity` names one, and removes a no-expiry record beside it unless `--no-expiry` writes a new
-one. The receipt names what it replaced under `result.replaced`. A standing credential that is still
+one. The receipt names what it replaced and its public key under `result.replaced`. A replacement
+does not revoke the credential it replaced, so a copy of one with no expiry claim stays valid. The
+receipt then warns `REPLACED_CREDENTIAL_VALID`, naming that key and the
+[`auth revoke-credential`](#auth-revoke-credential) route that stops it. A standing credential that is still
 valid refuses `CONFLICT`, naming its expiry, and so does one that is not a native credential.
 `--replace` takes no `--out`. An exported file stays outside
 managed `.cotal` and workstation state. Its path, label, profile and public key, without the
