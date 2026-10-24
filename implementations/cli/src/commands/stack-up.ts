@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { join, resolve } from "node:path";
 import { JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
-import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, MEMBERSHIP_MAX_BYTES, mintCreds, newIdentity, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
+import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, mintCreds, newIdentity, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
   accountInventory,
@@ -42,6 +42,7 @@ import {
   terminalWidth,
   workspaceSecretStore,
   writeResult,
+  MIN_FILE_STORE,
   type MaintenanceLock,
   type OutputWarning,
   type Report,
@@ -208,11 +209,6 @@ function controllerUnsupported(root: string, options: readonly string[], prepare
       : manifest ? `run cotal up without ${named}, or start the space from a manifest with cotal up -f <cotal.yaml>, which takes ${flags.length === 1 ? "it" : "them"}` : `run cotal up without ${named}${rotation}`,
   });
 }
-
-/** The smallest JetStream file store cap a stack starts on: the bytes the space's membership bucket
- *  reserves, plus one. nats-server creates a stream with no byte limit only while at least one byte
- *  of the cap is unreserved, so a cap equal to the reservation fails every later stream with 10047. */
-export const MIN_FILE_STORE = MEMBERSHIP_MAX_BYTES + 1;
 
 /** Any account record, readable or not, means the root carries static trust an open stack would bypass. */
 function holdsBrokerAccount(root: string): boolean {

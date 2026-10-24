@@ -2645,6 +2645,14 @@ the machine's home `.cotal`, status warns that unqualified `up` refuses instead 
 there. Prepare the intended folder first with
 `space create <space> --root .`; `up --root .` then names it.
 
+A prepared space whose controller stack ran and was stopped reads as stopped, with its last
+operation and how it ended, such as `cotal down, completed`, and Next names `cotal up` in its root.
+A space that never started still reads as prepared but not started. When the stopped stack recorded
+a file store cap below 67108865, the least the space's streams start on, the selected space shows it
+in a `Store cap` row, and Next names `cotal up --max-file-store 67108865` or more instead, because a
+bare `up` would fail on that cap. `--json` carries the cap as `selected.storeCap`, and
+`meshes.currentStopped` says whether the selection is such a stopped stack.
+
 Owned services use the saved controller definitions and instance records for the selected space.
 Instances are listed by definition name, then instance ID, in the text and in
 `result.services.instances`, so their order holds from one start to the next.

@@ -30,11 +30,12 @@
  *     refusal says the stack started no member. A running broker keeps its file store cap; a stopped
  *     one takes a new `--max-file-store`, and a recorded cap too small for the space's streams fails
  *     naming that cap and the flag. A cap equal to the membership bucket's reservation fails that way
- *     too, and one byte more starts. Once a space holds more than its cap, `send` refuses
- *     `DEPENDENCY_UNAVAILABLE` naming the store and the cap, `status` shows the store full and leads
- *     Next with `history clear`, and `down` refuses the same way before any stop, because the
- *     manager's stop needs an issuance record, which its dry run predicts. After that clear `send`
- *     stores again. A project folder renamed while its stack runs: the broker names
+ *     too, and one byte more starts. `status` then reads such a stack as stopped, with its last
+ *     operation, and names up at the floor while the recorded cap is below it. Once a space holds
+ *     more than its cap, `send` refuses `DEPENDENCY_UNAVAILABLE` naming the store and the cap,
+ *     `status` shows the store full and leads Next with `history clear`, and `down` refuses the same
+ *     way before any stop, because the manager's stop needs an issuance record, which its dry run
+ *     predicts. After that clear `send` stores again. A project folder renamed while its stack runs: the broker names
  *     its store relative to the root, so it does not create the old path again; `send`, `up` and
  *     `status --space` from the renamed folder name the move and the way back, `status` there offers
  *     no `clean store`, and after the move back `down` stops it.
@@ -118,7 +119,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, MIN_FILE_STORE, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -134,7 +135,6 @@ process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { readStackJournal } = await import("../src/lib/stack-journal.js");
-const { MIN_FILE_STORE } = await import("../src/commands/stack-up.js");
 const { serviceDefinitionStore } = await import("../src/lib/service-definitions.js");
 // Registers the broker adapter, which a definition saved from this process is checked against.
 await import("../src/lib/broker-service.js");
@@ -471,10 +471,20 @@ try {
     const reserved = cli(root, "up", "--no-manager", "--json");
     track(space);
     check(`a recorded cap of ${MIN_FILE_STORE - 1}, the membership bucket's reservation, fails OPERATION_FAILED, exit 5, naming ${MIN_FILE_STORE} as the least`, reserved.status === 5 && reserved.env?.error?.code === "OPERATION_FAILED" && Boolean(reserved.env.error.remedy?.includes(`with at least ${MIN_FILE_STORE} bytes`)), shown(reserved));
+    const capped = cli(root, "status", "--json");
+    const cappedSelected = capped.env?.result?.selected as { message?: string; storeCap?: number } | undefined;
+    check("status then says the stack is stopped after a failed up, shows the recorded cap and names up --max-file-store at the floor, not a bare up",
+      capped.status === 0 && Boolean(cappedSelected?.message?.includes(`"${space}" is stopped; its last operation, cotal up, failed`)) && cappedSelected?.storeCap === MIN_FILE_STORE - 1
+        && ((capped.env?.result?.hints ?? []) as string[]).some((hint) => hint.startsWith(`start it with \`cotal up --max-file-store ${MIN_FILE_STORE}\` or more in `)), shown(capped));
     const floor = cli(root, "up", "--no-manager", "--max-file-store", String(MIN_FILE_STORE), "--json");
     track(space);
     check(`up --max-file-store ${MIN_FILE_STORE} starts the stack`, floor.status === 0, shown(floor));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+    const stoppedStatus = cli(root, "status", "--json");
+    const stoppedSelected = stoppedStatus.env?.result?.selected as { message?: string; storeCap?: number } | undefined;
+    check("status then says the stack is stopped after a completed down, not prepared but not started, and names a bare up",
+      stoppedStatus.status === 0 && Boolean(stoppedSelected?.message?.includes(`"${space}" is stopped; its last operation, cotal down, completed`)) && stoppedSelected?.storeCap === undefined
+        && ((stoppedStatus.env?.result?.hints ?? []) as string[]).some((hint) => hint.startsWith("start it again with `cotal up` in ")), shown(stoppedStatus));
   }
 
   // 3f. A space over its file store cap. The broker refuses every write and stores nothing.

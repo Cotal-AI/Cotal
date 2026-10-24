@@ -182,6 +182,7 @@ import {
   restoreLeftOut,
   SPACE_NAME_MAX,
   spaceNameTooLong,
+  MIN_FILE_STORE,
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
@@ -220,7 +221,6 @@ import {
   stackUpForegroundNotice,
   stackUpInterruptNotice,
   keptOnUp,
-  MIN_FILE_STORE,
   selectedOnUp,
   type ExistingStorePin,
   type StackUpNative,
