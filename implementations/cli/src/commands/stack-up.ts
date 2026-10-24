@@ -196,6 +196,11 @@ function controllerUnsupported(root: string, options: readonly string[], prepare
   });
 }
 
+/** The smallest JetStream file store cap a stack starts on: the bytes the space's membership bucket
+ *  reserves, plus one. nats-server creates a stream with no byte limit only while at least one byte
+ *  of the cap is unreserved, so a cap equal to the reservation fails every later stream with 10047. */
+export const MIN_FILE_STORE = MEMBERSHIP_MAX_BYTES + 1;
+
 /** Any account record, readable or not, means the root carries static trust an open stack would bypass. */
 function holdsBrokerAccount(root: string): boolean {
   const inventory = accountInventory(authDir(root));
@@ -793,7 +798,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       // JetStream answers 10047, insufficient storage resources, when the file store cannot hold a
       // stream's reservation; the broker logs nothing about it.
       const noStorage = error instanceof JetStreamApiError && error.code === 10047;
-      const storeRemedy = `with at least ${MEMBERSHIP_MAX_BYTES} bytes, which the space's membership bucket reserves, plus room for messages`;
+      const storeRemedy = `with at least ${MIN_FILE_STORE} bytes, the least the space's streams start on, plus room for messages`;
       throw new CommandFailure("failed", "OPERATION_FAILED", `the broker this command started could not create the space's streams${unserved.outOfFiles ? ", because it ran out of open files" : noStorage ? `, because its JetStream file store${brokerCap !== undefined ? ` cap (--max-file-store ${brokerCap})` : ""} has too little room for them` : ""}, so it was stopped again; nothing of the stack runs`, {
         target: { root, space, operation: journal.operation.id, members: journal.members, ...(unserved.log ? { brokerLog: unserved.log } : {}) },
         changed: [instanceProjection(unserved.stopped)],

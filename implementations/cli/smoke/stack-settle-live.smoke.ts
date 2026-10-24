@@ -27,7 +27,8 @@
  *     and pins nothing: `down --yes` stops nothing and the next `up` starts at another address. The
  *     refusal says the stack started no member. A running broker keeps its file store cap; a stopped
  *     one takes a new `--max-file-store`, and a recorded cap too small for the space's streams fails
- *     naming that cap and the flag. A project folder renamed while its stack runs: the broker names
+ *     naming that cap and the flag. A cap equal to the membership bucket's reservation fails that way
+ *     too, and one byte more starts. A project folder renamed while its stack runs: the broker names
  *     its store relative to the root, so it does not create the old path again; `send`, `up` and
  *     `status --space` from the renamed folder name the move and the way back, `status` there offers
  *     no `clean store`, and after the move back `down` stops it.
@@ -127,6 +128,7 @@ process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { readStackJournal } = await import("../src/lib/stack-journal.js");
+const { MIN_FILE_STORE } = await import("../src/commands/stack-up.js");
 const { serviceDefinitionStore } = await import("../src/lib/service-definitions.js");
 // Registers the broker adapter, which a definition saved from this process is checked against.
 await import("../src/lib/broker-service.js");
@@ -432,6 +434,16 @@ try {
     const fixed = cli(root, "up", "--no-manager", "--max-file-store", "134217728", "--json");
     track(space);
     check("up with a new cap on the stopped broker records it and starts", fixed.status === 0 && (JSON.parse(readFileSync(path, "utf8")) as { broker: { maxFileStore?: number } }).broker.maxFileStore === 134217728, shown(fixed));
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+    // The membership bucket's reservation alone leaves no byte free, and the broker refuses the next stream.
+    const recorded = JSON.parse(readFileSync(path, "utf8")) as { broker: Record<string, unknown> };
+    writeFileSync(path, JSON.stringify({ ...recorded, broker: { ...recorded.broker, maxFileStore: MIN_FILE_STORE - 1 } }));
+    const reserved = cli(root, "up", "--no-manager", "--json");
+    track(space);
+    check(`a recorded cap of ${MIN_FILE_STORE - 1}, the membership bucket's reservation, fails OPERATION_FAILED, exit 5, naming ${MIN_FILE_STORE} as the least`, reserved.status === 5 && reserved.env?.error?.code === "OPERATION_FAILED" && Boolean(reserved.env.error.remedy?.includes(`with at least ${MIN_FILE_STORE} bytes`)), shown(reserved));
+    const floor = cli(root, "up", "--no-manager", "--max-file-store", String(MIN_FILE_STORE), "--json");
+    track(space);
+    check(`up --max-file-store ${MIN_FILE_STORE} starts the stack`, floor.status === 0, shown(floor));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
   }
 
