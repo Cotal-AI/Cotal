@@ -3,10 +3,10 @@
  *  `<root>/.cotal/stack-controller.json`. It is not a service record, unit receipt or team ledger,
  *  and it grants no stop authority by itself: every effect still rechecks the instance records. */
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, rmdirSync } from "node:fs";
 import { isAbsolute, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, serviceOperationId, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment, stackJournalPath } from "@cotal-ai/workspace";
+import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, serviceOperationId, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment, stackJournalPath } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
@@ -203,15 +203,32 @@ export function maintenanceStackView(root: string, space: string): ControllerSta
 
 /** Take the root's maintenance lock for one whole-stack operation. Every whole-stack operation
  *  holds it for its whole run, and a dead holder is reclaimed only when its PID is proven dead. A
- *  live holder is a known refusal that names its PID; nothing was read or changed. */
+ *  live holder is a known refusal that names its PID; nothing was read or changed.
+ *  Taking the lock creates the root's `.cotal/maintenance` folders when they are missing. A command
+ *  that then ends refused or failed releases the lock if it still holds it, and removes the folders
+ *  the lock created while they are still empty, so a refusal leaves the folder as it found it. */
 export function acquireStackOperationLock(root: string): MaintenanceLock {
-  try { return acquireMaintenanceLock(root); }
+  const paths = maintenancePaths(root);
+  const created = [paths.versionDir, paths.maintenanceDir, paths.cotalDir].filter((dir) => !existsSync(dir));
+  let lock: MaintenanceLock;
+  try { lock = acquireMaintenanceLock(root); }
   catch (error) {
     if (!isMaintenanceError(error) || error.code !== "lock-held") throw error;
     let holder: number | undefined;
-    try { holder = (decodeLocalJson(readLocalRecordSource(maintenancePaths(root).lock, 64 * 1024) ?? Buffer.from("null")) as { owner?: { pid?: unknown } } | null)?.owner?.pid as number | undefined; } catch { holder = undefined; }
+    try { holder = (decodeLocalJson(readLocalRecordSource(paths.lock, 64 * 1024) ?? Buffer.from("null")) as { owner?: { pid?: unknown } } | null)?.owner?.pid as number | undefined; } catch { holder = undefined; }
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `another whole-stack or maintenance operation holds this root${Number.isSafeInteger(holder) ? ` (pid ${holder})` : ""}; nothing was changed`, { target: { root, ...(Number.isSafeInteger(holder) ? { holderPid: holder } : {}) }, remedy: "run the command again after that operation exits; a foreground cotal up holds the root only while it starts" });
   }
+  // An exit through process.exit skips the caller's release, so the lock is checked here as well.
+  process.once("exit", (code) => {
+    if (code === 0) return;
+    try {
+      const held = (decodeLocalJson(readLocalRecordSource(lock.path, 64 * 1024) ?? Buffer.from("null")) as { token?: unknown } | null)?.token === lock.token;
+      if (held) releaseMaintenanceLock(lock);
+    } catch { return; }
+    // Deepest first. A folder that holds anything else was written by the command, and it stays.
+    for (const dir of created) { try { rmdirSync(dir); } catch { return; } }
+  });
+  return lock;
 }
 
 /** An earlier operation that had no recorded outcome, and the member evidence it was settled from. */

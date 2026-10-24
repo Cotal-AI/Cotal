@@ -37,6 +37,7 @@ import {
   type UserBundle,
 } from "./meshes-add.js";
 import { addWizard, canPrompt, clackIO } from "./meshes-wizard.js";
+import { handAddedRegistration } from "./space-registration.js";
 
 /**
  * `cotal meshes` — the registry of meshes this machine can reach, and the two verbs that maintain
@@ -61,7 +62,7 @@ export const meshesFlags = [
   { name: "mode", type: "string", value: "<auth|open|user>", description: "add: how the broker authenticates (default: inferred from --root; user needs --user-auth-file or --from)" },
   { name: "user-auth-file", type: "string", value: "<bundle.json>", description: "add --mode user: the pinned-trust bundle exported where the mesh runs" },
   { name: "from", type: "string", value: "<https url>", description: "add --mode user: fetch the mesh's /.well-known/cotal-mesh discovery document (pins are shown and confirmed)" },
-  { name: "force", type: "boolean", description: "add: record without verifying, replacing any existing record · rm: drop a running mesh's record" },
+  { name: "force", type: "boolean", description: "add: record without verifying, replacing a record added by hand · rm: drop a record when its folder cannot be checked for a running mesh" },
   { name: "tls", type: "boolean", description: "add: require TLS on every connection resolved through this record (a tls:// --server implies it)" },
   { name: "allow-unencrypted-overlay", type: "boolean", description: "add: accept that an overlay address is protected only while its tunnel is up (recorded on the entry)" },
 ] as const satisfies readonly FlagSpec[];
@@ -210,7 +211,9 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
     console.log(c.dim(`note: ${authDir(root)} holds trust for "${space}", but --mode open records a credless connect`));
   const auth = take(checkTrust(mode, root, space));
 
-  const existing = findMesh(space);
+  // A prepared space, or one this machine started or a catalog lists, is refused here as `space add`
+  // refuses it: replacing that registration leaves its running stack with nothing to stop it by.
+  const existing = handAddedRegistration(space, Boolean(v.force), { space });
   if (existing && !v.force) {
     console.error(c.red(`✗ "${space}" is already registered at ${existing.server} (${existing.root}) - \`cotal meshes rm ${space}\` first, or --force to replace it`));
     process.exit(1);
@@ -365,7 +368,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
   const root = take(checkRoot(v.root, process.cwd()));
   take(checkMode(space, root, [], "user", true));
 
-  const existing = findMesh(space);
+  const existing = handAddedRegistration(space, Boolean(v.force), { space });
   if (existing && !v.force) {
     console.error(c.red(`✗ "${space}" is already registered at ${existing.server} (${existing.root}) - \`cotal meshes rm ${space}\` first, or --force to replace it`));
     process.exit(1);
@@ -426,12 +429,21 @@ async function removeMeshes(names: string[], v: Values): Promise<void> {
     // provenance is now decided at the call site that started the broker: anything this machine
     // actually runs is stamped `up` and does reach the check.
     //
-    // Skipped entirely under `--force`: the probe itself throws on a multi-tenant or unreadable
-    // root, which must not defeat the documented override. Keyed on the entry's OWN space rather
-    // than one re-resolved from the root, which on a multi-tenant root can name another tenant.
-    const running = m.origin === "manual" || m.origin === "catalog" || v.force ? undefined : liveMeshOwner(m.root, m.space);
+    // `--force` does not drop the record of a mesh this machine is shown to run: `cotal down` finds
+    // the mesh by that record, so dropping it left a running stack nothing could stop. It overrides
+    // only a probe that throws, as it does on a multi-tenant or unreadable root. Keyed on the
+    // entry's OWN space rather than one re-resolved from the root, which on a multi-tenant root can
+    // name another tenant.
+    let running: string | undefined;
+    if (m.origin !== "manual" && m.origin !== "catalog") {
+      try {
+        running = liveMeshOwner(m.root, m.space);
+      } catch (e) {
+        if (!v.force) throw e;
+      }
+    }
     if (running) {
-      console.error(c.red(`✗ "${space}" is running from ${m.root} (${running}) - \`cotal down\` there stops it and drops the record; --force drops the record only, leaving the mesh running`));
+      console.error(c.red(`✗ "${space}" is running from ${m.root} (${running}) - \`cotal down\` there stops it and drops the record${v.force ? "; --force does not drop it while the mesh runs, because `cotal down` finds the mesh by it" : ""}`));
       failed = true;
       continue;
     }

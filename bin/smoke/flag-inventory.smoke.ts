@@ -53,7 +53,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // The command kernel's local entries (2026-10): `help [command…] [--all]` and `version`.
   help: { flags: ["all:boolean"], positionals: true },
   version: { flags: ["json:boolean:j"], positionals: false },
-  completion: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
+  completion: { flags: ["force:boolean", "json:boolean:j", "plain:boolean"], positionals: true },
   // `config` (2026-10): personal preferences, read through or written to your defaults or one space;
   // `--verbose` also shows the shadowed values.
   config: { flags: ["json:boolean:j", "plain:boolean", "space:string:s", "user:boolean", "verbose:boolean:v"], positionals: true },

@@ -12,6 +12,7 @@ import {
   effectiveDeliveryClass,
   effectiveReplay,
   readChannelRegistry,
+  channelBucket,
   AmbiguousPeerError,
   CotalEndpoint,
   type FlagSpec,
@@ -22,7 +23,7 @@ import {
 } from "@cotal-ai/core";
 import { CLI_USER_ACTOR, CommandFailure, connectOrThrow, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, resolveMeshTarget, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
-import { openTransient } from "../lib/transient.js";
+import { batchedRead, openTransient } from "../lib/transient.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { brokerStoreWrite } from "../lib/broker-store-health.js";
@@ -376,10 +377,10 @@ export async function send(args: ParsedArgs): Promise<void> {
     let registered: string[] = [];
     if (input.mode === "msg") {
       try {
-        // One Direct Get with a static or open credential, as the transient endpoint reads: the
-        // default scan's consumer outlives the send by five minutes (#4091). A user bearer has no
-        // Direct Get row, so it keeps the scan.
-        const registry = await readChannelRegistry({ servers: connection.server, space, ...(connection.bearer ? { bearer: connection.bearer, sentinelCreds: connection.sentinelCreds } : { creds: connection.creds }), directGet: !connection.bearer });
+        // One Direct Get where the credential may, as the transient endpoint reads: the default scan's
+        // consumer outlives the send by five minutes (#4091). A user bearer, or a credential with no
+        // Direct Get row, keeps the scan.
+        const registry = await readChannelRegistry({ servers: connection.server, space, ...(connection.bearer ? { bearer: connection.bearer, sentinelCreds: connection.sentinelCreds } : { creds: connection.creds }), directGet: batchedRead(connection, channelBucket(space)) });
         registered = Object.keys(registry.channels ?? {});
         const config = Object.hasOwn(registry.channels ?? {}, input.target) ? registry.channels![input.target] : undefined;
         policy = { registered: config !== undefined, replay: effectiveReplay(config, registry.defaults), window: config?.replayWindow ?? registry.defaults?.replayWindow ?? null, delivery: effectiveDeliveryClass(config, registry.defaults) };
@@ -439,7 +440,7 @@ export async function send(args: ParsedArgs): Promise<void> {
 /** Complete the declared destination flags from local records only. */
 export function sendComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, sendFlags);
-  if (flag?.name === "creds" || flag?.name === "file") return { items: [], directive: "default" };
+  if (flag?.name === "file") return { items: [], directive: "default" };
   if (flag?.name === "channel") return { items: declaredFrom(argv, listDeclaredChannels).map((value) => ({ value })), directive: "nofiles" };
   if (flag?.name === "role") return { items: declaredFrom(argv, listDeclaredRoles).map((value) => ({ value })), directive: "nofiles" };
   return { items: [], directive: "nofiles" };

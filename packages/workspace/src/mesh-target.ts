@@ -420,6 +420,42 @@ function noteSelectionOutsideFolder(cwd: string, current: string, meshes: readon
   });
 }
 
+/** The one registration recorded for `root`, if any. A broker that runs several spaces records one
+ *  entry per space, all under the same root. With no `--space` to pick one, `.find()` would silently
+ *  resolve whichever sorted first; name the tenants and refuse instead (the same posture as
+ *  `soleSpaceOf` for an unrecorded multi-space root). */
+function registrationAt(root: string, meshes: readonly MeshEntry[]): MeshEntry | undefined {
+  const rootMatches = meshes.filter((m) => canonicalRoot(m.root) === canonicalRoot(root));
+  if (rootMatches.length > 1)
+    throw new MeshTargetError(
+      "ambiguous-target",
+      `this folder's broker hosts ${rootMatches.length} spaces (${rootMatches.map((m) => m.space).join(", ")}) - name one with --space`,
+      { available: rootMatches.map((m) => `${m.space} (${m.root})`) },
+    );
+  return rootMatches[0];
+}
+
+/**
+ * The space a `--creds` command that names neither `--space` nor `--server` addresses, in
+ * {@link resolveMeshTarget}'s order: the selected space, else the space this folder's project is
+ * registered, set up or prepared as. `undefined` leaves the caller's default. It reads no trust,
+ * because the credential is the caller's own, and it never takes the only running space, because a
+ * credential goes only to a broker the caller paired it with.
+ */
+export function credsSpace(cwd: string): { space: string; selected: boolean } | undefined {
+  const meshes = loadMeshes();
+  const current = getCurrent();
+  if (current) {
+    noteSelectionOutsideFolder(cwd, current, meshes);
+    return { space: current, selected: true };
+  }
+  const root = findCotalRoot(cwd);
+  if (!isGenuineSpace(root)) return undefined;
+  assertRootIsSingleTenant(root);
+  const space = registrationAt(root, meshes)?.space ?? soleSpaceOf(authDir(root)) ?? preparedSpaceAt(root)?.space;
+  return space === undefined ? undefined : { space, selected: false };
+}
+
 /**
  * Resolve the mesh target by precedence (first match wins):
  *  1. `--space` — registry lookup (errors if that space isn't running).
@@ -513,17 +549,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // recorded project as UNRECORDED — discarding the recorded server and mode and falling through
     // to `DEFAULT_SERVER` below, silently. `mesh-registry.ts` states the rule on `meshesForRoot`:
     // "a raw `===` silently misses". This is the same rule, one predicate, not a second spelling.
-    const rootMatches = meshes.filter((m) => canonicalRoot(m.root) === canonicalRoot(root));
-    // A broker that runs several spaces records one entry per space, all under this same root. With no
-    // `--space` to pick one, `.find()` would silently resolve whichever sorted first; name the tenants
-    // and refuse instead (the same posture as `soleSpaceOf` for an unrecorded multi-space root).
-    if (rootMatches.length > 1)
-      throw new MeshTargetError(
-        "ambiguous-target",
-        `this folder's broker hosts ${rootMatches.length} spaces (${rootMatches.map((m) => m.space).join(", ")}) - name one with --space`,
-        { available: rootMatches.map((m) => `${m.space} (${m.root})`) },
-      );
-    const recorded = rootMatches[0];
+    const recorded = registrationAt(root, meshes);
     if (recorded) return targetFromEntry(recorded, recorded.server, "local-recorded", flags.readOnly);
     // A root whose own stack recorded a broker is not given the default address: with no
     // registration that stack is not running here, and the default port may hold another mesh. The

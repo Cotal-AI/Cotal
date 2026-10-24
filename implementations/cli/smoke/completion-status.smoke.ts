@@ -3,7 +3,9 @@
  * and the refusal of the form it replaced (`completion <shell>`), driven through the built binary in
  * a fresh sandbox per case. HOME, XDG_CONFIG_HOME and COTAL_HOME are sandboxed, so the status reads
  * and `completion install` writes only there. A symlinked startup file is refused by name with the
- * line to add where it points, and a group-writable one with the chmod that fixes it.
+ * line to add where it points, and a group-writable one with the chmod that fixes it. An edited owned
+ * stub or block is refused with `--force` as its way out, which keeps startup content outside the
+ * markers.
  *
  * Run: pnpm smoke:completion-status
  */
@@ -222,12 +224,44 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("running its one chmod lets install wire the rc", chmod === `chmod go-w ${rc} ${folder}` && fixed?.status === 0 && installed.status === 0 && readFileSync(rc, "utf8").includes(join(folder, "completion.bash")), { chmod, install: shown(installed) });
 }
 
+// ── a group-writable config folder with nothing installed is one named warning and a complete report ─
+// It used to be exit 4 for absent files, with an unnamed ownership line per shell and a Next that refused.
+if (process.platform !== "win32" && process.getuid?.() !== 0) {
+  const s = sandbox("/bin/bash");
+  mkdirSync(s.xdg);
+  chmodSync(s.xdg, 0o775);
+  const report = s.run(["completion", "--json"]);
+  const env = report.stdout.startsWith("{") ? JSON.parse(report.stdout) as { outcome: string; warnings: { code: string; message: string }[]; result: { shells: { shell: string; state: string; ownership: string }[] } } : undefined;
+  const fix = `chmod go-w ${s.xdg}`;
+  check("absent files under a group-writable config folder are missing and the report is complete, exit 0",
+    report.status === 0 && env?.outcome === "ok" && ["bash", "zsh", "fish"].every((shell) => env.result.shells.some((row) => row.shell === shell && row.state === "missing" && row.ownership === "unrecorded")), shown(report));
+  check("the folder is one warning naming it, its mode and the chmod that fixes it",
+    env?.warnings.length === 1 && env.warnings[0]!.code === "COMPLETION_FOLDER_UNSAFE" && env.warnings[0]!.message === `${s.xdg} is writable by group or others (mode 0775); completion does not open the bash, zsh and fish completion files under it, and install and uninstall refuse there; ${fix} fixes it`, env?.warnings);
+  const text = s.run(["completion"]);
+  const next = text.stdout.slice(text.stdout.indexOf("Next"));
+  check("Next offers the chmod first, then install, and no uninstall with nothing installed",
+    text.status === 0 && next.trimStart().startsWith(`Next\n  ${fix} `) && /cotal completion install bash/.test(next) && !/cotal completion uninstall/.test(next) && text.stderr.split("\n").filter((line) => line.startsWith("!")).length === 1, shown(text));
+  chmodSync(s.xdg, 0o700);
+  check("the install Next offers then works", s.run(["completion", "install", "bash"]).status === 0);
+  chmodSync(s.xdg, 0o775);
+  const installed = s.run(["completion"]);
+  const installedNext = installed.stdout.slice(installed.stdout.indexOf("Next"));
+  check("with files under the folder the report is partial, and Next offers the chmod and no install or uninstall that would refuse",
+    installed.status === 4 && installedNext.includes(fix) && !/cotal completion (?:un)?install/.test(installedNext) && /fix the folder the warning names/.test(installed.stderr), shown(installed));
+  chmodSync(s.xdg, 0o700);
+}
+
 // ── install refuses before it writes ────────────────────────────────────────────────────────────────
 {
   const s = sandbox("/bin/zsh");
   const stub = join(s.xdg, "cotal", "completion.zsh");
-  const missingDir = s.run(["completion", "install", "zsh"], { ZDOTDIR: join(s.home, "nowhere") });
-  check("install refuses a ZDOTDIR that does not exist, exit 2, with nothing written", missingDir.status === 2 && missingDir.stdout === "" && /the shell startup directory must exist/.test(missingDir.stderr) && !existsSync(stub), shown(missingDir));
+  const nowhere = join(s.home, "nowhere");
+  const missingDir = s.run(["completion", "install", "zsh"], { ZDOTDIR: nowhere });
+  check("install refuses a ZDOTDIR that does not exist, exit 2, with nothing written", missingDir.status === 2 && missingDir.stdout === "" && /TARGET_NOT_FOUND/.test(missingDir.stderr) && !existsSync(stub), shown(missingDir));
+  check("the refusal names the folder and ZDOTDIR, with the mkdir that creates it", missingDir.stderr.includes(`the shell startup folder ${nowhere}, which ZDOTDIR names, does not exist; nothing was changed`) && missingDir.stderr.includes(`create it with (umask 077 && mkdir -p ${nowhere}), or unset ZDOTDIR to use ~/.zshrc`), shown(missingDir));
+  const missingJson = s.run(["completion", "install", "zsh", "--json"], { ZDOTDIR: nowhere });
+  const missingEnv = JSON.parse(missingJson.stdout) as { target: { path?: string }; error: { remedy?: string } };
+  check("its JSON names the folder as the target and carries the remedy", missingEnv.target.path === nowhere && missingEnv.error.remedy?.includes(`mkdir -p ${nowhere}`) === true, missingEnv);
   const relative = s.run(["completion", "install", "zsh"], { ZDOTDIR: "zdot" });
   check("install refuses a relative ZDOTDIR, exit 1, with nothing written", relative.status === 1 && /relative ZDOTDIR/.test(relative.stderr) && !existsSync(stub) && !existsSync(join(s.home, "zdot")), shown(relative));
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
@@ -241,6 +275,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     chmodSync(rc, 0o600);
     // The line is the one the owned block would hold, single-quoted as the shell needs.
     check("an rc it can read but not extend fails, exit 5, naming the stub it wrote and the line to add", readOnly.status === 5 && /wrote .*completion\.zsh but could not add its line/.test(readOnly.stderr) && readOnly.stderr.includes(`source '${stub}'`) && existsSync(stub) && readFileSync(rc, "utf8") === "# mine\n", shown(readOnly));
+    check("that failure lists the files it changed instead of a receipt count", /Confirmed changes\n {2}\S*completion\.zsh\n/.test(readOnly.stderr) && !readOnly.stderr.includes("change receipt(s)"), shown(readOnly));
     const installed = s.run(["completion", "install", "zsh"]);
     chmodSync(rc, 0o400);
     const lockedOut = s.run(["completion", "uninstall", "zsh"]);
@@ -274,6 +309,18 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   // Compared by realpath: the working directory a child reports can be the resolved form of tmpdir().
   const wiredIn = typeof zsh?.wiredIn === "string" ? zsh.wiredIn : "";
   check("the status reads a relative ZDOTDIR from its working directory and names the absolute file", isAbsolute(wiredIn) && existsSync(wiredIn) && realpathSync(wiredIn) === join(realpathSync(zdot), ".zshrc"), zsh);
+
+  // Without that ZDOTDIR, the record names the startup file it was wired into and the ZDOTDIR to use.
+  const record = join(s.xdg, "cotal", "completion.zsh.ownership.json");
+  const without = s.run(["completion", "--json"]);
+  const warning = (JSON.parse(without.stdout) as { warnings: { code: string; message: string }[] }).warnings.find((w) => w.code === "COMPLETION_OWNERSHIP_UNREADABLE");
+  check(
+    "without the ZDOTDIR it was installed under, the warning names the record, its startup file and that ZDOTDIR",
+    without.status === 4 && warning?.message === `${record} records zsh completion wired into ${join(zdot, ".zshrc")}, and this environment's startup file is ${join(s.home, ".zshrc")}; read or change it with the ZDOTDIR it was installed under: ZDOTDIR=${zdot} cotal completion`,
+    { status: without.status, warning },
+  );
+  const text = s.run(["completion"]);
+  check("the text report gives the same warning", text.status === 4 && text.stderr.includes(`${record} records zsh completion wired into ${join(zdot, ".zshrc")}`), shown(text));
 }
 
 // ── script, and the form it replaced ───────────────────────────────────────────────────────────────
@@ -307,6 +354,9 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   // With no pwsh on PATH there is no profile to wire, so install refuses without guessing one.
   const pwsh = s.run(["completion", "install", "powershell"]);
   check("completion install powershell is refused, naming the supported loading command", pwsh.status === 2 && pwsh.stdout === "" && pwsh.stderr.includes("the supported loading command is: cotal completion script powershell | Out-String | Invoke-Expression"), shown(pwsh));
+  const fromShell = s.run(["completion", "install"], { SHELL: "/bin/tcsh" });
+  check("a SHELL that names an unsupported shell is refused UNSUPPORTED, exit 2, naming it without the whole help",
+    fromShell.status === 2 && /completion does not support tcsh, the shell SHELL names/.test(fromShell.stderr) && /UNSUPPORTED/.test(fromShell.stderr) && !/^Usage$/m.test(fromShell.stderr), shown(fromShell));
   const installTcsh = s.run(["completion", "install", "tcsh"]);
   check("completion install for an unknown shell is refused", installTcsh.status === 1 && installTcsh.stdout === "" && /choose a supported shell/.test(installTcsh.stderr) && /pass one of: bash, zsh, fish, powershell/.test(installTcsh.stderr), shown(installTcsh));
 
@@ -317,6 +367,105 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("completion offers script and install, not the replaced forms", /^script\t/m.test(offered.stdout) && /^install\t/m.test(offered.stdout) && !/^bash/m.test(offered.stdout), shown(offered));
   const shells = s.run(["__complete", "completion", "script", ""]);
   check("completion script offers the shells", ["bash", "zsh", "fish", "powershell"].every((shell) => new RegExp(`^${shell}$`, "m").test(shells.stdout)), shown(shells));
+}
+
+// ── A modified owned integration names its way out ──────────────────────────────────────────────────
+{
+  const s = sandbox();
+  const rc = join(s.home, ".bashrc"), stub = join(s.xdg, "cotal", "completion.bash");
+  writeFileSync(rc, "export EDITOR=vi\n");
+  s.run(["completion", "install", "bash"]);
+  writeFileSync(rc, readFileSync(rc, "utf8") + "alias ll='ls -l'\n");
+  const installed = { rc: readFileSync(rc, "utf8"), stub: readFileSync(stub, "utf8") };
+  writeFileSync(stub, installed.stub + "# my edit\n");
+  for (const operation of ["install", "uninstall"]) {
+    const r = s.run(["completion", operation, "bash"]);
+    check(`${operation} of an edited stub refuses, exit 2, naming --force, and changes nothing`, r.status === 2 && r.stderr.includes(`cotal completion ${operation} bash --force`) && readFileSync(stub, "utf8") === installed.stub + "# my edit\n", shown(r));
+  }
+  const status = s.run(["completion", "--plain"]);
+  check("bare completion offers install and uninstall for the modified integration only with --force",
+    /^ {2}cotal completion install bash --force /m.test(status.stdout) && /^ {2}cotal completion uninstall bash --force /m.test(status.stdout) && !/^ {2}cotal completion (?:un)?install bash +[A-Z]/m.test(status.stdout), shown(status));
+  const named = s.run(["completion", "install", "bash", "--json"]);
+  check("the refusal names the stub, and its JSON carries the way out", named.status === 2 && codeOf(named.stdout) === "CONFLICT" && JSON.parse(named.stdout).error.message.includes(stub) && /--force/.test(JSON.parse(named.stdout).error.remedy ?? ""), shown(named));
+  const forced = s.run(["completion", "install", "bash", "--force"]);
+  check("install --force rewrites the edited stub and leaves the startup file as it was", forced.status === 0 && readFileSync(stub, "utf8") === installed.stub && readFileSync(rc, "utf8") === installed.rc, shown(forced));
+  writeFileSync(rc, installed.rc.replace(/^(source .*)$/m, "$1 && echo edited"));
+  const block = s.run(["completion", "install", "bash"]);
+  check("install of an edited block refuses, naming the file, the markers and --force",
+    block.status === 2 && block.stderr.includes(rc) && block.stderr.includes('"# >>> cotal completion >>>" to "# <<< cotal completion <<<"') && block.stderr.includes("cotal completion install bash --force"), shown(block));
+  const rewritten = s.run(["completion", "install", "bash", "--force"]);
+  check("install --force rewrites the block and keeps the lines around it", rewritten.status === 0 && readFileSync(rc, "utf8") === installed.rc, shown(rewritten));
+  writeFileSync(rc, installed.rc + installed.rc);
+  const removed = s.run(["completion", "uninstall", "bash", "--force", "--json"]);
+  check("uninstall --force removes both copies of a duplicated block and the stub, and keeps the rest",
+    removed.status === 0 && outcomeOf(removed.stdout) === "ok" && JSON.parse(removed.stdout).result.forced === true && readFileSync(rc, "utf8") === "export EDITOR=vi\nalias ll='ls -l'\n".repeat(2) && !existsSync(stub), shown(removed));
+  s.run(["completion", "install", "bash"]);
+  writeFileSync(rc, readFileSync(rc, "utf8").replace("# <<< cotal completion <<<\n", ""));
+  const unclosed = s.run(["completion", "uninstall", "bash", "--force"]);
+  check("a block with no end marker is refused even with --force, naming the file to edit", unclosed.status === 2 && unclosed.stderr.includes(`${rc} has no complete block`) && existsSync(stub), shown(unclosed));
+  const misplaced = s.run(["completion", "--force"]);
+  check("--force is refused where it does not apply", misplaced.status === 1 && /--force applies to completion install and uninstall/.test(misplaced.stderr), shown(misplaced));
+}
+
+// ── Receipts say what happened ───────────────────────────────────────────────────────────────────────
+{
+  const s = sandbox();
+  const rc = join(s.home, ".bashrc"), stub = join(s.xdg, "cotal", "completion.bash");
+  s.run(["completion", "install", "bash"]);
+  const again = s.run(["completion", "install", "bash", "--plain"]);
+  check("a repeated install says nothing needed changing, not that material was changed", again.status === 0 && /Nothing needed changing/.test(again.stdout) && !/material was changed/.test(again.stdout), shown(again));
+  writeFileSync(rc, readFileSync(rc, "utf8") + `source '${stub}'\n`);
+  const blocked = s.run(["completion", "uninstall", "bash"]);
+  check("uninstall refuses a hand-added line that sources the stub, naming the file, the line and what to do",
+    blocked.status === 2 && blocked.stderr.includes(`${rc} still names this stub outside the cotal block, in "source '${stub}'"`) && blocked.stderr.includes(`remove that line from ${rc} yourself`) && existsSync(stub), shown(blocked));
+}
+
+// ── A startup file install created goes with the integration ───────────────────────────────────────
+{
+  const s = sandbox();
+  const rc = join(s.home, ".bashrc");
+  const first = s.run(["completion", "install", "bash"]);
+  check("install creates a missing .bashrc", first.status === 0 && existsSync(rc), shown(first));
+  const gone = s.run(["completion", "uninstall", "bash"]);
+  check("uninstall removes the .bashrc install created instead of leaving it empty", gone.status === 0 && !existsSync(rc), shown(gone));
+  s.run(["completion", "install", "bash"]);
+  writeFileSync(rc, readFileSync(rc, "utf8") + "alias ll='ls -l'\n");
+  const kept = s.run(["completion", "uninstall", "bash"]);
+  check("it keeps that .bashrc once you added your own lines", kept.status === 0 && readFileSync(rc, "utf8") === "alias ll='ls -l'\n", shown(kept));
+  writeFileSync(rc, "");
+  s.run(["completion", "install", "bash"]);
+  const empty = s.run(["completion", "uninstall", "bash"]);
+  check("a .bashrc that was there before install stays, even empty", empty.status === 0 && existsSync(rc) && readFileSync(rc, "utf8") === "", shown(empty));
+  const zd = join(s.home, "zd"), zrc = join(zd, ".zshrc");
+  mkdirSync(zd, { mode: 0o700 });
+  const zInstall = s.run(["completion", "install", "zsh"], { ZDOTDIR: zd });
+  const zUninstall = s.run(["completion", "uninstall", "zsh"], { ZDOTDIR: zd });
+  check("the same holds for a .zshrc in ZDOTDIR", zInstall.status === 0 && zUninstall.status === 0 && !existsSync(zrc), { install: shown(zInstall), uninstall: shown(zUninstall) });
+}
+
+// ── The stubs leave a path value to the shell's file names ─────────────────────────────────────────
+{
+  const s = sandbox();
+  const bin = join(s.home, "bin"), work = join(s.home, "work");
+  mkdirSync(bin, { mode: 0o700 });
+  mkdirSync(work, { mode: 0o700 });
+  writeFileSync(join(bin, "cotal"), `#!/bin/sh\nexec "${process.execPath}" "${BIN}" "$@"\n`, { mode: 0o700 });
+  for (const name of ["plain.yaml", "my team.yaml"]) writeFileSync(join(work, name), "");
+  const env = { ...HOST_ENV, HOME: s.home, XDG_CONFIG_HOME: s.xdg, COTAL_HOME: join(s.home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", PATH: `${bin}:${process.env.PATH ?? ""}` };
+  const drive = (shell: string, script: string) => spawnSync(shell, shell === "bash" ? ["--norc", "--noprofile", "-c", script] : ["-f", "-c", script], { cwd: work, env, encoding: "utf8", timeout: 60_000 });
+  const bash = (words: string) => drive("bash", `source <(cotal completion script bash); COMP_WORDS=(${words}); COMP_CWORD=$(( \${#COMP_WORDS[@]} - 1 )); _cotal_complete; printf '%s\\n' "\${COMPREPLY[@]}"`);
+  const files = bash(`cotal team check ""`);
+  check("bash completes file names where the value takes a path, one per file", files.status === 0 && files.stdout.split("\n").filter(Boolean).sort().join("|") === "my team.yaml|plain.yaml", { status: files.status, stdout: files.stdout, stderr: files.stderr.slice(0, 300) });
+  const prefix = bash("cotal team check pl");
+  check("bash narrows them to the typed prefix", prefix.status === 0 && prefix.stdout === "plain.yaml\n", { status: prefix.status, stdout: prefix.stdout });
+  const keys = bash(`cotal config set ""`);
+  check("bash offers no file names where the value takes none", keys.status === 0 && keys.stdout.includes("color\n") && !keys.stdout.includes("plain.yaml"), { status: keys.status, stdout: keys.stdout });
+  const zshStub = s.run(["completion", "script", "zsh"]).stdout;
+  check("the zsh stub calls _files for a path value", /\[\[ "\$directive" == default \]\] && _files/.test(zshStub), zshStub);
+  if (spawnSync("zsh", ["-fc", "true"]).status === 0) {
+    const zsh = drive("zsh", `compdef() {}; _describe() { print -r -- "describe"; }; _files() { print -r -- "files"; }; source <(cotal completion script zsh); words=(cotal team check ""); CURRENT=4; _cotal; words=(cotal config set ""); CURRENT=4; _cotal`);
+    check("zsh lists files for a path value and only cotal's own candidates otherwise", zsh.status === 0 && zsh.stdout === "files\ndescribe\n", { status: zsh.status, stdout: zsh.stdout, stderr: zsh.stderr.slice(0, 300) });
+  } else console.log("  zsh is not installed here, so the stub's _files call was checked only in its text");
 }
 
 // ── Values the CLI knows locally ──────────────────────────────────────────────────────────────────
@@ -368,6 +517,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("channel remove offers those channels", exactly(channel, ["review"]), shown(channel));
   // A path lets the shell complete file names; any other value does not.
   for (const [words, directive] of [[["space", "add", "x", "--root"], ":default"], [["space", "add", "x", "--file"], ":default"], [["channel", "set", "ops", "--creds"], ":default"],
+    [["status", "--creds"], ":default"], [["history", "--creds"], ":default"], [["watch", "--creds"], ":default"], [["who", "--creds"], ":default"],
     [["channel", "set", "ops", "--window"], ":nofiles"], [["channel", "set", "ops", "--desc"], ":nofiles"], [["channel", "set", "ops", "--instructions"], ":nofiles"]] as const) {
     const r = offered([...words]);
     check(`${words.join(" ")} ${directive === ":default" ? "offers file names" : "offers no file names"}`, r.status === 0 && r.values.length === 0 && r.directive === directive, shown(r));
