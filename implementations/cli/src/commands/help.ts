@@ -1,5 +1,5 @@
 import { findCommand, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { jsonFlag, writeResult } from "@cotal-ai/workspace";
+import { jsonFlag, oneLine, writeResult } from "@cotal-ai/workspace";
 import { commandSurface } from "../ext-loader.js";
 import { printCommandList, printHelpPath } from "../help.js";
 import { cliVersion, extensionVersions, readExtensionVersions } from "../lib/version.js";
@@ -14,7 +14,7 @@ export async function help(args: ParsedArgs): Promise<void> {
   const commands = commandSurface();
   if (word === undefined) return printCommandList(commands, values.all === true);
   const cmd = findCommand(commands, word);
-  if (!cmd || cmd.name.startsWith("__")) throw new Error(`unknown command: ${word} - run \`cotal help\` to list commands`);
+  if (!cmd || cmd.name.startsWith("__")) throw new Error(`unknown command: ${oneLine(word)} - run \`cotal help\` to list commands`);
   printHelpPath(cmd, path);
 }
 

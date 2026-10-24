@@ -6,7 +6,7 @@
  * (help, refusal and parse), and a word that only prefixes a command selects nothing. A short flag
  * parses as its long form, and a wrong-case short flag or a missing value is refused. So is a flag typed
  * with a typographic dash, naming the dash and the flag; after `--`, or naming no flag, such a word is
- * an argument. `version --json`
+ * an argument. A usage refusal escapes the control bytes of each word it quotes. `version --json`
  * writes one envelope, and a usage error under `--json` is one refusal envelope. `--no-color` and
  * `--no-input` are accepted by every command in any position before `--`.
  *
@@ -427,6 +427,17 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   refused("a prefix of a command selects nothing", cotal(["spaw"]), /unknown command: spaw/);
   refused("a prefix of an aliased command selects nothing", cotal(["hist"]), /unknown command: hist/);
   refused("help for a seeded command that is not installed yet seeds nothing", cotal(["web", "--help"]), /unknown command: web - run `cotal help`/);
+  // A word the refusal quotes cannot reach the terminal as a control sequence.
+  for (const [what, args, shownAs] of [
+    ["an unknown command", ["x\u001b[2J"], "unknown command: x\\u001b[2J"],
+    ["help for an unknown command", ["help", "x\u001b]0;T\u0007"], "unknown command: x\\u001b]0;T\\u0007"],
+    ["an unknown subcommand", ["ext", "x\u001b]0;T\u0007"], 'no subcommand "x\\u001b]0;T\\u0007"'],
+    ["help for an unknown subcommand", ["help", "ext", "x\u001b[2J"], 'no subcommand "x\\u001b[2J"'],
+    ["an unknown option", ["status", "--x\u001b[2J"], "'--x\\u001b[2J'"],
+  ] as const) {
+    const r = cotal([...args], undefined, noSeed);
+    check(`${what} quotes the word with its control bytes escaped`, r.status === 1 && r.stderr.includes(shownAs) && !/[\u0007\u001b]/.test(r.stderr), shown(r));
+  }
 }
 
 // ── A flag typed with a typographic dash, as autocorrect writes `--` ──────────────────────────────

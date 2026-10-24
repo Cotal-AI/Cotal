@@ -4,7 +4,7 @@
  * connects, writes, seeds or imports an extension.
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, getCurrent, preparedSpaceAt, readMesh, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, getCurrent, oneLine, preparedSpaceAt, readMesh, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
 import { c, hang } from "./ui.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
@@ -245,7 +245,7 @@ export function printHelpPath(cmd: Command, words: readonly string[], out: (line
     if (!sub || sub.hidden) {
       // The parser's usage error for the same word: the reason, then the help of the path that exists.
       const at = [cmd.name, ...path].join(" ");
-      for (const line of hang("✗ ", `cotal ${at} has no subcommand "${word}" - run \`cotal help ${at}\``, terminalWidth(process.stderr))) console.error(c.red(line));
+      for (const line of hang("✗ ", `cotal ${at} has no subcommand "${oneLine(word)}" - run \`cotal help ${at}\``, terminalWidth(process.stderr))) console.error(c.red(line));
       printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, (line) => console.error(line), terminalWidth(process.stderr));
       process.exit(1);
     }

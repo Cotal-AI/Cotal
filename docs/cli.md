@@ -80,7 +80,9 @@ before it acts, such as a missing argument, an invalid flag value or two flags t
 dash or a minus sign followed by one of the command's flag names, as an autocorrecting editor writes
 `--`: the refusal names the dash and the flag to type. After `--` such a word is an argument as
 typed. The command prints the error, then any remedy,
-then its help on stderr, writes nothing on stdout, exits 1, and does not run. A usage error is found before any effect, so it never seeds
+then its help on stderr, writes nothing on stdout, exits 1, and does not run. A control character in
+a word the error quotes, from the command line or from a file, shows as its `\uXXXX` escape, so a
+typed word cannot clear the screen or retitle the terminal. A usage error is found before any effect, so it never seeds
 connectors or writes configuration. Help, version and completion never do either.
 
 Command output, including error lines on stderr, the guided `setup` and `meshes add` prompts and

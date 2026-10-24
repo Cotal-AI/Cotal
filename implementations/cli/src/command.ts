@@ -21,6 +21,7 @@ import {
   localeIsUtf8,
   operationWarnings,
   outputDeclarationProblems,
+  oneLine,
   renderReport,
   renderWorkspaceError,
   runOperation,
@@ -281,13 +282,13 @@ export interface RunCliOptions {
 
 /** A usage refusal on stderr, then `cmd`'s help when one is given. Plain output and a locale without
  *  UTF-8 have no refusal mark, so there the refusal is the classified report, which names its outcome
- *  in words. */
+ *  in words. Either way the words it quotes are escaped, as the report escapes every text. */
 function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command): void {
   const report = plain || !localeIsUtf8();
   if (report) writeSync(2, `${renderReport(commandFailureReport(failure), plain ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
   else {
-    stderrLine("✗ ", failure.message, c.red);
-    if (failure.remedy) stderrLine("  ", failure.remedy, c.dim);
+    stderrLine("✗ ", oneLine(failure.message), c.red);
+    if (failure.remedy) stderrLine("  ", oneLine(failure.remedy), c.dim);
   }
   if (!cmd) return;
   if (report) console.error("");
