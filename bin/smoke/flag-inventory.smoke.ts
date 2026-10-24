@@ -256,12 +256,14 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `--full` (2026-10): a grant takes the wide ACL defaults only when asked; without it the grant
   // must name --scope, --allow-subscribe and --allow-publish. `--no-expiry` (2026-10): `auth mint`
   // issues a credential with no expiry only when asked, and records the request; the default is 24 h.
+  // `--replace` (2026-10): `auth mint` replaces a label's standing credential that has expired or has
+  // no expiry.
   auth: {
     flags: [
       "allow-publish:string", "allow-subscribe:string", "channels:string", "endpoint:string", "expires-at:string",
       "expires-in:string", "force:boolean", "full:boolean", "identity:string", "json:boolean:j", "label:string",
       "no-expiry:boolean", "out:string", "owner:string", "parent:string", "plain:boolean", "profile:string", "provision:boolean",
-      "role:string", "scope:string", "server:string", "space:string:s", "sub:string", "yes:boolean:y",
+      "replace:boolean", "role:string", "scope:string", "server:string", "space:string:s", "sub:string", "yes:boolean:y",
     ],
     positionals: true,
   },
@@ -407,12 +409,13 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Each refuses with its literal replacement and keeps the old flags so the old line parses.
   // Stage 2a: `start` errors naming `spawn --detach`; never a silent alias.
   start: { flags: [], positionals: true, rawArgs: true },
-  // `mint` moved to `auth mint` / `auth signer --out`.
+  // `mint` moved to `auth mint` / `auth signer --out`. It declares `auth mint`'s flags, so a line
+  // written for either parses and reaches the replacement.
   mint: {
     flags: [
       "allow-publish:string", "allow-subscribe:string", "channels:string", "endpoint:string", "expires-at:string",
       "expires-in:string", "force:boolean", "identity:string", "json:boolean:j", "no-expiry:boolean", "out:string",
-      "plain:boolean", "profile:string", "provision:boolean", "role:string", "server:string", "signer:boolean", "space:string:s",
+      "plain:boolean", "profile:string", "provision:boolean", "replace:boolean", "role:string", "server:string", "signer:boolean", "space:string:s",
     ],
     positionals: true,
   },

@@ -280,6 +280,15 @@ setCurrent("keep");
 
   const forced = await json(["space", "add", "dead1", "--server", DEAD, "--root", root, "--force"]);
   check("--force adds a space whose broker is down, marked not checked", forced.status === 0 && forced.env?.result.verified === false && findMesh("dead1") !== undefined, shown(forced));
+  check("…and its registration records that its mode was not checked", findMesh("dead1")?.unchecked === true && forced.env?.result.space.modeChecked === false, findMesh("dead1"));
+  const listedUnchecked = await json(["space"]);
+  check("space --json marks that mode unchecked and a checked one checked",
+    listedUnchecked.env?.result.items.find((item: { space: string }) => item.space === "dead1")?.modeChecked === false && listedUnchecked.env?.result.items.find((item: { space: string }) => item.space === "started")?.modeChecked === true, listedUnchecked.env?.result.items);
+  const shownUnchecked = await run(["space", "show", "dead1", "--plain"]);
+  check("space show names the mode not checked and how to check it", /mode:\s+open, not checked: added with --force/.test(shownUnchecked.stdout) && shownUnchecked.stdout.includes("cotal space forget dead1"), shown(shownUnchecked));
+  const whoUnchecked = await json(["whoami", "--space", "dead1"]);
+  check("whoami does not state an unchecked mode as fact: partial, exit 4, MODE_NOT_CHECKED",
+    whoUnchecked.status === 4 && whoUnchecked.env?.outcome === "partial" && whoUnchecked.env.result.modeChecked === false && whoUnchecked.env.warnings.some((w: { code: string }) => w.code === "MODE_NOT_CHECKED"), shown(whoUnchecked));
 
   clearCurrent();
   const unselected = await json(["space", "add", "open3", "--server", LIVE, "--root", root]);
@@ -839,6 +848,7 @@ if (process.platform === "linux") {
   const server = `nats://127.0.0.1:${await freePort()}`;
   const away = await json(["up", "--detach", "--open", "--no-manager", "--server", server, "--space", "demo"], elsewhere);
   check("up --space for it from another folder refuses, naming its root, and makes nothing there", refused(away, 2, "TARGET_UNAVAILABLE") && away.env?.error?.message.includes(`prepared in ${fresh}`) && !existsSync(join(elsewhere, ".cotal")), shown(away));
+  check("that refusal names the up --root that starts it from here", away.env?.error?.remedy === `start it in its folder with \`cotal up --root ${fresh} --space demo\`, or \`cotal space forget demo\` to start it here`, shown(away));
   const otherName = await json(["up", "--detach", "--open", "--no-manager", "--server", server, "--space", "other"], fresh);
   check("up --space for another space in its root refuses", refused(otherName, 2, "CONFLICT") && /root of "demo"/.test(otherName.env?.error?.message ?? "") && findMesh("other") === undefined, shown(otherName));
   check("that refusal names the command that runs the folder's own space",

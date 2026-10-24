@@ -32,6 +32,9 @@
  *   9. the refusals: both lifetime flags at once, or --no-expiry with either; --expires-in the seam would refuse (0, negative,
  *      fractional) without echoing it; an expiry past the last representable date; --identity on a file with no seed; --identity with a missing
  *      path → refused each, one sentence, nothing written
+ *  10. --replace: an existing label refuses CONFLICT, naming --replace; --replace swaps an expired
+ *      standing credential and an unbounded one, whose no-expiry record goes with it; a still-valid
+ *      one refuses CONFLICT naming its expiry and stays as it was; --replace with --out is refused
  *
  * Every cell dispatches real argv through `runCli` (the binary's entry: spec parsing, then the
  * registered runner), never a hand-built ParsedArgs. It runs in a child, because the kernel writes a
@@ -42,7 +45,7 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -67,7 +70,7 @@ const {
   seedChannelRegistry, provisionAgent, mintLifecycleUid, principalKey, DEV_OWNER,
 } = await import("@cotal-ai/core");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
-const { authDir, canonicalRoot, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
+const { agentSecretFilePaths, authDir, canonicalRoot, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
 const { credsClaims } = await import("@cotal-ai/core");
 const { bootBroker } = await import("../../manager/smoke/_boot-broker.js");
 
@@ -543,6 +546,62 @@ try {
     check("--identity on a missing path is refused before anything is read",
       r3.code === 2 && /credential reference is missing or unreadable/.test(r3.out), r3.out);
     check("  and mints nothing", !existsSync(out));
+    // An --out folder that cannot hold the credential is named, with the cause and the step.
+    const real = join(root, "out-real"), link = join(root, "out-link");
+    mkdirSync(real, { mode: 0o700 });
+    symlinkSync(real, link);
+    const linked = await runMint(["x", "--profile", "observer", "--out", join(link, "sub", "x.creds")]);
+    check("--out through a symbolic link exits 2 PERMISSION_DENIED, naming the link, where it points and the path without it",
+      linked.code === 2 && /^\s*Code:\s+PERMISSION_DENIED$/m.test(linked.out) && linked.out.includes(`the --out path goes through ${link}, a symbolic link to ${real}`)
+        && linked.out.includes(`such as ${join(real, "sub", "x.creds")} if that folder is yours`), linked.out);
+    check("  and creates nothing through the link", readdirSync(real).length === 0);
+    const file = join(root, "out-file");
+    writeFileSync(file, "", { mode: 0o600 });
+    const notFolder = await runMint(["x", "--profile", "observer", "--out", join(file, "x.creds")]);
+    check("--out through a file exits 1, naming the file that is not a folder",
+      notFolder.code === 1 && notFolder.out.includes(`the --out path goes through ${file}, which is not a folder; no credential was written`), notFolder.out);
+    // An account that bypasses folder permissions cannot be refused this way.
+    if (process.getuid?.() !== 0) {
+      const locked = join(root, "out-locked");
+      mkdirSync(locked, { mode: 0o500 });
+      const noAccess = await runMint(["x", "--profile", "observer", "--out", join(locked, "sub", "x.creds")]);
+      chmodSync(locked, 0o700);
+      check("--out under a folder this account cannot create in exits 2 PERMISSION_DENIED, naming the folder",
+        noAccess.code === 2 && /^\s*Code:\s+PERMISSION_DENIED$/m.test(noAccess.out) && noAccess.out.includes(`the --out folder ${join(locked, "sub")} could not be reached or made by this account (EACCES)`), noAccess.out);
+      check("  and creates nothing there", readdirSync(locked).length === 0);
+    }
+  }
+
+  // ── 10. --replace: an expired or unbounded label's standing credential ─────────────────────
+  {
+    const standing = (label: string) => agentSecretFilePaths(root, SPACE, label).creds;
+    const short = await runMint(["kurz", "--expires-in", "1"]);
+    check("a label minted to expire in a second", short.code === 0 && existsSync(standing("kurz")), short.out);
+    await wait(2_100);
+    const taken = await runMint(["kurz"]);
+    check("minting that label again refuses CONFLICT and names --replace",
+      taken.code === 2 && /^\s*Code:\s+CONFLICT$/m.test(taken.out) && taken.out.includes("replace it with --replace once it has expired or if it has no expiry"), taken.out);
+    const expired = readFileSync(standing("kurz"), "utf8");
+    const swapped = await runMint(["kurz", "--replace", "--expires-in", "3600"]);
+    const fresh = credsClaims(readFileSync(standing("kurz"), "utf8"));
+    check("--replace swaps the expired standing credential for a valid one and says what it replaced",
+      swapped.code === 0 && /^\s*Replaced:\s+a credential that expired at /m.test(swapped.out) && readFileSync(standing("kurz"), "utf8") !== expired && typeof fresh.exp === "number" && fresh.exp * 1000 > Date.now(), swapped.out);
+    const kept = readFileSync(standing("kurz"), "utf8");
+    const live = await runMint(["kurz", "--replace"]);
+    check("--replace on a still-valid credential refuses CONFLICT, naming its expiry",
+      live.code === 2 && /^\s*Code:\s+CONFLICT$/m.test(live.out) && /the standing credential "kurz" is valid until \S+Z, so --replace left it in place/.test(live.out), live.out);
+    check("  and leaves it as it was", readFileSync(standing("kurz"), "utf8") === kept);
+    const unbounded = await runMint(["ewig", "--no-expiry"]);
+    const record = `${standing("ewig")}.no-expiry.json`;
+    check("a label minted with --no-expiry records the request", unbounded.code === 0 && existsSync(record), unbounded.out);
+    const bounded = await runMint(["ewig", "--replace"]);
+    check("--replace bounds the unbounded credential with the 24-hour default",
+      bounded.code === 0 && /^\s*Replaced:\s+a credential with no expiry claim$/m.test(bounded.out) && typeof credsClaims(readFileSync(standing("ewig"), "utf8")).exp === "number", bounded.out);
+    check("  and removes the no-expiry record, which named the bytes it replaced", !existsSync(record));
+    const out = join(root, "replace-out.creds");
+    const withOut = await runMint(["kurz", "--replace", "--out", out]);
+    check("--replace with --out exits 1 with the reason and writes nothing",
+      withOut.code === 1 && /--replace replaces the label's standing credential, so it takes no --out/.test(withOut.out) && !existsSync(out), withOut.out);
   }
 
   console.log(`\nMINT-PROVISION SMOKE OK ✅  (${pass} passed)`);
