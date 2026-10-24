@@ -168,8 +168,9 @@ history prefix each new row with the mesh name so the context remains visible as
 output scrolls.
 
 On a terminal, a long value, line, warning or failure wraps at spaces, and each continuation line
-starts under the text it continues. A word wider than the line, such as a path, keeps a line of its
-own and is never split. Help wraps the same way, including the title of `cotal help --all`.
+starts under the text it continues. A labeled value with a word too wide to fit beside its label,
+such as an identity, starts on the line under the label. A word wider than the line, such as a path,
+keeps a line of its own and is never split. Help wraps the same way, including the title of `cotal help --all`.
 
 A question that defaults to No, such as the one before `history clear`, `down`, `channel remove` or
 `persona remove`, is answered by typing: `y` or `yes`, in any case, then Enter confirms it. Enter
