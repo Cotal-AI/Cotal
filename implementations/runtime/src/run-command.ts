@@ -110,7 +110,7 @@ import { logLineText } from "./log-line.js";
 import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer, RunAnswerBlocked } from "./resolve-checkpoint.js";
 
 const USAGE =
-  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] [--json] [--page [--limit <n>] [--cursor <cursor>]] | journal <runId> [--endpoint <ep>] [--limit <n>] [--json] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>] | migrate <runId> --local --file <program> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--on <instance>] [--space <s>] [--server <url>] [--creds <path>]';
+  'usage: cotal run [--endpoint <ep>] [--json] [--page [--limit <n>] [--cursor <cursor>]] | cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | show <runId> [--endpoint <ep>] [--limit <n>] [--json] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>] | check <runId> <program> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--on <instance>] [--space <s>] [--server <url>] [--creds <path>]';
 
 interface RunValues {
   space?: string;
@@ -140,7 +140,7 @@ interface RunValues {
   /** `ps` and `journal` only: one JSON object per row per line on stdout. */
   json?: boolean;
   page?: boolean;
-  /** `ps --page`: the page's row limit. `journal`: how many of the last journal rows the text view prints. */
+  /** `run --page`: the page's row limit. `show`: how many of the last journal rows the text view prints. */
   limit?: string;
   cursor?: string;
   plain?: boolean;
@@ -369,7 +369,7 @@ async function revoke(values: RunValues, runId: string | undefined): Promise<voi
     // What the operator will see NEXT, because the two surfaces disagreed for as long as one of
     // them never read the marker. Saying it here means the acknowledgement and the table cannot
     // drift apart without somebody noticing at the moment of the revoke.
-    console.log(`run ps now lists ${runId} as revoked; the status record is left as its driver last wrote it`);
+    console.log(`cotal run now lists ${runId} as revoked; the status record is left as its driver last wrote it`);
     // The marker is read only at a channel effect, so a run that makes none keeps computing.
     console.log("a revoke does not cancel the run: work that touches no channel, such as sleep or log, keeps running until the host driving it stops");
   } finally {
@@ -574,7 +574,7 @@ function parseAnswerValue(values: RunValues): unknown {
 async function migrate(values: RunValues, planes: Planes, runId: string | undefined, takeoverId: string): Promise<void> {
   if (runId === undefined || values.file === undefined) {
     console.error(USAGE);
-    console.error("run migrate: <runId> and --file <program> are required");
+    console.error("run check: <runId> and <program> are required");
     process.exit(1);
   }
   // Commit-side overrides, refused by name: each one records a person's decision on a report the
@@ -585,7 +585,7 @@ async function migrate(values: RunValues, planes: Planes, runId: string | undefi
     ["discard-approvals", "--discard-approvals"],
   ] as const) {
     if (values[flag] !== undefined) {
-      console.error(`run migrate: ${what} decides what a COMMIT does with an orphan, and this verb only checks; nothing was written`);
+      console.error(`run check: ${what} decides what a COMMIT does with an orphan, and this verb only checks; nothing was written`);
       process.exit(1);
     }
   }
@@ -613,7 +613,7 @@ async function migrate(values: RunValues, planes: Planes, runId: string | undefi
   } catch (e) {
     if (!(e instanceof LangErrors)) throw e;
     // Every problem with its position, cause and fix, as `run validate` lists them.
-    console.error(`run migrate: ${values.file} is not valid cotal-lang (${e.errors.length} problem${e.errors.length === 1 ? "" : "s"}), so it was not checked against the journal`);
+    console.error(`run check: ${values.file} is not valid cotal-lang (${e.errors.length} problem${e.errors.length === 1 ? "" : "s"}), so it was not checked against the journal`);
     for (const item of e.errors) console.error(`  ${item.code} ${item.title} (${item.span.file}:${item.span.line}:${item.span.column})\n    ${item.cause}\n    fix: ${item.fix}`);
     process.exit(1);
   }
@@ -676,7 +676,7 @@ const REFUSED_BEFORE_EFFECT: Readonly<Record<string, RefusalCode>> = {
 };
 
 /** The local journal read a refused hosted read names. */
-const localJournal = (args: Record<string, unknown> | undefined): string => `cotal run journal ${typeof args?.runId === "string" ? args.runId : "<run-id>"} --local`;
+const localJournal = (args: Record<string, unknown> | undefined): string => `cotal run show ${typeof args?.runId === "string" ? args.runId : "<run-id>"} --local`;
 
 /** A manager refusal under the CLI's outcome table, with the manager's own sentence. Any other code
  *  leaves a read failed and a start, resume or answer unconfirmed, because the manager may have
@@ -691,15 +691,15 @@ export function managerRefusal(command: string, space: string, args: Record<stri
   // A resume refused as a precondition, such as of a completed or failed run, appended nothing, so
   // the run's recorded state is what to read next.
   const resumeBlocked = command === "run-resume" && err?.code === "failed-precondition" && typeof args?.runId === "string";
-  const remedy = busy ? { remedy: `wait until one of them has activated, then run ${command === "run-resume" ? "the resume" : "the start"} again; cotal run ps lists a run once it has` }
+  const remedy = busy ? { remedy: `wait until one of them has activated, then run ${command === "run-resume" ? "the resume" : "the start"} again; cotal run lists a run once it has` }
     : resumeBlocked ? { remedy: `read the run's recorded state with cotal run show ${args.runId}${on ? ` --on ${on}` : ""}` }
-    : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" ? `read the run's open requests with cotal run show ${args.runId}` : "list the recorded runs with cotal run ps" };
+    : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" ? `read the run's open requests with cotal run show ${args.runId}` : "list the recorded runs with cotal run" };
   if (code) return new CommandFailure("refused", err!.details?.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND) ? "SCHEMA_INVALID" : code, message, { ...options, ...remedy });
   // A reply too large for the broker changed nothing; the local read takes no reply.
   if (command === "run-status" && err?.code === "resource-exhausted")
     return new CommandFailure("refused", "UNSUPPORTED", message, { ...options, remedy: `read the run from its project folder with ${localJournal(args)}` });
   if (command === "run-status" || command === "run-ps") return new CommandFailure("failed", "OPERATION_FAILED", message, options);
-  return new CommandFailure("unknown", "OPERATION_UNKNOWN", message, { ...options, remedy: "read the run with cotal run show or cotal run ps before trying again; it was not retried" });
+  return new CommandFailure("unknown", "OPERATION_UNKNOWN", message, { ...options, remedy: "read the run with cotal run show, or list the runs with cotal run, before trying again; it was not retried" });
 }
 
 /** nats.js refuses a frame over the broker's `max_payload` before writing any of it. */
@@ -715,7 +715,7 @@ function payloadRefused(error: unknown): boolean {
 function reportInterruptedStart(values: RunValues, space: string): () => void {
   const exit = (signal: "SIGINT" | "SIGTERM"): void => {
     const failure = new CommandFailure("unknown", "OPERATION_UNKNOWN", "interrupted after the start request was sent, so the manager may already have recorded the run", {
-      target: { space }, remedy: "list the recorded runs with cotal run ps before starting it again",
+      target: { space }, remedy: "list the recorded runs with cotal run before starting it again",
     });
     if (values.json) writeEnvelope(failureEnvelope("run", failure));
     process.stderr.write(`${renderReport(commandFailureReport(failure), values.plain ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
@@ -891,7 +891,7 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
   // The manager serves no `run-migrate` command, so there is nothing to route to: the check reads
   // the run's record, journal and program itself, which is what `--local` does.
   if (verb === "migrate") {
-    console.error("run migrate: the manager serves no run-migrate command; the check reads the run from this terminal. Run `cotal run migrate <runId> --local --file <program>`");
+    console.error("run check: the manager serves no run-migrate command; the check reads the run from this terminal. Run `cotal run check <runId> <program>`");
     process.exit(1);
   }
   if (verb === "start") {
@@ -1076,7 +1076,7 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   // A run id is an id token, so a malformed one is refused here, before any contact, rather than
   // by whichever plane reads it first.
   if (["journal", "resume", "revoke", "answer", "amend", "migrate"].includes(verb) && first !== undefined) {
-    try { assertIdToken(first, "run id"); } catch { usage(`run ${raw}: ${JSON.stringify(boundedValue(first, SHOWN_VALUE_MAX))} is not a run id, which is 1 to 64 letters, digits, "_" or "-"; cotal run ps lists them`); }
+    try { assertIdToken(first, "run id"); } catch { usage(`run ${raw}: ${JSON.stringify(boundedValue(first, SHOWN_VALUE_MAX))} is not a run id, which is 1 to 64 letters, digits, "_" or "-"; cotal run lists them`); }
   }
   let a: string | undefined = first;
   let b: string | undefined = second;
@@ -1098,7 +1098,7 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (first !== undefined) usage(`run ${raw} takes no positional argument`);
   } else if (verb === "answer" || verb === "amend") {
     if (!first || !second) usage(`run ${verb} requires a run id and step key`);
-  } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "cotal run turns lists your turns; run cotal run yield <turn-id>" : `cotal run ps lists the runs; run cotal run ${raw} <run-id>`);
+  } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "cotal run turns lists your turns; run cotal run yield <turn-id>" : `cotal run lists the runs; run cotal run ${raw} <run-id>`);
   const scopes: Record<string, readonly string[]> = {
     timeout: ["start", "resume"], by: ["answer", "amend", "revoke"], reason: ["revoke"], value: ["answer", "amend"], artifact: ["answer", "amend"],
     "admit-read": ["start"], "admit-publish": ["start"], adopt: ["migrate"], release: ["migrate"], "discard-approvals": ["migrate"],

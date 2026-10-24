@@ -261,11 +261,11 @@ it in its own process, and answers with the id once the run is recorded. The ter
 moment the id prints; the run continues on the manager through every pause, and a manager restart
 takes back every run it had recorded running, from the journal, under the next epoch. `resume`
 names a run the manager recorded and is refused while the manager is already driving it, and for
-a run recorded `completed` or `failed`, whose journal already holds its outcome. `ps` and
-`journal` read; `answer` resolves an open checkpoint, or an open `ask` attempt, from any terminal
+a run recorded `completed` or `failed`, whose journal already holds its outcome. Bare
+`run` and `show` read; `answer` resolves an open checkpoint, or an open `ask` attempt, from any terminal
 or agent that holds the `run` capability.
 
-`journal` prints an open pause's question under its step. Once a checkpoint or `ask` settles with an
+`show` prints an open pause's question under its step. Once a checkpoint or `ask` settles with an
 accepted answer, it instead prints the answer value as JSON, who answered, the artifact when one was
 cited, the recorded time, and the accepted answer id. Expired pauses and ordinary steps print no
 answer line. A settled `race` names on its line the branch it took, and a step the race cancelled
@@ -276,7 +276,7 @@ was then cancelled, as a losing branch's pause is. `--json` carries the race's `
 step of a losing branch, the `lostRace` it lost.
 
 A settled step is never answered twice, so a participant who changes their mind uses `amend`. It
-files a new answer beside the accepted one, naming the answer it supersedes, and `journal` prints
+files a new answer beside the accepted one, naming the answer it supersedes, and `show` prints
 each amendment under the step as an `amended` line, in the order the store committed them. The last
 line is the current position, whatever clock each amender's `at` came from. The pause stays settled
 and the run keeps the answer it acted on. A step that is still open, or that settled with no answer,
@@ -284,7 +284,7 @@ refuses an amend. So does a step whose answer was just accepted and is not in th
 yet, and that refusal says so. The manager records the amender from the credential, as for an answer, and a
 spawned seat may amend only an answer recorded under its own name.
 
-A program's `log(...)` lines are not journalled, so `journal` and `show` do not print them. A run
+A program's `log(...)` lines are not journalled, so `show` does not print them. A run
 the manager hosts writes each line to the manager's log as `run <run-id>: log <text>`, which
 `cotal service logs stack-manager --space <space>` reads. A run driven with `--local` prints them in
 that terminal, and `run simulate` lists them under `Log`. A resumed run replays its program, so it
@@ -292,22 +292,22 @@ writes the lines before the resume point again.
 
 ```bash
 cotal run start --file build.cotal.js                   # the manager starts it; the minted id is printed
-cotal run ps                                            # list run records: state, holder, lineage
-cotal run journal run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # print the record and its last 20 journal rows; --limit <n> prints up to 1000, --json all
+cotal run                                               # list run records: state, holder, lineage
+cotal run show run-3f2a90c41b7e0d5a6c884e19b02df4a1                        # print the record and its last 20 journal rows; --limit <n> prints up to 1000, --json all
 cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # the manager takes the run back
 cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"yes"'
 cotal run amend run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"no"'   # record a changed position
-cotal run migrate run-3f2a90c41b7e0d5a6c884e19b02df4a1 --local --file build-v2.cotal.js   # check an edited program against the journal
+cotal run check run-3f2a90c41b7e0d5a6c884e19b02df4a1 build-v2.cotal.js   # check an edited program against the journal
 ```
 
 A program that does not validate is refused before anything is recorded, with every problem in the
 answer as the validator would print it. The driver records the program beside the run, so `resume`
-takes the run id alone and the manager reads the source back; an edited program is a `migrate` or a
-`fork`, never a resume. `cotal run migrate <runId> --local --file <program>` is that check: it
+takes the run id alone and the manager reads the source back; an edited program is a migration or a
+`fork`, never a resume. `cotal run check <runId> <program>` is that check: it
 replays the run's journal and walks the edited program over it, prints whether the migration is
 admissible, how many journal rows the walk accounted for, every orphaned step with its verdict and
 code, and exits 0 on admissible and non-zero on not. It reads only, under the same credential
-`journal` reads on, and the commit side is not reachable yet: the report itself says what a commit
+`show` reads on, and the commit side is not reachable yet: the report itself says what a commit
 would file and that this invocation filed nothing. An answer is recorded under the answerer the
 manager knows from the caller's credential: a managed agent by its name, anyone else by their
 principal. The request
@@ -437,7 +437,7 @@ is recorded `released` and waits for `cotal run resume <runId>`; one still waiti
 the whole stack. The `run-cancel` endpoint above cancels one hosted run, and the CLI has no verb
 for it.
 
-`run ps`, hosted or `--local`, reads the marker beside each run record and prints `revoked` for a
+Bare `cotal run`, hosted or `--local`, reads the marker beside each run record and prints `revoked` for a
 run that carries one, whatever state the record itself holds, with the revoker and the reason
 under the table. The record is display only here: a revoke writes no terminal state, because no host drove
 the run to one and the journal owns the facts. A marker the listing cannot read, whether the store
@@ -448,7 +448,7 @@ once every row is printed. The hosted `run-ps` rows carry the marker as `revoked
 
 A run whose step was refused (L5016) stays held; a
 resume on a host that can perform the step performs it live and continues from there.
-`journal` prints what an open pause asks beneath its step key, which is the address `answer` takes
+`show` prints what an open pause asks beneath its step key, which is the address `answer` takes
 back. Checkpoint expiry rides the mediated timer writer, which the delivery daemon pumps on a live
 mesh; on a bare broker a pause still resolves, it just cannot expire.
 
@@ -468,8 +468,8 @@ one bounded JSON page. Page mode is not in release 0.88.0 or earlier: the callin
 the manager both need a later version.
 
 ```bash
-cotal run ps --page --on <instance> --limit 8
-cotal run ps --page --on <instance> --cursor <cursor>
+cotal run --page --on <instance> --limit 8
+cotal run --page --on <instance> --cursor <cursor>
 ```
 
 For the MCP surface, use `cotal_run` with `verb: "ps"`, `instance` and `page: { limit: 8 }`.
@@ -571,7 +571,7 @@ the compiled engine, as the engine paragraph below says. The wire
 substrate of §14 (the `WFJ_<space>` stream, the five record kinds, the activation barrier, the
 per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migrate and fork are
 `@cotal-ai/runtime` (`implementations/runtime`). The migrate check is reachable as
-`cotal run migrate <runId> --local --file <program>`; committing a migration it judged admissible
+`cotal run check <runId> <program>`; committing a migration it judged admissible
 is not reachable from any surface yet. On the mesh handler, `sleep`, `checkpoint`,
 `wait(message(...))`, `wait(idle(...))`, `wait(down(...))`, `wait(replied(...))`, `notify`,
 `spawn`, `conclave`, `ask`, `monitor` and `turn` are durable.
@@ -638,10 +638,10 @@ non-conforming answer costs one attempt and its refusal reason is recorded on th
 answerer to read, exhausted attempts (default one) are the catchable L4006, and so is the one
 absolute deadline for the whole ask passing with no conforming record (its kind is `ask-deadline`),
 including one that passes before an attempt's pause is armed.
-`checkpoint` binds what it asks on its own entry, so `cotal run journal` prints the question under
+`checkpoint` binds what it asks on its own entry, so `cotal run show` prints the question under
 the step key an answer is addressed by while the pause is open: the address alone left whoever was
 asked reading the source to find out what "approve" meant. The entry also records the open
-attempt's deadline and the `onExpiry` it was armed with, which `run journal --json` reports; what
+attempt's deadline and the `onExpiry` it was armed with, which `run show --json` reports; what
 an expiry does is still decided from the program's source. An escalation's attempt records its own
 deadline, one `timeout` after it opens, and a resumed attempt keeps the deadline it recorded. After a checkpoint or `ask` accepts an
 answer, the journal prints that accepted answer's recorded value and attribution under the settled

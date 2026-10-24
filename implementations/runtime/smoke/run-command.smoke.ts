@@ -561,7 +561,7 @@ let P = "";
   c("revoke acknowledges with the revoker and the reason",
     captured().includes("revoked by smoke-operator (broker outage)"), captured());
   c("...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",
-    captured().includes(`run ps now lists ${rid} as revoked`), captured());
+    captured().includes(`cotal run now lists ${rid} as revoked`), captured());
   c("...and says a revoke does not cancel the run, since work that touches no channel never reads the marker",
     captured().includes("a revoke does not cancel the run: work that touches no channel, such as sleep or log, keeps running until the host driving it stops"), captured());
 

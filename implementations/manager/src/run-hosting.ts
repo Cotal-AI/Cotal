@@ -1212,7 +1212,7 @@ export class RunHosting {
         );
       }
       if (Date.now() > deadline)
-        throw new EpEnvelopeError("unavailable", `run ${req.runId}: its drive has not activated after ${RUN_ACTIVATION_WAIT_MS / 1000}s and was released; \`cotal run ps\` shows what it recorded, and a \`cotal run resume ${req.runId}\` tries again`);
+        throw new EpEnvelopeError("unavailable", `run ${req.runId}: its drive has not activated after ${RUN_ACTIVATION_WAIT_MS / 1000}s and was released; \`cotal run\` shows what it recorded, and a \`cotal run resume ${req.runId}\` tries again`);
     }
   }
 
