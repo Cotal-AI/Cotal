@@ -18,6 +18,8 @@
  *  G. folder `b` takes a fresh channel-only `team boot` of its own space on a second port. Its
  *     receipt, `team show <id>` and the inventory name the record's kind, state, next action and
  *     auth mode in words; the JSON keeps the recorded values.
+ *  H. a deployment ID that no record names is TARGET_NOT_FOUND, naming the ID, from `team show` and
+ *     from `team remove` with and without `--dry-run`.
  *
  * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
  * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
@@ -173,6 +175,17 @@ try {
   const additiveShow = cotal(s, "team", "show", deployment);
   check("an additive team show names its state and auth mode in words",
     /Auth mode:\s+static auth\n/.test(additiveShow.stdout) && /Recorded state:\s+channels created\n/.test(additiveShow.stdout), additiveShow.stdout);
+
+  console.log("\nH. a deployment ID that no record names");
+  const missing = (run: ReturnType<typeof cotal>, message: string) => {
+    const error = envelope(run.stdout)?.error;
+    return run.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.message === message && error.remedy === "list the deployments recorded here with cotal team";
+  };
+  const unknown = "0000000000000000";
+  check("team show <unknown id> is TARGET_NOT_FOUND and names the ID", missing(cotal(s, "team", "show", unknown, "--json"), `no team deployment "${unknown}" is recorded in this root`));
+  check("team show <garbage> is TARGET_NOT_FOUND and says what an ID looks like", missing(cotal(s, "team", "show", "nonsense", "--json"), `no team deployment "nonsense" is recorded in this root; a deployment ID is 16 hex characters`));
+  check("team remove <unknown id> --dry-run is TARGET_NOT_FOUND", missing(cotal(s, "team", "remove", unknown, "--dry-run", "--json"), `no team deployment "${unknown}" is recorded in this root`));
+  check("team remove <unknown id> --yes is TARGET_NOT_FOUND, not a route it does not support", missing(cotal(s, "team", "remove", unknown, "--yes", "--json"), `no team deployment "${unknown}" is recorded in this root`));
 } finally {
   if (bUp) {
     const down = cotal(b, "down", "--yes");

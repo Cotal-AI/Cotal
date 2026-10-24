@@ -1,6 +1,6 @@
 import { basename, join, resolve } from "node:path";
 import { CotalEndpoint, DEFAULT_SERVER, isReachable, realDirNoSymlink, subjectMatches, type ChannelDefaults, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, credentialRefusalMessage, brokerAddressForDisplay, canonicalRoot, connectOrThrow, findMesh, findPreparedSpace, jsonFlag, loadMeshes, localMeshesForRoot, plainFlag, presentationOf, readMaintenanceJournal, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, oneLine, credentialRefusalMessage, brokerAddressForDisplay, canonicalRoot, connectOrThrow, findMesh, findPreparedSpace, jsonFlag, loadMeshes, localMeshesForRoot, plainFlag, presentationOf, readMaintenanceJournal, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { personaCatalog } from "../lib/persona-files.js";
 import { formatIssue, loadManifest, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
 import { findLedgerByRun, listLedgerFiles, type MeshLedger } from "../lib/manifest/ledger.js";
@@ -81,6 +81,21 @@ function recorded(root: string, ledger: MeshLedger) {
     channels: ledger.created.channels, agents: ledger.created.agents.map((agent) => ({ requested: agent.requested, name: agent.name, id: agent.id, lifecycleUid: agent.lifecycleUid ?? null })),
     removalScope: "only ledger-owned resources after native ownership and live-incarnation checks",
     nextAction: "review-scoped-native-teardown" as const };
+}
+
+/** The refusal for a deployment ID that no record at the root names, or undefined when a record
+ *  names it or a store cannot be read, so the caller's own refusal stands. A deployment ID is 16 hex
+ *  characters, and a value of another shape says so. */
+function unknownDeployment(root: string, space: string, id: string): CommandFailure | undefined {
+  const full = /^[a-f0-9]{16}$/.test(id);
+  if (full) {
+    try {
+      if (findFreshTeamSummary(root, id) || findFreshTeamAttempt(root, id) || findAdditiveTeamAttempt(root, id)) return undefined;
+      const ledgers = listLedgerFiles(root, { requireReadable: true });
+      if (ledgers.valid.some(({ ledger }) => ledger.runId === id) || ledgers.refused.some(({ path }) => basename(path) === `${id}.json`)) return undefined;
+    } catch { return undefined; }
+  }
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `no team deployment "${oneLine(id)}" is recorded in this root${full ? "" : "; a deployment ID is 16 hex characters"}`, { target: { space, root, deploymentId: id }, remedy: "list the deployments recorded here with cotal team" });
 }
 
 /** The manifest's `defaults:` block for a report row, or that it declares none. */
@@ -237,7 +252,7 @@ export async function team(args: ParsedArgs): Promise<void> {
     }
     let found: ReturnType<typeof findLedgerByRun>;
     try { found = findLedgerByRun(catalog.root, subject!); }
-    catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the selected root has no readable additive ownership ledger for this full ID; no resources were touched", { target: { space: catalog.space, deploymentId: subject }, remedy: "inspect team in the checkout and space that created this deployment" }); }
+    catch { throw unknownDeployment(catalog.root, catalog.space, subject!) ?? new CommandFailure("refused", "TARGET_UNAVAILABLE", "the selected root has no readable additive ownership ledger for this full ID; no resources were touched", { target: { space: catalog.space, deploymentId: subject }, remedy: "inspect team in the checkout and space that created this deployment" }); }
     if (found.ledger.space !== catalog.space) throw new CommandFailure("refused", "CONFLICT", "this deployment's recorded space differs from the selected space; it was not rebound", { target: { recordedSpace: found.ledger.space, selectedSpace: catalog.space, deploymentId: subject } });
     const result = recorded(catalog.root, found.ledger);
     writeResult(presentationOf(values), { command: "team", target: { space: result.space, root: result.root, deploymentId: result.deploymentId }, result }, (row): Report => ({ sections: [
@@ -392,8 +407,10 @@ async function previewRemove(deploymentId: string, values: TeamValues): Promise<
   if (values["dry-run"] !== true) {
     // The original intent picks the route; each route revalidates its own returned receipt.
     let routed: ReturnType<typeof findAdditiveTeamAttempt>;
-    try { routed = findAdditiveTeamAttempt(personaCatalog(values).root, deploymentId); }
+    const catalog = personaCatalog(values);
+    try { routed = findAdditiveTeamAttempt(catalog.root, deploymentId); }
     catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the additive attempt for this ID is unreadable; no removal route was inferred", { target: { deploymentId } }); }
+    if (!routed) { const missing = unknownDeployment(catalog.root, catalog.space, deploymentId); if (missing) throw missing; }
     if (routed && !routed.requestedAgents.length && routed.declaredChannels.length) {
       const { removeChannelTeam } = await import("./team-channel-remove.js");
       return removeChannelTeam(deploymentId, values);
@@ -444,7 +461,7 @@ async function previewRemove(deploymentId: string, values: TeamValues): Promise<
   }
   let found: ReturnType<typeof findLedgerByRun>;
   try { found = findLedgerByRun(catalog.root, deploymentId); }
-  catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no readable additive ownership ledger matches this full ID in the selected root; no resources were touched", { target: { space: catalog.space, root: catalog.root, deploymentId }, remedy: "inspect the checkout and space that recorded the additive deployment" }); }
+  catch { throw unknownDeployment(catalog.root, catalog.space, deploymentId) ?? new CommandFailure("refused", "TARGET_UNAVAILABLE", "no readable additive ownership ledger matches this full ID in the selected root; no resources were touched", { target: { space: catalog.space, root: catalog.root, deploymentId }, remedy: "inspect the checkout and space that recorded the additive deployment" }); }
   if (found.ledger.space !== catalog.space) throw new CommandFailure("refused", "CONFLICT", "this additive ledger belongs to another space; it was not rebound", { target: { recordedSpace: found.ledger.space, selectedSpace: catalog.space, deploymentId } });
   let otherAttempts: ReturnType<typeof listAdditiveTeamAttempts>;
   try { otherAttempts = listAdditiveTeamAttempts(catalog.root); }

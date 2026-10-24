@@ -6083,7 +6083,10 @@ root-local attempt records at the selected local root. A team read or `--dry-run
 completes exits 0. Its JSON marks `completeness` as `partial`, and its report has a line
 saying what it does not establish. A report names each record's kind, recorded state, next action
 and auth mode in words, such as `boot returned` and `static auth`. The JSON result keeps the
-recorded values, such as `broker-boot-returned` and `auth`. When native `up -f` returns from its broker start, it writes a creation-only fresh
+recorded values, such as `broker-boot-returned` and `auth`. A deployment ID that no record in the
+root names is refused with `TARGET_NOT_FOUND`, which names the ID, by `team show` and by
+`team remove`; `team show` adds that an ID is 16 hex characters when the value has another shape.
+When native `up -f` returns from its broker start, it writes a creation-only fresh
 summary with its full run ID, initial broker PID, declared agent/channel names
 and the initial control-plane, auth-service and delivery-responder results.
 Older summaries without a broker PID, auth-mode pin or responder observation
