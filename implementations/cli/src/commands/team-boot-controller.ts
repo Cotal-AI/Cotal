@@ -20,6 +20,7 @@ import { startControllerStack, stackMembersView, stackUpForegroundNotice } from 
 import { assertUserStackTransport, preflightUserStack, userLoginRequired, userLoginState } from "./stack-user-auth.js";
 import { controllerStackNative, holdForegroundStack, prepareFreshTeamBoot, prepareResumeTeamBoot, recheckFreshTeamBoot, type FreshTeamBootPlan } from "./up.js";
 import { recheckStackResume, stackResumeEligibility, type StackResumeBinding } from "../lib/stack-resume.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 
 export interface ControllerTeamBootRequest {
   file: string;
@@ -91,6 +92,10 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
   let plan: FreshTeamBootPlan;
   if (!recorded) plan = await prepareFreshTeamBoot(request.file, { space: request.space, transport: request.transport });
   else {
+    // A stack whose last operation started it is up. Say so before the resume checks name the stop
+    // it lacks, and offer the route that adds a manifest to a running stack.
+    if (recorded.space === request.space && recorded.operation.kind === "up" && recorded.operation.phase === "completed")
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `"${request.space}" is already up at this root and no cotal down has stopped it; a team boot starts only a stopped stack, so nothing was booted`, { target: { root: recorded.root, space: request.space, operation: recorded.operation.id }, remedy: `add this manifest's channels and agents to the running stack with cotal team deploy ${shellWord(request.file)}, or stop it with cotal down before a team boot` });
     binding = stackResumeEligibility(recorded.root, request.space, { server: recorded.server, mode: recorded.mode });
     plan = await prepareResumeTeamBoot(request.file, { space: request.space, transport: request.transport, recorded: { server: binding.server, mode: binding.mode, ...(binding.broker.host ? { host: binding.broker.host } : {}) } });
   }

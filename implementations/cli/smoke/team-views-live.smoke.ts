@@ -13,6 +13,8 @@
  *     channel field that inherits it `(default)` instead of "not declared".
  *  E. rows that do not apply are left out: no "Durable delivery on open" row for a static space,
  *     and no empty agent table; the deploy preview's TLS row reads as `team show` reads it.
+ *  F. `team boot` on the stack that is up says so and offers `team deploy` with the same file, or
+ *     `cotal down`, instead of naming the stop the stack lacks.
  *
  * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
  * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
@@ -139,6 +141,14 @@ try {
   check("the deploy preview on a static space has no durable-on-open row, and its TLS row reads not required",
     !staticDeploy.stdout.includes("Durable delivery on open") && /\n\s+TLS:\s+not required\n/.test(staticDeploy.stdout) && !staticDeploy.stdout.includes("recorded required"), staticDeploy.stdout.slice(0, 1200));
   check("the boot preview of a static manifest has no durable-on-open row", !cotal(s, "team", "boot", "live.yaml", "--dry-run").stdout.includes("Durable delivery on open"));
+
+  console.log("\nF. team boot on a stack that is up");
+  const second = cotal(s, "team", "boot", "live.yaml", "--json");
+  const blocked = envelope(second.stdout)?.error;
+  check("team boot on the running stack refuses LIFECYCLE_BLOCKED and says the space is already up",
+    second.status === 2 && blocked?.code === "LIFECYCLE_BLOCKED" && blocked.message === `"${SPACE}" is already up at this root and no cotal down has stopped it; a team boot starts only a stopped stack, so nothing was booted`, second.out.slice(-800));
+  check("its Next offers team deploy with the same manifest, or cotal down",
+    blocked?.remedy === `add this manifest's channels and agents to the running stack with cotal team deploy ${join(s, "live.yaml")}, or stop it with cotal down before a team boot`, blocked);
 } finally {
   if (up) {
     const down = cotal(s, "down", "--yes");

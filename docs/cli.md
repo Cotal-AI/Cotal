@@ -6241,6 +6241,10 @@ receipt was partial. Foreground apply takes neither JSON nor plain output;
 a dry-run remains a finite preview. It does not establish native apply readiness or platform support.
 `up -f --foreground` still refuses on its retained launcher path.
 
+A `team boot` in a root whose stack is up, with no `cotal down` since, refuses with
+`LIFECYCLE_BLOCKED`, says the space is already up and starts nothing. Its Next offers
+`cotal team deploy <file>`, which adds the manifest's channels and agents to the running stack, or
+`cotal down` before the boot.
 A recorded stack resumes only after its last whole-stack stop completed and its manager was never
 attempted. Its broker inputs must be recorded, every applicable member must have its original
 settled stopped record, and no supervisor, retained custody or earlier team boot may remain. The
