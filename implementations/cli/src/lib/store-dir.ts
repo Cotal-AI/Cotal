@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync, type Stats } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { authDir, c, CommandFailure, homeCotalDir, protectedLocalDirectory } from "@cotal-ai/workspace";
 
@@ -40,8 +40,8 @@ export function listEntries(entries: readonly string[]): string {
 
 /** The entry at `path`, or nothing when it is missing. A path under a regular file is missing too,
  *  so the walk up reaches that file and names it. */
-function statIfPresent(path: string): Stats | undefined {
-  try { return statSync(path); }
+function statIfPresent(path: string, stat: (path: string) => Stats = statSync): Stats | undefined {
+  try { return stat(path); }
   catch (error) { if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return undefined; throw error; }
 }
 
@@ -59,9 +59,16 @@ function controlDirectory(path: string): string | undefined {
  *  directory to be writable by this account. A non-empty directory is accepted, because it may be
  *  an existing store. A control directory, or a path in one, is refused unless it is `root`'s own
  *  default store: its files would mix with credentials and records, or with another root's store,
- *  and no reset could remove it alone. */
+ *  and no reset could remove it alone. A link is refused and the directory it points to is named:
+ *  the broker config records the path as given, and a reset removes only a real directory. */
 export function assertStoreDirArgument(value: string, root: string): void {
   const path = resolve(value);
+  // A dangling link has no real path, so its own target is named instead.
+  if (statIfPresent(path, lstatSync)?.isSymbolicLink()) {
+    let real: string | undefined;
+    try { real = realpathSync.native(path); } catch { real = undefined; }
+    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${path} is a link to ${real ?? `${readlinkSync(path)}, which does not exist`}; nothing was started or written`, { target: { storeDir: path, ...(real ? { linkTarget: real } : {}) }, remedy: real ? `name the directory itself with --store-dir ${real}` : "name a real directory with --store-dir" });
+  }
   let existing = path, stat = statIfPresent(existing);
   while (!stat) {
     const parent = dirname(existing);

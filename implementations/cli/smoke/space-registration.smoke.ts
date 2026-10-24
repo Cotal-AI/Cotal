@@ -987,6 +987,17 @@ if (process.platform === "linux") {
   const restoreControl = await json(["backup", "restore", join(home, "no-backup"), "--store-dir", join(control, "auth")], storeRoot);
   check("backup restore --store-dir in the root's .cotal is the same refusal",
     refused(restoreControl, 1, "USAGE_INVALID") && (restoreControl.env?.error?.message ?? "").includes(`is in the control directory ${control}`), shown(restoreControl));
+  // A link would be recorded as the store path, which no reset removes: it refuses, naming its target.
+  const real = realpathSync(mkdtempSync(join(tmpdir(), "cotal-space-registration-real-")));
+  const link = join(home, "store-link");
+  symlinkSync(real, link);
+  const asLink = await json(["up", "--server", DEAD, "--store-dir", link], storeRoot);
+  check("up --store-dir naming a link is USAGE_INVALID, exit 1, naming the directory it points to",
+    refused(asLink, 1, "USAGE_INVALID") && (asLink.env?.error?.message ?? "").includes(`the --store-dir path ${link} is a link to ${real}`) && asLink.env?.error?.remedy === `name the directory itself with --store-dir ${real}` && readdirSync(real).length === 0, shown(asLink));
+  const restoreLink = await json(["backup", "restore", join(home, "no-backup"), "--store-dir", link], storeRoot);
+  check("backup restore --store-dir naming a link is the same refusal",
+    refused(restoreLink, 1, "USAGE_INVALID") && (restoreLink.env?.error?.message ?? "").includes(`the --store-dir path ${link} is a link to ${real}`), shown(restoreLink));
+  rmSync(real, { recursive: true, force: true });
   // The next flag check refuses instead, so the root's own .cotal/nats passed the store check.
   const ownStore = await json(["up", "--server", DEAD, "--store-dir", join(control, "nats"), "--restore-only", "x"], storeRoot);
   check("up --store-dir naming the root's own .cotal/nats passes the store check",
