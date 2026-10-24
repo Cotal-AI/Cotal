@@ -127,6 +127,7 @@ function createSource(name: string, path: string, values: Values): Buffer {
     if (def.name !== name) throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy: `create it under its own name with cotal persona create ${def.name} --file ${values.file}, or set its name to '${name}'` });
     // A role is an address `send -r` reaches, so a role it would refuse is refused here.
     if (def.role !== undefined) {
+      if (/[\u0000-\u001f\u007f]/u.test(def.role)) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition ${source}: role takes a label without control characters`);
       try { assertValidRole(def.role); }
       catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition ${source}: ${(error as Error).message}`); }
     }
@@ -135,6 +136,8 @@ function createSource(name: string, path: string, values: Values): Buffer {
   if (values.subscribe === undefined) throw usage('provide --subscribe <a,b> or --subscribe "" for none');
   if (values.harness !== undefined) checkHarness(values.harness);
   if (values.role !== undefined) {
+    // A control character is refused before the role check, which would echo the value.
+    if (/[\u0000-\u001f\u007f]/u.test(values.role)) throw usage("--role takes a label without control characters");
     try { assertValidRole(values.role); }
     catch (error) { throw usage(`--role: ${(error as Error).message}`); }
   }

@@ -155,7 +155,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   refused("help of a hidden internal command is a usage error", cotal(["help", "__complete"]), /unknown command: __complete/);
   // `docs` reads its page names from the bundled docs, so completion offers them offline.
   const pages = cotal(["__complete", "docs", ""], undefined, noSeed);
-  check("docs completes its page names", pages.status === 0 && ["spec", "lang", "architecture"].every((page) => new RegExp(`^${page}$`, "m").test(pages.stdout)) && !/^--/m.test(pages.stdout), shown(pages));
+  check("docs completes its page names", pages.status === 0 && ["spec", "lang", "architecture"].every((page) => new RegExp(`^${page}(\\t|$)`, "m").test(pages.stdout)) && !/^--/m.test(pages.stdout), shown(pages));
   // A subcommand alias reaches the command as its canonical word. The seed is skipped by env so the
   // run reaches `ext remove` quickly; it refuses because nothing is installed.
   const removeByAlias = cotal(["x", "rm", "not-installed"], undefined, noSeed);
