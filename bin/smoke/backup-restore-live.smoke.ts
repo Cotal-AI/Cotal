@@ -1,4 +1,4 @@
-/** Live full/registry backup, restore, isolation, checkpoint, and ordinary-resume lifecycle, the `up -f` refusal while a restore is active, and the refusal of any `up` while its broker runs. */
+/** Live full/registry backup, restore, isolation, checkpoint, and ordinary-resume lifecycle, the runs a restore of an older backup rolled back, the `up -f` refusal while a restore is active, and the refusal of any `up` while its broker runs. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -948,6 +948,63 @@ async function backupRestoreCycleScenario(): Promise<void> {
   }
 }
 
+/** A full restore of a backup made before a run's checkpoint was answered rolls the run back. It names
+ *  the run and the reopened step in its receipt, in `status` and in the cleanup preview, reads the
+ *  set-aside store only from a clone it removes, and the step accepts an answer again. */
+async function rolledBackRunsScenario(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-rolled-back-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-rolled-back-home-")));
+  const port = await freePort();
+  const server = `nats://127.0.0.1:${port}`;
+  const space = "backup_rolled_back";
+  const { run } = sandboxRun(root, home);
+  const must = (label: string, result: ReturnType<typeof run>) => {
+    assert.equal(result.status, 0, `rolled back ${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+    return result;
+  };
+  const opens = async (runId: string, step: RegExp): Promise<void> => {
+    for (const until = Date.now() + 60_000; Date.now() < until; await new Promise((done) => setTimeout(done, 250)))
+      if (step.test(run("run", "show", runId, "--space", space).stdout)) return;
+    assert.fail(`run ${runId} never opened ${step}\n${run("run", "show", runId, "--space", space).stdout}`);
+  };
+  try {
+    must("up", run("up", "--detach", "--server", server, "--space", space));
+    writeFileSync(join(root, "zahlung.js"), 'const z = await checkpoint("zahlung", "Bezahlen?");\nconst v = await checkpoint("versand", "Versenden?");\n');
+    const runId = (JSON.parse(must("start", run("run", "start", "zahlung.js", "--space", space, "--json")).stdout) as { result?: { result?: { runId?: string } } }).result?.result?.runId ?? "";
+    assert.match(runId, /^run-/);
+    await opens(runId, /\/checkpoint:zahlung#0\s+Bezahlen\?/);
+    must("preserve before the answer", run("down", "--preserve-state"));
+    const artifact = join(root, "before-answer");
+    must("backup", run("backup", "create", artifact));
+    must("resume", run("up", "--detach", "--server", server, "--space", space));
+    must("answer", run("run", "answer", runId, "/checkpoint:zahlung#0", "--value", '"ja"', "--space", space));
+    await opens(runId, /\/checkpoint:versand#0\s+Versenden\?/);
+    must("preserve after the answer", run("down", "--preserve-state"));
+    const restored = must("restore", run("backup", "restore", artifact, "--json"));
+    const note = `Run ${runId} went back to where this backup left it: /checkpoint:zahlung#0 was answered after that and is open again. That answer is only in the previous store.`;
+    const rows = [{ run: runId, reopened: ["/checkpoint:zahlung#0"] }];
+    const warning = (JSON.parse(restored.stdout) as { warnings: { code: string; message: string; target: { rolledBackRuns?: unknown } }[] }).warnings.find((entry) => entry.code === "NEWER_HISTORY_NOT_RESTORED");
+    assert.ok(warning?.message.includes(note), `the receipt names the rolled-back run and its reopened step\n${restored.stdout}`);
+    assert.deepEqual(warning?.target.rolledBackRuns, rows);
+    const journal = JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as { restore: { attemptId: string }; launch: { rolledBackRuns?: unknown } };
+    assert.deepEqual(journal.launch.rolledBackRuns, rows, "the restore journals the run it rolled back");
+    const attemptId = journal.restore.attemptId;
+    assert.ok(!readdirSync(join(root, ".cotal", "maintenance", "attempts")).some((name) => name.startsWith(`${attemptId}-clone`)), "the clone of the set-aside store is removed");
+    const status = must("status", run("status", "--space", space));
+    assert.ok(status.stdout.includes(note), `status names the rolled-back run\n${status.stdout}`);
+    const preview = must("cleanup preview", run("backup", "cleanup-fallback", attemptId, "--dry-run"));
+    assert.ok(preview.stdout.includes(note), `the cleanup preview names the rolled-back run\n${preview.stdout}`);
+    // The reopened step is open again and accepts an answer.
+    await opens(runId, /\/checkpoint:zahlung#0\s+Bezahlen\?/);
+    must("answer again", run("run", "answer", runId, "/checkpoint:zahlung#0", "--value", '"nein"', "--space", space));
+    must("down", run("down"));
+  } finally {
+    run("down");
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 /** A store moved behind a link, `.cotal/nats` -> another disk, and an artifact written through a
  *  linked folder. The cut records the store by its real path, so a default restore is a same-path
  *  restore there, not an alternate target equal to the source, and verify reads the linked artifact
@@ -999,6 +1056,7 @@ await preservationCommitCrashScenario();
 await preservationStopCrashRecoveryScenario();
 await restoreClaimRaceScenario();
 await backupRestoreCycleScenario();
+await rolledBackRunsScenario();
 await scenario("open");
 await scenario("auth");
 await occupiedRestoreScenario();

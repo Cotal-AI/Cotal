@@ -1897,6 +1897,12 @@ an artifact made before the state it replaced was preserved, such as a backup ta
 `cotal up` and `down --preserve-state`, leaves out the chat and DM history and workflow runs written
 after the artifact. Its receipt says so with a `NEWER_HISTORY_NOT_RESTORED` warning that names the
 store it set aside, which holds their only copy, and its next step includes `--discard-history` too.
+When that restore brought the workflow runs back, it also names each run it rolled back and each
+step that was answered after the artifact and is open again, and says that answer is only in the
+store it set aside. A reopened step accepts an answer again. `cotal status` and the
+`backup cleanup-fallback` preview name the same runs. To find them, the restore copies the store it
+sets aside and reads its run journals on one more isolated broker, so such a restore takes longer
+and needs disk space for that copy.
 `up --restore --restore-only registry` prints the same two lines. `--store-dir` names a store the restore creates, so a path that
 already exists, or whose parent directory does not, refuses `USAGE_INVALID` (exit 1) before anything
 is staged. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no

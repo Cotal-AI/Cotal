@@ -33,6 +33,8 @@ import {
   authDir,
   isCommandFailure,
   readMaintenanceJournal,
+  restoreRolledBackRuns,
+  type RolledBackRun,
   brokerAddressForDisplay,
   canonicalRoot,
   CLI_USER_ACTOR,
@@ -115,7 +117,7 @@ import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/serv
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
-import { maintenanceNextStep, preservedSourceState, restoreNextStep } from "../lib/restore.js";
+import { maintenanceNextStep, preservedSourceState, restoreNextStep, rolledBackNotes } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import {
   journalRecordedElsewhere,
@@ -279,8 +281,10 @@ export interface StatusResult {
   /** Selected folder's local boot intents, not a live broker or ownership census. */
   bootAttempts?: { root: string; state: "read" | "partial" | "not-checked"; observedAt: string; unsettled: { deploymentId: string; space: string; server: string; createdAt: string }[]; additive: { deploymentId: string; space: string; server: string; createdAt: string; recordedState: ReturnType<typeof additiveTeamRecordedState> }[]; unreadable: string[]; elsewhere: { deploymentId: string; root: string }[] };
   /** This folder's maintenance journal: a preserved cut, a restore or a resume, with the full attempt
-   *  a recovery command names. Null when the root holds none; older inputs may omit it. */
-  maintenance?: { root: string; space: string | null; state: string; attemptId: string | null; next: string | null } | null;
+   *  a recovery command names. Null when the root holds none; older inputs may omit it.
+   *  `rolledBackRuns` names the runs a restore over a newer cut rolled back, and `rolledBackRunsMore`
+   *  counts those it did not list. */
+  maintenance?: { root: string; space: string | null; state: string; attemptId: string | null; next: string | null; rolledBackRuns?: readonly RolledBackRun[]; rolledBackRunsMore?: number } | null;
   /** A store write failure the selected space's running local broker logged; older inputs may omit it. */
   store?: StoreWriteObservation;
   /** One probe of the selected space's running stack manager's own endpoint. Its process record alone
@@ -412,7 +416,8 @@ function readMaintenance(root: string, gaps: Gaps): NonNullable<StatusResult["ma
   try {
     const journal = readMaintenanceJournal(root);
     if (!journal) return null;
-    return { root, space: journal.space, state: journal.state, ...maintenanceNextStep(root, journal) };
+    const rolledBack = "restore" in journal ? restoreRolledBackRuns(journal) : undefined;
+    return { root, space: journal.space, state: journal.state, ...maintenanceNextStep(root, journal), ...(rolledBack?.runs.length ? { rolledBackRuns: rolledBack.runs, ...(rolledBack.more ? { rolledBackRunsMore: rolledBack.more } : {}) } : {}) };
   } catch {
     gaps.add("MAINTENANCE_JOURNAL_UNREADABLE", "this folder's maintenance journal could not be read; no absent or settled state was inferred", { root });
     return { root, space: null, state: "unreadable", attemptId: null, next: null };
@@ -1648,6 +1653,7 @@ function maintenanceOverview(maintenance: StatusResult["maintenance"]): Section 
   return { title: "Maintenance", blocks: [
     { kind: "fields", rows: [["Folder root", maintenance.root], ["Space", maintenance.space ?? "not read"], ["State", maintenance.state], ["Attempt", maintenance.attemptId ?? "not read"]] },
     ...(maintenance.next ? [{ kind: "lines" as const, lines: [maintenance.next] }] : []),
+    ...(maintenance.rolledBackRuns?.length ? [{ kind: "lines" as const, lines: rolledBackNotes({ runs: maintenance.rolledBackRuns, more: maintenance.rolledBackRunsMore ?? 0 }) }] : []),
   ] };
 }
 

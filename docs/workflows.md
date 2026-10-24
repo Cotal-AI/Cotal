@@ -203,7 +203,9 @@ before full backups held workflow runs, holds none ([CLI reference](cli.md#backu
 restore from one of them, or a registry-only restore, the store the restore set aside holds the only
 copy of the runs, and `cotal backup cleanup-fallback` deletes it only with `--discard-history`.
 After a full restore of a backup made before the space last ran, that store holds the only copy of
-what the runs did after the backup, under the same rule.
+what the runs did after the backup, under the same rule. The restore names each run it rolled back
+and each checkpoint answered after the backup that is open again, and that checkpoint accepts an
+answer again.
 
 ## From an agent session
 
