@@ -259,6 +259,12 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const thrown = await simulate({});
   c("a program that throws fails naming what it threw, not an unscripted effect",
     isCommandFailure(thrown) && thrown.code === "OPERATION_FAILED" && thrown.message.includes('boom') && !thrown.message.includes("unscripted"), thrown);
+  // A list one result short says which result the step needs, counted from 1. The step key keeps its
+  // occurrence counted from 0.
+  writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s" });\nawait checkpoint("go", "Again?", { timeout: "4s" });\n');
+  const short = await simulate({ checkpoints: { go: [{ status: "resolved" }] } });
+  c("a list one result short says the second step needs result 2",
+    isCommandFailure(short) && short.code === "OPERATION_FAILED" && short.message.includes('the script gives 1 checkpoints result for "go", and step /checkpoint:go#1 needs result 2'), short);
   rmSync(dir, { recursive: true, force: true });
 }
 

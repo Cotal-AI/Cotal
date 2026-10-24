@@ -6768,8 +6768,10 @@ moves the virtual clock forward.
 
 The simulation's `log(...)` lines print under `Log`, and `--json` carries them in `result.log`, each
 with its `scope` and `values`. A step with no entry, or a list shorter than the step's occurrences,
-stops the simulation with L6001 and exit 5. The failure names the table, the step's name and its step key, and the remedy
-names the entry to add. A failure in the program itself names its code and cause.
+stops the simulation with L6001 and exit 5. The failure names the table, the step's name and its step key,
+and the remedy names the entry to add. For a list that is too short, it also says which result the step
+needs, counted from 1, while the step key counts occurrences from 0. A failure in the program itself
+names its code and cause.
 
 Inside a manager-launched static or open seat, `run turns` reads that seat's assigned turns and
 `run yield <turn-id> --status <done|blocked|handoff>` reports an outcome. Handoff also requires

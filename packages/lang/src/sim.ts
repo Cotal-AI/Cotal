@@ -281,7 +281,7 @@ export class SimHandler implements EffectHandler {
       throw new SimUnscriptedError(
         "L6001",
         stepKey,
-        `L6001 Unscripted effect in simulation\n\nThe script gives ${list.length} ${table} result${list.length === 1 ? "" : "s"} for "${name}", and this is occurrence ${occurrence} (step ${stepKey}).\n\nFix: add another entry to the list, or use a single value to script every occurrence the same way.`,
+        `L6001 Unscripted effect in simulation\n\nThe script gives ${list.length} ${table} result${list.length === 1 ? "" : "s"} for "${name}", and step ${stepKey} needs result ${occurrence + 1}.\n\nFix: add another entry to the list, or use a single value to script every occurrence the same way.`,
       );
     }
     return value;
