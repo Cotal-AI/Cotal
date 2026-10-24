@@ -365,6 +365,10 @@ export function validateUpArguments(args: ParsedArgs): void {
   // before the controller stack writes its journal or trust.
   const hostProblem = !args.values.file ? upHostProblem(args.values.host as string | undefined, args.values.server as string | undefined) : undefined;
   if (hostProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${hostProblem.problem}; nothing was started or written`, { remedy: hostProblem.remedy });
+  // A --tls-cert broker serves TLS only, and its address says so, so every client dials tls:// and
+  // checks the certificate against the address it names.
+  if (!args.values.file && args.values["tls-cert"] !== undefined && typeof args.values.server === "string" && /^nats:\/\//i.test(args.values.server))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--tls-cert serves the broker over TLS, so --server must be a tls:// address; nothing was started or written", { remedy: `pass --server ${tlsAddress(args.values.server)}` });
   if (args.values.file !== undefined && args.values.foreground === true) throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime");
   if (args.values.foreground === true && (args.values.json === true || args.values.plain === true)) throw new CommandFailure("refused", "USAGE_INVALID", "foreground up keeps native terminal custody and cannot produce a finite JSON or plain receipt");
   // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
@@ -1273,14 +1277,17 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // team summary remains, and a start that would differ from it refuses, naming its manifest.
     const implicit = !resumeAttempt && registeredServer === undefined && values.server === undefined && values.host === undefined && !values["user-auth"];
     const retained = implicit ? retainedLegacyBroker(cotalRoot()) : undefined;
+    // An address up chooses for a TLS broker names TLS, as an explicit one must.
+    const serving = (url: string) => transport.kind === "tls-required" ? tlsAddress(url) : url;
     if (retained) {
       if (retained.open) values.open = true;
-      console.log(c.dim(`starting this folder's stopped stack as it last ran: ${retained.server}${values.open ? ", open" : ""}`));
+      console.log(c.dim(`starting this folder's stopped stack as it last ran: ${serving(retained.server)}${values.open ? ", open" : ""}`));
     } else if (implicit) {
       const cleaned = cleanedManifestStart(cotalRoot(), recordedSpace, values.open === true);
       if (cleaned) throw new CommandFailure("refused", "CONFLICT", `this folder was deployed from a manifest as "${cleaned.space}" at ${cleaned.server} in ${cleaned.mode === "open" ? "open" : "static auth"} mode, and its identity and broker configuration were removed, so a bare up would not start it as it was deployed; nothing was started`, { target: { root: cotalRoot(), space: cleaned.space, server: cleaned.server }, remedy: `deploy it again with ${cleaned.command}` });
     }
-    const implicitServer = registeredServer ?? retained?.server ?? DEFAULT_SERVER;
+    // A registered address stays as recorded, so a running stack is still found by it.
+    const implicitServer = registeredServer ?? serving(retained?.server ?? DEFAULT_SERVER);
     let server = values.server ?? implicitServer;
     const host = values.host ?? "127.0.0.1";
     // `--host` is the BIND address; `server` is the URL the readiness probe, the mesh registry, and
@@ -3434,7 +3441,7 @@ async function serveReadyListener(l: {
   // Commit the policy only for a listener that is up and recorded (S5), and before the control
   // plane (S9). startDeliveryWithBroker is HANDED the transport decision, so it does not depend on
   // the file at all.
-  commitTransportPolicy(cotalRoot(), transport, l.quietBoot);
+  commitTransportPolicy(cotalRoot(), transport, l.quietBoot, server);
   // The delivery daemon self-gates on `.cotal/auth`, so an open mesh has none. Class-2 credential
   // renewal is NOT wired here: the MANAGER is the renewal owner (it is resident in every mesh mode,
   // where a foreground `up` process is not).
@@ -4379,17 +4386,20 @@ function assertTlsIntentServed(server: string, transport: BrokerTransport, sourc
 }
 
 /** Persist a transport after its listener starts; a structured boot leaves stdout to its receipt. */
-function commitTransportPolicy(root: string, transport: BrokerTransport, quietBoot = false): void {
+function commitTransportPolicy(root: string, transport: BrokerTransport, quietBoot = false, server?: string): void {
   if (transport.kind !== "tls-required") return;
   writeBrokerPolicy(root, { version: 1, transport });
-  if (!quietBoot) announceTransport(transport);
+  if (!quietBoot) announceTransport(transport, server);
 }
 
-function announceTransport(transport: BrokerTransport): void {
+/** The `tls://` form of a broker URL. */
+const tlsAddress = (server: string): string => server.replace(/^nats:/i, "tls:");
+
+function announceTransport(transport: BrokerTransport, server?: string): void {
   if (transport.kind !== "tls-required") return;
   try {
     const material = validateTlsMaterial(transport, {});
-    console.log(c.dim(`TLS: serving ${material.subject}, valid until ${material.notAfter.toISOString()}`));
+    console.log(c.dim(`TLS: serving ${material.subject}${server ? ` at ${server}` : ""}, valid until ${material.notAfter.toISOString()}`));
   } catch {
     // Already validated at decide-time; announce is best-effort display.
   }
