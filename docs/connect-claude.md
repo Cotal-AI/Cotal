@@ -213,7 +213,8 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   within 15 seconds, the seat ends with a bounded error naming the unmatched prompt instead of
   hanging silently or answering another dialog. The PTY runtime writes that error to the seat's output and
   stops the child as a graceful stop does, so a child that ignores SIGTERM is killed 3 seconds
-  later. The other runtimes write the error to the manager's log.
+  later. A prompt the child prints after that error gets no Enter. The other runtimes write the
+  error to the manager's log.
 - **Trusted directory.** An authorized supervised spawn accepts the selected workspace through
   Claude's native trust dialog, which Claude draws in one of two layouts. When a numbered list
   shows Yes first and selected, the runtime confirms it with Enter. When No comes first and is

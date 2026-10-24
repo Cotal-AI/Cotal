@@ -122,6 +122,8 @@ export class StartupConfirmGate {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pollTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly sequence: StartupConfirmSequence | undefined;
+  /** Set once the prompt matched, the gate failed or the child exited; no later output is answered. */
+  private ended = false;
 
   /** Throws for a prompt that can never match, so a runtime refuses it before it starts a child.
    * Choices and ready texts are read from the screen; a bare prompt is matched in the output. */
@@ -163,13 +165,15 @@ export class StartupConfirmGate {
 
   /** True once, for the chunk that completes the prompt; the runtime answers it with Enter. */
   push(chunk: string): boolean {
-    if (this.sequence || !this.matcher.push(chunk)) return false;
+    if (this.ended || this.sequence || !this.matcher.push(chunk)) return false;
     this.disarm();
     return true;
   }
 
-  /** A child that has exited can no longer fail its gate. */
+  /** Ends the gate for good: it can no longer fail, and a prompt printed later gets no Enter. A failure
+   *  calls this before it stops the child, so a prompt printed while stopping is not answered. */
   disarm(): void {
+    this.ended = true;
     clearTimeout(this.timer);
     clearTimeout(this.pollTimer);
     this.timer = undefined;

@@ -202,23 +202,29 @@ setInterval(() => {}, 1_000);
   await noPrompt.waitForExit?.();
   drop(noPrompt);
 
-  const unmatched = rt.spawn("unmatched prompt", {
-    command: process.execPath,
-    args: ["-e", "process.stdin.setRawMode?.(true);process.stdin.resume();setInterval(()=>{},1000)"],
-    env: { PATH: process.env.PATH ?? "" },
-    confirm: "Enter to confirm",
-  }, process.cwd());
-  const unmatchedSession = unmatched.attach();
-  let unmatchedOutput = "";
-  const unmatchedOff = unmatchedSession.onData((chunk) => { unmatchedOutput += chunk.toString("utf8"); });
-  await unmatched.waitForExit?.();
-  check(
-    "unmatched prompt: the seat fails bounded with the connector-owned prompt named",
-    unmatchedOutput.includes('startup confirmation failed: prompt "Enter to confirm" did not appear within 15000ms'),
-    unmatchedOutput,
-  );
-  unmatchedOff();
-  drop(unmatched);
+  // The child prints the prompt only from its SIGTERM handler, after the gate has failed and stopped
+  // it. Both runtimes that own a child's output run the cell, at once to share the 15 s window.
+  const unmatchedCell = async (label: string, runtime: Runtime): Promise<void> => {
+    const sink = join(root, `${label} unmatched.input`);
+    const unmatched = runtime.spawn(`${label} unmatched prompt`, {
+      command: process.execPath,
+      args: ["-e", "process.stdin.setRawMode?.(true);process.stdin.resume();process.stdin.on('data',c=>require('node:fs').appendFileSync(process.env.SINK,c));process.on('SIGTERM',()=>process.stdout.write('Enter to confirm\\r\\n'));setInterval(()=>{},1000)"],
+      env: { PATH: process.env.PATH ?? "", SINK: sink },
+      confirm: "Enter to confirm",
+    }, process.cwd());
+    const session = unmatched.attach();
+    let output = "";
+    const off = session.onData((chunk) => { output += chunk.toString("utf8"); });
+    await unmatched.waitForExit?.();
+    const failure = 'startup confirmation failed: prompt "Enter to confirm" did not appear within 15000ms';
+    const failedAt = output.indexOf(failure);
+    check(`${label} unmatched prompt: the seat fails bounded with the connector-owned prompt named`, failedAt >= 0, output);
+    check(`${label} unmatched prompt: the child prints the prompt after the failure`, failedAt >= 0 && output.lastIndexOf("Enter to confirm") > failedAt + failure.length, output);
+    check(`${label} unmatched prompt: a prompt printed after the failure gets no Enter`, file(sink) === "", file(sink));
+    off();
+    drop(unmatched);
+  };
+  await Promise.all([unmatchedCell("custodial", rt), unmatchedCell("in-process", createRuntime("pty", "cotal-smoke"))]);
   rmSync(root, { recursive: true, force: true });
 }
 
