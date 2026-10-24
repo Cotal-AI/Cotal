@@ -2063,11 +2063,9 @@ does not exist refuses `TARGET_NOT_FOUND`, exit 2, naming the link and its targe
 path contains a control character, such as a tab, a newline or an escape character, or a bidirectional
 formatting mark, which can show one path as another, refuses `USAGE_INVALID`, exit 1, with nothing
 written, in `space create` and in `cotal up`. The refusal names the character and shows the path with
-it escaped. `space` lists
-prepared spaces under their own heading, and `space show` and `use` accept one. A command that
-does not exist refuses `TARGET_NOT_FOUND`, exit 2, naming the link and its target. `space` lists
-prepared spaces under their own heading, below a line that says no space has been started or
-registered yet when that is so, and `space show` and `use` accept one. A command that
+it escaped. `space` lists prepared spaces under their own heading, below a line that says no space
+has been started or registered yet when that is so, and `space show`, `use` and `whoami` accept one.
+A command that
 targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
 and so does `cotal up --space <name>` run from another folder. `cotal up --space <name>` in a folder
 that is already another space's root refuses with `CONFLICT`, exit 2. `space add` refuses a prepared
@@ -2957,6 +2955,11 @@ So an address no registration names is reported as unknown, never as open; addin
 `cotal space add` checks the broker. The same holds for the space's own folder: its signer does not
 say whether a broker at another address serves the space, and the remedy names `cotal whoami --space
 <space>` for the address it is registered at.
+A space that is prepared and not started has no broker yet. `whoami` reports the identity its folder's
+trust gives it: `space-signer` when the root holds the space's signer, as after `space forget` and
+`space create` again, and `no-credential` before its first `up`. `server` and `mode` are `null`, the
+`target` names the root, and the report says to start it with `cotal up` there. With `--server`, or
+when the prepared folder no longer exists, it still refuses with `TARGET_UNAVAILABLE`.
 In a folder whose `.cotal/` names no space, as after `space forget`, the held default `main` is
 assumed. The report keeps `Mesh: main` and says under it that the default was assumed, and the JSON
 `target` is `{"root": <folder>, "assumed": "main"}`.
