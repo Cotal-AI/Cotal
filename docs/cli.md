@@ -4517,9 +4517,11 @@ filter that window on this machine. They do not search the whole stream. `result
 many messages were read, whether older retained messages exist that the window did not reach, and
 whether the window goes back to `--since`. The report names the local time and the ISO instant a
 time `--since` resolved to, or the chat stream sequence a bare number was read as. A four-digit
-number from 1900 to 2099 is still a sequence, and the report says to write a date in full. An age outside the supported date range, a date that is not on the
-calendar, or a sequence that cannot be represented without rounding is a `USAGE_INVALID` refusal
-before connecting.
+number from 1900 to 2099 is still a sequence, and the report says to write a date in full. A bare
+number past the chat stream's newest sequence names no message, so it is a `USAGE_INVALID` refusal
+that names that sequence and how to write a date. An age outside the supported date range, a date
+that is not on the calendar, or a sequence that cannot be represented without rounding is a
+`USAGE_INVALID` refusal before connecting.
 The report shows each message's local time, with its date when it is not today; `result.items[].ts`
 is the ISO time. A DM row shows its recipient's name when the roster carries that principal or a
 message in the window came from it, and the principal otherwise. `--dms` reads the roster for those

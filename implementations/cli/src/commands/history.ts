@@ -172,6 +172,9 @@ function keep(item: HistoryItem, since: Since | undefined, from: string | undefi
 
 const denial = (e: unknown): boolean => /permission|not authori[sz]ed|read acl|may not read/i.test(e instanceof Error ? e.message : String(e));
 
+/** A bare number that reads as a year, which `--since` still takes as a sequence. */
+const yearShaped = (input: string): boolean => /^(19|20)\d\d$/.test(input);
+
 /** Reports write a channel as `#general`, so the name may carry the `#`. */
 const channelOf = (name: string): string => name.replace(/^#/, "");
 
@@ -348,9 +351,11 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
 
   let retention: HistoryResult["retention"] = null;
   let chat: boolean | undefined;
+  let lastSeq: number | undefined;
   try {
     const held = await ep.chatRetention();
     chat = held.stream;
+    lastSeq = held.lastSeq;
     const names = new Map(read.map((item) => [item.from.id, item.from.name]));
     retention = {
       perSender: held.perSender,
@@ -368,6 +373,9 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   // `cotal up` creates the streams of a recorded auth or user space, so a missing chat stream there
   // means they were removed. An open space creates them on first use.
   if (chat === false && (conn.mode === "auth" || conn.mode === "user")) throw streamsAbsent(conn);
+  // A bare number past the newest sequence names no message; it is most often a year.
+  if (req.since?.kind === "seq" && lastSeq !== undefined && req.since.seq > lastSeq)
+    throw new CommandFailure("refused", "USAGE_INVALID", `--since ${req.since.input} is past the chat stream's newest sequence, ${lastSeq}, so it names no message`, { target: req.target, remedy: `give a sequence up to ${lastSeq}, or write a date in full, such as ${yearShaped(req.since.input) ? req.since.input : new Date().getFullYear()}-01-01` });
 
   // Each channel's replay policy, read from the registry: the endpoint's watch cache may not have
   // caught up this soon after start.
@@ -533,7 +541,7 @@ function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string,
   }
   // A bare number is a sequence, so a year such as 2026 reads as one; the note says how it was read.
   if (since?.kind === "seq")
-    notes.push({ text: `--since ${since.input} is chat stream sequence ${since.seq}; only messages after it are shown${/^(19|20)\d\d$/.test(since.input) ? `. For a date, write it in full, such as ${since.input}-01-01` : ""}`, tone: "hint" });
+    notes.push({ text: `--since ${since.input} is chat stream sequence ${since.seq}; only messages after it are shown${yearShaped(since.input) ? `. For a date, write it in full, such as ${since.input}-01-01` : ""}`, tone: "hint" });
   if (r.window.olderRetained === true) notes.push({ text: "older retained messages are not shown; raise --limit (up to 1000) to read further back", tone: "hint" });
   if (r.window.olderRetained === null) notes.push({ text: "whether older retained messages exist is unknown", tone: "waiting" });
   if (r.window.reachesSince === false) notes.push({ text: `the window does not reach back to --since ${r.window.since}; messages between them are not shown`, tone: "waiting" });
