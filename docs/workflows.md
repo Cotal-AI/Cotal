@@ -197,6 +197,10 @@ journal, without a live effect handler or durable store. Inspection stops before
 step or any effect that needs new work. Program catch and finally blocks cannot extend the cut.
 The recorded pins are preserved.
 
+Worker failure answers and inspection error exits preserve a thrown object's string `name` and
+`message` fields. A throw without a string name is reported as `Error`. A throw without a string
+message is rendered with `String(value)`, on both worker execution and inspection routes.
+
 **Restore** brings a run back from a full backup (`cotal backup create`) of a static-auth or open
 mesh, which holds each run's journal, records and admission. A run that waited at a checkpoint or a
 timer when the backup was made is back after a full restore, and the manager takes it over as after

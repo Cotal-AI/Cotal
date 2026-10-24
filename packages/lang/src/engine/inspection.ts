@@ -1,4 +1,4 @@
-import { RunDivergence, ScopeBranchMissing, UnwalkableScope } from "../errors.js";
+import { messageOf, nameOf, RunDivergence, ScopeBranchMissing, UnwalkableScope } from "../errors.js";
 import { Journal, type JournalEntry, type LookupVerdict } from "../journal.js";
 import { stepKeyString, type StepKey } from "../keys.js";
 
@@ -61,11 +61,11 @@ export function inspectionExit(error: unknown): InspectionExit {
   if (e instanceof UnwalkableScope) return { kind: "unwalkable", step: e.scopeKey, why: e.why };
   if (e instanceof ScopeBranchMissing)
     return { kind: "missing-branch", step: e.scopeKey, scope: e.scope, missing: e.missing, recorded: e.recorded, source: e.source };
-  const value = e as { name?: unknown; message?: unknown; code?: unknown } | null;
+  const value = e as { code?: unknown } | null;
   return {
     kind: "error",
-    name: typeof value?.name === "string" ? value.name : "Error",
-    message: typeof value?.message === "string" ? value.message : String(e),
+    name: nameOf(e),
+    message: messageOf(e),
     ...(typeof value?.code === "string" ? { code: value.code } : {}),
   };
 }
