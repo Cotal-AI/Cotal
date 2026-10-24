@@ -139,6 +139,12 @@ export function brokerStoreWrite(root: string, space: string): StoreWriteObserva
   return { state: "none-recorded", pid: broker.pid, log: tail.path };
 }
 
+/** The warning `up` and `history` give for damage the space's broker on this machine logged since it
+ *  started. It quotes the broker and claims no loss: nats-server serves what it can still read. */
+export function storeDamageNotice(damage: Extract<StoreWriteObservation, { state: "damaged" }>): string {
+  return `the broker on this machine logged damage in a stored file at ${damage.at}: ${damage.warning}; it serves what it can still read there, so history may miss messages it stored (broker log: ${damage.log})`;
+}
+
 /** The running local broker's store write failure when the broker then disabled JetStream. Until it
  *  restarts it answers no stream request, so no credential issuance record, stream check or lease
  *  write reaches it. */

@@ -771,7 +771,9 @@ warning. `clean store`, `clean all`, `reset store` and `reset space` refuse such
 [clean](#clean) and [reset](#reset) describe. A controller stack whose recorded store folder is
 missing, as after it was removed by hand, starts its broker on a new empty store there and warns
 `STORE_MISSING`: the space's history starts empty. A legacy root whose last broker served a missing
-folder warns the same.
+folder warns the same. When a controller stack's broker logged damage in a stored file since it
+started, as `status` shows in its `Store` row, `up` warns `STORE_DAMAGE_LOGGED` with the broker's
+words. It still starts the stack and repairs nothing.
 
 A file you own is set to `0600` through the open file. A symlink, a file another user owns or a name
 that is not a regular file is refused and left unchanged. A private directory is set to `0700`
@@ -5460,7 +5462,10 @@ Reads the newest retained messages in the selected space, newest last: one chann
 channel the identity may read. The channel may be written as `#general`, and a name holding `*` or
 `>` is refused with `name one concrete channel, without wildcards` before connecting. A channel with
 no retained messages and no saved entry warns `CHANNEL_NOT_FOUND`, names the channels that hold
-messages, and reports no replay policy for it. `--limit` bounds the read, and `--since`, `--from` and `--grep` then
+messages, and reports no replay policy for it. When the space's broker runs on this machine and logged
+damage in a stored file since it started, `history` warns `STORE_DAMAGE_LOGGED` with the broker's
+words, because it serves only what it can still read. The read stays complete, as it read the stream
+the broker serves. A broker whose log is not on this machine is not checked. `--limit` bounds the read, and `--since`, `--from` and `--grep` then
 filter that window on this machine. They do not search the whole stream, and with older retained
 messages behind the window the report says that `--from` and `--grep` searched only the messages
 read. At `--limit 1000`, the most it reads, the report says older retained messages are not shown and
