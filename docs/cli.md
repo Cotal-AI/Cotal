@@ -7905,6 +7905,10 @@ joined. Saving it starts nothing and grants no authority. Its native child start
 delivery daemon, does not adopt an existing legacy manager, and never prints its private console URL.
 It declares one instance per definition and runs in the background or with `start --foreground`.
 It is not OS-supervised installation or platform parity.
+A root that `space add --root` registered has no `.cotal` until a command writes there. A start
+makes it, as a directory private to you, after its other checks pass and once the root itself is
+protected against other local writers. It does not replace a `.cotal` that is already there, such
+as a link, which the child refuses.
 
 The real child exclusively claims its creation-pinned native PID custody before hosted authority
 preparation or local endpoint initialization. That starting record is not readiness; another existing slot is not adopted or reclaimed.

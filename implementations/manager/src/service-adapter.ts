@@ -1,11 +1,13 @@
+import { lstatSync } from "node:fs";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { registry, unansweredRequest } from "@cotal-ai/core";
+import { ensureDirNoSymlink, registry, unansweredRequest } from "@cotal-ai/core";
 import {
   CommandFailure, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, armManagerShutdownIntent,
   assertManagerName, assertRecordIdentity, canonicalLocalProcessPath, canonicalRoot, clearRefusedServiceStopRequest,
   colorEnabled, commandIsCotalSupervisor, controllerAttemptBinding, cutController, localProcessPath, maintenanceAdmitsStackWork, publishServiceStopRequest,
   readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessRecord, readServiceStopReceipts, removePidPair, readServiceStopRequest, releaseRetainedServiceStop, clearRetainedRefusedServiceStopRequest,
-  clearAbandonedServiceStopRequest, connectUserControlOrThrow, credentialRefusalMessage, disarmManagerShutdownIntent, isCommandFailure, managerShutdownIntentArmedBy,
+  clearAbandonedServiceStopRequest, connectUserControlOrThrow, credentialRefusalMessage, disarmManagerShutdownIntent, isCommandFailure, managerShutdownIntentArmedBy, protectedLocalDirectory,
   releaseExitedServiceStopReservation, reserveNativeServiceStop, resolveNativeServiceTarget, serviceAdapterAttempt, serviceMetadataDigest,
   stopReservationPath, userViewAuth, type LocalProcess, type NativeServiceStopRequest, type ProcessIdentityRecord, type ServiceAdapterAttempt, type ServiceAdapterContext,
   type ServiceAdapterStopAbandonment, type ServiceAdapterStopContext, type ServiceAdapterStopPlan, type ServiceAdapterStopRefusal, type ServiceAdapterStopResult,
@@ -238,6 +240,13 @@ export const managerService: LocalProcess = {
     // never reclaims. A record whose pid is dead is retired here, under the controller's definition
     // lock, after every refusal above; a live, foreign or unreadable one refused there.
     if (state.state === "dead") removePidPair(path, String(state.pid));
+    // A root that only `space add --root` registered has no `.cotal` until a command writes there,
+    // and the child requires one. It is made here after every refusal above, in the root registered
+    // for this space and only once that root is protected, as a 0700 directory through no link.
+    if (!lstatSync(join(target.root, ".cotal"), { throwIfNoEntry: false })) {
+      protectedLocalDirectory(target.root, "the manager root");
+      ensureDirNoSymlink(target.root, ".cotal");
+    }
     const [executable, ...self] = context.cliInvocation;
     return { executable: executable!, cwd: target.root, args: [...self, ...(colorEnabled() ? [] : ["--no-color"]), "__service-manager", "--root", target.root, "--space", context.space, "--server", target.server, "--runtime", String(context.options.runtime), "--service-instance", context.instanceId, "--launch-request", context.launchRequestId, "--state-directory", context.stateDirectory, ...extra] };
   },
