@@ -851,7 +851,9 @@ route described below. Recovery re-entry keeps its recorded mode.
 
 A whole-stack `up` or `down` takes the root's maintenance lock before it reads the journal. While
 another whole-stack or maintenance command holds it, the command refuses `LIFECYCLE_BLOCKED` and
-names that command's pid. Taking the lock makes `.cotal/maintenance` when the folder has none. A
+names that command's pid. A lock whose holder is no longer running, as a command killed by
+`SIGKILL` leaves it, is taken over by the next command that needs it, which warns
+`MAINTENANCE_LOCK_TAKEN_OVER` with the pid and start time of the process that left it. Taking the lock makes `.cotal/maintenance` when the folder has none. A
 command that then refuses or fails, such as `up -f` with a manifest that does not validate or `up
 --json` on the retained launcher, releases the lock and removes those folders again while they are
 empty, so a fresh folder is left without a `.cotal` that later commands would read as a project. A crashed member, or an `up` or `down` killed before it recorded its
@@ -1650,6 +1652,10 @@ directory is removed as a store, whatever that directory holds.
 store, credential, record and registration the command would remove, then removes nothing and takes
 no maintenance lock. A check that would refuse the command refuses its dry run the same way.
 
+Ctrl-C or `SIGTERM` during `store` or `all` releases the maintenance lock, reports what the clean
+left and exits 130 or 143. The outcome is `failed` when nothing was removed yet, and `unknown`, naming
+the paths removed, once removal began.
+
 `store` and `all` also refuse every maintenance journal state, with `LIFECYCLE_BLOCKED`, exit 2. The
 refusal names the attempt and, as Next, the step `cotal status` shows for it, such as bare
 `cotal up` to resume a preserved cut; once the root holds no maintenance state and its mesh is
@@ -1773,6 +1779,11 @@ A replacement registration is kept and reported as partial.
 
 The receipt retains acknowledged deletion paths even if later cleanup fails, and lists each path
 once.
+
+Ctrl-C or `SIGTERM` during either apply releases the maintenance lock, reports what the reset left
+and exits 130 or 143. Before the removal was submitted the outcome is `failed` and the store and
+identity are as they were. After it, the outcome is `unknown`, `reset space` lists the paths removed
+so far, and Next is the route's `--dry-run`.
 Unconfirmed effects are unknown and are not retried. Personas, saved service
 definitions and stopped-instance records, installed packages, login sessions
 and remote data remain. Local cleanup does not revoke a remote credential or
@@ -2427,6 +2438,13 @@ a live process can recreate a stream after the final read. The result
 does not claim that processes stopped, or remove registrations, credentials or local
 files. Open-mode impact and receipt label that any broker client can delete the space.
 `space forget` is not a substitute for live deletion.
+
+Ctrl-C or `SIGTERM` during the apply reports what the command left and exits 130 or 143; with
+`--json` the report is the envelope on stdout. Before any delete was submitted the outcome is
+`failed` and the streams are as they were. Once a delete was acknowledged it is `partial`, listing
+the acknowledged streams and any delete still unconfirmed, with `cotal space delete <name> --dry-run`
+to see what remains. After every delete was acknowledged and before the check that nothing remains,
+it is `unknown`.
 
 The receipt's Next names the route back. On a space this machine started, the broker keeps running
 without the streams. Until they are created again, `cotal history`, `cotal send` and `cotal run ps`

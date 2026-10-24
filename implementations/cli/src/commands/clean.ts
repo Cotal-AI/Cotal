@@ -18,6 +18,7 @@ import {
   deleteSpaceAuth,
   localProcessPath,
   localMeshesForRoot,
+  presentationOf,
   readMaintenanceJournal,
   releaseMaintenanceLock,
   renewalRecordPath,
@@ -33,6 +34,7 @@ import {
   userAuthSpacesOnDisk,
 } from "@cotal-ai/workspace";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
+import { reportOnInterrupt } from "../lib/interrupt-report.js";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { pidfileState, pidfileTargets } from "./down.js";
@@ -134,9 +136,17 @@ export async function clean(args: ParsedArgs): Promise<void> {
   // store | all: the JetStream store delete, plus (for `all`) the space identity. The broker-wide
   // refusal already ran above, before this branch could take the lock. A dry run writes nothing,
   // the lock included, so it reads the same state without one.
-  const lock = dryRun ? undefined : acquireMaintenanceLock(root);
+  // From here an interrupt says what the clean left, and releases the lock so the next run does not find it held.
+  // The handler is in place before the lock is taken: without one, an interrupt ends the process with the lock held.
+  let lock: ReturnType<typeof acquireMaintenanceLock> | undefined;
+  const progress: string[] = [];
+  const stopReporting = dryRun ? undefined : reportOnInterrupt(presentationOf(args.values), "clean", () => progress.length
+    ? new CommandFailure("unknown", "OPERATION_UNKNOWN", `clean ${target} was interrupted after it removed ${progress.join(", ")}; the rest may remain`, { target: { root }, changed: progress, remedy: `see what remains with cotal clean ${target} --dry-run, then run cotal clean ${target} --force again` })
+    : new CommandFailure("failed", "OPERATION_FAILED", `clean ${target} was interrupted before it removed anything`, { target: { root }, remedy: `run cotal clean ${target} --force again` }),
+  () => { if (lock) releaseMaintenanceLock(lock); });
   let removed: string[];
   try {
+    lock = dryRun ? undefined : acquireMaintenanceLock(root);
     const maintenance = readMaintenanceJournal(root);
     if (maintenance) {
       // The store holds the attempt's preserved or restored data, so the step that moves the attempt
@@ -161,12 +171,13 @@ export async function clean(args: ParsedArgs): Promise<void> {
     // store the last broker served is this root's store, and a bare `up` refuses and names it.
     const defaultStore = join(root, ".cotal", "nats");
     const storeDir = values["store-dir"] ?? (existsSync(join(defaultStore, "jetstream")) ? undefined : lastServedStore(root, defaultStore));
-    removed = await removeLocalState(root, { includeAuth: target === "all", storeDir, dryRun });
+    removed = await removeLocalState(root, { includeAuth: target === "all", storeDir, dryRun, onRemoved: (label) => progress.push(label) });
     // Keep registry/current-pointer cleanup in the same lock transaction as local identity removal.
     if (target === "all" && dryRun) removed.push(...localMeshesForRoot(root).map((mesh) => `the registration of space ${mesh.space}`));
     else if (target === "all") removeMeshesByRoot(root);
   } finally {
     if (lock) releaseMaintenanceLock(lock);
+    stopReporting?.();
   }
   if (removed.length === 0) {
     console.log(c.dim("nothing to clean - no local state found"));

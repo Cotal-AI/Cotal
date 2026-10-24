@@ -15,6 +15,7 @@ import { removeLocalState, userAuthTrustNote, type safeStoreCleanupPath } from "
 import { canPrompt } from "./meshes-wizard.js";
 import { assertResetEligible, selectResetTarget } from "./reset-store-apply.js";
 import { acquireStackOperationLock } from "../lib/stack-journal.js";
+import { reportOnInterrupt } from "../lib/interrupt-report.js";
 
 /** This space's saved service definitions whose credential file the account `accountPub` issued.
  *  A reset removes that account, so the next identity rejects each such credential. A file that
@@ -48,6 +49,14 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
       throw new CommandFailure("refused", "CONFLICT", "the store path exists but is not a pinned real directory; nothing was removed", { target: { ...target, store: store.path } });
     return store;
   };
+  // From here an apply's interrupt says what the reset left, and releases the lock so the next run does not find it held.
+  let lock: ReturnType<typeof acquireMaintenanceLock> | undefined;
+  const removed: string[] = [];
+  let submitted = false, cleanupReturned = false, registrationRemoved = false, refsCleared = 0;
+  const stopReporting = dryRun ? undefined : reportOnInterrupt(presentation, "reset", () => submitted
+    ? new CommandFailure("unknown", "OPERATION_UNKNOWN", `reset space was interrupted after it removed ${removed.length} ${removed.length === 1 ? "path" : "paths"}${registrationRemoved ? " and the registration" : ""}; the rest may remain`, { target, changed: removed, remedy: `see what remains with cotal reset space ${space} --dry-run before you run it again` })
+    : new CommandFailure("failed", "OPERATION_FAILED", "reset space was interrupted before it removed anything; the store and local identity are as they were", { target, remedy: `run cotal reset space ${space} --yes again` }),
+  () => { if (lock) releaseMaintenanceLock(lock); });
   const expected = await eligible();
   const plan = await planResetSpaceIdentity(root, space, selected.mode);
   // A kept definition would hand its child a credential the next identity rejects, so its reference is cleared.
@@ -74,18 +83,17 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
     console.error(renderReport({ ...impactView(), space }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr)));
     const answer = await prompts.confirm({ message: `Remove the reviewed stopped store and local identity for ${oneLine(space)}?`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) {
+      stopReporting?.();
       writeResult(presentation, { command: "reset", target, result: { kind: "reset-space", confirmed: false, removedPaths: [], registrationRemoved: false }, noOp: true }, (): Report => ({ sections: [{ title: "Space kept", blocks: [{ kind: "lines", lines: ["No reset was submitted. Local store, identity and registration were kept."] }] }] }));
       return;
     }
   }
   // A live holder, such as a racing `up`, is named by its pid, as whole-stack commands name it.
-  let lock: ReturnType<typeof acquireMaintenanceLock>;
   try { lock = acquireStackOperationLock(root); }
   catch (error) {
     if (isCommandFailure(error)) throw error;
     throw new CommandFailure("refused", "CONFLICT", "the exclusive root maintenance lock could not be acquired; no reset was submitted", { target });
   }
-  const removed: string[] = [];
   // A deletion through the reviewed secret store is reported by the store and again by the local
   // cleanup. The receipt lists each path once, keeping the annotated label when there is one.
   const unannotated = (label: string) => label.replace(/ \([^()]*\)$/, "");
@@ -94,7 +102,6 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
     if (index === -1) removed.push(label);
     else if (label !== unannotated(label)) removed[index] = label;
   };
-  let submitted = false, cleanupReturned = false, registrationRemoved = false, refsCleared = 0;
   let failure: CommandFailure | undefined;
   try {
     const currentStore = await eligible();
@@ -131,6 +138,7 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
   } finally {
     try { releaseMaintenanceLock(lock); }
     catch { if (!failure) failure = new CommandFailure("partial", "OPERATION_PARTIAL", "the reset returned, but maintenance lock release did not confirm", { target, changed: [...removed, ...(registrationRemoved ? [{ space, registrationRemoved: true }] : [])] }); }
+    stopReporting?.();
   }
   writeResult(presentation, { command: "reset", target, result: { kind: "reset-space", space, root, storePath: expected.path, removedPaths: removed, localIdentityRemoved: cleanupReturned, registrationRemoved, clearedCredentialRefs: credentialRefs.slice(0, refsCleared), remoteRevocation: "not-performed", preserved: impact.preserved }, ...(failure ? { failure } : {}) }, (data): Report => ({ sections: [{ title: failure ? "Local reset incomplete" : "Local space reset", blocks: [
     { kind: "fields", rows: [["Space", data.space], ["Store", data.storePath], ["Local identity", data.localIdentityRemoved ? "removed and checked absent" : "not confirmed removed"], ["Local registration", data.registrationRemoved ? "removed" : selected.source === "stopped-stack" ? "none recorded; the prepared record and stack journal stay" : "not confirmed removed"], ["Remote revocation", "not performed"]] },
