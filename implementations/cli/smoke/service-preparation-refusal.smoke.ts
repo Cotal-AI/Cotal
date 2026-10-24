@@ -33,7 +33,10 @@
  * On Linux, a stop ends the server a service's shell backgrounded, so its address is free and the
  * next start is reachable on its own. A server that left the service's process group with `setsid`
  * outlives the stop, and the stop, `service status`, `cotal service` and `cotal status` each warn
- * SERVICE_ADDRESS_HELD naming its address and its PID. The suite then stops that server by PID.
+ * SERVICE_ADDRESS_HELD naming its address and its PID. A start while it holds the address refuses
+ * CONFLICT naming that PID and does not signal it. The suite then stops that server by PID. Before the
+ * first stop, `service stop --dry-run` names the process group it would signal and its members, and
+ * says a descendant that left the group is not signalled.
  *
  * A process executable that every other local account can write, or one in a folder they can
  * write, is refused at `add` naming that path with its `chmod o-w`, and so is a link in such a
@@ -340,6 +343,14 @@ if (process.platform === "linux") {
     writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "b1", launch: shell(port, ""), readiness: { type: "http", url: `http://127.0.0.1:${port}/`, expectedStatus: 200, timeoutMs: 5000 } }));
     check("rig: a definition whose shell backgrounds its server is saved", run(["service", "add", "grouped", "--file", file, "--space", "b1"]).status === 0);
     check("rig: it starts reachable", run(["service", "start", "grouped", "--space", "b1"]).envelope?.result?.readinessObservation === "http-reachable");
+    const preview = run(["service", "stop", "grouped", "--space", "b1", "--dry-run"]);
+    const signal = preview.envelope?.result?.stopSignal as { scope?: string; pid?: number; processes?: number } | null | undefined;
+    check("its stop --dry-run names the process group it would signal and its members, and signals nothing",
+      preview.status === 0 && signal?.scope === "process-group" && (signal.processes ?? 0) >= 2 && preview.envelope?.result?.signalled === false && await answers(port), preview.envelope?.result);
+    const text = spawnSync(process.execPath, [BIN, "service", "stop", "grouped", "--space", "b1", "--dry-run", "--plain"], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+    const flat = text.stdout.replace(/\s+/g, " ");
+    check("...and its text names SIGTERM to that group and that a descendant which left it is not signalled",
+      text.status === 0 && flat.includes(`Stop signal: SIGTERM to process group ${signal?.pid} (`) && flat.includes("One that left the group, such as with setsid, is not signalled."), text.stdout.slice(0, 1500));
     const stop = run(["service", "stop", "grouped", "--space", "b1", "--yes"]);
     check("its stop ends the backgrounded server, so nothing answers its address and no warning names it", stop.status === 0 && !await answers(port) && !held(stop, port), shown(stop));
     const again = run(["service", "start", "grouped", "--space", "b1"]);
@@ -362,6 +373,10 @@ if (process.platform === "linux") {
     const warning = held(stop, port), pid = Number(/; process (\d+) \(node\) of this account listens there$/.exec(warning?.message ?? "")?.[1]);
     const listening = loopbackListeners(`http://127.0.0.1:${port}/`);
     check("its stop warns SERVICE_ADDRESS_HELD, naming the address and the server's PID", stop.status === 0 && warning?.target?.definition === "escaped" && (warning.message ?? "").startsWith(`something still answers 127.0.0.1:${port}, where escaped's HTTP readiness is checked, and no instance of escaped runs`) && listening.length === 1 && listening[0] === pid, { stop: shown(stop), listening });
+    const blocked = run(["service", "start", "escaped", "--space", "held"]);
+    check("a start while that server holds the address refuses CONFLICT, exit 2, naming its PID and program, and leaves it running",
+      blocked.status === 2 && blocked.envelope?.error?.code === "CONFLICT" && (blocked.envelope.error.message ?? "").endsWith(`; process ${pid} (node) of this account listens there; nothing was launched`)
+        && blocked.envelope.error.remedy === `stop process ${pid} (node), which is not an instance of escaped, then run the command again` && await answers(port), shown(blocked));
     const status = run(["service", "status", "escaped", "--space", "held"]);
     check("service status names it", status.status === 0 && held(status, port) !== undefined, shown(status));
     const listed = run(["service", "--space", "held"]);

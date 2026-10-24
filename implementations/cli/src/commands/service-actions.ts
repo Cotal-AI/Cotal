@@ -1,7 +1,7 @@
 import * as prompts from "../lib/prompts.js";
 import { lstatSync, readlinkSync } from "node:fs";
 import type { ParsedArgs } from "@cotal-ai/core";
-import { ConfirmationRequired, CommandFailure, commandFailureReport, isCommandFailure, oneLine, presentationOf, protectedLocalDirectory, renderReport, terminalWidth, writeResult, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, commandFailureReport, isCommandFailure, oneLine, presentationOf, processGroupMembers, processGroupOf, protectedLocalDirectory, renderReport, terminalWidth, writeResult, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
 import { reportOnInterrupt } from "../lib/interrupt-report.js";
 import { observeRecordedSupervisor, systemdUserUnitDirectory } from "../lib/service-systemd.js";
 import { observeSystemdAttempt } from "../lib/service-systemd-attempt-read.js";
@@ -25,7 +25,7 @@ import { assertDefinitionRoot, serviceDefinitionStore, type ServiceDefinitionSna
 import { stackMemberFor } from "../lib/stack-journal.js";
 import { definitionListeners, exposedPlaintext, listenerRow } from "../lib/stack-listeners.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
-import { assertNoServiceUnitAttempts, assertRestartAdmitted, prepareKernelServiceStop, prepareNativeServiceStop, prepareProcessService, readinessAddressSurvivors, readServiceLog, retainedStopRequest, selectServiceInstance, startProcessService, stopProcessService } from "../lib/service-process.js";
+import { assertNoServiceUnitAttempts, assertRestartAdmitted, PROCESS_STOP_GRACE_MS, prepareKernelServiceStop, prepareNativeServiceStop, prepareProcessService, readinessAddressSurvivors, readServiceLog, retainedStopRequest, selectServiceInstance, startProcessService, stopProcessService } from "../lib/service-process.js";
 
 /** The file a running instance's process executes, as the kernel reports it, or null when the
  *  process is not running here or this platform has no `/proc`. */
@@ -55,6 +55,14 @@ export function kernelImpactView(plan: ServiceAdapterKernelStopPlan): Report {
     { kind: "fields", rows: [["Scope", "exact pinned broker process; not reserved"], ["Space", plan.binding.space], ["Root", plan.binding.root], ["Broker", plan.binding.server], ["Configuration digest", plan.binding.configSha256], ["Observed at", plan.observedAt], ["Scope fingerprint", plan.scopeSha256]] },
     { kind: "lines", lines: ["Stopping the broker disconnects every client of this space. The stop rechecks this scope and the exact process before one SIGTERM, then waits for that process to exit. An observed exit is not a broker acknowledgement or store, registry or credential cleanup. A process that does not exit is retained as unknown, with no force kill or restart."] },
   ] }] };
+}
+
+/** What a generic stop would signal, as its preview names it. */
+function stopSignalText(signal: { scope: "process-group" | "process"; pid: number; processes: number; graceMs: number }): string {
+  const grace = `${signal.graceMs / 1000}s`;
+  return signal.scope === "process-group"
+    ? `SIGTERM to process group ${signal.pid} (${signal.processes} ${signal.processes === 1 ? "process" : "processes"}), then SIGKILL to any still in it after ${grace}`
+    : `SIGTERM to PID ${signal.pid} alone, then SIGKILL after ${grace} if it still runs`;
 }
 
 function previewNativeInstall(definition: ServiceDefinitionSnapshot, selected: ServiceInstanceSnapshot | undefined, presentation: ReturnType<typeof presentationOf>, commandName: string): void {
@@ -293,7 +301,14 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   if (values["dry-run"]) {
     const row = selected ? instanceProjection(selected) : null;
     if (row && !["running", "gone", "previous-boot", "foreign-pid"].includes(row.observedProcess)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the selected instance is unresolved or foreign; a safe process effect cannot be previewed", { target });
-    writeResult(presentation, { command: commandName, target, result: { kind: "service-operation-preview", operation: mode, dryRun: true, instance: row, newInstanceWouldBeAllocated: mode === "start" && !selected, allocated: false, signalled: false, launch: definition.record.value.launch.type, readiness: definition.record.value.readiness.type, osSupervisor: "not-checked", recordedSupervisor: row?.supervisor ?? null, adapter: prepared?.adapter?.pin ?? selected?.record.value.adapter ?? null, providerCodeLoaded: false } }, (result): Report => ({ sections: [{ title: "Service operation preview", blocks: [{ kind: "fields", rows: [["Action", result.operation], ["Definition", name], ["Space", space], ["Instance", row?.instanceId ?? "would be assigned; not allocated"], ["Process observation", row?.observedProcess ?? "no instance selected"], ["Readiness policy", result.readiness], ["Recorded supervisor", result.recordedSupervisor ?? "no instance selected"], ["Supervisor discovery", result.osSupervisor]] }, { kind: "lines", lines: ["No provider code was imported, no process was launched or signalled and no instance record was created. Cached adapter metadata is not a resolved executable launch plan. No native endpoint readiness, manager-impact query or descendant cleanup was inferred. A native stop still requires its live caller-scoped preflight and confirmation."] }] }] }));
+    // A generic stop signals the process group a background start made the process lead, and only the
+    // process otherwise; a native or kernel stop follows its own policy, so it gets no such line.
+    const pid = selected?.record.value.process?.pid, stopPolicy = declaredStop?.declaration.stop;
+    const leads = pid !== undefined && processGroupOf(pid) === pid;
+    const stopSignal = mode !== "start" && stopPolicy !== "native" && stopPolicy !== "kernel-exit" && row?.observedProcess === "running" && pid !== undefined
+      ? { scope: leads ? "process-group" as const : "process" as const, pid, processes: leads ? processGroupMembers(pid).length : 1, graceMs: PROCESS_STOP_GRACE_MS }
+      : null;
+    writeResult(presentation, { command: commandName, target, result: { kind: "service-operation-preview", operation: mode, dryRun: true, instance: row, newInstanceWouldBeAllocated: mode === "start" && !selected, allocated: false, signalled: false, launch: definition.record.value.launch.type, readiness: definition.record.value.readiness.type, osSupervisor: "not-checked", recordedSupervisor: row?.supervisor ?? null, adapter: prepared?.adapter?.pin ?? selected?.record.value.adapter ?? null, providerCodeLoaded: false, stopSignal } }, (result): Report => ({ sections: [{ title: "Service operation preview", blocks: [{ kind: "fields", rows: [["Action", result.operation], ["Definition", name], ["Space", space], ["Instance", row?.instanceId ?? "would be assigned; not allocated"], ["Process observation", row?.observedProcess ?? "no instance selected"], ["Readiness policy", result.readiness], ["Recorded supervisor", result.recordedSupervisor ?? "no instance selected"], ["Supervisor discovery", result.osSupervisor], ...(stopSignal ? [["Stop signal", stopSignalText(stopSignal)] as [string, string]] : [])] }, { kind: "lines", lines: [...(stopSignal?.scope === "process-group" ? ["The stop signals the whole process group, so a descendant still in it, such as a server its shell backgrounded, stops too. One that left the group, such as with setsid, is not signalled."] : []), "No provider code was imported, no process was launched or signalled and no instance record was created. Cached adapter metadata is not a resolved executable launch plan. No native endpoint readiness, manager-impact query or descendant cleanup was inferred. A native stop still requires its live caller-scoped preflight and confirmation."] }] }] }));
     return;
   }
   // A restart whose original process is already gone stops nothing, so it asks for nothing.
