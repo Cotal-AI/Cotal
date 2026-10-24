@@ -5105,10 +5105,10 @@ account's discovered registry entries. See
 
 ```bash
 # an upsert of the WHOLE row: name all three ACL flags, or pass --full for the wide defaults below
-cotal actor grant <actor> --sub <IdP subject> --scope a,b --allow-subscribe a,b --allow-publish a,b [--role <r>] [--label <l>]
-cotal actor grant <actor> --sub <IdP subject> --full [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role <r>] [--label <l>]
-cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>)
-cotal actor list
+cotal actor grant <actor> --sub <IdP subject> --scope a,b --allow-subscribe a,b --allow-publish a,b [--role <r>] [--label <l>] [--json|--plain]
+cotal actor grant <actor> --sub <IdP subject> --full [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role <r>] [--label <l>] [--json|--plain]
+cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>) [--json|--plain]
+cotal actor list [--json|--plain]
 ```
 
 | Flag | Default | Meaning |
@@ -5123,6 +5123,7 @@ cotal actor list
 | `--role <r>` | none | Role (scopes the task-queue consumer) |
 | `--label <l>` | none | Display label for `actor list` (never the IdP subject) |
 | `--parent <owner.actor>` | none | Audit link to the spawning principal. An operator grant is the authority, so the link does not narrow the row |
+| `--json`, `-j`, `--plain` | off | Print one JSON document or line-oriented text, as `auth grants`, `auth grant` and `auth revoke` do |
 
 The actor ledger is the single authorization source of a user-auth space: no row, no access.
 `actor list`, `grant` and `revoke` resolve their space and root as `auth grants`, `auth grant` and
@@ -5140,7 +5141,8 @@ input that is not valid refuses the same way, naming each field and why: the act
 `grant` that leaves off `--scope`, `--allow-subscribe` or `--allow-publish` without `--full` is
 refused and writes nothing. A re-grant **replaces the whole row**, not the one field you name, so to add a capability spell
 every field out: the new scope plus the row's current read set, post set, role and label
-(`cotal actor list` shows what a row holds). Under `--full`, a field left off does not stay as it
+(`cotal actor list` and `cotal auth grants` show what a row holds: its capabilities, read and post
+sets, role, label and parent). Under `--full`, a field left off does not stay as it
 was: it reverts to the wide default in the table above. A re-grant retires the current interactive lifecycle through the running auth
 service before it rotates the row, so copied bearers cannot cross an authorization update. The
 receipt names the earlier grant as none, the same fields (titled `Actor grant stored unchanged`) or

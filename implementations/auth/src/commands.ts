@@ -309,13 +309,14 @@ async function evictRevokedPrincipal(space: string, principal: string, rootOverr
 }
 
 function publicActor(row: ActorRow & { kind?: string }) {
-  return { owner: row.owner, actor: row.actor, kind: row.kind, role: row.role ?? null, label: row.label ?? null, scope: row.scope, allowSubscribe: row.allowSubscribe, allowPublish: row.allowPublish };
+  return { owner: row.owner, actor: row.actor, kind: row.kind, role: row.role ?? null, label: row.label ?? null, parent: row.parent ?? null, scope: row.scope, allowSubscribe: row.allowSubscribe, allowPublish: row.allowPublish };
 }
 
 function grantView(space: string, rows: readonly ReturnType<typeof publicActor>[]) {
   return { sections: [{ title: "Recorded actor grants", blocks: [
     { kind: "fields" as const, rows: [["Space", space], ["Source", "local authoritative actor ledger"]] as [string, string][] },
-    rows.length ? { kind: "table" as const, columns: [{ key: "principal", label: "Principal" }, { key: "kind", label: "Kind" }, { key: "scope", label: "Capabilities" }, { key: "read", label: "May read" }, { key: "post", label: "May post" }], rows: rows.map((row) => ({ principal: `${row.owner}.${row.actor}`, kind: row.kind ?? "not recorded", scope: row.scope.join(", ") || "none", read: row.allowSubscribe.join(", ") || "none", post: row.allowPublish.join(", ") || "none" })) } : { kind: "lines" as const, lines: ["No rows in this authoritative ledger snapshot."] },
+    // A re-grant replaces the whole row, so every field it must spell again is shown.
+    rows.length ? { kind: "table" as const, columns: [{ key: "principal", label: "Principal" }, { key: "kind", label: "Kind" }, { key: "scope", label: "Capabilities" }, { key: "read", label: "May read" }, { key: "post", label: "May post" }, { key: "role", label: "Role" }, { key: "label", label: "Label" }, { key: "parent", label: "Parent" }], rows: rows.map((row) => ({ principal: `${row.owner}.${row.actor}`, kind: row.kind ?? "not recorded", scope: row.scope.join(", ") || "none", read: row.allowSubscribe.join(", ") || "none", post: row.allowPublish.join(", ") || "none", role: row.role ?? "none", label: row.label ?? "none", parent: row.parent ?? "none" })) } : { kind: "lines" as const, lines: ["No rows in this authoritative ledger snapshot."] },
     { kind: "lines" as const, lines: [{ text: "Recorded grants are not proof of current connections, task progress or the authority of a cached account session.", tone: "hint" as const }] },
   ] }] };
 }
@@ -413,7 +414,7 @@ async function runActor(args: ParsedArgs, target: AuthTarget, command: "auth" | 
       const previous = current === undefined ? "none" as const : fields(current) === fields(row) ? "unchanged" as const : "replaced" as const;
       const result = { kind: "actor-grant", grant: publicActor({ ...row, kind: "interactive" }), fullOptionExplicit: values.full === true, previous, previousLifecycleRetired: retired };
       writeResult(presentationOf(args.values), { command, target: { space, owner: row.owner, actor: row.actor }, result }, (data) => ({ sections: [
-        { title: data.previous === "unchanged" ? "Actor grant stored unchanged" : "Actor grant stored", blocks: [{ kind: "fields", rows: [["Principal", `${data.grant.owner}.${data.grant.actor}`], ["Space", space], ["Earlier grant", data.previous === "none" ? "none" : data.previous === "unchanged" ? "the same fields" : "replaced"], ...(data.previousLifecycleRetired ? [["Earlier lifecycle", "retired, so a bearer issued under it no longer works"] as [string, string]] : []), ["Capabilities", data.grant.scope.join(", ") || "none"], ["May read", data.grant.allowSubscribe.join(", ") || "none"], ["May post", data.grant.allowPublish.join(", ") || "none"], ["Wide defaults requested", data.fullOptionExplicit ? "explicit --full" : "no"]] }, { kind: "lines", lines: [{ text: "The local authority stored this grant. No process was launched and no cached login was treated as a grant.", tone: "hint" }] }] },
+        { title: data.previous === "unchanged" ? "Actor grant stored unchanged" : "Actor grant stored", blocks: [{ kind: "fields", rows: [["Principal", `${data.grant.owner}.${data.grant.actor}`], ["Space", space], ["Earlier grant", data.previous === "none" ? "none" : data.previous === "unchanged" ? "the same fields" : "replaced"], ...(data.previousLifecycleRetired ? [["Earlier lifecycle", "retired, so a bearer issued under it no longer works"] as [string, string]] : []), ["Capabilities", data.grant.scope.join(", ") || "none"], ["May read", data.grant.allowSubscribe.join(", ") || "none"], ["May post", data.grant.allowPublish.join(", ") || "none"], ["Role", data.grant.role ?? "none"], ["Label", data.grant.label ?? "none"], ["Parent", data.grant.parent ?? "none"], ["Wide defaults requested", data.fullOptionExplicit ? "explicit --full" : "no"]] }, { kind: "lines", lines: [{ text: "The local authority stored this grant. No process was launched and no cached login was treated as a grant.", tone: "hint" }] }] },
       ] }));
       return;
     }
@@ -588,7 +589,7 @@ const authCommands: Command[] = [
     name: "actor",
     group: "Identity",
     summary: "manage the space's actor ledger - grant/revoke which (user, actor) pairs may run agents",
-    usage: "actor <grant <actor> | revoke <actor> | list> [--sub <IdP subject>|--owner <u_…>] [--space <s>] [--full | --scope a,b --allow-subscribe a,b --allow-publish a,b] [--role r] [--label l]",
+    usage: "actor <grant <actor> | revoke <actor> | list> [--sub <IdP subject>|--owner <u_…>] [--space <s>] [--full | --scope a,b --allow-subscribe a,b --allow-publish a,b] [--role r] [--label l] [--json|--plain]",
     positionals: "<grant <actor> | revoke <actor> | list>",
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space whose ledger to manage (default: the resolved mesh, as for auth grants)" },
@@ -601,7 +602,9 @@ const authCommands: Command[] = [
       { name: "role", type: "string", value: "<r>", description: "role (scopes the task-queue consumer)" },
       { name: "label", type: "string", value: "<l>", description: "display label for `actor list` (never the IdP subject)" },
       { name: "parent", type: "string", value: "<owner.actor>", description: "spawning principal audit link (operator grants are authority - this does not attenuate)" },
+      jsonFlag, plainFlag,
     ],
+    outputs: ["json", "plain"],
     validate: validateActorArguments,
     run: (args) => {
       validateActorArguments(args);
@@ -680,7 +683,7 @@ const authCommands: Command[] = [
 
 const actorCommand = authCommands.find((command) => command.name === "actor");
 if (!actorCommand?.flags) throw new Error("the native actor command must declare its shared authority flags");
-const authFlagSources = [...actorCommand.flags.filter((flag) => flag.name !== "space"), ...signerExportFlags, ...credentialMintFlags, { name: "yes", short: "y", type: "boolean" as const, description: "retire: explicit intent never bypasses the native caller/serve-gate requirement" }, spaceFlag, jsonFlag, plainFlag];
+const authFlagSources = [...actorCommand.flags.filter((flag) => !["space", "json", "plain"].includes(flag.name)), ...signerExportFlags, ...credentialMintFlags, { name: "yes", short: "y", type: "boolean" as const, description: "retire: explicit intent never bypasses the native caller/serve-gate requirement" }, spaceFlag, jsonFlag, plainFlag];
 const authFlags = [...new Map(authFlagSources.map((flag) => [flag.name, flag])).values()] as readonly FlagSpec[];
 
 function validateAuthArguments(args: ParsedArgs): void {
