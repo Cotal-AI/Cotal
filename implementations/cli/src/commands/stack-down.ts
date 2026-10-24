@@ -142,9 +142,13 @@ async function managerImpact(journal: StackJournal, members: readonly Member[], 
   }
 }
 
-/** The full-store refusal of a stack's manager stop, before any member is stopped. */
+/** The full-store refusal of a stack's manager stop, before any member is stopped. Making room
+ *  purges the space's channel history; a plain SIGTERM to the manager's own process needs no
+ *  credential, so it stops the stack without that loss. */
 function fullStoreStop(journal: StackJournal, manager: Member, store: { path: string; cap?: number } | undefined): CommandFailure {
-  return fullStoreStopRefusal("the manager", store, "no member was stopped", { root: journal.root, space: journal.space, manager: manager.instance.name }, "make room with cotal history clear --yes, then run cotal down");
+  const pid = manager.instance.record.value.process?.pid;
+  return fullStoreStopRefusal("the manager", store, "no member was stopped", { root: journal.root, space: journal.space, manager: manager.instance.name },
+    `make room with cotal history clear --yes, which purges all of this space's channel history, then run cotal down${pid !== undefined ? `; to keep that history, end the manager on this host with kill -TERM ${pid}, which stops its agents by its default policy, then run cotal down, and cotal up --max-file-store <bytes> with a larger cap` : ""}`);
 }
 
 /** Everything outside the recorded members that would be cut off refuses before the first signal.

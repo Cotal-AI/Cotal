@@ -35,8 +35,9 @@
  *     more than its cap, `send` refuses `DEPENDENCY_UNAVAILABLE` naming the store and the cap,
  *     `status` shows the store full and leads Next with `history clear`, and `down` and `service stop
  *     stack-manager` refuse the same way before any stop, because the manager's stop needs an
- *     issuance record, which down's dry run predicts. After that clear `send` stores again. When the
- *     manager instead ends on its own host's SIGTERM, `down` stops the rest and keeps the delivery
+ *     issuance record, which down's dry run predicts. Both say that `history clear` purges all channel
+ *     history and name the manager's SIGTERM that keeps it. After that clear `send` stores again. When
+ *     the manager instead ends on its own host's SIGTERM, `down` stops the rest and keeps the delivery
  *     credential, because the full store refused the daemon's release, and the next `up` with a larger
  *     cap waits out that lease and starts every member with the history kept. A project folder renamed while its stack runs: the broker names
  *     its store relative to the root, so it does not create the old path again; `send`, `up` and
@@ -555,14 +556,14 @@ try {
     const stopRefused = `the broker's JetStream store ${store} is full at its --max-file-store cap of 70000000 bytes, and stopping the manager needs a credential whose issuance record the full store cannot take; no member was stopped`;
     const managerStop = cli(root, "service", "stop", "stack-manager", "--space", space, "--yes", "--json");
     const managerPid = pidOf(space, "stack-manager");
-    check("service stop stack-manager on a full store refuses DEPENDENCY_UNAVAILABLE, exit 2, naming the store and history clear, and the manager runs on",
+    check("service stop stack-manager on a full store refuses DEPENDENCY_UNAVAILABLE, exit 2, naming the store, history clear and what it purges, and the SIGTERM that keeps the history, and the manager runs on",
       managerStop.status === 2 && managerStop.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && managerStop.env.error.message === `the broker's JetStream store ${store} is full at its --max-file-store cap of 70000000 bytes, and stopping stack-manager needs a credential whose issuance record the full store cannot take; nothing was stopped`
-        && managerStop.env.error.remedy === `make room with cotal history clear --space ${space} --yes, then run cotal svc stop stack-manager --space ${space} --yes` && managerPid !== null && alive(managerPid), shown(managerStop));
+        && managerStop.env.error.remedy === `make room with cotal history clear --space ${space} --yes, which purges all of this space's channel history, then run cotal svc stop stack-manager --space ${space} --yes; to keep that history, end it on this host with kill -TERM ${managerPid}, which stops its agents by its default policy` && managerPid !== null && alive(managerPid), shown(managerStop));
     const preview = cli(root, "down", "--dry-run", "--json");
     check("down --dry-run predicts the full-store refusal of the manager's stop", preview.status === 0 && (preview.env?.result?.blockedBy as { code?: string; message?: string } | null)?.code === "DEPENDENCY_UNAVAILABLE" && (preview.env?.result?.blockedBy as { message?: string }).message === stopRefused && Boolean(preview.env?.warnings?.some((w) => w.code === "DEPENDENCY_UNAVAILABLE")), shown(preview));
     const manager = pidOf(space, "stack-manager");
     const down = cli(root, "down", "--yes", "--json");
-    check("down --yes on a full store refuses DEPENDENCY_UNAVAILABLE, exit 2, before any stop, naming history clear then down", down.status === 2 && down.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && down.env.error.message === stopRefused && down.env.error.cause?.code === "10023" && down.env.error.remedy === "make room with cotal history clear --yes, then run cotal down" && manager !== null && alive(manager) && !gone(space, "stack-delivery"), shown(down));
+    check("down --yes on a full store refuses DEPENDENCY_UNAVAILABLE, exit 2, before any stop, naming history clear and what it purges, then the SIGTERM route that keeps the history", down.status === 2 && down.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && down.env.error.message === stopRefused && down.env.error.cause?.code === "10023" && down.env.error.remedy === `make room with cotal history clear --yes, which purges all of this space's channel history, then run cotal down; to keep that history, end the manager on this host with kill -TERM ${manager}, which stops its agents by its default policy, then run cotal down, and cotal up --max-file-store <bytes> with a larger cap` && manager !== null && alive(manager) && !gone(space, "stack-delivery"), shown(down));
     check("history clear --yes makes room", cli(root, "history", "clear", "--yes", "--json").status === 0);
     check("down --dry-run then names no refusal", cli(root, "down", "--dry-run", "--json").env?.result?.blockedBy === null);
     const again = cli(root, "send", "-c", "general", "after the clear", "--json");
@@ -571,8 +572,9 @@ try {
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
   }
 
-  // 3g. A space over its cap whose manager ended on its own host's SIGTERM. Then down needs no new
-  // credential, and the full store refuses the delivery daemon's release, so its lease row stays.
+  // 3g. A space over its cap stopped by the route its down refusal names to keep the history: the
+  // manager ends on its own host's SIGTERM, so down needs no new credential, and the full store
+  // refuses the delivery daemon's release, so its lease row stays.
   {
     const space = "fullkeep";
     const root = prepare(space);

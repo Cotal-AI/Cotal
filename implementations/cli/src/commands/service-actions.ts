@@ -307,7 +307,8 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     if (!storeRefusedWrite(error)) throw error;
     let store: { path: string; cap?: number } | undefined;
     try { store = recordedStore(root, space); } catch { store = undefined; }
-    throw fullStoreStopRefusal(oneLine(name), store, "nothing was stopped", target, `make room with cotal history clear --space ${space} --yes, then run cotal svc ${mode} ${oneLine(name)} --space ${space} --yes`);
+    const pid = mode === "stop" ? selected!.record.value.process?.pid : undefined;
+    throw fullStoreStopRefusal(oneLine(name), store, "nothing was stopped", target, `make room with cotal history clear --space ${space} --yes, which purges all of this space's channel history, then run cotal svc ${mode} ${oneLine(name)} --space ${space} --yes${pid !== undefined ? `; to keep that history, end it on this host with kill -TERM ${pid}, which stops its agents by its default policy` : ""}`);
   }
   const kernelPlan = mode === "stop" || mode === "restart" ? await prepareKernelServiceStop(definition, selected!) : undefined;
   // The impact is the first report the operation prints, so it carries the space's Mesh line.

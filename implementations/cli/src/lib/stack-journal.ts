@@ -240,8 +240,8 @@ export function refuseControllerCut(root: string, action: "down --preserve-state
     : `${action} needs a preserved cut, and a controller-owned stack cannot be preserved in this release; nothing was written`, {
     target: { root: recorded.journal.root, space: recorded.journal.space },
     remedy: preserve
-      ? "stop the stack with plain `cotal down`, which keeps its store, channels and history for the next `cotal up`; preserve on a controller-owned stack returns in a later release"
-      : "plain `cotal down` and `cotal up` keep this stack's store, channels and history; backup and restore of a controller-owned stack return in a later release",
+      ? "stop the stack with plain `cotal down`, which keeps its store, channels and history for the next `cotal up`, but on a full store `cotal down` refuses and names how to stop the stack with or without purging that history; preserve on a controller-owned stack returns in a later release"
+      : "plain `cotal down` and `cotal up` keep this stack's store, channels and history, but on a full store `cotal down` refuses and names how to stop the stack with or without purging that history; backup and restore of a controller-owned stack return in a later release",
   });
 }
 
