@@ -3901,8 +3901,11 @@ and names the setting to fix. The draft's private folder is made in the temporar
 (`TMPDIR`). One this account cannot write refuses with `PERMISSION_DENIED`, and one that is missing
 or not a directory with `TARGET_UNAVAILABLE`, both exit 2 and naming it before anything is made. A
 successful editor exit and valid definition are required before saving. A draft that fails
-validation is refused with `SCHEMA_INVALID` and the reason, and an editor that exits non-zero fails
-with `OPERATION_FAILED`. Both keep the draft and name its path, so the edit is not lost. A changed
+validation is refused with `SCHEMA_INVALID` and the reason, keeping the draft and naming its path,
+so the edit is not lost. An editor that exits non-zero, as vim's `:cq` does, cancels the edit: it
+exits 0 with a `USER_CANCELLED` warning, saves nothing, and keeps and names a draft it changed. An
+editor ended by a signal fails with `OPERATION_FAILED` and keeps the draft. A draft left as it was
+saves nothing and says the persona is unchanged. A changed
 or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. The
 refusal says which one happened and keeps your edited draft in its private folder, naming it, so
 the edit is not lost. Local

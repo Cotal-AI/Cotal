@@ -160,16 +160,18 @@ function draftFolder(): string {
 }
 
 /** Own a private draft and remove only that draft. A cleanup failure is not a successful operation.
- *  A failure that `keep` accepts leaves the draft in place, because it holds work that was not saved. */
-function withDraft<T>(name: string, action: (path: string) => T, keep?: (error: unknown) => boolean): T {
+ *  When `keep` says so, the draft stays in place, because it holds work that was not saved. */
+function withDraft<T>(name: string, action: (path: string) => T, keep?: () => boolean): T {
   const dir = draftFolder();
   let kept = false;
   try {
     hardenPrivate(dir, "dir");
-    return action(join(dir, `${name}.md`));
+    const value = action(join(dir, `${name}.md`));
+    kept = keep?.() === true;
+    return value;
   }
   catch (error) {
-    kept = keep?.(error) === true;
+    kept = keep?.() === true;
     throw error;
   }
   finally {
@@ -202,8 +204,12 @@ function editorProgram(editor: string): string | undefined {
   catch { return undefined; }
 }
 
+/** What an edit did. An editor that exits non-zero cancels it, as vim's `:cq` does; a draft it changed
+ *  is kept. A draft left as it was saves nothing. */
+export type PersonaEdit = { action: "saved" } | { action: "unchanged" } | { action: "cancelled"; status: number; draft?: string };
+
 /** Never expose the catalog file to an editor. Validate successful draft bytes, then compare under lock. */
-export function editPersona(path: string, name: string, catalog: PersonaCatalog, json = false): void {
+export function editPersona(path: string, name: string, catalog: PersonaCatalog, json = false): PersonaEdit {
   if (json || inputDisabledByFlag())
     throw new CommandFailure("refused", "USAGE_INVALID", "persona edit opens an editor, --no-input forbids one, as does --json", { remedy: "edit interactively without --json or --no-input" });
   const source = requirePersonaSource(path);
@@ -213,7 +219,7 @@ export function editPersona(path: string, name: string, catalog: PersonaCatalog,
   if (!editor) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
   // A draft the editor may have changed and that was not saved is kept, and the failure names it.
   let keep = false;
-  withDraft(name, draft => {
+  return withDraft(name, (draft): PersonaEdit => {
     writeSecretFile(draft, source.bytes);
     const program = editorProgram(editor);
     const quoted = process.platform === "win32" ? `"${draft.replaceAll('"', '""')}"` : `'${draft.replaceAll("'", "'\\''")}'`;
@@ -228,13 +234,18 @@ export function editPersona(path: string, name: string, catalog: PersonaCatalog,
         remedy: "set VISUAL or EDITOR to an installed editor, or run `cotal config set editor vim`; a value that is not the path of an existing file runs as a shell command, so quote a path that holds spaces",
       });
     if (result.error) throw new CommandFailure("failed", "OPERATION_FAILED", "the editor could not be started - not saved");
-    if (result.status !== 0) {
+    if (result.signal) {
       keep = true;
-      throw new CommandFailure("failed", "OPERATION_FAILED", `editor ${result.signal ? `ended on ${result.signal}` : `exited with status ${result.status}`} - not saved`, {
+      throw new CommandFailure("failed", "OPERATION_FAILED", `editor ended on ${result.signal} - not saved`, {
         remedy: `your draft is kept in ${draft}; remove ${dirname(draft)} when you are done`,
       });
     }
+    if (result.status !== 0) {
+      keep = readPersonaSource(draft)?.bytes.equals(source.bytes) === false;
+      return { action: "cancelled", status: result.status ?? 1, ...(keep ? { draft } : {}) };
+    }
     const edited = requirePersonaSource(draft).bytes;
+    if (edited.equals(source.bytes)) return { action: "unchanged" };
     try { validatePersona(edited, draft); }
     catch (error) {
       if (!isCommandFailure(error)) throw error;
@@ -253,5 +264,6 @@ export function editPersona(path: string, name: string, catalog: PersonaCatalog,
         remedy: `your edit is kept in ${draft}; ${removed ? `restore it with \`cotal persona create ${name} --file ${draft}\`` : `compare it with \`cotal persona show ${name}\`, then edit again`}, and remove ${dirname(draft)} when you are done`,
       });
     }
+    return { action: "saved" };
   }, () => keep);
 }

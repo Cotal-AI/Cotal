@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import { assertValidChannel, assertValidRole, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
@@ -11,7 +12,7 @@ import { completedFlagValue, completingFlagValue, positionalsForCompletion } fro
 import { readPersonas } from "../lib/personas.js";
 import {
   commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource,
-  requirePersonaSource, reservedPersonaName, serializePersona, validatePersona, type PersonaCatalog,
+  requirePersonaSource, reservedPersonaName, serializePersona, validatePersona, type PersonaCatalog, type PersonaEdit,
 } from "../lib/persona-files.js";
 import { remotePersona, validateRemotePersonaArguments } from "./persona-remote.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -83,8 +84,9 @@ export async function persona(args: ParsedArgs): Promise<void> {
     return receipt(presentation, catalog, name!, path, "created");
   }
   if (sub === "edit") {
-    editPersona(path, name!, catalog, presentation === "json");
-    return receipt(presentation, catalog, name!, path, "saved");
+    const edit = editPersona(path, name!, catalog, presentation === "json");
+    if (edit.action === "saved") return receipt(presentation, catalog, name!, path, "saved");
+    return editNotSaved(presentation, catalog, name!, path, edit);
   }
   if (sub === "remove") {
     const expected = requirePersonaSource(path);
@@ -186,6 +188,18 @@ function list(catalog: PersonaCatalog, presentation: Presentation): void {
       { command: "cotal ps", description: "See running agents" },
     ] }] },
   ] }));
+}
+
+/** An edit that saved nothing: a draft left as it was, or an editor that exited non-zero, which cancels. */
+function editNotSaved(presentation: Presentation, catalog: PersonaCatalog, name: string, path: string, edit: Exclude<PersonaEdit, { action: "saved" }>): void {
+  const cancel = edit.action === "cancelled" ? edit : undefined;
+  writeResult(presentation, {
+    command: "persona", target: catalog, noOp: true,
+    result: cancel ? { kind: "persona-edit-cancelled", name, path, editorStatus: cancel.status, ...(cancel.draft ? { draft: cancel.draft } : {}) } : { kind: "persona-unchanged", name, path },
+    ...(cancel ? { warnings: [{ code: "USER_CANCELLED", target: { name, path }, message: "nothing was saved" }] } : {}),
+  }, () => ({ sections: [{ blocks: [{ kind: "lines", lines: cancel
+    ? [`Edit cancelled: the editor exited with status ${cancel.status}.`, ...(cancel.draft ? [`Your draft is kept in ${cancel.draft}; remove ${dirname(cancel.draft)} when you are done.`] : [])]
+    : [`${name} is unchanged, so nothing was saved.`] }] }] }));
 }
 
 function receipt(presentation: Presentation, catalog: PersonaCatalog, name: string, path: string, action: string, seededDefault = false): void {

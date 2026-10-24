@@ -199,8 +199,10 @@ function show(name: string | undefined, values: { space?: string; server?: strin
 function edit(name: string | undefined, values: { space?: string; server?: string }): void {
   if (!name) return usage();
   const catalog = personaCatalog(values);
-  editPersona(personaPath(catalog.root, name), name, catalog);
-  console.log(c.green(`✓ saved "${name}"`));
+  const edit = editPersona(personaPath(catalog.root, name), name, catalog);
+  if (edit.action === "saved") console.log(c.green(`✓ saved "${name}"`));
+  else if (edit.action === "unchanged") console.log(c.dim(`"${name}" is unchanged, so nothing was saved`));
+  else console.log(c.yellow(`edit cancelled: the editor exited with status ${edit.status}, so nothing was saved${edit.draft ? `; your draft is kept in ${edit.draft}` : ""}`));
 }
 
 function create(name: string | undefined, v: { role?: string; model?: string; prompt?: string; from?: string; subscribe?: string; force?: boolean; space?: string; server?: string }): void {

@@ -304,9 +304,10 @@ try {
   check("rm: leaves the cwd's same-named card untouched", existsSync(join(CWD, ".cotal", "agents", "fresh-one.md")));
 
   // edit — shares `show`'s resolution and is not driven here (it hands the terminal to $EDITOR).
-  // Witnessed instead by pointing EDITOR at a no-op and checking which path it was handed.
+  // Witnessed instead by pointing EDITOR at a no-op: the card it found and validated is reported
+  // unchanged, so nothing is saved.
   const edited = await captureCmd(["edit", "mesh-default"], {}, { EDITOR: "true" });
-  check("edit: re-validates the card under the MESH root", /✓ saved "mesh-default"/.test(edited), edited.slice(0, 120));
+  check("edit: re-validates the card under the MESH root", /"mesh-default" is unchanged, so nothing was saved/.test(edited), edited.slice(0, 120));
 
   // 5. `cotal mint --profile agent` READS ITS ACLs FROM THE SAME ROOT.
   //

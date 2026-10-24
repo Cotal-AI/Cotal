@@ -314,7 +314,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   };
   const editor = { ...noSeed, VISUAL: 'node -e ""', EDITOR: 'node -e ""' };
   const edited = cotal(["personas", "edit", "x"], persona, editor);
-  check("control: personas edit runs the editor", edited.status === 0 && edited.stdout.includes('saved "x"'), shown(edited));
+  check("control: personas edit runs the editor, and a draft left as it was saves nothing", edited.status === 0 && edited.stdout.includes('"x" is unchanged, so nothing was saved'), shown(edited));
   const forbidden = cotal(["personas", "edit", "x", "--no-input"], persona, editor);
   check("personas edit --no-input refuses to open an editor", forbidden.status === 1 && /--no-input forbids one/.test(forbidden.stderr) && !forbidden.stdout.includes("saved"), shown(forbidden));
   // An editor setting that is the path of an existing file runs as that program, spaces and all.
@@ -343,8 +343,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   };
   const shownDefault = cotal(["persona", "show", "default", "--json"], seeded, noSeed);
   check("persona show reads the seeded default persona", shownDefault.status === 0 && JSON.parse(shownDefault.stdout).result?.definition?.name === "default_agent", shown(shownDefault));
-  const editedDefault = cotal(["persona", "edit", "default"], seeded, editor);
+  const appending = `sh -c 'printf "more\\n" >> "$1"' sh`;
+  const editedDefault = cotal(["persona", "edit", "default"], seeded, { ...noSeed, VISUAL: appending, EDITOR: appending });
   check("persona edit saves the seeded default persona", editedDefault.status === 0 && editedDefault.stdout.includes("Persona saved"), shown(editedDefault));
+  const unchanged = cotal(["persona", "edit", "default"], seeded, editor);
+  check("persona edit of a draft left as it was says the persona is unchanged and saves nothing", unchanged.status === 0 && unchanged.stdout.includes("default is unchanged, so nothing was saved") && !unchanged.stdout.includes("Persona saved"), shown(unchanged));
   // A catalog file saved as UTF-16 is named by its encoding, with the step to save it as UTF-8.
   const utf16 = (home: string) => {
     seeded(home);
