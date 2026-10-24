@@ -627,7 +627,9 @@ keeps its mode. A `.cotal`, or a root without one, that this account cannot writ
 broker store this account cannot write refuses the same way, naming the store's `jetstream` folder,
 or the store itself before a broker has made one, and `chmod -R u+w`. Without that check the broker
 exited and named the cause only in its log. `status` names the same step for a stopped space whose
-store `up` would refuse. The broker log `.cotal/nats.log` and the auth service,
+store `up` would refuse. A service record folder of the space, under `services/` in the Cotal home,
+that this account cannot write refuses `up` the same way, naming the folder and `chmod u+w`, before
+any member starts. The broker log `.cotal/nats.log` and the auth service,
 delivery and manager logs are created owner-private as well, and the process records `up` writes, such as
 `.cotal/nats.pid` and its identity pin, are created `0600` under a fresh name that is never opened
 through a symlink, then renamed into place. The pid record and identity pin of a native service
@@ -1101,8 +1103,10 @@ preservation and manifest flags rather than switching to the legacy launcher. Ou
 a bare `down` that would stop a running member refuses without `--yes`, exit 1, and prints that
 line and its remedy without the command help. A stop records each step in the stack journal in the root's
 `.cotal`. When this account cannot write that folder, `down` refuses `PERMISSION_DENIED`, exit 2,
-before the plan, names the folder and the `chmod u+w` that fixes it, and stops nothing. A dry run
-names it as a refusal the real stop would hit.
+before the plan, names the folder and the `chmod u+w` that fixes it, and stops nothing. Each
+member's stop is also recorded in the space's service instance records, under `services/` in the
+Cotal home, and a folder there this account cannot write refuses the same way. A dry run names
+either as a refusal the real stop would hit.
 
 A controller stack's members are stopped through the registration `cotal up` wrote for it. When an
 older `meshes rm --force` dropped it, or an older `meshes add --force` replaced it with one added by

@@ -18,7 +18,7 @@ import { brokerLaunchAt } from "../lib/broker-service.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
-import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
+import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, serviceRecordsWriteProblem, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { abandonableSignalStop, assertNoServiceUnitAttempts, resumableSignalStop, prepareKernelServiceStop, prepareNativeServiceStop, retainedStopRequest, settleExitedInstance, stopProcessService } from "../lib/service-process.js";
 import { readStackRuns } from "../lib/stack-runs.js";
 import { RESUME_REMEDY, abandonRemedy, abandonRetainedStackStop, acquireStackOperationLock, newStackOperation, previewStackSettlement, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, settleRetainedStackStops, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
@@ -46,6 +46,17 @@ export function stackRootElsewhere(space: string, root: string): string | undefi
 /** The same `down`, without `--space`, for a refusal that names the folder to run it from. */
 export const sameDown = (values: ParsedArgs["values"]): string =>
   ["cotal down", ...["dry-run", "with-agents", "preserve-state", "yes"].filter((flag) => values[flag] === true).map((flag) => `--${flag}`)].join(" ");
+
+/** A stop records each member's stop under the space's service instance records, so a folder there this
+ *  account cannot write refuses before the plan, naming it, rather than leaving every member running
+ *  after an unknown first stop. */
+function assertServiceRecordsWritable(root: string, space: string, values: ParsedArgs["values"]): void {
+  const dir = serviceRecordsWriteProblem(space, ["instances"]);
+  if (dir) throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${dir}, where down records each member's stop; no member was stopped`, {
+    target: { root, space, path: dir },
+    remedy: `make it writable with chmod u+w ${dir}, then run \`${sameDown({ ...values, "dry-run": undefined, yes: true })}\``,
+  });
+}
 
 /** A stop records each step in the stack journal in the root's `.cotal`, so a folder this account
  *  cannot write refuses before the plan, naming it, rather than after the plan at the first write. */
@@ -267,7 +278,7 @@ function previewStackStop(root: string, values: ParsedArgs["values"], presentati
   if (alreadyStopped(journal0, members) || stackNeverStarted(journal0)) return nothingRunning(presentation, target, false);
   // A preview reports what would refuse the real stop instead of refusing itself.
   let blocked: CommandFailure | undefined, restore: string | undefined, stranded: ReturnType<typeof strandedRegistration>;
-  try { restore = scopeRefusals(journal0); stranded = strandedRegistration(journal0, members); assertJournalWritable(root, values); }
+  try { restore = scopeRefusals(journal0); stranded = strandedRegistration(journal0, members); assertJournalWritable(root, values); assertServiceRecordsWritable(root, journal0.space, values); }
   catch (error) { if (!isCommandFailure(error)) throw error; blocked = error; }
   const warnings = blocked ? [{ code: blocked.code, target: blocked.target, message: `the real stop would refuse: ${blocked.message}${blocked.remedy ? `; ${blocked.remedy}` : ""}` }] : stranded ? [strandedNotice(journal0, stranded.previous, true)] : [];
   // A preview that changes nothing succeeds. It is partial only in what it read: no provider and
@@ -293,6 +304,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   if (stackNeverStarted(journal0)) return nothingRunning(presentation, target, false, abandonWarnings);
   const admittedRestore = scopeRefusals(journal0);
   assertJournalWritable(root, values);
+  assertServiceRecordsWritable(root, journal0.space, values);
   if (!values.yes && !interactive) throw new ConfirmationRequired("stopping the whole controller stack requires --yes outside an interactive terminal", { target, remedy: "run `cotal down --yes` to stop it; `cotal down --dry-run` shows what it stops" });
   // A missing or hand-added registration is rebuilt from the journal before anything resolves the
   // members, and put back as it was when the stop ends before any member stops.

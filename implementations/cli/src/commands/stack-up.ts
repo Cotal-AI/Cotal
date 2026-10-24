@@ -24,7 +24,7 @@ import { brokerListenAddress, listenerBindError } from "../lib/broker-service.js
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { definitionListeners, exposedPlaintext, listenerRow, type StackListener } from "../lib/stack-listeners.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
-import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
+import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, serviceRecordsWriteProblem, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { prepareKernelServiceStop, prepareProcessService, readServiceLog, removeStoppedInstanceRecords, settleExitedInstances, startProcessService, stopProcessService } from "../lib/service-process.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
@@ -340,6 +340,10 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // member's file is written, instead of failing on the first file name that does not fit.
   const tooLong = spaceNameTooLong(space);
   if (tooLong) throw new CommandFailure("refused", "USAGE_INVALID", `${tooLong}; nothing was started or written`, { target: { root, space }, remedy: `forget it with cotal space forget ${space}, then create one with a name of at most ${SPACE_NAME_MAX} characters with cotal space create <name>` });
+  // Each member's start is recorded under the space's service records. A folder there this account
+  // cannot write refuses here, naming it, instead of an unknown outcome after a member started.
+  const unwritable = serviceRecordsWriteProblem(space, ["definitions", "instances"]);
+  if (unwritable) throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${unwritable}, where up records the stack's services; nothing was started or written`, { target: { root, space, path: unwritable }, remedy: `make it writable with chmod u+w ${unwritable}, then run cotal up again` });
   const recorded = readStackJournal(root);
   if (request.expectPriorDown && (!recorded || recorded.sha256 !== request.expectPriorDown.journalSha256 || recorded.journal.operation.id !== request.expectPriorDown.operationId))
     throw new CommandFailure("refused", "CONFLICT", "the stopped stack changed after the team boot checked it; nothing was started", { target: { root, space, expected: request.expectPriorDown.operationId } });
