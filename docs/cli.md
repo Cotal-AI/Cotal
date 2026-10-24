@@ -2423,7 +2423,9 @@ Next is `cotal down`, to run once space is freed, after which `cotal up` starts 
 
 `deliveryResponder` is `stale` when the ready row in the delivery lease belongs to a daemon that is
 gone. That includes this folder's own daemon once its recorded process has exited without releasing
-the row, as after a kill. The row expires on its own within 30 seconds.
+the row, as after a kill. The row expires on its own within 30 seconds. The delivery responder line
+then says the delivery daemon died and its lease has not expired yet, that spawn, retirement and join
+wait until a new daemon binds, and that `cotal up` restarts it, since `up` waits out the lease first.
 
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. An open mesh runs no delivery daemon, so when it records no delivery lease its
