@@ -1124,6 +1124,11 @@ if (process.platform === "linux") {
   check("space show says the folder is gone and names forget and create, not cotal up",
     goneShow.status === 0 && goneShow.env?.result.kind === "prepared-space" && goneShow.env.result.rootMissing === true &&
       goneShowPlain.stdout.includes(`prepared in ${goneRoot}, which no longer exists`) && goneShowPlain.stdout.includes("forget it with `cotal space forget gone`, then prepare it again with `cotal space create gone --root <dir>`") && !goneShowPlain.stdout.includes("cotal up"), { json: shown(goneShow), plain: shown(goneShowPlain) });
+  const goneList = await json(["space"]);
+  const goneListPlain = await run(["space", "--plain"]);
+  check("the space listing marks the folder gone and names forget and create for it",
+    goneList.status === 0 && goneList.env?.result?.prepared?.find((p: { space: string }) => p.space === "gone")?.rootMissing === true &&
+      goneListPlain.stdout.includes(`${goneRoot} (no longer exists)`) && goneListPlain.stdout.includes("cotal space forget gone") && goneListPlain.stdout.includes("`cotal space create gone --root <dir>`"), { json: shown(goneList), plain: shown(goneListPlain) });
   const goneForgot = await run(["space", "forget", "gone"]);
   check("forget says the folder no longer exists", goneForgot.status === 0 && goneForgot.stdout.includes(`its folder ${goneRoot} no longer exists`) && findPreparedSpace("gone") === undefined, shown(goneForgot));
 

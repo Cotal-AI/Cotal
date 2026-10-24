@@ -89,12 +89,12 @@ export interface PreparedRow {
   readonly root: string;
   readonly preparedAt: string;
   readonly current: boolean;
+  /** Its project folder no longer exists, so `up` cannot start it there. */
+  readonly rootMissing: boolean;
 }
 
 interface PreparedDetail extends PreparedRow {
   readonly kind: "prepared-space";
-  /** Its project folder no longer exists, so `up` cannot start it there. */
-  readonly rootMissing: boolean;
 }
 
 /** One registration in full. Pins and endpoints are public; credential paths are left out. */
@@ -164,7 +164,7 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     if (!m) {
       const p = findPreparedSpace(name);
       if (!p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { target: { space: name }, remedy: "see the registered spaces with `cotal space`" });
-      const result: PreparedDetail = { kind: "prepared-space", ...preparedRow(p, current), rootMissing: !existsSync(p.root) };
+      const result: PreparedDetail = { kind: "prepared-space", ...preparedRow(p, current) };
       writeResult(presentation, { command: "space", target: { space: p.space }, result }, preparedView);
       return;
     }
@@ -175,7 +175,7 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
 }
 
 function preparedRow(p: PreparedSpace, current: string | null): PreparedRow {
-  return { space: p.space, root: p.root, preparedAt: p.ts, current: p.space === current };
+  return { space: p.space, root: p.root, preparedAt: p.ts, current: p.space === current, rootMissing: !existsSync(p.root) };
 }
 
 function row(m: MeshEntry, current: string | null, check: Check): SpaceRow {
@@ -235,9 +235,13 @@ function spacesView(result: SpacesResult): Report {
       {
         kind: "table",
         columns: [{ key: "space", label: "Space" }, { key: "root", label: "Project" }],
-        rows: result.prepared.map((p) => ({ space: nameCell(p, result.folder), root: { text: p.root, tone: "hint" } })),
+        rows: result.prepared.map((p) => ({ space: nameCell(p, result.folder), root: p.rootMissing ? { text: `${p.root} (no longer exists)`, tone: "waiting" } : { text: p.root, tone: "hint" } })),
       },
-      { kind: "commands", items: [{ command: "cotal up", description: "Start a prepared space from its project folder" }] },
+      // A folder that is gone cannot be started, so its space names the steps `space show` gives.
+      { kind: "commands", items: [
+        ...(result.prepared.some((p) => !p.rootMissing) ? [{ command: "cotal up", description: "Start a prepared space from its project folder" }] : []),
+        ...result.prepared.filter((p) => p.rootMissing).map((p) => ({ command: `cotal space forget ${p.space}`, description: `Its folder is gone: forget it, then prepare it again with \`cotal space create ${p.space} --root <dir>\`` })),
+      ] },
     ],
   }];
   // A prepared space is listed below, so the empty line names what is missing without denying it.

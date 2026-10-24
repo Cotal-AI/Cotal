@@ -2189,8 +2189,9 @@ read refuses both with `SCHEMA_INVALID`, exit 1, naming its file.
 user-auth space under `userAuth` and the catalog's `id`, `slug`, `kind` and `role`. It leaves
 credential paths out. A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
 so is a bare `space show` with nothing selected. Each entry under `prepared` has `space`, `root`,
-`preparedAt` and `current`, and `space show` of a prepared space gives those with the kind
-`prepared-space` and `rootMissing`, which is true when its project folder no longer exists.
+`preparedAt`, `current` and `rootMissing`, which is true when its project folder no longer exists,
+and `space show` of a prepared space gives those with the kind `prepared-space`. The listing marks
+such a folder `(no longer exists)` and names `cotal space forget <space>` for it instead of `cotal up`.
 
 `space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. A name
 that starts with `-`, given or named by a bundle, refuses with `USAGE_INVALID`, exit 1, before
