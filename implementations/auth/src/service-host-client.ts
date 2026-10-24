@@ -96,13 +96,17 @@ export async function serviceEndpointHostCall(dir: string, space: string, positi
   if (!sub || !subject || extra.length) throw usage();
   const fresh = <K extends ServiceHostOperation>(operation: K, input: ServiceHostInputs[K]): ServiceHostRouteRequest<K> =>
     ({ v: 1, kind: "service-endpoint-host", requestId: randomBytes(16).toString("hex"), operation, input });
-  const post = (r: ServiceHostRouteRequest) => postServiceEndpointHost(dir, space, r, `service-endpoint ${sub}`);
+  // The host is resolved before a request is recorded, so a space with no host records nothing.
+  let resolved: ServiceHostTarget | undefined;
+  const host = () => resolved ??= serviceHostEndpoint(dir, space, `service-endpoint ${sub}`);
+  const post = (r: ServiceHostRouteRequest) => postServiceEndpointHost(host(), r);
   const read = async (operation: "proposal-read" | "operation-read" | "name-read", input: ServiceHostInputs[typeof operation]): Promise<ServiceEndpointCall> =>
     ({ request: sub, subject, answer: await post(fresh(operation, input) as ServiceHostRouteRequest) });
   // A lost answer leaves the request recorded, so the failure names the id a resend goes under.
   const send = async (request: RecordedHostRequest): Promise<ServiceEndpointCall> => {
+    const target = host();
     let answer: ServiceHostResult;
-    try { answer = await post(request); }
+    try { answer = await postServiceEndpointHost(target, request); }
     catch (e) { throw new Error(`${e instanceof Error ? e.message : String(e)}; the request is recorded as ${request.requestId}: send it again with \`cotal service-endpoint ${sub} ${subject} --request-id ${request.requestId}\``); }
     return { request: sub, subject, requestId: request.requestId, answer };
   };
@@ -139,6 +143,7 @@ export async function serviceEndpointHostCall(dir: string, space: string, positi
     case "name-bind": {
       if (!values.owner || !values.claim) throw usage();
       const request = fresh("name-bind", { endpoint: subject, owner: values.owner, expectedRevision: 0, claimReference: values.claim });
+      host();
       recordHostRequest(dir, request);
       return send(request);
     }
@@ -146,7 +151,20 @@ export async function serviceEndpointHostCall(dir: string, space: string, positi
   }
 }
 
-function serviceHostEndpoint(dir: string, space: string, what: string): { endpoint: string; idpUrl: string; authorization?: string } {
+export type ServiceHostTarget = { endpoint: string; idpUrl: string; authorization?: string };
+
+/** The refusal for a space this root knows no service endpoint host for. Only the auth service of a
+ *  user-auth space started with `--service-endpoints` hosts one, so a static or open space is told
+ *  that, as grants are; a remote user-auth registration without one is re-registered. */
+function noServiceHost(space: string, mode: "auth" | "open" | "user" | undefined, remote: boolean): CommandFailure {
+  const target = { space };
+  if (remote) return new CommandFailure("refused", "UNSUPPORTED", `space "${space}" has no pinned service endpoint host; nothing was sent`, { target, remedy: `re-register it with \`cotal meshes add ${space} --from <url>\`` });
+  if (mode === "auth" || mode === "open")
+    return new CommandFailure("refused", "UNSUPPORTED", `space "${space}" is ${mode === "auth" ? "a static-credential" : "an open"} space and has no service endpoint host; nothing was sent`, { target, remedy: "service endpoints are hosted by the auth service of a space started with `cotal up --user-auth --service-endpoints`" });
+  return new CommandFailure("refused", "UNSUPPORTED", "this root does not hold the space's user-auth service; nothing was sent", { target, remedy: "run it on the root that started the space with `cotal up --user-auth --service-endpoints`; a space started without `--user-auth` has no service endpoint host" });
+}
+
+function serviceHostEndpoint(dir: string, space: string, what: string): ServiceHostTarget {
   const idp = loadPinnedIdp(dir);
   if (idp) {
     const info = loadAuthServiceInfo(dir);
@@ -156,17 +174,15 @@ function serviceHostEndpoint(dir: string, space: string, what: string): { endpoi
   }
   const entry = findMesh(space);
   const ua = entry?.mode === "user" ? entry.userAuth : undefined;
-  if (ua?.remote !== true || typeof ua.endpoints?.url !== "string")
-    throw new Error(`space "${space}" has no pinned service endpoint host - re-register it with \`cotal meshes add ${space} --from <url>\``);
+  if (ua?.remote !== true || typeof ua.endpoints?.url !== "string") throw noServiceHost(space, entry?.mode, ua?.remote === true);
   const url = new URL(ua.endpoints.url);
   url.pathname = `${url.pathname.replace(/\/$/, "")}${SERVICE_ENDPOINT_HOST_PATH}`;
   url.search = ""; url.hash = "";
   return { endpoint: url.toString(), idpUrl: ua.idp.url };
 }
 
-/** POST one host request with a fresh IdP proof and return the engine's parsed answer. */
-export async function postServiceEndpointHost(dir: string, space: string, request: ServiceHostRouteRequest, what: string): Promise<ServiceHostResult> {
-  const target = serviceHostEndpoint(dir, space, what);
+/** POST one host request to the resolved host with a fresh IdP proof and return the engine's parsed answer. */
+export async function postServiceEndpointHost(target: ServiceHostTarget, request: ServiceHostRouteRequest): Promise<ServiceHostResult> {
   const idpToken = await fetchIdpJwt(target.idpUrl, requireIdpSession(homeCotalDir(), target.idpUrl).token);
   const res = await fetch(target.endpoint, {
     method: "POST", redirect: "manual",

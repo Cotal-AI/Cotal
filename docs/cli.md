@@ -3566,7 +3566,10 @@ cotal service-endpoint name-bind <endpoint> (--owner <u_…> --claim <ref> | --r
 ```
 
 Decides and inspects service endpoint registrations on a user-auth space whose auth service runs
-with `--service-endpoints`. Every subcommand is one request to the service's
+with `--service-endpoints`. A static-credential or open space has no service endpoint host, so
+there every subcommand refuses `UNSUPPORTED` (exit 2), says so, sends nothing and records no
+request. A root that does not hold the space's user-auth service refuses the same way and names the
+root that started it. Every subcommand is one request to the service's
 `/service-endpoint-host` route as the signed-in user: the route verifies your IdP token and derives
 the granter itself, so no command names one. `approve` and `refuse` are the owner's: the command
 reads the proposal and its name first and decides at those revisions, so a proposal or name that
