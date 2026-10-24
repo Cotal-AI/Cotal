@@ -10,8 +10,9 @@
  * writes one envelope, and a usage error under `--json` is one refusal envelope. A `--server` with a
  * user and password is refused by every command that takes one, and a `COTAL_SERVER` with one by the
  * manager, without repeating it. `--no-color` and
- * `--no-input` are accepted by every command in any position before `--`. A command an official
- * extension adds, run or asked for help before that extension is added, names the package to add.
+ * `--no-input` are accepted by every command in any position before `--`, once each. A command an
+ * official extension adds, run or asked for help before that extension is added, names the package
+ * to add.
  *
  * The aliases and short flags come from the registry the binary composes (the same imports as
  * `bin/run.ts`), and help must list each alias, so a new alias is covered without editing this file.
@@ -308,6 +309,13 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("--no-input after the command's words is accepted", same(cotal(["version", "--no-input"]), cotal(["version"])));
   check("--no-input and --no-color together are accepted", same(cotal(["--no-input", "version", "--no-color"]), cotal(["version"])));
   refused("a global flag after -- is a word", cotal(["ext", "--", "--no-input"]), /cotal ext has no subcommand "--no-input"/);
+  // A global flag is given once, as any flag is, wherever the two stand.
+  for (const argv of [["version", "--no-color", "--no-color"], ["--no-color", "--no-color", "version"], ["--no-input", "version", "--no-input"]])
+    refused(`${argv.join(" ")} is refused as a repeated flag`, cotal(argv, undefined, noSeed), new RegExp(`Option '${argv.find((word) => word.startsWith("--no-"))}' cannot be repeated`));
+  const repeatedJson = cotal(["status", "--no-input", "--no-input", "--json"], undefined, noSeed);
+  let repeatedEnvelope: { error?: { code?: string; message?: string } } = {};
+  try { repeatedEnvelope = JSON.parse(repeatedJson.stdout); } catch { /* shown below */ }
+  check("under --json the repeat is one USAGE_INVALID envelope", repeatedJson.status === 1 && repeatedEnvelope.error?.code === "USAGE_INVALID" && repeatedEnvelope.error.message === "Option '--no-input' cannot be repeated", shown(repeatedJson));
   // `personas edit` opens an editor, which --no-input forbids. The control runs a do-nothing editor.
   const persona = (home: string) => {
     mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });

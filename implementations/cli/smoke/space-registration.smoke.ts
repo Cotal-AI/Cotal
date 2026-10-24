@@ -53,7 +53,7 @@ if (!existsSync(BIN)) {
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, saveExtensionsManifest, setCurrent } = await import("@cotal-ai/workspace");
+const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, saveExtensionsManifest, setCurrent, spaceSegment } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 await import("../src/lib/broker-service.js");
@@ -805,7 +805,8 @@ if (process.platform === "linux") {
   check("an add flag other than --root on create is USAGE_INVALID", refused(await json(["space", "create", "other", "--server", LIVE], spare), 1, "USAGE_INVALID"));
   for (const name of ["a b", "dot.name", "é"]) {
     const bad = await json(["space", "create", name], spare);
-    check(`a name cotal up cannot start (${name.length > 20 ? `${name.length} characters` : name}) is USAGE_INVALID`, refused(bad, 1, "USAGE_INVALID") && /1 to 64 letters, digits, underscores or hyphens/.test(bad.env?.error?.message ?? ""), shown(bad));
+    check(`a name cotal up cannot start (${name.length > 20 ? `${name.length} characters` : name}) is USAGE_INVALID, with the remedy in its envelope`,
+      refused(bad, 1, "USAGE_INVALID") && /1 to 64 letters, digits, underscores or hyphens/.test(bad.env?.error?.message ?? "") && bad.env?.error?.remedy === "choose a name of only letters, digits, underscores and hyphens", shown(bad));
   }
   const dashed = await json(["space", "create", "--", "-x"], spare);
   check("a name that starts with - is USAGE_INVALID, saying it cannot be passed as a flag value",
@@ -1174,6 +1175,11 @@ if (process.platform === "linux") {
   check("space show says the folder is gone and names forget and create, not cotal up",
     goneShow.status === 0 && goneShow.env?.result.kind === "prepared-space" && goneShow.env.result.rootMissing === true &&
       goneShowPlain.stdout.includes(`prepared in ${goneRoot}, which no longer exists`) && goneShowPlain.stdout.includes("forget it with `cotal space forget gone`, then prepare it again with `cotal space create gone --root <dir>`") && !goneShowPlain.stdout.includes("cotal up"), { json: shown(goneShow), plain: shown(goneShowPlain) });
+  const goneList = await json(["space"]);
+  const goneListPlain = await run(["space", "--plain"]);
+  check("the space listing marks the folder gone and names forget and create for it",
+    goneList.status === 0 && goneList.env?.result?.prepared?.find((p: { space: string }) => p.space === "gone")?.rootMissing === true &&
+      goneListPlain.stdout.includes(`${goneRoot} (no longer exists)`) && goneListPlain.stdout.includes("cotal space forget gone") && goneListPlain.stdout.includes("`cotal space create gone --root <dir>`"), { json: shown(goneList), plain: shown(goneListPlain) });
   const goneForgot = await run(["space", "forget", "gone"]);
   check("forget says the folder no longer exists", goneForgot.status === 0 && goneForgot.stdout.includes(`its folder ${goneRoot} no longer exists`) && findPreparedSpace("gone") === undefined, shown(goneForgot));
 
@@ -1312,8 +1318,9 @@ if (process.platform === "linux") {
   const folder = projectRoot("prepared-file");
   for (const args of [["space"], ["space", "create", "pf"], ["use", "pf"], ["space", "show", "pf"], ["up", "--server", DEAD, "--no-manager"]]) {
     const r = await json(args, folder);
-    check(`${args.slice(0, 2).join(" ")} with a file at the prepared spaces folder refuses SCHEMA_INVALID, exit 1, naming that folder`,
-      refused(r, 1, "SCHEMA_INVALID") && r.env?.target?.file === dir && r.env.error?.remedy === "restore the record from backup or remove it", shown(r));
+    check(`${args.slice(0, 2).join(" ")} with a file at the prepared spaces folder refuses SCHEMA_INVALID, exit 1, saying it is a file and how to move it aside`,
+      refused(r, 1, "SCHEMA_INVALID") && r.env?.target?.file === dir && r.env.error?.message === `${dir} is a file, not a folder` &&
+        r.env.error?.remedy === `move ${dir} aside, for example \`mv ${dir} ${dir}.old\`; Cotal makes the folder when it next prepares a space`, shown(r));
   }
   check("...and none of them wrote: the folder is still the file, and the project has only its .cotal", readFileSync(dir, "utf8") === "not a folder" && readdirSync(folder).join() === ".cotal");
   // status names the folder and reports the rest, exit 4, with a space selected that is not registered.
@@ -1326,18 +1333,39 @@ if (process.platform === "linux") {
     report.status === 4 && report.env?.outcome === "partial" && Boolean(report.env.result?.meshes?.unreadable?.some((u: { file: string }) => u.file === dir)) && new Set(hints).size === hints.length, shown(report));
   rmSync(dir);
   if (held) renameSync(aside, dir);
-  // A record in it that does not parse, or is not a prepared space record, is refused by its file.
+  // A record in it that does not parse, or is not a prepared space record, is skipped with a warning
+  // naming its file, and refuses only a command about the space its file is named for.
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  for (const [name, body] of [["unparsed.json", "{ not json"], ["unshaped.json", '{"space":"pf"}']]) {
-    const damaged = join(dir, name);
+  recordPreparedSpace({ space: "pready", root: projectRoot("prepared-ready"), ts: new Date().toISOString() });
+  const damaged = join(dir, `${spaceSegment("pf")}.json`);
+  for (const [label, body] of [["unparsed", "{ not json"], ["unshaped", '{"space":"pf"}']]) {
     writeFileSync(damaged, body);
-    for (const args of [["space"], ["use", "pf"]]) {
-      const r = await json(args, folder);
-      check(`${args.join(" ")} with a damaged prepared record (${name}) refuses SCHEMA_INVALID, exit 1, naming that file`,
-        refused(r, 1, "SCHEMA_INVALID") && r.env?.target?.file === damaged && r.env.error?.remedy === "restore the record from backup or remove it", shown(r));
+    const list = await json(["space"], folder);
+    const skipped = list.env?.warnings?.find((w: { code: string }) => w.code === "PREPARED_RECORD_SKIPPED");
+    check(`space with a damaged prepared record (${label}) lists the rest and warns PREPARED_RECORD_SKIPPED, naming the file and its forget`,
+      list.status === 0 && list.env?.result?.prepared?.some((p: { space: string }) => p.space === "pready") && skipped?.target?.file === damaged && skipped.target.space === "pf" &&
+        skipped.message.endsWith("so it is skipped; remove it with `cotal space forget pf`"), shown(list));
+    const other = await json(["space", "show", "pready"], folder);
+    check(`space show of another space beside that record (${label}) succeeds`, other.status === 0 && other.env?.outcome === "ok", shown(other));
+    if (label === "unparsed") {
+      const report = await json(["status"], folder);
+      check("status names that record under meshes.unreadable, exit 4",
+        report.status === 4 && Boolean(report.env?.result?.meshes?.unreadable?.some((u: { file: string }) => u.file === damaged)), shown(report));
     }
-    rmSync(damaged);
+    const own = await json(["use", "pf"], folder);
+    check(`use pf with its own record damaged (${label}) refuses SCHEMA_INVALID, exit 1, naming that file`, refused(own, 1, "SCHEMA_INVALID") && own.env?.target?.file === damaged, shown(own));
+    const forget = await json(["space", "forget", "pf"], folder);
+    check(`space forget pf removes its damaged record (${label}), with no root`,
+      forget.status === 0 && forget.env?.result?.kind === "space-forgotten" && forget.env.result.root === null && !existsSync(damaged), shown(forget));
   }
+  const stray = join(dir, "stray.json");
+  writeFileSync(stray, "{ not json");
+  const strayList = await json(["space"], folder);
+  check("a damaged file named for no space is skipped with a warning to remove it",
+    strayList.status === 0 && Boolean(strayList.env?.warnings?.some((w: { code: string; target: { file: string; space: unknown }; message: string }) =>
+      w.code === "PREPARED_RECORD_SKIPPED" && w.target.file === stray && w.target.space === null && w.message.endsWith("so it is skipped; remove it"))), shown(strayList));
+  rmSync(stray);
+  removePreparedSpace("pready");
 }
 
 finish();
