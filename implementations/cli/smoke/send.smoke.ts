@@ -478,11 +478,12 @@ try {
   const notUtf8 = join(storeDir, "not-utf8.txt");
   writeFileSync(notUtf8, Buffer.from([0x6f, 0x6b, 0xff, 0xfe]));
   const [noFile, dirBody, badBody] = await Promise.all([absentFile, dirFile, notUtf8].map((file) => run(["send", "-c", "general", "--file", file])));
-  check("a missing, directory or non-UTF-8 --file is each refused in one classified block naming the path, without the usage block",
-    noFile.code === 2 && /Code: +TARGET_NOT_FOUND/.test(noFile.stderr) && noFile.stderr.includes(`"${absentFile}" could not be read`)
-      && dirBody.code === 1 && /Code: +USAGE_INVALID/.test(dirBody.stderr) && dirBody.stderr.includes(`"${dirFile}" is a directory; --file reads one file`)
-      && badBody.code === 1 && /Code: +USAGE_INVALID/.test(badBody.stderr) && badBody.stderr.includes(`"${notUtf8}" is not valid UTF-8`)
-      && [noFile, dirBody, badBody].every((r) => r.stderr.includes("Request refused") && !r.stderr.includes("Usage")), { noFile, dirBody, badBody });
+  // Each block begins with the mesh and ends with a Next that keeps the destination, as a refusal after connecting does.
+  check("a missing, directory or non-UTF-8 --file is each refused in one classified block naming the path and the mesh, with a Next and without the usage block",
+    noFile.code === 2 && /Code: +TARGET_NOT_FOUND/.test(noFile.stderr) && noFile.stderr.includes(`"${absentFile}" does not exist`) && noFile.stderr.includes('check the path, or run cotal send -c general "<message>"')
+      && dirBody.code === 1 && /Code: +USAGE_INVALID/.test(dirBody.stderr) && dirBody.stderr.includes(`"${dirFile}" is a directory; --file reads one file`) && dirBody.stderr.includes('give --file one file in it, or run cotal send -c general "<message>"')
+      && badBody.code === 1 && /Code: +USAGE_INVALID/.test(badBody.stderr) && badBody.stderr.includes(`"${notUtf8}" is not valid UTF-8`) && badBody.stderr.includes('save it as UTF-8 text, or run cotal send -c general "<message>"')
+      && [noFile, dirBody, badBody].every((r) => r.stderr.startsWith(`Mesh: ${space}\n`) && r.stderr.includes("Request refused") && /\nNext\n/.test(r.stderr) && !r.stderr.includes("Usage")), { noFile, dirBody, badBody });
 
   // The broker's default limit is 1 MiB. A body over it used to report a possibly stored message.
   const bigFile = join(storeDir, "big.txt");
