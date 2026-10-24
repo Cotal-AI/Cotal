@@ -211,6 +211,11 @@ try {
     check("down --yes settles the earlier operation and stops the live broker", stopped.status === 0 && Boolean(stopped.env?.warnings?.some((warning) => warning.code === "OPERATION_SETTLED")) && (broker === null || !alive(broker)), shown(stopped));
     const again = cli(root, "down", "--yes", "--json");
     check("a second down --yes is a no-op", again.status === 0 && again.env?.outcome === "no-op", shown(again));
+    for (const [flag, name] of [["--open", "open"], ["--user-auth", "user auth"]] as const) {
+      const pinned = cli(root, "up", flag, "--no-manager", "--json");
+      check(`up ${flag} on the stopped static-auth root refuses CONFLICT, exit 2, and names another folder for ${name}`,
+        pinned.status === 2 && pinned.env?.error?.code === "CONFLICT" && Boolean(pinned.env.error.remedy?.includes(`for ${name} run cotal space create <space>, then cotal up ${flag}, in another folder`)), shown(pinned));
+    }
 
     // A bare up adds the manager, so the restart keeps --no-manager for the ps refusal.
     const restarted = cli(root, "up", "--no-manager", "--json");

@@ -508,8 +508,8 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--restore-only registry` | artifact selection | Restore only the registry component |
 | `--accept-missing-source` | off | Explicit disaster consent when the inode-bound preserved source is absent |
 | `--accept-stale-checkpoint` | off | Explicit consent to resume a seat whose checkpoint was captured outside its recorded recency horizon |
-| `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs |
-| `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger |
+| `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs. A root whose first `up` recorded another mode refuses it |
+| `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger. A root whose first `up` recorded another mode refuses it |
 | `--idp <url>` | none | With `--user-auth`: the IdP auth base URL to pin on first enable. A later run may omit it or pass any spelling that normalizes to the pinned URL, such as one with a trailing slash; a different IdP is refused. With `-f`, overrides the manifest's `broker.idp` under the same rules: https (or http on a loopback IP literal), with no credentials, query or fragment |
 | `--exchange-public-port <n>` | none | With `--user-auth`: add the public exchange face on this loopback port, for an HTTPS reverse proxy to forward to |
 | `--exchange-public-url <https://…>` | none | With `--exchange-public-port`: advertise the reverse proxy's HTTPS URL in discovery |
@@ -667,7 +667,12 @@ whole-stack failure shows that sentence as its native detail.
 
 A fresh prepared static-auth, open or plain-loopback user-auth root starts through the service
 controller. It records its mode, definitions and full instance IDs in the private
-`.cotal/stack-controller.json` journal. Static-auth startup prepares trust and configuration, starts
+`.cotal/stack-controller.json` journal. The root keeps the mode its first `up` recorded: a later `--open` or
+`--user-auth` that names another mode refuses `CONFLICT`, exit 2, whether the stack runs or not.
+`reset store`, `reset space`, `clean all` and `space forget` all keep the journal, so none of them
+changes the mode. To run another mode, run `cotal space create <space>` in another folder, then
+`cotal up --open` or `cotal up --user-auth` there.
+Static-auth startup prepares trust and configuration, starts
 the broker, initializes native streams, then starts delivery and the optional manager. Open startup
 prepares an unauthenticated broker and streams, then the optional manager; it creates no delivery
 service or credential. Each member reports its own readiness; the result does not prove agent or
@@ -1510,7 +1515,8 @@ cotal reset space <space> [--dry-run] [-y|--yes] [--json|--plain]
 Both routes select a space this machine started. A space with a locally started registration is
 selected by it. A controller stack that a completed `down` stopped has no registration; its
 prepared record and stack journal at the same root name its broker address, store and mode, and a
-reset keeps both, so a later `up` starts it again. A stack none of whose members ever started has
+reset keeps both, so a later `up` starts it again in the same mode. No reset changes a stack's mode;
+[up](#up) names the way to run another one. A stack none of whose members ever started has
 no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. A stack whose last
 operation is not a completed `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each
 refusal names one reason and the command that clears it. A space that may still run names

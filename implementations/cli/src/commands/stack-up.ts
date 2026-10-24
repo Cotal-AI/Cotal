@@ -152,6 +152,16 @@ function holdsBrokerAccount(root: string): boolean {
   return inventory.spaces.length > 0 || inventory.corrupt.length > 0;
 }
 
+const MODE_NAME: Record<StackMode, string> = { auth: "static auth", open: "open", user: "user auth" };
+
+/** The next step when an explicit mode is not the one a root's first whole-stack `up` recorded.
+ *  Nothing converts a root's mode: `reset`, `clean` and `space forget` keep the stack journal that
+ *  records it. So the step keeps that mode, or starts the requested one in another folder. */
+function pinnedModeRemedy(recorded: StackMode, requested: StackMode): string {
+  const flag = requested === "open" ? " --open" : requested === "user" ? " --user-auth" : "";
+  return `run bare cotal up to keep ${MODE_NAME[recorded]} here, or for ${MODE_NAME[requested]} run cotal space create <space>, then cotal up${flag}, in another folder`;
+}
+
 /** The mode an invocation explicitly asks for, or none for a bare `up`. */
 export function requestedStackMode(values: ParsedArgs["values"]): StackMode | undefined {
   return values["user-auth"] === true ? "user" : values.open === true ? "open" : undefined;
@@ -171,7 +181,7 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   if (recorded) {
     const unsupported = CONTROLLER_UNSUPPORTED.filter((name) => name !== "rotate-sys" && unsupportedNow(name));
     if (unsupported.length) throw new CommandFailure("refused", "UNSUPPORTED", "this root's stack is owned by the service controller; the requested startup option has no controller-owned route and was not applied through the legacy launcher", { target: { root: canonical, options: unsupported } });
-    if (requested !== undefined && requested !== recorded.journal.mode) throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is pinned to ${recorded.journal.mode === "open" ? "open" : recorded.journal.mode === "user" ? "user auth" : "static auth"}; the requested mode does not convert it`, { target: { root: canonical, recorded: recorded.journal.mode, requested }, remedy: "run bare cotal up to keep the recorded mode" });
+    if (requested !== undefined && requested !== recorded.journal.mode) throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is pinned to ${MODE_NAME[recorded.journal.mode]}; the requested mode does not convert it`, { target: { root: canonical, recorded: recorded.journal.mode, requested }, remedy: pinnedModeRemedy(recorded.journal.mode, requested) });
     if (values.idp !== undefined && recorded.journal.mode !== "user") throw new CommandFailure("refused", "USAGE_INVALID", "--idp belongs to a user-auth stack", { target: { root: canonical } });
     return true;
   }
@@ -405,7 +415,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // The mode is pinned by the first whole-stack up. A conflicting explicit request refuses here,
   // before any preflight write, preparation or launch.
   if (previous && request.mode !== undefined && request.mode !== previous.journal.mode)
-    throw new CommandFailure("refused", "CONFLICT", "this root's controller stack is pinned to another auth mode; a running or stopped stack is not converted", { target: { root, space, recorded: previous.journal.mode, requested: request.mode }, remedy: "run bare cotal up to keep the recorded mode" });
+    throw new CommandFailure("refused", "CONFLICT", "this root's controller stack is pinned to another auth mode; a running or stopped stack is not converted", { target: { root, space, recorded: previous.journal.mode, requested: request.mode }, remedy: pinnedModeRemedy(previous.journal.mode, request.mode) });
   const mode: StackMode = previous?.journal.mode ?? request.mode ?? "auth";
   if (mode === "open" && holdsBrokerAccount(root))
     throw new CommandFailure("refused", "CONFLICT", "this root holds a broker account; an open stack does not bypass its recorded authorization", { target: { root, space } });
