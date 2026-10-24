@@ -167,8 +167,10 @@ one JSON document on stdout. Most commands have one, among them `cotal status`, 
 | `error` | Present when the outcome is not `ok` or `no-op`: `{code, message, remedy, cause}`. `remedy` is the step to take, present when the refusal names one, and the text report prints it under Next. `cause` keeps an endpoint's own code, outcome and safe detail |
 | `changed` | What a command that did not succeed changed anyway |
 
-Diagnostics stay on stderr. A usage error under `--json` is a `refused` envelope with code
-`USAGE_INVALID`, and the help it names stays off stdout. A word that names none of a command's
+Diagnostics stay on stderr. A command that refuses or fails under `--json` reports it with the
+envelope alone and writes no text report on stderr. The text report goes to stderr only when the
+envelope cannot be written to stdout, and the exit code is the same either way. A usage error under
+`--json` is a `refused` envelope with code `USAGE_INVALID`, and the help it names stays off stdout. A word that names none of a command's
 subcommands and is near none of them is a usage error that lists the subcommands the command takes.
 A command without a JSON output refuses `--json` as an unknown option.
 

@@ -127,6 +127,16 @@ Code of your own that reads `managerInstanceId` from an exchange response reads 
 
 Read the instance from the bearer's `act.managerInstanceId` claim.
 
+## JSON refusals after 0.100.2
+
+Under `--json`, a command that refuses or fails writes its envelope on stdout and nothing on stderr.
+Before, it also printed the text report on stderr. The envelope and the exit code are unchanged, and
+nothing on a running mesh changes.
+
+- A script that read the refusal from stderr reads `error.message` and `error.remedy` from the
+  envelope.
+- The text report still goes to stderr when the envelope cannot be written to stdout.
+
 ## Endpoint caller files after 0.99.0
 
 `cotal auth mint <name> --endpoint <class> --out <file>` from 0.91.0 through 0.99.0 recorded the

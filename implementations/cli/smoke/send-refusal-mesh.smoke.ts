@@ -78,7 +78,7 @@ try {
   const json = run(["send", "-t", absent, "hello", "--space", space, "--json"]);
   check("json: the refusal envelope is TARGET_NOT_FOUND", json.status === 2 && json.envelope?.outcome === "refused" && json.envelope.error?.code === "TARGET_NOT_FOUND", shown(json));
   check("json: the envelope target carries the resolved space and the name", json.envelope?.target?.space === space && json.envelope.target.name === absent, json.envelope?.target);
-  check("json: stderr still has the human report with the Mesh line", firstLine(json.stderr) === `Mesh: ${space}`, shown(json));
+  check("json: the envelope alone reports the refusal, with nothing on stderr", json.stderr === "", shown(json));
   check("json: the remedy names who to list", json.envelope?.error?.remedy?.includes(`cotal who --all --space ${space}`) === true, json.envelope?.error);
 
   const mention = run(["send", "-c", "general", "--mention", absent, "hello", "--space", space, "--json"]);

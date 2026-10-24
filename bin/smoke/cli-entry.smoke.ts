@@ -256,8 +256,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const colored = cotal(["version", "--json"], undefined, { FORCE_COLOR: "1" });
   check("forced color never reaches the envelope", colored.stdout === json.stdout, shown(colored));
 
+  // Under --json the envelope alone reports a refusal: its message is the reason, and stderr stays empty.
+  const refusedJson = (name: string, r: Run, reason: RegExp) =>
+    check(name, r.status === 1 && r.stderr === "" && reason.test(envelopes(r)[0]?.error?.message ?? "") && r.wrote.length === 0, shown(r));
   const bogus = cotal(["version", "--json", "--bogus"]);
-  refused("a usage error under --json is refused", bogus, /Unknown option '--bogus'/);
+  refusedJson("a usage error under --json is refused", bogus, /Unknown option '--bogus'/);
   const [refusal] = envelopes(bogus);
   check(
     "a usage error under --json is one USAGE_INVALID envelope naming the help to read",
@@ -265,7 +268,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     shown(bogus),
   );
   const extra = cotal(["version", "-j", "extra"]);
-  refused("an unexpected argument under -j is refused", extra, /Unexpected argument 'extra'/);
+  refusedJson("an unexpected argument under -j is refused", extra, /Unexpected argument 'extra'/);
   check("an unexpected argument under -j is a USAGE_INVALID envelope", envelopes(extra)[0]?.error?.code === "USAGE_INVALID", shown(extra));
   // `--replay` takes no value, so `--replay off` used to be refused as a second channel name.
   const replayOff = cotal(["channel", "set", "general", "--replay", "off", "--json"]);

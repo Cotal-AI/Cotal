@@ -58,7 +58,9 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 const bare = kernel("scoped", "--json", "--record", "s9", "--fail", "bare");
 check("a target-less refusal after the record is refused, exit 2", bare.status === 2 && bare.envelope?.error?.code === "TARGET_NOT_FOUND", shown(bare));
 check("its envelope target is the recorded space", same(bare.envelope?.target, { space: "s9" }), bare.envelope?.target);
-check("its report begins with Mesh: <space>", bare.first === "Mesh: s9", shown(bare));
+check("under --json the envelope alone reports it, with nothing on stderr", bare.stderr === "", shown(bare));
+const bareText = kernel("scoped", "--record", "s9", "--fail", "bare");
+check("its report begins with Mesh: <space>", bareText.status === 2 && bareText.first === "Mesh: s9", shown(bareText));
 
 const plain = kernel("scoped", "--plain", "--record", "s9", "--fail", "bare");
 check("the plain report begins with Mesh: <space>", plain.status === 2 && plain.first === "Mesh: s9", shown(plain));
@@ -67,13 +69,16 @@ const named = kernel("scoped", "--json", "--record", "s9", "--fail", "named");
 check("a target without a space keeps its fields and gains the space", same(named.envelope?.target, { space: "s9", name: "x" }), named.envelope?.target);
 
 const own = kernel("scoped", "--json", "--record", "s9", "--fail", "own");
-check("a target that names its own space is kept", same(own.envelope?.target, { space: "other" }) && own.first === "Mesh: other", shown(own));
+const ownText = kernel("scoped", "--record", "s9", "--fail", "own");
+check("a target that names its own space is kept", same(own.envelope?.target, { space: "other" }) && ownText.first === "Mesh: other", shown(ownText));
 
 const none = kernel("scoped", "--json", "--record", "s9", "--fail", "none");
-check("a target whose space is null is kept, with no Mesh line", same(none.envelope?.target, { space: null }) && !none.stderr.includes("Mesh:"), shown(none));
+const noneText = kernel("scoped", "--record", "s9", "--fail", "none");
+check("a target whose space is null is kept, with no Mesh line", same(none.envelope?.target, { space: null }) && noneText.status === 2 && !noneText.stderr.includes("Mesh:"), shown(noneText));
 
 const unrecorded = kernel("scoped", "--json", "--fail", "bare");
-check("control: without a record the refusal has no target and no Mesh line", unrecorded.status === 2 && unrecorded.envelope?.target === null && !unrecorded.stderr.includes("Mesh:"), shown(unrecorded));
+const unrecordedText = kernel("scoped", "--fail", "bare");
+check("control: without a record the refusal has no target and no Mesh line", unrecorded.status === 2 && unrecorded.envelope?.target === null && unrecordedText.status === 2 && !unrecordedText.stderr.includes("Mesh:"), shown(unrecordedText));
 
 const unknown = kernel("scoped", "--json", "--record", "s9", "--fail", "plain");
 check("an unclassified failure after the record is OPERATION_UNKNOWN in that space", unknown.status === 3 && unknown.envelope?.error?.code === "OPERATION_UNKNOWN" && same(unknown.envelope.target, { space: "s9" }), shown(unknown));
