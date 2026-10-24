@@ -340,7 +340,7 @@ try {
     const status = cli(moved, "status", "--space", space, "--json");
     renameSync(moved, root);
     check("stopped and moved, up, send and history there all name moving the folder back", routes.every((r) => r.status === 2 && r.env?.error?.remedy === way), routes.map(shown));
-    check("status --space there names the same step", String((status.env?.result?.selected as { message?: string } | undefined)?.message ?? "").endsWith(way), shown(status));
+    check("status --space there names the same step", ((status.env?.result?.hints as string[] | undefined) ?? []).includes(way), shown(status));
   }
 
   // 3b. A first up refused at a port another program holds pins nothing.
