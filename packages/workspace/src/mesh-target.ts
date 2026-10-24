@@ -463,13 +463,15 @@ export function retainedLegacyBroker(root: string): { server: string; open: bool
   return server ? { server, open: true } : undefined;
 }
 
-/** The selection is the target from every folder. Inside a project whose root has registered spaces
- *  and none of them is the selection, say so before the command acts, with the `--space` that
- *  targets this folder's space instead. */
+/** The selection is the target from every folder. Inside a project whose root has registered spaces,
+ *  or a space prepared there and not started yet, and none of them is the selection, say so before
+ *  the command acts, with the `--space` that targets this folder's space instead. */
 function noteSelectionOutsideFolder(cwd: string, current: string, meshes: readonly MeshEntry[]): void {
   const root = findCotalRoot(cwd);
   if (!isGenuineSpace(root)) return;
-  const here = meshes.filter((m) => canonicalRoot(m.root) === canonicalRoot(root)).map((m) => m.space);
+  const registered = meshes.filter((m) => canonicalRoot(m.root) === canonicalRoot(root)).map((m) => m.space);
+  const prepared = preparedSpaceAt(root)?.space;
+  const here = prepared === undefined || registered.includes(prepared) ? registered : [...registered, prepared];
   if (here.length === 0 || here.includes(current)) return;
   const folder = here.length === 1 ? `this folder's space "${here[0]}"` : `this folder's spaces ${here.map((s) => `"${s}"`).join(", ")}`;
   recordOperationWarning({

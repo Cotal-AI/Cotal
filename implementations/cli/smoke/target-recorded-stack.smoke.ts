@@ -42,7 +42,7 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   target: { space?: string | null } | null;
-  result: { selected?: { resolved: boolean; code?: string; message?: string } } | null;
+  result: { selected?: { resolved: boolean; code?: string; message?: string }; hints?: string[] } | null;
   error?: { code: string; message: string; remedy?: string };
   warnings?: { code: string; message: string }[];
 }
@@ -137,7 +137,7 @@ renameSync(moved, root);
 check("up in a moved folder whose space this machine does not record refuses CONFLICT and names only --adopt",
   movedUp.status === 2 && movedUp.envelope?.error?.code === "CONFLICT" && (movedUp.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && movedUp.envelope.error.remedy === adoptOnly, shown(movedUp));
 check("status and whoami there name the same next step",
-  (movedStatus.envelope?.result?.selected?.message ?? "").endsWith(adoptOnly) && movedWho.status === 2 && movedWho.envelope?.error?.remedy === adoptOnly, { status: shown(movedStatus), whoami: shown(movedWho) });
+  (movedStatus.envelope?.result?.hints ?? []).includes(adoptOnly) && movedWho.status === 2 && movedWho.envelope?.error?.remedy === adoptOnly, { status: shown(movedStatus), whoami: shown(movedWho) });
 check("with empty folders at the old path it is still moved, and names the same step",
   recreatedUp.status === 2 && (recreatedUp.envelope?.error?.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && recreatedUp.envelope?.error?.remedy === adoptOnly, shown(recreatedUp));
 // With la07 prepared at the old path, moving back starts it again; adopting it here needs a forget first.
@@ -155,7 +155,7 @@ check("with empty folders at the old path it is still moved, and names the same 
   check("up, down, whoami and whoami --space there all name moving back, or forgetting and adopting",
     routes.every((r) => r.status === 2 && r.envelope?.error?.remedy === back), routes.map(shown));
   check("status --space there says the folder was moved and names the same step",
-    (status.envelope?.result?.selected?.message ?? "") === `"la07" is prepared in ${root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there - ${back}`, shown(status));
+    (status.envelope?.result?.selected?.message ?? "") === `"la07" is prepared in ${root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there` && (status.envelope?.result?.hints ?? []).includes(back), shown(status));
   check("with empty folders at the old path, up says to move them aside first",
     recreated.status === 2 && recreated.envelope?.error?.remedy === `move what is now at ${root} aside, such as empty folders a running broker created there, then move this folder back to ${root} and run the command again there; ${adopt}`, shown(recreated));
   check("rig: forget la07", run(["space", "forget", "la07", "--json"]).status === 0);
@@ -217,7 +217,7 @@ rmSync(linked, { recursive: true, force: true });
     plain.status === 2 && plain.envelope?.error?.code === "CONFLICT" && plain.envelope.error.remedy === `adopt it with ${command}`, shown(plain));
   const status = run(["status", "--json"], brought), up = run(["up", "--json"], brought);
   check("status there names the same step as up, which adopts it",
-    up.status === 2 && (up.envelope?.error?.remedy ?? "").startsWith(`adopt it with ${command};`) && (status.envelope?.result?.selected?.message ?? "").endsWith(up.envelope?.error?.remedy ?? "-"), { status: shown(status), up: shown(up) });
+    up.status === 2 && (up.envelope?.error?.remedy ?? "").startsWith(`adopt it with ${command};`) && (status.envelope?.result?.hints ?? []).includes(up.envelope?.error?.remedy ?? "-"), { status: shown(status), up: shown(up) });
   const adopted = run(["space", "create", "la07", "--adopt", "--json"], brought);
   const journal = JSON.parse(readFileSync(path, "utf8")) as { root: string; space: string; server: string; broker?: { storeDir: string }; members: { instanceId: string | null; state: string }[] };
   renameSync(away, root);

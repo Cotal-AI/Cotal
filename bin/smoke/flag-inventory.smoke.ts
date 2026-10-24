@@ -118,7 +118,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   doctor: { flags: ["fix:boolean", "json:boolean:j", "plain:boolean", "space:string"], positionals: true },
   // `who` and `whoami` (2026-10): the roster and the CLI's own identity, on the structured output contract.
   who: { flags: [...TARGET, "all:boolean", "waiting:boolean", "json:boolean:j", "plain:boolean"], positionals: false },
-  whoami: { flags: ["space:string:s", "server:string", "json:boolean:j", "plain:boolean"], positionals: false },
+  whoami: { flags: ["space:string:s", "server:string", "creds:string", "json:boolean:j", "plain:boolean"], positionals: false },
   // Stage 2a: spawn absorbs the detached mode: the full launch grammar (launchFlags) + --detach,
   // and gains --model/--cwd (parity) + --creds (control-caller, --detach only, guarded in run).
   // The shared short forms are -n/-m/-C/-p/-H. `--harness` picks the application, `--foreground`
