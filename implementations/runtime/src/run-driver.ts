@@ -95,6 +95,7 @@ interface HostedEngineRequest {
     readonly file?: string;
     readonly effectCeiling?: number;
     readonly stepBudget?: number;
+    readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => void;
   };
 }
 
@@ -121,6 +122,7 @@ const hostedEngineRun = (r: HostedEngineRequest): Promise<RunResult> =>
     ...(r.options.seed !== undefined ? { seed: r.options.seed } : {}),
     ...(r.options.effectCeiling !== undefined ? { effectCeiling: r.options.effectCeiling } : {}),
     ...(r.options.stepBudget !== undefined ? { stepBudget: r.options.stepBudget } : {}),
+    ...(r.options.onLog !== undefined ? { onLog: r.options.onLog } : {}),
   });
 
 /**
@@ -303,6 +305,8 @@ export interface DriveRequest {
   readonly workExpiry?: number;
   /** An operator's pause, honoured at the next effect boundary. */
   readonly pause?: PauseToken;
+  /** Where the program's `log(...)` lines go. They are not journalled. */
+  readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => void;
   /** Root cancellation established by the hosting manager after observing its durable marker. */
   readonly cancellation?: RootCancellationSource;
   /** Shared host observation for classifying a revoked channel effect before root signalling. */
@@ -648,6 +652,7 @@ async function drive(
     ...(req.file !== undefined ? { file: req.file } : {}),
     ...(req.effectCeiling !== undefined ? { effectCeiling: req.effectCeiling } : {}),
     ...(req.stepBudget !== undefined ? { stepBudget: req.stepBudget } : {}),
+    ...(req.onLog !== undefined ? { onLog: req.onLog } : {}),
   };
 
   // The spec is created AFTER the activation, not before: until this driver holds the run it has

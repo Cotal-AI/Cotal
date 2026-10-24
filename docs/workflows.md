@@ -278,6 +278,12 @@ refuses an amend. So does a step whose answer was just accepted and is not in th
 yet, and that refusal says so. The manager records the amender from the credential, as for an answer, and a
 spawned seat may amend only an answer recorded under its own name.
 
+A program's `log(...)` lines are not journalled, so `journal` and `show` do not print them. A run
+the manager hosts writes each line to the manager's log as `run <run-id>: log <text>`, which
+`cotal service logs stack-manager --space <space>` reads. A run driven with `--local` prints them in
+that terminal, and `run simulate` lists them under `Log`. A resumed run replays its program, so it
+writes the lines before the resume point again.
+
 ```bash
 cotal run start --file build.cotal.js                   # the manager starts it; the minted id is printed
 cotal run ps                                            # list run records: state, holder, lineage

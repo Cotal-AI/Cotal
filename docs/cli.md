@@ -6125,6 +6125,10 @@ journal row. The view says so under `Failure` and names
 `cotal service logs stack-manager --space <space>`, because a hosted run's cause is in its manager's log.
 The failure records no line or column in the program: a source position belongs to a problem
 `run validate` reports before the program runs.
+A program's `log(...)` lines are not journalled, so `show` and `journal` do not print them. A hosted
+run writes each line to its manager's log as `run <run-id>: log <text>`, which
+`cotal service logs stack-manager --space <space>` reads, and a resumed run writes the lines before
+its resume point again. `--local` prints them in the terminal that drives the run.
 `--json` on `ps` or `journal` writes one envelope on stdout, as other commands do, and nothing on
 stderr, whether the manager answers or `--local` reads. `ps` lists its rows under `result.items`.
 `journal` puts the run under `result.view`: its `runId`, `endpoint`, recorded `spec` and `status`,
@@ -6454,8 +6458,9 @@ moves the virtual clock forward.
 | `clock` | `{start, turn, ask, checkpoint, wait}`: the start time in milliseconds and how long each effect takes, such as `"5m"`. A turn takes 5 minutes and the others 1 minute unless set |
 | `faults` | `[{at, kind, code, message}]`: the step at `at`, a step key such as `turn:build#1`, fails with that error |
 
-A step with no entry, or a list shorter than the step's occurrences, stops the simulation with
-L6001 and exit 5. The failure names the table, the step's name and its step key, and the remedy
+The simulation's `log(...)` lines print under `Log`, and `--json` carries them in `result.log`, each
+with its `scope` and `values`. A step with no entry, or a list shorter than the step's occurrences,
+stops the simulation with L6001 and exit 5. The failure names the table, the step's name and its step key, and the remedy
 names the entry to add. A failure in the program itself names its code and cause.
 
 Inside a manager-launched static or open seat, `run turns` reads that seat's assigned turns and

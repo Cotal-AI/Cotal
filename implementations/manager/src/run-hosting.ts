@@ -1153,6 +1153,8 @@ export class RunHosting {
           : undefined,
         // The broker's own max_payload, minus headroom for the record envelope around the entry.
         ...(typeof max === "number" && max > 4096 ? { resultBytes: max - 4096 } : {}),
+        // The program's log lines are not journalled; this process's log is where they are read.
+        onLog: (text) => this.ctx.log(`run ${req.runId}: log ${text}`),
       }, mediator);
     } catch (error) {
       await nc.close();
