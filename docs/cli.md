@@ -6025,8 +6025,11 @@ the file, and the reset removes the space's store with its history. An expired l
 its guidance names that same `--replace`, next to the managed renewal that re-signs an agent a
 manager runs. An agent file whose key was revoked is a finding in state `revoked`, with
 `result.items[].revokedAt`, however far off its expiry is. A revoked key is not signed again, so
-for a label's file the guidance names `--replace` with the file's read and post channels and role,
-and for any other agent file it names stopping the agent that uses it.
+for a label's file the guidance names `--replace`, and for any other agent file it names stopping
+the agent that uses it. Each `--replace` this guidance names, for an unbounded, expired or revoked
+file, carries the file's read and post channels and its role as `--allow-subscribe`,
+`--allow-publish` and `--role`, since the replacement is a new key, which holds only the grants its
+mint names.
 
 Each file `auth mint --out` wrote for the space from this root and that is still there is listed
 under Exported credential files, and in `result.exported`, with its state and expiry. These rows

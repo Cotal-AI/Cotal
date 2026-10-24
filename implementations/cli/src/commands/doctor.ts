@@ -49,6 +49,7 @@ import {
   recordOperationSpace,
   agentGrants,
   grantMintFlags,
+  type AgentGrants,
 } from "@cotal-ai/workspace";
 import { displayCmd } from "../lib/self-exec.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
@@ -368,30 +369,29 @@ function missingReport(label: string, kind: CredentialKind, path: string, sysPub
 type AgentFileRole = "current" | "superseded" | "sole";
 interface LocalCredentialFamily { role: AgentFileRole }
 
-function agentRepair(path: string, family?: LocalCredentialFamily, space?: string): string {
+function agentRepair(path: string, family?: LocalCredentialFamily, space?: string, grants?: AgentGrants): string {
   if (family?.role === "superseded") return `an older local incarnation file exists at ${path}; inspect its exact lifecycle and owner before removing it. File ordering alone proves no live successor. Do not respawn an agent from this finding`;
-  const replace = standingReplace(path, space);
+  const replace = standingReplace(path, space, grants);
   if (replace) return `if a manager runs this agent, inspect this original lifecycle under it; supported managed renewal can re-sign the same nkey without a replacement. If \`${displayCmd()} auth mint\` wrote it, replace it with ${replace}. Do not spawn another agent only because a local file expired`;
   return `inspect this original lifecycle under its manager; supported managed renewal can re-sign the same nkey without a replacement. Do not spawn another agent only because a local file expired`;
 }
 
-/** The `auth mint --replace` that replaces a standing `<label>.creds`, with the lifetime it gets. An
- *  incarnation file, `<alias>.<lifecycleUid>.creds`, is no label's standing credential. */
-function standingReplace(path: string, space?: string): string | undefined {
+/** The `auth mint --replace` that replaces a standing `<label>.creds`, with the lifetime it gets. It
+ *  mints a new key, which holds only the grants its mint names, so it names the ones the file holds.
+ *  An incarnation file, `<alias>.<lifecycleUid>.creds`, is no label's standing credential. */
+function standingReplace(path: string, space?: string, grants?: AgentGrants): string | undefined {
   const label = basename(path);
   if (space === undefined || !label.endsWith(".creds") || incarnationUidOf(label) !== undefined) return undefined;
-  return `\`${displayCmd()} auth mint ${aliasOf(label)} --replace --space ${space}\`, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time`;
+  return `\`${displayCmd()} auth mint ${aliasOf(label)} --replace --space ${space}${grants ? grantMintFlags(grants) : ""}\`, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time`;
 }
 
 /** The repair for an agent file whose key was revoked. A revoked key is never signed again, so a
  *  label's standing file is replaced under a new key that holds the grants this one did, and any
  *  other agent file belongs to an agent to stop. */
-function revokedAgentRepair(path: string, claims: ReturnType<typeof credsClaims>, space?: string): string {
-  const label = basename(path);
-  if (space === undefined || !label.endsWith(".creds") || incarnationUidOf(label) !== undefined)
-    return "a revoked key is not signed again; stop or despawn the agent that uses this file";
-  const grants = claims.name === "agent" ? agentGrants(claims.nats ?? {}, space) : undefined;
-  return `a revoked key is not signed again, so replace it with a new key${grants ? " that holds the grants this file holds" : ""}: \`${displayCmd()} auth mint ${aliasOf(label)} --replace --space ${space}${grants ? grantMintFlags(grants) : ""}\`, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time`;
+function revokedAgentRepair(path: string, space?: string, grants?: AgentGrants): string {
+  const replace = standingReplace(path, space, grants);
+  if (!replace) return "a revoked key is not signed again; stop or despawn the agent that uses this file";
+  return `a revoked key is not signed again, so replace it with a new key${grants ? " that holds the grants this file holds" : ""}: ${replace}`;
 }
 
 function agentUnrenewableRepair(): string {
@@ -402,9 +402,9 @@ function agentUnrenewableRepair(): string {
  *  with everything the space issued, and a bounded replacement ends it. A label's standing file is
  *  replaced with `auth mint --replace`, which also drops its no-expiry record; any other file, and
  *  the record beside it, are removed first. */
-function agentUnboundedRepair(path: string, space: string, record?: string): string {
+function agentUnboundedRepair(path: string, space: string, record?: string, grants?: AgentGrants): string {
   const cmd = displayCmd();
-  const replace = standingReplace(path, space);
+  const replace = standingReplace(path, space, grants);
   const bound = replace ? `stop what uses it, then replace it with ${replace}` : `stop what uses it, remove ${path}${record ? ` and ${record}` : ""} and mint a replacement without --no-expiry, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time`;
   return `native renewal skips unbounded material. Revoke it and keep the store: \`${cmd} down\`, \`${cmd} auth revoke-credential ${path} --yes\`, then \`${cmd} up\`. Or bound it: ${bound}; a copy made before stays valid until it is revoked. To retire every credential the space issued, rotate the space identity: \`${cmd} down\`, \`${cmd} reset space ${space}\`, then \`${cmd} up\`; the reset also removes the space's store, with its ${storeContentsText(STORE_CONTENTS)}. This diagnosis does not prove the agent is stopped or authorize a blind respawn`;
 }
@@ -537,12 +537,16 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
     health = { state: "unreadable", error: "protected credential could not be read or parsed" };
   }
   const r: CredReport = { label, kind, path, health, unparsable };
+  // An agent file's own claims: its grants, which a replacement under a new key holds only if its
+  // mint names them, and its key, which a revocation names.
+  const claims = kind === "agent" && health.state !== "unreadable" && bytes ? credsClaims(bytes.toString("utf8")) : undefined;
+  const grants = claims?.name === "agent" && space !== undefined ? agentGrants(claims.nats ?? {}, space) : undefined;
   const policy = credentialLifetime(kind);
   const standing = policy.class === "standing-renewable" || policy.class === "rotation-renewed";
   const repair = isRemintable(kind)
     ? `${displayCmd()} doctor auth --fix   (or start the mesh's manager - it is the renewal owner and re-signs + reloads these every half-TTL)`
     : kind === "agent"
-      ? agentRepair(path, live, space)
+      ? agentRepair(path, live, space, grants)
       : systemRotationRepair();
   // A $SYS cred is only usable if the system account that SIGNED it is the one the broker loads,
   // i.e. the one in this root's trust record. Expiry alone cannot see a RETIRED issuer: a rotation
@@ -558,13 +562,12 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
   }
   // The broker refuses a key the space's account revoked, so a file signed for it before then is dead
   // however far off its expiry is, and nothing signs that key again.
-  if (kind === "agent" && live?.role !== "superseded" && health.state !== "unreadable" && bytes) {
-    const claims = credsClaims(bytes.toString("utf8"));
+  if (claims && live?.role !== "superseded") {
     const revokedAt = claims.sub === undefined ? undefined : revocations[claims.sub];
     if (revokedAt !== undefined && (claims.iat === undefined || claims.iat <= revokedAt)) {
       r.revokedAt = revokedAt;
       r.problem = `REVOKED - its key ${claims.sub} was revoked at ${at(revokedAt)} with auth revoke-credential, so the broker refuses this credential`;
-      r.repair = revokedAgentRepair(path, claims, space);
+      r.repair = revokedAgentRepair(path, space, grants);
       return r;
     }
   }
@@ -602,7 +605,7 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
       const requestedAt = kind === "agent" && live?.role !== "superseded" && space !== undefined && bytes ? noExpiryRequestedAt(path, bytes) : undefined;
       if (requestedAt !== undefined) {
         r.warning = `unbounded by request (auth mint --no-expiry, recorded ${requestedAt}) - a copy stays valid until it is revoked or the space identity rotates`;
-        r.repair = agentUnboundedRepair(path, space!, noExpiryRecordPath(path));
+        r.repair = agentUnboundedRepair(path, space!, noExpiryRecordPath(path), grants);
         break;
       }
       // A credential with no expiry claim stays valid until its signer rotates, whatever its kind,
@@ -610,7 +613,7 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
       r.problem = standing
         ? "unbounded standing credential (minted before the renewal slice) - a copied cred never dies"
         : "unbounded credential (no expiry claim) - a copy stays valid until it is revoked or the space identity rotates";
-      r.repair = kind === "agent" && live?.role !== "superseded" && space !== undefined ? agentUnboundedRepair(path, space) : repair;
+      r.repair = kind === "agent" && live?.role !== "superseded" && space !== undefined ? agentUnboundedRepair(path, space, undefined, grants) : repair;
       break;
     }
   }
