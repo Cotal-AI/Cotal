@@ -23,7 +23,7 @@
  *    is gone.
  *
  * It also checks the Commands table in docs/cli.md against the registry: one row per command
- * `cotal help --all` lists, under the section help lists it in.
+ * `cotal help --all` lists, under the section help lists it in, linked to a heading of that page.
  *
  * Run: pnpm smoke:flag-inventory
  */
@@ -503,9 +503,19 @@ const helpAll = registry.all<Command>("command").filter((cmd) => !cmd.name.start
 const doc = readFileSync(new URL("../../docs/cli.md", import.meta.url), "utf8");
 const tableStart = doc.indexOf("\n## Commands\n");
 const table = doc.slice(tableStart, doc.indexOf("\n## ", tableStart + 1));
-const rows = [...table.matchAll(/^\| ([^|]+?) \| \[`([^`]+)`\]\(#[^)]+\) \|/gm)].map((match) => ({ section: match[1]!, name: match[2]! }));
+const rows = [...table.matchAll(/^\| ([^|]+?) \| \[`([^`]+)`\]\(#([^)]+)\) \|/gm)].map((match) => ({ section: match[1]!, name: match[2]!, anchor: match[3]! }));
 assert.deepEqual(rows.map((row) => row.name).sort(), helpAll.map((cmd) => cmd.name).sort(), "the docs Commands table has one row per command help --all lists");
 for (const row of rows) assert.equal(row.section, helpAll.find((cmd) => cmd.name === row.name)?.group ?? "Commands", `the docs Commands table puts \`${row.name}\` under its help section`);
+// Each row links a heading of the page, slugged as GitHub and the docs site slug it: a repeated
+// heading takes `-1`, `-2` and so on.
+const headings = new Set<string>(), seen = new Map<string, number>();
+for (const [, text] of doc.replace(/^```[\s\S]*?^```/gm, "").matchAll(/^#{1,6} (.+)$/gm)) {
+  const slug = text!.trim().toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, "").replace(/\s/g, "-");
+  const n = seen.get(slug) ?? 0;
+  seen.set(slug, n + 1);
+  headings.add(n ? `${slug}-${n}` : slug);
+}
+for (const row of rows) assert.ok(headings.has(row.anchor), `the docs Commands table links \`${row.name}\` to #${row.anchor}, a heading of docs/cli.md`);
 // Help: every listed command's usage and every listed subcommand's starts with its whole `cotal …`
 // path, and a subcommand of a command with flags names its own, so `help channel set` neither drops
 // the channel name nor offers `--purge`.
