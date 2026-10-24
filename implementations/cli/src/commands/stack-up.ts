@@ -299,6 +299,8 @@ function stackListeners(journal: StackJournal): StackListener[] | null {
     listeners.push(...found);
   }
   return listeners;
+}
+
 /** The selection a start finds: one that names a registered or prepared space, else none. */
 function usableSelection(): string | undefined {
   const current = getCurrent();
