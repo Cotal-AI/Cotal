@@ -1515,20 +1515,28 @@ export function cotalToolSpecs(
       name: "cotal_despawn",
       title: "Cotal: stop a teammate",
       description:
-        "Ask the manager to tear a teammate down: it leaves the mesh and its process/tab is closed. Graceful by default (the session exits cleanly first); pass graceful:false for a hard, immediate kill. The inverse of cotal_spawn. Omit `name` to stop yourself (self-despawn): the manager resolves the target as your own managed entry, so it can only ever stop you, never a peer.",
+        "Ask the manager to tear a teammate down: it leaves the mesh and its process/tab is closed. Graceful by default (the session exits cleanly first); pass graceful:false for a hard, immediate kill. The inverse of cotal_spawn. Omit `name` to stop yourself (self-despawn): the manager resolves the target as your own managed entry, so it can only ever stop you, never a peer. In a multi-manager space, pass `instance` to name the manager that runs the peer.",
       schema: {
         name: z
           .string()
           .optional()
           .describe("Name of the peer to stop. Omit to stop yourself (self-despawn)."),
+        instance: z
+          .string()
+          .refine((value) => {
+            try { assertLifecycleToken(value, "instance"); return true; }
+            catch { return false; }
+          }, "instance must be a lifecycle token ([a-z0-9]{26,32})")
+          .optional()
+          .describe("Optional manager instance id for the named peer. Requires `name`. Omitted keeps this session's existing manager selection. A managed user-auth seat must use its own manager. An unresolved pin is refused without fallback."),
         graceful: z
           .boolean()
           .optional()
           .describe("Default true: let the session exit cleanly. false = hard kill."),
       },
-      async run(agent, _config, { name, graceful }: { name?: string; graceful?: boolean }) {
+      async run(agent, _config, { name, instance, graceful }: { name?: string; instance?: string; graceful?: boolean }) {
         try {
-          const reply = await agent.despawn(name, { graceful });
+          const reply = await agent.despawn(name, { graceful, instance });
           if (!reply.ok) {
             return err(`Couldn't despawn ${name ?? "self"}: ${reply.error ?? "manager refused"}`);
           }
