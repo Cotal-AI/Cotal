@@ -47,6 +47,9 @@
  *     it. `status` says the space was deleted under the running stack and leads its Next with
  *     `cotal down --yes`, then `cotal up`; history, send and `run ps` refuse with that cause and
  *     remedy. `down --yes` and `up` give the space its streams back.
+ * 12. Reset targets with nothing to reset. `reset store` and `reset space` of a name no space has
+ *     refuse TARGET_NOT_FOUND saying so, naming `cotal space` first. Of a prepared space no stack
+ *     has run for, they refuse TARGET_NOT_FOUND naming its root, `cotal up` and `cotal space forget`.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:space-teardown:live
  */
@@ -532,6 +535,23 @@ try {
     check("down --yes, then up, gives the space its streams back", stopped.status === 0 && restarted.status === 0 && sent.status === 0, { down: shown(stopped), up: shown(restarted), send: shown(sent) });
     const last = cli(root, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
+  }
+
+  // 12. A mistyped name and a prepared space no stack ran for have nothing to reset.
+  {
+    const space = "tear12";
+    const root = folder(space);
+    const created = cli(home, "space", "create", space, "--root", root, "--json");
+    check("space create prepares a root no stack runs in", created.status === 0, shown(created));
+    for (const command of ["store", "space"]) {
+      const typo = cli(home, "reset", command, "tear", "--dry-run", "--json");
+      check(`reset ${command} of a name no space has refuses TARGET_NOT_FOUND, exit 2, saying so and naming cotal space first`,
+        typo.status === 2 && typo.env?.error?.code === "TARGET_NOT_FOUND" && typo.env.error.message === "no space this machine registered or prepared has this exact name; nothing was removed" && Boolean(typo.env.error.remedy?.startsWith("see the spaces with cotal space; if it ran from a legacy root")), shown(typo));
+      const unstarted = cli(home, "reset", command, space, "--dry-run", "--json");
+      check(`reset ${command} of a prepared space no stack ran for refuses TARGET_NOT_FOUND, naming its root, cotal up and space forget`,
+        unstarted.status === 2 && unstarted.env?.error?.code === "TARGET_NOT_FOUND" && unstarted.env.error.message === `reset ${command} found nothing to reset: no stack has run for "${space}" in ${root}, so no broker wrote a store; nothing was removed`
+          && unstarted.env.error.remedy === `start it with cotal up from ${root}, or remove its local record with cotal space forget ${space}`, shown(unstarted));
+    }
   }
 } finally {
   for (const root of roots) if (anchors.has(root)) cli(root, "down", "--yes", "--json");

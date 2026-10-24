@@ -1240,9 +1240,11 @@ nothing. It refuses neither bare `down` nor a stop of `stack-broker`, `down --dr
 a complete bare `down` removes it with its pin and names it in a `STALE_PROCESS_RECORD` warning. The
 process that holds a reused pid is never signalled. The broker scope
 is checked again after its dependants stop. A failure stops the sequence and preserves completed and
-unattempted members.
+unattempted members. A member stopped by signal that has not exited 15 seconds after SIGTERM gets
+SIGKILL. Its row then reads `stopped with SIGKILL`, and a `STOP_ESCALATED` warning names its pid.
 Only a complete confirmed stop removes the delivery credential and local registration. When the
-delivery daemon was already gone, its credential stays: that daemon never released its lease, and
+delivery daemon was already gone or had to be killed, its credential stays: that daemon never
+released its lease, and
 the next `up` uses the credential to recognise the row and wait it out before it mints a new one.
 The JSON `cleanup` field then reads `registration-removed-delivery-credential-kept`. Saved
 definitions and the journal remain for the next `up`, and the space stays prepared at its root. A
@@ -1734,7 +1736,8 @@ prepared record and stack journal at the same root name its broker address, stor
 reset keeps both, so a later `up` starts it again in the same mode. No reset changes a stack's mode;
 [up](#up) names the way to run another one. After `reset space` of a user-auth space, that
 `up` needs `--user-auth --idp <auth base URL>`, as described below. A stack none of whose members ever started has
-no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. A stack whose last
+no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. So does a prepared space
+no stack has run for, which also names `cotal space forget`. A stack whose last
 operation is not a completed `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each
 refusal names one reason and the command that clears it. A space that may still run names
 `cotal down` from its root. A member that exited without a recorded stop, as after a crash, is
@@ -1743,8 +1746,10 @@ reset then accepts it. Only a member that no completed `down` recorded that way 
 then `cotal down --yes`. A legacy root has no stack journal, and its `down` drops the registration
 a reset selects, so no reset reaches it once stopped. There the step after `cotal down` is
 `cotal clean store --force` from its root for `reset store`, or `cotal clean all --force` for
-`reset space`, with `--store-dir <dir>` when the registration records a custom store. A reset of
-such a space refuses `TARGET_NOT_FOUND` and names that step.
+`reset space`, with `--store-dir <dir>` when the registration records a custom store. Once stopped,
+such a space has no record here, like a mistyped name, so a reset of either refuses
+`TARGET_NOT_FOUND`, says no registered or prepared space has that exact name, and names `cotal space`
+and then that step.
 
 Removing the store removes what the broker kept in it: workflow runs and their journals, channel
 history, stored messages and every other record. A run still waiting for an answer goes with it and
@@ -2968,6 +2973,11 @@ gone. That includes this folder's own daemon once its recorded process has exite
 the row, as after a kill. The row expires on its own within 30 seconds. The delivery responder line
 then says the delivery daemon died and its lease has not expired yet, that spawn, retirement and join
 wait until a new daemon binds, and that `cotal up` restarts it, since `up` waits out the lease first.
+
+When a controller stack's delivery member runs but holds no delivery lease, `deliveryResponder` is
+`unbound`, and the delivery responder line names the member's pid and says it is starting or not
+responding. `status` cannot ask the daemon which. Next names `cotal service status stack-delivery`,
+then `cotal down --yes`, which kills a member that does not exit, and `cotal up`.
 
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. An open mesh runs no delivery daemon, so when it records no delivery lease its

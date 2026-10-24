@@ -692,6 +692,9 @@ export function preflightProcessServiceStop(definition: ServiceDefinitionSnapsho
   if (command.kind !== "command" || commandIsCotalSupervisor(command.command)) throw new CommandFailure("refused", "UNSUPPORTED", "a selected process has an unreadable or manager-supervisor role; no generic set stop bypassed its native impact policy");
 }
 
+/** How long a process stop waits after SIGTERM before it sends SIGKILL. */
+export const PROCESS_STOP_GRACE_MS = 15_000;
+
 /** Only the stored creation-pinned process is signalled. Every escalation rechecks its identity. */
 export async function stopProcessService(definition: ServiceDefinitionSnapshot, selected: ServiceInstanceSnapshot, held?: DefinitionHold, native?: { plan?: ServiceAdapterStopPlan; withAgents: boolean; preserved?: ServiceAdapterPreservedStop; requestId?: string }, kernel?: { plan?: ServiceAdapterKernelStopPlan }) {
   const hold = held ?? serviceDefinitionStore(definition.record.value.space).pin(definition);
@@ -778,7 +781,7 @@ export async function stopProcessService(definition: ServiceDefinitionSnapshot, 
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the exact process signal was not confirmed; its record was retained", { target: instanceProjection(row) }); }
     };
     signal("SIGTERM");
-    for (const [timeout, escalation] of [[15000, "SIGKILL"], [3000, undefined]] as const) {
+    for (const [timeout, escalation] of [[PROCESS_STOP_GRACE_MS, "SIGKILL"], [3000, undefined]] as const) {
       const deadline = Date.now() + timeout;
       while (Date.now() < deadline) {
         const state = observeServiceProcess(row.record.value);
