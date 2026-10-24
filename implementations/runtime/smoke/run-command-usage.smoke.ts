@@ -10,7 +10,7 @@
  *
  * Run: pnpm smoke:runtime-run-command-usage   (no broker)
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EpEnvelopeError, EP_UNANSWERED, registry, type Command, type RunStatusView } from "@cotal-ai/core";
@@ -177,7 +177,8 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
 }
 
 // A scripted checkpoint result is read by the simulator only for an `expired` status, so a
-// malformed one would simulate as an answer. The results file is refused before the simulation.
+// malformed one would simulate as an answer. The results file is refused before the simulation,
+// and a simulation that stops names why.
 {
   const dir = mkdtempSync(join(tmpdir(), "run-simulate-script-"));
   const program = join(dir, "p.cotal.js");
@@ -214,6 +215,10 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("a gate scripted expired under the default onExpiry is a completed simulation whose program failed at that gate with L4007",
     expired === undefined && envelope?.outcome === "ok" && envelope.result?.outcome === "failed" && envelope.result.failure?.code === "L4007"
       && envelope.result.failure.step === "/checkpoint:go#0" && envelope.result.failure.stepOutcome === "expired" && envelope.result.effects?.some((e) => e.step === "/checkpoint:go#0") === true, { expired, envelope });
+  writeFileSync(program, 'throw "boom";\n');
+  const thrown = await simulate({});
+  c("a program that throws fails naming what it threw, not an unscripted effect",
+    isCommandFailure(thrown) && thrown.code === "OPERATION_FAILED" && thrown.message.includes('boom') && !thrown.message.includes("unscripted"), thrown);
   rmSync(dir, { recursive: true, force: true });
 }
 
@@ -229,6 +234,56 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("a validator warning names its code, title, position and fix on stderr",
     said.includes(`L3021 \`fanOut\` has no stable key (${program}:1:7)`) && said.includes("Fix: Pass a key function"), said);
   rmSync(dir, { recursive: true, force: true });
+}
+
+// A workflow source that cannot be read is refused naming its path and the cause, before any plane.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-source-"));
+  mkdirSync(join(dir, "adir"));
+  symlinkSync(join(dir, "nowhere.cotal.js"), join(dir, "dangling.cotal.js"));
+  writeFileSync(join(dir, "locked.cotal.js"), "x\n", { mode: 0o000 });
+  const cases: [string, string, string][] = [
+    ["missing.cotal.js", "TARGET_NOT_FOUND", "does not exist"],
+    ["adir", "USAGE_INVALID", "is a directory"],
+    ["dangling.cotal.js", "TARGET_NOT_FOUND", "is a link whose target does not exist"],
+    // root reads a mode-000 file, so the permission case runs only for another user.
+    ...(process.getuid?.() === 0 ? [] : [["locked.cotal.js", "PERMISSION_DENIED", "is not readable"] as [string, string, string]]),
+  ];
+  for (const [name, code, says] of cases) {
+    const path = join(dir, name);
+    const got = await attempt(["start", path]);
+    c(`run start of ${name} refuses ${code} naming its path and cause`, isCommandFailure(got) && got.code === code && got.message.includes(path) && got.message.includes(says), got);
+  }
+  const dash = await attempt(["start", "-"]);
+  c("run start - says that - does not mean standard input", isCommandFailure(dash) && dash.code === "TARGET_NOT_FOUND" && dash.message.includes("- does not mean standard input"), dash);
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// `journal --limit` says how many of the last journal rows the text view prints. The view printed only
+// the last 20, and the only way to read more was --json, which holds the whole journal and so takes
+// no --limit. A ps --limit still belongs to --page.
+{
+  const ok50 = gate(["journal", "run-0"], { limit: "50" });
+  c("run journal takes --limit from 1 to 1000", !(ok50 instanceof Error) && ok50.values.limit === "50"
+    && !(gate(["show", "run-0"], { limit: "1000" }) instanceof Error), ok50);
+  for (const limit of ["0", "1001", "x"])
+    c(`run show --limit ${limit} is refused`, usageRefusal(gate(["show", "run-0"], { limit }), "--limit must be between 1 and 1000"), limit);
+  c("run journal --limit with --json is refused", usageRefusal(gate(["journal", "run-0"], { limit: "5", json: true }), "--json returns the whole journal"));
+  c("run ps --limit without --page is still refused", usageRefusal(gate(["ps"], { limit: "5" }), "diagnostic paging requires run --page"));
+  const view = { runId: "run-0", endpoint: "manager", spec: {} as RunStatusView["spec"],
+    journal: Array.from({ length: 30 }, (_, n) => ({ n, kind: "activation" as const, holder: "h", epoch: n, replayedTo: 0 })) } satisfies RunStatusView;
+  const printed = (limit?: string): string => {
+    const out: string[] = [];
+    const origLog = console.log;
+    console.log = (...a: unknown[]) => { out.push(a.map(String).join(" ")); };
+    try { printRunDetail("usage", view, { plain: true, ...(limit === undefined ? {} : { limit }) }); } finally { console.log = origLog; process.exitCode = 0; }
+    return out.join("\n");
+  };
+  const rows = (text: string) => text.split("\n").filter((line) => line.includes("holder activation")).length;
+  const bare = printed(), limited = printed("25");
+  c("the text view prints the last 20 rows by default and the last n under --limit n",
+    bare.includes("last 20 of 30") && rows(bare) === 20 && limited.includes("last 25 of 30") && rows(limited) === 25 && limited.includes("epoch 29") && !limited.split("\n").some((line) => line.trimEnd().endsWith("epoch 4")),
+    { bare: rows(bare), limited: rows(limited) });
 }
 
 // A source file that cannot be read is refused with the path to check.

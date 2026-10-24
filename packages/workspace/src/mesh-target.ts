@@ -16,7 +16,7 @@ import {
   type MeshEntry,
   type UserAuthInfo,
 } from "./mesh-registry.js";
-import { ProtectedRecordStore } from "./protected-records.js";
+import { ProtectedRecordStore, shellPath } from "./protected-records.js";
 import { rootNamesNoSpace } from "./space.js";
 
 /**
@@ -391,7 +391,7 @@ export function stackAdoptionBlock(root: string, recordedRoot: string, space: st
   const known = journalInstanceIds(members).find((id) => instances.read(id) !== undefined);
   if (known) return { kind: "known", message: `this machine records instance ${known} of the stack that ${recordedRoot} recorded, so that stack is this machine's own`, remedy: movedRootRemedy(recordedRoot) };
   const registered = findMesh(space), recorded = registered?.root ?? findPreparedSpace(space)?.root;
-  if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with cotal space forget ${space}, then run cotal space create ${space} --adopt --root ${root}` };
+  if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with cotal space forget ${space}, then run cotal space create ${space} --adopt --root ${shellPath(root)}` };
   return undefined;
 }
 
@@ -405,7 +405,7 @@ export function stackElsewhereRemedy(root: string, recordedRoot: string, space: 
   if (existsSync(stackJournalPath(recordedRoot))) return `use the stack from ${recordedRoot}, which holds it; this copy does not`;
   let block: StackAdoptionBlock | undefined | null;
   try { block = stackAdoptionBlock(root, recordedRoot, space, members); } catch { block = null; }
-  const adopt = block === undefined ? `adopt it with cotal space create ${space} --adopt --root ${root}` : block?.kind === "recorded" ? block.remedy : undefined;
+  const adopt = block === undefined ? `adopt it with cotal space create ${space} --adopt --root ${shellPath(root)}` : block?.kind === "recorded" ? block.remedy : undefined;
   if (adopt === undefined) return movedRootRemedy(recordedRoot);
   if (rootPathProblem(recordedRoot) !== undefined) return `to run it from this folder, ${adopt}; cotal up refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`;
   return block === undefined
@@ -481,7 +481,7 @@ function selectionTargetsHere(cwd: string, current: string, meshes: readonly Mes
   const folder = folderSpaces(cwd, meshes);
   if (!folder || folder.spaces.length === 0 || folder.spaces.includes(current)) return true;
   if (folder.spaces.length === 1) {
-    recordOperationSpaceNote(folder.spaces[0]!, `this folder's space; the selected space "${current}" applies outside it`);
+    noteFolderSpace(folder.spaces[0]!, current);
     return false;
   }
   recordOperationWarning({
@@ -490,6 +490,21 @@ function selectionTargetsHere(cwd: string, current: string, meshes: readonly Mes
     message: `this targets the selected space "${current}", not this folder's spaces ${folder.spaces.map((s) => `"${s}"`).join(", ")}; pass --space <space> to target one of them`,
   });
   return true;
+}
+
+/** Say under the run's `Mesh:` heading that `space` is this folder's and the selection `current`
+ *  applies outside the folder. */
+export function noteFolderSpace(space: string, current: string): void {
+  recordOperationSpaceNote(space, `this folder's space; the selected space "${current}" applies outside it`);
+}
+
+/** The space a command without `--space` targets in the project folder `cwd` is in when that is not
+ *  the selection `current`: the root's one registered or prepared space. Undefined with nothing
+ *  selected, outside a project, and where the selection is the target. */
+export function folderSpaceOverSelection(cwd: string, current: string | null): string | undefined {
+  if (current === null) return undefined;
+  const folder = folderSpaces(cwd, loadMeshes());
+  return folder?.spaces.length === 1 && folder.spaces[0] !== current ? folder.spaces[0] : undefined;
 }
 
 /** The one registration recorded for `root`, if any. A broker that runs several spaces records one

@@ -6,7 +6,8 @@ A manifest (`cotal.yaml`, `kind: Mesh`) describes a whole team (its channels, it
 and who may read and post where) in one file. It is **channel-centric**: you list the
 channels, and under each one name the agents that may read and post; Cotal inverts that
 into one least-privilege credential per agent. The manifest is a convenience over the CLI;
-it adds no wire concepts. Today it is **single-space** (one `space:` per file).
+it adds no wire concepts. Today it is **single-space** (one `space:` per file). The file is
+UTF-8; one saved as UTF-16 is refused with `SCHEMA_INVALID`, saying to save it as UTF-8.
 
 The lifecycle (`cotal topology view -f` / `up -f` / `team deploy` / `team remove` / `down`), ownership,
 and teardown behavior are in the guide: [Define a team](define-a-team.md).
@@ -54,7 +55,7 @@ Per-agent keys: `persona`, `agent` (harness override), `cwd`, `continuity`, `mod
 agent may delegate that role when spawning; `admin` is never accepted from a manifest),
 `personaPermissions` (override the top-level policy). Model strings and variants pass to
 the harness as-is: for Claude use the short form (`opus`, `sonnet`) or the full id; for
-OpenCode use `provider/model` plus an optional variant (`cotal models --agent opencode`
+OpenCode use `provider/model` plus an optional variant (`cotal models --harness opencode`
 lists both). Persona file format: [agent files](agent-files.md).
 
 `cwd` is the agent's working directory on the **manager host**. A relative path resolves

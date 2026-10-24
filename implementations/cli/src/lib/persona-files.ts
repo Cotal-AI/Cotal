@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
   acquireLock, agentFilePath, assertValidName, hardenPrivate, MAX_NAME_LENGTH, mkSecretDir,
-  parseAgentFileSource, saveAgentFile, writeSecretFile, writeSecretFileAtomic,
+  parseAgentFileSource, saveAgentFile, utf16Problem, writeSecretFile, writeSecretFileAtomic,
   type AgentDef,
 } from "@cotal-ai/core";
 import {
   cachedPreferences, CommandFailure, inputDisabledByFlag, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, loadMeshes, movedProject,
   resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts,
 } from "@cotal-ai/workspace";
+import { DEFAULT_AGENT_NAME } from "./default-persona.js";
 import { shellWord } from "./endpoint-errors.js";
 
 export interface PersonaCatalog { root: string; space: string }
@@ -52,6 +53,12 @@ function catalogAt(root: string, space: string): PersonaCatalog {
   }
 }
 
+/** Why a new persona cannot take `name`: the seeded default's agents already launch under it, so a
+ *  second definition would launch under the same name. */
+export function reservedPersonaName(name: string): string | undefined {
+  return name === DEFAULT_AGENT_NAME ? `'${name}' is reserved: the seeded default persona launches its agents under that name` : undefined;
+}
+
 /** Why `name` cannot name a persona, or undefined when it can. */
 export function personaNameProblem(name: string): string | undefined {
   if (!/^[A-Za-z0-9_-]+$/.test(name)) return `persona names use letters, digits, '_' or '-', up to ${MAX_NAME_LENGTH} characters`;
@@ -85,13 +92,27 @@ export function requirePersonaSource(path: string): PersonaSource {
   return source;
 }
 
-/** Keep parser diagnostics private: YAML errors can contain the document's own sensitive values.
- *  `name` is required of a new definition only. A stored one may launch under another name: the
+/** Why the agent-file parser refused a definition. A YAML error keeps only its position: the
+ *  parser's own text can quote the document's sensitive values. */
+function definitionProblem(error: unknown, path: string): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const prefix = `agent file ${path}: `;
+  const reason = message.startsWith(prefix) ? message.slice(prefix.length) : message;
+  if (!reason.startsWith("invalid YAML frontmatter")) return reason;
+  // The parser counts lines from the first line after the opening `---`.
+  const at = /at line (\d+), column (\d+)/.exec(reason);
+  return `the frontmatter is not valid YAML${at ? ` at line ${Number(at[1]) + 1}, column ${at[2]}` : ""}`;
+}
+
+/** `name` is required of a new definition only. A stored one may launch under another name: the
  *  seeded `default` persona launches as `default_agent`. */
 export function validatePersona(bytes: Buffer, path: string, name?: string): AgentDef {
+  // Its encoding names no value from the file, so it is the one reason given.
+  const encoding = utf16Problem(bytes.toString("utf8"));
+  if (encoding) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition: ${path}: ${encoding}`, { remedy: `save ${path} as UTF-8` });
   let def: AgentDef;
   try { def = parseAgentFileSource(bytes.toString("utf8"), path); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition: ${path}`, { remedy: "check the agent-file frontmatter and channel declarations" }); }
+  catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition ${path}: ${definitionProblem(error, path)}`, { remedy: "check the agent-file frontmatter and channel declarations" }); }
   if (name !== undefined && def.name !== name) throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'`);
   return def;
 }
@@ -182,6 +203,8 @@ export function editPersona(path: string, name: string, catalog: PersonaCatalog,
   assertCatalogWritable(dirname(path));
   const editor = resolvePreference("editor", { preferences: cachedPreferences(), space: catalog.space }).value;
   if (!editor) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
+  // A draft the editor may have changed and that was not saved is kept, and the failure names it.
+  let keep = false;
   withDraft(name, draft => {
     writeSecretFile(draft, source.bytes);
     const quoted = process.platform === "win32" ? `"${draft.replaceAll('"', '""')}"` : `'${draft.replaceAll("'", "'\\''")}'`;
@@ -192,18 +215,31 @@ export function editPersona(path: string, name: string, catalog: PersonaCatalog,
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the editor ${JSON.stringify(editor)} ${result.status === 127 ? "was not found" : "could not be run"} - not saved`, {
         remedy: "set VISUAL or EDITOR to an installed editor, or run `cotal config set editor vim`; the value runs as a shell command, so quote a path that holds spaces",
       });
-    if (result.error || result.status !== 0)
-      throw new CommandFailure("failed", "OPERATION_FAILED", `editor ${result.signal ? `ended on ${result.signal}` : `exited with status ${result.status}`} - not saved`);
+    if (result.error) throw new CommandFailure("failed", "OPERATION_FAILED", "the editor could not be started - not saved");
+    if (result.status !== 0) {
+      keep = true;
+      throw new CommandFailure("failed", "OPERATION_FAILED", `editor ${result.signal ? `ended on ${result.signal}` : `exited with status ${result.status}`} - not saved`, {
+        remedy: `your draft is kept in ${draft}; remove ${dirname(draft)} when you are done`,
+      });
+    }
     const edited = requirePersonaSource(draft).bytes;
-    validatePersona(edited, path);
+    try { validatePersona(edited, draft); }
+    catch (error) {
+      if (!isCommandFailure(error)) throw error;
+      keep = true;
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message} - not saved`, {
+        remedy: `your edit is kept in ${draft}; correct it, run cotal persona edit ${name} again and paste it in, then remove ${dirname(draft)}`,
+      });
+    }
     try { commitPersona(path, source, edited); }
     catch (error) {
       if (!isCommandFailure(error) || error.code !== "CONFLICT") throw error;
       // The edit was not saved, so the draft stays and the refusal says where it is.
       const removed = readPersonaSource(path) === undefined;
+      keep = true;
       throw new CommandFailure("refused", "CONFLICT", error.message, {
         remedy: `your edit is kept in ${draft}; ${removed ? `restore it with \`cotal persona create ${name} --file ${draft}\`` : `compare it with \`cotal persona show ${name}\`, then edit again`}, and remove ${dirname(draft)} when you are done`,
       });
     }
-  }, (error) => isCommandFailure(error) && error.code === "CONFLICT");
+  }, () => keep);
 }

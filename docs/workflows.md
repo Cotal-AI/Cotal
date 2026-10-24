@@ -262,7 +262,10 @@ or agent that holds the `run` capability.
 `journal` prints an open pause's question under its step. Once a checkpoint or `ask` settles with an
 accepted answer, it instead prints the answer value as JSON, who answered, the artifact when one was
 cited, the recorded time, and the accepted answer id. Expired pauses and ordinary steps print no
-answer line.
+answer line. A settled `race` names on its line the branch it took. An answer the program never read
+is marked `not acted on`: its step was in a branch that lost a race, or its pause accepted it and
+was then cancelled, as a losing branch's pause is. `--json` carries the race's `winner` and, on each
+step of a losing branch, the `lostRace` it lost.
 
 A settled step is never answered twice, so a participant who changes their mind uses `amend`. It
 files a new answer beside the accepted one, naming the answer it supersedes, and `journal` prints
@@ -276,7 +279,7 @@ spawned seat may amend only an answer recorded under its own name.
 ```bash
 cotal run start --file build.cotal.js                   # the manager starts it; the minted id is printed
 cotal run ps                                            # list run records: state, holder, lineage
-cotal run journal run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # print the durable step journal
+cotal run journal run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # print the record and its last 20 journal rows; --limit <n> prints up to 1000, --json all
 cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # the manager takes the run back
 cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"yes"'
 cotal run amend run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"no"'   # record a changed position

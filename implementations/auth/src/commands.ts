@@ -589,8 +589,13 @@ const authCommands: Command[] = [
     name: "actor",
     group: "Identity",
     summary: "manage the space's actor ledger - grant/revoke which (user, actor) pairs may run agents",
-    usage: "actor <grant <actor> | revoke <actor> | list> [--sub <IdP subject>|--owner <u_…>] [--space <s>] [--full | --scope a,b --allow-subscribe a,b --allow-publish a,b] [--role r] [--label l] [--json|--plain]",
+    usage: "cotal actor <grant <actor> | revoke <actor> | list> [--sub <IdP subject>|--owner <u_…>] [--space <s>] [--full | --scope a,b --allow-subscribe a,b --allow-publish a,b] [--role r] [--label l] [--json|--plain]",
     positionals: "<grant <actor> | revoke <actor> | list>",
+    subcommands: [
+      { name: "grant", flagNames: ["space", "sub", "owner", "full", "scope", "allow-subscribe", "allow-publish", "role", "label", "parent"], summary: "store an actor's whole ledger row: name all three ACL flags, or --full for the wide defaults", usage: "cotal actor grant <actor> (--sub <IdP subject> | --owner <u_…>) (--full | --scope a,b --allow-subscribe a,b --allow-publish a,b) [--role r] [--label l] [--parent <owner.actor>] [--space <s>]" },
+      { name: "revoke", flagNames: ["space", "sub", "owner"], summary: "revoke an actor's ledger row", usage: "cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>) [--space <s>]" },
+      { name: "list", flagNames: ["space"], summary: "list the space's actor ledger", usage: "cotal actor list [--space <s>]" },
+    ],
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space whose ledger to manage (default: the resolved mesh, as for auth grants)" },
       { name: "sub", type: "string", value: "<subject>", description: "the IdP subject (shown by `cotal login`) the actor belongs to" },
@@ -616,7 +621,7 @@ const authCommands: Command[] = [
     name: "agent-bearer",
     group: "Manager",
     summary: "print one fresh agent bearer for a spawned user-mode agent (machine-facing; exec'd by agent endpoints)",
-    usage: "agent-bearer [--dir <state-dir> | --exchange-url <https://base>] --space <s> --owner <u_…> --actor <a> --token-file <path>",
+    usage: "cotal agent-bearer [--dir <state-dir> | --exchange-url <https://base>] --space <s> --owner <u_…> --actor <a> --token-file <path>",
     flags: [
       { name: "dir", type: "string", value: "<state-dir>", description: "local arm: the space's user-auth state dir" },
       { name: "exchange-url", type: "string", value: "<https://base>", description: "remote arm: pinned public exchange base URL (HTTPS required; no local capability)" },
@@ -635,7 +640,7 @@ const authCommands: Command[] = [
     name: "service-endpoint",
     group: "Identity",
     summary: "decide and inspect service endpoint registrations on this space's auth service - approve or refuse a proposal as its owner; bind a name as the operator",
-    usage: "service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref>> [--caller-ceiling a,b] [--request-id <hex32>] [--space <s>] [--json|--plain]",
+    usage: "cotal service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref>> [--caller-ceiling a,b] [--request-id <hex32>] [--space <s>] [--json|--plain]",
     positionals: "<approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint>>",
     outputs: ["json", "plain"],
     flags: [
@@ -908,7 +913,7 @@ const authCommand: Command = {
     { name: "retire", flagNames: ["space", "yes", "json", "plain"], summary: "not available from this CLI; rotating the space identity with reset space stops its credentials", usage: "cotal auth retire <full-lifecycle-uid> [--space <space>] [--yes]", prepareMeshTarget: false },
     { name: "redeem", flagNames: ["space", "json", "plain"], summary: "conferring-handle redemption requires a supported native auth path", usage: "cotal auth redeem <private-handle-file> [--space <space>]", prepareMeshTarget: false },
     { name: "signer", flagNames: ["space", "out", "force", "json", "plain"], summary: "export existing account-signing material to a protected private file", usage: "cotal auth signer --out <private-file> [--force]", prepareMeshTarget: false },
-    { name: "grants", flagNames: ["space", "json", "plain"], summary: "read the authoritative local actor grants, not cached sign-in claims", reads: true, prepareMeshTarget: false },
+    { name: "grants", flagNames: ["space", "json", "plain"], summary: "read the authoritative local actor grants, not cached sign-in claims", usage: "cotal auth grants [--space <space>] [--json|--plain]", reads: true, prepareMeshTarget: false },
     { name: "grant", flagNames: ["space", "sub", "owner", "scope", "allow-subscribe", "allow-publish", "role", "label", "parent", "full", "json", "plain"], summary: "store a deliberate operator grant through the existing authority path", usage: "cotal auth grant <actor>", prepareMeshTarget: false },
     { name: "revoke", flagNames: ["space", "sub", "owner", "json", "plain"], summary: "retire and revoke an interactive actor grant under its existing authority", usage: "cotal auth revoke <actor>", prepareMeshTarget: false },
   ] as const).map((sub) => ({ ...sub, outputs: ["json", "plain"] as const })),
