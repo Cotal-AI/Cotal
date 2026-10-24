@@ -26,7 +26,7 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, assessMaintenanceClaim, authDir, cotalDirLink, isCommandFailure, readMaintenanceJournal, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, PREFERENCE_KEYS, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, preferencesPath, workspaceErrorParts, preferencesFolderWarning, type Cell, type LocalProcess, type LocalProcessContext, type MaintenanceClaim, type MeshEntry, type MeshTarget, type OutputWarning, type Preferences, type Report, type Section, type Tone } from "@cotal-ai/workspace";
+import { accountInventory, assessMaintenanceClaim, authDir, cotalDirLink, isCommandFailure, readMaintenanceJournal, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, PREFERENCE_KEYS, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, spaceStreamsAbsent, spaceStreamsExpected, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, preferencesPath, workspaceErrorParts, preferencesFolderWarning, type Cell, type LocalProcess, type LocalProcessContext, type MaintenanceClaim, type MeshEntry, type MeshTarget, type OutputWarning, type Preferences, type Report, type Section, type Tone } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -35,6 +35,7 @@ import { signedInSpace } from "../lib/conversation-identity.js";
 import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, webInstalled, webSessionSource, type HarnessStatus, type MachineStatus } from "../lib/status.js";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { brokerStoreWrite, type StoreWriteObservation } from "../lib/broker-store-health.js";
+import { chatStreamGone, stackState } from "../lib/space-streams.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { readPersonas, type PersonaEntry } from "../lib/personas.js";
@@ -224,6 +225,11 @@ type SelectedResult =
       snapshot: { state: "read" | "unavailable" | "skipped"; reason: string | null };
       channels: { channel: string; messages: number }[] | null;
       membershipFeed: { entries: number; asOf: string | null } | null;
+      /** Whether the space's streams are on its broker, read only where `cotal up` created them.
+       *  When they are absent, `root` is this machine's stack of the space, null when none runs from
+       *  here, and `stack` says whether it still runs members other than the broker, null when its
+       *  records cannot be read. */
+      spaceStreams: { state: "present" | "absent" | "not-checked"; root: string | null; stack: "running" | "stopped" | null };
     };
 
 /** Collects what each reader could not read, so the report names it on its row and the run is
@@ -926,6 +932,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     deliveryResponder: null,
     channels: null,
     membershipFeed: null,
+    spaceStreams: { state: "not-checked" as const, root: null, stack: null },
   };
   if (target.mode === "user") {
     // Status never static-mints on a user-auth mesh (the flip). Everything here is offline
@@ -954,7 +961,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     const result = { ...base, connection: live ? "reachable" : "unreachable", login };
     if (!live) return { ...result, snapshot: { state: "skipped", reason: "broker unreachable" } };
     if (!granted) return { ...result, snapshot: { state: "skipped", reason: "needs a signed-in, granted login" } };
-    return { ...result, ...(await readSnapshot(() => userSnapshotEndpoint(target, stateDir), target.space, gaps)) };
+    return { ...result, ...(await readSnapshot(() => userSnapshotEndpoint(target, stateDir), target.space, true, gaps)) };
   }
   const preflight = await preflightTarget(target);
   if (!preflight.ok) return { ...base, connection: preflight.kind, staleRecord: preflight.prune, snapshot: { state: "skipped", reason: "broker not connected" } };
@@ -962,7 +969,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
   // delivery PROCESS is doing; this says whether the SPACE currently has a bound responder, which is
   // the question "can I spawn into this mesh right now" actually reduces to. An operator reading a
   // reachable broker and a running daemon had, before this, no row that said otherwise.
-  return { ...base, connection: "ok", deliveryResponder: target.mode === "open" && !responder.leased ? null : responder.state, ...(await readSnapshot(() => snapshotEndpoint(target), target.space, gaps)) };
+  return { ...base, connection: "ok", deliveryResponder: target.mode === "open" && !responder.leased ? null : responder.state, ...(await readSnapshot(() => snapshotEndpoint(target), target.space, spaceStreamsExpected(target.space, target.mode), gaps)) };
 }
 
 async function snapshotEndpoint(target: MeshTarget): Promise<CotalEndpoint> {
@@ -1013,13 +1020,21 @@ async function userSnapshotEndpoint(target: MeshTarget, stateDir: string): Promi
   });
 }
 
-/** The selected space's channels and membership feed, read over one short-lived connection. The
+/** The absent streams of `space`, with this machine's stack of it. */
+function absentStreams(space: string): Extract<SelectedResult, { resolved: true }>["spaceStreams"] {
+  const local = stackState(space);
+  return { state: "absent", root: local?.root ?? null, stack: local?.stack ?? null };
+}
+
+/** The selected space's channels and membership feed, read over one short-lived connection, and
+ *  where `streams` says `cotal up` created them, whether its streams are still on the broker. The
  *  roster is not part of status: who is present is a separate read. */
 async function readSnapshot(
   endpoint: () => Promise<CotalEndpoint>,
   space: string,
+  streams: boolean,
   gaps: Gaps,
-): Promise<Pick<Extract<SelectedResult, { resolved: true }>, "snapshot" | "channels" | "membershipFeed">> {
+): Promise<Pick<Extract<SelectedResult, { resolved: true }>, "snapshot" | "channels" | "membershipFeed" | "spaceStreams">> {
   let ep: CotalEndpoint;
   try {
     ep = await endpoint();
@@ -1031,19 +1046,21 @@ async function readSnapshot(
     await ep.start();
   } catch (e) {
     gaps.add("SNAPSHOT_UNAVAILABLE", `the channels of ${space} could not be read: ${(e as Error).message}`, { space });
-    return { snapshot: { state: "unavailable", reason: (e as Error).message }, channels: null, membershipFeed: null };
+    return { snapshot: { state: "unavailable", reason: (e as Error).message }, channels: null, membershipFeed: null, spaceStreams: { state: "not-checked", root: null, stack: null } };
   }
   try {
     const channels = await ep.listChannels();
     const feed = await ep.readMembership().catch(() => undefined);
+    const gone = streams && await chatStreamGone(ep);
     return {
       snapshot: { state: "read", reason: null },
       channels: channels.map((ch) => ({ channel: ch.channel, messages: ch.messages })),
       membershipFeed: feed ? { entries: feed.members.length, asOf: feed.asOf ? new Date(feed.asOf).toISOString() : null } : null,
+      spaceStreams: !streams ? { state: "not-checked", root: null, stack: null } : gone ? absentStreams(space) : { state: "present", root: null, stack: null },
     };
   } catch (e) {
     gaps.add("SNAPSHOT_UNAVAILABLE", `the channels of ${space} could not be read: ${(e as Error).message}`, { space });
-    return { snapshot: { state: "unavailable", reason: (e as Error).message }, channels: null, membershipFeed: null };
+    return { snapshot: { state: "unavailable", reason: (e as Error).message }, channels: null, membershipFeed: null, spaceStreams: { state: "not-checked", root: null, stack: null } };
   } finally {
     await ep.stop().catch(() => {});
   }
@@ -1333,6 +1350,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
   const rows: [string, Cell][] = [
     ["Broker", s.server ?? stateCell("address unavailable", "failed")],
     ["Connection", connectionCell(s)],
+    ...(s.spaceStreams.state === "absent" ? [["Space streams", stateCell(s.spaceStreams.stack === "running" ? "not on the broker · the space was deleted under its running stack" : "not on the broker · a space delete removed them", "failed")] as [string, Cell]] : []),
     ...(responder ? [["Delivery responder", stateCell(responder.text, responder.tone)] as [string, Cell]] : []),
     ...(r.store?.state === "write-failed" ? [["Store", stateCell(`write failed at ${r.store.at}: ${r.store.cause}${r.store.path ? ` · ${r.store.path}` : ""}`, "failed")] as [string, Cell]] : []),
     ...(r.stackManager ? [["Manager", r.stackManager.endpoint === "answered" ? stateCell("answering", "ok") : r.stackManager.endpoint === "not-answering" ? stateCell(`not answering · stack-manager pid ${r.stackManager.pid}`, "failed") : stateCell("endpoint not checked", "hint")] as [string, Cell]] : []),
@@ -1374,6 +1392,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
 function nextActions(r: StatusResult): Section {
   const cmd = displayCmd();
   const items: { command: string; description: string }[] = [];
+  const extra: string[] = [];
   const noApplication = !r.machine.connectors?.length;
   if (r.selected.resolved) {
     const s = r.selected;
@@ -1400,6 +1419,17 @@ function nextActions(r: StatusResult): Section {
   if (block && r.selected.resolved) {
     const inspect = { command: `${cmd} service status ${block.definition} --instance ${block.instanceId} --space ${r.selected.space}`, description: block.route.kind === "inspect" ? "Inspect the member that keeps up and down from settling" : "Inspect that member" };
     items.unshift(...(block.route.kind === "abandon" ? [{ command: `${cmd} down --abandon-stop ${block.route.requestId} --yes`, description: `Abandon the unconfirmed stop of ${block.definition}; up and down refuse until then` }, inspect] : [inspect]));
+  } else if (r.selected.resolved && r.selected.spaceStreams.state === "absent") {
+    // Up creates the streams again only while the stack's other members are stopped.
+    const stack = r.selected.spaceStreams.stack;
+    if (own && stack === "running")
+      items.unshift({ command: `${cmd} down --yes`, description: "Stop the stack its space was deleted under" }, { command: `${cmd} up`, description: "Then start it again; up creates the space's streams, empty" });
+    else if (own)
+      items.unshift({ command: `${cmd} up --root ${r.selected.root}`, description: stack === "stopped" ? "Create the space's streams again, empty, and restart the stack's stopped members" : `Create the space's streams again, empty; while the stack runs, stop it first with ${cmd} down --yes` });
+    else {
+      const absent = spaceStreamsAbsent(r.selected.space, r.selected.spaceStreams.root ?? undefined, stack ?? undefined);
+      extra.push(`${absent.message}; ${absent.remedy}`);
+    }
   } else if (own && r.selected.resolved && (memberGone || r.selected.connection !== "ok" && r.selected.connection !== "reachable"))
     items.unshift({ command: `${cmd} up --root ${r.selected.root}`, description: "Restart this stack's stopped members from its recorded inputs" });
   if (r.selected.resolved && r.selected.mode === "user" && r.selected.login && !r.selected.login.subject) items.unshift({ command: `${cmd} login --idp ${r.selected.login.idp}`, description: "Sign in to the selected space" });
@@ -1409,7 +1439,7 @@ function nextActions(r: StatusResult): Section {
   // The broker keeps a store write error until it restarts, so messages sent meanwhile may be lost.
   if (r.store?.state === "write-failed")
     items.unshift({ command: `${cmd} down`, description: `Free space on the disk that holds ${r.store.path ?? "the broker's store"} first; then ${cmd} up starts the broker again` });
-  return { title: "Next", blocks: [{ kind: "commands", items }, ...r.hints.map((hint) => ({ kind: "lines" as const, lines: [cell(hint, "hint")] }))] };
+  return { title: "Next", blocks: [{ kind: "commands", items }, ...[...extra, ...r.hints].map((hint) => ({ kind: "lines" as const, lines: [cell(hint, "hint")] }))] };
 }
 
 function ownedServicesOverview(services: OwnedServiceStatus | undefined): Section | undefined {

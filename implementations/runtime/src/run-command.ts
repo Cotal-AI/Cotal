@@ -22,7 +22,9 @@ import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManage
 import { Kvm, type KV } from "@nats-io/kv";
 import {
   BASELINE_LIFECYCLE_ENDPOINT,
+  chatStream,
   EpEnvelopeError,
+  isStreamNotFound,
   hasDuplicateNames,
   assertIdToken,
   assertLifecycleToken,
@@ -66,7 +68,7 @@ import {
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
 import { RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
-import { CommandFailure, commandFailureReport, failureEnvelope, presentationOf, recordOperationSpace, renderReport, terminalWidth, writeEnvelope, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget, type RefusalCode } from "@cotal-ai/workspace";
+import { CommandFailure, commandFailureReport, failureEnvelope, presentationOf, recordOperationSpace, renderReport, terminalWidth, writeEnvelope, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, localStackRoot, spaceStreamsAbsent, spaceStreamsExpected, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget, type RefusalCode } from "@cotal-ai/workspace";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
 import { printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
@@ -722,6 +724,10 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     }
     return r.reply.data;
   } catch (e) {
+    // A space whose streams were removed has no registry or contract store to read, so name that
+    // instead of the read that failed. `cotal status` says whether its stack still runs.
+    if (!(e instanceof CommandFailure) && spaceStreamsExpected(t.space, t.mode) && await chatStreamGone(nc, t.space))
+      throw spaceStreamsAbsent(t.space, localStackRoot(t.space));
     // No answer is an unavailable target, not a usage error. Only this machine's records can name a
     // manager that runs and does not answer, and `cotal status` reads them.
     if (e instanceof EpEnvelopeError && unansweredRequest(e))
@@ -733,6 +739,17 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     throw e;
   } finally {
     await nc.drain().catch(() => nc.close());
+  }
+}
+
+/** Whether the chat stream of `space` is gone from the broker `nc` is connected to. Any other
+ *  failure to read it answers no. */
+async function chatStreamGone(nc: NatsConnection, space: string): Promise<boolean> {
+  try {
+    await (await jetstreamManager(nc, { checkAPI: false })).streams.info(chatStream(space));
+    return false;
+  } catch (e) {
+    return isStreamNotFound(e);
   }
 }
 
