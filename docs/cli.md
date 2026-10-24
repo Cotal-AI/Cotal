@@ -227,7 +227,8 @@ before it does anything, and says to `cd` to an existing folder. It prints that 
 remedy without the command's help, because the command itself was not mistyped. A command whose folder has a
 `.cotal` that is a file rather than a directory, such as a notes file, refuses with `CONFLICT`, exit
 2, before it does anything, names that file and says to rename or move it. `help`, `version` and
-`completion` still work in both.
+`completion` still work in both. `docs` and `telemetry` also work from a folder that no longer
+exists, and there `help` says the folder is gone instead of showing a space.
 
 Output that cannot be written, for example to a full disk, is reported in one line on stderr, and
 the command stops with exit 3, or with the non-zero status it had already set. It may have stopped
