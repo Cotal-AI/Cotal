@@ -8,7 +8,8 @@
  * other accounts can write refusing a write and warning on a read, a stale write refused, a persona
  * the space's catalog does not hold saved with a warning that names the catalog, two concurrent
  * writers both landing, and the consumers outside `spawn`: color, the `personas edit` editor and the
- * detach key.
+ * detach key. A file that begins with a UTF-8 byte-order mark reads, and the next write leaves the
+ * mark out.
  * The launch consumers (harness, persona) are proved through real spawns in `smoke:persona-agent`.
  * Broker-free and offline.
  *
@@ -419,6 +420,17 @@ if (process.platform !== "win32") {
   check("a write whose folder would be made in a world-writable parent is refused, and nothing is created",
     fresh.status === 2 && fresh.envelope?.error?.code === "PERMISSION_DENIED" && fresh.envelope.error.remedy === `chmod o-w ${open}` && readdirSync(open).length === 0, shown(fresh));
   chmodSync(open, 0o700);
+}
+
+// ── a file a Windows editor saved with a UTF-8 byte-order mark reads, and the next write drops it ──
+{
+  run(["config", "set", "editor", "vi"]);
+  writeFileSync(file, `\uFEFF${fileText()!}`, { mode: 0o600 });
+  const get = run(["config", "get", "editor", "--json"]);
+  check("a preferences file that begins with a UTF-8 byte-order mark reads as the JSON after it",
+    get.status === 0 && (get.envelope?.result as { setting?: Setting } | null)?.setting?.value === "vi", shown(get));
+  const write = run(["config", "set", "editor", "ed"]);
+  check("the next write leaves the byte-order mark out", write.status === 0 && !fileText()!.startsWith("\uFEFF") && fileText()!.includes('"ed"'), shown(write));
 }
 
 // ── a linked preferences file is refused as a private record's link is, and never replaced ──────────

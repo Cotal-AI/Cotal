@@ -174,7 +174,9 @@ function checkScope(where: string, value: unknown, perSpaceOnly: boolean): Parti
 function parsePreferences(text: string): Preferences {
   let doc: unknown;
   try {
-    doc = JSON.parse(text);
+    // A hand edit on Windows can begin the file with a UTF-8 byte-order mark, which RFC 8259 lets a
+    // reader ignore; the next write leaves it out.
+    doc = JSON.parse(text.replace(/^\uFEFF/, ""));
   } catch (e) {
     throw invalid(`not JSON (${(e as Error).message})`);
   }

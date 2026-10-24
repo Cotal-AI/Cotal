@@ -981,7 +981,8 @@ and the manager's log both name the credential and this repair.
 ### Channel seed file
 
 A start seeds the channel registry from the `--channels` file, or from the root's
-`.cotal/channels.json` when you pass none. The file is one JSON object with two optional keys:
+`.cotal/channels.json` when you pass none. The file is one JSON object with two optional keys. A
+UTF-8 byte-order mark at its start, which some Windows editors write, is ignored:
 
 ```json
 {

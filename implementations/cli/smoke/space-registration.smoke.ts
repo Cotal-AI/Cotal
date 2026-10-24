@@ -16,7 +16,8 @@
  * A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
  * no installed provider, ones naming a missing or invalid channels file, and one with an invalid
- * default channels file, have refused and left the root as it was. Create and a later `up` write the
+ * default channels file, have refused and left the root as it was; a default channels file that
+ * begins with a UTF-8 byte-order mark seeds as the JSON after it. Create and a later `up` write the
  * default persona when the root has none, and leave an edited one byte-identical. Under umask 0002,
  * create makes `.cotal` and its persona catalog 0700. A registration
  * whose root is not an absolute path is refused at the space claim on the controller route and on the
@@ -790,12 +791,18 @@ if (process.platform === "linux") {
   check("an invalid default .cotal/channels.json refuses the same way, with a remedy to fix or remove it, before a store or a registration",
     refused(badDefault, 1, "SCHEMA_INVALID") && (badDefault.env?.error?.message ?? "").includes(defaultSeed) && badDefault.env?.error?.remedy === `fix or remove ${defaultSeed}` &&
       !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(badDefault));
-  unlinkSync(defaultSeed);
+  // A channels file that begins with a UTF-8 byte-order mark, as some Windows editors save one, seeds
+  // as the JSON after it.
+  writeFileSync(defaultSeed, '\uFEFF{"channels":{"bomseed":{"description":"saved with a BOM"}}}');
 
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");
   check("up in its root starts it under its name, and the prepared record goes", up.status === 0 && started?.root === fresh && started.server === server && started.origin === "up" && findPreparedSpace("demo") === undefined, shown(up));
   check("the selection still names it", getCurrent() === "demo", getCurrent());
+  const bomSeeded = await json(["channel", "show", "bomseed", "--space", "demo"]);
+  check("a default channels file that begins with a UTF-8 byte-order mark seeds its channels",
+    bomSeeded.status === 0 && JSON.stringify(bomSeeded.env?.result ?? null).includes("saved with a BOM"), shown(bomSeeded));
+  unlinkSync(defaultSeed);
   const reads = await json(["space", "show", "demo"]);
   check("space show now reports its broker answering", reads.env?.result.kind === "space" && reads.env.result.check === "reachable", reads.env?.result);
   // Another up of the running space refreshes it: it writes back a default persona that went

@@ -4364,7 +4364,9 @@ function readChannelsFile(path: string, explicit = true): ChannelRegistryFile {
   try { text = readFileSync(path, "utf8"); }
   catch { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is missing or unreadable`, { remedy: explicit ? "name an existing channels file with --channels <path>, or omit --channels" : remedy }); }
   let value: unknown;
-  try { value = JSON.parse(text); }
+  // An editor on Windows can begin the file with a UTF-8 byte-order mark, which RFC 8259 lets a
+  // reader ignore.
+  try { value = JSON.parse(text.replace(/^\uFEFF/, "")); }
   catch (error) { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is not valid JSON (${(error as Error).message})`, { remedy }); }
   const problem = channelsFileProblem(value);
   if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `the channels file ${path} is invalid: ${problem}`, { remedy });
