@@ -243,9 +243,19 @@ function isRemintable(kind: CredentialKind): boolean {
 type AgentFileRole = "current" | "superseded" | "sole";
 interface LocalCredentialFamily { role: AgentFileRole }
 
-function agentRepair(path: string, family?: LocalCredentialFamily): string {
+function agentRepair(path: string, family?: LocalCredentialFamily, space?: string): string {
   if (family?.role === "superseded") return `an older local incarnation file exists at ${path}; inspect its exact lifecycle and owner before removing it. File ordering alone proves no live successor. Do not respawn an agent from this finding`;
+  const replace = standingReplace(path, space);
+  if (replace) return `if a manager runs this agent, inspect this original lifecycle under it; supported managed renewal can re-sign the same nkey without a replacement. If \`${displayCmd()} auth mint\` wrote it, replace it with ${replace}. Do not spawn another agent only because a local file expired`;
   return `inspect this original lifecycle under its manager; supported managed renewal can re-sign the same nkey without a replacement. Do not spawn another agent only because a local file expired`;
+}
+
+/** The `auth mint --replace` that replaces a standing `<label>.creds`, with the lifetime it gets. An
+ *  incarnation file, `<alias>.<lifecycleUid>.creds`, is no label's standing credential. */
+function standingReplace(path: string, space?: string): string | undefined {
+  const label = basename(path);
+  if (space === undefined || !label.endsWith(".creds") || incarnationUidOf(label) !== undefined) return undefined;
+  return `\`${displayCmd()} auth mint ${aliasOf(label)} --replace --space ${space}\`, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time`;
 }
 
 function agentUnrenewableRepair(): string {
@@ -253,11 +263,14 @@ function agentUnrenewableRepair(): string {
 }
 
 /** The two ways out for an agent credential with no expiry: rotating the space identity retires it
- *  with everything the space issued, and a bounded replacement ends it once the file, and the
- *  no-expiry record beside it when there is one, are gone. */
+ *  with everything the space issued, and a bounded replacement ends it. A label's standing file is
+ *  replaced with `auth mint --replace`, which also drops its no-expiry record; any other file, and
+ *  the record beside it, are removed first. */
 function agentUnboundedRepair(path: string, space: string, record?: string): string {
   const cmd = displayCmd();
-  return `native renewal skips unbounded material. Retire it, with every other credential the space issued, by rotating the space identity: \`${cmd} down\`, \`${cmd} reset space ${space}\`, then \`${cmd} up\`. Or bound it: stop what uses it, remove ${path}${record ? ` and ${record}` : ""} and mint a replacement without --no-expiry, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time; a copy made before stays valid until that rotation. This diagnosis does not prove the agent is stopped or authorize a blind respawn`;
+  const replace = standingReplace(path, space);
+  const bound = replace ? `stop what uses it, then replace it with ${replace}` : `stop what uses it, remove ${path}${record ? ` and ${record}` : ""} and mint a replacement without --no-expiry, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time`;
+  return `native renewal skips unbounded material. Retire it, with every other credential the space issued, by rotating the space identity: \`${cmd} down\`, \`${cmd} reset space ${space}\`, then \`${cmd} up\`. Or bound it: ${bound}; a copy made before stays valid until that rotation. This diagnosis does not prove the agent is stopped or authorize a blind respawn`;
 }
 
 /** Classify every `agent` file by alias family, so a superseded incarnation is never reported as a
@@ -389,7 +402,7 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
   const repair = isRemintable(kind)
     ? `${displayCmd()} doctor auth --fix   (or start the mesh's manager - it is the renewal owner and re-signs + reloads these every half-TTL)`
     : kind === "agent"
-      ? agentRepair(path, live)
+      ? agentRepair(path, live, space)
         // The $SYS pair. A plain `down` + `up` does NOT touch these: `up` mints them only on the
         // branch that CREATES the trust record, so re-upping an existing space reuses the same
         // expired files and reports success. The rotation must be asked for.

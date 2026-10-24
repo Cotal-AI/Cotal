@@ -1,4 +1,4 @@
-import { existsSync, lstatSync } from "node:fs";
+import { existsSync, lstatSync, unlinkSync } from "node:fs";
 import { dirname, parse, resolve, sep } from "node:path";
 import {
   CotalEndpoint, DEV_OWNER, acquireLock, agentFilePath, credsClaims, ensureDirNoSymlink, identityFromCreds,
@@ -28,6 +28,19 @@ const expiry = (seconds: number | undefined): string => {
   const date = new Date(seconds * 1000);
   return Number.isFinite(date.getTime()) ? date.toISOString() : `${seconds} native Unix seconds`;
 };
+
+/** What `--replace` found at the label: a standing credential that has expired, or one with no
+ *  expiry claim. Any other standing credential stays, because something may still use it. */
+interface Replaced { state: "expired" | "unbounded"; expiresAt: number | null }
+
+function replaceable(standing: string, name: string, target: object): Replaced {
+  let exp: number | undefined;
+  try { exp = credsClaims(standing).exp; }
+  catch { throw new CommandFailure("refused", "CONFLICT", `the standing credential "${name}" is not a native credential this command can read; it was not replaced`, { target }); }
+  if (exp === undefined) return { state: "unbounded", expiresAt: null };
+  if (exp * 1000 > Date.now()) throw new CommandFailure("refused", "CONFLICT", `the standing credential "${name}" is valid until ${expiry(exp)}, so --replace left it in place`, { target, remedy: "choose a new label, or run it again with --replace once that credential has expired" });
+  return { state: "expired", expiresAt: exp };
+}
 
 /** Native static profiles only. Labels, files and broker provisioning share one resolved authority. */
 export async function mint(args: ParsedArgs): Promise<void> {
@@ -63,7 +76,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
     ensureDirNoSymlink(volume, ...parent.slice(volume.length).split(sep).filter(Boolean));
     protectedLocalDirectory(parent);
     held = acquireLock(`${out}.mint.lock`, { label: "credential output", waitMs: 0, onTimeout: () => new CommandFailure("refused", "CONFLICT", "another credential writer holds this output") });
-    let previous: Buffer | undefined;
+    let previous: Buffer | undefined, standing: string | undefined, replaced: Replaced | undefined;
     if (values.out !== undefined) {
       const found = lstatSync(out, { throwIfNoEntry: false });
       if (found) {
@@ -73,7 +86,11 @@ export async function mint(args: ParsedArgs): Promise<void> {
         catch { throw new CommandFailure("refused", "CONFLICT", "the output is not an owned native credential; it was not overwritten"); }
         if (!requestedIdentity || old.id !== requestedIdentity.id) throw new CommandFailure("refused", "CONFLICT", "the output already holds another credential; choose a new output or explicitly re-mint its matching --identity", { target });
       }
-    } else if (await store.get(key) !== undefined) throw new CommandFailure("refused", "CONFLICT", "the named standing credential already exists; it was not replaced", { target, remedy: "choose a new label or an explicit separate private --out path" });
+    } else {
+      standing = await store.get(key);
+      if (standing !== undefined && !values.replace) throw new CommandFailure("refused", "CONFLICT", "the named standing credential already exists; it was not replaced", { target, remedy: "choose a new label or an explicit separate private --out path, or replace it with --replace once it has expired or if it has no expiry" });
+      if (standing !== undefined) replaced = replaceable(standing, name, target);
+    }
     let allowSubscribe: string[] | undefined, allowPublish: string[] | undefined, role: string | undefined;
     if (profile === "agent") {
       const path = agentFilePath(root, name);
@@ -108,6 +125,11 @@ export async function mint(args: ParsedArgs): Promise<void> {
         if (!current?.equals(previous)) throw new CommandFailure("refused", "CONFLICT", "the inspected credential output changed; no replacement was made", { target });
         writeSecretFileAtomic(out, creds);
       } else writeSecretFileCreateOnly(out, creds);
+    } else if (standing !== undefined) {
+      // The replacement lands only over the bytes --replace inspected.
+      if (await store.get(key) !== standing) throw new CommandFailure("refused", "CONFLICT", "the standing credential changed after it was inspected; no replacement was made", { target });
+      await store.put(key, creds);
+      changed.push({ kind: "credential-store", key, space, replaced: true, acknowledged: true });
     } else {
       if (!await store.create(key, creds)) throw new CommandFailure("refused", "CONFLICT", "another writer created the standing credential; its value was not overwritten", { target });
       changed.push({ kind: "credential-store", key, space, acknowledged: true });
@@ -119,6 +141,15 @@ export async function mint(args: ParsedArgs): Promise<void> {
     if (!exported?.equals(Buffer.from(creds, "utf8"))) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "credential publication was acknowledged but the current private output could not be confirmed as this result; no issuance was retried", { target, changed });
     // The request sits beside the file, so doctor auth reports this unbounded credential as one asked for.
     let noExpiryRecord: string | null = null;
+    // A replaced credential's no-expiry record names bytes that are gone.
+    if (replaced && !values["no-expiry"]) {
+      const record = noExpiryRecordPath(out);
+      try { unlinkSync(record); changed.push({ kind: "no-expiry-record-removed", path: record, acknowledged: true }); }
+      catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT")
+          throw new CommandFailure("partial", "OPERATION_PARTIAL", `the credential was replaced, but the no-expiry record ${record} of the one it replaced was not removed`, { target, remedy: `remove ${record}; it names a credential that is gone` });
+      }
+    }
     if (values["no-expiry"]) {
       noExpiryRecord = noExpiryRecordPath(out);
       try { writeSecretFileAtomic(noExpiryRecord, noExpiryRecordText(creds)); }
@@ -126,10 +157,10 @@ export async function mint(args: ParsedArgs): Promise<void> {
       changed.push({ kind: "no-expiry-record", path: noExpiryRecord, acknowledged: true });
     }
     const claims = credsClaims(creds);
-    const result = { kind: "credential-minted", name, space, profile, identity: identity.id, principal: principalKey(DEV_OWNER, identity.id).key, lifecycleUid: lifecycleUid ?? null, output: out, provisioned: values.provision === true, identityReused: requestedIdentity !== undefined, lifecycleReused: false, expiresAt: claims.exp ?? null, defaultLifetime, noExpiryRecord, secretOnStdout: false, changed };
+    const result = { kind: "credential-minted", name, space, profile, identity: identity.id, principal: principalKey(DEV_OWNER, identity.id).key, lifecycleUid: lifecycleUid ?? null, output: out, provisioned: values.provision === true, identityReused: requestedIdentity !== undefined, lifecycleReused: false, expiresAt: claims.exp ?? null, defaultLifetime, noExpiryRecord, replaced: replaced ?? null, secretOnStdout: false, changed };
     const warnings = result.identityReused && profile === "agent" ? [{ code: "NEW_OUT_OF_BAND_LIFECYCLE", target: { space, name }, message: "The native out-of-band mint reuses the nkey, not the old lifecycle UID. Old inbox/DM footprints were not claimed as reused." }] : [];
     writeResult(presentationOf(values), { command: "auth mint", target: { space, name }, result, warnings }, (data): Report => ({ sections: [
-      { title: "Private credential written", blocks: [{ kind: "fields", rows: [["Label", data.name], ["Space", data.space], ["Profile", data.profile], ["Principal", data.principal], ["Lifecycle", data.lifecycleUid ?? "not an agent lifecycle"], ["Private file", data.output], ["Expiry", data.noExpiryRecord ? `no expiry claim, as --no-expiry asked; recorded in ${data.noExpiryRecord}` : `${expiry(data.expiresAt ?? undefined)}${data.defaultLifetime ? " (the 24-hour default)" : ""}`], ["Broker footprint", data.provisioned ? "native provisioning acknowledged" : "not provisioned by this command"]] }, { kind: "lines", lines: [{ text: "Credential contents were written privately, not printed. Provisioning is not presence, a joined agent or task completion. Fixed observer/admin profiles do not accept agent ACL overrides.", tone: "hint" }] }] },
+      { title: "Private credential written", blocks: [{ kind: "fields", rows: [["Label", data.name], ["Space", data.space], ["Profile", data.profile], ["Principal", data.principal], ["Lifecycle", data.lifecycleUid ?? "not an agent lifecycle"], ["Private file", data.output], ...(data.replaced ? [["Replaced", data.replaced.state === "expired" ? `a credential that expired at ${expiry(data.replaced.expiresAt ?? undefined)}` : "a credential with no expiry claim"]] as [string, string][] : []), ["Expiry", data.noExpiryRecord ? `no expiry claim, as --no-expiry asked; recorded in ${data.noExpiryRecord}` : `${expiry(data.expiresAt ?? undefined)}${data.defaultLifetime ? " (the 24-hour default)" : ""}`], ["Broker footprint", data.provisioned ? "native provisioning acknowledged" : "not provisioned by this command"]] }, { kind: "lines", lines: [{ text: "Credential contents were written privately, not printed. Provisioning is not presence, a joined agent or task completion. Fixed observer/admin profiles do not accept agent ACL overrides.", tone: "hint" }] }] },
     ] }));
   } catch (error) {
     if (isCommandFailure(error)) {

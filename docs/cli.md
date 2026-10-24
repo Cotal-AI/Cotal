@@ -4985,6 +4985,7 @@ cotal auth mint <name> [--profile agent|observer|admin] [--out <private-file>] [
 cotal auth mint <name> --provision [--role <role>] [--space <space>] [--server <url>]
 cotal auth mint <name> [--expires-in <seconds> | --expires-at <unix-seconds> | --no-expiry]
 cotal auth mint <name> --identity <private-creds> --out <private-file>
+cotal auth mint <name> --replace
 cotal auth mint <name> --endpoint <class> --out <private-file> [--channels <a,b>] [--expires-in <seconds>]
 ```
 
@@ -5003,7 +5004,12 @@ Observer and admin have fixed native scope and reject agent ACL, role and provis
 rather than implying those inputs narrowed anything.
 
 The default credential is created through its canonical secret-store kind. An existing label is
-not overwritten. Use another label or an explicit private output. Explicit exports stay outside
+not overwritten. Use another label or an explicit private output. `--replace` replaces the label's
+standing credential when it has expired or has no expiry claim, under a new identity unless
+`--identity` names one, and removes a no-expiry record beside it unless `--no-expiry` writes a new
+one. The receipt names what it replaced under `result.replaced`. A standing credential that is still
+valid refuses `CONFLICT`, naming its expiry, and so does one that is not a native credential.
+`--replace` takes no `--out`. Explicit exports stay outside
 managed `.cotal` and workstation state. A pre-existing explicit output must be an owned private
 native credential matching the nkey deliberately supplied through `--identity`; unrelated files
 and identities refuse. New outputs use create-only publication. The output's directories follow
@@ -5212,9 +5218,12 @@ stays a finding until its file is gone. The exception is one `auth mint --no-exp
 record beside it still names the file's bytes: someone asked for it, so it is a
 `CREDENTIAL_UNBOUNDED_BY_REQUEST` warning instead, and the run ends ok, exit 0. Both get guidance that
 names both ways out. Rotating the space identity (`cotal down`, `cotal reset space <space>`, then
-`cotal up`) retires it with every other credential the space issued and removes the file. Removing
-the file and its record once nothing uses it, and minting a replacement without `--no-expiry`, bounds
-it from then on; a copy made before stays valid until that rotation. `doctor auth` reads only the
+`cotal up`) retires it with every other credential the space issued and removes the file. Replacing
+a label's file with `cotal auth mint <label> --replace` once nothing uses it bounds it from then on,
+and so does removing any other file and its record and minting a replacement without `--no-expiry`;
+a copy made before stays valid until that rotation. An expired label's file is a finding too, and
+its guidance names that same `--replace`, next to the managed renewal that re-signs an agent a
+manager runs. `doctor auth` reads only the
 space's credential store, so a credential minted with `--out` is not listed, whatever its expiry.
 Missing local signing trust is not inferred to mean an open or healthy mesh. An unreadable renewal
 record prevents a complete healthy verdict. Locally ordered older incarnation files are labeled as
