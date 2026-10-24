@@ -4841,11 +4841,37 @@ function checkStartStore(storeDir: string | undefined, space: string): void {
  */
 function writeOpenBrokerConf(storeDir: string, space: string, opts: { port: number; host: string; transport: BrokerTransport; maxFileStore?: number }): string {
   const confPath = cotalPath("server-open.conf");
-  writeSecretFile(
+  writeBrokerConfig(
     confPath,
     namedOpenConfig(openServerConfig({ port: opts.port, host: opts.host, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore: opts.maxFileStore, transport: opts.transport }), space),
   );
   return confPath;
+}
+
+/** Write a broker configuration that `up` renders again on every start. Something other than this
+ *  account's own regular file at its path, such as a symlink or a folder, is refused by name and
+ *  left as it is. Moving it aside loses nothing, because the next `up` writes the file again. */
+function writeBrokerConfig(path: string, text: string): void {
+  try { writeSecretFile(path, text); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EPERM" && code !== "EISDIR" && code !== "EACCES") throw error;
+    const entry = lstatSync(path, { throwIfNoEntry: false });
+    const what = entry?.isSymbolicLink() ? "is a symlink" : entry?.isDirectory() ? "is a folder" : code === "EACCES" ? "cannot be written by this account" : "is not a regular file this account owns";
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `the broker configuration ${path} ${what}, so up cannot write it; it was left as it is and nothing was started`, {
+      target: { path }, remedy: `move it aside, as mv ${shellWord(path)} ${shellWord(`${path}.old`)} does, then run cotal up again, which writes it from the space's trust`,
+    });
+  }
+}
+
+/** The refusal for a trust record of the space that this account cannot read. It holds the space's
+ *  keys, so the step makes it readable again and never removes it. Any other error as it is. */
+function unreadableTrust(error: unknown): unknown {
+  const { code, path } = error as NodeJS.ErrnoException;
+  if (code !== "EACCES" && code !== "EPERM" || typeof path !== "string") return error;
+  return new CommandFailure("refused", "PERMISSION_DENIED", `the space's trust record ${path} cannot be read by this account (${code}); nothing was started`, {
+    target: { path }, remedy: `make it readable by you again, as chmod 600 ${shellWord(path)} does, then run cotal up again; it holds the space's keys, so keep it`,
+  });
 }
 
 /** Ensure the space's trust material exists, render a server config, and mint a privileged
@@ -4881,7 +4907,7 @@ async function authSetup(
 ): Promise<{ confPath: string; creds: string; wsPort: number; prepared?: AuthPrepared; stateDir?: string }> {
   const dir = authDir(cotalRoot()); // the broker config (server.conf) still lands under the FS auth dir
   const store = workspaceSecretStore(cotalRoot());
-  let auth: SpaceAuth | undefined = await getSpaceAuth(store, space);
+  let auth: SpaceAuth | undefined = await getSpaceAuth(store, space).catch((error: unknown) => { throw unreadableTrust(error); });
   if (!auth) {
     auth = await createSpaceAuth(space);
     // The trust record is written last. Until it exists the next up treats the space as fresh and
@@ -4995,7 +5021,7 @@ async function authSetup(
   }
   // Owner-private regardless of umask, as `writeOpenBrokerConf` writes the open configuration: the
   // broker preset refuses a configuration that other local users can write.
-  writeSecretFile(confPath, serverConfig(auth, spaces, { transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, host, wsPort, wsHost: host, extraAccounts }));
+  writeBrokerConfig(confPath, serverConfig(auth, spaces, { transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, host, wsPort, wsHost: host, extraAccounts }));
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.
