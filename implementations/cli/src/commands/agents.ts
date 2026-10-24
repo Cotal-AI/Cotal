@@ -265,6 +265,8 @@ function fmtUptime(ms: number): string {
 export type SeatLocation =
   | { kind: "pin"; instanceId: string }
   | { kind: "unpinned" } // one instance, or a mode that cannot scatter — no ambiguity to resolve
+  /** The registry lists no live manager, so no instance can host the seat or be asked for it. */
+  | { kind: "no-manager"; space: string; native: { code?: string; detail: string } }
   | { kind: "absent"; checked: number }
   /** #1638 item 3: the search could not settle. At least one registered instance did not answer
    *  FOR ITSELF, so the seat may be sitting on it; absence is not what was established. */
@@ -284,6 +286,7 @@ export async function locateSeat(
   if (probe.auth.managerInstanceId !== undefined) return { kind: "pin", instanceId: probe.auth.managerInstanceId };
   if (probe.auth.bearer) return { kind: "unpinned" };
   const scatter = await scatterManager(probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
+  if (!scatter.ok && scatter.noLiveManager) return { kind: "no-manager", space: probe.space, native: { code: scatter.code, detail: scatter.error } };
   if (!scatter.ok) return { kind: "unpinned" }; // cannot locate ⇒ behave exactly as before, never worse
   return locateSeatIn(scatter.instances, name);
 }
@@ -320,6 +323,11 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
   const loc = await locateSeat(v, String(v.name));
   if (loc.kind === "pin") return loc.instanceId;
   if (loc.kind === "unpinned") return undefined;
+  // Refused before anything is sent, as `ps` refuses, rather than after a describe no manager can answer.
+  if (loc.kind === "no-manager") {
+    recordOperationSpace(loc.space);
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to reach agent "${oneLine(String(v.name))}"`, { target: { space: loc.space, managerInstanceId: null, agent: String(v.name) }, native: loc.native, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
+  }
   console.error(c.red(`✗ ${seatMissRefusal(String(v.name), verb, loc)}`));
   process.exit(1);
 }

@@ -449,7 +449,8 @@ export interface ScatterInstanceReply {
   /** Set on unreachable slots only: a slot that ANSWERED needs no liveness verdict. */
   liveness?: ScatterInstanceLiveness;
 }
-export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { ok: false; error: string; code?: string; unanswered?: boolean };
+/** A failed scatter's `noLiveManager` says the registry was read and lists no live manager. */
+export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { ok: false; error: string; code?: string; unanswered?: boolean; noLiveManager?: true };
 
 /** Open one short-lived control connection under whichever of the three auth shapes this command
  *  holds (static creds / user bearer + sentinel / bare open mesh) and hand it to `fn`. Extracted so
@@ -690,7 +691,7 @@ async function askManagerScatterEp(
     });
   } catch (e) {
     const { error, code, unanswered } = epRailFailure(e);
-    return { ok: false, error: error ?? "error", ...(code === undefined ? {} : { code }), ...(unanswered ? { unanswered } : {}) };
+    return { ok: false, error: error ?? "error", ...(code === undefined ? {} : { code }), ...(unanswered ? { unanswered } : {}), ...(noLiveInstances(e) ? { noLiveManager: true as const } : {}) };
   }
 
   // ---- the LOCAL pinned re-mint, decided by {@link scatterProbeMaterial} rather than inline.

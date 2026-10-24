@@ -3598,6 +3598,10 @@ A write the manager cannot confirm, such as a terminal write that failed partway
 `Outcome unconfirmed` and is not typed again. Part of the text may already be at the prompt, so check
 the seat before you send it again.
 
+With no manager running, as after `cotal service stop stack-manager`, `input` refuses
+`TARGET_UNAVAILABLE` (exit 2) before it sends anything and names bare `cotal up`, as `ps` does.
+`stop` and `attach` find their seat the same way and refuse the same.
+
 **This one is operator-only, and more narrowly than `stop` or `attach`.** Those two are granted to
 anything holding `spawn`, so an agent can stop and attach to seats under its own owner. `input` is
 not: it is granted only to operator credentials, which on a user-auth mesh means your ledger row
