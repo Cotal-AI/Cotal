@@ -4,7 +4,8 @@
  * space has this exact name", `space forget` called a space started before "never started", and the
  * delete help described `-y` with the `add` text first. The `space` listing said "No spaces
  * registered" above the prepared space it listed, under a `SPACE  Project` header. `space forget
- * --yes` said `--yes` is taken by `space add` only, though `space delete` takes it too.
+ * --yes` said `--yes` is taken by `space add` only, though `space delete` takes it too. A second
+ * `space create` in the folder named no step for the space already there.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME. No broker is
  * started and nothing is deleted.
@@ -59,6 +60,14 @@ check("control: a name nothing records is still not found, exit 2", unknown.stat
 
 const help = run(["help", "space", "delete"]);
 check("delete help describes -y without the add text first", help.status === 0 && /a delete must name the exact space/.test(help.stdout) && !/add: skip terminal confirmation/.test(help.stdout), shown(help));
+
+// A second space in this folder named no step for the space already here, and told a caller who
+// passed --root to pass --root.
+const second = run(["space", "create", "b4c", "--root", root, "--json"]);
+check("space create in a folder another space holds is CONFLICT, exit 2, naming the steps for that space",
+  second.status === 2 && second.envelope?.error?.code === "CONFLICT"
+    && Boolean(second.envelope.error.remedy?.startsWith('create "b4c" in another folder with --root <dir>; for "b4b", which uses this folder, start it with `cotal up` from '))
+    && Boolean(second.envelope.error.remedy?.endsWith(", select it with `cotal use b4b`, or forget it with `cotal space forget b4b`")), second.envelope?.error);
 
 // --yes belongs to space delete too; the refusal named space add alone.
 const forgetYes = run(["space", "forget", "b4b", "--yes"]);

@@ -474,9 +474,11 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
       throw refuse("CONFLICT", link !== undefined ? `${join(root, ".cotal")} is a link to ${link}, which holds the records of "${held[0]}" at ${origin}` : `${root} holds records copied or moved from ${origin}, the root of "${held[0]}"`, target, `create "${name}" in another folder with ${flag} <dir>`);
     }
     const stopped = held.length === 1 && journaled === undefined && !loadMeshes().some((m) => here(m.root)) && preparedSpaceAt(root) === undefined;
+    // The next step names the space already here, so whoever meant it can start, select or forget it.
+    const which = held.length === 1 ? held[0]! : "<space>";
     throw refuse("CONFLICT", `${root} is already the root of "${held.join('", "')}"`, target, stopped
       ? `start "${held[0]}" again with \`cotal up\` from ${root}${held[0] === name ? "" : `, or create "${name}" in another folder with ${flag} <dir>`}`
-      : `create the space in another folder, or pass ${flag} <dir>`);
+      : `create "${name}" in another folder with ${flag} <dir>; for "${held.join('", "')}", which ${held.length === 1 ? "uses" : "use"} this folder, start it with \`cotal up\` from ${root}, select it with \`cotal use ${which}\`, or forget it with \`cotal space forget ${which}\``);
   }
   return "created";
 }

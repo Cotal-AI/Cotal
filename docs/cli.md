@@ -2089,7 +2089,9 @@ prepared the same way, before it starts anything, and names `cotal space forget`
 `space add` and `meshes add` refuse a longer name with `USAGE_INVALID`, exit 1, and write no
 record, because a space added from elsewhere is carried by the same files.
 It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
-space's root, and the home folder, whose `.cotal` holds this machine's own records. A folder this
+space's root, and the home folder, whose `.cotal` holds this machine's own records. For a folder
+another space uses, the next step names creating it in another folder with `--root <dir>`, and
+starting, selecting or forgetting the space that uses the folder. A folder this
 account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so
 does a Cotal home (`~/.cotal` or `COTAL_HOME`) it cannot write. A `.cotal` that links to a folder that
 does not exist refuses `TARGET_NOT_FOUND`, exit 2, naming the link and its target. A folder whose
