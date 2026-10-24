@@ -102,7 +102,7 @@ import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positio
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { askManager, failIfNotOk, liveManagerIds, onInstance, refuseWithoutLiveManager, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
 import { managerPin, managersWithPersona, rerunOn } from "../lib/manager-choice.js";
-import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
+import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { callerHarness, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
 import { defaultPersonaFix } from "../lib/default-persona.js";
@@ -286,11 +286,7 @@ export function spawnComplete(argv: string[]): CompletionResult {
   if (flag?.name === "config") {
     const current = argv[argv.length - 1] ?? "";
     if (current.includes("/") || current.includes("\\") || current.endsWith(".md")) return { items: [], directive: "default" };
-    try {
-      return { items: personaItems(argv), directive: "nofiles" };
-    } catch {
-      return { items: [], directive: "nofiles" };
-    }
+    return { items: personaItems(argv), directive: "nofiles" };
   }
   if (flag && ["subscribe", "allow-subscribe", "allow-publish"].includes(flag.name))
     return { items: declaredFrom(argv, listDeclaredChannels).map((value) => ({ value, description: "declared channel" })), directive: "nofiles" };
@@ -300,15 +296,8 @@ export function spawnComplete(argv: string[]): CompletionResult {
 
   const positionals = positionalsForCompletion(argv, spawnFlags);
   // Only the first word after `spawn` is the persona positional; once it's typed, defer to the shell.
-  if (positionals.length <= 1 && !hasCompletedFlagValue(argv, spawnFlags, "config") && !hasCompletedFlagValue(argv, spawnFlags, "file")) {
-    try {
-      return { items: personaItems(argv), directive: "nofiles" };
-    } catch {
-      // No single target (no mesh, or several with no `current`) — fail CLOSED: offer no personas
-      // rather than throw. `cotal spawn --space <TAB>` still lists the running meshes.
-      return { items: [], directive: "nofiles" };
-    }
-  }
+  if (positionals.length <= 1 && !hasCompletedFlagValue(argv, spawnFlags, "config") && !hasCompletedFlagValue(argv, spawnFlags, "file"))
+    return { items: personaItems(argv), directive: "nofiles" };
   return { items: [], directive: "nofiles" };
 }
 
@@ -319,8 +308,14 @@ const catalogRoot = (argv: string[]): string => personaCatalog({
   server: completedFlagValue(argv, spawnFlags, "server"),
 }).root;
 
+/** The personas this spawn would launch from. With no single target (no mesh, or several with no
+ *  `current`) it fails CLOSED and offers none; `cotal spawn --space <TAB>` still lists the running
+ *  meshes. A catalog folder that cannot be read throws, so the completion fails and names it. */
 function personaItems(argv: string[]) {
-  return listPersonas(catalogRoot(argv)).map((p) => ({ value: p.name }));
+  let root: string;
+  try { root = catalogRoot(argv); }
+  catch { return []; }
+  return listPersonaNames(root).map((value) => ({ value }));
 }
 
 /** Channels/roles declared by the TARGET mesh's personas — the same root {@link personaItems}

@@ -549,6 +549,19 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const directives = r.stdout.split("\n").filter((line) => line.startsWith(":"));
     check(`${words.join(" ")} leaves out a catalog file name with a control character`, exactly(r, ["default"]) && directives.length === 1 && !/[\u0000-\u0009\u000b-\u001f\u007f‮]/u.test(r.stdout), shown(r));
   }
+  // A catalog folder that cannot be read is not an empty catalog: the completion fails, so the shell
+  // offers nothing, and COTAL_COMPLETE_DEBUG names the folder. Root reads through the mode, so the
+  // cell runs only for an ordinary POSIX user.
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const folder = realpathSync(agents);
+    chmodSync(agents, 0o000);
+    for (const words of [["persona", "show"], ["persona", "edit"], ["personas", "show"], ["spawn"]]) {
+      const r = s.run(["__complete", ...words, "--space", "cc", ""], { COTAL_COMPLETE_DEBUG: "1" });
+      check(`${words.join(" ")} fails its completion on an unreadable catalog folder and names it`,
+        r.status === 1 && r.stdout === "" && r.stderr.includes(`cannot read the persona catalog ${folder}: permission denied`), shown(r));
+    }
+    chmodSync(agents, 0o700);
+  }
   // A path lets the shell complete file names; any other value does not.
   for (const [words, directive] of [[["space", "add", "x", "--root"], ":default"], [["space", "add", "x", "--file"], ":default"], [["channel", "set", "ops", "--creds"], ":default"],
     [["status", "--creds"], ":default"], [["history", "--creds"], ":default"], [["watch", "--creds"], ":default"], [["who", "--creds"], ":default"],

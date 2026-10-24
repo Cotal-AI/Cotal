@@ -110,16 +110,18 @@ export function personasComplete(argv: string[]): CompletionResult {
     // Complete from the TARGET mesh's catalog, matching what the subcommand will actually open —
     // a <TAB> that offers a name the command then reports as missing is worse than no completion.
     // Resolved offline (no probe), and FAIL CLOSED: with no single target, offer nothing rather
-    // than throw into the operator's shell (the same posture as `spawnComplete`).
+    // than throw into the operator's shell (the same posture as `spawnComplete`). A catalog folder
+    // that cannot be read fails the completion instead, naming it.
+    let root: string;
     try {
-      const root = personaCatalog({
+      root = personaCatalog({
         space: completedFlagValue(argv, flags, "space"),
         server: completedFlagValue(argv, flags, "server"),
       }).root;
-      return { items: listPersonaNames(root).map((value) => ({ value })), directive: "nofiles" };
     } catch {
       return { items: [], directive: "nofiles" };
     }
+    return { items: listPersonaNames(root).map((value) => ({ value })), directive: "nofiles" };
   }
   return { items: [], directive: "nofiles" };
 }

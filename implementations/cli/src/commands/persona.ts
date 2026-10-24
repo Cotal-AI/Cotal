@@ -8,7 +8,7 @@ import {
   recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { readPersonas } from "../lib/personas.js";
+import { listPersonaNames, readPersonas } from "../lib/personas.js";
 import {
   commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource,
   requirePersonaSource, reservedPersonaName, serializePersona, validatePersona, type PersonaCatalog,
@@ -212,10 +212,10 @@ export function personaComplete(argv: string[]): CompletionResult {
   if (completedFlagValue(argv, personaFlags, "on") !== undefined) return { items: words.length <= 1 ? ["show", "create"].map(value => ({ value })) : [], directive: "nofiles" };
   if (words.length <= 1) return { items: ["show", "create", "edit", "remove"].map(value => ({ value })), directive: "nofiles" };
   if (["show", "edit", "remove", "rm"].includes(words[0]!) && words.length === 2) {
-    try {
-      const catalog = personaCatalog({ space: completedFlagValue(argv, personaFlags, "space"), server: completedFlagValue(argv, personaFlags, "server") });
-      return { items: readPersonas(catalog.root).map(entry => ({ value: entry.name })), directive: "nofiles" };
-    } catch { return { items: [], directive: "nofiles" }; }
+    let catalog: PersonaCatalog;
+    try { catalog = personaCatalog({ space: completedFlagValue(argv, personaFlags, "space"), server: completedFlagValue(argv, personaFlags, "server") }); }
+    catch { return { items: [], directive: "nofiles" }; }
+    return { items: listPersonaNames(catalog.root).map(value => ({ value })), directive: "nofiles" };
   }
   return { items: [], directive: "nofiles" };
 }

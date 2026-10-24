@@ -6005,7 +6005,9 @@ values a write accepts. `docs` offers its pages, `watch --view` its views and `s
 modes. A channel name for `send -c`, `history` or `channel show`, `members`, `set` and `remove` comes
 from the channels the target space's personas declare, because the broker keeps the others. A
 candidate that holds a control character, such as a persona file name with an escape sequence or a
-newline in it, is not offered. `persona` still lists that file with the characters escaped. The bash
+newline in it, is not offered. `persona` still lists that file with the characters escaped. A
+persona catalog folder that cannot be read fails the completion of a persona name, so the shell
+offers none, and with `COTAL_COMPLETE_DEBUG=1` it prints the folder. The bash
 and zsh stubs complete file names where a value takes a path. The fish stub offers only cotal's own
 candidates.
 
