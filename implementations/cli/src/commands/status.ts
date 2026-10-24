@@ -128,6 +128,7 @@ import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import {
   journalRecordedElsewhere,
   readStackJournal,
+  serviceHeldRecords,
   STACK_DEFINITION,
   stackStartedWithoutManager,
   stackOperationBlock,
@@ -253,6 +254,9 @@ export interface StatusResult {
     controllerStack: boolean;
     /** Whether that controller stack was started with `--no-manager`, so it runs no manager by choice. */
     noManager: boolean;
+    /** The service of this space, outside that stack, whose process runs this root's manager, as a
+     *  `manager` preset started here does. Null when none does; older inputs may omit it. */
+    managerService?: { definition: string; instanceId: string } | null;
     /** The member that keeps `up` and `down` from settling that stack's last operation, which ended
      *  with no recorded outcome, with why and the way out their refusal names. Null when none does;
      *  older inputs may omit it. */
@@ -866,7 +870,13 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   try { maintained = readMaintenanceJournal(root) !== undefined; } catch { maintained = true; }
   // Its next step is the unusable journal's, which every stack command refuses until it is fixed.
   if (storedState && !maintained && !unusable) hints.push(`if the stored JetStream state is stale: ${cmd} clean store --force, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
-  return folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, noManager, stackBlock, stackUnfinished);
+  // A stack started with --no-manager can still have a manager: a `manager` preset service run here.
+  let managerService: StatusResult["folder"]["managerService"] = null;
+  if (noManager && journal) try {
+    const held = serviceHeldRecords(root, journal.space).find((row) => row.record.name === "manager");
+    managerService = held ? { definition: held.definition, instanceId: held.instanceId } : null;
+  } catch { managerService = null; }
+  return { ...folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, noManager, stackBlock, stackUnfinished), managerService };
 }
 
 /** The folder's persona catalog, which must never let a catalog imply a `spawn` the operator does
@@ -1657,8 +1667,12 @@ function selectedOverview(r: StatusResult): Section | undefined {
     }
   }
   if (s.snapshot.state === "unavailable") rows.push(["Live details", stateCell(`unavailable · ${s.snapshot.reason}`, "waiting")]);
-  if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.controllerStack && r.folder.noManager)
-    rows.push(["Manager", stateCell("none · this stack was started with --no-manager; bare cotal up adds it", "hint")]);
+  if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.controllerStack && r.folder.noManager) {
+    const service = r.folder.managerService;
+    rows.push(["Manager", service
+      ? stateCell(`the ${service.definition} service · instance ${service.instanceId} · outside this stack, which was started with --no-manager`, "ok")
+      : stateCell("none · this stack was started with --no-manager; bare cotal up adds it", "hint")]);
+  }
   const blocks: Section["blocks"][number][] = [{ kind: "fields", rows }];
   if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.controllerStack) {
     blocks.push({ kind: "lines", lines: [cell("Controller stack · its members are the stack-* rows under Owned services", "hint")] }, ...stackLines(r.folder));
