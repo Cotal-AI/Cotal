@@ -764,7 +764,10 @@ or an access list, and does not refuse a link: a symlink or junction is followed
 record schema, the regular-file check and the refusal of a link inside a record store's own
 directories still apply. When a service path check refuses a path, the refusal names the option
 and each path that failed once, with its reason and one `chmod` that fixes every writable one. A
-whole-stack failure shows that sentence as its native detail.
+whole-stack failure shows that sentence as its native detail. On POSIX, a credential file a command
+is given, such as a `<private-file>` argument, and a saved private record must be a regular file this
+account owns with no group or other access. One that is not, or that this account cannot open,
+refuses `PERMISSION_DENIED` (exit 2) and names the file.
 
 A fresh prepared static-auth, open or plain-loopback user-auth root starts through the service
 controller. It records its mode, definitions and full instance IDs in the private

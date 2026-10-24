@@ -248,6 +248,17 @@ try {
   try { protectedCredentialReference(creds); } catch (error) { thrown = error; }
   assert.ok(thrown instanceof CommandFailure && thrown.code === "PERMISSION_DENIED", "a group-writable credential file refuses");
   assert.match((thrown as Error).message, /must be an owned private regular file/, "a group-writable credential file names the file rule");
+  assert.ok((thrown as Error).message.includes(`the referenced credential ${creds} `) && ((thrown as CommandFailure).target as { path?: unknown } | undefined)?.path === creds, "it names the file, in the text and the target");
+  // The bounded reader names the file it refused, too: a link it does not follow, and a saved record
+  // that is not private.
+  const credsLink = join(dir, "creds-link");
+  symlinkSync(creds, credsLink);
+  for (const [path, mode, text] of [[credsLink, 0o600, `the local record source ${credsLink} could not be opened without following links`], [creds, 0o640, `the saved local record ${creds} is not owned and private`]] as const) {
+    chmodSync(creds, mode);
+    let read: unknown;
+    try { readLocalRecordSource(path, 1024, true); } catch (error) { read = error; }
+    assert.ok(read instanceof CommandFailure && read.code === "PERMISSION_DENIED" && read.message === text && (read.target as { path?: unknown } | undefined)?.path === path, `${path} (mode ${mode.toString(8)}) is refused naming it\n${String(read)}`);
+  }
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
