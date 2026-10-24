@@ -267,7 +267,7 @@ try {
   check("a re-grant naming ONLY --scope is refused, naming the flags it left off",
     wWide.status !== 0 && wWide.out.includes("--allow-subscribe, --allow-publish left off"), wWide.out);
   const wList = await cotal(["actor", "list"]);
-  check("…and the narrow row is unchanged", wList.status === 0 && /\.widenprobe\s+interactive\s+spawn\s+general\s+general$/m.test(plain(wList.out)), wList.out);
+  check("…and the narrow row is unchanged", wList.status === 0 && /\.widenprobe\s+interactive\s+spawn\s+general\s+general(\s|$)/m.test(plain(wList.out)), wList.out);
   const wBack = await cotal(["actor", "grant", "widenprobe", "--sub", sub, "--scope", "spawn", "--allow-subscribe", "general", "--allow-publish", "general"]);
   check("re-granting with every field named still succeeds",
     wBack.status === 0 && field(wBack.out, "May read", "general") && field(wBack.out, "May post", "general"), wBack.out);
