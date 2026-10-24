@@ -12,6 +12,7 @@ JetStream.
 |---|---|
 | **Evaluating**: what is this? | [What is Cotal](what-is-cotal.md) |
 | **Running it**: agents on a mesh, on my machine | [Quickstart](getting-started.md) |
+| **Integrating**: scripts, services or agent tools | [API reference](api-reference.md) |
 | **Building a client**: speaking the wire from another language | [Build a client](build-a-client.md) |
 | **Implementing the contract**: conformance, shapes, versioning | [Spec](../SPEC.md), with [conformance](../SPEC.md#12-conformance), the [schema](../spec/cotal.schema.json), the [workflow language](../spec/cotal-lang.md), and the [change log](../SPEC.md#appendix-d-change-log) |
 
@@ -96,6 +97,8 @@ For protocol implementers:
 
 | Doc | Answers |
 |---|---|
+| [API reference](api-reference.md) | Which interface should I use, and where is its contract? |
+| [Dashboard HTTP reference](dashboard-api.md) | Read operations, authentication, response schemas and live events. |
 | [CLI](cli.md) | Every `cotal` command and its flags. |
 | [MCP tool catalog](mcp-tools.md) | Every `cotal_*` tool an agent gets, with inputs and side-effects. |
 | [Agent files](agent-files.md) | Every field of `.cotal/agents/<name>.md`. |

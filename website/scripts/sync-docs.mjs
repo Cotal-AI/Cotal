@@ -19,6 +19,7 @@ import { decodeString } from 'micromark-util-decode-string';
 import { normalizeUri } from 'micromark-util-sanitize-uri';
 import { parse as parseHtml, parseFragment } from 'parse5';
 import { PROMPT_FENCE } from '../src/prompt.js';
+import { dashboardMarkdown, loadDashboardSpec } from './dashboard-api.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
@@ -87,6 +88,8 @@ const groups = [
   {
     label: 'Reference',
     files: [
+      'docs/api-reference.md',
+      'docs/dashboard-api.md',
       'docs/cli.md',
       'docs/mcp-tools.md',
       'docs/agent-files.md',
@@ -108,6 +111,10 @@ const groups = [
     files: ['docs/roadmap.md', 'docs/release.md', 'docs/stability.md', 'docs/setup-internals.md'],
   },
 ];
+
+const dashboardSpec = loadDashboardSpec();
+if (readFileSync(join(repoRoot, 'docs/dashboard-api.md'), 'utf8') !== dashboardMarkdown(dashboardSpec))
+  throw new Error('Dashboard reference is stale; run npm --prefix website run gen:api');
 
 const sources = groups.flatMap((g) => g.files);
 
@@ -343,6 +350,9 @@ mkdirSync(genDir, { recursive: true });
 
 // Publish the machine-readable schema at its canonical URL (/cotal.schema.json).
 mkdirSync(pubDir, { recursive: true });
+const dashboardJson = JSON.stringify(dashboardSpec, null, 2) + '\n';
+writeFileSync(join(pubDir, 'dashboard.openapi.json'), dashboardJson);
+writeFileSync(join(genDir, 'dashboard.openapi.json'), dashboardJson);
 copyFileSync(join(repoRoot, 'spec', 'cotal.schema.json'), join(pubDir, 'cotal.schema.json'));
 
 // Publish the installer at /install.sh, which is what get.cotal.ai serves. The repo root

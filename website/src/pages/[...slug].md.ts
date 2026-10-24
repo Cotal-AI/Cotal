@@ -4,6 +4,8 @@
 import type { APIRoute, GetStaticPaths } from 'astro';
 import { getCollection } from 'astro:content';
 import { PROMPT_FENCE } from '../prompt';
+import { dashboardPages } from '../../scripts/dashboard-api.mjs';
+import dashboardSpec from '../generated/dashboard.openapi.json';
 
 const isIndex = (id: string) => id === '' || id === 'index';
 
@@ -20,16 +22,19 @@ function restorePrompt(body: string): string {
 
 export const getStaticPaths: GetStaticPaths = async () => {
   const docs = await getCollection('docs');
-  return docs
-    .filter((entry) => !isIndex(entry.id))
-    .map((entry) => ({ params: { slug: entry.id }, props: { entry } }));
+  return [
+    ...docs.filter((entry) => !isIndex(entry.id))
+      .map((entry) => ({ params: { slug: entry.id }, props: { entry } })),
+    ...dashboardPages(dashboardSpec).map((page) => ({
+      params: { slug: page.slug }, props: { markdown: page.markdown },
+    })),
+  ];
 };
 
 export const GET: APIRoute = ({ props }) => {
   const { entry } = props as { entry: { id: string; body?: string; data: { title?: string } } };
-  const title = entry.data.title ?? entry.id;
-  const body = restorePrompt((entry.body ?? '').trim());
-  const markdown = `# ${title}\n\n${body}\n`;
+  const markdown = typeof props.markdown === 'string' ? props.markdown
+    : `# ${entry.data.title ?? entry.id}\n\n${restorePrompt((entry.body ?? '').trim())}\n`;
   return new Response(markdown, {
     headers: {
       'content-type': 'text/markdown; charset=utf-8',

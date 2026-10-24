@@ -3,13 +3,15 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Cotal documentation site — Astro Starlight, agent-native (llms.txt, per-page Markdown, content negotiation).",
+  "description": "Cotal documentation site \u2014 Astro Starlight, agent-native (llms.txt, per-page Markdown, content negotiation).",
   "scripts": {
-    "sync": "node scripts/sync-docs.mjs",
+    "sync": "node scripts/generate-openapi-docs.mjs --check && node scripts/sync-docs.mjs",
     "dev": "npm run sync && astro dev",
-    "build": "npm run sync && astro build && node scripts/check-dist.mjs",
+    "build": "npm run sync && npm test && astro build && node scripts/check-dist.mjs && node scripts/check-openapi-dist.mjs",
     "preview": "astro preview",
-    "astro": "astro"
+    "astro": "astro",
+    "gen:api": "node scripts/generate-openapi-docs.mjs",
+    "test": "node --test scripts/dashboard-api.test.mjs"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.41.1",
@@ -22,9 +24,11 @@
     "micromark-util-sanitize-uri": "^2.0.1",
     "parse5": "^7.3.0",
     "sharp": "^0.34.0",
-    "starlight-llms-txt": "^0.11.0"
+    "starlight-llms-txt": "^0.11.0",
+    "starlight-openapi": "0.27.0"
   },
   "devDependencies": {
+    "@readme/openapi-parser": "4.1.2",
     "wrangler": "^4.105.0"
   }
 }
