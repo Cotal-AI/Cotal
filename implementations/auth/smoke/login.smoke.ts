@@ -333,6 +333,7 @@ console.log("C2) advertised space catalog cache");
   let conditional = 0;
   let failCatalog = false;
   let invalidCatalog = false;
+  let bareRegistration = false;
   let foreignTrust: "idp" | "issuer" | "endpoint" | undefined;
   let advertiseCatalog = true;
   const catalogDir = mkdtempSync(join(tmpdir(), "cotal-login-catalog-"));
@@ -354,7 +355,7 @@ console.log("C2) advertised space catalog cache");
         res.writeHead(200, { "content-type": "application/json", etag: '"bad"' });
         return void res.end(JSON.stringify({ v: 2 }));
       }
-      if (req.headers["if-none-match"] === '"v1"' && foreignTrust === undefined) return void res.writeHead(304).end();
+      if (req.headers["if-none-match"] === '"v1"' && foreignTrust === undefined && !bareRegistration) return void res.writeHead(304).end();
       res.writeHead(200, { "content-type": "application/json", etag: '"v1"' });
       const spaces = Array.from({ length: 100 }, (_, i) => ({
         id: `space-${i}`,
@@ -377,6 +378,7 @@ console.log("C2) advertised space catalog cache");
           sentinelCreds: `catalog-sentinel-${i}`,
         },
       }));
+      if (bareRegistration) delete (spaces[0] as { registration?: unknown }).registration;
       return void res.end(JSON.stringify({
         v: 1,
         account: { idpUrl: `${catalogBase}/api/auth`, issuer: "http://127.0.0.1", sub: "cat-user" },
@@ -537,6 +539,14 @@ console.log("C2) advertised space catalog cache");
   const invalid = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate, apply });
   check("an invalid candidate refuses the whole update and retains the prior snapshot", invalid[0]?.state === "failed" && invalid[0].snapshot !== undefined, invalid);
   invalidCatalog = false;
+  // A row the provider sent with no registration is a missing field, not a file that failed to parse.
+  bareRegistration = true;
+  const bare = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate, apply });
+  check("a row with no registration is refused as no bundle object and retains the prior snapshot",
+    bare[0]?.state === "failed" && bare[0].snapshot !== undefined &&
+      bare[0].error === 'space catalog entry "Shared project": the user-auth bundle must be a JSON object',
+    bare);
+  bareRegistration = false;
   const cacheBeforeTrustProbe = readFileSync(cacheFile, "utf8");
   const registryBeforeTrustProbe = new Map(readdirSync(meshDir).map((file) => [file, readFileSync(join(meshDir, file), "utf8")]));
   for (const trustCase of ["idp", "issuer", "endpoint"] as const) {

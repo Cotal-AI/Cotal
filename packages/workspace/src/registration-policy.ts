@@ -51,7 +51,9 @@ export async function checkDiscoveryDocument(res: Response): Promise<Check<UserB
   return checkBundleDocument(doc);
 }
 
-function checkBundleDocument(parsed: unknown): Check<UserBundle> {
+/** The bundle rules for a value the caller already holds, such as a catalog row's registration.
+ *  There is no text to parse, so an absent or non-object value is refused as not an object. */
+export function checkBundleDocument(parsed: unknown): Check<UserBundle> {
   const doc = parsed as Partial<UserBundle> & { userAuth?: unknown };
   if (doc === null || typeof doc !== "object") return bad("✗ the user-auth bundle must be a JSON object");
   if (typeof doc.space !== "string" || !doc.space) return bad("✗ the user-auth bundle names no space");
