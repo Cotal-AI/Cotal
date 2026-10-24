@@ -4790,7 +4790,9 @@ older status may already have been removed. That uncertain outcome retains the t
 not retried. Raw probe diagnostics and credential material are not copied into the receipt.
 
 The old `deregister-instance` spelling is a hidden migration refusal. It starts no operation
-and names the literal replacement; its former default-to-this-folder instance is not retained.
+and names the literal replacement, and says that the replacement needs a static space's signing
+authority, since an open or user-auth space has no command that removes a registration. Its former
+default-to-this-folder instance is not retained.
 
 ## runtimes
 

@@ -283,8 +283,9 @@ try {
   check("ps lists the corpse as stale and names endpoint deregister from this space's own root",
     ps.status === 4 && ps.stdout.includes(`remove the record from this space's own root: cotal endpoint deregister manager ${IID_CORPSE} --yes`), { status: ps.status, out: ps.stdout.slice(-700) });
   const legacy = await cli(["deregister-instance", "--instance", IID_CORPSE]);
-  check("deregister-instance refuses naming endpoint deregister, and prints no usage after it",
-    legacy.status === 1 && legacy.stderr.includes("the legacy deregistration spelling no longer executes") && legacy.stderr.includes("cotal endpoint deregister <class> <full-instance-id>") && !/^(Usage|Options)$/m.test(legacy.stderr), legacy.stderr);
+  check("deregister-instance refuses naming endpoint deregister and the static authority it needs, and prints no usage after it",
+    legacy.status === 1 && legacy.stderr.includes("the legacy deregistration spelling no longer executes") && legacy.stderr.includes("cotal endpoint deregister <class> <full-instance-id>") &&
+      legacy.stderr.includes("which needs a static space's signing authority; an open or user-auth space has no command that removes a registration") && !/^(Usage|Options)$/m.test(legacy.stderr), legacy.stderr);
 
   console.log("9. with every registered manager gone, an unpinned launch's describe draws no answer and nothing is sent");
   // The live manager now crashes the same way, so the registry lists two managers and neither answers.

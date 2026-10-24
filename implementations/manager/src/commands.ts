@@ -962,7 +962,7 @@ const managerCommands: Command[] = [
       { name: "endpoint", type: "string", value: "<e>", description: `endpoint the instance serves (default: ${MANAGER_ENDPOINT})` },
       { name: "instance", type: "string", value: "<id>", description: "instance id to deregister, the whole id as `cotal ps` prints it (default: this folder's persisted manager instance)" },
     ],
-    validate: () => { throw new CommandFailure("refused", "USAGE_INVALID", "the legacy deregistration spelling no longer executes", { remedy: "use cotal endpoint deregister <class> <full-instance-id> [--space <space>] [--yes|--dry-run]", selfContained: true }); },
+    validate: () => { throw new CommandFailure("refused", "USAGE_INVALID", "the legacy deregistration spelling no longer executes", { remedy: "use cotal endpoint deregister <class> <full-instance-id> [--space <space>] [--yes|--dry-run], which needs a static space's signing authority; an open or user-auth space has no command that removes a registration", selfContained: true }); },
     run: async () => { throw new CommandFailure("refused", "USAGE_INVALID", "use cotal endpoint deregister <class> <full-instance-id> instead"); },
   },
   {
