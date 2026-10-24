@@ -154,7 +154,7 @@ export async function channels(args: ParsedArgs): Promise<void> {
   const result = { action, name, space: connection.space, patch: action === "remove" ? null : patch(values), purged: purged ?? null, removed: action === "remove" ? removed : null };
   writeResult(presentation, { command: "channel", target, result, noOp: unchanged }, (r) => ({ sections: [
     { title: action !== "remove" ? action === "defaults" ? "Channel defaults saved" : `Channel saved · #${name}` : removed ? `Channel removed · #${name}` : unchanged ? `Nothing removed · #${name}` : `Channel history purged · #${name}`, blocks: [
-      { kind: "fields", rows: [["Space", r.space], ...(action === "remove" ? [["Metadata", removed ? "removed" : "no saved entry"], ["History", r.purged === null ? "kept" : `${r.purged} retained messages purged`]] as [string, string][] : Object.entries(r.patch!).map(([key, value]) => [key === "replayWindow" ? "Replay window" : key[0]!.toUpperCase() + key.slice(1), String(value)] as [string, string]))] },
+      { kind: "fields", rows: [["Space", r.space], ...(action === "remove" ? [["Metadata", removed ? "removed" : "no saved entry"], ["History", r.purged === null ? "kept" : `${r.purged} retained messages purged`]] as [string, string][] : Object.entries(r.patch!).map(savedRow))] },
       { kind: "lines", lines: [{ text: action !== "remove" ? "Metadata does not grant read or post access. Replay controls backfill, not confidentiality." : unchanged ? `${connection.space} has no saved entry for #${name}, so nothing changed.` : "This does not stop members or revoke access. Future posts can create new retained history.", tone: "hint" }] },
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ch", description: "See saved channel metadata" }, { command: "cotal history <channel>", description: "Read retained messages within your grant" }] }] },
@@ -183,6 +183,14 @@ async function refuseUnknownRemoval(name: string, values: Values, target: object
   throw new CommandFailure("refused", "TARGET_NOT_FOUND",
     `#${name} has no saved entry and no retained messages; ${spelled ? `channel names are case-sensitive, and the registered one is #${spelled}` : known}`,
     { target, remedy: spelled ? `name it as registered: cotal channel remove ${spelled}` : "name a channel the space has; cotal ch lists the registered ones" });
+}
+
+/** A saved setting in the receipt, in the words `channel show` uses for it. */
+function savedRow([key, value]: [string, unknown]): [string, string] {
+  if (key === "replay") return ["Replay", value ? "on" : "off"];
+  if (key === "replayWindow") return ["Replay window", String(value)];
+  if (key === "deliveryClass") return ["Delivery", String(value)];
+  return [key[0]!.toUpperCase() + key.slice(1), String(value)];
 }
 
 function policyFields(config: ChannelConfig | undefined, defaults: ChannelRegistryFile["defaults"]): [string, string][] {

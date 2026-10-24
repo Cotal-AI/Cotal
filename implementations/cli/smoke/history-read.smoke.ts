@@ -496,6 +496,10 @@ try {
   // ── channel remove says whether it removed a saved entry, and refuses a name the space lacks ──
   {
     const removedOf = (r: { envelope?: Envelope }) => (r.envelope?.result as { removed?: boolean } | null | undefined)?.removed;
+    // The receipt used to print the stored values raw: `Replay: false` and `DeliveryClass: durable`.
+    const saved = await run(["channel", "set", "general", "--no-replay", "--delivery", "durable", "--space", space, "--plain"]);
+    check("a channel set receipt says replay on or off and labels the delivery class as channel show does",
+      saved.status === 0 && /^\s+Replay:\s+off$/m.test(saved.stdout) && /^\s+Delivery:\s+durable$/m.test(saved.stdout) && !saved.stdout.includes("DeliveryClass") && !/Replay:\s+false/.test(saved.stdout), shown(saved));
     const removed = await run(["channel", "remove", "ops", "--yes", "--space", space, "--json"]);
     check("removing a saved channel is ok and says it removed the entry", removed.status === 0 && removed.envelope?.outcome === "ok" && removedOf(removed) === true, shown(removed));
     // history clear above left #ops with no retained message, so with its entry gone the space lacks it.
