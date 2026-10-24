@@ -7319,7 +7319,9 @@ refuses before its first effect, such as a missing persona file or connector, ca
 names the file it looked for. An unpinned launch that no manager received is refused with
 `TARGET_UNAVAILABLE` and exit 2. With no manager running, the CLI says so before it sends and
 names bare `cotal up`. When every live manager reports `classSpawn: false`, it says none has an
-agent application installed and names the `cotal ext add` that adds one. A manager reads its
+agent application installed and names the `cotal ext add` that adds one. A registered manager whose
+rail the broker reports empty is skipped without waiting on it and named in a `MANAGER_SILENT`
+warning, and the reason comes from the managers that answered. A manager reads its
 applications when it starts, so restart it after adding one. A failure after the manager reserved
 the name or wrote a launch file keeps its native outcome, and the CLI never reclassifies it from
 its message.
