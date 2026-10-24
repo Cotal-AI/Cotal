@@ -350,6 +350,30 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("for a permission denied, Next makes the store writable by this account again and says nothing of disk space", /cotal down +First make \S+ writable by this account again/.test(denied.stdout) && !/Free space|free space/.test(denied.stdout), denied.stdout);
 }
 
+// ── damage the running local broker found in a stored file is shown in its own words ────────────
+{
+  const { home, run } = sandbox();
+  const server = ["--server", `nats://127.0.0.1:${await freePort()}`];
+  const pid = process.pid, stamp = "2026/10/25 01:24:11.149803";
+  writeFileSync(join(home, ".cotal", "nats.pid"), `${pid}\n`, { mode: 0o600 });
+  const log = join(home, ".cotal", "nats.log");
+  // The three warnings as nats-server 2.14 logs them; the first is from before this broker started.
+  const block = "Filestore [CHAT_s] indexCacheBuf corrupt record state in .cotal/nats/jetstream/A/streams/CHAT_s/msgs/1.blk: dlen 2147483193 slen 65451 index 2592 rl 2147483215 lbuf 5184";
+  const rolledBack = "JetStream consumer 'A > CHAT_s > fanout' delivered sequence 12 past last stream sequence of 8";
+  writeFileSync(log, [`[${pid}] ${stamp} [WRN] ${block}`, `[${pid}] ${stamp} [INF] Starting nats-server`, ""].join("\n"), { mode: 0o600 });
+  const before = run(["status", ...server, "--json"]);
+  check("damage logged before this broker started is not reported", before.envelope?.result?.store?.state === "none-recorded", shown(before));
+  appendFileSync(log, `[${pid}] ${stamp} [WRN]   Stream metafile ".cotal/nats/jetstream/A/streams/CHAT_s/meta.inf": checksums do not match "5e352183bb879de0" vs "523cc3d3cb0c740e"\n[${pid}] ${stamp} [WRN] ${rolledBack}\n`);
+  const damaged = run(["status", ...server, "--json"]);
+  const store = damaged.envelope?.result?.store as { state?: string; at?: string; warning?: string } | undefined;
+  check("status --json names the newest damage this broker logged, in its words, with its time", damaged.status === 0 && store?.state === "damaged" && store.at === "2026/10/25 01:24:11" && store.warning === rolledBack, shown(damaged));
+  appendFileSync(log, `[${pid}] ${stamp} [WRN] ${block}\n`);
+  const plain = run(["status", ...server, "--plain"]);
+  check("the report shows a Store row quoting the corrupt block", /Store: +damage logged at 2026\/10\/25 01:24:11: /.test(plain.stdout) && plain.stdout.includes(block), plain.stdout);
+  appendFileSync(log, `[${pid}] ${stamp} [ERR] Filestore [CHAT_s] Critical write error: write /store/msgs/1.blk: no space left on device\n[${pid}] ${stamp} [WRN] ${block}\n`);
+  check("a store write failure is named before damage logged after it", run(["status", ...server, "--json"]).envelope?.result?.store?.state === "write-failed");
+}
+
 // ── a nats-server on PATH below the broker floor ─────────────────────────────────────────────────
 if (process.platform !== "win32") {
   const { home, run } = sandbox();

@@ -1,20 +1,22 @@
 import { join } from "node:path";
 import { JetStreamApiError } from "@nats-io/jetstream";
 import { CotalEndpoint, mintCreds, newIdentity } from "@cotal-ai/core";
-import { CommandFailure, loadMeshes, localProcessPath, type MeshTarget } from "@cotal-ai/workspace";
+import { CommandFailure, boundedValue, loadMeshes, localProcessPath, oneLine, type MeshTarget } from "@cotal-ai/workspace";
 import { pidfileState } from "../commands/down.js";
 import { shellWord } from "./endpoint-errors.js";
 import { readOwnedLogTail, readServiceLog } from "./service-process.js";
 import { serviceInstances, instanceProjection } from "./service-instances.js";
 import { readStackJournal, STACK_DEFINITION } from "./stack-journal.js";
 
-/** What the running local broker's own log says about writing its JetStream store. nats-server
- *  reports a stream's write error natively only through `healthz`, which needs a system-account
- *  user, so this reads the log the broker writes on this machine: a bounded tail, and only lines
- *  tagged with the running broker's process id since its last start. A broker whose log is not on
- *  this machine is not checked. `full` is {@link storeFull}'s reading instead. */
+/** What the running local broker's own log says about its JetStream store: a write it could not
+ *  make, or damage it found in a stored file. nats-server reports a stream's write error natively
+ *  only through `healthz`, which needs a system-account user, so this reads the log the broker writes
+ *  on this machine: a bounded tail, and only lines tagged with the running broker's process id since
+ *  its last start. A broker whose log is not on this machine is not checked. `full` is
+ *  {@link storeFull}'s reading instead. */
 export type StoreWriteObservation =
   | { state: "write-failed"; pid: number; log: string; at: string; cause: string; path: string | null; jetStreamDisabled: boolean }
+  | { state: "damaged"; pid: number; log: string; at: string; warning: string }
   | { state: "full"; used: number; cap: number; path: string }
   | { state: "none-recorded"; pid: number; log: string }
   | { state: "not-checked"; reason: string };
@@ -89,7 +91,14 @@ export function storeWriteRepair(failed: Extract<StoreWriteObservation, { state:
   return `fix what failed the write to ${where}: ${failed.cause}`;
 }
 
-/** The newest `Critical write error` the running broker logged since it started. */
+/** The warnings nats-server logs for damage it finds in a stored file: a message block whose records
+ *  do not parse, which it rebuilds without the messages from the damage on; a stream whose recovery
+ *  rolled back past what a consumer had delivered; and a stream metafile that fails its checksum,
+ *  which it does not load. `STREAM.INFO` reports no lost data for any of them. */
+const STORE_DAMAGE = /^\[\d+\] (\S+ \S+) \[WRN\] +((?:Filestore \[[^\]]+\] indexCacheBuf corrupt |JetStream consumer '.+' delivered sequence \d+ past last stream sequence of |Stream metafile ".+": checksums do not match).*)$/;
+
+/** The newest `Critical write error` the running broker logged since it started, else the newest
+ *  damage it logged in a stored file. */
 export function brokerStoreWrite(root: string, space: string): StoreWriteObservation {
   let broker: { pid: number; read: () => { lines: string[]; path: string | null } } | undefined;
   try {
@@ -122,6 +131,10 @@ export function brokerStoreWrite(root: string, space: string): StoreWriteObserva
     // Go reports a failed file operation as `<op> <path>: <cause>`.
     const parts = /^\S+ (\/.+): ([^:]+)$/.exec(failed[2]!);
     return { state: "write-failed", pid: broker.pid, log: tail.path, at: failed[1]!.replace(/\.\d+$/, ""), cause: parts ? parts[2]! : failed[2]!, path: parts ? parts[1]! : null, jetStreamDisabled };
+  }
+  for (const line of [...since].reverse()) {
+    const damage = STORE_DAMAGE.exec(line);
+    if (damage) return { state: "damaged", pid: broker.pid, log: tail.path, at: damage[1]!.replace(/\.\d+$/, ""), warning: oneLine(boundedValue(damage[2]!, 400)) };
   }
   return { state: "none-recorded", pid: broker.pid, log: tail.path };
 }

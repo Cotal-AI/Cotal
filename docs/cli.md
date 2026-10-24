@@ -3080,7 +3080,7 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `selected` | `{resolved: false, code, message}` when no mesh resolves, where `message` states why and `hints` carries the step (`code` is `registry-unreadable` when the registry directory or a record could not be read, and a `not-started` prepared space adds its `space` and `root`); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels`, `membershipFeed` and `spaceStreams`. `spaceStreams.state` is `present`, `absent` or `not-checked`; it is read for an auth or user space and an open space this machine started. When `absent`, `root` is this machine's stack of the space and `stack` is `running` or `stopped`, each `null` when unknown. `storedBytes` is what the space's account holds in the broker's JetStream file store, `null` when it was not read |
 | `services` | Selected-space local owned records: `space`, `state` (`read`, `partial` or `not-checked`), non-atomic `observedAt`, public definition/instance projections and explicit scope. An unreadable family is `null`; stored readiness is historical. Older serialized snapshots may omit this observation, which is not an empty inventory. |
 | `stackManager` | The selected space's running stack manager: `instanceId`, `pid` and `endpoint`, which is `answered`, `not-answering` or `unchecked`. Absent when no stack manager runs |
-| `store` | What the selected space's running local broker logged about writing its JetStream store: `state` `write-failed` with `pid`, `log`, `at`, `cause`, `path` and `jetStreamDisabled`, true when the broker then disabled JetStream; `full` with `used`, `cap` and `path` when the space holds more than its broker's recorded cap; `none-recorded` with `pid` and `log`; or `not-checked` with a `reason`. Absent when no space resolves |
+| `store` | What the selected space's running local broker logged about its JetStream store: `state` `write-failed` with `pid`, `log`, `at`, `cause`, `path` and `jetStreamDisabled`, true when the broker then disabled JetStream; `full` with `used`, `cap` and `path` when the space holds more than its broker's recorded cap; `damaged` with `pid`, `log`, `at` and the broker's `warning` when it logged damage in a stored file; `none-recorded` with `pid` and `log`; or `not-checked` with a `reason`. Absent when no space resolves |
 | `hints` | The hints, in the order the report prints them |
 
 `store` covers only a broker whose log is on this machine: a controller stack's `stack-broker`
@@ -3095,6 +3095,14 @@ permission error, or free space for a full disk. Then `cotal up` starts the brok
 broker also disabled JetStream, which `store.jetStreamDisabled` shows, the manager's stop cannot be
 recorded, so the Next starts with `kill -TERM <pid>` for the stack's manager on this host, then
 `cotal down --yes` and `cotal up`.
+
+When the broker logged damage in a stored file since it started, the `Store` row reads
+`damage logged` with its time and the broker's own words. nats-server logs three kinds: a message
+block whose records do not parse (`indexCacheBuf corrupt`), which it rebuilds without the messages
+from the damage on; a stream whose recovery rolled back past what a consumer had delivered; and a
+stream metafile that fails its checksum, which it does not load. It keeps serving what it can still
+read, so `history` holds only that, and `STREAM.INFO` reports no lost data for any of these. For a
+controller stack the Next is `cotal service logs stack-broker`. `status` repairs nothing.
 
 When the space holds more bytes than the `--max-file-store` cap this machine recorded for its
 broker, the broker refuses every write, so the `Store` row reads `full` with the bytes stored, the
