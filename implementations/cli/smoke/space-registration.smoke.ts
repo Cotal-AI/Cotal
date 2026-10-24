@@ -51,7 +51,7 @@ if (!existsSync(BIN)) {
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, saveExtensionsManifest, setCurrent } = await import("@cotal-ai/workspace");
+const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, saveExtensionsManifest, setCurrent, spaceSegment } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 await import("../src/lib/broker-service.js");
@@ -1276,18 +1276,39 @@ if (process.platform === "linux") {
     report.status === 4 && report.env?.outcome === "partial" && Boolean(report.env.result?.meshes?.unreadable?.some((u: { file: string }) => u.file === dir)) && new Set(hints).size === hints.length, shown(report));
   rmSync(dir);
   if (held) renameSync(aside, dir);
-  // A record in it that does not parse, or is not a prepared space record, is refused by its file.
+  // A record in it that does not parse, or is not a prepared space record, is skipped with a warning
+  // naming its file, and refuses only a command about the space its file is named for.
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  for (const [name, body] of [["unparsed.json", "{ not json"], ["unshaped.json", '{"space":"pf"}']]) {
-    const damaged = join(dir, name);
+  recordPreparedSpace({ space: "pready", root: projectRoot("prepared-ready"), ts: new Date().toISOString() });
+  const damaged = join(dir, `${spaceSegment("pf")}.json`);
+  for (const [label, body] of [["unparsed", "{ not json"], ["unshaped", '{"space":"pf"}']]) {
     writeFileSync(damaged, body);
-    for (const args of [["space"], ["use", "pf"]]) {
-      const r = await json(args, folder);
-      check(`${args.join(" ")} with a damaged prepared record (${name}) refuses SCHEMA_INVALID, exit 1, naming that file`,
-        refused(r, 1, "SCHEMA_INVALID") && r.env?.target?.file === damaged && r.env.error?.remedy === "restore the record from backup or remove it", shown(r));
+    const list = await json(["space"], folder);
+    const skipped = list.env?.warnings?.find((w: { code: string }) => w.code === "PREPARED_RECORD_SKIPPED");
+    check(`space with a damaged prepared record (${label}) lists the rest and warns PREPARED_RECORD_SKIPPED, naming the file and its forget`,
+      list.status === 0 && list.env?.result?.prepared?.some((p: { space: string }) => p.space === "pready") && skipped?.target?.file === damaged && skipped.target.space === "pf" &&
+        skipped.message.endsWith("so it is skipped; remove it with `cotal space forget pf`"), shown(list));
+    const other = await json(["space", "show", "pready"], folder);
+    check(`space show of another space beside that record (${label}) succeeds`, other.status === 0 && other.env?.outcome === "ok", shown(other));
+    if (label === "unparsed") {
+      const report = await json(["status"], folder);
+      check("status names that record under meshes.unreadable, exit 4",
+        report.status === 4 && Boolean(report.env?.result?.meshes?.unreadable?.some((u: { file: string }) => u.file === damaged)), shown(report));
     }
-    rmSync(damaged);
+    const own = await json(["use", "pf"], folder);
+    check(`use pf with its own record damaged (${label}) refuses SCHEMA_INVALID, exit 1, naming that file`, refused(own, 1, "SCHEMA_INVALID") && own.env?.target?.file === damaged, shown(own));
+    const forget = await json(["space", "forget", "pf"], folder);
+    check(`space forget pf removes its damaged record (${label}), with no root`,
+      forget.status === 0 && forget.env?.result?.kind === "space-forgotten" && forget.env.result.root === null && !existsSync(damaged), shown(forget));
   }
+  const stray = join(dir, "stray.json");
+  writeFileSync(stray, "{ not json");
+  const strayList = await json(["space"], folder);
+  check("a damaged file named for no space is skipped with a warning to remove it",
+    strayList.status === 0 && Boolean(strayList.env?.warnings?.some((w: { code: string; target: { file: string; space: unknown }; message: string }) =>
+      w.code === "PREPARED_RECORD_SKIPPED" && w.target.file === stray && w.target.space === null && w.message.endsWith("so it is skipped; remove it"))), shown(strayList));
+  rmSync(stray);
+  removePreparedSpace("pready");
 }
 
 finish();

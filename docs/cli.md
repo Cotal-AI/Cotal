@@ -2290,7 +2290,8 @@ running while any stack member's process may still run. The refusal names one su
 writes nothing: the registration, the selection and the root's files stay. A member whose process
 is gone without its stop receipt does not block, and the result warns with `STACK_MEMBER_UNSETTLED`
 that it was never stopped cleanly. A prepared space is forgotten the same way, and the `.cotal/`
-that `space create` made stays. Forgetting the selected space clears the selection. Forget also
+that `space create` made stays. A prepared record that cannot be read names no folder, so forgetting
+its space removes only that file, and the result's `root` is null. Forgetting the selected space clears the selection. Forget also
 removes the per-space preferences saved under that name, so a later space with the same name starts
 without them, and the receipt lists each removed key and value so you can set them again. If that
 removal fails after the record is gone, the run is `partial` and names the `config unset` to finish it,
@@ -2570,8 +2571,11 @@ A registry directory that exists but cannot be read, such as one without read pe
 regular file in its place, refuses the same way, naming the directory, and `meshes` gives the read
 error. Only an absent directory is an empty registry. The folder of prepared spaces,
 `~/.cotal/prepared`, refuses the same way when it exists and cannot be read, on every command that
-reads it, such as `space`, `space create`, `use <name>` and `up`, and so does a record in it that
-does not parse or is not a prepared space record. A record removed between listing and reading
+reads it, such as `space`, `space create`, `use <name>` and `up`. A record in it that does not parse
+or is not a prepared space record refuses only a command about the space its file is named for, such
+as `use <space>`. Other commands skip it with the warning `PREPARED_RECORD_SKIPPED`, which names the
+file and `cotal space forget <space>`, the step that removes it, and `status` lists it under
+`meshes.unreadable` and exits 4. A record removed between listing and reading
 is omitted from that listing. A keyed read also treats a record removed during its read as absent;
 parse, shape and other read failures still refuse by name. Recording or removing a mesh also sweeps
 the directory for an older-format record of the same space. Any error listing the directory for

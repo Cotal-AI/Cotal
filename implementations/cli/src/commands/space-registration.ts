@@ -17,8 +17,10 @@ import {
   getCurrent,
   homeCotalDir,
   isCommandFailure,
+  isMeshRegistryError,
   loadMeshes,
   pinnedFetch,
+  preparedRecordSpace,
   preparedSpaceAt,
   protectedLocalDirectory,
   readPreferences,
@@ -116,7 +118,8 @@ interface SpaceForgotten {
   readonly space: string;
   /** The broker it was registered at, or null for a prepared space, which has none. */
   readonly server: string | null;
-  readonly root: string;
+  /** Its root, or null for a prepared space whose record could not be read, which names none. */
+  readonly root: string | null;
   /** How it came to be here: a registration's origin, or `prepared` for a space `space create` made. */
   readonly origin: MeshEntry["origin"] | "prepared" | null;
   /** The stopped controller stack definitions this machine saved for the space at its root, removed
@@ -554,7 +557,15 @@ export async function spaceForget(rest: readonly string[], presentation: Present
   const preferencesRevision = readPreferences().revision;
   const m = findMesh(name);
   if (!m) {
-    const p = findPreparedSpace(name);
+    let p: ReturnType<typeof findPreparedSpace>;
+    try {
+      p = findPreparedSpace(name);
+    } catch (e) {
+      // Its own record cannot be read, so it names no root to release definitions at: remove the file.
+      if (!isMeshRegistryError(e) || preparedRecordSpace(e.file) !== name) throw e;
+      removePreparedSpace(name);
+      return forgotten(presentation, { space: name, server: null, root: null, origin: "prepared", releasedDefinitions: [] }, preferencesRevision);
+    }
     if (!p) throw refuse("TARGET_NOT_FOUND", `no space named "${name}" is registered here`, target, "see the registered spaces with `cotal space`");
     const release = releaseStackDefinitions(p.root, name);
     removePreparedSpace(name);
@@ -604,7 +615,7 @@ function forgotten(presentation: Presentation, r: Omit<SpaceForgotten, "kind" | 
 function forgottenView(r: SpaceForgotten): Report {
   const lines: Cell[] = [
     { text: `forgot ${r.space}`, tone: "ok", mark: "✓" },
-    { text: `  ${r.server === null ? "prepared, not running" : r.server}; ${existsSync(r.root) ? `the files under ${r.root} are kept` : `its folder ${r.root} no longer exists`}`, tone: "hint" },
+    { text: `  ${r.server === null ? "prepared, not running" : r.server}; ${r.root === null ? "its record could not be read, so it named no folder" : existsSync(r.root) ? `the files under ${r.root} are kept` : `its folder ${r.root} no longer exists`}`, tone: "hint" },
   ];
   const removed = Object.entries(r.removedPreferences).filter(([, value]) => value !== undefined);
   if (removed.length) lines.push({ text: `  removed its per-space preferences: ${removed.map(([key, value]) => `${key}=${value}`).join(", ")} - \`cotal config set <key> <value> --space ${r.space}\` sets one again`, tone: "hint" });
