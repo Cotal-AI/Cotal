@@ -35,9 +35,10 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
       remedy: held?.remedy ?? "this root's maintenance journal names no restore attempt; check it with cotal status before another restore",
     });
   }
-  // A registry restore leaves chat and DM history and workflow runs empty, and a full restore of an
-  // artifact with no runs leaves the runs empty; the warning says so and names the store that holds
-  // their only copy.
+  // A registry restore leaves chat and DM history and workflow runs empty, a full restore of an
+  // artifact with no runs leaves the runs empty, and one of an artifact older than the cut it replaced
+  // leaves out what was written since; the warning says so and names the store that holds their only
+  // copy.
   const registryOnly = result.selection === "registry";
   const onlyCopy = restoreOnlyCopy(result.root, result.attemptId);
   const previousStore = onlyCopy?.previousStore;
@@ -78,7 +79,7 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
     completeness: data.seatResume === "requested" ? "partial" : "complete",
     warnings: [
       ...(data.seatResume === "requested" ? [{ code: "AGENT_READINESS_NOT_CHECKED", target: { space: result.space }, message: "Retained seats were offered to the manager's resume; whether each one joined is not checked." }] : []),
-      ...(leftOutLines.length ? [{ code: registryOnly ? "HISTORY_NOT_RESTORED" : "RUNS_NOT_RESTORED", target: { space: result.space, ...(previousStore ? { previousStore } : {}) }, message: leftOutLines.join(" ") }] : []),
+      ...(leftOutLines.length ? [{ code: registryOnly ? "HISTORY_NOT_RESTORED" : onlyCopy?.newer ? "NEWER_HISTORY_NOT_RESTORED" : "RUNS_NOT_RESTORED", target: { space: result.space, ...(previousStore ? { previousStore } : {}) }, message: leftOutLines.join(" ") }] : []),
     ],
   }, (row): Report => ({ sections: [
     { title: "Backup restored", blocks: [

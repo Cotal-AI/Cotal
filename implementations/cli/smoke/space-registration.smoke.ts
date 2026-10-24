@@ -16,6 +16,8 @@
  * A space name over 64 characters is refused by create, `up --space`, `space add` and `meshes add`
  * before anything is written, and `up` of a longer name an earlier release prepared refuses before its
  * journal is written.
+ * A service saved for a space survives its forget, which names it, and the next space of that name,
+ * in another folder, names it on its up, until the remove the forget named forgets it.
  * A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
  * no installed provider, ones naming a missing or invalid channels file, and one with an invalid
@@ -280,6 +282,15 @@ setCurrent("keep");
 
   const forced = await json(["space", "add", "dead1", "--server", DEAD, "--root", root, "--force"]);
   check("--force adds a space whose broker is down, marked not checked", forced.status === 0 && forced.env?.result.verified === false && findMesh("dead1") !== undefined, shown(forced));
+  check("…and its registration records that its mode was not checked", findMesh("dead1")?.unchecked === true && forced.env?.result.space.modeChecked === false, findMesh("dead1"));
+  const listedUnchecked = await json(["space"]);
+  check("space --json marks that mode unchecked and a checked one checked",
+    listedUnchecked.env?.result.items.find((item: { space: string }) => item.space === "dead1")?.modeChecked === false && listedUnchecked.env?.result.items.find((item: { space: string }) => item.space === "started")?.modeChecked === true, listedUnchecked.env?.result.items);
+  const shownUnchecked = await run(["space", "show", "dead1", "--plain"]);
+  check("space show names the mode not checked and how to check it", /mode:\s+open, not checked: added with --force/.test(shownUnchecked.stdout) && shownUnchecked.stdout.includes("cotal space forget dead1"), shown(shownUnchecked));
+  const whoUnchecked = await json(["whoami", "--space", "dead1"]);
+  check("whoami does not state an unchecked mode as fact: partial, exit 4, MODE_NOT_CHECKED",
+    whoUnchecked.status === 4 && whoUnchecked.env?.outcome === "partial" && whoUnchecked.env.result.modeChecked === false && whoUnchecked.env.warnings.some((w: { code: string }) => w.code === "MODE_NOT_CHECKED"), shown(whoUnchecked));
 
   clearCurrent();
   const unselected = await json(["space", "add", "open3", "--server", LIVE, "--root", root]);
@@ -409,6 +420,7 @@ setCurrent("keep");
     check("...its stack definition is kept, and the warning names the route that releases it",
       kept.length === 1 && /stack-broker/.test(kept[0].message) && kept[0].message.includes(`cotal down --yes in ${goneRoot}, then run cotal space forget stackgone again`) &&
         unsettled.env?.result.releasedDefinitions.length === 0 && serviceDefinitionStore("stackgone").read("stack-broker") !== undefined, shown(unsettled));
+    check("...and its kept services do not repeat a stack definition the warning names", JSON.stringify(unsettled.env?.result.keptServices) === "[]", unsettled.env?.result);
 
     // Only a delivery member is recorded: its generic stop leaves the process-exit receipt this suite
     // can write, where the broker's and the manager's receipts carry native evidence.
@@ -431,6 +443,7 @@ setCurrent("keep");
       prepared.status === 0 && JSON.stringify(prepared.env?.result.releasedDefinitions) === JSON.stringify(["stack-broker"]) && serviceDefinitionStore("prepdone").read("stack-broker") === undefined, shown(prepared));
     check("...and keeps one saved for another folder, without a warning",
       other.status === 0 && other.env?.result.releasedDefinitions.length === 0 && other.env.warnings.length === 0 && serviceDefinitionStore("prepother").read("stack-broker") !== undefined, shown(other));
+    check("...and names it among the services it keeps for a later space of the name", JSON.stringify(other.env?.result.keptServices) === JSON.stringify(["stack-broker"]), other.env?.result);
   } else console.log("  - controller stack forget cells skipped: service records need Linux machine and boot identity");
 
   const stopped = await json(["space", "forget", "started"]);
@@ -611,6 +624,43 @@ if (process.platform === "linux") {
   check("and down stops it", stopped.status === 0, shown(stopped));
   if (selected === undefined) clearCurrent(); else setCurrent(selected);
 } else console.log("  - up selection cells skipped: a controller stack needs Linux machine and boot identity");
+
+// ── A saved service stays with the space's name ────────────────────────────────────────────────────────
+// Saved services belong to the space name, so a forget keeps them and names them, and the next space
+// of that name, in another folder, names them on its up.
+if (process.platform === "linux") {
+  const selected = getCurrent();
+  const first = join(home, "inheritfirst"), second = join(home, "inheritsecond");
+  mkdirSync(first);
+  mkdirSync(second);
+  const server = `nats://127.0.0.1:${await freePort()}`, definition = join(home, "inherit-tick.json");
+  writeFileSync(definition, JSON.stringify({ schemaVersion: 1, space: "inherit", launch: { type: "process", executable: "/bin/sh", args: ["-c", "exit 0"], cwd: first }, readiness: { type: "process", timeoutMs: 3000 } }));
+  await json(["space", "create", "inherit"], first);
+  const sandbox = recordSmokeSandbox({ root: first, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
+  const fresh = await json(["up", "--detach", "--open", "--no-manager", "--server", server], first);
+  check("an up whose space has no saved service of its own names none", fresh.status === 0 && JSON.stringify(fresh.env?.result.savedServices) === "[]", shown(fresh));
+  const added = await json(["service", "add", "tick", "--file", definition], first);
+  check("rig: a service is saved for the space", added.status === 0, shown(added));
+  assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: first, env: runEnv });
+  await run(["down", "--yes"], {}, first);
+  const forgot = await run(["space", "forget", "inherit"], {}, first);
+  check("forget keeps the saved service, names it and the remove that forgets it in a later space of the name",
+    forgot.status === 0 && serviceDefinitionStore("inherit").read("tick") !== undefined &&
+      forgot.stdout.includes("kept its saved services (tick): a later space named inherit inherits them, and `cotal service remove <name> --space inherit --yes` in that space forgets one"), shown(forgot));
+  await json(["space", "create", "inherit"], second);
+  const secondSandbox = recordSmokeSandbox({ root: second, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
+  const later = await json(["up", "--detach", "--open", "--no-manager", "--server", server], second);
+  check("the next space of that name, in another folder, names the service it inherits on its up", later.status === 0 && JSON.stringify(later.env?.result.savedServices) === JSON.stringify(["tick"]), shown(later));
+  const text = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, second);
+  check("...and its text receipt says up does not start it", text.status === 0 && text.stdout.includes("saved services up does not start: tick"), shown(text));
+  assertSmokeSandboxDown(secondSandbox, ["down", "--yes"], { cwd: second, env: runEnv });
+  await run(["down", "--yes"], {}, second);
+  const removed = await json(["service", "remove", "tick", "--space", "inherit", "--yes"], second);
+  check("the remove the forget named forgets it there", removed.status === 0 && serviceDefinitionStore("inherit").read("tick") === undefined, shown(removed));
+  const clean = await json(["space", "forget", "inherit"], second);
+  check("a forget whose space has no saved service left keeps none", clean.status === 0 && JSON.stringify(clean.env?.result.keptServices) === "[]", shown(clean));
+  if (selected === undefined) clearCurrent(); else setCurrent(selected);
+} else console.log("  - saved service inheritance cells skipped: a controller stack needs Linux machine and boot identity");
 
 // ── Preparing a space with create, then starting it with up ────────────────────────────────────────────
 {
@@ -840,6 +890,7 @@ if (process.platform === "linux") {
   const server = `nats://127.0.0.1:${await freePort()}`;
   const away = await json(["up", "--detach", "--open", "--no-manager", "--server", server, "--space", "demo"], elsewhere);
   check("up --space for it from another folder refuses, naming its root, and makes nothing there", refused(away, 2, "TARGET_UNAVAILABLE") && away.env?.error?.message.includes(`prepared in ${fresh}`) && !existsSync(join(elsewhere, ".cotal")), shown(away));
+  check("that refusal names the up --root that starts it from here", away.env?.error?.remedy === `start it in its folder with \`cotal up --root ${fresh} --space demo\`, or \`cotal space forget demo\` to start it here`, shown(away));
   const otherName = await json(["up", "--detach", "--open", "--no-manager", "--server", server, "--space", "other"], fresh);
   check("up --space for another space in its root refuses", refused(otherName, 2, "CONFLICT") && /root of "demo"/.test(otherName.env?.error?.message ?? "") && findMesh("other") === undefined, shown(otherName));
   check("that refusal names the command that runs the folder's own space",

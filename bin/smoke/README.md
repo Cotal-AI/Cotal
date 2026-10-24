@@ -66,6 +66,13 @@ covered pass.
 `skipSuite` throws when the reason would not read back as that one skip line, such as a reason
 with a line break, because the shard grades the last sentinel line a suite prints.
 
+## Shared hosts
+
+`pnpm smoke:up-stack:live` checks that `up` moves off the default address when it is taken. With
+127.0.0.1:4222 free, it starts an open broker there for a few seconds, and any client on the host
+can join it. On a host other stacks share, set `COTAL_SMOKE_SHARED_HOST=1`: those cells then skip
+and print why.
+
 ## Failure reports
 
 A shard stops at its first failing suite. It names that suite, lists the planned suites that
