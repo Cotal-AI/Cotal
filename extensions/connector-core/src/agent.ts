@@ -2759,8 +2759,7 @@ export class MeshAgent extends EventEmitter {
   }
 
   private async publishStatus(status: PresenceStatus, activity?: string): Promise<void> {
-    if (activity !== undefined) await this.ep.setActivity(activity);
-    await this.ep.setStatus(status);
+    await this.ep.setStatus(status, activity);
   }
 
   /** Change only the activity line. Routing it through `setStatus` with the current status read the
