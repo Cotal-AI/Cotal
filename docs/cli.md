@@ -6968,7 +6968,9 @@ loop counts or an execution schedule. Simulation uses the native simulator with 
 script. It executes no JavaScript handler and invents no unscripted outcome. A scripted
 checkpoint result needs a `status` of `resolved` or `expired` and may carry `value`, `by` and
 `artifact`; any other shape, a scripted `at` included, is refused `SCHEMA_INVALID`, because the
-simulator stamps `at` from virtual time. When the script has no result for an effect, the
+simulator stamps `at` from virtual time. A scripted turn result needs a `status` of `done`, `blocked` or
+`handoff` and may carry `to` and `note`; any other shape, a scripted `at` included, is refused the
+same way. When the script has no result for an effect, the
 simulation does not complete: it exits 5 with `OPERATION_FAILED`, the message names the step and the
 entry to add, and `target.step` carries the step. When the program itself fails under the script,
 as a checkpoint scripted `expired` under the default `onExpiry: "fail"` does with L4007, the
