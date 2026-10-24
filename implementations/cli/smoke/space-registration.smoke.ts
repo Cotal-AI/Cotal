@@ -776,9 +776,9 @@ if (process.platform === "linux") {
   const listed = await json(["space"]);
   check("a selected prepared space is not warned about as missing", listed.status === 0 && listed.env?.warnings.length === 0 && listed.env.result.prepared[0]?.current === true, listed.env?.warnings);
   // After the prepared-list reads above, so a second prepared space does not reorder them.
-  const longest = join(home, "longest");
-  mkdirSync(longest);
-  const sixtyFour = await json(["space", "create", "b".repeat(64)], longest);
+  const longestRoot = join(home, "longestRoot");
+  mkdirSync(longestRoot);
+  const sixtyFour = await json(["space", "create", "b".repeat(64)], longestRoot);
   check("a 64-character name is prepared", sixtyFour.status === 0 && findPreparedSpace("b".repeat(64)) !== undefined, shown(sixtyFour));
   // A record an earlier release prepared under a name `up` cannot start: the refusal says no member
   // was started, and its next step quotes the name.
