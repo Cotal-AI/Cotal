@@ -711,7 +711,7 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
     throw new ConnectRefusal(
       `✗ mesh "${target.space}" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,
       undefined,
-      { code: "DEPENDENCY_UNAVAILABLE" },
+      { code: "DEPENDENCY_UNAVAILABLE", target: { space: target.space, root: target.root } },
     );
   }
   await preflightOrThrow(target, creds, opts.readOnly === true);

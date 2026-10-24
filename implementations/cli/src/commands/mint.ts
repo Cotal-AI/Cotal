@@ -11,7 +11,7 @@ import {
   isCommandFailure, preflightTarget, presentationOf,
   protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource,
   validateCredentialMintArguments,
-  writeResult, type MeshTarget, type Report,
+  writeResult, type MeshTarget, type OutputWarning, type Report,
   recordOperationSpace, agentGrants, type AgentGrants,
 } from "@cotal-ai/workspace";
 
@@ -32,15 +32,27 @@ const expiry = (seconds: number | undefined): string => {
 
 /** What `--replace` found at the label: a standing credential that has expired, or one with no
  *  expiry claim. Any other standing credential stays, because something may still use it. */
-interface Replaced { state: "expired" | "unbounded"; expiresAt: number | null }
+interface Replaced { state: "expired" | "unbounded"; expiresAt: number | null; publicKey: string }
 
 function replaceable(standing: string, name: string, target: object): Replaced {
-  let exp: number | undefined;
-  try { exp = credsClaims(standing).exp; }
-  catch { throw new CommandFailure("refused", "CONFLICT", `the standing credential "${name}" is not a native credential this command can read; it was not replaced`, { target }); }
-  if (exp === undefined) return { state: "unbounded", expiresAt: null };
+  let claims: ReturnType<typeof credsClaims> | undefined;
+  try { claims = credsClaims(standing); } catch { claims = undefined; }
+  if (!claims?.sub) throw new CommandFailure("refused", "CONFLICT", `the standing credential "${name}" is not a native credential this command can read; it was not replaced`, { target });
+  const exp = claims.exp, publicKey = claims.sub;
+  if (exp === undefined) return { state: "unbounded", expiresAt: null, publicKey };
   if (exp * 1000 > Date.now()) throw new CommandFailure("refused", "CONFLICT", `the standing credential "${name}" is valid until ${expiry(exp)}, so --replace left it in place`, { target, remedy: "choose a new label, or run it again with --replace once that credential has expired" });
-  return { state: "expired", expiresAt: exp };
+  return { state: "expired", expiresAt: exp, publicKey };
+}
+
+/** A replaced credential with no expiry claim is not revoked by its replacement, so any copy of it
+ *  still connects: the warning names its key and the revocation that stops it. */
+function replacedStillValid(replaced: Replaced | undefined, identity: string, space: string, name: string): OutputWarning[] {
+  if (replaced?.state !== "unbounded") return [];
+  const key = replaced.publicKey;
+  const message = key === identity
+    ? `the credential this replaced has no expiry claim and this credential's key ${key}, so a copy of it stays valid until that key is revoked, which stops this credential too`
+    : `the credential this replaced has no expiry claim, so a copy of it stays valid until its key ${key} is revoked; to stop it, run cotal down --yes, then cotal auth revoke-credential ${key} --yes, then cotal up`;
+  return [{ code: "REPLACED_CREDENTIAL_VALID", target: { space, name, publicKey: key }, message }];
 }
 
 /** Why the `--out` folders could not be made, naming the folder: the first one on the path that is a
@@ -205,9 +217,12 @@ export async function mint(args: ParsedArgs): Promise<void> {
     const fromIdentity = carried ? ([["read", values["allow-subscribe"]], ["post", values["allow-publish"]], ["role", values.role]] as const).filter(([, flag]) => flag === undefined).map(([grant]) => grant) : [];
     const grants = profile === "agent" ? { read: allowSubscribe ?? [], post: allowPublish ?? [], role: role ?? null, fromIdentity } : null;
     const result = { kind: "credential-minted", name, space, profile, identity: identity.id, principal: principalKey(DEV_OWNER, identity.id).key, lifecycleUid: lifecycleUid ?? null, output: out, provisioned: values.provision === true, identityReused: requestedIdentity !== undefined, grants, lifecycleReused: false, expiresAt: claims.exp ?? null, defaultLifetime, noExpiryRecord, replaced: replaced ?? null, secretOnStdout: false, changed };
-    const warnings = result.identityReused && profile === "agent" ? [{ code: "NEW_OUT_OF_BAND_LIFECYCLE", target: { space, name }, message: "The native out-of-band mint reuses the nkey, not the old lifecycle UID. Old inbox/DM footprints were not claimed as reused." }] : [];
+    const warnings = [
+      ...(result.identityReused && profile === "agent" ? [{ code: "NEW_OUT_OF_BAND_LIFECYCLE", target: { space, name }, message: "The native out-of-band mint reuses the nkey, not the old lifecycle UID. Old inbox/DM footprints were not claimed as reused." }] : []),
+      ...replacedStillValid(replaced, identity.id, space, name),
+    ];
     writeResult(presentationOf(values), { command: "auth mint", target: { space, name }, result, warnings }, (data): Report => ({ sections: [
-      { title: "Private credential written", blocks: [{ kind: "fields", rows: [["Label", data.name], ["Space", data.space], ["Profile", data.profile], ["Principal", data.principal], ["Lifecycle", data.lifecycleUid ?? "not an agent lifecycle"], ...(data.grants ? grantRows(data.grants) : []), ["Private file", data.output], ...(data.replaced ? [["Replaced", data.replaced.state === "expired" ? `a credential that expired at ${expiry(data.replaced.expiresAt ?? undefined)}` : "a credential with no expiry claim"]] as [string, string][] : []), ["Expiry", data.noExpiryRecord ? `no expiry claim, as --no-expiry asked; recorded in ${data.noExpiryRecord}` : `${expiry(data.expiresAt ?? undefined)}${data.defaultLifetime ? " (the 24-hour default)" : ""}`], ["Broker footprint", data.provisioned ? "native provisioning acknowledged" : "not provisioned by this command"]] }, { kind: "lines", lines: [{ text: "Credential contents were written privately, not printed. Provisioning is not presence, a joined agent or task completion. Fixed observer/admin profiles do not accept agent ACL overrides.", tone: "hint" }] }] },
+      { title: "Private credential written", blocks: [{ kind: "fields", rows: [["Label", data.name], ["Space", data.space], ["Profile", data.profile], ["Principal", data.principal], ["Lifecycle", data.lifecycleUid ?? "not an agent lifecycle"], ...(data.grants ? grantRows(data.grants) : []), ["Private file", data.output], ...(data.replaced ? [["Replaced", `${data.replaced.state === "expired" ? `a credential that expired at ${expiry(data.replaced.expiresAt ?? undefined)}` : "a credential with no expiry claim"}, key ${data.replaced.publicKey}`]] as [string, string][] : []), ["Expiry", data.noExpiryRecord ? `no expiry claim, as --no-expiry asked; recorded in ${data.noExpiryRecord}` : `${expiry(data.expiresAt ?? undefined)}${data.defaultLifetime ? " (the 24-hour default)" : ""}`], ["Broker footprint", data.provisioned ? "native provisioning acknowledged" : "not provisioned by this command"]] }, { kind: "lines", lines: [{ text: "Credential contents were written privately, not printed. Provisioning is not presence, a joined agent or task completion. Fixed observer/admin profiles do not accept agent ACL overrides.", tone: "hint" }] }] },
     ] }));
   } catch (error) {
     if (isCommandFailure(error)) {

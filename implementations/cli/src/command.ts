@@ -67,6 +67,7 @@ import { workingFolderRemoved } from "./lib/paths.js";
 import { reportLostOutput } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { managerChoiceFailure, pickManager, rosterOf } from "./lib/manager-choice.js";
+import { goneStackRefusal } from "./commands/stack-gone.js";
 import { canPrompt } from "./commands/meshes-wizard.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { didYouMean, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
@@ -713,9 +714,9 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // A usage error a command raises from its own checks prints the command's help, not a stack trace.
     if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json, parsed.values.plain === true);
     // A refused manager selection among several live managers becomes the choice: each manager
-    // and the command again with `--on` for it.
+    // and the command again with `--on` for it. A space whose stack folder is gone names its stop.
     const target = { space: typeof parsed.values.space === "string" ? parsed.values.space : undefined, server: typeof parsed.values.server === "string" ? parsed.values.server : undefined };
-    const choice = async (failure: CommandFailure) => (await managerChoiceFailure(failure, () => rosterOf(target), argv)) ?? failure;
+    const choice = async (failure: CommandFailure) => (await managerChoiceFailure(failure, () => rosterOf(target), argv)) ?? goneStackRefusal(failure);
     if (isCommandFailure(e)) failureExit(cmd, inOperationSpace(await choice(e), scope.space), json, parsed.values.plain === true, scope);
     // A command that declares a structured output reports by the outcome table. A target it could
     // not resolve or connect to is refused before any request, under the refusal's own code; a

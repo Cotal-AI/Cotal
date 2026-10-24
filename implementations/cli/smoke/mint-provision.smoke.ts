@@ -613,8 +613,9 @@ try {
     const expired = readFileSync(standing("kurz"), "utf8");
     const swapped = await runMint(["kurz", "--replace", "--expires-in", "3600"]);
     const fresh = credsClaims(readFileSync(standing("kurz"), "utf8"));
-    check("--replace swaps the expired standing credential for a valid one and says what it replaced",
-      swapped.code === 0 && /^\s*Replaced:\s+a credential that expired at /m.test(swapped.out) && readFileSync(standing("kurz"), "utf8") !== expired && typeof fresh.exp === "number" && fresh.exp * 1000 > Date.now(), swapped.out);
+    check("--replace swaps the expired standing credential for a valid one and says what it replaced, with its key",
+      swapped.code === 0 && new RegExp(`^\\s*Replaced:\\s+a credential that expired at \\S+Z, key ${credsClaims(expired).sub}$`, "m").test(swapped.out) && readFileSync(standing("kurz"), "utf8") !== expired && typeof fresh.exp === "number" && fresh.exp * 1000 > Date.now(), swapped.out);
+    check("  and warns of no copy, since an expired credential no longer connects", !swapped.out.includes("stays valid until"), swapped.out);
     const kept = readFileSync(standing("kurz"), "utf8");
     const live = await runMint(["kurz", "--replace"]);
     check("--replace on a still-valid credential refuses CONFLICT, naming its expiry",
@@ -623,10 +624,20 @@ try {
     const unbounded = await runMint(["ewig", "--no-expiry"]);
     const record = `${standing("ewig")}.no-expiry.json`;
     check("a label minted with --no-expiry records the request", unbounded.code === 0 && existsSync(record), unbounded.out);
+    const ewig = credsClaims(readFileSync(standing("ewig"), "utf8")).sub;
     const bounded = await runMint(["ewig", "--replace"]);
-    check("--replace bounds the unbounded credential with the 24-hour default",
-      bounded.code === 0 && /^\s*Replaced:\s+a credential with no expiry claim$/m.test(bounded.out) && typeof credsClaims(readFileSync(standing("ewig"), "utf8")).exp === "number", bounded.out);
+    check("--replace bounds the unbounded credential with the 24-hour default, naming the key it replaced",
+      bounded.code === 0 && bounded.out.split("\n").some((line) => /^\s*Replaced:\s+a credential with no expiry claim, key /.test(line) && line.endsWith(`key ${ewig}`)) && typeof credsClaims(readFileSync(standing("ewig"), "utf8")).exp === "number", bounded.out);
     check("  and removes the no-expiry record, which named the bytes it replaced", !existsSync(record));
+    check("  and warns that a copy of the replaced credential stays valid, naming the revocation that stops it",
+      bounded.out.includes(`! the credential this replaced has no expiry claim, so a copy of it stays valid until its key ${ewig} is revoked; to stop it, run cotal down --yes, then cotal auth revoke-credential ${ewig} --yes, then cotal up`), bounded.out);
+    await runMint(["ewig2", "--no-expiry"]);
+    const ewig2 = credsClaims(readFileSync(standing("ewig2"), "utf8")).sub;
+    const boundedJson = await runMint(["ewig2", "--replace", "--json"]);
+    const replacedEnvelope = JSON.parse(boundedJson.out.split("\n").find((text) => text.startsWith('{"schemaVersion"')) ?? "{}") as { result?: { replaced?: { state?: string; publicKey?: string } }; warnings?: { code: string; target: { publicKey?: string } }[] };
+    check("  --json reports the replaced key, and the warning with that key as its target",
+      boundedJson.code === 0 && replacedEnvelope.result?.replaced?.state === "unbounded" && replacedEnvelope.result.replaced.publicKey === ewig2
+        && replacedEnvelope.warnings?.length === 1 && replacedEnvelope.warnings[0]!.code === "REPLACED_CREDENTIAL_VALID" && replacedEnvelope.warnings[0]!.target.publicKey === ewig2, boundedJson.out);
     const out = join(root, "replace-out.creds");
     const withOut = await runMint(["kurz", "--replace", "--out", out]);
     check("--replace with --out exits 1 with the reason and writes nothing",

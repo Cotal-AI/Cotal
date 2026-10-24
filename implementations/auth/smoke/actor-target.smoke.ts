@@ -6,7 +6,9 @@
  * `--space`. On a space whose root holds no user-auth ledger, both refuse UNSUPPORTED instead of
  * listing no rows. On a registered static or open space, list, grant and revoke refuse UNSUPPORTED
  * under both spellings and say that actor grants need a user-auth space, grant and revoke before
- * they ask for a subject or the ACL flags; nothing is written. A
+ * they ask for a subject or the ACL flags; nothing is written. Every `service-endpoint` subcommand
+ * refuses UNSUPPORTED there too, saying the space has no service endpoint host, and records no
+ * request; a root without the user-auth service says it does not hold it. A
  * user-auth space lists its row under both spellings, with its role, label and parent in the table
  * and in `--json`, which `actor list` takes as `auth grants` does. With `--sub`, both list only the rows
  * of the owner that IdP subject derives to, titled with the subject and that owner, and an empty
@@ -20,7 +22,7 @@
  * Run: pnpm smoke:actor-target
  */
 import { strict as nodeAssert } from "node:assert";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSpaceAuth, mintLifecycleUid, registry, type Command, type ParsedArgs } from "@cotal-ai/core";
@@ -44,6 +46,12 @@ function command(name: string): Command {
 }
 const actorCommand = command("actor");
 const authCommand = command("auth");
+const serviceEndpointCommand = command("service-endpoint");
+/** Every `service-endpoint` subcommand, with a subject and the flags its usage needs. */
+const SERVICE_ENDPOINT_RUNS = [
+  [["approve", "p1"], {}], [["refuse", "p1"], {}], [["proposal", "p1"], {}], [["operation", "o1"], {}], [["name", "e1"], {}],
+  [["name-bind", "e1"], { owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", claim: "c1" }],
+] as const;
 
 /** Validate and run one command in `cwd`, as the CLI does after parsing. Returns the failure it
  *  threw and what it wrote to stdout. */
@@ -107,6 +115,10 @@ try {
     assert.deepEqual(refusal(actor.failure), refusal(auth.failure), "actor list and auth grants refuse alike without a ledger");
     assert.doesNotMatch(actor.out, /No rows/, "no empty authoritative list is printed");
     assert.match(actor.failure?.remedy ?? "", /host this space's user-auth ledger; a space started without `--user-auth` has none$/, "a space with no mode yet points to the root that holds its ledger");
+    const endpoint = await run(serviceEndpointCommand, root, { space: "static-space" }, ["proposal", "p1"]);
+    assert.equal(endpoint.failure?.code, "UNSUPPORTED", `service-endpoint without the user-auth service refuses: ${endpoint.failure?.message ?? endpoint.out}`);
+    assert.equal(endpoint.failure?.message, "this root does not hold the space's user-auth service; nothing was sent", "service-endpoint says this root holds no user-auth service");
+    assert.equal(endpoint.failure?.remedy, "run it on the root that started the space with `cotal up --user-auth --service-endpoints`; a space started without `--user-auth` has no service endpoint host", "service-endpoint names the root that hosts the service");
   }
 
   // 3. Control: a user-auth space lists its row under both spellings.
@@ -233,6 +245,16 @@ try {
       assert.equal(actor.failure?.code, "UNSUPPORTED", `actor ${verb} with no --sub on a static space refuses UNSUPPORTED before asking for one: ${actor.failure?.message ?? actor.out}`);
       assert.deepEqual(refusal(actor.failure), refusal(auth.failure), `actor ${verb} and auth ${verb} with no --sub refuse alike on a static space`);
     }
+    // service-endpoint is the auth service's too: every subcommand refuses the same way, a binding
+    // before it records a request, and nothing names a re-registration.
+    for (const [positionals, values] of SERVICE_ENDPOINT_RUNS) {
+      const endpoint = await run(serviceEndpointCommand, root, { space, ...values }, [...positionals]);
+      assert.equal(endpoint.failure?.code, "UNSUPPORTED", `service-endpoint ${positionals[0]} on a static space refuses: ${endpoint.failure?.message ?? endpoint.out}`);
+      assert.equal(exitCode(endpoint.failure!.outcome, endpoint.failure!.code), 2, `service-endpoint ${positionals[0]} on a static space exits 2`);
+      assert.equal(endpoint.failure?.message, `space "${space}" is a static-credential space and has no service endpoint host; nothing was sent`, `service-endpoint ${positionals[0]} on a static space says why`);
+      assert.equal(endpoint.failure?.remedy, "service endpoints are hosted by the auth service of a space started with `cotal up --user-auth --service-endpoints`", `service-endpoint ${positionals[0]} on a static space: remedy`);
+    }
+    assert.equal(existsSync(join(userAuthStateDir(root, space), "service-endpoint-requests")), false, "service-endpoint name-bind on a static space records no request");
     const staticLabel = await run(actorCommand, root, { space, sub: "someone" }, ["label", "alice", "x"]);
     assert.equal(staticLabel.failure?.message, `space "${space}" is a static-credential space and has no user-auth ledger; no label was written`, "actor label on a static space refuses UNSUPPORTED and says nothing was written");
     assert.equal(hasUserAuthState(root, space, { readOnly: true }), false, "no user-auth state was written on the static space");
@@ -266,6 +288,8 @@ try {
     assert.equal(actor.failure?.remedy, "actor grants apply only to a space started with `cotal up --user-auth`", "actor grant on an open space: remedy");
     const bare = await run(actorCommand, root, { space }, ["grant", "alice"]);
     assert.equal(bare.failure?.message, `space "${space}" is an open space and has no user-auth ledger; no inert grant was written`, `actor grant with no --sub or ACL flags on an open space refuses the same way: ${bare.failure?.message ?? bare.out}`);
+    const endpoint = await run(serviceEndpointCommand, root, { space }, ["proposal", "p1"]);
+    assert.equal(endpoint.failure?.message, `space "${space}" is an open space and has no service endpoint host; nothing was sent`, `service-endpoint on an open space says why: ${endpoint.failure?.message ?? endpoint.out}`);
   }
 } finally {
   process.chdir(startCwd);

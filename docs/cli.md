@@ -1358,7 +1358,9 @@ is stopped, `down` removes the stack's saved definitions, their instance records
 registration that names the folder, so the space can be created and started in another folder.
 Outside a terminal it needs `--yes`, and `--dry-run` lists each member with its pid and process.
 `cotal status` marks such a project folder as gone, with `selected.rootGone` set to `true` in its
-JSON, and its Next names `cotal down --space <space> --yes`.
+JSON, and its Next names `cotal down --space <space> --yes`. A command that connects to a static-auth
+space, such as `send` or `history`, is refused with `DEPENDENCY_UNAVAILABLE`, because the seed went
+with the folder, and its Next names the same `down`.
 
 A bare `down` in a folder whose stack is already stopped stops nothing. It reports that the stack
 in that folder is not running and names `cotal up`, outcome `no-op`, exit 0, and writes nothing,
@@ -3566,7 +3568,10 @@ cotal service-endpoint name-bind <endpoint> (--owner <u_…> --claim <ref> | --r
 ```
 
 Decides and inspects service endpoint registrations on a user-auth space whose auth service runs
-with `--service-endpoints`. Every subcommand is one request to the service's
+with `--service-endpoints`. A static-credential or open space has no service endpoint host, so
+there every subcommand refuses `UNSUPPORTED` (exit 2), says so, sends nothing and records no
+request. A root that does not hold the space's user-auth service refuses the same way and names the
+root that started it. Every subcommand is one request to the service's
 `/service-endpoint-host` route as the signed-in user: the route verifies your IdP token and derives
 the granter itself, so no command names one. `approve` and `refuse` are the owner's: the command
 reads the proposal and its name first and decides at those revisions, so a proposal or name that
@@ -5732,7 +5737,10 @@ The default credential is created through its canonical secret-store kind. An ex
 not overwritten. Use another label or an explicit private output. `--replace` replaces the label's
 standing credential when it has expired or has no expiry claim, under a new identity unless
 `--identity` names one, and removes a no-expiry record beside it unless `--no-expiry` writes a new
-one. The receipt names what it replaced under `result.replaced`. A standing credential that is still
+one. The receipt names what it replaced and its public key under `result.replaced`. A replacement
+does not revoke the credential it replaced, so a copy of one with no expiry claim stays valid. The
+receipt then warns `REPLACED_CREDENTIAL_VALID`, naming that key and the
+[`auth revoke-credential`](#auth-revoke-credential) route that stops it. A standing credential that is still
 valid refuses `CONFLICT`, naming its expiry, and so does one that is not a native credential.
 `--replace` takes no `--out`. An exported file stays outside
 managed `.cotal` and workstation state. Its path, label, profile and public key, without the

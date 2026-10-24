@@ -41,8 +41,9 @@
  *     `reset store`, `reset space` and their dry runs refuse CONFLICT naming those files, and the
  *     folder keeps them. Once that store path is a link, they refuse naming it and its target.
  * 10. A deleted folder. With a whole stack running, its folder is deleted. `status` marks the folder
- *     gone, `down --space --yes` from another folder stops every member by signal and removes the
- *     stack definitions, no member process is left, and another folder starts the same name.
+ *     gone, `send` and `history` refuse DEPENDENCY_UNAVAILABLE and name `down --space --yes`, which
+ *     from another folder stops every member by signal and removes the stack definitions, no member
+ *     process is left, and another folder starts the same name.
  * 11. An open space deleted under its running stack. Another Cotal home adds the space and deletes
  *     it. `status` says the space was deleted under the running stack and leads its Next with
  *     `cotal down --yes`, then `cotal up`; history, send and `run ps` refuse with that cause and
@@ -91,6 +92,7 @@ const roots: string[] = [];
 type Envelope = {
   outcome: string;
   error?: { code: string; message: string; remedy?: string };
+  target?: { space?: string; root?: string } | null;
   warnings?: { code: string; message: string }[];
   result?: Record<string, unknown> & { applyVerdict?: { offered: boolean; code?: string; remedy?: string | null } };
 };
@@ -486,6 +488,13 @@ try {
     anchor(other);
     const status = cli(other, "status", "--space", space, "--json");
     check("status says the project folder is gone", (status.env?.result?.selected as { rootGone?: unknown } | undefined)?.rootGone === true, shown(status));
+    // The seed went with the folder, so a command that connects names the same stop.
+    for (const args of [["send", "-c", "general", "hi"], ["history", "general"]]) {
+      const refused = cli(other, ...args, "--space", space, "--json");
+      check(`${args[0]} refuses DEPENDENCY_UNAVAILABLE, naming the gone folder and cotal down --space ${space} --yes`,
+        refused.status === 2 && refused.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && refused.env.target?.space === space && Boolean(refused.env.error.message.includes(`${root}, and that folder is gone`))
+          && refused.env.error.remedy === `stop the stack it left running and free its name with cotal down --space ${space} --yes`, shown(refused));
+    }
     const stopped = cli(other, "down", "--space", space, "--yes", "--json");
     const members = (stopped.env?.result?.members as { result: string }[] | undefined) ?? [];
     check("down --space from another folder stops every member by signal and removes the stack definitions",
