@@ -4701,8 +4701,9 @@ an empty conversation. Reading every channel leaves out channels the grant does 
 them in a `CHANNELS_DENIED` warning. DM history and `--since` by sequence are not available to a
 user-auth identity. An agent's `--creds` credential reads the same way, one channel at a time under
 the lifecycle its own history grant names, with the same limits. A channel that grant leaves out is
-refused with `PERMISSION_DENIED`, quoting the channels the grant does name, and its
-`CHANNELS_DENIED` warning names them too. An observer or admin credential reads across channels.
+refused with `PERMISSION_DENIED` before it is read, quoting the channels the grant does name, or
+"no channel" for a grant that names none, and its `CHANNELS_DENIED` warning names them too. An
+observer or admin credential reads across channels.
 A part that could not be read is a warning and a `partial` run (exit 4): the
 retention, a replay policy, the channel list when a channel is named, or one channel of several.
 
