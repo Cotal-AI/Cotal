@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { CommandFailure, assertRecordIdentity, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, resolveOnPath, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, isWorkspaceTargetError, targetErrorCode, workspaceErrorParts, type MeshTargetError } from "@cotal-ai/workspace";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
@@ -168,6 +168,27 @@ export function abandonRetainedSignalStop(row: ServiceInstanceSnapshot, requestI
   return transition(row, { state: "failed", readiness: "not-checked" });
 }
 
+/** Record `failed`, on an operator's explicit request, a launch whose record names no process: its
+ *  launcher ended after it recorded the launch and before it recorded the child. The caller holds the
+ *  definition's writer lock, which that launcher held, so it has exited. A child it spawned without
+ *  recording is not excluded, and nothing here looks for one. */
+export function abandonUnresolvedLaunch(row: ServiceInstanceSnapshot): ServiceInstanceSnapshot {
+  if (observeServiceProcess(row.record.value) !== "unresolved-launch") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this instance's launch is not unresolved: its record names a process or a settled state; nothing was abandoned", { target: instanceProjection(row) });
+  return transition(row, { state: "failed", readiness: "not-checked" });
+}
+
+/** What an interrupt records for each launch this process recorded and has not yet pinned to its child. */
+const unpinnedLaunches = new Set<() => void>();
+
+/** For a command that ends itself on an interrupt: record each launch it has not yet pinned to its
+ *  child. One with no spawned child is recorded `failed`. One whose child was spawned is recorded with
+ *  that child's identity; when that cannot be read, it is recorded `failed` with the exit once the
+ *  child has exited and `unknown` before, as a failed pin is. Without this, the record names no
+ *  process, and only `down --abandon-launch` resolves it. */
+export function settleInterruptedLaunches(): void {
+  for (const settle of unpinnedLaunches) settle();
+}
+
 /** The refusal for a retained native stop, made before any readiness probe, stop request or record
  *  write. This command has no effect, so it is refused; only the earlier stop's outcome is unknown. A
  *  request file that does not read as this launch's own is named an unknown publication. */
@@ -248,6 +269,37 @@ function environment(definition: ServiceDefinitionInput): NodeJS.ProcessEnv {
 export function serviceLogPath(space: string, id: string, create = false): string | undefined {
   const dir = serviceInstanceStore(space).directory(create);
   return dir ? join(dir, `${spaceKey(id)}.log`) : undefined;
+}
+
+/** The size at which a background launch moves the instance's log aside before it starts. */
+const LOG_ROTATE_BYTES = 16 * 1024 * 1024;
+
+/** Move a log that reached {@link LOG_ROTATE_BYTES} to `<log>.1`, replacing an earlier one, so the
+ *  launch starts a fresh file. Only a start or restart rotates, so a running service's log grows
+ *  until its next start. */
+function rotateServiceLog(path: string): void {
+  let info;
+  try { info = lstatSync(path); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  if (!info.isFile() || info.uid !== process.getuid!() || (info.mode & 0o077) !== 0) throw new Error("unprotected log target");
+  if (info.size >= LOG_ROTATE_BYTES) renameSync(path, `${path}.1`);
+}
+
+/** Delete the instances' logs, `<log>` and the rotated `<log>.1`, and return the paths deleted. */
+export function removeServiceLogs(space: string, ids: readonly string[]): string[] {
+  const removed: string[] = [];
+  for (const id of ids) {
+    const path = serviceLogPath(space, id);
+    if (!path) continue;
+    for (const file of [path, `${path}.1`]) {
+      try { unlinkSync(file); removed.push(file); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw new CommandFailure("partial", "OPERATION_PARTIAL", `the definition and its stopped instance records were removed, but the log ${file} was not deleted: ${(error as Error).message}`, { target: { space, instanceId: id }, changed: removed.map((log) => ({ kind: "service-log", path: log })), remedy: `delete ${file} yourself` });
+      }
+    }
+  }
+  return removed;
 }
 
 /** Both absent, or the same attempt and inventory digest. */
@@ -412,7 +464,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
   const { program, adapter: declaredAdapter, cliInvocation, env, launcher } = prepareProcessService(definition);
   if (declaredAdapter && (options.newInstance && !declaredAdapter.declaration.capabilities.multiInstance || options.foreground && !declaredAdapter.declaration.capabilities.foreground)) throw new CommandFailure("refused", "UNSUPPORTED", "the selected adapter does not declare this multi-instance or foreground capability; no launch was allocated");
   const hold = held ?? serviceDefinitionStore(value.space).pin(definition);
-  let child: ChildProcess | undefined;
+  let child: ChildProcess | undefined, unpinned: (() => void) | undefined;
   try {
     assertNoServiceUnitAttempts(value.space, definition.name);
     const rows = serviceInstances(value.space, definition.name);
@@ -460,6 +512,16 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
     const store = serviceInstanceStore(value.space);
     store.commit(id, selected, instance);
     let row = store.read(id)!;
+    // Until the child's identity is recorded, an interrupt records this launch on its way out.
+    unpinned = () => {
+      if (child?.pid === undefined) { row = transition(row, { state: "failed", readiness: "not-checked" }); return; }
+      let identity;
+      try { identity = requireProcessIdentity(child.pid); } catch { identity = undefined; }
+      row = transition(row, identity ? { process: identity } : { state: exited ? "failed" : "unknown", ...(exited ? { exit: { code: exitCode, signal: exitSignal } } : {}) });
+    };
+    unpinnedLaunches.add(unpinned);
+    // Smoke only: hold a recorded launch before its child exists, so a signal can land in that window.
+    if (process.env.COTAL_SMOKE_HOLD_AFTER_LAUNCH_RECORD === "1") await delay(60_000);
     let adapter: { provider: LoadedServiceAdapter; context: ServiceAdapterContext } | undefined;
     let launch: { program: string; args: readonly string[]; cwd: string };
     try {
@@ -495,6 +557,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
     const exit = new Promise<void>((resolve) => { done = resolve; });
     try {
       if (!options.foreground) {
+        rotateServiceLog(path);
         log = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
         const info = fstatSync(log);
         if (!info.isFile() || info.uid !== process.getuid!() || (info.mode & 0o077) !== 0) throw new Error("unprotected log target");
@@ -517,6 +580,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       throw new CommandFailure(exited ? "failed" : "unknown", exited ? "OPERATION_FAILED" : "OPERATION_UNKNOWN", "the child could not be creation-pinned; its native child handle was asked to exit, and no replacement was launched", { target: instanceProjection(row) });
     }
     row = transition(row, { process: identity });
+    unpinnedLaunches.delete(unpinned);
     // A process that exits at once never ran: process readiness first gives it a moment to do so,
     // and that exit is then settled below with the code this parent observed.
     if (value.readiness.type === "process") await Promise.race([exit, delay(Math.min(PROCESS_SETTLE_MS, value.readiness.timeoutMs))]);
@@ -530,7 +594,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       throw new CommandFailure("failed", "OPERATION_FAILED", `the owned service process exited before readiness was established${exited ? ` (exit code ${exitCode ?? "none"}, signal ${exitSignal ?? "none"})` : ""}; its log records the cause`, { target: instanceProjection(failed), remedy: `read its log with cotal service logs ${definition.name} --instance ${id} --space ${value.space}` });
     }
     return { instance: running, noOp: false, child, exit: { done: exit, observed: () => exited, result: () => ({ code: exitCode, signal: exitSignal }) } };
-  } finally { if (!held) hold.release(); }
+  } finally { if (unpinned) unpinnedLaunches.delete(unpinned); if (!held) hold.release(); }
 }
 
 /** Native preview imports only the pinned provider and performs its caller-scoped read. No
@@ -776,8 +840,9 @@ export function removeStoppedInstanceRecord(definition: ServiceDefinitionSnapsho
   } finally { hold.release(); }
 }
 
-/** Called under the definition writer lock, after stopped/host/supervisor checks for every row. */
-export function removeStoppedInstanceRecords(space: string, name: string): void {
+/** Called under the definition writer lock, after stopped/host/supervisor checks for every row.
+ *  Returns the full IDs whose records it removed. */
+export function removeStoppedInstanceRecords(space: string, name: string): string[] {
   const rows = removableServiceInstances(space, name), removed: string[] = [];
   try {
     for (const row of rows) { serviceInstanceStore(space).commit(row.name, row, undefined); removed.push(row.name); }
@@ -785,7 +850,11 @@ export function removeStoppedInstanceRecords(space: string, name: string): void 
     if (!removed.length) throw error;
     throw new CommandFailure("partial", "OPERATION_PARTIAL", "some stopped instance records were removed, but the definition was kept after another record changed", { target: { space, name }, changed: removed.map((instanceId) => ({ kind: "stopped-instance-record", instanceId })), remedy: "inspect the remaining records before another removal; no process was signalled and logs were retained" });
   }
+  return removed;
 }
+
+/** The most a finite tail reads back from the end of a log, the size at which a start rotates it. */
+const LOG_TAIL_BYTES = LOG_ROTATE_BYTES;
 
 /** Read only bounded regular-file bytes; log data is not promised to be secret-redacted. */
 export function readServiceLog(space: string, id: string, tail: number) {
@@ -803,11 +872,20 @@ export function readOwnedLogTail(path: string, tail: number) {
     const info = fstatSync(fd);
     if (![info.size, info.dev, info.ino].every((number) => Number.isSafeInteger(number) && number >= 0)) throw new CommandFailure("refused", "UNSUPPORTED", "this log's native file coordinates cannot be represented safely; no approximate byte offsets were reported");
     if (!info.isFile() || info.uid !== process.getuid!() || (info.mode & 0o077) !== 0) throw new CommandFailure("refused", "PERMISSION_DENIED", "the service log is not an owned private regular file");
-    const length = Math.min(info.size, 1024 * 1024), start = info.size - length;
-    const buffer = Buffer.alloc(length);
-    let offset = 0;
-    while (offset < length) { const count = readSync(fd, buffer, offset, length - offset, start + offset); if (!count) break; offset += count; }
-    let text = buffer.subarray(0, offset).toString("utf8");
+    // Read back 1 MiB at a time until the bytes hold `tail` whole lines, the file's start or the bound.
+    const limit = Math.min(info.size, LOG_TAIL_BYTES), chunks: Buffer[] = [];
+    let start = info.size, newlines = 0;
+    while (info.size - start < limit && (start === info.size || newlines < tail)) {
+      const length = Math.min(1024 * 1024, limit - (info.size - start)), chunk = Buffer.alloc(length);
+      let offset = 0;
+      while (offset < length) { const count = readSync(fd, chunk, offset, length - offset, start - length + offset); if (!count) break; offset += count; }
+      if (offset < length) break;
+      chunks.unshift(chunk);
+      start -= length;
+      for (let at = chunk.indexOf(10); at !== -1; at = chunk.indexOf(10, at + 1)) newlines++;
+      if (start + length === info.size && chunk[length - 1] === 10) newlines--;
+    }
+    let text = Buffer.concat(chunks).toString("utf8");
     if (start) text = text.includes("\n") ? text.slice(text.indexOf("\n") + 1) : "";
     const all = text.replace(/\n$/, "").split("\n");
     return { lines: text ? all.slice(-tail) : [], omittedBytes: start, path };

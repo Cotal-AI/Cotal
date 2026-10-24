@@ -16,17 +16,23 @@ import { nativeEndpointRefusal } from "../lib/endpoint-errors.js";
 import { onInstance } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
+import { reservedPersonaName } from "../lib/persona-files.js";
 import type { PersonaValues } from "./persona.js";
 
 const INPUT_LIMIT = 1024 * 1024;
 const CONTENT_FLAGS = ["file", "prompt", "from", "role", "model", "subscribe", "harness", "allow-subscribe", "allow-publish", "announce"] as const;
 const csv = (text: string | undefined) => text?.split(",").map((part) => part.trim()).filter(Boolean);
 
+/** The command an `--on` refusal tells the caller to rerun with `--on <instance>` added. */
+function personaVerb(mode: string | undefined, name: string | undefined): string {
+  return mode === undefined || mode === "list" || name === undefined ? "cotal persona" : `cotal persona ${mode} ${name}`;
+}
+
 export function validateRemotePersonaArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   const values = args.values as PersonaValues;
-  onInstance(values.on!, "cotal persona --on");
   const [mode, name, ...extra] = args.positionals;
+  onInstance(values.on!, personaVerb(mode, name));
   if (mode !== undefined && !["list", "show", "create"].includes(mode)) throw new CommandFailure("refused", "UNSUPPORTED", "remote persona operations support list, show and create only; no local edit or removal was substituted");
   if (extra.length || (mode === undefined || mode === "list" ? name !== undefined : !name)) throw new CommandFailure("refused", "USAGE_INVALID", "use persona --on <full-manager-instance>, persona show <name> --on <id>, or persona create <name> --on <id>");
   if (name !== undefined) {
@@ -36,6 +42,8 @@ export function validateRemotePersonaArguments(args: ParsedArgs): void {
   if (values.yes !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--yes is not a remote persona write override; existing ownership rules remain in force");
   if (mode !== "create" && CONTENT_FLAGS.some((flag) => values[flag] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "definition and announcement inputs belong to persona create");
   if (mode === "create") {
+    const reserved = reservedPersonaName(name!);
+    if (reserved) throw new CommandFailure("refused", "USAGE_INVALID", reserved, { remedy: "choose another name" });
     if ([values.file, values.prompt, values.from].filter((value) => value !== undefined).length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", "remote persona creation needs one of --file, --prompt or --from");
     if (values.role !== undefined) {
       try { assertValidRole(values.role); } catch { throw new CommandFailure("refused", "USAGE_INVALID", "use a valid role token"); }
@@ -109,7 +117,7 @@ export async function remotePersona(args: ParsedArgs): Promise<void> {
   const values = args.values as PersonaValues;
   const [mode = "list", name] = args.positionals;
   const input = mode === "create" ? definitionInput(values, name!) : undefined;
-  const instanceId = (await managerPin(values, "cotal persona --on"))!;
+  const instanceId = (await managerPin(values, personaVerb(mode, name)))!;
   const requestId = randomUUID();
   let connection: Awaited<ReturnType<typeof openEndpointConnection>> | undefined;
   let sender: Awaited<ReturnType<typeof openTransient>> | undefined;
@@ -148,7 +156,7 @@ export async function remotePersona(args: ParsedArgs): Promise<void> {
     const localFilesChanged = mode === "create" && localFile !== undefined && raw.path === localFile && existsSync(localFile);
     // Without a bearer the caller is minted for this call alone, so a later call is another caller.
     const perCallCaller = connection.auth.bearer === undefined;
-    result = { kind: "remote-persona", operation: mode, space: connection.space, requestedInstanceId: instanceId, requestId: response.reply.id, responder: response.responder, data, saved: mode === "create", localFilesChanged, perCallCaller, agentLaunched: false, announcement: null };
+    result = { kind: "remote-persona", operation: mode, space: connection.space, requestedInstanceId: instanceId, requestId: response.reply.id, responder: response.responder, data, saved: mode === "create", localFilesChanged, perCallCaller, localCatalog: connection.root !== undefined, agentLaunched: false, announcement: null };
     if (sender && values.announce !== undefined) {
       try {
         const message = await sender.ep.multicast(`Defined persona ${name}; available in the selected manager's persona catalog.`, { channel: values.announce });
@@ -180,6 +188,13 @@ function remotePersonaView(result: Record<string, unknown>): Report {
   const instructions = typeof data.persona === "string" ? data.persona.split(/\r?\n/) : [];
   const pin = String(result.requestedInstanceId);
   const name = typeof data.name === "string" && /^[A-Za-z0-9_-]+$/.test(data.name) ? data.name : null;
+  const next = name ? [
+    ...(!result.saved || !result.perCallCaller ? [{ command: `cotal p show ${name} --on ${pin}`, description: "Read this manager's authorized definition" }]
+      : result.localFilesChanged ? [{ command: `cotal p show ${name}`, description: "Read the definition in this root's catalog" }] : []),
+    { command: `cotal spawn ${name} --on ${pin}`, description: "Request a launch under the native caller grants" },
+  ] : !result.perCallCaller ? [{ command: `cotal p show <name> --on ${pin}`, description: "Read a named definition from this manager" }]
+    // A caller minted for this call alone owns no card, so the manager answers its show not-found.
+    : result.localCatalog ? [{ command: "cotal p show <name>", description: "Read a definition in this root's catalog" }] : [];
   return { sections: [
     { title: result.saved ? "Persona saved on manager" : "Manager persona catalog", blocks: [
       { kind: "fields", rows: [["Space", String(result.space)], ["Requested manager", pin], ["Answering manager", responder.instanceId], ["Epoch", String(responder.epoch)], ["Original request", String(result.requestId)], ["Local files", result.localFilesChanged ? `${String(data.path)}, written by the manager in this root's catalog` : "unchanged"], ["Agent launch", "not requested"]] },
@@ -188,10 +203,6 @@ function remotePersonaView(result: Record<string, unknown>): Report {
     ] },
     ...(instructions.length ? [{ title: "Authorized instructions", blocks: [{ kind: "lines" as const, lines: instructions.slice(0, 60) }, ...(instructions.length > 60 ? [{ kind: "lines" as const, lines: [`${instructions.length - 60} body lines are not shown; JSON retains the authorized result.`] }] : [])] }] : []),
     ...(announcement ? [{ title: "Announcement", blocks: [{ kind: "fields" as const, rows: [["Channel", announcement.channel], ["Storage", announcement.outcome], ["Message", announcement.messageId ?? "not confirmed"], ["Delivery and completion", "not confirmed"]] as [string, string][] }] }] : []),
-    { title: "Next", blocks: [{ kind: "commands", items: name ? [
-      ...(!result.saved || !result.perCallCaller ? [{ command: `cotal p show ${name} --on ${pin}`, description: "Read this manager's authorized definition" }]
-        : result.localFilesChanged ? [{ command: `cotal p show ${name}`, description: "Read the definition in this root's catalog" }] : []),
-      { command: `cotal spawn ${name} --on ${pin}`, description: "Request a launch under the native caller grants" },
-    ] : [{ command: `cotal p show <name> --on ${pin}`, description: "Read a named definition from this manager" }] }] },
+    ...(next.length ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: next }] }] : []),
   ] };
 }

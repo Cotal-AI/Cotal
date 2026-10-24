@@ -6107,6 +6107,13 @@ a released record with a marker cannot resume. A failed marker read MUST be repo
 not as marker absence or permission to resume. A terminal record remains terminal whether or not
 it has a marker.
 
+A `run-status` request MAY carry `journal: { offset }`, a row offset into the journal. The reply
+then carries `journalTotal`, the journal's row count, and its `journal` holds the rows from
+`offset`, in journal order, that fit in one reply under the serving connection's payload limit: at
+least one row while any remain, and none when `offset` is at or past the end. A record that does not
+fit in a reply with no rows, or a single row that does not fit, MUST be refused
+`resource-exhausted`. A request without `journal` returns the whole journal in one reply.
+
 Each cancellation intent is keyed by the full served subject, not just the envelope id. A pending
 intent prevents a new local launch but does not stop an existing drive. Only an observed durable
 marker permits the manager to call the current eligible drive's cooperative `cancel(reason)`

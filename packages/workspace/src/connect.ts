@@ -38,6 +38,7 @@ import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from 
 import { renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
 import { CommandFailure, type RefusalCode } from "./output.js";
 import { credentialFileExposure } from "./protected-records.js";
+import { stoppedLoopbackListener } from "./pid.js";
 import type { MeshTargetErrorCode } from "./mesh-target.js";
 import type { PreflightFailure } from "./preflight.js";
 
@@ -402,6 +403,7 @@ export function preflightCode(failure: PreflightFailure): RefusalCode {
   switch (failure) {
     case "unreachable":
     case "slow-link":
+    case "broker-stopped":
       return "TARGET_UNAVAILABLE";
     case "registry-open-now-auth":
     case "open-wants-auth":
@@ -665,6 +667,8 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
       // `--on <instanceId>` reaches the mint as `opts.instanceId`. Only the two control-caller
       // tiers take it: `deployer` mints through a different arm that does not consume endpoint
       // capabilities, so pinning it would silently do nothing.
+      // The issuer dial waits out its own budget on a stopped broker, so the preflight names it first.
+      if (stoppedLoopbackListener(target.server) !== undefined) await preflightOrThrow(target, undefined, opts.readOnly === true);
       try {
         ({ creds, epCaller } = await mintControlInstrument({ server: target.server, space: target.space, tlsRequired: target.tlsRequired, auth: target.auth },
           role === "control-caller-admin" ? "admin" : "privileged", opts.instanceId));
@@ -942,8 +946,8 @@ export async function preflightOrThrow(target: MeshTarget, probeCreds?: string, 
   // `offline`; mismatch (creds rejected / mode flipped) still drops it. Manual never deletes.
   // The message reports what ACTUALLY happened, so it never claims a removal that the registry refused.
   const pruned = !readOnly && r.prune ? pruneMesh(target.space, r.kind === "unreachable" ? "gone" : "mismatch") : false;
-  const kind = r.kind === "unreachable" || r.kind === "slow-link" ? "transient" : "permanent";
-  throw workspaceRefusal({ kind: "preflight", failure: r.kind, target, pruned }, { kind, code: preflightCode(r.kind) });
+  const kind = r.kind === "unreachable" || r.kind === "slow-link" || r.kind === "broker-stopped" ? "transient" : "permanent";
+  throw workspaceRefusal({ kind: "preflight", failure: r.kind, target, pruned, ...(r.pid === undefined ? {} : { pid: r.pid }) }, { kind, code: preflightCode(r.kind) });
 }
 
 /** {@link preflightOrThrow} with the exiting disposition. */
