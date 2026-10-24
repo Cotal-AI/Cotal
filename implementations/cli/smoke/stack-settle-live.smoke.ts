@@ -150,6 +150,8 @@ const TSX_IMPORT = import.meta.resolve("tsx");
 const home = mkdtempSync(join(tmpdir(), "cotal-stack-settle-"));
 // A --store-dir outside the Cotal home, which is a control directory.
 const storeDirs = mkdtempSync(join(tmpdir(), "cotal-stack-settle-stores-"));
+// Project folders outside it too: a project folder may not be in a control directory.
+const projects = mkdtempSync(join(tmpdir(), "cotal-stack-settle-projects-"));
 const configDir = join(home, "xdg");
 // The CLI children must not inherit a managed session's mesh identity from whatever runs this
 // suite; they get only the private home and the values set below.
@@ -219,7 +221,7 @@ const gone = (space: string, definition: string) => serviceInstances(space, defi
 const exited = (child: ChildProcess) => new Promise<void>((done) => child.exitCode !== null || child.signalCode !== null ? done() : child.once("exit", () => done()));
 
 const prepare = (space: string): string => {
-  const root = join(home, space);
+  const root = join(projects, space);
   // Not group-writable under the umask step 4 sets: such a root needs a private-group proof
   // (getfacl) that a host without acl cannot give.
   mkdirSync(root, { mode: 0o755 });
@@ -260,6 +262,7 @@ process.on("exit", () => {
   for (const pid of owned) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
   rmSync(home, { recursive: true, force: true });
   rmSync(storeDirs, { recursive: true, force: true });
+  rmSync(projects, { recursive: true, force: true });
 });
 
 try {
