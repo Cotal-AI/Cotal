@@ -184,6 +184,7 @@ export interface StatusResult {
       origin: MeshEntry["origin"] | null;
       tlsRequired: boolean;
       eventsRequired: boolean;
+      modeChecked: boolean;
       current: boolean;
       check: "reachable" | "unreachable" | "not-checked";
       catalog: { name: string | null; fetchedAt: string | null; error: string | null } | null;
@@ -891,6 +892,7 @@ async function readMeshes(selected: Selected, all: boolean, gaps: Gaps): Promise
       origin: m.origin ?? null,
       tlsRequired: Boolean(m.tlsRequired),
       eventsRequired: m.policy?.events === "required",
+      modeChecked: m.unchecked !== true,
       current: m.space === current,
       check: all || m.space === chosen ? ((await isReachable(m.server, m.tlsRequired ? { tls: true } : {})) ? "reachable" as const : "unreachable" as const) : "not-checked" as const,
       catalog: m.origin === "catalog" ? { name: m.catalogName && m.catalogName !== m.space ? m.catalogName : null, fetchedAt: m.catalogFetchedAt ?? null, error: m.catalogError ?? null } : null,
@@ -1339,7 +1341,7 @@ function brokerOverview(r: StatusResult): Section {
       columns: [{ key: "space", label: "Space" }, { key: "state", label: "Connection" }, { key: "detail", label: "Details" }],
       rows: entries.map((entry) => {
         const selected = r.selected.resolved && entry.space === r.selected.space;
-        const detail = [entry.mode === "user" ? "user sign-in" : entry.mode === "auth" ? "static auth" : "open", entry.origin === "catalog" ? "saved catalog entry" : entry.origin === "manual" ? "registered endpoint" : "local registration", entry.tlsRequired ? "TLS required" : "", entry.catalog?.error ? "catalog refresh failed" : ""].filter(Boolean).join(" · ");
+        const detail = [`${entry.mode === "user" ? "user sign-in" : entry.mode === "auth" ? "static auth" : "open"}${entry.modeChecked ? "" : ", not checked"}`, entry.origin === "catalog" ? "saved catalog entry" : entry.origin === "manual" ? "registered endpoint" : "local registration", entry.tlsRequired ? "TLS required" : "", entry.catalog?.error ? "catalog refresh failed" : ""].filter(Boolean).join(" · ");
         return {
           space: selected ? cell(`→ ${entry.space}`, "selected") : entry.space,
           state: selected && r.selected.resolved ? connectionCell(r.selected) : entry.check === "not-checked" ? stateCell("not checked", "hint") : stateCell(entry.check === "reachable" ? "reachable" : "unreachable", entry.check === "reachable" ? "ok" : "failed"),

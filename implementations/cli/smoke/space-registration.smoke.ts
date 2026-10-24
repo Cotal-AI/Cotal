@@ -266,6 +266,15 @@ setCurrent("keep");
 
   const forced = await json(["space", "add", "dead1", "--server", DEAD, "--root", root, "--force"]);
   check("--force adds a space whose broker is down, marked not checked", forced.status === 0 && forced.env?.result.verified === false && findMesh("dead1") !== undefined, shown(forced));
+  check("…and its registration records that its mode was not checked", findMesh("dead1")?.unchecked === true && forced.env?.result.space.modeChecked === false, findMesh("dead1"));
+  const listedUnchecked = await json(["space"]);
+  check("space --json marks that mode unchecked and a checked one checked",
+    listedUnchecked.env?.result.items.find((item: { space: string }) => item.space === "dead1")?.modeChecked === false && listedUnchecked.env?.result.items.find((item: { space: string }) => item.space === "started")?.modeChecked === true, listedUnchecked.env?.result.items);
+  const shownUnchecked = await run(["space", "show", "dead1", "--plain"]);
+  check("space show names the mode not checked and how to check it", /mode:\s+open, not checked: added with --force/.test(shownUnchecked.stdout) && shownUnchecked.stdout.includes("cotal space forget dead1"), shown(shownUnchecked));
+  const whoUnchecked = await json(["whoami", "--space", "dead1"]);
+  check("whoami does not state an unchecked mode as fact: partial, exit 4, MODE_NOT_CHECKED",
+    whoUnchecked.status === 4 && whoUnchecked.env?.outcome === "partial" && whoUnchecked.env.result.modeChecked === false && whoUnchecked.env.warnings.some((w: { code: string }) => w.code === "MODE_NOT_CHECKED"), shown(whoUnchecked));
 
   clearCurrent();
   const unselected = await json(["space", "add", "open3", "--server", LIVE, "--root", root]);

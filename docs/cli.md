@@ -1998,7 +1998,7 @@ read refuses both with `SCHEMA_INVALID`, exit 1, naming its file.
 `--json` writes one document. `space` gives `current` (the selected space or null),
 `currentRecorded`, `items` and `prepared`; each item is the row `cotal status --json` gives under
 `meshes.items`: `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`,
-`current`, `check` (`reachable`, `unreachable` or `not-checked`) and `catalog`. `space show` adds
+`modeChecked`, `current`, `check` (`reachable`, `unreachable` or `not-checked`) and `catalog`. `space show` adds
 `recordedAt`, `attachHost`, `maxSessions`, `storeDir`, `unencryptedOverlay`, the login pins of a
 user-auth space under `userAuth` and the catalog's `id`, `slug`, `kind` and `role`. It leaves
 credential paths out. A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
@@ -2037,7 +2037,9 @@ address, and says when it has no TLS. A port that takes no connection gets the p
 remedy. For `--server`, the `--force` route follows either one.
 `--force` replaces a registration added by hand, never one this machine started or a catalog lists,
 and adds a `--server` space without checking its broker, which suits a
-space that is down right now; a user-auth space is always checked. Declining the question is a
+space that is down right now; a user-auth space is always checked. Such a registration records that
+its mode was not checked: `space` and `space show` show the mode as not checked, with
+`modeChecked: false` in `--json`, and `whoami` does not state what that mode implies as fact. Declining the question is a
 `no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
 shape `space show` gives, with `verified` and `replaced`.
 
@@ -2967,6 +2969,7 @@ session, so there is no unread count or connection state to report.
 | Static auth, no signer here | `no-credential` | Nothing without `--creds <file>` |
 | User auth | `user` | The signed-in user's `cli` actor: `read`, `post` and `capabilities` are its ledger row |
 | A `--server` the space is not registered at, whether or not this folder holds its trust | `unknown` | Unknown: `mode` and the access fields are `null`, and the run is `partial` (exit 4) with `BROKER_NOT_PROBED` |
+| A space `space add --force` registered without checking its broker | the kind its recorded mode gives | What that mode allows, if the broker enforces it: `modeChecked` is `false`, and the run is `partial` (exit 4) with `MODE_NOT_CHECKED`, naming how to add it again with the check |
 
 A user who is not signed in has no principal. A signed-in user with no ledger row (`grant:
 "not-granted"`) may read and post nothing. When the grant ledger is on another machine the grant

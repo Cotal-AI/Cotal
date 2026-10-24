@@ -62,6 +62,8 @@ export interface SpaceRow {
   readonly origin: MeshEntry["origin"] | null;
   readonly tlsRequired: boolean;
   readonly eventsRequired: boolean;
+  /** False when `space add --force` registered it unchecked, so its `mode` was never seen enforced. */
+  readonly modeChecked: boolean;
   /** Whether it is the space `cotal use` selected. */
   readonly current: boolean;
   readonly check: Check;
@@ -179,6 +181,7 @@ function row(m: MeshEntry, current: string | null, check: Check): SpaceRow {
     origin: m.origin ?? null,
     tlsRequired: m.tlsRequired === true,
     eventsRequired: m.policy?.events === "required",
+    modeChecked: m.unchecked !== true,
     current: m.space === current,
     check,
     catalog: m.origin === "catalog" ? { name: m.catalogName && m.catalogName !== m.space ? m.catalogName : null, fetchedAt: m.catalogFetchedAt ?? null, error: m.catalogError ?? null } : null,
@@ -251,7 +254,7 @@ function spacesView(result: SpacesResult): Report {
           space: nameCell(s),
           broker: checkCell(s),
           server: s.server,
-          mode: s.mode,
+          mode: s.modeChecked ? s.mode : { text: `${s.mode}, not checked`, tone: "waiting" },
           origin: s.catalog?.name ? `${originText(s.origin)} as ${s.catalog.name}` : originText(s.origin),
           root: { text: s.root, tone: "hint" },
         })),
@@ -286,7 +289,7 @@ function spaceView(s: SpaceDetail): Report {
     ["space", nameCell(s)],
     ["broker", checkCell(s)],
     ["server", s.server],
-    ["mode", s.mode],
+    ["mode", s.modeChecked ? s.mode : { text: `${s.mode}, not checked: added with --force`, tone: "waiting" }],
     ["origin", originText(s.origin)],
     ["root", s.root],
     ["recorded", s.recordedAt],
@@ -304,6 +307,7 @@ function spaceView(s: SpaceDetail): Report {
     if (s.catalog.error) fields.push(["catalog error", { text: s.catalog.error, tone: "failed" }]);
   }
   const hints: Cell[] = s.current ? [] : [{ text: `select it with \`cotal use ${s.space}\``, tone: "hint" }];
+  if (!s.modeChecked) hints.push({ text: `check its mode by adding it again without --force: \`cotal space forget ${s.space}\`, then \`cotal space add ${s.space} --server ${s.server} --root ${s.root}\``, tone: "hint" });
   return { sections: [{ title: `Space · ${s.space}`, blocks: [{ kind: "fields", rows: fields }, ...(hints.length ? [{ kind: "lines" as const, lines: hints }] : [])] }] };
 }
 
