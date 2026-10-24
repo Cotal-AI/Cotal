@@ -4505,7 +4505,8 @@ channel the identity may read. `--limit` bounds the read, and `--since`, `--from
 filter that window on this machine. They do not search the whole stream. `result.window` says how
 many messages were read, whether older retained messages exist that the window did not reach, and
 whether the window goes back to `--since`. The report names the local time and the ISO instant a
-time `--since` resolved to. An age outside the supported date range, a date that is not on the
+time `--since` resolved to, or the chat stream sequence a bare number was read as. A four-digit
+number from 1900 to 2099 is still a sequence, and the report says to write a date in full. An age outside the supported date range, a date that is not on the
 calendar, or a sequence that cannot be represented without rounding is a `USAGE_INVALID` refusal
 before connecting.
 The report shows each message's local time, with its date when it is not today; `result.items[].ts`

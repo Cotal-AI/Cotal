@@ -203,6 +203,11 @@ try {
 
   const bySeq = await run(["history", "general", "--since", String(items[0]?.seq), "--json"]);
   check("--since a sequence keeps only later messages", JSON.stringify(texts(bySeq)) === JSON.stringify(["looks good", "deploy finished"]) && bySeq.envelope?.result?.window.reachesSince === true, texts(bySeq));
+  // A bare number is a sequence, so a year reads as one; the report used to name no filter at all.
+  const [seqPlain, yearPlain] = await Promise.all([run(["history", "general", "--since", String(items[0]?.seq), "--plain"]), run(["history", "general", "--since", "2026", "--plain"])]);
+  check("a sequence --since is named in the report, and a year-shaped one says how to write a date",
+    seqPlain.stdout.includes(`--since ${items[0]?.seq} is chat stream sequence ${items[0]?.seq}; only messages after it are shown\n`)
+      && yearPlain.stdout.includes("--since 2026 is chat stream sequence 2026; only messages after it are shown. For a date, write it in full, such as 2026-01-01"), { seq: shown(seqPlain), year: shown(yearPlain) });
   const byTime = await run(["history", "general", "--since", midpoint, "--json"]);
   check("--since a time keeps only messages after it", JSON.stringify(texts(byTime)) === JSON.stringify(["deploy finished"]), texts(byTime));
   // A bare date is local midnight. ECMAScript reads it as UTC, so east of UTC it dropped the day's
