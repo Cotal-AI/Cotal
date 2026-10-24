@@ -108,6 +108,7 @@ export async function managerPin(values: { on?: unknown; space?: unknown; server
       throw new CommandFailure("refused", "USAGE_INVALID", `${(error as Error).message}. A manager's name or host is taken only on a user-auth mesh`, {
         target: { on },
         remedy: `cotal ps prints each manager's instance id; rerun it as ${verb} --on <instance>`,
+        selfContained: true,
       });
     }
   }

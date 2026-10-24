@@ -91,7 +91,7 @@ export function managedTarget(args: ParsedArgs, operation: "stop" | "attach", al
   const name = args.positionals[0] ?? named;
   if (typeof args.values.on === "string") onInstance(args.values.on, `cotal ${operation}`);
   if (name === undefined && operation === "attach" && allowPicker) {
-    if (!canPrompt()) throw new CommandFailure("refused", "USAGE_INVALID", "name the agent to attach without an interactive terminal", { remedy: "run cotal ps, then cotal attach <name>" });
+    if (!canPrompt()) throw new CommandFailure("refused", "USAGE_INVALID", "name the agent to attach without an interactive terminal", { remedy: "run cotal ps, then cotal attach <name>", selfContained: true });
     return undefined;
   }
   if (name !== undefined && /[\u0000-\u001f\u007f]/u.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "the agent name contains terminal control characters");

@@ -322,9 +322,9 @@ export const onFlag = { name: "on", type: "string", value: "<instance>", descrip
 export function onInstance(on: string | undefined, verb: string): string | undefined {
   if (on === undefined) return undefined;
   if (on === "")
-    throw new CommandFailure("refused", "USAGE_INVALID", `--on requires a manager instance id (the whole id, as \`cotal ps\` prints it), or on a user-auth mesh a manager's name or host: \`${verb} --on <instance>\`. An empty value is refused, not dropped`);
+    throw new CommandFailure("refused", "USAGE_INVALID", `--on requires a manager instance id (the whole id, as \`cotal ps\` prints it), or on a user-auth mesh a manager's name or host: \`${verb} --on <instance>\`. An empty value is refused, not dropped`, { selfContained: true });
   if (on.startsWith("local."))
-    throw new CommandFailure("refused", "USAGE_INVALID", `"${on}" is a principal id. --on wants the manager INSTANCE id as \`cotal ps\` prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it): \`${verb} --on <instance>\``);
+    throw new CommandFailure("refused", "USAGE_INVALID", `"${on}" is a principal id. --on wants the manager INSTANCE id as \`cotal ps\` prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it): \`${verb} --on <instance>\``, { selfContained: true });
   return on;
 }
 
@@ -337,7 +337,7 @@ export function onInstanceId(on: string | undefined, verb: string): string | und
   try {
     assertLifecycleToken(value, "instanceId");
   } catch (e) {
-    throw new CommandFailure("refused", "USAGE_INVALID", `${(e as Error).message}. --on wants the INSTANCE id as \`cotal ps\` prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did): \`${verb} --on <instance>\``);
+    throw new CommandFailure("refused", "USAGE_INVALID", `${(e as Error).message}. --on wants the INSTANCE id as \`cotal ps\` prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did): \`${verb} --on <instance>\``, { selfContained: true });
   }
   return value;
 }

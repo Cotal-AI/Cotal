@@ -185,7 +185,10 @@ none of the three set, the marks are drawn in UTF-8. Windows consoles are always
 A usage refusal under `--plain` or such a locale prints the classified report that begins
 `Request refused`, then the command's help. Every refusal line, the `✗` line included, shows a
 control character in the text it quotes, such as a file's bytes or an argument, as an escape like
-\u001b, so that text cannot move the cursor or change the screen.
+\u001b, so that text cannot move the cursor or change the screen. A refusal of a value that names
+its own fix prints that line and its next step without the help: an `--on` value that is empty, a
+principal id or not an instance id, a `spawn --on` that needs a terminal or `-d`, `attach` with no
+name and no terminal, and a `run` command given no run id.
 Pass one of `--json` and `--plain`; both is a `USAGE_INVALID` refusal. A table that does not fit the
 terminal is written as one labeled record per row, so no value is cut off. A warning on stderr wraps
 to the terminal at spaces, each continuation line under its text.
