@@ -382,7 +382,10 @@ function readOwnedServices(selected: Selected, gaps: Gaps): OwnedServiceStatus {
     const causeCode = isCommandFailure(error) ? error.code : "TARGET_UNAVAILABLE";
     gaps.add("SERVICE_DEFINITIONS_UNAVAILABLE", `the selected space's owned service definitions could not be read (${causeCode}); no empty inventory or repair was inferred`, { space, causeCode });
   }
-  try { result.instances = serviceInstances(space).map(instanceProjection); }
+  // By definition, then instance, as the definitions are listed: the store orders them by their
+  // random instance IDs, so the rows changed order whenever a member started under a new one.
+  const byName = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+  try { result.instances = serviceInstances(space).map(instanceProjection).sort((a, b) => byName(a.definition, b.definition) || byName(a.instanceId, b.instanceId)); }
   catch (error) {
     const causeCode = isCommandFailure(error) ? error.code : "TARGET_UNAVAILABLE";
     gaps.add("SERVICE_INSTANCES_UNAVAILABLE", `the selected space's owned service instance observations could not be established (${causeCode}); no stopped, empty or serving state was inferred`, { space, causeCode });

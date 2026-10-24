@@ -6,7 +6,8 @@
  *     the broker, and a second `down --yes` is a no-op. `ps` on the `--no-manager` stack is a known
  *     refusal.
  *  2. Broker crash after start. The `up` that adds the manager and `service status` list the broker's
- *     client and websocket listeners and the manager's console; a wildcard configuration lists them
+ *     client and websocket listeners and the manager's console, and `status` lists the members by
+ *     definition; a wildcard configuration lists them
  *     on every interface and names the plaintext ones. `service add` refuses a broker `--server`
  *     that is no broker address, by preset or `--file`, quoting it unless it may hold a credential, and
  *     starting such a definition saved earlier names its `server` option. The next `up` restarts the broker from its
@@ -219,6 +220,11 @@ try {
     const added = cli(root, "up", "--json");
     track(space);
     check("bare up adds the manager to the running stack", added.status === 0 && pidOf(space, "stack-manager") !== null, shown(added));
+    // The rows followed the store's order, by random instance ID, so they moved whenever a member
+    // started under a new one.
+    const statusInstances = (cli(root, "status", "--json").env?.result?.services as { instances?: { definition: string; instanceId: string }[] } | undefined)?.instances ?? [];
+    check("status lists the stack's instances by definition, then instance",
+      JSON.stringify(statusInstances.map((row) => row.definition)) === JSON.stringify(["stack-broker", "stack-delivery", "stack-manager"]), statusInstances);
     // The receipt and service status name every listener the stack opened: the broker's client and
     // websocket listeners and the manager's console, here all on loopback.
     type Listed = Parameters<typeof exposedPlaintext>[0];
