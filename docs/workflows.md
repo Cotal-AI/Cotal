@@ -159,7 +159,9 @@ dispatch it again: it opens a hold, a checkpoint under a token derived from the 
 request id, whose prompt names that id. Answer it with
 `cotal run answer <run> <step-key> --value <json>`, and the value becomes the step's result. An
 expired hold fails the step with the catchable L4027. Only `ask` runs inside `once`, so wrap just
-the step that writes: a host restart while it is in flight costs a settle.
+the step that writes: a host restart while it is in flight costs a settle. `run validate` refuses
+another effect in the body, or in a function the body calls by name, with L2033, and the run
+refuses one it reaches any other way with L4028.
 
 ```js
 const publisher = await spawn("publisher")

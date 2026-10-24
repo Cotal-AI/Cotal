@@ -243,7 +243,7 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
     ["checked", verified ? `the broker answers and enforces this mode${mode === "open" ? ", and serves this space" : ""}` : "nothing: --force adds it unchecked"],
   ];
   if (!(await review(prompt, v.yes === true, rows, `Add ${name}`, true))) return undefined;
-  const entry: MeshEntry = { space: name, server, root, mode, origin: "manual", ...(tlsRequired ? { tlsRequired: true } : {}), ...(dial.residual ? { unencryptedOverlay: true } : {}), ts: new Date().toISOString() };
+  const entry: MeshEntry = { space: name, server, root, mode, origin: "manual", ...(tlsRequired ? { tlsRequired: true } : {}), ...(dial.residual ? { unencryptedOverlay: true } : {}), ...(verified ? {} : { unchecked: true }), ts: new Date().toISOString() };
   recordMesh(entry);
   return { result: { kind: "space-added", space: detail(entry, getCurrent() ?? null, verified ? "reachable" : "not-checked"), verified, replaced }, warnings };
 }

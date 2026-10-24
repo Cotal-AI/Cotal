@@ -761,7 +761,8 @@ they name that project; otherwise the next step is to remove the link and prepar
 `space create`. A `.cotal` link that leads nowhere makes them refuse `TARGET_NOT_FOUND`, exit 2,
 naming where it leads. `status` there does not read the folder's boot and additive attempt
 inventories through the link. It warns `COTAL_DIR_LINKED`, or `COTAL_DIR_DANGLING` for a link that
-leads nowhere, with the same next step, and exits 4. `space create` in a copy whose records name
+leads nowhere, with the same next step, and exits 4. For a linked folder, its selected space names
+the same refusal, and Next gives that step in place of starting the space with `cotal up`. `space create` in a copy whose records name
 another root says so and names that root, and in a linked folder it names the link.
 
 A journal that is not valid JSON, as an interrupted write or a full disk can leave it, makes `up`,
@@ -2184,7 +2185,7 @@ read refuses both with `SCHEMA_INVALID`, exit 1, naming its file.
 `currentRecorded`, `folder` (this folder's space when it is marked, else null), `items` and
 `prepared`; each item is the row `cotal status --json` gives under
 `meshes.items`: `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`,
-`current`, `check` (`reachable`, `unreachable` or `not-checked`) and `catalog`. `space show` adds
+`modeChecked`, `current`, `check` (`reachable`, `unreachable` or `not-checked`) and `catalog`. `space show` adds
 `recordedAt`, `attachHost`, `maxSessions`, `storeDir`, `unencryptedOverlay`, the login pins of a
 user-auth space under `userAuth` and the catalog's `id`, `slug`, `kind` and `role`. It leaves
 credential paths out. A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
@@ -2224,7 +2225,9 @@ address, and says when it has no TLS. A port that takes no connection gets the p
 remedy. For `--server`, the `--force` route follows either one.
 `--force` replaces a registration added by hand, never one this machine started or a catalog lists,
 and adds a `--server` space without checking its broker, which suits a
-space that is down right now; a user-auth space is always checked. Declining the question is a
+space that is down right now; a user-auth space is always checked. Such a registration records that
+its mode was not checked: `space` and `space show` show the mode as not checked, with
+`modeChecked: false` in `--json`, and `whoami` does not state what that mode implies as fact. Declining the question is a
 `no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
 shape `space show` gives, with `verified` and `replaced`.
 
@@ -2274,7 +2277,9 @@ it escaped. `space` lists prepared spaces under their own heading, below a line 
 has been started or registered yet when that is so, and `space show`, `use` and `whoami` accept one.
 A command that
 targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
-and so does `cotal up --space <name>` run from another folder. `cotal up --space <name>` in a folder
+and so does `cotal up --space <name>` run from another folder. Its Next names
+`cotal up --root <root> --space <name>`, which starts it in that root from where you are, and
+`cotal space forget <name>`, which lets you start it in the current folder. `cotal up --space <name>` in a folder
 that is already another space's root refuses with `CONFLICT`, exit 2. `space add` refuses a prepared
 name. A prepared space records its folder by path, and moving the folder leaves nothing in it that
 names the space. A bare `cotal up` in a folder that names no space, while the selected space is
@@ -2404,6 +2409,12 @@ targets the selection. Before it acts, it warns on stderr and in its JSON `warni
 An empty `--space` value, such as `--space "$S"` with `S` unset, is refused with `USAGE_INVALID`,
 exit 1, by every command that takes `--space`, before anything is read or written. It never falls
 back to the selection.
+A `--server` URL with a user name or password in it, such as `nats://<user>:<password>@<host>:<port>`,
+is refused with `USAGE_INVALID`, exit 1, by every command that takes `--server`, before anything is
+read, written or dialed. The refusal does not repeat the value. The NATS client uses only the host
+and port of that URL, so the command would otherwise connect with the credential it resolves. Pass
+that credential with `--creds`, a login or the space's own trust instead. `up` refuses such a URL
+with its own message.
 
 A prepared space whose project folder was deleted cannot start. A command that targets it, `persona`
 included, refuses with `TARGET_UNAVAILABLE`, exit 2, saying the folder no longer exists and naming
@@ -2543,7 +2554,8 @@ probe of its manager endpoint, and the selected space's `Manager` row reads `ans
 `not answering · stack-manager pid <pid>`, or `endpoint not checked` when the probe could not be
 made or another manager instance answered. A manager that does not answer puts `kill -KILL <pid>`
 first in Next, because `cotal down` cannot stop it; once that process is gone, `cotal down --yes`
-records it stopped. Unreadable
+records it stopped. A folder this account cannot read is one warning that names the folder and
+`chmod u+rx` on it, and nothing in it is read. Unreadable
 service record families make the report partial instead of becoming empty lists. Warnings retain
 a classified cause code, such as unsupported host observation, without native diagnostic bodies. These reads
 import no provider and start, stop, adopt or repair nothing. `--all` extends broker checks; this
@@ -3192,6 +3204,7 @@ session, so there is no unread count or connection state to report.
 | Static auth, no signer here | `no-credential` | Nothing without `--creds <file>` |
 | User auth | `user` | The signed-in user's `cli` actor: `read`, `post` and `capabilities` are its ledger row |
 | A `--server` the space is not registered at, whether or not this folder holds its trust | `unknown` | Unknown: `mode` and the access fields are `null`, and the run is `partial` (exit 4) with `BROKER_NOT_PROBED` |
+| A space `space add --force` registered without checking its broker | the kind its recorded mode gives | What that mode allows, if the broker enforces it: `modeChecked` is `false`, and the run is `partial` (exit 4) with `MODE_NOT_CHECKED`, naming how to add it again with the check |
 
 A user who is not signed in has no principal. A signed-in user with no ledger row (`grant:
 "not-granted"`) may read and post nothing. When the grant ledger is on another machine the grant
@@ -3313,6 +3326,8 @@ format. It does not create a caller, rotate a key, start a service or export the
 A cached login is not signing authority. The selected root must hold validated static trust;
 conflicting current-folder and selected-root account authorities refuse before publication. A space
 registered as open refuses `UNSUPPORTED`: it issues no credentials, so it has no signer to export.
+A per-user-auth space refuses `UNSUPPORTED` as `auth mint` does there, naming the login or
+enrollment path, and nothing is written.
 
 `--out` is required. Its parent must exist and pass the protected physical-directory checks. A
 parent that does not exist refuses `TARGET_NOT_FOUND`, naming the folder, before anything is
@@ -3576,8 +3591,9 @@ apart, because the service registry records no package version, so check whether
 running and, if it is, its version. The same scoping applies to `cotal run`'s hosted verbs, which
 drop the `--local` suggestion there, since `--local` drives the run from the calling process and
 names the caller as its answerer. A hosted verb that no manager answered refuses
-`TARGET_UNAVAILABLE`, exit 2, and its Next is `cotal status`, which names a stack manager that runs
-but does not answer, with its pid.
+`TARGET_UNAVAILABLE`, exit 2, leading with `the manager registered for this space did not answer`,
+and its Next is `cotal status`, which names a stack manager that runs but does not answer, with its
+pid.
 
 **`stop` and `attach` route by seat locality.** A seat can only be stopped or attached by the
 manager actually running it, and the class queue does not know which one that is. So on a
@@ -3789,6 +3805,13 @@ its output already goes: the mesh, its transcript, or an `attach`.
 A write the manager cannot confirm, such as a terminal write that failed partway, exits 3 with
 `Outcome unconfirmed` and is not typed again. Part of the text may already be at the prompt, so check
 the seat before you send it again.
+
+With no manager running, as after `cotal service stop stack-manager`, `input` refuses
+`TARGET_UNAVAILABLE` (exit 2) before it sends anything and names bare `cotal up`, as `ps` does.
+`stop` and `attach` find their seat the same way and refuse the same. A manager that stays
+registered but does not answer, such as one that crashed, leaves `input` and `stop` waiting out its
+answer deadline. They then refuse `TARGET_UNAVAILABLE` too, since nothing was sent, with
+`cotal status` as the next step.
 
 **This one is operator-only, and more narrowly than `stop` or `attach`.** Those two are granted to
 anything holding `spawn`, so an agent can stop and attach to seats under its own owner. `input` is
@@ -4787,7 +4810,8 @@ has `space`, `mode` (`open`, `static` or `user`), `principal` (`<owner>.<actor>`
 `label`, the `allowSubscribe` and `allowPublish` ceilings, and `expiresAt` in epoch milliseconds
 when the session has a set end. A roster's `view` is `current`, `unpopulated` or `stale`, and its
 `rows` are complete only when it is `current`. A row has `id`, `name`, `kind` and `status`, and
-`role`, `activity` and `sessionKind` when they are set.
+`role`, `activity` and `sessionKind` when they are set. A `status` request with an `activity` sets
+both in one presence write, so a peer gets one `updated` record carrying both.
 
 A `result` record has `type`, `id` and `outcome`. With `ok` or `stored` it carries `result`, which
 is `null` when the request returns nothing. With `refused`, `unknown` or `failed` it carries `error`
@@ -4802,10 +4826,15 @@ The session also writes these records on its own:
 | `type` | Fields | When |
 |---|---|---|
 | `message` | `message`: `id`, `ts` (epoch milliseconds), `kind` (`channel`, `dm` or `anycast`), `from` (`id`, `name`, optional `role`), `channel` or `service`, `text`, optional `replyTo`, `mentionsMe`, `historical`, optional `deliveryCount` | A message arrived |
-| `presence` | `change` (`joined`, `updated` or `left`), `row` (a roster row) | A roster row changed, this session's own row included |
+| `presence` | `change` (`joined`, `updated` or `left`), `row` (a roster row) | A roster row changed, this session's own row included. As the session opens, its own row and each member already online come as `joined` |
 | `gap` | `scope` (`live` or `inbox`), `reason` | Messages may have been missed |
 | `error` | `id` (`null`), `error` | A line was refused before an id could be read from it, or was too long |
 | `end` | `reason`, `close` | The session ended. Nothing follows it |
+
+A `presence` record's `joined` is a member coming online and `left` one going offline. `updated`
+means a field the row shows changed, such as `status` or `activity`. A presence change the row does
+not show, such as a member's attention or channel modes, writes no record. `cotal who --all --json`
+shows attention.
 
 A message's `text` is untrusted. JSON escapes its control characters, so a body can never start
 another record. `channel` is set on a channel message and `service` on an anycast. `mentionsMe`
@@ -4820,6 +4849,13 @@ channel's messages are dropped. `inbox` with `peek` lists the held messages and 
 Without `peek` it returns them, and they are acknowledged once its result is handed to stdout. A
 message still unacknowledged when the session closes is left unacknowledged and does not come back
 to this session.
+
+`join`'s `backfilled` counts the messages the join read back from the channel's retained history:
+those sent before the join and within the channel's replay window, not counting this session's own.
+It is 0 when the session is already on the channel or replay is off for it. Each of them then follows
+the rules above. One the session already handed over, holds or dropped is not held again, and one on
+a muted channel is dropped, so the inbox can gain fewer messages than `backfilled` says. The session
+remembers at least the last 4096 messages it handled for this.
 
 A `live` gap means the connection dropped or is reconnecting, so live channel messages may be
 missed until it returns. Its reason defaults to
@@ -5262,6 +5298,7 @@ cotal auth mint <name> [--profile agent|observer|admin] [--out <private-file>] [
 cotal auth mint <name> --provision [--role <role>] [--space <space>] [--server <url>]
 cotal auth mint <name> [--expires-in <seconds> | --expires-at <unix-seconds> | --no-expiry]
 cotal auth mint <name> --identity <private-creds> --out <private-file>
+cotal auth mint <name> --replace
 cotal auth mint <name> --endpoint <class> --out <private-file> [--channels <a,b>] [--expires-in <seconds>]
 ```
 
@@ -5280,12 +5317,21 @@ Observer and admin have fixed native scope and reject agent ACL, role and provis
 rather than implying those inputs narrowed anything.
 
 The default credential is created through its canonical secret-store kind. An existing label is
-not overwritten. Use another label or an explicit private output. Explicit exports stay outside
+not overwritten. Use another label or an explicit private output. `--replace` replaces the label's
+standing credential when it has expired or has no expiry claim, under a new identity unless
+`--identity` names one, and removes a no-expiry record beside it unless `--no-expiry` writes a new
+one. The receipt names what it replaced under `result.replaced`. A standing credential that is still
+valid refuses `CONFLICT`, naming its expiry, and so does one that is not a native credential.
+`--replace` takes no `--out`. Explicit exports stay outside
 managed `.cotal` and workstation state. A pre-existing explicit output must be an owned private
 native credential matching the nkey deliberately supplied through `--identity`; unrelated files
 and identities refuse. New outputs use create-only publication. The output's directories follow
 the [`space create`](#selecting-a-space) path rule, which also accepts a root-owned sticky directory
 such as `/tmp`, and the file is owner-only. Unsupported platforms refuse rather than weakening it.
+A credential is never written through a symbolic link: a link among the output's folders refuses
+`PERMISSION_DENIED`, naming the link, the folder it points to and the same file named without the
+link. A path through a file refuses `USAGE_INVALID`, and a folder this account cannot create
+refuses `PERMISSION_DENIED`, naming the folder. None of them writes anything.
 
 `--identity` reuses the native nkey. The out-of-band agent mint reports its newly allocated
 lifecycle UID, with a warning that it did not reuse the old inbox/delivery footprint. Use that
@@ -5491,15 +5537,22 @@ on the file as its repair. That includes the space's own store credentials, and 
 still checked. Each file is also parsed the way `--creds` checks one, so a file the NATS
 client cannot parse is a finding even when its claims are legible, such as one with Windows (CRLF)
 line endings.
+Once the root holds the space's trust, a missing `membership-observer` or `connection-evictor`
+credential is a finding too, with `cotal down` then `cotal up --rotate-sys` as its repair, because
+nothing else mints that pair again. A missing delivery or membership-rw credential is only noted,
+since `cotal up` mints it.
 A credential with no expiry claim is a finding whatever its kind, since a copy stays valid until its
 signer rotates. `--fix` re-signs only the static daemon credentials, so an unbounded agent credential
 stays a finding until its file is gone. The exception is one `auth mint --no-expiry` wrote, whose
 record beside it still names the file's bytes: someone asked for it, so it is a
 `CREDENTIAL_UNBOUNDED_BY_REQUEST` warning instead, and the run ends ok, exit 0. Both get guidance that
 names both ways out. Rotating the space identity (`cotal down`, `cotal reset space <space>`, then
-`cotal up`) retires it with every other credential the space issued and removes the file. Removing
-the file and its record once nothing uses it, and minting a replacement without `--no-expiry`, bounds
-it from then on; a copy made before stays valid until that rotation. `doctor auth` reads only the
+`cotal up`) retires it with every other credential the space issued and removes the file. Replacing
+a label's file with `cotal auth mint <label> --replace` once nothing uses it bounds it from then on,
+and so does removing any other file and its record and minting a replacement without `--no-expiry`;
+a copy made before stays valid until that rotation. An expired label's file is a finding too, and
+its guidance names that same `--replace`, next to the managed renewal that re-signs an agent a
+manager runs. `doctor auth` reads only the
 space's credential store, so a credential minted with `--out` is not listed, whatever its expiry.
 Missing local signing trust is not inferred to mean an open or healthy mesh. An unreadable renewal
 record prevents a complete healthy verdict. Locally ordered older incarnation files are labeled as
@@ -5511,6 +5564,14 @@ renewal lease when using the broker and refuses another holder. Offline repair i
 uncoordinated; an authenticated preflight failure is not called an offline target. User-auth roots
 cannot receive a static-signer repair fallback. No system account is rotated and no agent is
 respawned or silently given a new identity.
+
+A delivery or membership-rw credential the NATS client cannot parse holds no key to re-sign, and
+the manager cannot renew it either. When no broker answers, `--fix` mints it again under a new
+identity, as `cotal up` mints a missing one, and its result row has `reminted: true`. While its
+broker answers it stays a finding, and its guidance and row name `cotal down` first. A refusal
+because the manager holds the renewal lease names the same step. Every result row that is not a
+plain re-sign has a `reason`. When `cotal up` starts with such a membership-rw credential, the
+delivery daemon runs without it, and `up` warns `DAEMON_CREDENTIAL_UNPARSABLE`, naming the same step.
 
 A local re-sign does not erase a recorded broker refusal or claim that a daemon adopted it.
 A recorded refusal names the space's manager, the renewal owner, as the next step. A pre-per-space
@@ -5564,6 +5625,13 @@ current connection can last only until its already-issued bearer expires.
 For `nats://` and `tls://` addresses, if TLS is required but the broker does not offer it, `join`
 refuses with a request for the operator's TLS-enabled broker address. It never retries over
 plaintext. A `ws://` address uses plaintext WebSocket. Use `wss://` for TLS.
+
+`join` has no `--json`. A refusal before the session starts prints on stderr with its code and
+exits 1 for `USAGE_INVALID` and 2 for any other refusal: `TARGET_NOT_FOUND` for a space not
+registered here, a creds file that does not exist, a lifecycle with no inbox or a space not
+provisioned for a console session, `PERMISSION_DENIED` for credentials the broker rejects,
+`TARGET_UNAVAILABLE` for a broker that does not answer, and `UNSUPPORTED` for a broker without the
+TLS the join requires.
 
 ## Manifest deploys
 
@@ -5978,7 +6046,10 @@ cotal run migrate <runId> --local --file <program> [--endpoint <ep>]
 ```
 
 Every verb also takes `--space <s>`, `--server <url>` and `--creds <path>` to pick the mesh and the
-credential.
+credential. A hosted verb refuses a raw `--creds` file `UNSUPPORTED`, exit 2, because the file
+carries no endpoint-caller triple for the manager call and that route cannot mint one. Its next step
+is to run the verb again without `--creds`, in the mesh's project folder or with `--space`, where
+the CLI mints the one-shot caller itself.
 
 Hosted run verbs accept `--on <manager-instance>` to choose one full manager id
 as `cotal ps` prints it. A managed seat defaults to the manager that launched
@@ -6009,6 +6080,10 @@ lists no live manager, as after `cotal down stack-manager`, the verb refuses `TA
 (exit 2) at once, as `ps` does, and names bare `cotal up` as the next step, instead of waiting out
 the manager's answer deadline.
 
+A mesh a run verb cannot resolve or connect to is refused before any request under the refusal's
+own code, hosted or `--local`, as `ps` refuses it. With no mesh running that is `TARGET_NOT_FOUND`,
+exit 2, and with `--json` one refusal envelope on stdout.
+
 `start` hands the program to the mesh's manager, which validates it, mints the run id (the record
 never takes a caller-supplied one), drives it in its own process, and answers with the id once the
 run is recorded; a program that does not validate is refused with every problem listed. A program
@@ -6026,7 +6101,8 @@ limit stays readable. A record or a journal row too large for one reply refuses 
 exit 2, and names `cotal run journal <run-id> --local`, which reads the run's stream from its
 project folder with no reply. A manager from release 0.99.3 or earlier reads no journal page, so
 through it both refuse `UNSUPPORTED` and name the same local read. An open pause prints its question
-under `Needs an answer`, and only then does Next offer `answer`. A pause counts as open while its
+under `Needs an answer`, and only then does Next offer `answer`. A checkpoint with a `to` prints
+beside its question whom it escalates to, and once it has escalated, until when that attempt is open. A pause counts as open while its
 last journal row is pending, so a settled or expired one is not listed there.
 A pause settled with an accepted answer prints its value as JSON plus the recorded answerer,
 artifact when present, time, and answer id, then one `amended` line per later amendment, in the
@@ -6052,8 +6128,10 @@ with its `code` and `message`, and `revoked` or `revocationUnreadable` when the 
 step row carries its `step` key, the `effect` kind and its `name`, `state`, `outcome`, the recorded
 `status` and `errorCode` once settled, the recorded `errorMessage` of a failed or refused step,
 and `startedAt` and `endedAt` in epoch milliseconds. An open
-pause adds its `asks`, its `deadlineAt`, and for a checkpoint the `onExpiry` it was armed with; a
-settled pause adds its `answer` and its `amendments`, as the text view prints them. A field the
+pause adds its `asks`, its `deadlineAt`, and for a checkpoint the `onExpiry` it was armed with and
+the `addressee` its `to` names. A checkpoint's escalation is armed with `proceed`, so it never
+escalates again. A settled pause adds its `answer` and its `amendments`, as the text view prints
+them. A field the
 journal does not record is absent: a checkpoint opened before `onExpiry` was recorded carries none.
 An unreadable revocation marker makes the result partial, exit 4, with a `REVOCATION_NOT_CHECKED`
 warning naming the run. The text view is presentation and is not a stable parsing target. With
@@ -7554,6 +7632,12 @@ status. When the last check got no answer, such as a refused connection, it exit
 saw, and its Next also names `cotal service show <name>`, which shows the readiness deadline. Either
 way the process is left running, and the Next names the `service logs` and `service stop` for that
 exact instance.
+
+A Ctrl-C or `SIGTERM` while a background `service start` waits does not reach the service, which
+keeps running. The start exits 130 or 143 and names the instance it left. Its Next is
+`cotal service start <name>` to wait for that instance's readiness again, or the `service stop` for
+it. Until a later command settles that start, `service status` and `cotal status` say the start was
+interrupted.
 
 Stop and restart default to cancellation in a terminal and need `--yes` in scripts. The selected
 record revision and creation identity are checked before signals, including escalation. A reused
