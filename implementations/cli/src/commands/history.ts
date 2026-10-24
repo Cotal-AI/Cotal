@@ -552,7 +552,10 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
             if (seen.has(entry.item.id) || !match(entry.item)) continue;
             remember(entry.item.id);
             names.set(entry.item.from.id, entry.item.from.name);
-            if (presentation === "json") writeStreamRecord(streamRecord("history", "event", target, entry.item));
+            // The live feed is the broker's delivery, which carries no stream sequence, so an event has
+            // no `seq`. The snapshot's items carry theirs.
+            const { seq: _seq, ...event } = entry.item;
+            if (presentation === "json") writeStreamRecord(streamRecord("history", "event", target, event));
             else line(followLine(entry.item));
           } else if (entry.gap) {
             outage = false;

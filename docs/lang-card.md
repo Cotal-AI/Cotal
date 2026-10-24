@@ -82,7 +82,9 @@ rule covers user functions declared `async`.
 branch keys and survive reordering; array branches are keyed by index, which shifts when you
 insert one (warning L3023). `fanOut(items, fn, { name, key? })` runs `fn(item, index)` per item;
 the branch key is `key(item)`, else the item's string `id`, else the run refuses the fan-out when
-it reaches it (L3021). `cotal run validate` warns with the same code on a literal list it can see.
+it reaches it (L3021). `cotal run validate` warns with the same code only for a list written in the
+`fanOut` call. A list held in a variable can change before the call, so only the run judges it:
+give its items an `id` or pass `key`, as below.
 
 ```js
 async function review(pr) {

@@ -386,6 +386,11 @@ try {
   await bob.multicast("not this channel", { channel: "ops" });
   const event = await f.until((l) => l.includes("live one"));
   check("a message sent while following is one event record", event && records().filter((r) => r.type === "event").map((r) => r.data.text).join() === "live one", f.lines);
+  // The snapshot's items carry their stream sequence. A live event has no `seq` field: the live feed
+  // carries none, and a null would read as a message that has no sequence.
+  const live = records().find((r) => r.type === "event");
+  check("the snapshot items carry their stream sequence and a live event carries no seq field",
+    records()[0]?.data.items?.every((item) => typeof item.seq === "number") === true && live !== undefined && !("seq" in live.data), { snapshot: records()[0]?.data.items?.map((item) => item.seq), event: live?.data });
   f.child.kill("SIGINT");
   const code = await f.exited;
   check("an interrupted follow ends with an end record and exit 130", code === 130 && records().at(-1)?.type === "end" && records().at(-1)?.data.reason === "interrupted", { code, last: f.lines.at(-1), stderr: f.stderr() });

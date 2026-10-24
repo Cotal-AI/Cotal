@@ -278,7 +278,7 @@ partway, so check what it did before you retry. A reader that closes the output 
 does, ends the command quietly with the status it had already set, or 0. A command that follows a
 stream, such as `watch`, `history --follow`, `console` or `channel members --follow`, notices the
 closed reader at its next line, so on a quiet mesh it runs until a message arrives or it is
-interrupted. Ctrl-C ends it at once: `watch` exits 130, and the other three exit 0.
+interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above.
 
 ## Commands
 
@@ -5209,7 +5209,9 @@ credential gets, `AUTH_REQUIRED` or `PERMISSION_DENIED`, and its Next. Without `
 static-auth space the follow mints its own credential from the space's trust, so when the broker
 rejects it the Next says to run the follow again, which mints one from the current trust. With
 `--json` each line is one record: `{"schemaVersion":1,"stream":"history","type":<type>,"target":…,"receivedAt":…,"data":…}`.
-The first record is a `snapshot` holding the window, then one `event` per message. An `error`
+The first record is a `snapshot` holding the window, then one `event` per message. An event has
+no `seq`, because the live feed carries no stream sequence; the snapshot's items keep theirs. To
+read on from a follow, give `--since` the last event's `ts`. An `error`
 record names a failure on the live feed, and a lost connection is one `TARGET_UNAVAILABLE` error. A
 `gap` record says the connection was re-established and messages sent while it was down are not
 shown. An `end` record always closes the stream. The exit code is the snapshot's, the refusal's
@@ -6353,8 +6355,9 @@ escape. A run that failed records its cause on its status. Its recorded state re
 view prints the message under `Failure`. When a step's error is the run's failure, `Failure` names
 that step and the message stays under `Step errors`. A run that failed before its status recorded a
 cause shows only `failed`. A failure raised by program code outside any step is recorded in no
-journal row. The view says so under `Failure` and names
-`cotal service logs stack-manager --space <space>`, because a hosted run's cause is in its manager's log.
+journal row. When the status recorded no cause either, the view says so under `Failure`. Either way
+it names `cotal service logs stack-manager --space <space>`, because a hosted run's cause is in its
+manager's log.
 The failure records no line or column in the program: a source position belongs to a problem
 `run validate` reports before the program runs.
 A program's `log(...)` lines are not journalled, so `show` and `journal` do not print them. A hosted
@@ -6377,7 +6380,8 @@ escalates again. A settled pause adds its `answer` and its `amendments`, as the 
 them. A field the
 journal does not record is absent: a checkpoint opened before `onExpiry` was recorded carries none.
 An unreadable revocation marker makes the result partial, exit 4, with a `REVOCATION_NOT_CHECKED`
-warning naming the run. The text view is presentation and is not a stable parsing target. With
+warning naming the run. A `ps --endpoint <endpoint>` that matches no run lists nothing and says so,
+naming the endpoints runs are recorded under, with an `ENDPOINT_HAS_NO_RUNS` warning. The text view is presentation and is not a stable parsing target. With
 `--local`, only `ps`, `journal`, `answer` and `amend` take `--json` or `--plain`.
 `ps --page`, which is not in release 0.88.0 or earlier, asks one manager for a single bounded
 diagnostic JSON page instead of the full list:
@@ -6398,8 +6402,8 @@ answer without `--value` carries no value: the step settles as answered, and the
 program's checkpoint result has no `value`. `--value` is refused with `SCHEMA_INVALID` before
 anything is sent when the record would not hold what you typed: an object that names a key twice,
 a number outside the range JSON carries (such as `1e999`), or a value nested more than 1000 levels
-deep. The receipt of `answer` and `amend` names the step, the
-value it filed or that none was given, any artifact and the answer id. With `--json` they are in
+deep. An empty or blank `--artifact` is refused with `USAGE_INVALID`. The receipt of `answer` and
+`amend` names the step, the value it filed or that none was given, any artifact and the answer id. With `--json` they are in
 `result.answer`, where `valueGiven` says whether a value was sent. `amend` records a changed
 position on a settled checkpoint or `ask`: it files a new answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
 settled and the run keeps the answer it acted on. A step that is still open or settled without an
@@ -6424,7 +6428,8 @@ material, and is the path on a bare broker with no manager or for a run with no 
 (`cotal run resume <runId> --local --file <program>`); `answer --local` and `amend --local` take
 `--by <who>` and print the same receipt as the hosted path, and `start --local` requires
 `--admit-read` and `--admit-publish` (comma-separated
-patterns or `none`), the run's channel ceiling. On a
+patterns or `none`), the run's channel ceiling. An entry that is not a channel or a pattern, such as
+`a b`, is refused `USAGE_INVALID` naming it. On a
 user-auth mesh the host's own manager refuses the family by name, and `--local` has no credential
 there. A participant's manager started with `cotal supervise` hosts a logged-in user's runs through
 its issuing host: the auth callout issues the user's manager connection, and every `run` verb rides
@@ -6655,8 +6660,9 @@ These three forms are offline and reject mesh or caller selection. Validation ch
 language. A program that does not validate is refused by all three with every problem listed: its
 code, position, cause and fix, as a hosted `start` lists them. `--json` carries them under
 `result.problems`. A warning leaves the program valid. All three print it on stderr with its code,
-position, cause and fix, and `validate --json` lists it under `result.warnings`. One is L3021, a `fanOut` over a literal list whose items carry no `id` and
-that passes no `key`, which the run refuses when it reaches it. Plan lists validated static call sites in source order; it does not evaluate branches,
+position, cause and fix, and `validate --json` lists it under `result.warnings`. One is L3021, a `fanOut` over a list written in the call whose items carry no
+`id` and that passes no `key`, which the run refuses when it reaches it. A list held in a variable
+gets no warning, because it can change before the call; the run refuses it the same way. Plan lists validated static call sites in source order; it does not evaluate branches,
 loop counts or an execution schedule. Simulation uses the native simulator with a JSON results
 script. It executes no JavaScript handler and invents no unscripted outcome. A scripted
 checkpoint result needs a `status` of `resolved` or `expired` and may carry `value`, `by` and

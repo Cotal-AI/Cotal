@@ -6,11 +6,17 @@ const recordedState = (state: string | undefined, failure?: RunFailure): Styled 
 const managerPin = (values: OutputValues) => values.on ? ` --on ${values.on}` : "";
 const runToken = (value: string | undefined) => value && /^run-[0-9a-f]{32}$/.test(value) ? value : "<run-id>";
 
-export function printRunList(space: string | undefined, items: readonly RunListRow[], values: OutputValues): void {
+/** `unmatched` is given when `--endpoint` matched no run: that endpoint, and the endpoints this view
+ *  records runs under. */
+export function printRunList(space: string | undefined, items: readonly RunListRow[], values: OutputValues, unmatched?: { endpoint: string; recordedUnder: readonly string[] }): void {
   const unread = items.filter((row) => row.revocationUnreadable !== undefined);
+  const nowhere = unmatched && !items.length
+    ? `no run record in this view lives under endpoint ${oneLine(unmatched.endpoint)}; ${unmatched.recordedUnder.length ? `runs are recorded under ${unmatched.recordedUnder.map(oneLine).join(", ")}` : "it holds no run record under any endpoint"}`
+    : undefined;
   writeResult(presentationOf(values), {
     command: "run", target: { space: space ?? null, requestedManagerInstance: values.on ?? null }, result: { kind: "runs", items },
-    warnings: unread.map((row) => ({ code: "REVOCATION_NOT_CHECKED", target: { run: row.runId, endpoint: row.endpoint }, message: "The revocation marker could not be read; the recorded state does not establish that this run may continue." })),
+    warnings: [...unread.map((row) => ({ code: "REVOCATION_NOT_CHECKED", target: { run: row.runId, endpoint: row.endpoint }, message: "The revocation marker could not be read; the recorded state does not establish that this run may continue." })),
+      ...(nowhere ? [{ code: "ENDPOINT_HAS_NO_RUNS", target: { endpoint: unmatched!.endpoint, recordedUnder: unmatched!.recordedUnder }, message: nowhere }] : [])],
     ...(unread.length ? { completeness: "partial" as const, partial: { message: "Some run revocation markers could not be read." } } : {}),
   }, (result): Report => ({ sections: [
     { title: "Workflow runs", blocks: [
@@ -102,12 +108,11 @@ export function printRunDetail(space: string, view: RunStatusView, values: Outpu
     ...(answers.length ? [{ title: "Answers", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "record", label: "Record" }, { key: "value", label: "Value" }, { key: "by", label: "By" }, ...(artifacts ? [{ key: "artifact", label: "Artifact" }] : []), { key: "at", label: "At" }, { key: "id", label: "Answer id" }], rows: answers }, { kind: "lines" as const, lines: [{ text: ignored ? "The run acted on each answered line. It never read a line marked not acted on, because that step's branch lost a race or was cancelled. Each amended line records a later position, and the last one is current." : "The run acted on the answered value. Each amended line records a later position, and the last one is current.", tone: "hint" as const },
       ...(cut ? [{ text: `A value longer than ${ANSWER_VALUE_SHOWN} characters is cut here; --json carries it whole.`, tone: "hint" as const }] : [])] }] }] : []),
     // The run's failure, as its status records it. When a step's error is that failure, it is
-    // printed once, under Step errors, and named here. A failure no journal row records is named
-    // as raised outside any step.
+    // printed once, under Step errors, and named here. A failure that neither the status nor a
+    // journal row records is named as raised outside any step.
     ...(failure ? [{ title: "Failure", blocks: [{ kind: "lines" as const, lines: failedStep
       ? [{ text: `${failedStep.step} failed the run; its error is under Step errors.`, tone: "failed" as const }]
-      : [...failure.message.split("\n").map((line) => ({ text: oneLine(line), tone: "failed" as const })),
-        ...(unrecorded ? [{ text: "No journal row records why this run failed, so the program raised it outside any step. A hosted run's cause is in its manager's log.", tone: "hint" as const }] : [])] }] }]
+      : failure.message.split("\n").map((line) => ({ text: oneLine(line), tone: "failed" as const })) }] }]
       : unrecorded ? [{ title: "Failure", blocks: [{ kind: "lines" as const, lines: ["No journal row records why this run failed, so the program raised it outside any step. A hosted run's cause is in its manager's log."] }] }] : []),
     ...(errored.length ? [{ title: "Step errors", blocks: [{ kind: "lines" as const, lines: errored.flatMap((row) => [{ text: `${row.step}  ${row.outcome}`, tone: "failed" as const }, ...row.errorMessage!.split("\n").map((line) => `  ${oneLine(line)}`)]) }] }] : []),
     { title: `Journal · last ${shown.length} of ${view.journal.length}`, blocks: [shown.length ? { kind: "table", columns: [{ key: "number", label: "Entry" }, { key: "step", label: "Step" }, { key: "outcome", label: "Recorded outcome" }], rows: shown.map((row) => ({ number: String(row.n), step: row.kind === "activation" ? "holder activation" : row.step, outcome: row.kind === "activation" ? `epoch ${row.epoch}` : row.winner !== undefined ? `${row.outcome}, ${row.winner} won` : row.outcome })) } : { kind: "lines", lines: ["No journal entries in this view."] }, { kind: "lines", lines: [{ text: "Use --limit <n> for up to 1000 rows, or --json for the full returned journal. A step outcome is not proof that every external task succeeded.", tone: "hint" }] }] },
