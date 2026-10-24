@@ -16,6 +16,7 @@ import {
 import { runningStackMembers } from "../lib/stack-members.js";
 import { readStackJournal } from "../lib/stack-journal.js";
 import { reportOnInterrupt } from "../lib/interrupt-report.js";
+import { verdictSection } from "../lib/verdict.js";
 
 interface DeletionStream { name: string; kind: "stream" | "bucket" | "object-store"; state: "present" | "absent"; messages: number | null }
 interface PresenceImpact { id: string; name: string | null; status: string | null; lastHeartbeat: number | null }
@@ -325,9 +326,14 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
     // The preview reads its whole scope, so it is complete; its limits are a note, not a partial read.
     const { result, entry } = await readSpaceDeletion(name);
     const blocked = liveStackRefusal(entry, name, true);
+    // The verdict leads the report, so a text run does not repeat it as a warning after it.
     writeResult(presentation, { command: "space delete", target: { space: name }, result: { ...result, applyBlockedBy: blocked?.detail() ?? null },
-      ...(blocked ? { warnings: [{ code: blocked.code, target: blocked.target, message: `the apply would refuse: ${blocked.message}; ${blocked.remedy}` }] } : {}) },
-      (data) => ({ sections: [...previewView(data).sections, { blocks: [{ kind: "lines", lines: ["This is a non-atomic native read of first-party stream targets and presence entries, not a guarded deletion plan. A fresh exact-scope check and confirmation are still required before any apply."] }] }] }));
+      ...(blocked && presentation === "json" ? { warnings: [{ code: blocked.code, target: blocked.target, message: `the apply would refuse: ${blocked.message}; ${blocked.remedy}` }] } : {}) },
+      (data) => ({ sections: [
+        verdictSection(`space delete ${name}`, blocked, { command: `cotal space delete ${name} --yes`, description: "Delete the space's streams on its broker", recheck: "The apply reads the broker again and refuses if what this preview read has changed." }),
+        ...previewView(data).sections,
+        { blocks: [{ kind: "lines", lines: ["This is a non-atomic native read of first-party stream targets and presence entries, not a guarded deletion plan. A fresh exact-scope check and confirmation are still required before any apply."] }] },
+      ] }));
     return;
   }
   const yes = args.values.yes === true;
