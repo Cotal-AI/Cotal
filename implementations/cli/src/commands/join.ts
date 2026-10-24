@@ -360,14 +360,15 @@ export async function join(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
 
-  const shutdown = async () => {
+  // `/quit` leaves with 0; a signal leaves the same way and exits with its code.
+  const shutdown = async (code = 0) => {
     print(c.dim("leaving…"));
     rl?.close();
     await ep.stop();
-    process.exit(0);
+    process.exit(code);
   };
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown(130));
+  process.on("SIGTERM", () => void shutdown(143));
 
   if (!interactive || !rl) {
     console.log(

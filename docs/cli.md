@@ -232,6 +232,15 @@ before it does anything, and says to `cd` to an existing folder. A command whose
 2, before it does anything, names that file and says to rename or move it. `help`, `version` and
 `completion` still work in both.
 
+A long-running command that SIGINT stops ends cleanly first. It stops observing, closes the
+session it holds and writes its last record, then exits 130. SIGTERM ends it the same way and exits
+143. This holds for `watch`, `chat`, `console`, `history --follow`, `channel members --follow` and
+`join`, and for `service logs --follow`, the `--wait` follows and a foreground `up`. The JSON
+streams of `watch`, `chat --stdio`, `history --follow` and `channel members --follow` end with an
+`end` record whose reason is `interrupted` for SIGINT or `terminated` for SIGTERM. Inside a terminal
+view a key that leaves, such as `q` or Ctrl-C, is not a signal, and the view exits as it does when
+you leave it.
+
 Output that cannot be written, for example to a full disk, is reported in one line on stderr, and
 the command stops with exit 3, or with the non-zero status it had already set. It may have stopped
 partway, so check what it did before you retry. A reader that closes the output early, as `| head`
@@ -4514,9 +4523,10 @@ the held buffer was full: channel messages were dropped and direct messages were
 to redeliver. When a write waits for stdout to drain, or more than 4 MiB of records are waiting, the
 session stops reading stdin until stdout drains.
 
-`end` is the last record. Its `reason` is `input closed` when stdin ended or a signal ended input,
-and `session ended` when the session ended by itself, for example at a static session's expiry. A
-session that could not reconnect gives that reason instead, and its `close` carries it as `lost`.
+`end` is the last record. Its `reason` is `input closed` when stdin ended, `interrupted`,
+`terminated` or `hangup` when SIGINT, SIGTERM or SIGHUP ended input, and `session ended` when the
+session ended by itself, for example at a static session's expiry. A session that could not
+reconnect gives that reason instead, and its `close` carries it as `lost`.
 When stdin ends, the requests already read finish first. `close` has `retirement` (`retired`,
 `requested`, `unknown` or `not-applicable`), `connectionClosed` (`confirmed` or `not-confirmed`) and
 `message`. A static session's `close` can carry `credentialValidUntil` in epoch milliseconds: the
@@ -4674,8 +4684,8 @@ rejects it the Next says to run the follow again, which mints one from the curre
 The first record is a `snapshot` holding the window, then one `event` per message. An `error`
 record names a failure on the live feed, and a lost connection is one `TARGET_UNAVAILABLE` error. A
 `gap` record says the connection was re-established and messages sent while it was down are not
-shown. An `end` record always closes the stream. The exit code is the snapshot's, or the refusal's
-when the credential ended the follow.
+shown. An `end` record always closes the stream. The exit code is the snapshot's, the refusal's
+when the credential ended the follow, or 130 or 143 when SIGINT or SIGTERM ended it.
 
 `history clear` purges retained history from every channel in the selected space; `--dms` extends
 it to direct-message history. It refuses extra channel names, read filters and `--follow` before
