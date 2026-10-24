@@ -61,7 +61,7 @@ export function configComplete(argv: string[]): CompletionResult {
   return { items: [], directive: "nofiles" };
 }
 
-const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message);
+const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message, { remedy: "run `cotal help config` for its keys and forms" });
 
 /** The scope a run reads through or writes to: the user's defaults, or one space's values. */
 interface Scope {

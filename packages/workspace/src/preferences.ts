@@ -120,7 +120,7 @@ export const PREFERENCE_KEYS: readonly PreferenceKey[] = KEYS.map((k) => k.key);
 
 function specOf(key: string): KeySpec {
   const spec = KEYS.find((k) => k.key === key);
-  if (!spec) throw new CommandFailure("refused", "USAGE_INVALID", `unknown preference "${key}"; valid keys: ${PREFERENCE_KEYS.join(", ")}`);
+  if (!spec) throw new CommandFailure("refused", "USAGE_INVALID", `unknown preference "${key}"; valid keys: ${PREFERENCE_KEYS.join(", ")}`, { remedy: "run `cotal config` to see each key and its value" });
   return spec;
 }
 
@@ -149,6 +149,8 @@ const invalid = (problem: string): CommandFailure =>
   new CommandFailure("refused", "SCHEMA_INVALID", `the preferences file ${preferencesPath()} is invalid: ${problem}`, {
     remedy: `fix or remove ${preferencesPath()}; nothing resets it`,
   });
+
+const SPACE_NAME_REMEDY = "run `cotal space` for the names of the spaces this machine knows";
 
 /** Why a space name cannot hold preferences, or undefined. */
 export function preferenceSpaceProblem(space: string): string | undefined {
@@ -240,12 +242,13 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
   const spec = specOf(key);
   if (scope.space !== undefined) {
     const problem = preferenceSpaceProblem(scope.space);
-    if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
-    if (!spec.perSpace) throw new CommandFailure("refused", "USAGE_INVALID", `${key} has no per-space value; set it for the user`);
+    if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem, { remedy: SPACE_NAME_REMEDY });
+    if (!spec.perSpace) throw new CommandFailure("refused", "USAGE_INVALID", `${key} has no per-space value; set it for the user`, { remedy: "run it again without --space" });
   }
   if (value !== undefined) {
     const problem = preferenceValueProblem(key, value);
-    if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
+    const space = scope.space === undefined ? "" : ` --space ${scope.space}`;
+    if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem, { remedy: `give ${key} a value of that form; \`cotal config unset ${key}${space}\` returns it to its default` });
   }
   const dir = globalConfigDir();
   let lock: ReturnType<typeof acquireLock>;
@@ -293,7 +296,7 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
  */
 export function removeSpacePreferences(space: string, expectedRevision: number): { removed: Partial<Record<PreferenceKey, string>>; revision: number } {
   const problem = preferenceSpaceProblem(space);
-  if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
+  if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem, { remedy: SPACE_NAME_REMEDY });
   // A space with nothing saved needs no write, so no lock and no configuration folder.
   const before = readPreferences();
   if (!Object.keys(before.spaces[space] ?? {}).length) return { removed: {}, revision: before.revision };

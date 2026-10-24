@@ -78,7 +78,7 @@ export function readPersonaSource(path: string): PersonaSource | undefined {
 
 export function requirePersonaSource(path: string): PersonaSource {
   const source = readPersonaSource(path);
-  if (!source) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona at ${path}`);
+  if (!source) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona at ${path}`, { remedy: "see the personas here with `cotal persona`" });
   return source;
 }
 

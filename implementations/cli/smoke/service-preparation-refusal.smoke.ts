@@ -127,6 +127,8 @@ const shownText = spawnSync(process.execPath, [BIN, "service", "show", "envsvc",
 check("service show lists the reference by name", shownText.status === 0 && /Environment references:\s+REVIEWS_TOKEN from SMOKE_UNSET_REVIEWS_TOKEN/.test(shownText.stdout), { status: shownText.status, stdout: shownText.stdout.slice(0, 900) });
 const envRemoved = run(["service", "remove", "envsvc", "--space", "b1", "--yes"]);
 check("rig: the definition is forgotten", envRemoved.status === 0, shown(envRemoved));
+const gone = run(["service", "show", "envsvc", "--space", "b1"]);
+check("service show of a definition that is not saved is TARGET_NOT_FOUND, exit 2, naming where the saved ones are", gone.status === 2 && gone.envelope?.error?.code === "TARGET_NOT_FOUND" && gone.envelope.error.remedy === "see the saved definitions with `cotal service`", shown(gone));
 
 // A Linear service whose envRefs give the child HOME from SERVICE_HOME. With COTAL_HOME unset, each
 // process reads the Cotal home under its own HOME: the controller's is `a`, the child's `b`.

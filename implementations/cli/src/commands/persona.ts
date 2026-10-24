@@ -73,7 +73,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
   }
   if (sub === "create") {
     const expected = readPersonaSource(path);
-    if (expected !== undefined) throw new CommandFailure("refused", "CONFLICT", `persona '${name}' already exists`);
+    if (expected !== undefined) throw new CommandFailure("refused", "CONFLICT", `persona '${name}' already exists`, { remedy: `change it with cotal persona edit ${name}, or remove it with cotal persona remove ${name} first` });
     const bytes = createSource(name!, path, values);
     commitPersona(path, expected, bytes);
     return receipt(presentation, catalog, name!, path, "created");
