@@ -324,26 +324,14 @@ export function removeMeshes(spaces: Iterable<string>): void {
 }
 
 /**
- * Drop a record because an automatic sweep decided it should leave — as opposed to the operator
- * saying so. Returns whether the record was actually removed.
- *
- * Every automatic deletion goes through here rather than {@link removeMesh}, because the rule is one
- * rule and forgetting it at a single site is the whole failure. A `manual` record (`cotal meshes
- * add`) is NEVER auto-pruned. An `up` record (and a pre-origin record, which is `up`) is kept on a
- * liveness miss: the broker being down is a STATE the surfaces report (`offline`), not proof the
- * operator no longer wants the root. A mismatch — credentials rejected, an open record whose
- * broker now requires auth, or a root whose on-disk auth is now for a different space — still
- * drops an `up` record, because connecting through it would mint against the wrong mesh. A sleeping
- * laptop or a VPN blip must not unregister a perfectly healthy remote mesh (observed exactly once,
- * and once was enough), and the same erasure of a stopped local stack is the existence denial this
- * helper exists to prevent. `cotal meshes rm` / `cotal down` are how a kept record leaves.
+ * Drop a mismatched `up` record (including a pre-origin record). Returns whether it was removed.
+ * Call only after a credentials, mode, or on-disk space mismatch. A liveness miss is reported as
+ * `offline` without calling this helper. Manual and catalog records are never auto-pruned.
+ * Explicit removal belongs to {@link removeMesh} (`cotal meshes rm` / `cotal down`).
  */
-export type PruneReason = "gone" | "mismatch";
-
-export function pruneMesh(space: string, reason: PruneReason = "gone"): boolean {
+export function pruneMesh(space: string): boolean {
   const m = findMesh(space);
   if (!m || m.origin === "manual" || m.origin === "catalog") return false;
-  if (reason === "gone") return false;
   removeMesh(space);
   return true;
 }
