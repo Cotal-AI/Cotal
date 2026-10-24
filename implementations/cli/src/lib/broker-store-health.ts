@@ -14,7 +14,7 @@ import { readStackJournal, STACK_DEFINITION } from "./stack-journal.js";
  *  tagged with the running broker's process id since its last start. A broker whose log is not on
  *  this machine is not checked. `full` is {@link storeFull}'s reading instead. */
 export type StoreWriteObservation =
-  | { state: "write-failed"; pid: number; log: string; at: string; cause: string; path: string | null }
+  | { state: "write-failed"; pid: number; log: string; at: string; cause: string; path: string | null; jetStreamDisabled: boolean }
   | { state: "full"; used: number; cap: number; path: string }
   | { state: "none-recorded"; pid: number; log: string }
   | { state: "not-checked"; reason: string };
@@ -111,12 +111,35 @@ export function brokerStoreWrite(root: string, space: string): StoreWriteObserva
   const tag = `[${broker.pid}] `;
   const own = tail.lines.filter((line) => line.startsWith(tag));
   const started = own.findLastIndex((line) => line.includes("[INF] Starting nats-server"));
-  for (const line of own.slice(started + 1).reverse()) {
+  // nats-server disables JetStream when a write is refused for permission or for space, and only a
+  // restart, or a reload that logs JetStream starting again, brings it back.
+  const since = own.slice(started + 1);
+  const enabled = since.findLastIndex((line) => line.includes("[INF] Starting JetStream"));
+  const jetStreamDisabled = since.slice(enabled + 1).some((line) => /disabling JetStream|JetStream out of space, will be DISABLED/.test(line));
+  for (const line of [...since].reverse()) {
     const failed = /^\[\d+\] (\S+ \S+) \[ERR\] .*?ritical write error: (.+)$/.exec(line);
     if (!failed) continue;
     // Go reports a failed file operation as `<op> <path>: <cause>`.
     const parts = /^\S+ (\/.+): ([^:]+)$/.exec(failed[2]!);
-    return { state: "write-failed", pid: broker.pid, log: tail.path, at: failed[1]!.replace(/\.\d+$/, ""), cause: parts ? parts[2]! : failed[2]!, path: parts ? parts[1]! : null };
+    return { state: "write-failed", pid: broker.pid, log: tail.path, at: failed[1]!.replace(/\.\d+$/, ""), cause: parts ? parts[2]! : failed[2]!, path: parts ? parts[1]! : null, jetStreamDisabled };
   }
   return { state: "none-recorded", pid: broker.pid, log: tail.path };
+}
+
+/** The running local broker's store write failure when the broker then disabled JetStream. Until it
+ *  restarts it answers no stream request, so no credential issuance record, stream check or lease
+ *  write reaches it. */
+export function jetStreamDisabled(root: string, space: string): Extract<StoreWriteObservation, { state: "write-failed" }> | undefined {
+  const write = brokerStoreWrite(root, space);
+  return write.state === "write-failed" && write.jetStreamDisabled ? write : undefined;
+}
+
+/** The refusal of a step that needs JetStream from a broker that disabled it. Only a restart brings
+ *  JetStream back, the broker stops only after the manager, and the manager's own stop needs an
+ *  issuance record, so the way out ends the manager's process on this host with a plain SIGTERM. */
+export function jetStreamDisabledRefusal(write: Extract<StoreWriteObservation, { state: "write-failed" }>, root: string, space: string, needs: string, outcome: string, target: Record<string, unknown>, managerPid: number | undefined): CommandFailure {
+  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker logged a store write failure at ${write.at}: ${write.cause}, and disabled JetStream until it restarts, so ${needs}; ${outcome}`, {
+    target: { ...target, brokerLog: write.log },
+    remedy: `${managerPid !== undefined ? `end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run cotal down` : "run cotal down"}; ${storeWriteRepair(write, root, space)}, then run cotal up`,
+  });
 }

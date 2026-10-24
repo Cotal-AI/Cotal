@@ -15,7 +15,7 @@ import {
   type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
 } from "@cotal-ai/workspace";
 import { brokerLaunchAt } from "../lib/broker-service.js";
-import { fullStoreStopRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite } from "../lib/broker-store-health.js";
+import { fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite } from "../lib/broker-store-health.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -130,6 +130,9 @@ async function managerImpact(journal: StackJournal, members: readonly Member[], 
       try { store = recordedStore(journal.root, journal.space); } catch { store = undefined; }
       throw fullStoreStop(journal, manager, store);
     }
+    // Nothing was submitted: the stop's credential could not be recorded on a broker without JetStream.
+    const disabled = jetStreamDisabled(journal.root, journal.space);
+    if (disabled && !(isCommandFailure(caught) && caught.outcome !== "unknown")) throw disabledJetStreamStop(journal, manager, disabled);
     // The read connects through the broker, so a gone broker surfaces as the connect refusal.
     const error = isConnectRefusal(caught) ? caught.failure() : caught;
     const broker = members.find((member) => member.role === "broker" && member.live);
@@ -149,6 +152,13 @@ function fullStoreStop(journal: StackJournal, manager: Member, store: { path: st
   const pid = manager.instance.record.value.process?.pid;
   return fullStoreStopRefusal("the manager", store, "no member was stopped", { root: journal.root, space: journal.space, manager: manager.instance.name },
     `make room with cotal history clear --yes, which purges all of this space's channel history, then run cotal down${pid !== undefined ? `; to keep that history, end the manager on this host with kill -TERM ${pid}, which stops its agents by its default policy, then run cotal down, and cotal up --max-file-store <bytes> with a larger cap` : ""}`);
+}
+
+/** The refusal of a stack's manager stop while its broker has JetStream disabled, before any member
+ *  is stopped. */
+function disabledJetStreamStop(journal: StackJournal, manager: Member, write: NonNullable<ReturnType<typeof jetStreamDisabled>>): CommandFailure {
+  return jetStreamDisabledRefusal(write, journal.root, journal.space, "stopping the manager needs a credential whose issuance record the broker cannot store", "no member was stopped",
+    { root: journal.root, space: journal.space, manager: manager.instance.name }, manager.instance.record.value.process?.pid);
 }
 
 /** Everything outside the recorded members that would be cut off refuses before the first signal.
@@ -329,10 +339,13 @@ async function previewStackStop(root: string, values: ParsedArgs["values"], pres
   const manager = members.find((member) => member.role === "manager" && member.live);
   const brokerPid = members.find((member) => member.role === "broker" && member.live)?.instance.record.value.process?.pid;
   if (!blocked && manager && brokerPid !== undefined && !processStopped(brokerPid)) {
+    // A broker that disabled JetStream answers no read of the store, so its own log decides first.
+    const disabled = jetStreamDisabled(root, journal0.space);
     let used: number | undefined;
-    try { used = await readStoredBytes(resolveMeshTarget(root, { space: journal0.space, readOnly: true }), "down-preview"); } catch { used = undefined; }
+    if (!disabled) try { used = await readStoredBytes(resolveMeshTarget(root, { space: journal0.space, readOnly: true }), "down-preview"); } catch { used = undefined; }
     const full = used === undefined ? undefined : storeFull(root, journal0.space, used);
-    if (full) blocked = fullStoreStop(journal0, manager, full);
+    if (disabled) blocked = disabledJetStreamStop(journal0, manager, disabled);
+    else if (full) blocked = fullStoreStop(journal0, manager, full);
   }
   const warnings = blocked ? [{ code: blocked.code, target: blocked.target, message: `the real stop would refuse: ${blocked.message}${blocked.remedy ? `; ${blocked.remedy}` : ""}` }]
     : [...stranded ? [strandedNotice(journal0, stranded.previous, true)] : [], ...localRecords(root, journal0.space).filter((row) => row.state !== "live").map((row) => staleWarning(root, row, true))];

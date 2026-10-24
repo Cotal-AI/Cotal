@@ -1300,7 +1300,18 @@ starts the stack again with its history. The signal reaches only a process on th
 `cotal service stop stack-manager` and `restart` refuse the same way before submitting a stop, and
 name `cotal history clear --space <space> --yes` and then the same command again. A stop also
 names `kill -TERM <pid>` as the way to keep that history. A dry run
-names that refusal as a warning when the space holds more than the recorded cap. Controller roots refuse
+names that refusal as a warning when the space holds more than the recorded cap.
+
+nats-server disables JetStream when its store refuses a write for permission or for space, and
+only a restart brings it back. While the broker's log on this machine shows that, the manager's
+stop cannot record its credential either, so `down`, `service stop stack-manager` and `restart`
+refuse `DEPENDENCY_UNAVAILABLE`, exit 2, before any stop, and name the logged failure. `up` refuses
+the same way, because it cannot check the space's streams on that broker. A dry run names the
+refusal as a warning. Each names the way out: end the manager on the stack's host with
+`kill -TERM <pid>`, which stops every agent it runs by its default policy, then run `cotal down`,
+fix the logged cause, and run `cotal up`. Fixing the cause alone does not bring JetStream back.
+
+Controller roots refuse
 preservation and manifest flags rather than switching to the legacy launcher. Outside a terminal,
 a bare `down` that would stop a running member refuses without `--yes`, exit 1, and prints that
 line and its remedy without the command help. A stop records each step in the stack journal in the root's
@@ -3002,7 +3013,7 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `selected` | `{resolved: false, code, message}` when no mesh resolves, where `message` states why and `hints` carries the step (`code` is `registry-unreadable` when the registry directory or a record could not be read, and a `not-started` prepared space adds its `space` and `root`); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels`, `membershipFeed` and `spaceStreams`. `spaceStreams.state` is `present`, `absent` or `not-checked`; it is read for an auth or user space and an open space this machine started. When `absent`, `root` is this machine's stack of the space and `stack` is `running` or `stopped`, each `null` when unknown. `storedBytes` is what the space's account holds in the broker's JetStream file store, `null` when it was not read |
 | `services` | Selected-space local owned records: `space`, `state` (`read`, `partial` or `not-checked`), non-atomic `observedAt`, public definition/instance projections and explicit scope. An unreadable family is `null`; stored readiness is historical. Older serialized snapshots may omit this observation, which is not an empty inventory. |
 | `stackManager` | The selected space's running stack manager: `instanceId`, `pid` and `endpoint`, which is `answered`, `not-answering` or `unchecked`. Absent when no stack manager runs |
-| `store` | What the selected space's running local broker logged about writing its JetStream store: `state` `write-failed` with `pid`, `log`, `at`, `cause` and `path`; `full` with `used`, `cap` and `path` when the space holds more than its broker's recorded cap; `none-recorded` with `pid` and `log`; or `not-checked` with a `reason`. Absent when no space resolves |
+| `store` | What the selected space's running local broker logged about writing its JetStream store: `state` `write-failed` with `pid`, `log`, `at`, `cause`, `path` and `jetStreamDisabled`, true when the broker then disabled JetStream; `full` with `used`, `cap` and `path` when the space holds more than its broker's recorded cap; `none-recorded` with `pid` and `log`; or `not-checked` with a `reason`. Absent when no space resolves |
 | `hints` | The hints, in the order the report prints them |
 
 `store` covers only a broker whose log is on this machine: a controller stack's `stack-broker`
@@ -3012,9 +3023,11 @@ system-account user, so `status` reads a bounded tail of that log instead and ke
 with the running broker's process ID since its last start. When the broker logged a store write
 failure, such as a full disk, the selected space shows a `Store` row with its time, cause and file.
 The broker keeps that error until it restarts, so messages sent meanwhile are not stored. The first
-Next is `cotal down`, after the repair the cause calls for: free space on the disk for a full disk,
-or make the store writable by this account again for a permission denied. `cotal up` then starts the
-broker again with the history it kept.
+Next is `cotal down`, to run once the logged cause is fixed: write access to the store again for a
+permission error, or free space for a full disk. Then `cotal up` starts the broker again. When the
+broker also disabled JetStream, which `store.jetStreamDisabled` shows, the manager's stop cannot be
+recorded, so the Next starts with `kill -TERM <pid>` for the stack's manager on this host, then
+`cotal down --yes` and `cotal up`.
 
 When the space holds more bytes than the `--max-file-store` cap this machine recorded for its
 broker, the broker refuses every write, so the `Store` row reads `full` with the bytes stored, the
@@ -4955,8 +4968,10 @@ a larger cap applies after that through `cotal down` and `cotal up --max-file-st
 unknown and never retried automatically. A broker that cannot write its store sends no
 acknowledgement at all, so when such a publish times out and the space's broker log on this machine
 records a store write failure, the `OPERATION_UNKNOWN` message names its time, cause and file and
-says the message was probably not stored. Its Next repairs that cause, by freeing disk space or by
-making the store writable again, and restarts the broker before the message is sent again.
+says the message was probably not stored. Its Next names the fix for that cause, write access to
+the store for a permission error or free space for a full disk, and restarts the broker before the
+message is sent again. When the broker disabled JetStream, it adds that `cotal down` names the
+manager's process to end first if the manager's stop cannot be recorded.
 The command sends once and exits. It does not wait for an answer, retain an inbox
 or transfer replies to a later chat session.
 
