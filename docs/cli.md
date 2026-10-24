@@ -3365,7 +3365,9 @@ implicit installation, account switch or open/user-auth credential fallback. For
 select the Node executable and pass the script path in `--handler-args`. The runtime Node in
 Cotal's install root qualifies; if an earlier installer left its folders group-writable, the
 refusal names `cotal update`, which removes that write. That JSON array has at
-most 64 fixed nonsecret strings and its serialized form has at most 8192 characters. The handler
+most 64 fixed nonsecret strings of at most 4096 characters each, and its serialized form has at
+most 8192 characters. A longer string refuses `USAGE_INVALID`, exit 1, naming its position and that
+limit. The handler
 runs in the contract directory with an empty environment. It is trusted local code with the
 operator's OS permissions, not a sandbox; it must not daemonize or leave independent children.
 
@@ -4261,7 +4263,7 @@ loopback health URL answers 200:
 |---|---|
 | `schemaVersion` | `1` |
 | `space` | The selected space's name. Another name is refused |
-| `launch` | `{type: "process", executable, args, cwd}`: an executable on `PATH` or by path, its arguments, and an absolute working directory. Or `{type: "adapter", adapter, options}` for an installed adapter, which a preset writes for you |
+| `launch` | `{type: "process", executable, args, cwd}`: an executable on `PATH` or by path, at most 256 arguments of at most 8192 characters each, and an absolute working directory. Or `{type: "adapter", adapter, options}` for an installed adapter, which a preset writes for you |
 | `readiness` | `{type: "process", timeoutMs}`: ready once the process runs. `{type: "http", url, expectedStatus, timeoutMs}`: ready when a loopback `http://127.0.0.1` or `http://[::1]` URL answers that status. An adapter definition uses `{type: "adapter", timeoutMs}`. `timeoutMs` is 1 to 120000 |
 | `envRefs` | Optional. Child variable name to the name of a variable in the environment `start` runs in. `CLAUDECODE` and names starting `COTAL_` or `CLAUDE_CODE_` are refused |
 | `credentialRef` | Optional. `{kind: "file", path}`: an absolute, protected credential file. The child receives its path as `COTAL_CREDS`, never its contents |
@@ -4270,7 +4272,8 @@ A `space` that names another space is refused `SCHEMA_INVALID`, exit 1, before `
 the selected space already has a service of that name. No other field is accepted. The file is at
 most 256 KiB. A `readiness` value that breaks these rules refuses `SCHEMA_INVALID`, exit 1, naming
 the field and its rule, such as a `timeoutMs` outside 1 to 120000, a field the chosen type does not
-take, or a `url` that is not on loopback.
+take, or a `url` that is not on loopback. A launch argument over 8192 characters refuses
+`SCHEMA_INVALID`, exit 1, naming its position and that limit.
 
 A process launch runs its executable as you, so the executable follows the
 [`space create`](#selecting-a-space) rule for other local writers. The file it names, where a link
