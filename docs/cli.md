@@ -6372,8 +6372,8 @@ answer without `--value` carries no value: the step settles as answered, and the
 program's checkpoint result has no `value`. `--value` is refused with `SCHEMA_INVALID` before
 anything is sent when the record would not hold what you typed: an object that names a key twice,
 a number outside the range JSON carries (such as `1e999`), or a value nested more than 1000 levels
-deep. The receipt of `answer` and `amend` names the step, the
-value it filed or that none was given, any artifact and the answer id. With `--json` they are in
+deep. An empty or blank `--artifact` is refused with `USAGE_INVALID`. The receipt of `answer` and
+`amend` names the step, the value it filed or that none was given, any artifact and the answer id. With `--json` they are in
 `result.answer`, where `valueGiven` says whether a value was sent. `amend` records a changed
 position on a settled checkpoint or `ask`: it files a new answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
 settled and the run keeps the answer it acted on. A step that is still open or settled without an

@@ -88,6 +88,11 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
   c("an answer value with a number outside the range JSON carries is refused SCHEMA_INVALID", schemaRefusal(huge, "outside the range JSON carries"), huge);
   const deep = answerWith("[".repeat(1001) + "]".repeat(1001));
   c("an answer value nested more than 1000 levels deep is refused SCHEMA_INVALID", schemaRefusal(deep, "--value nests more than 1000 levels deep"), deep);
+  // An artifact reference names something, so an empty or blank one is refused before anything is sent.
+  for (const verb of ["answer", "amend"]) for (const artifact of ["", "   "]) {
+    const got = gate([verb, "run-0", "/checkpoint:probe#0"], { artifact });
+    c(`${verb} --artifact ${JSON.stringify(artifact)} is refused USAGE_INVALID naming --artifact`, usageRefusal(got, "--artifact names the artifact the answer cites, so it cannot be empty"), got);
+  }
   const fine = answerWith('{"a":1,"b":[1e300,"a"]}');
   const deepest = answerWith("[".repeat(1000) + "]".repeat(1000));
   c("and a value JSON carries as typed, 1000 levels deep at most, passes the gate",
