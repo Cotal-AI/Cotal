@@ -1054,6 +1054,22 @@ another space refuses with `CONFLICT`, exit 2, and names this folder's stack. Ea
 the space and, when this machine started it elsewhere, its root, and its next step runs the same
 `down` from that root.
 
+When the folder of a running controller stack is deleted, its stack journal and broker
+configuration go with it, so no member's own stop can run. A running broker writes `.cotal/nats`
+back into the folder, which does not bring them back. `down --space <space>` from any folder stops
+that stack from the instance records this machine keeps, and so does a bare `down` in the folder
+the broker wrote back, or in a folder with no `.cotal` of its own while the space is selected. Each
+running member gets SIGTERM at its recorded process, manager first and broker last, after `down`
+checks that the process is still the one its record pinned, and its record is marked stopped. The
+manager stops its agents by its default policy, so `--with-agents` and the other stop flags are
+refused. A member that does not exit within its window, 90 seconds for the manager and 30 for the
+others, ends the stop with `OPERATION_UNKNOWN` and later members are not stopped. Once every member
+is stopped, `down` removes the stack's saved definitions, their instance records and the
+registration that names the folder, so the space can be created and started in another folder.
+Outside a terminal it needs `--yes`, and `--dry-run` lists each member with its pid and process.
+`cotal status` marks such a project folder as gone, with `selected.rootGone` set to `true` in its
+JSON, and its Next names `cotal down --space <space> --yes`.
+
 A bare `down` in a folder whose stack is already stopped stops nothing. It reports that the stack
 in that folder is not running and names `cotal up`, outcome `no-op`, exit 0, and writes nothing,
 so it needs no `--yes`. `--dry-run`, `--json` and `--plain` show the same. A controller stack
@@ -2043,7 +2059,8 @@ Forget also removes the stack definitions `cotal up` saved for the space at its 
 stopped instance records, so another folder can start a stack under the same name. The result lists
 them. While a member was not stopped cleanly, or the root holds preserved state, they stay and the
 result warns with `STACK_DEFINITIONS_KEPT`. For a member that was not stopped cleanly, the warning
-names `cotal down --yes` in the root and then `space forget` again.
+names `cotal down --yes` in the root and then `space forget` again. When the stack's folder is
+gone, it names `cotal down --space <space> --yes`, which stops the stack and removes them.
 `status` in a forgotten space's root then selects no space and probes no broker. When nothing left
 in that root's `.cotal/` names a space, its next step is `cotal space create <name> --root <root>`,
 because a bare `cotal up` there would start the default space `main` in that folder. A command run

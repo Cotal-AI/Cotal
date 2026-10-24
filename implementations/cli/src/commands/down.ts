@@ -99,6 +99,7 @@ import { processRecorded, stopLocalProcess } from "../lib/local-process-stop.js"
 import { stopManager } from "../lib/manager-proc.js";
 import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
 import { controllerStackRecorded, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
+import { goneRootDown, goneRootStackDown, validateGoneRootDownArguments } from "./stack-gone.js";
 import { readStackJournal, recordedProcessLine } from "../lib/stack-journal.js";
 import { ownStdoutErrors } from "../lib/stdout-owner.js";
 
@@ -145,6 +146,7 @@ export function validateDownArguments(args: ParsedArgs): void {
     return;
   }
   if (args.values.instance !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--instance needs one explicit service definition name");
+  if (goneRootDown(args.values)) return validateGoneRootDownArguments(args.values);
   if (controllerStackRecorded(cotalRoot())) return validateStackDownArguments(cotalRoot(), args.values);
   refuseStackElsewhere(args.values);
   if (args.values["abandon-stop"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-stop applies only to a controller stack's member stop, and this root has none; nothing was abandoned");
@@ -409,6 +411,9 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   validateDownArguments(args);
   if (args.positionals.length > 1) return stopNamedServiceSet(args);
   if (args.positionals.length) return service(namedStopArguments(args), "down");
+  // A stack whose folder is gone stops from this machine's records, wherever down runs.
+  const gone = goneRootDown(args.values);
+  if (gone) return goneRootStackDown(gone.space, gone.root, args.values);
   // A root whose stack the service controller owns stops only through its recorded members.
   if (controllerStackRecorded(cotalRoot())) return stackDown(cotalRoot(), args.values);
   const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; "session-store"?: string[]; space?: string };

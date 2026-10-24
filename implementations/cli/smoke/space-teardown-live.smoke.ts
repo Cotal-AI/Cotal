@@ -33,6 +33,9 @@
  *  9. A store directory that also holds the user's files. After `up --store-dir` and `down`,
  *     `reset store`, `reset space` and their dry runs refuse CONFLICT naming those files, and the
  *     folder keeps them.
+ *  9. A deleted folder. With a whole stack running, its folder is deleted. `status` marks the folder
+ *     gone, `down --space --yes` from another folder stops every member by signal and removes the
+ *     stack definitions, no member process is left, and another folder starts the same name.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:space-teardown:live
  */
@@ -346,6 +349,38 @@ try {
       check(`reset ${kind} ${mode} refuses CONFLICT, naming the files beside the store`, reset.status === 2 && reset.env?.error?.code === "CONFLICT" && Boolean(reset.env.error.message.includes(`${store} also holds notes.txt, photos`)), shown(reset));
     }
     check("the folder keeps the user's files and the store", existsSync(join(store, "notes.txt")) && existsSync(join(store, "photos")) && existsSync(join(store, "jetstream")));
+  }
+
+  // 10. A stack whose folder is deleted stops from another folder, and its name starts again.
+  {
+    const space = "tear7";
+    const root = folder(space);
+    const created = cli(home, "space", "create", space, "--root", root, "--json");
+    check("space create prepares a root that is then deleted", created.status === 0, shown(created));
+    anchor(root);
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
+    const listed = cli(root, "service", "--space", space, "--json");
+    const pids = ((listed.env?.result?.instances as { pid: number | null }[] | undefined) ?? []).map((row) => row.pid);
+    check("up starts the broker, delivery and the manager", started.status === 0 && pids.length === 3 && pids.every((pid) => typeof pid === "number"), { up: shown(started), services: shown(listed) });
+    anchors.delete(root);
+    rmSync(root, { recursive: true, force: true });
+    const other = folder(`${space}-other`);
+    anchor(other);
+    const status = cli(other, "status", "--space", space, "--json");
+    check("status says the project folder is gone", (status.env?.result?.selected as { rootGone?: unknown } | undefined)?.rootGone === true, shown(status));
+    const stopped = cli(other, "down", "--space", space, "--yes", "--json");
+    const members = (stopped.env?.result?.members as { result: string }[] | undefined) ?? [];
+    check("down --space from another folder stops every member by signal and removes the stack definitions",
+      stopped.status === 0 && stopped.env?.result?.kind === "gone-root-stack-stop" && members.length === 3 && members.every((row) => row.result === "stopped")
+        && JSON.stringify(stopped.env?.result?.releasedDefinitions) === JSON.stringify(["stack-broker", "stack-delivery", "stack-manager"]), shown(stopped));
+    check("no member process is left", pids.every((pid) => { try { process.kill(pid!, 0); return false; } catch { return true; } }), pids);
+    const elsewhere = folder(`${space}b`);
+    const again = cli(home, "space", "create", space, "--root", elsewhere, "--json");
+    anchor(elsewhere);
+    const reused = cli(elsewhere, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    check("another folder prepares and starts a stack under the same name", again.status === 0 && reused.status === 0, { create: shown(again), up: shown(reused) });
+    const last = cli(elsewhere, "down", "--yes", "--json");
+    check("down --yes stops it", last.status === 0, shown(last));
   }
 } finally {
   for (const root of roots) if (anchors.has(root)) cli(root, "down", "--yes", "--json");
