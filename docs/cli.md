@@ -1743,10 +1743,14 @@ remains as the equivalent startup form. After its startup lines it names the res
 gives the cleanup step that retires it, with `--discard-history` for a registry restore. Unlike the other
 backup modes, `backup restore` runs the connector seed first, as `up` does, because it resumes seats.
 
-Two commands refuse an active restore. `down --preserve-state` begins a new cut only after
+Three commands refuse an active restore. `down --preserve-state` begins a new cut only after
 the restore journal is retired, so it names `backup cleanup-fallback` as the next step. `team boot`
 resumes only a stopped stack whose manager never launched, and a restored stack's manager already
-ran, so start it with bare `cotal up` instead.
+ran, so start it with bare `cotal up` instead. `cotal up -f` boots a fresh mesh, so it starts only
+once the restore is retired. While the restored broker runs, it refuses `CONFLICT`, exit 2, naming
+the broker's PID, and its Next is `cotal down`, then `backup cleanup-fallback <attempt> --yes`, then
+`cotal up -f` again. Once that stack is stopped, it refuses `LIFECYCLE_BLOCKED`, exit 2, and names
+the cleanup. Nothing is started either way.
 
 Stopped client-managed KV ordered consumers are ephemeral read residue, not backup state. Backup
 ignores only the pinned client's exact stopped shapes: ordinary last-value watchers and the

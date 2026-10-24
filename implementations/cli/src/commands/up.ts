@@ -1255,7 +1255,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         if (!values.space) throw new CommandFailure("refused", "USAGE_INVALID", "fresh team boot needs the manifest's exact selected space");
         assertFreshTeamBootOwnership(cotalRoot(), values.space);
       }
-      assertOrdinaryUpAllowed(cotalRoot());
+      assertOrdinaryUpAllowed(cotalRoot(), undefined, values.file);
       await upManifest(values.file, {
         transport,
         dryRun: Boolean(values["dry-run"]),
@@ -2025,21 +2025,34 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   }
 }
 
-function assertOrdinaryUpAllowed(root: string, storeDir?: string): void {
+/** `manifest` is the `up -f` file, which boots a fresh mesh and so needs the restore retired first. */
+function assertOrdinaryUpAllowed(root: string, storeDir?: string, manifest?: string): void {
   const maintenance = readMaintenanceJournal(root);
   if (!maintenance) return;
   if (maintenance.state === "active") {
+    const attempt = maintenance.restore.attemptId, retire = `cotal backup cleanup-fallback ${attempt} --yes`;
     if (!isManagerCommittedRestore(maintenance))
-      throw new Error(`restore attempt ${maintenance.restore.attemptId} is active without durable manager commit evidence`);
+      throw new Error(`restore attempt ${attempt} is active without durable manager commit evidence`);
     if (!maintenance.listenerProof)
-      throw new Error(`restore attempt ${maintenance.restore.attemptId} is active without a bound listener proof`);
+      throw new Error(`restore attempt ${attempt} is active without a bound listener proof`);
     const status = localProcessOwnerStatus(maintenance.listenerProof.processOwner);
+    if (status === "alive")
+      throw new CommandFailure("refused", "CONFLICT", `the broker that restore attempt ${attempt} started still runs here (pid ${maintenance.listenerProof.processOwner.pid}), and a new start does not run beside it; nothing was started`, {
+        target: { root, attempt, pid: maintenance.listenerProof.processOwner.pid },
+        remedy: manifest !== undefined ? `stop the restored stack with cotal down, retire the restore with ${retire}, then run cotal up -f ${manifest} again` : "stop the restored stack with cotal down, then run cotal up again",
+      });
     if (status !== "dead")
-      throw new Error(`restore attempt ${maintenance.restore.attemptId} active listener ownership is ${status}; refusing ordinary startup`);
+      throw new Error(`restore attempt ${attempt} active listener ownership is ${status}; refusing ordinary startup`);
+    // `up -f` boots a fresh mesh, so the restore it would start over is retired first.
+    if (manifest !== undefined)
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore attempt ${attempt} is still active here, and cotal up -f boots a fresh mesh, which does not start over a restore that is not retired; nothing was started`, {
+        target: { root, attempt },
+        remedy: `retire the restore with ${retire}, then run cotal up -f ${manifest} again; bare cotal up starts the restored stack instead`,
+      });
     // Relaunching after restore must serve the exact recorded active target, not whatever store the
     // caller happens to name — the journal's provenance would otherwise describe a different mesh.
     if (!storeDir)
-      throw new Error(`restore attempt ${maintenance.restore.attemptId} is active; relaunch with bare \`cotal up\` over the recorded target ${maintenance.restore.target.path}`);
+      throw new Error(`restore attempt ${attempt} is active; relaunch with bare \`cotal up\` over the recorded target ${maintenance.restore.target.path}`);
     if (!sameStoreIdentity(readStoreIdentity(resolve(storeDir)), maintenance.restore.target))
       throw new Error(`ordinary startup after restore must use the recorded active target store ${maintenance.restore.target.path}, not ${storeDir}`);
     return;
