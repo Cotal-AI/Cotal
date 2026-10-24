@@ -214,6 +214,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const extra = cotal(["version", "-j", "extra"]);
   refused("an unexpected argument under -j is refused", extra, /Unexpected argument 'extra'/);
   check("an unexpected argument under -j is a USAGE_INVALID envelope", envelopes(extra)[0]?.error?.code === "USAGE_INVALID", shown(extra));
+  // `--replay` takes no value, so `--replay off` used to be refused as a second channel name.
+  const replayOff = cotal(["channel", "set", "general", "--replay", "off", "--json"]);
+  check("`channel set <name> --replay off` names the stray value and points to --no-replay",
+    envelopes(replayOff)[0]?.error?.code === "USAGE_INVALID" && envelopes(replayOff)[0]?.error?.message?.startsWith('--replay takes no value, so "off" was read as a channel name') === true
+      && envelopes(replayOff)[0]?.error?.remedy === "run cotal channel set general --no-replay", shown(replayOff));
   const human = cotal(["version", "--bogus"]);
   refused("a usage error without --json is refused", human, /Unknown option '--bogus'/);
   check("a usage error without --json writes no envelope and prints the help on stderr", envelopes(human).length === 0 && human.stdout === "" && /^Usage\n  cotal version /m.test(human.stderr), shown(human));

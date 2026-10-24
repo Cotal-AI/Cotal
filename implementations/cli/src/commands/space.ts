@@ -40,6 +40,7 @@ export const spaceFlags = [
   { name: "force", type: "boolean", description: "add: replace a registration added by hand, and add a --server space without checking its broker" },
   { name: "yes", short: "y", type: "boolean", description: "confirm without the terminal question; a delete must name the exact space, and an add still confirms fetched pins" },
   { name: "dry-run", type: "boolean", description: "delete: read native first-party impact without deleting anything" },
+  { name: "adopt", type: "boolean", description: "create: take over the stack journal a copied or moved project folder holds, so the space starts from this folder" },
 ] as const satisfies readonly FlagSpec[];
 
 const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message);
@@ -112,6 +113,7 @@ export async function space(args: ParsedArgs): Promise<void> {
   const values = args.values as FlagValues<typeof spaceFlags>;
   const presentation = presentationOf(values);
   const [sub, ...rest] = args.positionals;
+  if (values.adopt !== undefined && sub !== "create") throw usage("--adopt belongs to space create");
   if (sub === "delete") {
     const invalid = ADD_FLAGS.find((flag) => flag !== "yes" && values[flag] !== undefined);
     if (invalid) throw usage(`--${invalid} belongs to space add, not delete`);
@@ -122,7 +124,7 @@ export async function space(args: ParsedArgs): Promise<void> {
   const addOnly = ADD_FLAGS.find((flag) => values[flag] !== undefined && !(sub === "create" && flag === "root"));
   if (addOnly) throw usage(`--${addOnly} is taken by \`cotal space add\` only`);
   if (sub === "forget") return spaceForget(rest, presentation);
-  if (sub === "create") return spaceCreate(rest, values.root, presentation);
+  if (sub === "create") return spaceCreate(rest, values.root, values.adopt === true, presentation);
   if (sub !== undefined && sub !== "show") throw usage(`cotal space has no subcommand "${sub}" - run \`cotal help space\``);
   // Listing and show read the registry before anything else and write nothing, so a record that
   // cannot be read refuses them.

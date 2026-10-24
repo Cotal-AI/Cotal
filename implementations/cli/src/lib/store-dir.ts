@@ -1,5 +1,5 @@
 import { accessSync, constants, lstatSync, readdirSync, realpathSync, statSync, type Stats } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { c, CommandFailure, homeCotalDir, protectedLocalDirectory } from "@cotal-ai/workspace";
 
 /** What a store directory holds: the broker's `jetstream` tree and Cotal's generation marker. */
@@ -64,6 +64,15 @@ export function assertStoreDirArgument(value: string, root: string): void {
   if (existing === path) return;
   try { accessSync(existing, constants.W_OK | constants.X_OK); }
   catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `the --store-dir path ${path} cannot be created, because this account cannot write ${existing}; nothing was started or written`, { target: { storeDir: path }, remedy: "name a store directory this account can create, or create it with the right owner first" }); }
+}
+
+/** The `store_dir` a broker configuration names for `storeDir`: relative to `root` when the store
+ *  lies inside it, since the broker runs from the root. A project folder renamed while its broker runs
+ *  then keeps that broker writing into the renamed folder, and nothing creates the old path again. A
+ *  store outside the root keeps its absolute path. */
+export function configuredStoreDir(root: string, storeDir: string): string {
+  const path = relative(resolve(root), resolve(storeDir));
+  return path !== "" && path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path) ? path : resolve(storeDir);
 }
 
 /** Warn when an explicit `--store-dir` already holds files that are not part of a store. `up`

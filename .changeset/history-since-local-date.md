@@ -2,7 +2,4 @@
 "@cotal-ai/cli": patch
 ---
 
-`cotal history --since` reads a date alone as local midnight, as it reads a date and time with no
-offset as local time. A date alone was read as UTC midnight, so east of UTC `--since <today>` could
-start in the future and return nothing. The text and `--plain` reports print the resolved cutoff
-under `Since`.
+`cotal history --since` reads a bare date as local midnight, as a date and time without an offset already were, and refuses a date that is not on the calendar. The report names the local time and the ISO instant a time `--since` resolved to.

@@ -2,6 +2,7 @@ import { CotalEndpoint, channelBucket, credsClaims, isPublishPermissionDenied, p
 import { CommandFailure, endpointAuth, type Connection } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { connectOrExit, connectOrThrow } from "./connect.js";
+import { streamsAbsent } from "./space-streams.js";
 
 /**
  * A one-shot, write-capable connection for the headless commands that touch the live mesh
@@ -36,6 +37,11 @@ export function batchedRead(conn: Connection, bucket: string): boolean {
   const subject = `$JS.API.DIRECT.GET.KV_${bucket}`;
   const pub = credsClaims(conn.creds).nats?.pub;
   return (pub?.allow ?? []).some((row) => subjectMatches(row, subject)) && !(pub?.deny ?? []).some((row) => subjectMatches(row, subject));
+}
+
+/** A JetStream request that no responder answered: the stream it names is not on the broker. */
+function noResponders(e: unknown): boolean {
+  return e instanceof Error && e.name === "JetStreamStatusError" && String((e as { code?: unknown }).code) === "503";
 }
 
 /** Open a transient endpoint: it holds the roster and channel registry on return but never registers
@@ -82,6 +88,8 @@ export async function openTransient(
         target: { space: conn.space },
         remedy: values.creds === undefined ? `use a credential that may read both in ${conn.space}` : `run it without --creds to use the credential this machine records for ${conn.space}, or use one that may read both`,
       });
+    // A one-time read is a Direct Get, which nothing answers when the bucket's stream is gone.
+    if (readOnce && !opts.watch && noResponders(e)) throw streamsAbsent(conn);
     throw e;
   }
   return { ep, space: conn.space, connection: conn };
