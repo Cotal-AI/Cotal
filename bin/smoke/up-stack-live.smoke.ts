@@ -8,7 +8,7 @@
  *  2. a real `cotal ps` is ANSWERED by the detached manager (control plane reachable, creds minted
  *     from this folder's auth — the exact "spawn --detach works right after up" promise), and with
  *     no agents it lists that manager's instance id, which `ps --on` takes. With no connector
- *     installed, an unpinned `spawn -d` is refused and names the `cotal ext add` to run.
+ *     installed, an unpinned `spawn -d` is refused and names that manager and the `cotal ext add` to run.
  *  2b. a refresh whose delivery launch LOSES the single-flight lease exits non-zero and says so,
  *     instead of reporting a healthy control plane over a child that is already dead (#837).
  *  3. `cotal down` stops all three: pid files gone, processes dead, port closed.
@@ -214,9 +214,9 @@ try {
   // unpinned launch with no responders: a refusal that says why and what to add, never an unknown.
   const unserved = cli("spawn", "-d");
   const unservedOut = plain(unserved.stdout + unserved.stderr);
-  ok("an unpinned spawn -d with no agent application refuses TARGET_UNAVAILABLE, exit 2, naming the cotal ext add",
-    unserved.status === 2 && /no manager of yours takes unpinned launches: none has an agent application installed/.test(unservedOut)
-      && /Code:\s+TARGET_UNAVAILABLE/.test(unservedOut) && /Native outcome:\s+not-executed/.test(unservedOut) && /`cotal ext add [^`]+`, then restart that manager/.test(unservedOut),
+  ok("an unpinned spawn -d with no agent application refuses DEPENDENCY_UNAVAILABLE, exit 2, naming the manager and the cotal ext add",
+    unserved.status === 2 && unservedOut.includes(`no manager of yours takes unpinned launches: none has an agent application installed (manager ${listed} on host `)
+      && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(unservedOut) && /Native outcome:\s+not-executed/.test(unservedOut) && /`cotal ext add [^`]+`, then restart that manager/.test(unservedOut),
     { status: unserved.status, out: unservedOut });
 
   // 2b) #837: a delivery launch that LOSES the single-flight lease is not a healthy control plane.

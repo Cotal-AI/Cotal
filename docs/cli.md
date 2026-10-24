@@ -7334,13 +7334,16 @@ accepting instance ID does not confer an instance route or cause another launch.
 follower verifies the returned fact against the original caller and goal. A launch the manager
 refuses before its first effect, such as a missing persona file or connector, carries
 `not-executed`. The CLI reports it `refused` with exit 2 and prints the manager's reason, which
-names the file it looked for. An unpinned launch that no manager received is refused with
-`TARGET_UNAVAILABLE` and exit 2. With no manager running, the CLI says so before it sends and
-names bare `cotal up`. When every live manager reports `classSpawn: false`, it says none has an
-agent application installed and names the `cotal ext add` that adds one. A registered manager whose
-rail the broker reports empty is skipped without waiting on it and named in a `MANAGER_SILENT`
-warning, and the reason comes from the managers that answered. A manager reads its
-applications when it starts, so restart it after adding one. A failure after the manager reserved
+names the file it looked for. A missing connector is `DEPENDENCY_UNAVAILABLE`, as it is for a spawn
+in this terminal, and the refusal names the manager's instance and the host its status reports. An
+unpinned launch that no manager received is refused with `TARGET_UNAVAILABLE` and exit 2. With no
+manager running, the CLI says so before it sends and names bare `cotal up`. When every live manager
+reports `classSpawn: false`, the refusal is `DEPENDENCY_UNAVAILABLE`: it names each manager and its
+host, says none has an agent application installed, and names the `cotal ext add` that adds one.
+A registered manager whose rail the broker reports empty is skipped without waiting and named
+in a `MANAGER_SILENT` warning; the reason comes from the managers that answered.
+Both refusals say to add the application where the manager runs, not on your machine. A manager
+reads its applications when it starts, so restart it after adding one. A failure after the manager reserved
 the name or wrote a launch file keeps its native outcome, and the CLI never reclassifies it from
 its message.
 

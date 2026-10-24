@@ -88,6 +88,7 @@ import {
   type ControlAuth,
   type ControlTarget,
   DEFAULT_CONNECTOR,
+  hintedConnector,
   manifestExtensionNames,
   OFFICIAL_CONNECTORS,
   type MeshTarget,
@@ -657,6 +658,13 @@ export async function launchManagedPersona(
     // A pinned describe that drew no answer means the launch was never sent, as ps and stop --on say.
     if (on !== undefined && describeUnanswered(reply))
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `manager instance ${on} did not answer, so the launch was not sent and nothing was launched`, { target, native: { code: reply.code, ...(reply.error ? { detail: oneLine(reply.error) } : {}) }, remedy: "cotal ps shows which managers answer; rerun the spawn on one of them with --on <instance>" });
+    // A manager without the connector: it is added where that manager runs, not on this machine.
+    const absent = reply.nativeOutcome === "not-executed" && reply.error !== undefined ? hintedConnector(reply.error) : undefined;
+    if (absent !== undefined) {
+      const answered = reply.managerInstanceId ?? on;
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no connector "${absent}" is installed on ${answered ? await managerNamed(seat ? undefined : flags, t, answered) : "the manager"}; nothing was launched`, { target, native,
+        remedy: `add it where that manager runs, such as ${extAddFor(absent)}, then restart that manager; it reads its agent applications when it starts` });
+    }
     if (reply.nativeOutcome === "not-executed" && code) {
       // A manager without the default persona: name your other live managers whose catalog has one.
       const elsewhere = ref === "default" && managerConfigRef === undefined && reply.error?.startsWith('no persona "default"') ? await managersWithPersona(flags, reply.managerInstanceId ?? on, "default").catch((): string[] => []) : [];
@@ -703,9 +711,8 @@ async function unservedClassLaunch(flags: ConnectFlags | undefined, t: ControlTa
   for (const instanceId of census?.gone ?? [])
     recordOperationWarning({ code: "MANAGER_SILENT", target: { space: t.space, managerInstanceId: instanceId }, message: `manager ${instanceId} was skipped: its registration is stale (the broker reports nothing subscribed on its rail; its host is gone and never deregistered)` });
   if (census?.noApplication) {
-    const name = agent ?? DEFAULT_CONNECTOR, pkg = OFFICIAL_CONNECTORS[name];
-    return new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager of yours takes unpinned launches: none ${census.gone.length ? "that answered " : ""}has an agent application installed; nothing was launched`, { ...at,
-      remedy: `add one where the manager runs, such as ${pkg ? `\`cotal ext add ${pkg}\`` : `\`cotal ext add <npm-package>\` for "${name}"`}, then restart that manager; it reads its agent applications when it starts` });
+    return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no manager of yours takes unpinned launches: none ${census.gone.length ? "that answered " : ""}has an agent application installed${census.managers.length ? ` (${census.managers.join(", ")})` : ""}; nothing was launched`, { ...at,
+      remedy: `add one where ${census.managers.length > 1 ? "one of them" : "that manager"} runs, such as ${extAddFor(agent ?? DEFAULT_CONNECTOR)}, then restart that manager; it reads its agent applications when it starts` });
   }
   return new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager of yours received this unpinned launch; nothing was launched", { ...at, remedy: "run the spawn again, or pin one manager with --on <instance> from cotal ps" });
 }
@@ -715,9 +722,9 @@ async function unservedClassLaunch(flags: ConnectFlags | undefined, t: ControlTa
  *  managers skipped because the broker affirms nothing subscribed on their rail. Status has no
  *  scatter route, so each is read pinned to its instance, racing the rail probe: whichever settles
  *  first stops the other, so neither a live manager nor a gone one is waited out. */
-async function classLaunchCensus(flags: ConnectFlags, t: ControlTarget): Promise<{ noApplication: boolean; gone: string[] }> {
+async function classLaunchCensus(flags: ConnectFlags, t: ControlTarget): Promise<{ noApplication: boolean; gone: string[]; managers: string[] }> {
   const gone: string[] = [];
-  let answered = 0;
+  const managers: string[] = [];
   for (const instanceId of await liveManagerIds(t.space, t.server, t.auth)) {
     const pinned = await resolveControlTarget(flags, "control-caller-privileged", instanceId, { onRefusal: "throw" });
     const settled = new AbortController();
@@ -729,12 +736,30 @@ async function classLaunchCensus(flags: ConnectFlags, t: ControlTarget): Promise
       gone.push(instanceId);
       continue;
     }
-    const data = status.data as { classSpawn?: unknown; execution?: unknown } | undefined;
-    if (!status.ok || data?.classSpawn !== false || data.execution === "none") return { noApplication: false, gone };
-    answered++;
+    const data = status.data as { classSpawn?: unknown; execution?: unknown; host?: unknown } | undefined;
+    if (!status.ok || data?.classSpawn !== false || data.execution === "none") return { noApplication: false, gone, managers };
+    managers.push(managerAt(instanceId, data.host));
   }
-  return { noApplication: answered > 0, gone };
+  return { noApplication: managers.length > 0, gone, managers };
 }
+
+/** A manager as a refusal names it: its instance id, and the host its own status reports. */
+const managerAt = (instanceId: string, host: unknown): string => typeof host === "string" && host ? `manager ${instanceId} on host ${host}` : `manager ${instanceId}`;
+
+/** {@link managerAt} for one manager, read pinned to it. A seat (`flags` undefined) reads with its
+ *  own caller, and a status that cannot be read leaves the host out. */
+async function managerNamed(flags: ConnectFlags | undefined, t: ControlTarget, instanceId: string): Promise<string> {
+  try {
+    const pinned = flags ? await resolveControlTarget(flags, "control-caller-privileged", instanceId, { onRefusal: "throw" }) : t;
+    const status = await askManager(pinned.space, pinned.server, "managerStatus", undefined, pinned.auth, "owner", 5_000, { instanceId });
+    return managerAt(instanceId, status.ok ? (status.data as { host?: unknown } | undefined)?.host : undefined);
+  } catch {
+    return managerAt(instanceId, undefined);
+  }
+}
+
+/** The `cotal ext add` that installs connector `name`, quoted for a refusal. */
+const extAddFor = (name: string): string => OFFICIAL_CONNECTORS[name] ? `\`cotal ext add ${OFFICIAL_CONNECTORS[name]}\`` : `\`cotal ext add <npm-package>\` for "${name}"`;
 
 /** The harness the manager's `spawn` resolves for this persona, read with the same fields `start` sends. */
 async function launchAgentOrExit(t: ControlTarget, on: string | undefined, fields: { name: string; config?: string; defaultAgent?: string }): Promise<string> {
