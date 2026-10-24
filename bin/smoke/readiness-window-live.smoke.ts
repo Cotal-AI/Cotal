@@ -283,6 +283,8 @@ try {
       ok("...carrying the MANAGER's diagnosis, not core's generic line", msg.includes("launch status uncertain"), msg);
       ok("...and the instruction that prevents a duplicate re-issue", msg.includes("Inspect with"), msg);
       ok("...naming the agent it is about", msg.includes("ghost"), msg);
+      // The window is named as it elapsed, so a sub-second one is not read as "within 0s" (#3603).
+      ok("...and the window it waited, in milliseconds", msg.includes(`within ${SHORT_MS}ms;`), msg);
     } finally {
       (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = restore;
     }

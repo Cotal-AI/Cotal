@@ -7605,7 +7605,7 @@ export class Manager {
         finish({
           ok: false,
           uncertain: true,
-          detail: `${a.name} (${a.id}): launch status uncertain - no process exit and no mesh presence within ${Math.round(readinessTimeoutMs / 1000)}s; it may still be booting or stuck before connector startup. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`; do not stop it solely because this bounded wait elapsed.`,
+          detail: `${a.name} (${a.id}): launch status uncertain - no process exit and no mesh presence within ${readinessTimeoutMs}ms; it may still be booting or stuck before connector startup. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`; do not stop it solely because this bounded wait elapsed.`,
         });
       // The exit poll read the runtime up to a poll ago, and a window can be shorter than a poll, so
       // the window closes on a fresh read: a child that exited by then is reported as exited. Nothing
