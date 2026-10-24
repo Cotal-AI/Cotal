@@ -177,6 +177,31 @@ check("the --json refusal names the levels in its message", (() => { try { retur
 const hiddenSub = run(["ext", "bogus"]);
 check("the refusal lists the visible subcommands only", /cotal ext has no subcommand "bogus"; it takes \w/.test(hiddenSub.stderr) && !/__/.test(hiddenSub.stderr.split("\n")[0] ?? ""), shown(hiddenSub));
 
+// A word of any length is refused whole. The refusal repeats its first 128 characters and its length,
+// so one over-long argument does not print a line as long as itself; a word of 128 characters, the
+// longest name a command takes, is repeated whole.
+const long = "x".repeat(100_000);
+const longest = (text: string) => Math.max(...text.split("\n").map((line) => line.length));
+const longCommand = run([long]);
+check("an over-long unknown command is repeated as its first 128 characters and its length", longCommand.status === 1 && longCommand.stderr.includes(`unknown command: ${"x".repeat(128)}… (100000 characters) - run \`cotal help\` to list commands`) && longest(longCommand.stderr) < 400, shown(longCommand));
+const longSub = run(["telemetry", long]);
+check("an over-long unknown subcommand is repeated the same way", usageShape(longSub, /cotal telemetry has no subcommand "x{128}… \(100000 characters\)"; it takes off, minimal or regular/) && longest(longSub.stderr) < 400, shown(longSub));
+const longSubJson = run(["telemetry", long, "--json"]);
+const parsed = (r: ReturnType<typeof run>) => { try { return JSON.parse(r.stdout) as { target?: unknown; error?: { code?: string; message?: string } }; } catch { return undefined; } };
+check("its --json message is repeated the same way", longSubJson.status === 1 && parsed(longSubJson)?.error?.code === "USAGE_INVALID" && parsed(longSubJson)?.error?.message?.startsWith(`cotal telemetry has no subcommand "${"x".repeat(128)}… (100000 characters)"`) === true && longSubJson.stdout.length < 1_000, shown(longSubJson));
+check("its --json target is what a short word's refusal carries", JSON.stringify(parsed(longSubJson)?.target) === JSON.stringify(parsed(levelJson)?.target), { long: parsed(longSubJson)?.target, short: parsed(levelJson)?.target });
+const longRun = run(["run", "show", `run-${long}`]);
+check("an over-long run id is refused repeating its first 128 characters and its length", longRun.status === 1 && longRun.stderr.includes(`run show: "run-${"x".repeat(124)}… (100004 characters)" is not a run id`) && longest(longRun.stderr) < 400, shown(longRun));
+const longRunJson = run(["run", "show", `run-${long}`, "--json"]);
+check("its --json message is repeated the same way", longRunJson.status === 1 && parsed(longRunJson)?.error?.code === "USAGE_INVALID" && parsed(longRunJson)?.error?.message?.startsWith(`run show: "run-${"x".repeat(124)}… (100004 characters)" is not a run id`) === true && longRunJson.stdout.length < 1_000, shown(longRunJson));
+const edge = "w".repeat(128);
+const edgeCommand = run([edge]);
+check("control: a 128-character unknown command is repeated whole", edgeCommand.status === 1 && edgeCommand.stderr.includes(`unknown command: ${edge} - run`) && !/characters\)/.test(edgeCommand.stderr), shown(edgeCommand));
+const edgeSub = run(["telemetry", edge]);
+check("control: a 128-character unknown subcommand is repeated whole", usageShape(edgeSub, new RegExp(`cotal telemetry has no subcommand "${edge}"; it takes`)), shown(edgeSub));
+const edgeRun = run(["run", "show", `run-${"w".repeat(124)}`, "--json"]);
+check("control: a 128-character run id is repeated whole", edgeRun.status === 1 && parsed(edgeRun)?.error?.message?.startsWith(`run show: "run-${"w".repeat(124)}" is not a run id`) === true, shown(edgeRun));
+
 const json = run(["clean", "--json"]);
 check("control: a command without JSON output still refuses --json as an unknown option", json.status === 1 && /Unknown option '--json'/.test(json.stderr), shown(json));
 

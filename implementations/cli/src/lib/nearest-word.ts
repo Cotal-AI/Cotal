@@ -1,5 +1,5 @@
 import type { Command } from "@cotal-ai/core";
-import { oneLine } from "@cotal-ai/workspace";
+import { boundedValue, oneLine, SHOWN_VALUE_MAX } from "@cotal-ai/workspace";
 import { OFFICIAL_COMMANDS } from "../ext-loader.js";
 
 /** The optimal string alignment distance between `a` and `b`: insertions, deletions, substitutions
@@ -60,7 +60,7 @@ export function unknownCommandMessage(commands: readonly Command[], word: string
   const words = commandWords(commands, word);
   const synonym = Object.hasOwn(COMMAND_SYNONYMS, word) ? COMMAND_SYNONYMS[word] : undefined;
   if (synonym !== undefined && words.includes(synonym)) return `unknown command: ${oneLine(word)} - did you mean ${synonym}? Or run \`cotal help\` to list commands`;
-  return `unknown command: ${oneLine(word)} - ${suggestThen(word, words, "run `cotal help` to list commands")}`;
+  return `unknown command: ${oneLine(boundedValue(word, SHOWN_VALUE_MAX))} - ${suggestThen(word, words, "run `cotal help` to list commands")}`;
 }
 
 /** The usage line for a first word that names none of `surface`'s subcommands: the nearest, or the
@@ -70,5 +70,5 @@ export function unknownSubcommandMessage(path: string, surface: Pick<Command, "s
   const words = visible.flatMap((sub) => [sub.name, ...(sub.aliases ?? [])]);
   const names = visible.map((sub) => sub.name);
   const takes = didYouMean(word, words) || !names.length ? "" : `; it takes ${names.length > 1 ? `${names.slice(0, -1).join(", ")} or ${names.at(-1)}` : names[0]}`;
-  return `cotal ${path} has no subcommand "${oneLine(word)}"${takes} - ${suggestThen(word, words, `run \`cotal help ${path}\``)}`;
+  return `cotal ${path} has no subcommand "${oneLine(boundedValue(word, SHOWN_VALUE_MAX))}"${takes} - ${suggestThen(word, words, `run \`cotal help ${path}\``)}`;
 }

@@ -1,9 +1,9 @@
 import { existsSync, lstatSync, readFileSync, type Stats } from "node:fs";
 import { join } from "node:path";
-import { DEFAULT_SERVER, DEFAULT_SPACE, MEMBERSHIP_MAX_BYTES, personaDir, type SpaceAuth } from "@cotal-ai/core";
+import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, MEMBERSHIP_MAX_BYTES, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootPathProblem, soleSpaceOf, stackJournalPath, userAuthSpacesOnDisk } from "./auth-paths.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
-import { recordOperationSpaceNote, recordOperationWarning } from "./output.js";
+import { recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
 import { parsePid, probeLiveness, readPidfile } from "./pid.js";
 import { findPreparedSpace, preparedSpaceAt } from "./prepared-spaces.js";
 import {
@@ -621,7 +621,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     const m = findMesh(flags.space);
     if (!m) {
       notStarted(flags.space, cwd);
-      throw new MeshTargetError("unknown-space", `no mesh named "${flags.space}" is running`, {
+      throw new MeshTargetError("unknown-space", `no mesh named "${boundedValue(flags.space, SHOWN_VALUE_MAX)}" is running`, {
         requested: flags.space,
       });
     }
@@ -663,7 +663,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     const cur = meshes.find((m) => m.space === current);
     if (!cur) {
       notStarted(current, cwd);
-      throw new MeshTargetError("unknown-space", `the selected space "${current}" is not registered here`, { requested: current, selected: true });
+      throw new MeshTargetError("unknown-space", `the selected space "${boundedValue(current, SHOWN_VALUE_MAX)}" is not registered here`, { requested: current, selected: true });
     }
     // A selected space whose broker is down is still the target: the preflight reports it not
     // running, the way it does for a named `--space`, rather than another mesh answering instead.

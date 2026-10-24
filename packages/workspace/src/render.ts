@@ -1,7 +1,9 @@
+import { boundedValue } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "./broker-display.js";
 import { userCotalDir } from "./mesh-registry.js";
 import { shellPath } from "./protected-records.js";
 import { MIN_FILE_STORE, type MeshTarget, type MeshTargetError } from "./mesh-target.js";
+import { SHOWN_VALUE_MAX } from "./output.js";
 import type { PreflightFailure } from "./preflight.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS } from "./preflight.js";
 
@@ -61,8 +63,8 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
       return parts("no mesh running", "run `cotal up` in a project, or pass `--server`");
     case "unknown-space":
       return d.selected
-        ? parts(`the selected space "${d.requested}" is not registered here`, "select one with `cotal use <name>` (`cotal space` lists them), or name one with `--space`")
-        : parts(`no space named "${d.requested}" is registered here`, "see `cotal space`");
+        ? parts(`the selected space "${boundedValue(String(d.requested), SHOWN_VALUE_MAX)}" is not registered here`, "select one with `cotal use <name>` (`cotal space` lists them), or name one with `--space`")
+        : parts(`no space named "${boundedValue(String(d.requested), SHOWN_VALUE_MAX)}" is registered here`, "see `cotal space`");
     case "ambiguous-target":
       return parts(`multiple meshes running: ${(d.available ?? []).join(", ")}`, "pick one with `--space <name>` or set a default with `cotal use <name>`");
     case "default-occupied":

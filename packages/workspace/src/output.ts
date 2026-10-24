@@ -16,6 +16,10 @@ export type Outcome = "ok" | "no-op" | "refused" | "failed" | "partial" | "unkno
 /** How much of the read scope the result covers. It says nothing about whether the work succeeded. */
 export type Completeness = "complete" | "partial" | "not-checked";
 
+/** The most characters of an argument a message repeats through `boundedValue`: as many as the longest
+ *  name a command accepts, so a value of valid length is shown whole. */
+export const SHOWN_VALUE_MAX = 128;
+
 /** Refusals of the declared input, before any effect: exit 1. */
 export const USAGE_CODES = ["USAGE_INVALID", "SCHEMA_INVALID"] as const;
 

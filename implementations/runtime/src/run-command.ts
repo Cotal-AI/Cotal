@@ -71,6 +71,7 @@ import {
 } from "@cotal-ai/core";
 import { DurationError, isDuration, LangErrors, parseDuration, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
 import {
+  boundedValue,
   CommandFailure,
   commandFailureReport,
   failureEnvelope,
@@ -94,6 +95,7 @@ import {
   spaceStreamsExpected,
   connectOrThrow,
   isConnectRefusal,
+  SHOWN_VALUE_MAX,
 } from "@cotal-ai/workspace";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
@@ -1067,7 +1069,7 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   // A run id is an id token, so a malformed one is refused here, before any contact, rather than
   // by whichever plane reads it first.
   if (["journal", "resume", "revoke", "answer", "amend", "migrate"].includes(verb) && first !== undefined) {
-    try { assertIdToken(first, "run id"); } catch { usage(`run ${raw}: ${JSON.stringify(first)} is not a run id, which is 1 to 64 letters, digits, "_" or "-"; cotal run ps lists them`); }
+    try { assertIdToken(first, "run id"); } catch { usage(`run ${raw}: ${JSON.stringify(boundedValue(first, SHOWN_VALUE_MAX))} is not a run id, which is 1 to 64 letters, digits, "_" or "-"; cotal run ps lists them`); }
   }
   let a: string | undefined = first;
   let b: string | undefined = second;

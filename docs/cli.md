@@ -96,7 +96,10 @@ then its help on stderr, writes nothing on stdout, exits 1, and does not run. A 
 `--yes` outside an interactive terminal prints its error and a remedy that names `--yes`, without the
 help. A control character in
 a word the error quotes, from the command line or from a file, shows as its `\uXXXX` escape, so a
-typed word cannot clear the screen or retitle the terminal. A usage error is found before any effect, so it never seeds
+typed word cannot clear the screen or retitle the terminal. A refusal that repeats an argument
+longer than 128 characters, such as an unknown command, a space name or a run id, shows its first
+128 characters followed by `… (<n> characters)`, in text and in the `--json` message. The command
+still checks and uses the whole value. A usage error is found before any effect, so it never seeds
 connectors or writes configuration. Help, version and completion never do either.
 A word that starts with `-` reads as an option. A message or name that starts with one goes after
 `--`, which the refusal names, and an option value that starts with one is written `--limit=-1`,
