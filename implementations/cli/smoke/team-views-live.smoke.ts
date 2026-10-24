@@ -5,6 +5,8 @@
  *  A. `team`, `team show <id>`, `team deploy --dry-run`, `team boot --dry-run` and
  *     `team remove <id> --dry-run` each exit 0 with outcome `ok` and `completeness` `partial`, and
  *     the report says what the read does not establish, with no failure line on stderr.
+ *  B. a card without `deliveryClass: live`: the apply refuses `UNSUPPORTED`, names the cards and
+ *     says what to set, and its preview warns `LIVE_DELIVERY_REQUIRED` for the same cards.
  *
  * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
  * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
@@ -38,7 +40,7 @@ const cotal = (cwd: string, ...args: string[]) => {
   const run = spawnSync(TSX, [CLI, ...args], options);
   return { status: run.status, stdout: run.stdout, stderr: run.stderr, out: `${run.stdout}${run.stderr}` };
 };
-type Envelope = { outcome?: string; completeness?: string; error?: { code?: string; message?: string }; result?: Record<string, unknown> };
+type Envelope = { outcome?: string; completeness?: string; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code: string; target: Record<string, unknown>; message: string }[]; result?: Record<string, unknown> };
 const envelope = (stdout: string): Envelope | undefined => { try { return JSON.parse(stdout.trim().split("\n").at(-1) ?? "") as Envelope; } catch { return undefined; } };
 /** A read that completed: exit 0, outcome ok, completeness partial and no error. */
 const answered = (run: ReturnType<typeof cotal>) => { const e = envelope(run.stdout); return run.status === 0 && e?.outcome === "ok" && e.completeness === "partial" && e.error === undefined; };
@@ -49,6 +51,7 @@ const manifest = (name: string, space: string, channels: Record<string, string>)
   writeFileSync(join(s, name), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  servers: ${SERVER}\nchannels:\n${Object.entries(channels).map(([channel, extra]) => `  ${channel}:\n    description: The ${channel} channel.\n${extra}`).join("")}`);
 };
 manifest("live.yaml", SPACE, { live1: "    deliveryClass: live\n", live2: "    deliveryClass: live\n" });
+manifest("inherit.yaml", SPACE, { design: "", ops: "    replay: true\n", fine: "    deliveryClass: live\n" });
 
 let up = false;
 try {
@@ -84,6 +87,21 @@ try {
   check("team boot --dry-run exits 0 and says what it has not checked",
     reported(bootPreview, "startup readiness have not been checked"), bootPreview.out.slice(-800));
   check("team boot --dry-run --json is ok and partial in completeness", answered(cotal(s, "team", "boot", "live.yaml", "--dry-run", "--json")));
+
+  console.log("\nB. cards without deliveryClass: live");
+  const notLivePreview = envelope(cotal(s, "team", "deploy", "inherit.yaml", "--dry-run", "--json").stdout);
+  const required = notLivePreview?.warnings?.find((w) => w.code === "LIVE_DELIVERY_REQUIRED");
+  check("team deploy --dry-run warns that the apply refuses the cards without deliveryClass: live",
+    JSON.stringify(required?.target.cards) === JSON.stringify(["design", "ops"]) && required!.message.startsWith("Apply refuses: #design, #ops do not set deliveryClass: live."), notLivePreview?.warnings);
+  const notLiveText = cotal(s, "team", "deploy", "inherit.yaml", "--dry-run");
+  check("the text preview prints that warning on stderr", notLiveText.status === 0 && notLiveText.stderr.includes("! Apply refuses: #design, #ops do not set deliveryClass: live."), notLiveText.stderr);
+  const notLive = cotal(s, "team", "deploy", "inherit.yaml", "--json");
+  const refused = envelope(notLive.stdout);
+  check("team deploy refuses those cards with UNSUPPORTED, names them and says what to set",
+    notLive.status === 2 && refused?.error?.code === "UNSUPPORTED" && refused.error.message!.includes("#design, #ops do not set deliveryClass: live") &&
+      refused.error.remedy === "set `deliveryClass: live` on each card, or create a durable channel with `cotal channel set <name> --delivery durable`", notLive.out.slice(-800));
+  const liveCheck = cotal(s, "team", "deploy", "live.yaml", "--dry-run", "--json");
+  check("a manifest whose cards all set deliveryClass: live has no such warning", !envelope(liveCheck.stdout)?.warnings?.some((w) => w.code === "LIVE_DELIVERY_REQUIRED"));
 } finally {
   if (up) {
     const down = cotal(s, "down", "--yes");

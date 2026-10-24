@@ -6120,6 +6120,10 @@ channel-only manifest whose declared cards are all absent and explicitly set
 `deliveryClass: live`. It refuses agents, runtime requests, defaults,
 broker bind changes, access edges, existing cards,
 re-apply, registered broker lists and unresolved prior attempts before an effect.
+A card that does not set `deliveryClass: live` is refused with `UNSUPPORTED`. The refusal names
+the cards, and its Next says to set `deliveryClass: live` on each card or to create a durable
+channel with `cotal channel set <name> --delivery durable`. `team deploy --dry-run` warns
+`LIVE_DELIVERY_REQUIRED` for the same cards, so the preview says the apply would refuse.
 It selects the exact registered root, single broker address, auth mode and TLS
 requirement, then holds the local maintenance lock. The original user bearer and its deployer and writer
 views must name the same owner and actor. A refused view stops before the
