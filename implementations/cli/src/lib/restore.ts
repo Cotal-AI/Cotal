@@ -84,11 +84,12 @@ import {
   readStoreIdentity,
   type StoreIdentity,
 } from "@cotal-ai/workspace";
-import { ArtifactFileFault, missingBackupPath, missingBackupPathText, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
+import { ArtifactFileFault, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, missingBackupPath, missingBackupPathText, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, connectIsolatedBroker, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
 import { displayCmd } from "./self-exec.js";
+import { assertEndpointUnreachable } from "./endpoint-cut.js";
 import { acquireStackOperationLock } from "./stack-journal.js";
 import { admitAndRestoreSeatCheckpoints } from "./seat-resume.js";
 import { assertControllerRestorable, reconfigureControllerBroker, rollbackRestoreWithBroker } from "./controller-restore.js";
@@ -126,6 +127,8 @@ export interface PreparedRestore {
   runtime: string;
   detached: boolean;
   selection: "full" | "registry";
+  /** The streams this attempt restored from the artifact. */
+  restoredStreams: readonly string[];
   inventory: JsonValue;
   serverName: string;
   serverNonce: string;
@@ -183,6 +186,7 @@ export function rehydratePreparedRestore(root: string, journal: RecoverableResto
     runtime: launchString(journal.launch, "runtime"),
     detached: journal.launch.detached === true,
     selection: restoreOnly,
+    restoredStreams: journaledRestoredStreams(journal.launch, journal.space, journal.mode),
     inventory: resume.inventory,
     serverName,
     serverNonce,
@@ -377,10 +381,10 @@ async function validateManifest(
   if (flags.space && flags.space !== manifest.space) throw new Error(`--space ${JSON.stringify(flags.space)} does not match backup space ${JSON.stringify(manifest.space)}`);
   if (flags.open && manifest.mode !== "open") throw new Error("--open conflicts with the backup auth mode");
   if (flags["user-auth"] && manifest.mode !== "user") throw new Error("--user-auth conflicts with the backup auth mode");
-  const inventory = spaceBackupInventory(manifest.space);
-  const selected = flags["restore-only"] === "registry" ? inventory.registry : inventory[manifest.selection];
+  const held = artifactStreams(manifest);
+  const selected = flags["restore-only"] === "registry" ? spaceBackupInventory(manifest.space).registry : held;
   const actual = manifest.streams.map((entry) => entry.stream);
-  if (new Set(actual).size !== actual.length || JSON.stringify([...actual].sort()) !== JSON.stringify([...inventory[manifest.selection]].sort()))
+  if (new Set(actual).size !== actual.length || JSON.stringify([...actual].sort()) !== JSON.stringify([...held].sort()))
     throw new Error("backup manifest stream inventory does not match its selection");
   for (const stream of selected) {
     const record = manifest.streams.find((entry) => entry.stream === stream);
@@ -576,11 +580,14 @@ async function recreateCheckpoint(
 async function createOmittedInfrastructure(
   broker: IsolatedBroker,
   space: string,
-  registryOnly: boolean,
+  restored: readonly string[],
 ): Promise<void> {
   const inventory = spaceBackupInventory(space);
-  const create = registryOnly ? inventory.full.filter((name) => !inventory.registry.includes(name)) : [];
-  const excluded = inventory.excluded.map((entry) => entry.name);
+  // The workflow stores are endpoint stores: createEndpointStreams below creates the ones the
+  // artifact did not hold and verifies the restored ones.
+  const workflow = inventory.backedUp.filter((entry) => entry.class === "workflow").map((entry) => entry.name);
+  const create = inventory.full.filter((name) => !restored.includes(name) && !workflow.includes(name));
+  const excluded = [...workflow, ...inventory.excluded.map((entry) => entry.name)];
   const login = await broker.addLogin({
     profile: "infrastructure",
     streams: [...create, ...excluded],
@@ -599,8 +606,9 @@ async function createOmittedInfrastructure(
     await kvm.create(membershipBucket(space), { history: 1, max_bytes: MEMBERSHIP_MAX_BYTES });
     await kvm.create(deliveryBucket(space), { ttl: LEASE_TTL_MS });
     await kvm.create(managerBucket(space), { ttl: MANAGER_LEASE_TTL_MS });
-    // Endpoint journals and authority/session stores are nonportable control state. Recreate their
-    // canonical empty infrastructure through the same production seam as ordinary space setup.
+    // The other endpoint stores are nonportable control state. Recreate them empty, with any workflow
+    // store the artifact did not hold, through the same production seam as ordinary space setup,
+    // which verifies the restored workflow stores.
     await createEndpointStreams(jsm, kvm, space);
     // The artifact Object Store is EXCLUDED from the backup artifact, which does not mean restore
     // ignores it: the assertion below covers `excluded` too, so a restored space must come back
@@ -642,11 +650,11 @@ async function restoreAndValidate(
   checkpoints: readonly PersistentConsumerCheckpoint[],
   completeInfrastructure: boolean,
 ): Promise<void> {
-  const wanted = onlyRegistry ? spaceBackupInventory(space).registry : spaceBackupInventory(space)[staged.manifest.selection];
+  const wanted = onlyRegistry ? spaceBackupInventory(space).registry : artifactStreams(staged.manifest);
   for (const name of wanted) await restoreStream(broker, space, snapshotDir, pass, staged.manifest.streams.find((entry) => entry.stream === name)!);
   for (const name of wanted)
     await validateRestoredStream(broker, space, staged.manifest.streams.find((entry) => entry.stream === name)!, 0);
-  if (completeInfrastructure) await createOmittedInfrastructure(broker, space, onlyRegistry);
+  if (completeInfrastructure) await createOmittedInfrastructure(broker, space, wanted);
   if (!onlyRegistry) for (const checkpoint of checkpoints) await recreateCheckpoint(broker, space, checkpoint);
   if (!onlyRegistry) for (const name of wanted) {
     const count = checkpoints.filter((checkpoint) => checkpoint.stream === name).length;
@@ -683,6 +691,43 @@ export function preservedSourceState(root: string, source: StoreIdentity): { sta
 export function movedFolderRefusal(root: string, space: string, recordedStore: string, moved: { recordedRoot: string; store: string }, then: string): CommandFailure {
   return new CommandFailure("refused", "CONFLICT", `this folder was moved from ${moved.recordedRoot} after its state was preserved: the maintenance journal records the preserved store at ${recordedStore}, and that store is now ${moved.store}`, { target: { root, space, recordedRoot: moved.recordedRoot, recordedStore, store: moved.store }, remedy: `move this folder back to ${moved.recordedRoot}, then ${then} there` });
 }
+
+/** The streams a restore attempt restored, from its launch record. A record written before full
+ *  backups held workflow runs names none, and those attempts restored a v1 artifact's streams. */
+export function journaledRestoredStreams(launch: Readonly<Record<string, JsonValue>>, space: string, mode: MaintenanceReadyRecord["mode"]): string[] {
+  const recorded = launch.restoredStreams;
+  const selection = launchString(launch, "restoreOnly") === "registry" ? "registry" : "full";
+  if (recorded === undefined) return [...artifactStreams({ format: BACKUP_MANIFEST_FORMAT_V1, space, selection, mode })];
+  if (!Array.isArray(recorded) || recorded.some((name) => typeof name !== "string")) throw new Error("restore launch record has an invalid restoredStreams");
+  return recorded as string[];
+}
+
+const CLASS_WORDS: Record<string, string> = {
+  registry: "channel registry", messages: "messages", authorization: "channel ACLs and members", workflow: "workflow runs",
+  transient: "presence", derived: "membership", lease: "leases", control: "endpoint control stores", artifact: "artifact store",
+};
+
+/** What a restore brought back from the artifact and what it recreated empty, by stream, and the
+ *  same in words. A full restore that brought back no workflow store carries a note that says why:
+ *  a user-mode artifact holds none, and an older artifact was made before full backups held runs. */
+export function restoreComposition(space: string, restored: readonly string[], mode: MaintenanceReadyRecord["mode"]): { restored: string[]; recreatedEmpty: string[]; restoredWords: string; emptyWords: string; note?: string } {
+  const inventory = spaceBackupInventory(space);
+  const all = [...inventory.backedUp, ...inventory.excluded];
+  const empty = all.filter((entry) => !restored.includes(entry.name));
+  const words = (entries: readonly { class: string }[]) => [...new Set(entries.map((entry) => CLASS_WORDS[entry.class]))].join(", ") || "none";
+  const workflow = inventory.backedUp.filter((entry) => entry.class === "workflow").map((entry) => entry.name);
+  return {
+    restored: [...restored],
+    recreatedEmpty: empty.map((entry) => entry.name),
+    restoredWords: words(all.filter((entry) => restored.includes(entry.name))),
+    emptyWords: words(empty),
+    ...(restored.length > inventory.registry.length && !workflow.some((name) => restored.includes(name))
+      ? { note: mode === "user" ? USER_MODE_NO_RUNS : OLDER_FORMAT_NO_RUNS } : {}),
+  };
+}
+
+const USER_MODE_NO_RUNS = "A user-mode backup holds no workflow runs, because the records store's lifecycle heads name credential rows in the auth store, which a backup does not carry; the workflow run stores were recreated empty.";
+const OLDER_FORMAT_NO_RUNS = "This backup was made before full backups held workflow runs, so it holds none; the workflow run stores were recreated empty.";
 
 /** The step that moves a full restore attempt on from `state`, for a refusal to name. A committed or
  *  degraded attempt goes forward through bare `up`, which continues it. */
@@ -886,7 +931,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     if (!onlyRegistry && flags.runtime && inventoryRuntimes[0] && flags.runtime !== inventoryRuntimes[0])
       throw new Error(`--runtime ${flags.runtime} contradicts the preserved agent runtime ${inventoryRuntimes[0]}; omit it or restore registry-only`);
     const effectiveRuntime = flags.runtime ?? inventoryRuntimes[0] ?? "pty";
-    const wanted = onlyRegistry ? spaceBackupInventory(journal.space).registry : spaceBackupInventory(journal.space)[artifact.manifest.selection];
+    const wanted = onlyRegistry ? spaceBackupInventory(journal.space).registry : artifactStreams(artifact.manifest);
     for (const checkpoint of onlyRegistry ? [] : checkpoints) {
       if (!wanted.includes(checkpoint.stream)) throw new Error(`checkpoint ${checkpoint.stream}/${checkpoint.name} is outside the restored selection`);
       const streamRecord = artifact.manifest.streams.find((entry) => entry.stream === checkpoint.stream);
@@ -903,6 +948,13 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     if (JSON.stringify(authorityBeforeMutation) !== JSON.stringify(currentAuthority))
       throw new Error("current trust state changed during restore validation");
     await validateManifest(artifact.manifest, flags, journal, authorityBeforeMutation);
+    const resumeLaunch = (resume.launch ?? {}) as { server?: unknown };
+    const effectiveServer = canonicalServerEndpoint(controller ? journal.cut.launch.server : flags.server ?? (typeof resumeLaunch.server === "string" ? resumeLaunch.server : "nats://127.0.0.1:4222"));
+    // The restored broker binds this address after commit intent, so another listener there would
+    // leave the attempt degraded. It is refused here, before anything moves, as backup create does.
+    await assertEndpointUnreachable(effectiveServer).catch((error: Error) => {
+      throw new CommandFailure("refused", "CONFLICT", `${error.message}; the restored broker needs that address, so the preserved cut was not changed`, { target: { root, space: journal.space, server: effectiveServer }, remedy: `stop the process that listens on ${effectiveServer}, then run the restore again` });
+    });
     const sourceExists = (() => {
       try { lstatSync(journal.source.path); return true; }
       catch (error) {
@@ -1035,8 +1087,6 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     // A controller alternate restore rewrites the broker definition to the target before commit
     // intent, so a failure up to here still rolls the definition back first.
     if (controller && sourceExists && targetPath !== journal.source.path) reconfigureControllerBroker(lock);
-    const resumeLaunch = (resume.launch ?? {}) as { server?: unknown };
-    const effectiveServer = canonicalServerEndpoint(controller ? journal.cut.launch.server : flags.server ?? (typeof resumeLaunch.server === "string" ? resumeLaunch.server : "nats://127.0.0.1:4222"));
     const effectiveHost = controller ? new URL(effectiveServer).hostname : flags.host ?? (() => {
       try { return new URL(effectiveServer).hostname; } catch { return "127.0.0.1"; }
     })();
@@ -1053,6 +1103,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       detached: Boolean(flags.detach),
       restoreSource: resolve(flags.restore),
       restoreOnly: flags["restore-only"] ?? artifact.manifest.selection,
+      restoredStreams: [...wanted],
       acceptMissingSource: Boolean(flags["accept-missing-source"]),
       serverName,
       serverNonce,
@@ -1078,6 +1129,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       runtime: effectiveRuntime,
       detached: Boolean(flags.detach),
       selection: onlyRegistry ? "registry" : artifact.manifest.selection,
+      restoredStreams: wanted,
       inventory: resume.inventory,
       serverName,
       serverNonce,

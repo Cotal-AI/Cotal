@@ -16,7 +16,7 @@ import { createSuite } from "@cotal-ai/smoke-kit";
 import { disableInput, exitCode, globalFlagDeclarationProblems, isCommandFailure, outputDeclarationProblems, type CommandFailure } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands
 import { printCommandHelp } from "../src/help.js";
-import { USER_CHAT_TTL_SEC, channelDisclosure, chatAdmission, chatArguments, chatComplete, closeExitCode, holdSignals, sharedNameWarning, type ChatInput } from "../src/commands/chat.js";
+import { USER_CHAT_TTL_SEC, channelDisclosure, chatAdmission, chatArguments, chatComplete, closeExitCode, holdSignals, reopenCommand, sharedNameWarning, type ChatInput } from "../src/commands/chat.js";
 import { loadChatFrontEnd } from "../src/chat/frontend.js";
 import type { AdmittedChatSession, CloseReport, RosterRow } from "../src/chat/session.js";
 
@@ -136,6 +136,11 @@ console.log("5. the recorded mode alone picks the admission");
   try { chatAdmission("other" as never, "l", undefined); } catch (e) { unknown = e; }
   check("an unknown recorded mode refuses as unsupported with no other mode tried",
     isCommandFailure(unknown) && unknown.code === "UNSUPPORTED" && unknown.message.includes("no other mode was tried"), unknown);
+  // A --stdio session's refusal named the interactive `cotal chat <channel>`, which a program cannot drive.
+  const stdio = reopenCommand({ raw: ["--stdio", "--name", "s x", "--space", "a2"], positionalIndices: [] })("general");
+  check("the reopen command keeps the session's flags, quoted for a shell", stdio === "cotal chat general --stdio --name 's x' --space a2", stdio);
+  const plain = reopenCommand({ raw: ["review", "--plain"], positionalIndices: [0] })("ops");
+  check("...and names the new channel in place of the session's own", plain === "cotal chat ops --plain", plain);
 }
 
 console.log("6. a close report sets the exit code");

@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
 import { brokerAddressForDisplay, CommandFailure, isCommandFailure, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { cotalRoot } from "../lib/paths.js";
-import { heldRestoreAttempt, registryRestoreNotes, retainedPreviousStore } from "../lib/restore.js";
+import { heldRestoreAttempt, registryRestoreNotes, restoreComposition, retainedPreviousStore } from "../lib/restore.js";
 import { assertStoreDirArgument } from "../lib/store-dir.js";
 import { startRestore, type RestoreStartupResult } from "./up.js";
 
@@ -40,6 +40,7 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
   const registryOnly = result.selection === "registry";
   const previousStore = registryOnly ? retainedPreviousStore(result.root, result.attemptId) : undefined;
   const historyNotes = registryRestoreNotes(result.attemptId, previousStore);
+  const composition = restoreComposition(result.space, result.restoredStreams, result.mode);
   // The native activation throws on a degraded control plane or auth service before this point, so
   // a returned result is a healthy one. A static or open mesh has no auth service to report.
   const data = {
@@ -50,6 +51,8 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
     server: brokerAddressForDisplay(result.server) ?? "not displayable",
     mode: result.mode,
     selection: result.selection,
+    restored: composition.restored,
+    recreatedEmpty: composition.recreatedEmpty,
     store: result.targetPath,
     runtime: result.runtime,
     brokerPid: result.brokerPid,
@@ -75,8 +78,9 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
       : registryOnly ? [{ code: "HISTORY_NOT_RESTORED", target: { space: result.space, ...(previousStore ? { previousStore } : {}) }, message: historyNotes.join(" ") }] : [],
   }, (row): Report => ({ sections: [
     { title: "Backup restored", blocks: [
-      { kind: "fields", rows: [["Space", row.space], ["Root", row.root], ["Restore attempt", row.attemptId], ["Selection", row.selection], ["Store", row.store], ["Broker", row.server], ["Broker PID", String(row.brokerPid)], ["Manager", row.manager ? "started" : "not started"], ["Delivery", row.delivery ? "started" : "not started"], ["Seat resume", row.seatResume], ["Journal", "active"]] },
+      { kind: "fields", rows: [["Space", row.space], ["Root", row.root], ["Restore attempt", row.attemptId], ["Selection", row.selection], ["Restored", composition.restoredWords], ["Recreated empty", composition.emptyWords], ["Store", row.store], ["Broker", row.server], ["Broker PID", String(row.brokerPid)], ["Manager", row.manager ? "started" : "not started"], ["Delivery", row.delivery ? "started" : "not started"], ["Seat resume", row.seatResume], ["Journal", "active"]] },
       ...(row.seatResume === "requested" ? [] : [{ kind: "lines" as const, lines: ["A registry-only restore resumes no seat."] }]),
+      ...(composition.note ? [{ kind: "lines" as const, lines: [composition.note] }] : []),
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [
       { command: `cotal status --space ${row.space}`, description: "Check the restored stack" },

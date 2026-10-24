@@ -30,8 +30,9 @@ connectors after an old executable rebuilt them, run the verified newer absolute
 
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
 the selected space, or with none selected the space prepared in the current folder, and lists common
-commands. It points a prepared space to the `cotal up` that starts it, and a machine with no space
-to `cotal setup`. Every command generates its own help, usage, and shell completion from its declared
+commands. It points a prepared space to the `cotal up` that starts it, with `--root <dir>` when the
+space is prepared in another folder and `<dir>` quoted when a shell would split it, and a machine
+with no space to `cotal setup`. Every command generates its own help, usage, and shell completion from its declared
 flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. `-v` is not a
 version flag.
 
@@ -162,7 +163,9 @@ Under a locale whose character set is not UTF-8, as `LC_ALL`, then `LC_CTYPE`, t
 reports and error lines draw their marks and punctuation as plain does, and keep their color. With
 none of the three set, the marks are drawn in UTF-8. Windows consoles are always treated as UTF-8.
 A usage refusal under `--plain` or such a locale prints the classified report that begins
-`Request refused`, then the command's help.
+`Request refused`, then the command's help. Every refusal line, the `✗` line included, shows a
+control character in the text it quotes, such as a file's bytes or an argument, as an escape like
+\u001b, so that text cannot move the cursor or change the screen.
 Pass one of `--json` and `--plain`; both is a `USAGE_INVALID` refusal. A table that does not fit the
 terminal is written as one labeled record per row, so no value is cut off. A warning on stderr wraps
 to the terminal at spaces, each continuation line under its text.
@@ -227,7 +230,8 @@ A command with a JSON output exits by its outcome, with or without `--json`:
 
 An error such a command does not classify is `unknown`, exit 3. Other commands still exit 1 on any
 failure. A command run from a folder that no longer exists refuses with `USAGE_INVALID`, exit 1,
-before it does anything, and says to `cd` to an existing folder. A command whose folder has a
+before it does anything, and says to `cd` to an existing folder. It prints that line and the `cd`
+remedy without the command's help, because the command itself was not mistyped. A command whose folder has a
 `.cotal` that is a file rather than a directory, such as a notes file, refuses with `CONFLICT`, exit
 2, before it does anything, names that file and says to rename or move it. `help`, `version` and
 `completion` still work in both.
@@ -514,11 +518,11 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | Flag | Default | Meaning |
 |---|---|---|
 | `--server <url>` | auto (free local port) | Listen URL: one `nats://` or `tls://` URL with an IP address and a port, without credentials, path, query or fragment. A URL with no port is not given the default 4222. Any other value, a host name such as `localhost`, and an IPv6 address, which the stack's own clients cannot reach, refuse `USAGE_INVALID` before anything is written. That refusal gives an example on `127.0.0.1` with the port you passed, and prints no help. With no `--host` the broker binds `127.0.0.1`, so a `--server` naming another IPv4 address refuses `USAGE_INVALID` the same way and names the `--host` to add. A `tls://` address records TLS as required, so without `--tls-cert` and `--tls-key`, or a recorded TLS policy, `up` refuses it `USAGE_INVALID` before anything starts. A controller stack's first `up` records it, and a later `--server` naming another address refuses `CONFLICT`, naming the recorded address and the bare `cotal up` that starts the stack there. A different `--store-dir`, `--max-file-store` or `--host` refuses the same way, naming each recorded value. A controller stack's broker also needs an address that is not a wildcard, which `up` checks before it writes the stack journal. With `-f`, it overrides the manifest's `broker.servers` and follows that field's rules instead: a valid URL with no embedded credentials |
-| `--host <host>` | none | Bind host override for a **fresh** broker boot: an IP or hostname only, never a URL (that is `--server`) and never `host:port` (the port comes from `--server` or its default); a URL or port-bearing value is refused pointing at the right flag. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL. Each of these refusals, and a concrete IPv6 address, refuses `USAGE_INVALID` (exit 1) before anything is written. Recorded on the mesh and reused by every later manager launch, so a repair or resume keeps remote [`attach`](#managed-seats) working. A live refresh (`✓ mesh already running`) does not rewrite `.cotal/auth/server.conf` or rebind nats; stop the broker, then re-run `up --host` |
-| `--space <s>` | the folder's space | Space name |
+| `--host <host>` | none | Bind host override for a **fresh** broker boot: an IP or hostname only, never a URL (that is `--server`) and never `host:port` (the port comes from `--server` or its default); a URL or port-bearing value is refused pointing at the right flag. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL. The broker's plaintext websocket and the manager's plain HTTP console bind the same host, so a wildcard bind opens all three listeners on every interface. Each of these refusals, and a concrete IPv6 address, refuses `USAGE_INVALID` (exit 1) before anything is written. Recorded on the mesh and reused by every later manager launch, so a repair or resume keeps remote [`attach`](#managed-seats) working. A live refresh (`✓ mesh already running`) does not rewrite `.cotal/auth/server.conf` or rebind nats; stop the broker, then re-run `up --host` |
+| `--space <s>` | the folder's space | Space name, at most 64 characters; a longer one refuses `USAGE_INVALID` before anything is written |
 | `--root <prepared-dir>` | current folder's workspace | Use an existing local project's own `.cotal` root rather than inheriting one from the invoking folder. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Prepare a new folder with `space create <space> --root <dir>` first. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
 | `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it). Also accepted with `-f` |
-| `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). At least 67108864 (64 MiB), which the space's membership bucket reserves; a smaller value refuses `USAGE_INVALID` before anything starts. Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), and a stopped stack's next `up --max-file-store` replaces the recorded cap. `down --preserve-state` keeps it for the resume, and a resume with a different value is refused. When a broker `up` started cannot create the space's streams for want of storage, the failure names the cap and `cotal up --max-file-store <bytes>`. Not accepted with `-f` |
+| `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). At least 67108864 (64 MiB), which the space's membership bucket reserves; a smaller value refuses `USAGE_INVALID` before anything starts. Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), and a stopped stack's next `up --max-file-store` replaces the recorded cap. A controller stack keeps it across `cotal down`, because it refuses `down --preserve-state` in this release. On a legacy root, `down --preserve-state` keeps it for the resume, and a resume with a different value refuses `CONFLICT`, exit 2. When a broker `up` started cannot create the space's streams for want of storage, the failure names the cap and `cotal up --max-file-store <bytes>`. Not accepted with `-f` |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON), in the [channel seed file](#channel-seed-file) format. An explicit path that is missing, unreadable, not a regular file (such as a FIFO) or not JSON refuses `USAGE_INVALID`, naming the file, before anything is written. A default `.cotal/channels.json` that exists refuses the same way. Content the registry would not take refuses `SCHEMA_INVALID` before anything starts, naming the file and the entry |
 | `--restore <dir>` | none | Restore a completed offline backup before exposing the normal listener |
 | `--restore-only registry` | artifact selection | Restore only the registry component |
@@ -654,7 +658,8 @@ writers, so a group- or world-writable directory in it refuses `PERMISSION_DENIE
 is written. A path still to create needs its nearest existing directory to be writable by this
 account, or it refuses `PERMISSION_DENIED` (exit 2) before anything is written. A non-empty
 directory is accepted, since it may hold an existing store. When it holds anything besides a
-store's `jetstream` directory and `.cotal-store-id` marker, `up` warns and names those entries,
+store's `jetstream` directory, its `.cotal-store-id` marker and the `ocsp` folder nats-server makes
+there when it reloads its configuration, `up` warns and names those entries,
 because `clean store` and `reset store` refuse such a directory. A control
 directory refuses `USAGE_INVALID` too, before anything is written: a root's `.cotal` or a path in it,
 other than that root's own `.cotal/nats`, and the machine home's `.cotal`. A store there would mix
@@ -701,29 +706,50 @@ told the same, and it can adopt the copy only after the original's stack is stop
 folder no longer holds its journal. When this machine records neither the space nor an instance of
 its stack, as on another machine, moving back would not start it, so a moved folder is told only to
 adopt the journal with `space create --adopt`. `status`, `send` and `history` there name the same
-next step. Commands that reach a static-auth space from a moved folder, such as `send`, `history`,
-`ps` and `service stop`, refuse the same way. `status` there says the folder was moved, names the
-way back as its next step, and does not offer `clean store`, which refuses there too. The broker
-names a store inside the project folder relative to that folder and runs from it, so a broker still
-running when its folder is renamed keeps writing into the renamed folder and does not create the old
-path again. A broker an earlier release
+next step. `clean store` refuses in a moved folder or a copy, so `status` there does not offer it.
+Commands that reach a static-auth space from a moved folder, such as `send`, `history`, `ps` and
+`service stop`, refuse the same way. `status` there says the folder was moved and names the way back
+as its next step. The broker names a store inside the project folder relative to that folder and
+runs from it, so a broker still running when its folder is renamed keeps writing into the renamed
+folder and does not create the old path again. A broker an earlier release
 started does, so when something is found at the recorded path, the refusal says to move it aside
 before moving the folder back. When the space is prepared or registered here and
 `space create --adopt` could take the journal over instead, the refusal names that command too. A
 folder whose `.cotal` is a link to another project's `.cotal` is told that it is a link and to use
-the stack from that project. `status` there does not read the folder's boot and additive attempt
-inventories through the link and warns that it did not. `space create` in a copy whose records name
+the stack from that project. `up` and `down` there refuse `CONFLICT`, exit 2, before anything reads
+through the link, naming the link and where it leads. When it leads to another project's `.cotal`,
+they name that project; otherwise the next step is to remove the link and prepare the folder with
+`space create`. A `.cotal` link that leads nowhere makes them refuse `TARGET_NOT_FOUND`, exit 2,
+naming where it leads. `status` there does not read the folder's boot and additive attempt
+inventories through the link. It warns `COTAL_DIR_LINKED`, or `COTAL_DIR_DANGLING` for a link that
+leads nowhere, with the same next step, and exits 4. `space create` in a copy whose records name
 another root says so and names that root, and in a linked folder it names the link.
 
 A journal that is not valid JSON, as an interrupted write or a full disk can leave it, makes `up`,
-`down`, `clean` and `reset` refuse `SCHEMA_INVALID`, exit 1, naming its path, and `status` warns
-about it. When no member of the stack runs, the Next says to remove the file, and the next
-`cotal up` starts the stack again from its saved definitions. When members still run, it names the
-`cotal service stop` for each one first, manager first and broker last.
+`down`, `clean`, `reset` and `space create` refuse `SCHEMA_INVALID`, exit 1, naming its path, and
+`status` warns about it. When no member of the stack runs, the Next says to remove the file, and the
+next `cotal up` starts the stack again from its saved definitions. When no space is recorded at the
+root, as after `space forget`, there are no saved definitions, and the Next says to remove the file
+and run `cotal up`. When members still run, it names the `cotal service stop` for each one first,
+manager first and broker last.
+
+A controller stack opens three listeners. The broker serves clients at its `--server` port, and a
+websocket for the browser console's mesh session on a port `up` picks, which is always plaintext.
+The manager serves its console over plain HTTP on a port it picks when it starts. All three bind the
+`--host` address, and loopback without it, so `--host 0.0.0.0` opens each of them on every interface.
+The receipt's `Listeners` section names each one with its address, how far it reaches and whether it
+is encrypted, and says when a plaintext listener is reachable from other machines.
+`cotal service status stack-broker` and `cotal service status stack-manager` name their own while
+they run, and `--json` carries the same list as `listeners`. The console's port is recorded nowhere,
+so it is named by its host.
 
 A journal root always keeps that controller route and its recorded mode and broker address, even
 when a completed stop removed its mesh registration. Bare `up` reuses that address; an explicit
-conflicting `--server` or `--open` refuses before effects. A journal whose stack never launched a
+conflicting `--server` or `--open` refuses before effects. With no journal and no registration, as
+after a damaged journal was removed, `up` starts at the address the saved `stack-broker` definition
+names and warns `STACK_ADDRESS_RECOVERED`. With no definition either, a root that holds the space's
+trust or a store from an earlier start refuses `USAGE_INVALID`, exit 1, and asks for `--server`.
+Only a fresh prepared root starts at the default address. A journal whose stack never launched a
 member pins neither, as when its first `up` was refused because another broker answers at the
 address or another program holds it. The next `up` plans it as a first start, with that address or
 another `--server`, and `down` reports that nothing runs there. That refusal names the address and
@@ -996,7 +1022,9 @@ and the manager's log both name the credential and this repair.
 ### Channel seed file
 
 A start seeds the channel registry from the `--channels` file, or from the root's
-`.cotal/channels.json` when you pass none. The file is one JSON object with two optional keys:
+`.cotal/channels.json` when you pass none. The file is one JSON object with two optional keys, in
+UTF-8. A byte-order mark at its start, which some Windows editors write, is ignored, and a file
+saved as UTF-16 is refused with `USAGE_INVALID`, saying to save it as UTF-8:
 
 ```json
 {
@@ -1066,9 +1094,11 @@ ownership, the complete service set, exclusive broker use or agent impact.
 a process, and the receipt is not an authorized stop plan. A fresh `team show`
 summary points to this read-only command from the recorded root.
 
-On a root with a controller journal, bare `down` reads only its recorded full instance IDs. It
-shows the member set and the live manager's native agent impact before confirmation, then stops
-manager, delivery and broker in that order. `--yes` acknowledges that scope in scripts; `--with-agents`
+On a root with a controller journal, bare `down` reads only its recorded full instance IDs. On an
+interactive terminal it shows the member set and the live manager's native agent impact and asks to
+confirm, then stops manager, delivery and broker in that order. `--yes` acknowledges that scope in
+scripts and prints no plan. The receipt names the mesh once, lists each member with its result in
+stop order, and names `cotal up` as the next step. `--with-agents`
 requests the manager's native retirement policy. Another live service instance in the space
 refuses `LIFECYCLE_BLOCKED` before the first stop; the Next names the
 `cotal svc stop <name> --instance <id> --space <space> --yes` command for each one. The broker scope
@@ -1120,6 +1150,22 @@ names another folder's stack. In a folder with its own controller stack, a `--sp
 another space refuses with `CONFLICT`, exit 2, and names this folder's stack. Each refusal names
 the space and, when this machine started it elsewhere, its root, and its next step runs the same
 `down` from that root.
+
+When the folder of a running controller stack is deleted, its stack journal and broker
+configuration go with it, so no member's own stop can run. A running broker writes `.cotal/nats`
+back into the folder, which does not bring them back. `down --space <space>` from any folder stops
+that stack from the instance records this machine keeps, and so does a bare `down` in the folder
+the broker wrote back, or in a folder with no `.cotal` of its own while the space is selected. Each
+running member gets SIGTERM at its recorded process, manager first and broker last, after `down`
+checks that the process is still the one its record pinned, and its record is marked stopped. The
+manager stops its agents by its default policy, so `--with-agents` and the other stop flags are
+refused. A member that does not exit within its window, 90 seconds for the manager and 30 for the
+others, ends the stop with `OPERATION_UNKNOWN` and later members are not stopped. Once every member
+is stopped, `down` removes the stack's saved definitions, their instance records and the
+registration that names the folder, so the space can be created and started in another folder.
+Outside a terminal it needs `--yes`, and `--dry-run` lists each member with its pid and process.
+`cotal status` marks such a project folder as gone, with `selected.rootGone` set to `true` in its
+JSON, and its Next names `cotal down --space <space> --yes`.
 
 A bare `down` in a folder whose stack is already stopped stops nothing. It reports that the stack
 in that folder is not running and names `cotal up`, outcome `no-op`, exit 0, and writes nothing,
@@ -1451,7 +1497,8 @@ One configurable cleanup verb; every target requires `--force`, except a `--dry-
 - `store` deletes the **stopped** mesh's JetStream store (`.cotal/nats`): streams, durable
   consumers, and messages. This is the reset for stale on-disk broker state, e.g. durables
   minted by an older, incompatible Cotal generation surviving a `down`/`up` cycle. It removes the
-  store's `jetstream` directory and `.cotal-store-id` marker, then the empty store directory. A
+  store's `jetstream` directory, its `.cotal-store-id` marker and the broker's `ocsp` folder, then
+  the empty store directory. A
   store directory that holds anything else refuses `CONFLICT` (exit 2), names those entries and
   removes nothing; move them out and run it again.
 - `all` is `store` plus the space identity (`.cotal/auth`), the local creds and markers tied to
@@ -1459,8 +1506,10 @@ One configurable cleanup verb; every target requires `--force`, except a `--dry-
   registry entry; the next `cotal up` mints a fresh identity. On a root deployed with `up -f`, plain
   `cotal up` then refuses and names `cotal up -f <manifest>` when the deployment ran at another
   address, mode or space. A full backup is bound to the space trust it was taken under, so full
-  backups taken before `clean all` no longer restore into this root. Its dry run and its receipt
-  say so when it removes that trust; take a new full backup after the next `cotal up`.
+  backups taken before `clean all` no longer restore into this root. Only the registry of such a
+  backup still restores, with `backup restore <dir> --only registry`, and chat and DM history start
+  empty. Its dry run and its receipt say so when it removes that trust; take a new full backup after
+  the next `cotal up`.
 
 `history` needs the mesh up; `store` and `all` refuse while any recorded mesh process may still be
 running or any same-root recorded broker endpoint remains reachable (run `cotal down` first). On a
@@ -1633,7 +1682,9 @@ rest of this section applies to a root without a stack journal.
 Backup is offline-only. It requires the stable `ready` record from `down --preserve-state`, an exact
 store match (`--store-dir` defaults to the cut's recorded source store), no recorded process that may still be running (the same test `clean` uses), and an
 unreachable exact endpoint from the recorded cut. That endpoint is probed immediately before cloning, so a live broker with a missing or stale pidfile
-is still refused. It claims the cut, reflink/copies the stopped source to a
+is still refused. `backup restore`, `up --restore` and a bare `up` that resumes the cut probe the
+broker address they will bind before they move or start anything. While another process listens
+there they refuse `CONFLICT` (exit 2), name the address and leave the cut unchanged. It claims the cut, reflink/copies the stopped source to a
 private attempt clone, and opens only that clone on a random loopback bootstrap broker with an
 independent parent/deadline watchdog. A bootstrap broker that does not accept connections within
 15 seconds fails the command. Creation returns one JSON/plain receipt after cleanup.
@@ -1652,7 +1703,9 @@ A root with no preserved cut refuses and names `cotal down --preserve-state`. A 
 refuses and names that state and its space. A destination that already exists is a `CONFLICT`
 refusal, because create writes only a new directory. A destination whose folder does not exist
 refuses `TARGET_NOT_FOUND` (exit 2) and names that folder; create makes only the artifact's own
-folder. Any other refusal or failure shows the check's
+folder. A destination inside the preserved store refuses `USAGE_INVALID` (exit 1), and one in a
+folder this account cannot write refuses `PERMISSION_DENIED` (exit 2) and names that folder. A `--store-dir` that is not the cut's preserved store, such as an empty folder,
+refuses `CONFLICT` (exit 2) and names both stores. Any other refusal or failure shows the check's
 own sentence as its native detail, such as a broker still listening at the cut's recorded endpoint.
 A failure that removed what it wrote leaves the preserved cut ready, and its Next names the same
 `backup create` to run again once that cause is fixed.
@@ -1688,8 +1741,11 @@ not a plain file name in the folder, such as one with `../` or an absolute path,
 1 MiB or is not a valid manifest has the fault `manifest-not-regular`, `manifest-too-large` or
 `manifest-invalid`. `backup restore` and `up --restore` refuse each of these `SCHEMA_INVALID` with
 the same file and fault, before they stage or change anything.
-A directory with no `manifest.json` is refused as an incomplete artifact, the kind an interrupted
-`backup create` leaves, with the fault `manifest-missing`. A path that names nothing refuses
+A directory with no `manifest.json` that holds files a `backup create` writes is refused as an
+incomplete artifact, the kind an interrupted create leaves, with the fault `manifest-missing`. A
+file, or a directory that holds neither a manifest nor such a file, is not a backup artifact and
+refuses `TARGET_NOT_FOUND` (exit 2), naming it. The folder of a create in this root that was
+interrupted before it wrote a file is still an incomplete artifact. A path that names nothing refuses
 `TARGET_NOT_FOUND` (exit 2) and says in `missing` whether its folder or the artifact is missing, as
 `backup restore` does. A full artifact of an authenticated space
 restores only into a root that still holds the trust state it was taken under, so it cannot move to
@@ -1742,7 +1798,8 @@ manifest whose space is longer than 200 characters is invalid, so restore refuse
 receipt means the
 active journal was written. Its `seatResume` field says whether retained seats were handed to the
 manager's resume (`requested`) or dropped by a registry restore (`not-requested`). It does not
-confirm that any seat joined. A registry restore brings back channel settings only, so chat and DM
+confirm that any seat joined. Its `restored` and `recreatedEmpty` fields name the streams the
+restore brought back and the ones it recreated empty. A registry restore brings back channel settings only, so chat and DM
 history start empty. Its receipt says so with a `HISTORY_NOT_RESTORED` warning, and `previousStore`
 names the store the restore set aside, which holds the only copy of that history. Its next step says
 that `backup cleanup-fallback` deletes that store only with `--discard-history`.
@@ -1760,24 +1817,42 @@ remains as the equivalent startup form. After its startup lines it names the res
 gives the cleanup step that retires it, with `--discard-history` for a registry restore. Unlike the other
 backup modes, `backup restore` runs the connector seed first, as `up` does, because it resumes seats.
 
-Two commands refuse an active restore. `down --preserve-state` begins a new cut only after
-the restore journal is retired, so it names `backup cleanup-fallback` as the next step. `team boot`
+Three commands refuse an active restore. `down --preserve-state`, in each of its forms, refuses
+`LIFECYCLE_BLOCKED` (exit 2) and stops nothing: a new cut begins only after the restore journal is
+retired, so it names the attempt and `backup cleanup-fallback` as the next step, with
+`--discard-history` after a registry restore. `team boot`
 resumes only a stopped stack whose manager never launched, and a restored stack's manager already
-ran, so start it with bare `cotal up` instead.
+ran, so start it with bare `cotal up` instead. `cotal up -f` boots a fresh mesh, so it starts only
+once the restore is retired. While the restored broker runs, it refuses `CONFLICT`, exit 2, naming
+the broker's PID, and its Next is `cotal down`, then `backup cleanup-fallback <attempt> --yes`, then
+`cotal up -f` again. Once that stack is stopped, it refuses `LIFECYCLE_BLOCKED`, exit 2, and names
+the cleanup. Nothing is started either way. While the restored broker runs, any other `cotal up`,
+bare or with `--server`, refuses `CONFLICT` too, naming its PID, and leaves the restore journal as it
+was. Its Next is `cotal down`, then `cotal up`, which starts the restored stack again.
 
 Stopped client-managed KV ordered consumers are ephemeral read residue, not backup state. Backup
-ignores only the pinned client's exact stopped shapes: ordinary last-value watchers and the
-whole-bucket scanner that uses all-history delivery to collapse concurrent tombstones. A bound
-consumer or any lookalike with a different filter, inbox, lifetime, or other config is still refused.
+ignores only the pinned client's exact stopped shapes: ordinary last-value watchers, a watcher of one
+subtree of its bucket such as the manager's goal index, and the whole-bucket scanner that uses
+all-history delivery to collapse concurrent tombstones. A bound consumer or any lookalike with a
+filter outside its bucket, another inbox, lifetime, or other config is still refused.
 
-`full` is the default and indivisible: channel registry, CHAT/DM/TASK/INBOX/DLV, ACL, MEMBERS, and
-validated durable checkpoints. `registry` is the sole partial artifact. Presence, derived membership
+`full` is the default and indivisible: channel registry, CHAT/DM/TASK/INBOX/DLV, ACL, MEMBERS, on
+a static-auth or open mesh the workflow run stores (the WFJ step journal, the records store and the
+run admission store), and validated durable checkpoints. `registry` is the sole partial artifact. Presence, derived membership
 feed, leases, native ephemeral/history consumers, credentials, keys, tokens, owner secrets, and actor
-ledger files are excluded. `full` means every transferable message and registry stream, not every
-JetStream resource: endpoint submissions/facts/events/timers/workflow state, contract artifacts, and
-the records/auth/session stores are nonportable control state. Restore recreates those streams empty
-with their canonical configs before exposing the normal listener, so active endpoint runs,
-lifecycles, and sessions do not cross a backup. Artifacts are exclusively created `0700`;
+ledger files are excluded. The other endpoint stores are nonportable control state: endpoint
+submissions, facts, events, timer requests and fires, work pools, contract artifacts, and the
+auth, session and issued-authority stores. Restore recreates those streams empty with their
+canonical configs before exposing the normal listener, so endpoint sessions do not cross a backup. A
+workflow run that waited at a checkpoint or a timer at the cut is back after a full restore, and the
+manager takes it over as after a restart. The records store also holds the endpoint authority rows,
+such as lifecycle heads, obligations and policy versions, and a full restore rolls them back to the
+cut with the runs. A user-mode full backup holds no workflow run store, because the records store's
+lifecycle heads name credential rows in the auth store, which a backup does not carry; its restore
+recreates the run stores empty and says so. An artifact in the earlier `cotal-space-backup/v1`
+format still restores; it holds no workflow run, so the run stores come back empty and the restore
+says so. Each restore lists what
+it restored and what it recreated empty. Artifacts are exclusively created `0700`;
 snapshot/checkpoint files and
 the manifest are `0600`; `manifest.json` is written last with exact sizes and SHA-256 values. The
 directory is trusted operator input: hashes detect corruption, not malicious rewriting. So
@@ -1805,8 +1880,10 @@ A restore interrupted by SIGINT, SIGTERM or SIGHUP before it commits exits 130, 
 prints its attempt id and that recovery command. A registry-only artifact restores as registry-only whether or not
 `--restore-only registry` is passed; omitted infrastructure is always created and the exact
 post-restore stream inventory is asserted before commit intent. Ordinary `up` from a preserved cut
-resumes only the exact recorded source store and runtime; a contradicting `--store-dir` or
-`--runtime` fails in preflight.
+resumes only the exact recorded source store, file store cap and runtime. A different `--store-dir`,
+`--max-file-store` or `--runtime` refuses `CONFLICT`, exit 2, before anything starts, naming the value
+given and the recorded one. The Next resumes with `cotal up` without that flag, then `cotal down` and
+`cotal up` with it.
 
 **Admitting a seat checkpoint.** An ordinary `up` from a preserved cut admits that cut's seat
 checkpoints before it journals the resume attempt and before any process starts, so a refusal costs
@@ -1917,7 +1994,8 @@ full restores commit to the validated operator, system-account, data-account, an
 chain in addition to the static/user authority fingerprint. Because the system account is part of that
 commitment, a [`cotal up --rotate-sys`](#up) makes every full artifact taken before it unrestorable
 against this root: take a fresh full backup after each rotation. [`cotal clean all`](#clean) removes
-the space trust itself, so it does the same. The composed commitment is revalidated
+the space trust itself, so it does the same. Such an artifact still restores its registry with
+`--only registry`, and chat and DM history start empty. The composed commitment is revalidated
 immediately before store mutation and never includes secret seeds. Restore never creates fresh auth.
 Same-path restores atomically retain the old
 source at the journaled fallback path; alternate targets retain it in place; a missing canonical
@@ -2074,9 +2152,14 @@ prepared record is written, without changing its permissions. The refusal names 
 in the chain at once, the reason and one remedy such as `chmod g-w <paths>` that lists each path.
 It starts nothing and leaves the selection as it is. `cotal up` applies the same rule to the root
 it starts in, before it writes anything, so it never starts a stack that `down` would refuse to
-stop from that root. `cotal up` starts a space only under a name of 1 to 200 letters, digits,
+stop from that root. `cotal up` starts a space only under a name of 1 to 64 letters, digits,
 underscores or hyphens, so any other name refuses with `USAGE_INVALID`, exit 1, before anything is
-written. It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
+written. The limit is 64 because each local file that carries a space spells its name twice over,
+and a file name holds at most 255 bytes. `cotal up` refuses a longer name that an earlier release
+prepared the same way, before it starts anything, and names `cotal space forget` and a shorter name.
+`space add` and `meshes add` refuse a longer name with `USAGE_INVALID`, exit 1, and write no
+record, because a space added from elsewhere is carried by the same files.
+It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
 space's root, and the home folder, whose `.cotal` holds this machine's own records. A folder this
 account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so
 does a Cotal home (`~/.cotal` or `COTAL_HOME`) it cannot write. A `.cotal` that links to a folder that
@@ -2116,7 +2199,8 @@ Forget also removes the stack definitions `cotal up` saved for the space at its 
 stopped instance records, so another folder can start a stack under the same name. The result lists
 them. While a member was not stopped cleanly, or the root holds preserved state, they stay and the
 result warns with `STACK_DEFINITIONS_KEPT`. For a member that was not stopped cleanly, the warning
-names `cotal down --yes` in the root and then `space forget` again.
+names `cotal down --yes` in the root and then `space forget` again. When the stack's folder is
+gone, it names `cotal down --space <space> --yes`, which stops the stack and removes them.
 `status` in a forgotten space's root then selects no space and probes no broker. When nothing left
 in that root's `.cotal/` names a space, its next step is `cotal space create <name> --root <root>`,
 because a bare `cotal up` there would start the default space `main` in that folder. A command run
@@ -2530,7 +2614,9 @@ Next is `cotal down`, to run once space is freed, after which `cotal up` starts 
 
 `deliveryResponder` is `stale` when the ready row in the delivery lease belongs to a daemon that is
 gone. That includes this folder's own daemon once its recorded process has exited without releasing
-the row, as after a kill. The row expires on its own within 30 seconds.
+the row, as after a kill. The row expires on its own within 30 seconds. The delivery responder line
+then says the delivery daemon died and its lease has not expired yet, that spawn, retirement and join
+wait until a new daemon binds, and that `cotal up` restarts it, since `up` waits out the lease first.
 
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. An open mesh runs no delivery daemon, so when it records no delivery lease its
@@ -4029,7 +4115,11 @@ loopback health URL answers 200:
 | `envRefs` | Optional. Child variable name to the name of a variable in the environment `start` runs in. `CLAUDECODE` and names starting `COTAL_` or `CLAUDE_CODE_` are refused |
 | `credentialRef` | Optional. `{kind: "file", path}`: an absolute, protected credential file. The child receives its path as `COTAL_CREDS`, never its contents |
 
-No other field is accepted. The file is at most 256 KiB.
+A `space` that names another space is refused `SCHEMA_INVALID`, exit 1, before `add` checks whether
+the selected space already has a service of that name. No other field is accepted. The file is at
+most 256 KiB. A `readiness` value that breaks these rules refuses `SCHEMA_INVALID`, exit 1, naming
+the field and its rule, such as a `timeoutMs` outside 1 to 120000, a field the chosen type does not
+take, or a `url` that is not on loopback.
 
 ### Running a service
 
@@ -4056,7 +4146,9 @@ With `--instance <id>` it forgets only that stopped instance record, and keeps t
 its other instances. A command that names no instance while several records exist refuses
 `TARGET_AMBIGUOUS`; its Next lists each instance with its state and the `remove --instance` command
 for each stopped one, so a finished record stops blocking the bare form. A controller stack's
-member records are not removed this way; they go with `cotal space forget`.
+member definitions and records are not removed this way, since its `up` and `down` read them:
+`remove` refuses `UNSUPPORTED`, exit 2, and names `cotal down --yes`, then `cotal space forget <space>`,
+which removes them with the space.
 
 `install` writes an owned systemd user unit for a saved direct-process definition with no
 `envRefs` or `credentialRef`, and enables it without starting it. It is Linux only. `uninstall`
@@ -4402,7 +4494,8 @@ session's whole read and post list, so a session opened without one can send and
 messages only. A send, join or channel mode outside that list refuses with `PERMISSION_DENIED`
 before anything reaches the broker. `/leave` does not change that list, so `/join` returns the
 session to a channel it left. On a session opened without a channel, the refusal says to
-leave and open a new session on the channel. Before the session is admitted, `chat` reads the channel registry on the resolved
+leave and run `cotal chat <channel>` with the flags this session was started with, such as
+`--stdio` and `--space`. Before the session is admitted, `chat` reads the channel registry on the resolved
 mesh the way `send` does, under the same one-shot identity, and says on stderr whether the channel
 is registered, unregistered, or could not be read. The space's native policy decides whether a send
 is allowed, and nothing creates registry metadata.
@@ -5041,7 +5134,9 @@ is refused with the literal namespace replacement.
 A minted credential cannot be revoked on its own, and `auth retire` refuses. It stays valid until it
 expires, and one minted with `--no-expiry` until the space identity rotates: `cotal down`, then
 `cotal reset space <space>` (or `cotal clean all --force` from the root when `down` left no
-registration), then `cotal up`. That stops every credential the space issued.
+registration), then `cotal up`. That stops every credential the space issued. It also stops every
+earlier full backup of the space from restoring into this root: only its registry restores, and
+chat and DM history start empty (see [Backups](#backups)).
 
 ### Endpoint caller credentials
 
@@ -6495,7 +6590,8 @@ capabilities came from the manifest, a persona or neither. Terminal tables show 
 rows of each kind. The JSON result includes all resolved sources, merged policies,
 inherited scopes and, when requested, the channel graph, without persona bodies,
 kickoff prompts or opaque launch-option values.
-A manifest it cannot resolve is refused with `SCHEMA_INVALID` (exit 1). The refusal names each
+A manifest it cannot resolve, such as one whose `space:` is not a name `space create` takes, is
+refused with `SCHEMA_INVALID` (exit 1). The refusal names each
 problem by file, line and column where the parser has them, the key path, and the reason, and
 `--json` lists every problem under `target.issues`. A problem in a referenced persona
 names that file and the parser's reason without quoting its contents. `team boot` and
@@ -7273,7 +7369,8 @@ endpoint accepts retirement only from the requester's own current serve identity
 CLI does not have. It neither borrows a manager identity nor substitutes the interactive or managed
 loopback host doors. `--yes` cannot create authority, and no retirement request is sent. The refusal
 names the lever that works, rotating the space identity, which stops every credential the space issued
-(see [auth mint](#auth-mint)).
+(see [auth mint](#auth-mint)). The rotation also leaves earlier full backups of the space restoring
+only their registry.
 
 `auth redeem <private-handle-file> [--space <space>]` selects the existing local auth target and
 refuses with `UNSUPPORTED` because its conferring-handle redemption path is not exposed. It does

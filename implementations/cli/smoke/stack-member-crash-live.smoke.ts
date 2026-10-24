@@ -5,8 +5,9 @@
  *
  *  1. `status` leads its Next with `cotal up --root <root>`, which restarts the stopped member. The
  *     project folder's name needs shell quoting. This hint, the `chmod u+w` a persona catalog that
- *     cannot be written names, and the `space create --root` that `status` names after a forget all
- *     quote it, so each pastes as one word.
+ *     cannot be written names, the `space create --root` that `status` names after a forget, the
+ *     home screen's `up --root` row for a space prepared there, and the `space create --adopt`
+ *     remedy once the folder is moved all quote it, so each pastes as one word.
  *  2. `ps` refuses: no manager is running for this space, and its Next names bare `cotal up`.
  *     `chat` refuses TARGET_UNAVAILABLE once its describe goes unanswered, pointing to `status`.
  *  3. `up` starts the manager again, and `ps` is answered.
@@ -25,7 +26,7 @@
  * Run: pnpm smoke:stack-member-crash:live
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -44,8 +45,9 @@ const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTA
 const { check, finish } = createSuite();
 const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const cli = (...args: string[]) => {
-  const options = { cwd: root, env, encoding: "utf8" as const, timeout: 120_000 };
+const cli = (...args: string[]) => cliIn(root, ...args);
+const cliIn = (cwd: string, ...args: string[]) => {
+  const options = { cwd, env, encoding: "utf8" as const, timeout: 120_000 };
   assertSmokeSandboxDown(anchor, args, options);
   const r = spawnSync(TSX, [CLI, ...args], options);
   return { status: r.status, out: plain(`${r.stdout}${r.stderr}`), stdout: r.stdout };
@@ -163,6 +165,16 @@ try {
   const forgot = cli("space", "forget", "crash");
   const prepareAgain = /prepare it again with `cotal space create crash --root (.+?)`/.exec(cli("status").out)?.[1];
   check("after a forget, status names space create --root with the folder quoted", forgot.status === 0 && shellWords(prepareAgain) === `${root}\n`, prepareAgain);
+  const prepared = cli("space", "create", "crash");
+  cli("use", "crash");
+  const homeRow = /^ {2}cotal up --root (.+?) {2,}Start this space$/m.exec(cliIn(base).out)?.[1];
+  cli("use", "--clear");
+  check("the home screen of a space prepared in another folder quotes that folder in its up --root row", prepared.status === 0 && shellWords(homeRow) === `${root}\n`, homeRow);
+  cli("space", "forget", "crash");
+  const moved = join(base, "moved $x 'q'");
+  renameSync(root, moved);
+  const adopt = /adopt it with cotal space create crash --adopt --root (.+?); this machine/.exec(cliIn(moved, "whoami").out)?.[1];
+  check("a folder moved with its stack journal names space create --adopt with the new folder quoted", shellWords(adopt) === `${moved}\n`, adopt);
   rmSync(home, { recursive: true, force: true });
   rmSync(base, { recursive: true, force: true });
   finish();

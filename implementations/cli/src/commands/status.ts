@@ -33,7 +33,7 @@ import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
 import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, webInstalled, webSessionSource, type HarnessStatus, type MachineStatus } from "../lib/status.js";
-import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
+import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_STALE_TEXT, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { brokerStoreWrite, type StoreWriteObservation } from "../lib/broker-store-health.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
@@ -49,9 +49,10 @@ import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/serv
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
-import { preservedSourceState, restoreNextStep, maintenanceNextStep } from "../lib/restore.js";
+import { maintenanceNextStep, preservedSourceState, restoreNextStep } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
-import { readStackJournal, STACK_DEFINITION, stackStartedWithoutManager, stackOperationBlock, type StackJournal, type StackOperationBlock } from "../lib/stack-journal.js";
+import { journalRecordedElsewhere, readStackJournal, STACK_DEFINITION, stackStartedWithoutManager, stackOperationBlock, goneStackRoot, type StackJournal, type StackOperationBlock } from "../lib/stack-journal.js";
+import { cotalLinkHere, linkedCotalRemedy } from "../lib/paths.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
@@ -216,6 +217,8 @@ type SelectedResult =
       mode: MeshTarget["mode"];
       source: string;
       root: string;
+      /** The project folder is gone while this machine still records the space's stack there. */
+      rootGone: boolean;
       tlsRequired: boolean;
       eventsRequired: boolean;
       idp: string | null;
@@ -332,11 +335,15 @@ function readBootAttempts(root: string, gaps: Gaps): NonNullable<StatusResult["b
   // A refusal with its own cause, such as a root other local accounts can write, is named.
   const because = (error: unknown) => isCommandFailure(error) ? ` (${error.message})` : "";
   const result: NonNullable<StatusResult["bootAttempts"]> = { root, state: "not-checked", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] };
+  // A `.cotal` link that leads nowhere leaves this folder no records of its own, and the walk to a
+  // root passes over it.
+  const here = cotalLinkHere();
+  if (here?.dangling) gaps.add("COTAL_DIR_DANGLING", `this folder's .cotal links to ${here.target}, which does not exist, so this folder has no records of its own; remove the link and prepare this folder with cotal space create <space> --root ${here.root}`, { root: here.root, path: here.path, link: here.target });
   // Neither inventory is read through a link; the folder it leads to reports its own.
   const link = cotalDirLink(root);
   if (link !== undefined) {
     result.state = "partial";
-    gaps.add("COTAL_DIR_LINKED", `this folder's .cotal is a link to ${link}, so its fresh boot and additive attempt inventories were not read through it`, { root, link });
+    gaps.add("COTAL_DIR_LINKED", `this folder's .cotal is a link to ${link}, so its fresh boot and additive attempt inventories were not read through it; ${linkedCotalRemedy(root, link)}`, { root, link });
     return result;
   }
   try {
@@ -691,7 +698,11 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   // why and the way out their refusal names. A refusal of another kind is left to them.
   let stackBlock: StackOperationBlock | null = null;
   if (journal && controllerStack) try { stackBlock = stackOperationBlock(journal) ?? null; } catch { stackBlock = null; }
-  const storedState = !controllerStack && !elsewhere && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
+  // A copy or a moved folder keeps the stack journal another folder recorded, and its store is that
+  // stack's. Clean store refuses there with the step the journal's refusal names.
+  let copiedStack = false;
+  if (!controllerStack) try { copiedStack = journalRecordedElsewhere(root)?.journal.space === space; } catch { copiedStack = false; }
+  const storedState = !controllerStack && !elsewhere && !copiedStack && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
   // While a maintenance journal holds the store, clean store refuses, so it is not offered.
   let maintained = false;
   try { maintained = readMaintenanceJournal(root) !== undefined; } catch { maintained = true; }
@@ -903,7 +914,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       // A bare `up` in a folder whose records name no space starts the default space there, which
       // then holds the folder, so the step that brings a forgotten space back is to prepare it again.
       hints.push(e.namesNoSpace
-        ? `prepare a space with \`${cmd} space create <name> --root ${e.root}\`, or select one with \`${cmd} use <name>\``
+        ? `prepare a space with \`${cmd} space create <name> --root ${shellWord(e.root)}\`, or select one with \`${cmd} use <name>\``
         : `run \`${cmd} up\` in ${e.root} to start one, or select a space with \`${cmd} use <name>\``);
       return { resolved: false, code: "unregistered-root", message };
     }
@@ -924,6 +935,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     mode: target.mode,
     source: target.source,
     root: target.root,
+    rootGone: stackRootGone(target.space, target.root),
     tlsRequired: Boolean(target.tlsRequired),
     eventsRequired: target.policy?.events === "required",
     idp: target.userAuth?.idp.url ?? null,
@@ -1214,7 +1226,7 @@ function responderText(state: DeliveryResponderState | null, mode: MeshTarget["m
   // starting a daemon now loses the single-flight CAS. Say that, rather than sending the operator
   // into a refusal they will read as a second failure.
   if (state === "stale")
-    return { text: `NOT BOUND - a DEAD daemon's ready record still holds the lease - ${RESPONDER_UNBOUND_CONSEQUENCE} · it expires on its own; a replacement can then take the shard`, tone: "failed" };
+    return { text: `NOT BOUND - ${RESPONDER_STALE_TEXT} · \`${displayCmd()} up\` restarts it, after waiting out the lease`, tone: "failed" };
   if (state === "bound") return { text: "bound", tone: "ok" };
   return undefined;
 }
@@ -1285,6 +1297,12 @@ function machineOverview(r: StatusResult): Section {
   };
 }
 
+/** Whether `root` is the gone folder of the stack this machine still records for `space`. */
+function stackRootGone(space: string, root: string): boolean {
+  const gone = goneStackRoot(space);
+  return gone !== undefined && canonicalRoot(gone) === canonicalRoot(root);
+}
+
 function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
   if (s.connection === "ok" || s.connection === "reachable") return stateCell("reachable", "ok");
   const states: Readonly<Record<string, string>> = {
@@ -1351,7 +1369,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
     ...(r.store?.state === "write-failed" ? [["Store", stateCell(`write failed at ${r.store.at}: ${r.store.cause}${r.store.path ? ` · ${r.store.path}` : ""}`, "failed")] as [string, Cell]] : []),
     ...(r.stackManager ? [["Manager", r.stackManager.endpoint === "answered" ? stateCell("answering", "ok") : r.stackManager.endpoint === "not-answering" ? stateCell(`not answering · stack-manager pid ${r.stackManager.pid}`, "failed") : stateCell("endpoint not checked", "hint")] as [string, Cell]] : []),
     ["Access", s.mode === "user" ? "user sign-in" : s.mode === "auth" ? "static auth" : "open"],
-    ["Project", s.root],
+    ["Project", s.rootGone ? stateCell(`${s.root} · folder is gone`, "failed") : s.root],
     ["Default agent", r.machine.defaults ? `${r.machine.defaults.harness ?? "application not set"} · persona ${r.machine.defaults.persona ?? "not set"}` : stateCell("saved defaults could not be read", "failed")],
     ["Persona catalog", s.personas.default === "valid" ? "default available" : stateCell(s.personas.default === "invalid" ? "default is invalid" : s.personas.default === "unreadable" ? "could not be read" : "no default persona", s.personas.default === "invalid" || s.personas.default === "unreadable" ? "failed" : "hint")],
   ];
@@ -1418,6 +1436,8 @@ function nextActions(r: StatusResult): Section {
     items.unshift(...(block.route.kind === "abandon" ? [{ command: `${cmd} down --abandon-stop ${block.route.requestId} --yes`, description: `Abandon the unconfirmed stop of ${block.definition}; up and down refuse until then` }, inspect] : [inspect]));
   } else if (own && r.selected.resolved && (memberGone || r.selected.connection !== "ok" && r.selected.connection !== "reachable"))
     items.unshift({ command: `${cmd} up --root ${shellWord(r.selected.root)}`, description: "Restart this stack's stopped members from its recorded inputs" });
+  // A stack whose folder was deleted stops only from this machine's records.
+  if (r.selected.resolved && r.selected.rootGone) items.unshift({ command: `${cmd} down --space ${r.selected.space} --yes`, description: "Stop the stack whose folder is gone and free its name" });
   if (r.selected.resolved && r.selected.mode === "user" && r.selected.login && !r.selected.login.subject) items.unshift({ command: `${cmd} login --idp ${r.selected.login.idp}`, description: "Sign in to the selected space" });
   // A manager that does not answer cannot report its stop impact, so no stop route reaches it.
   if (r.stackManager?.endpoint === "not-answering")
