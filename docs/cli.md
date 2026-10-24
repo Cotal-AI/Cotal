@@ -1214,7 +1214,9 @@ name, as `channel set` takes it, and its object takes those three fields plus `d
 registry, and fields the file leaves out keep their values. Any other key, a wildcard or invalid
 channel name, or an invalid value refuses `SCHEMA_INVALID` before anything starts, naming the file
 and the entry. A default file that is invalid refuses the same way, with a remedy to fix or remove
-it. A manifest start (`-f`) seeds from the manifest's own channels instead.
+it. A manifest start (`-f`) seeds from the manifest's own channels instead. Because the next start
+writes the default file's values back, a `channel set` or `channel defaults` of a field that file
+sets, and a `channel remove` of a channel it names, warn `CHANNEL_SEED_REAPPLIES` and name the file.
 
 ## down
 
@@ -5351,7 +5353,9 @@ history again. A `set`, `defaults` or `remove` that the broker refuses for the c
 applied nothing, so it is refused with `PERMISSION_DENIED` (exit 2), naming the credential's profile,
 the write it lacks and the subject the broker refused. With `--creds`, the Next is to run it without
 `--creds`, on the operator credential this machine records. A remove whose credential may not read
-the registry skips the name check, and the broker's answer to the remove decides.
+the registry skips the name check, and the broker's answer to the remove decides. A change that the
+root's default `.cotal/channels.json` would undo at the next start warns that it will, as the
+[channel seed file](#channel-seed-file) section says.
 
 
 | Flag | Default | Meaning |

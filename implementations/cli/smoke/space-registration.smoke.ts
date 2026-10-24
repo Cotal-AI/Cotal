@@ -30,7 +30,8 @@
  * default channels file, have refused and left the root as it was; a default channels file that
  * begins with a UTF-8 byte-order mark seeds as the JSON after it, and one saved as UTF-16 is refused
  * by its encoding. That `up` reads its `--channels` seed once, from a FIFO written once, and seeds
- * the channel from it. Create and a later `up` write the
+ * the channel from it. A `channel set` or `remove` of what a default seed sets warns that the next
+ * start writes it back. Create and a later `up` write the
  * default persona when the root has none, and leave an edited one byte-identical. Under umask 0002,
  * create makes `.cotal` and its persona catalog 0700. A registration
  * whose root is not an absolute path is refused at the space claim on the controller route and on the
@@ -1080,6 +1081,18 @@ if (process.platform === "linux") {
   check("the selection still names it", getCurrent() === "demo", getCurrent());
   check("a default channels file that begins with a UTF-8 byte-order mark seeds its channels",
     bomSeeded.status === 0 && JSON.stringify(bomSeeded.env?.result ?? null).includes("saved with a BOM"), shown(bomSeeded));
+  // A default seed in the root sets those fields again at the next start, and the edit says so. It
+  // begins with a byte-order mark, which the start ignores, so the warning reads past it too.
+  writeFileSync(defaultSeed, '\uFEFF{"channels":{"news":{"description":"Neuigkeiten"}}}');
+  const seededField = await json(["channel", "set", "news", "--desc", "von Hand", "--space", "demo"], fresh);
+  const seedWarning = seededField.env?.warnings?.find((w: { code: string }) => w.code === "CHANNEL_SEED_REAPPLIES");
+  check("channel set of a field the default seed sets warns that the next start writes it back, naming the file",
+    seededField.status === 0 && seedWarning?.message === `the default seed ${defaultSeed} also sets #news's description, so the next start of this space with \`cotal up\` writes the file's value back` && seededField.stderr.includes(`! the default seed ${defaultSeed}`), shown(seededField));
+  const otherField = await json(["channel", "set", "news", "--instructions", "Kurz.", "--space", "demo"], fresh);
+  check("a field the seed does not set gets no such warning", otherField.status === 0 && otherField.env?.warnings?.length === 0, shown(otherField));
+  const seededRemove = await json(["channel", "remove", "news", "--yes", "--space", "demo"], fresh);
+  check("channel remove of a channel the default seed names warns that the next start saves it again",
+    seededRemove.status === 0 && seededRemove.env?.warnings?.some((w: { code: string; message: string }) => w.code === "CHANNEL_SEED_REAPPLIES" && w.message === `the default seed ${defaultSeed} names #news, so the next start of this space with \`cotal up\` saves its entry again`) === true, shown(seededRemove));
   unlinkSync(defaultSeed);
   const reads = await json(["space", "show", "demo"]);
   check("space show now reports its broker answering", reads.env?.result.kind === "space" && reads.env.result.check === "reachable", reads.env?.result);

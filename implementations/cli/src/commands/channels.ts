@@ -1,3 +1,5 @@
+import { readFileSync, statSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import {
   assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
@@ -6,7 +8,7 @@ import {
 } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
-  CommandFailure, jsonFlag, plainFlag, presentationOf, targetFlags, writeResult,
+  CommandFailure, findMesh, jsonFlag, plainFlag, presentationOf, recordOperationWarning, targetFlags, writeResult,
   type Presentation, type Report,
 } from "@cotal-ai/workspace";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
@@ -153,6 +155,7 @@ export async function channels(args: ParsedArgs): Promise<void> {
       purged === undefined ? "The channel change did not return a confirmed outcome. It may have been applied." : `The purge reported ${purged} messages removed, but channel metadata removal was not confirmed.`,
       { target, ...(purged === undefined ? {} : { changed: [{ kind: "channel-history", channel: name, purged }] }), remedy: "Read the channel and its history before retrying; do not assume the change failed." });
   }
+  seedReapplies(connection.space, action, name, action === "remove" ? [] : Object.keys(patch(values)));
   // A channel with no saved entry and no retained message to purge is left as it was, and so is an
   // entry that already holds every value a set gives.
   const unchanged = action === "remove" ? !removed && !purged : !wrote;
@@ -164,6 +167,28 @@ export async function channels(args: ParsedArgs): Promise<void> {
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ch", description: "See saved channel metadata" }, { command: "cotal history <channel>", description: "Read retained messages within your grant" }] }] },
   ] }));
+}
+
+/** Warn when the root's default seed, `.cotal/channels.json`, names what this write changed. A start
+ *  of the stack writes each field the file sets and adds each channel it names, so a `set` of such a
+ *  field or a `remove` of such a channel lasts only until the next start. A seed this cannot read as a
+ *  file is left to the start, which refuses it. */
+function seedReapplies(space: string, action: string, name: string | undefined, fields: string[]): void {
+  const root = findMesh(space)?.root;
+  if (!root || !isAbsolute(root)) return;
+  const path = join(root, ".cotal", "channels.json");
+  let seed: ChannelRegistryFile;
+  // The file is read as `up` reads it, which ignores a UTF-8 byte-order mark at its start.
+  try { seed = statSync(path).isFile() ? JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, "")) : undefined; } catch { return; }
+  if (!seed || typeof seed !== "object") return;
+  const entry = action === "defaults" ? seed.defaults : seed.channels?.[name!];
+  if (!entry || typeof entry !== "object") return;
+  const named = fields.filter((field) => Object.hasOwn(entry, field));
+  const what = action === "defaults" ? "the channel defaults'" : `#${name}'s`;
+  const message = action === "remove"
+    ? `the default seed ${path} names #${name}, so the next start of this space with \`cotal up\` saves its entry again`
+    : named.length ? `the default seed ${path} also sets ${what} ${named.length > 1 ? `${named.slice(0, -1).join(", ")} and ${named.at(-1)}` : named[0]}, so the next start of this space with \`cotal up\` writes the file's ${named.length === 1 ? "value" : "values"} back` : undefined;
+  if (message) recordOperationWarning({ code: "CHANNEL_SEED_REAPPLIES", target: { space, seed: path, ...(name ? { channel: name } : {}) }, message });
 }
 
 /** A remove, or a members read that observed no member, names a channel the space has: one with a
