@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { acquireLock, stripSpaceAuth, writeSecretFileAtomic, writeSecretFileCreateOnly, type FlagSpec, type SpaceAuth } from "@cotal-ai/core";
-import { authDir, findCotalRoot, getSoleSpaceAuth, getSpaceAuth } from "./auth-paths.js";
+import { authDir, findCotalRoot, getSoleSpaceAuth, getSpaceAuth, hasUserAuthState } from "./auth-paths.js";
 import { canonicalRoot } from "./mesh-registry.js";
 import { isWorkspaceTargetError, resolveMeshTarget } from "./mesh-target.js";
 import { targetErrorCode } from "./connect.js";
@@ -67,6 +67,9 @@ export async function exportSpaceSigner(values: SignerExportInput, cwd = process
     } catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the selected trust chain or current-folder authority could not be established; no signer was exported"); }
     if (target.open) throw new CommandFailure("refused", "UNSUPPORTED", "this space is open: it issues no credentials, so it has no signing authority to export; nothing was written", { target: { space: target.space }, remedy: "connect to it without credentials" });
     if (!auth) throw new CommandFailure("refused", "AUTH_REQUIRED", "this machine holds no validated static signing trust for the selected space; a cached login cannot replace it");
+    // A user-auth space admits people through its IdP and actor ledger, so it issues no static
+    // credentials, and its data-account signer is not exported either: `auth mint` refuses the same way.
+    if (hasUserAuthState(target.root, target.space, { readOnly: true })) throw new CommandFailure("refused", "UNSUPPORTED", "static credentials are not issued for open or per-user-auth spaces", { target: { space: target.space }, remedy: "use the space's supported login/enrollment path instead of a static identity" });
     if (cwdAuth && (cwdAuth.space !== auth.space || cwdAuth.account.pub !== auth.account.pub)) throw new CommandFailure("refused", "CONFLICT", "the selected root and current folder hold different account authorities; no signer was exported", { target: { space: target.space }, remedy: "run the export from the intended authority root" });
     if (existing) replacementIsSigner(existing, auth);
     protectedLocalDirectory(dirname(path));

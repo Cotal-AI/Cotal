@@ -324,9 +324,9 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     assert.ok(cleanupNext.includes(`cotal backup cleanup-fallback ${active.restore.attemptId} --yes`) && cleanupNext.includes("--discard-history") === (restoreArtifact === registryArtifact), `${mode} up --restore names the cleanup that retires it\n${restored.stdout}`);
     // A registry restore says history starts empty and names the store that holds its only copy.
     if (restoreArtifact === registryArtifact) {
-      assert.match(restored.stdout, /channel settings only, so chat and DM history start empty/, `${mode} registry restore names the empty history\n${restored.stdout}`);
+      assert.match(restored.stdout, /channel settings only, so chat and DM history and workflow runs start empty/, `${mode} registry restore names the empty history\n${restored.stdout}`);
       const previous = active.restore.previousSource?.identity.path;
-      assert.ok(previous && restored.stdout.includes(`The previous store at ${previous} holds the only copy of that history. \`cotal backup cleanup-fallback ${active.restore.attemptId}\` deletes it only with --discard-history.`), `${mode} registry restore names the previous store\n${restored.stdout}`);
+      assert.ok(previous && restored.stdout.includes(`The previous store at ${previous} holds the only copy of them. \`cotal backup cleanup-fallback ${active.restore.attemptId}\` deletes it only with --discard-history.`), `${mode} registry restore names the previous store\n${restored.stdout}`);
     } else assert.doesNotMatch(restored.stdout, /history start empty/);
     // `up -f` boots a fresh mesh, so it refuses while the restore is active and names the way out.
     const manifest = join(root, "cotal.yaml");
@@ -342,6 +342,10 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       assert.ok(/Code: +CONFLICT/.test(again.stderr) && again.stderr.includes("stop the restored stack with cotal down, then run cotal up again"), `${mode} ${args.join(" ")} names the way out\n${again.stderr}`);
       assert.equal((JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as { state: string }).state, "active", `${mode} ${args.join(" ")} leaves the restore journal active`);
     }
+    // `status` names the same cleanup for the attempt it shows under Maintenance.
+    const status = run("status", "--space", space);
+    const statusNext = status.stdout.split("\n").find((line) => line.includes(`cotal backup cleanup-fallback ${active.restore.attemptId}`)) ?? "";
+    assert.ok(statusNext !== "" && statusNext.includes("--discard-history") === (restoreArtifact === registryArtifact), `${mode} status names the cleanup that retires the restore\n${status.stdout}`);
     must("down", run("down"));
     const stopped = run("up", "-f", "cotal.yaml");
     assert.equal(stopped.status, 2, `${mode} up -f after the restored stack stopped refuses, exit 2\n${stopped.stdout}\n${stopped.stderr}`);
@@ -372,7 +376,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       assert.equal(kept.status, 1, `${mode} cleanup-fallback without --discard-history refuses\n${kept.stdout}\n${kept.stderr}`);
       assert.match(kept.stdout, /"code":"USAGE_INVALID"/);
       const keptPlain = run("backup", "cleanup-fallback", active.restore.attemptId, "--yes");
-      assert.ok(keptPlain.status === 1 && keptPlain.stderr.includes("cleanup deletes it only with --discard-history; nothing was deleted") && !keptPlain.stderr.includes("Usage"), `${mode} the refusal names --discard-history without the command help\n${keptPlain.stderr}`);
+      assert.ok(keptPlain.status === 1 && keptPlain.stderr.includes("only copy of the chat and DM history and workflow runs it left out, and cleanup deletes it only with --discard-history; nothing was deleted") && !keptPlain.stderr.includes("Usage"), `${mode} the refusal names --discard-history without the command help\n${keptPlain.stderr}`);
       assert.ok(existsSync(previous), `${mode} cleanup-fallback without --discard-history keeps the previous store`);
       const keptByClean = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force");
       assert.equal(keptByClean.status, 1, `${mode} clean restore-fallback without --discard-history refuses\n${keptByClean.stdout}\n${keptByClean.stderr}`);

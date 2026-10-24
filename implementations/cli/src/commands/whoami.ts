@@ -20,6 +20,9 @@ export interface WhoamiResult {
   /** `null` when no registration here names the server, so its auth mode is not known, and for a
    *  prepared space, which no `up` has given a mode yet. */
   readonly mode: "open" | "auth" | "user" | null;
+  /** `false` when `space add --force` registered the space unchecked, so its broker was never seen
+   *  to enforce `mode`; `null` when `mode` is. */
+  readonly modeChecked: boolean | null;
   readonly identity: {
     /** `open`: the broker authenticates nothing. `space-signer`: this machine holds the space's
      *  signing key and each command mints its own short-lived credential. `no-credential`: it holds
@@ -95,7 +98,8 @@ export async function whoami(args: ParsedArgs): Promise<void> {
   const warnings: OutputWarning[] = [];
   const server = brokerAddressForDisplay(t.server);
   if (server === undefined) throw new CommandFailure("refused", v.server === undefined ? "SCHEMA_INVALID" : "USAGE_INVALID", "the server address cannot be parsed safely; the raw value was not printed", { target });
-  const base = { kind: "identity" as const, space: t.space, server, mode: t.mode };
+  const entry = findMesh(t.space);
+  const base = { kind: "identity" as const, space: t.space, server, mode: t.mode, modeChecked: !(entry?.unchecked === true && entry.server === t.server) };
   let result: WhoamiResult;
   // A `--server` this space is not registered at says nothing about the broker there, and whoami does
   // not contact it. The folder's trust for the space does not reach an address nothing records.
@@ -105,7 +109,7 @@ export async function whoami(args: ParsedArgs): Promise<void> {
       ? `${server} is not registered here and this folder holds no trust for it; whoami does not contact the broker, so whether it authenticates, and what this identity may do there, is unknown`
       : `${server} is not where ${t.space} is registered here; whoami does not contact the broker, so whether it serves ${t.space}, and what this identity may do there, is unknown`;
     warnings.push({ code: "BROKER_NOT_PROBED", target: { ...target, server }, message });
-    result = { ...base, mode: null, identity: { kind: "unknown", ...none }, read: null, post: null, dms: null, capabilities: null };
+    result = { ...base, mode: null, modeChecked: null, identity: { kind: "unknown", ...none }, read: null, post: null, dms: null, capabilities: null };
   } else if (t.mode === "open") {
     result = { ...base, identity: { kind: "open", ...none }, read: "all", post: "all", dms: true, capabilities: "all" };
   } else if (t.mode === "auth") {
@@ -140,6 +144,9 @@ export async function whoami(args: ParsedArgs): Promise<void> {
       result = { ...base, identity, read: null, post: null, dms: false, capabilities: null };
     }
   }
+  // A mode `space add --force` recorded is what the operator gave, so what it implies is not stated as fact.
+  if (result.modeChecked === false)
+    warnings.push({ code: "MODE_NOT_CHECKED", target, message: `${t.space} was added with --force, so its ${t.mode} mode was not checked against the broker; whoami does not contact the broker, so whether it enforces that mode, and what this identity may do there, is unknown` });
   writeResult(
     presentation,
     {
@@ -150,7 +157,9 @@ export async function whoami(args: ParsedArgs): Promise<void> {
       warnings,
       ...(warnings.length ? { partial: result.identity.kind === "unknown"
         ? { message: "whoami could not tell what this identity may do at that address; the warning names why", remedy: registered ? `run \`cotal whoami --space ${t.space}\` without --server to read it at the address it is registered at` : "add the space with `cotal space add <name> --server <url> --root <dir>`, which checks the broker, then run `cotal whoami --space <name>`" }
-        : { message: "whoami could not read this identity's grant; the warning names why", remedy: "run `cotal whoami` on the machine that hosts the space's auth service" } } : {}),
+        : result.modeChecked === false
+          ? { message: "whoami could not tell whether the broker enforces the registered mode; the warning names why", remedy: `check it by adding it again without --force: \`cotal space forget ${t.space}\`, then \`cotal space add ${t.space} --server ${server} --root ${t.root}\`` }
+          : { message: "whoami could not read this identity's grant; the warning names why", remedy: "run `cotal whoami` on the machine that hosts the space's auth service" } } : {}),
     },
     (r) => whoamiView(r, assumed),
   );
@@ -255,7 +264,7 @@ function writePrepared(presentation: Presentation, space: string, root: string):
   let signer: boolean;
   try { signer = loadSpaceAuth(authDir(root), space) !== undefined; }
   catch (e) { throw new MeshTargetError("unreadable-auth", (e as Error).message, { space, root }); }
-  const base = { kind: "identity" as const, space, server: null, mode: null };
+  const base = { kind: "identity" as const, space, server: null, mode: null, modeChecked: null };
   const result: WhoamiResult = signer
     ? { ...base, identity: { kind: "space-signer", ...none }, read: "all", post: "all", dms: true, capabilities: "all" }
     : { ...base, identity: { kind: "no-credential", ...none }, read: [], post: [], dms: false, capabilities: [] };
@@ -278,7 +287,7 @@ function whoamiView(r: WhoamiResult, assumed: boolean, preparedRoot?: string): R
   const rows: (readonly [string, Cell])[] = [
     ["space", { text: r.space, tone: "selected" }],
     ["server", r.server ?? { text: "not started", tone: "waiting" }],
-    ["identity", id.kind === "user" && !id.subject ? "not signed in" : KIND_TEXT[id.kind]],
+    ["identity", id.kind === "user" && !id.subject ? "not signed in" : r.modeChecked === false ? { text: `${KIND_TEXT[id.kind]}, if the broker is ${r.mode} as registered; that was not checked`, tone: "waiting" } : KIND_TEXT[id.kind]],
   ];
   if (id.kind === "user") {
     rows.push(["principal", id.principal ?? { text: id.subject ? "not known on this machine" : "not signed in", tone: "waiting" }]);

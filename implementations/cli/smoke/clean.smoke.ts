@@ -424,6 +424,37 @@ try {
     notes.length === 2 && /full backups taken before this clean would no longer restore into this root/.test(notes[0] ?? "") && /full backups taken before this clean no longer restore into this root.*Take a new full backup/.test(notes[1] ?? ""), notes);
   rmSync(trustRoot, { recursive: true, force: true });
 
+  // A user-auth space's state directory holds its pinned IdP and its actor ledger. `clean all` names
+  // them, in its dry run and in its receipt, with what a later up needs.
+  const userAuthRoot = meshRoot();
+  const userAuthDir = join(userAuthRoot, ".cotal", "auth", spaceSegment("demo"));
+  mkdirSync(join(userAuthDir, "actors"), { recursive: true });
+  writeFileSync(join(userAuthDir, "idp.json"), "{}");
+  writeFileSync(join(userAuthDir, "actors", "u_a.anna.json"), "{}");
+  const userAuthOut: string[] = [];
+  notes.length = 0;
+  const consoleOut = console.log;
+  console.log = (...args: unknown[]) => { userAuthOut.push(args.map(String).join(" ")); };
+  console.error = (...args: unknown[]) => { notes.push(args.map(String).join(" ")); };
+  process.chdir(userAuthRoot);
+  try {
+    await clean({ positionals: ["all"], values: { "dry-run": true }, raw: [] });
+    await clean({ positionals: ["all"], values: { force: true }, raw: [] });
+  } finally {
+    console.log = consoleOut;
+    console.error = consoleWarn;
+    process.chdir(cwd);
+  }
+  const labeled = `.cotal/auth/${spaceSegment("demo")} (IdP trust and actor ledger)`;
+  check("all: a user-auth space's state directory is named as its IdP trust and actor ledger, in the dry run and the receipt",
+    userAuthOut.some((line) => line.includes(`would remove ${labeled}`)) && userAuthOut.some((line) => line.includes(`removed ${labeled}`)), userAuthOut);
+  check("all: the dry run and the receipt say every actor grant is lost and what a later up needs",
+    /would remove the IdP trust and the actor ledger.*would need cotal up --user-auth --idp <auth base URL>/.test(notes[0] ?? "") && /removed the IdP trust and the actor ledger.*every actor grant is lost.*needs cotal up --user-auth --idp <auth base URL>/.test(notes[2] ?? ""), notes);
+  check("all: the receipt names the up a user-auth space needs for its fresh identity",
+    userAuthOut.some((line) => line.includes("minted on the next `cotal up --user-auth --idp <auth base URL>`")), userAuthOut);
+  check("all: the user-auth state directory is gone", !existsSync(userAuthDir));
+  rmSync(userAuthRoot, { recursive: true, force: true });
+
   // Without --store-dir, clean reads the record a start reads: while the default store holds no data,
   // the store the last broker served, named in the broker config `up` wrote, is this root's store.
   const printed: string[] = [];
