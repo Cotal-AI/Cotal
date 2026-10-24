@@ -779,6 +779,52 @@ if (process.platform === "linux") {
   const linked = await json(["space", "create", "other", "--root", dangling]);
   check("a .cotal linking to a missing folder is TARGET_NOT_FOUND, exit 2, naming the link and its target",
     refused(linked, 2, "TARGET_NOT_FOUND") && linked.env?.error?.message === `${join(dangling, ".cotal")} links to ${join(home, "nowhere")}, which does not exist; nothing was written` && !existsSync(join(home, "nowhere")) && findPreparedSpace("other") === undefined, shown(linked));
+  // A folder that is, or is in, a control directory is no project: a .cotal made there would sit
+  // among that project's credentials and records, and up would start a second stack inside it. The
+  // physical path a link leads to counts as well as the path given. Outside the home folder, whose
+  // .cotal up would otherwise refuse to inherit first.
+  if (process.platform !== "win32") {
+    const outer = realpathSync(mkdtempSync(join(tmpdir(), "cotal-space-registration-control-")));
+    const project = join(outer, "project"), control = join(project, ".cotal");
+    mkdirSync(join(control, "agents"), { recursive: true, mode: 0o700 });
+    const next = `run cotal from the project folder ${project}, or create the space in a folder outside any .cotal with --root <dir>`;
+    const nested = () => readdirSync(control, { recursive: true }).map(String).filter((entry) => entry.split("/").includes(".cotal"));
+    for (const [label, args, cwd, root] of [
+      ["run in the control directory", ["space", "create", "inner"], control, control],
+      ["run in a folder in it", ["space", "create", "inner"], join(control, "agents"), join(control, "agents")],
+      ["given it as --root", ["space", "create", "inner", "--root", control], outer, control],
+    ] as const) {
+      const r = await json([...args], cwd);
+      check(`space create ${label} is CONFLICT, exit 2, naming the project it belongs to, with nothing written`,
+        refused(r, 2, "CONFLICT") && r.env?.error?.message === `${root} is ${root === control ? "" : "in "}the control directory ${control}, which holds the Cotal records of the project ${project}, so it cannot be a project folder; nothing was written` &&
+          r.env.error.remedy === next && r.env.target?.controlDirectory === control && nested().length === 0 && findPreparedSpace("inner") === undefined, shown(r));
+    }
+    const link = join(project, "ctl");
+    symlinkSync(control, link);
+    const throughLink = await json(["space", "create", "inner", "--root", link], outer);
+    check("a --root that links to the control directory is refused the same way, by the path it leads to",
+      refused(throughLink, 2, "CONFLICT") && (throughLink.env?.error?.message ?? "").startsWith(`${link} is the control directory ${control}, which holds the Cotal records of the project ${project}`) && nested().length === 0 && findPreparedSpace("inner") === undefined, shown(throughLink));
+    const machine = await json(["space", "create", "inner", "--root", process.env.COTAL_HOME!], outer);
+    check("the machine's own Cotal home is refused as a control directory that holds this machine's records",
+      refused(machine, 2, "CONFLICT") && machine.env?.error?.message === `${process.env.COTAL_HOME} is the control directory ${process.env.COTAL_HOME}, which holds this machine's own records, so it cannot be a project folder; nothing was written` &&
+        machine.env.error.remedy === "create the space in a project folder with --root <dir>" && !existsSync(join(process.env.COTAL_HOME!, ".cotal")), shown(machine));
+    // A .cotal an earlier release made in the control directory is not started either.
+    mkdirSync(join(control, ".cotal"), { mode: 0o700 });
+    const upInside = await json(["up", "--server", DEAD, "--no-manager"], control);
+    check("up in a control directory that holds a .cotal of its own is CONFLICT, exit 2, naming the project, and starts nothing",
+      refused(upInside, 2, "CONFLICT") && upInside.env?.error?.message === `${control} is the control directory ${control}, which holds the Cotal records of the project ${project}, so it cannot be a project folder; nothing was started or written` &&
+        upInside.env.error.remedy === `run cotal up from the project folder ${project}` && readdirSync(join(control, ".cotal")).length === 0, shown(upInside));
+    const upRoot = await json(["up", "--root", control, "--server", DEAD, "--no-manager"], outer);
+    check("so is up --root naming it", refused(upRoot, 2, "CONFLICT") && (upRoot.env?.error?.message ?? "").startsWith(`${control} is the control directory ${control}`) && readdirSync(join(control, ".cotal")).length === 0, shown(upRoot));
+    rmSync(join(control, ".cotal"), { recursive: true });
+    // A project folder inside another project, outside its control directory, is a project of its own.
+    const sub = join(project, "sub");
+    mkdirSync(sub);
+    const inner = await json(["space", "create", "inner"], sub);
+    check("control: a folder inside a project, outside its .cotal, is still prepared", inner.status === 0 && inner.env?.result?.root === sub && existsSync(join(sub, ".cotal")) && findPreparedSpace("inner")?.root === sub, shown(inner));
+    check("control: forgetting it", (await json(["space", "forget", "inner"])).status === 0 && findPreparedSpace("inner") === undefined);
+    rmSync(outer, { recursive: true, force: true });
+  }
   // A folder whose path holds a control character could be prepared but never started, and a
   // bidirectional formatting mark can show one path as another, so create and up refuse both before
   // anything is written.

@@ -1,7 +1,8 @@
 import { CommandFailure } from "./output.js";
 import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, sep } from "node:path";
+import { homeCotalDir } from "./cotal-home.js";
 import {
   composeSpaceAuth,
   jwtIssuedAt,
@@ -351,6 +352,29 @@ export function rootPathProblem(root: string): string | undefined {
   const names: Record<number, string> = { 9: "a tab", 10: "a newline", 13: "a carriage return", 27: "an escape character", 127: "a delete character" };
   const name = names[code] ?? (/\p{Cc}/u.test(found) ? `the control character U+${hex}` : `the bidirectional formatting mark U+${hex}`);
   return `the folder path ${oneLine(root)} contains ${name}, and a project path may hold neither control characters nor bidirectional formatting marks`;
+}
+
+/** The control directory `path` is or lies in: a root's `.cotal`, or the machine home's. */
+export function controlDirectory(path: string): string | undefined {
+  const home = resolve(homeCotalDir());
+  if (path === home || path.startsWith(`${home}${sep}`)) return home;
+  const parts = path.split(sep), at = parts.indexOf(".cotal");
+  return at === -1 ? undefined : parts.slice(0, at + 1).join(sep);
+}
+
+/** Why `root` cannot be a project folder: it is, or is in, a control directory, by its own path or by
+ *  the physical path its links lead to. A `.cotal` made there would sit among that directory's
+ *  credentials and records, and start a second stack inside another project's. `project` is the
+ *  folder that control directory belongs to, absent for the machine home's. Undefined when it can. */
+export function rootControlProblem(root: string): { controlDirectory: string; project?: string; message: string } | undefined {
+  const path = resolve(root);
+  let physical: string | undefined;
+  try { physical = realpathSync.native(path); } catch { physical = undefined; }
+  const control = controlDirectory(path) ?? (physical === undefined ? undefined : controlDirectory(physical));
+  if (control === undefined) return undefined;
+  const project = control === resolve(homeCotalDir()) ? undefined : dirname(control);
+  const holds = project === undefined ? "this machine's own records" : `the Cotal records of the project ${project}`;
+  return { controlDirectory: control, project, message: `${path} is ${path === control || physical === control ? "" : "in "}the control directory ${control}, which holds ${holds}, so it cannot be a project folder` };
 }
 
 /** Where `<root>/.cotal` leads when it is a symlink, such as a link to another project's `.cotal`.

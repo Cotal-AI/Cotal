@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve, sep, isAbsolute } from "node:path";
 import { token } from "@cotal-ai/core";
-import { authDir, c, CommandFailure, foreignStoreEntries, homeCotalDir, loadMeshes, loadPreparedSpaces, protectedLocalDirectory } from "@cotal-ai/workspace";
+import { authDir, c, CommandFailure, controlDirectory, foreignStoreEntries, loadMeshes, loadPreparedSpaces, protectedLocalDirectory } from "@cotal-ai/workspace";
 import { readStackJournal } from "./stack-journal.js";
 
 /** The stores the broker configurations `root`'s starts rendered name. */
@@ -139,14 +139,6 @@ export function listEntries(entries: readonly string[]): string {
 function statIfPresent(path: string, stat: (path: string) => Stats = statSync): Stats | undefined {
   try { return stat(path); }
   catch (error) { if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return undefined; throw error; }
-}
-
-/** The control directory `path` is or lies in: a root's `.cotal`, or the machine home's. */
-function controlDirectory(path: string): string | undefined {
-  const home = resolve(homeCotalDir());
-  if (path === home || path.startsWith(`${home}${sep}`)) return home;
-  const parts = path.split(sep), at = parts.indexOf(".cotal");
-  return at === -1 ? undefined : parts.slice(0, at + 1).join(sep);
 }
 
 /** Check an explicit `--store-dir` before anything is written. Its nearest existing part must be a
