@@ -22,26 +22,6 @@ export async function historyClear(values: Values): Promise<void> {
     return;
   }
   if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("history clear", presentation === "json"), { remedy: `preview the space-wide scope with cotal history clear${values.dms ? " --dms" : ""} --dry-run, then confirm it with cotal history clear${values.dms ? " --dms" : ""} --yes` });
-  const conn = await connectOrThrow(values, "purger");
-  const target = { space: conn.space, broker: brokerLabel(conn.server), includeDms: values.dms === true };
-  recordOperationSpace(conn.space);
-  if (!values.yes) {
-    const answer = await prompts.confirm({ message: `Permanently clear all retained channel history${values.dms ? " and DM history" : " (DMs kept)"} in ${oneLine(conn.space)} at ${oneLine(target.broker)}? Agents and identity are not reset.`, initialValue: false });
-    if (prompts.isCancel(answer) || !answer) {
-      writeResult(presentation, { command: "history", target, result: { kind: "history-clear", confirmed: false, purged: false }, noOp: true }, (): Report => ({ sections: [{ title: "History kept", blocks: [{ kind: "lines", lines: ["No stream was purged. Agents, identity and retained messages were left unchanged."] }] }] }));
-      return;
-    }
-  }
-  let user: Awaited<ReturnType<typeof userViewAuth>> | undefined;
-  try { user = conn.bearer ? await userViewAuth(conn, "purger") : undefined; }
-  catch (error) {
-    if (isConnectRefusal(error)) throw error.failure();
-    const remedy = credentialRefusalMessage(error);
-    throw new CommandFailure("refused", "PERMISSION_DENIED", "the existing per-action purger view was not issued; no history purge was submitted", { target, ...(remedy ? { remedy } : {}) });
-  }
-  const material = user ? { bearer: user.bearer, sentinelCreds: user.sentinelCreds } : conn.creds ? { creds: conn.creds } : {};
-  const nc = await dialerFor(conn.server)({ servers: conn.server, ...standaloneConnectOpts({ ...material, tls: conn.tls }), maxReconnectAttempts: 0 });
-  const streams = [chatStream(conn.space), ...(values.dms ? [dmStream(conn.space)] : [])];
   const acknowledged: PurgeReceipt[] = [];
   let submitted: string | undefined;
   // A signal from the confirmed clear on ends it where it is, and says what was purged.
@@ -89,7 +69,7 @@ export async function historyClear(values: Values): Promise<void> {
       const knownRefusal = denied || absent;
       const detail = { acknowledged, unconfirmedStream: submitted ?? null, notSubmitted: streams.filter((stream) => !acknowledged.some((row) => row.stream === stream) && stream !== submitted) };
       if (denied && !acknowledged.length) throw deniedWrite(conn, values.creds !== undefined, "purge retained history", "purged", error, { target, native: { code: "permission-denied", outcome: "not-executed", detail } });
-      if (knownRefusal && !acknowledged.length) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the native broker refused the purge before executing it", { target, native: { code: denied ? "permission-denied" : "not-found", outcome: "not-executed", detail } });
+      if (knownRefusal && !acknowledged.length) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the native broker refused the purge before executing it", { target, native: { code: "not-found", outcome: "not-executed", detail } });
       if (knownRefusal) throw new CommandFailure("partial", "OPERATION_PARTIAL", "some history purges were acknowledged, but the next stream was refused; no retry was made", { target, changed: acknowledged, native: { outcome: "not-executed", detail } });
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "a history purge was submitted without a confirmed outcome; it was not retried", { target, changed: acknowledged, native: { outcome: "unknown", detail }, remedy: "inspect retained history on the original broker before another purge; an unknown result does not mean nothing changed" });
     } finally { await nc.close(); }
