@@ -51,13 +51,16 @@ const shown = (r: { status: number | null; stdout: string; stderr: string }) => 
 // ── docs: the index ──────────────────────────────────────────────────────────────────────────────
 {
   const json = run(["docs", "--json"]);
-  const r = json.envelope?.result as { kind: string; version: string; sources: { slug: string }[]; pages: { slug: string; kind: string; summary: string }[] } | undefined;
+  const r = json.envelope?.result as { kind: string; version: string; sources: { slug: string }[]; pages: { slug: string; kind: string; category: string; summary: string }[] } | undefined;
   check("docs --json is one complete ok envelope with no target", json.status === 0 && json.envelope?.outcome === "ok" && json.envelope.completeness === "complete" && json.envelope.target === null && json.stderr === "", shown(json));
   check("the index is this version's: the three normative sources and the pages", r?.kind === "docs-index" && r.version === VERSION && JSON.stringify(r.sources.map((s) => s.slug)) === JSON.stringify(["spec", "lang", "schema"]) && r.pages.some((p) => p.slug === "architecture" && p.summary.length > 0), r && { kind: r.kind, version: r.version, sources: r.sources, pages: r.pages.length });
   const pages = r?.pages ?? [];
-  const order = pages.map((p) => p.kind).filter((kind, i, all) => kind !== all[i - 1]);
-  check("each page's kind is its category, listed in the docs index's order, and telemetry is a Reference page",
-    JSON.stringify(order) === JSON.stringify(["Start here", "Guide", "Concept", "Reference", "Project"]) && pages.find((p) => p.slug === "telemetry")?.kind === "Reference", order);
+  const order = pages.map((p) => p.category).filter((category, i, all) => category !== all[i - 1]);
+  check("each page's category is one of the five, listed in the docs index's order, and telemetry is a Reference page",
+    JSON.stringify(order) === JSON.stringify(["Start here", "Guide", "Concept", "Reference", "Project"]) && pages.find((p) => p.slug === "telemetry")?.category === "Reference", order);
+  const architecture = pages.find((p) => p.slug === "architecture");
+  check("a page's kind keeps its classification line's words, which begin with its category",
+    pages.every((p) => p.kind.startsWith(p.category)) && new Set(pages.map((p) => p.kind)).size > 5 && architecture?.kind !== architecture?.category, { architecture, kinds: [...new Set(pages.map((p) => p.kind))] });
   const plain = run(["docs", "--plain"]);
   check("the plain index names the version, both groups and how to read a page", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && plain.stdout.startsWith(`Cotal v${VERSION} documentation`) && /^Normative sources$/m.test(plain.stdout) && /^Concept$/m.test(plain.stdout) && /^Reference$/m.test(plain.stdout) && /cotal docs <page>/.test(plain.stdout), shown(plain));
   const narrow = run(["docs", "--plain"], { COLUMNS: "80" });

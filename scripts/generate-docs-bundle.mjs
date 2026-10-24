@@ -70,10 +70,17 @@ const CATEGORIES = ["Start here", "Guide", "Concept", "Reference", "Project"];
 
 /** The category the classification line every page opens with names — `> **Concept** (informative)
  *  · …` → "Concept". Fail loud on a page without one, so the index lists no page under no heading. */
-function kindOf(md, slug) {
-  const kind = md.match(/^>\s*\*\*([^*]+)\*\*/m)?.[1].trim();
-  if (!CATEGORIES.includes(kind)) throw new Error(`gen:docsbundle: ${slug}.md opens with no classification line naming one of ${CATEGORIES.join(", ")}`);
-  return kind;
+function categoryOf(md, slug) {
+  const category = md.match(/^>\s*\*\*([^*]+)\*\*/m)?.[1].trim();
+  if (!CATEGORIES.includes(category)) throw new Error(`gen:docsbundle: ${slug}.md opens with no classification line naming one of ${CATEGORIES.join(", ")}`);
+  return category;
+}
+
+/** That classification line's own words before its first `·` — `> **Concept** (informative) · …` →
+ *  "Concept (informative)". */
+function kindOf(md) {
+  const line = md.match(/^>\s*\*\*[^*]+\*\*.*$/m)?.[0] ?? "";
+  return line.replace(/^>\s*/, "").split("·")[0].replace(/\*\*/g, "").replace(/[[\]]/g, "").trim();
 }
 
 /** One-line summary: the first real content paragraph, flattened to a single sentence-ish
@@ -119,7 +126,7 @@ const pages = files.map((f) => {
   const slug = basename(f, ".md").toLowerCase();
   const body = readFileSync(join(docsDir, f), "utf8");
   if (!body.trim()) throw new Error(`gen:docsbundle: docs/${f} is empty`);
-  return { slug, title: titleOf(body, slug), kind: kindOf(body, slug), summary: summaryOf(body, slug), body };
+  return { slug, title: titleOf(body, slug), kind: kindOf(body), category: categoryOf(body, slug), summary: summaryOf(body, slug), body };
 });
 
 const specBody = readFileSync(join(repoRoot, "SPEC.md"), "utf8");

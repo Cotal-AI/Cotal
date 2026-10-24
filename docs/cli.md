@@ -5841,7 +5841,8 @@ cotal docs --search <query> [--json | --plain]
 Reads the docs bundled with this installed version, offline: the same pages agents read with
 `cotal_docs`. Bare `docs` lists the pages by category (`Start here`, `Guide`, `Concept`, `Reference`,
 `Project`, the order of the docs index), each with its title; `result.pages` holds each page's slug,
-title, kind (its category) and summary, in that order, and
+title, kind (its classification line, such as `Concept (informative)`), category (the heading it
+lists under) and summary, in that order, and
 `result.sources` the normative `spec`, `lang` and `schema`. A page is named by its slug,
 ignoring case and a trailing `.md`; `result.body` holds its Markdown. On a terminal a page is drawn
 for reading: each heading is a title, paragraphs and lists wrap to the terminal, a table is text that

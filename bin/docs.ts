@@ -76,7 +76,7 @@ function indexView(r: DocsIndexResult): Report {
   const table = (pages: readonly { slug: string; title: string }[]) =>
     ({ kind: "table" as const, columns, rows: pages.map((p) => ({ slug: { text: p.slug, tone: "command" as const }, title: p.title })) });
   const groups = new Map<string, DocsIndexResult["pages"][number][]>();
-  for (const p of r.pages) groups.set(p.kind, [...(groups.get(p.kind) ?? []), p]);
+  for (const p of r.pages) groups.set(p.category, [...(groups.get(p.category) ?? []), p]);
   return {
     sections: [
       { title: `Cotal v${r.version} documentation`, blocks: [{ kind: "lines", lines: [{ text: "Bundled with this installed version and readable offline.", tone: "hint" }] }] },
