@@ -7438,7 +7438,9 @@ Only a complete matching retirement sequence yields the create-only full removal
 receipt. Earlier confirmed retirements and stop requests remain in rich/plain/JSON
 output on a partial or unknown result. An unsettled removal intent stays blocking
 and is never resumed by repeating its effects. `team show` keeps its original creation and removal
-journals, and inventory/status/down/reset distinguish historical retired receipts.
+journals, and inventory/status/down/reset distinguish historical retired receipts. It lists a card
+removal's steps in the order they were written: the cards in manifest order, and each card's delete
+submission before its outcome.
 The full receipt releases only this deployment's known additive blocker, not any
 other service, broker, shared-root or process guard. It never authorizes stopping
 current alias holders. No channel, broker, service or remote account is removed.
