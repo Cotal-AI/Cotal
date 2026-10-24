@@ -25,6 +25,8 @@
  * A definition whose readiness breaks the schema refuses SCHEMA_INVALID, exit 1, naming the field
  * and the rule it breaks, such as a timeoutMs out of range or a field the chosen type does not take.
  *
+ * `service remove` of a controller stack member's definition refuses UNSUPPORTED and keeps it.
+ *
  * A Linear service whose definition gives the child its own HOME, with COTAL_HOME unset, refuses
  * before a child in two isolated homes: with the account only in the child's home and only in the
  * controller's. Its space is registered in both homes as `up` records a started one, with static
@@ -161,6 +163,15 @@ for (const [what, readiness, rule] of readinessCases) {
     bad.status === 1 && bad.envelope?.error?.code === "SCHEMA_INVALID" && bad.envelope.error.message === `service definition: ${rule}` && bad.envelope.error.remedy === "correct readiness in the definition as the message says, then add it again", shown(bad));
 }
 check("no refused definition was saved", run(["service", "show", "badready", "--space", "b1"]).envelope?.error?.code === "TARGET_NOT_FOUND");
+
+// A controller stack member's definition stays with its stack, whose up and down read it. Its name
+// marks it, so a definition saved under one stands for the stack's here.
+const member = run(["service", "add", "stack-manager", "--preset", "manager", "--root", root, "--runtime", "pty", "--space", "b1"]);
+check("rig: a definition under a stack member's name is saved", member.status === 0, shown(member));
+const keptMember = run(["service", "remove", "stack-manager", "--space", "b1", "--yes"]);
+check("service remove of a stack member's definition refuses UNSUPPORTED, exit 2, naming down and space forget, and keeps it",
+  keptMember.status === 2 && keptMember.envelope?.error?.code === "UNSUPPORTED" && keptMember.envelope.error.remedy === "it goes with the stack: cotal down --yes, then cotal space forget b1"
+    && run(["service", "show", "stack-manager", "--space", "b1"]).status === 0, shown(keptMember));
 
 // A process service whose HTTP readiness never answers: nothing listens at its loopback address.
 {
