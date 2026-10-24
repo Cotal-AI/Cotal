@@ -602,7 +602,7 @@ try {
       }
       check("the send whose block the broker cannot create exits 3 naming the logged permission failure, and its Next makes the store writable, not free disk",
         failed?.status === 3 && failed.env?.error?.code === "OPERATION_UNKNOWN" && /broker logged a store write failure at .*: permission denied/.test(failed.env.error.message) &&
-          failed.env.error.remedy === `make ${store} writable by this account again, as chmod -R u+w ${store} does, then restart the broker with cotal down and cotal up before sending again`, failed && shown(failed));
+          failed.env.error.remedy === `Make ${store} writable by this account again, as chmod -R u+w ${store} does, then restart the broker with cotal down and cotal up before sending again. The broker disabled JetStream, so if cotal down refuses because the manager's stop cannot be recorded, it names the manager process to end on this host first.`, failed && shown(failed));
       const after = cli(root, "send", "-c", "general", "after the failure", "--json");
       const message = after.env?.error?.message ?? "";
       check("a later send refuses DEPENDENCY_UNAVAILABLE naming the write failure, and does not say the space was deleted",
