@@ -57,6 +57,7 @@ import {
   seatCheckpointDir,
   type SeatCheckpoint,
   type JsonValue,
+  restoreLeftOut,
 } from "@cotal-ai/workspace";
 import { jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
@@ -90,7 +91,7 @@ import { additiveTeamRecordedState, listAdditiveTeamAttempts, retainedAdditiveTe
 import { service, serviceComplete, validateServiceArguments } from "./service-registry.js";
 import { stopNamedServiceSet } from "./service-set-stop.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
-import { assertBareDownServicesVerified, bareDownServicesView, planBareDownServices, stopBareDownServices, type BareDownService } from "./down-services.js";
+import { assertBareDownServicesVerified, assertNoServicesForPreserve, bareDownServicesView, planBareDownServices, stopBareDownServices, type BareDownService } from "./down-services.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
@@ -641,7 +642,7 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
     const existing = readMaintenanceJournal(root);
     // A completed restore keeps its journal, and a new cut begins only after that journal is retired.
     if (existing && "restore" in existing && existing.state === "active")
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a completed restore still holds this root's maintenance journal; a new preserve begins only after it is retired, so nothing was stopped", { target: { root, space: mesh.space, attemptId: existing.restore.attemptId }, remedy: restoreNextStep(existing.state, existing.restore.attemptId, existing.restore.selection) });
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a completed restore still holds this root's maintenance journal; a new preserve begins only after it is retired, so nothing was stopped", { target: { root, space: mesh.space, attemptId: existing.restore.attemptId }, remedy: restoreNextStep(existing.state, existing.restore.attemptId, restoreLeftOut(existing)) });
     if (existing && existing.state !== "cut-intent" && existing.state !== "cut-committed" && existing.state !== "ready")
       throw new Error(`cannot preserve while maintenance state is ${existing.state}`);
     if (existing && (existing.space !== mesh.space || existing.mode !== mesh.mode ||
@@ -652,6 +653,9 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
       console.log(c.dim(`state for "${mesh.space}" is already preserved and offline`));
       return;
     }
+    // A saved service depends on the broker, so the cut does not stop the broker under one. Plain
+    // down stops them first; a preserve leaves that to the operator and stops nothing.
+    assertNoServicesForPreserve(mesh.space);
 
     let attemptId: string;
     let resume;

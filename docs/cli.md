@@ -693,11 +693,13 @@ path to create in one. A regular file there refuses `USAGE_INVALID` (exit 1) and
 existing part of the path follows the [`space create`](#selecting-a-space) rule for other local
 writers, so a group- or world-writable directory in it refuses `PERMISSION_DENIED` before anything
 is written. A path still to create needs its nearest existing directory to be writable by this
-account, or it refuses `PERMISSION_DENIED` (exit 2) before anything is written. A non-empty
-directory is accepted, since it may hold an existing store. When it holds anything besides a
+account, or it refuses `PERMISSION_DENIED` (exit 2) before anything is written. On `up`, a
+non-empty directory is accepted, since it may hold an existing store. When it holds anything besides a
 store's `jetstream` directory, its `.cotal-store-id` marker and the `ocsp` folder nats-server makes
 there when it reloads its configuration, `up` warns and names those entries,
-because `clean store` and `reset store` refuse such a directory. A control
+because `clean store` and `reset store` refuse such a directory. A restore creates its store
+directory itself, so `up --restore` and `backup restore` refuse a path that already exists, empty or
+not, other than the preserved store, with `USAGE_INVALID` (exit 1) and restore nothing. A control
 directory refuses `USAGE_INVALID` too, before anything is written: a root's `.cotal` or a path in it,
 other than that root's own `.cotal/nats`, and the machine home's `.cotal`. A store there would mix
 with credentials and records, or with another root's store, and `reset store` could not remove it.
@@ -1287,6 +1289,10 @@ that command. `--preserve-state` takes its agent inventory from the manager that
 When no manager holds the space's lease, as on a stack started with `--no-manager`, it refuses
 `TARGET_UNAVAILABLE`, exit 2, before it stops anything or writes a maintenance record. Start the
 manager with `cotal up`, then run `cotal down --preserve-state` again.
+It also refuses `LIFECYCLE_BLOCKED`, exit 2, before it stops anything, while a saved service in the
+space still runs or cannot be verified, because the service depends on the broker it would stop.
+The refusal names each one and the `cotal service stop <name> --instance <id> --space <space> --yes`
+that stops it. Bare `down` stops those services first instead.
 The preserved state records its store by absolute path. If the project folder is moved after
 `down --preserve-state`, `up`, `backup create` and `backup restore` refuse `CONFLICT`, exit 2, name
 the folder it was moved from, and say to move it back there first. A store missing from its recorded
@@ -1551,7 +1557,7 @@ cotal clean restore-fallback --attempt <id> --force [--discard-history]
 | `--force` | none | Required: destructive, no prompting |
 | `--dry-run` | off | `store`/`all`: list what would be removed and remove nothing; needs no `--force` |
 | `--attempt <id>` | none | `restore-attempt`: exact stale pre-commit attempt; `restore-fallback`: matching healthy committed restore |
-| `--discard-history` | off | `restore-fallback`: also delete a registry-only restore's old store, the only copy of the history it left out |
+| `--discard-history` | off | `restore-fallback`: also delete an old store that holds the only copy of the history or workflow runs the restore left out |
 
 One configurable cleanup verb; every target requires `--force`, except a `--dry-run` of `store` or `all`.
 
@@ -1572,7 +1578,10 @@ One configurable cleanup verb; every target requires `--force`, except a `--dry-
   backups taken before `clean all` no longer restore into this root. Only the registry of such a
   backup still restores, with `backup restore <dir> --only registry`, and chat and DM history start
   empty. Its dry run and its receipt say so when it removes that trust; take a new full backup after
-  the next `cotal up`.
+  the next `cotal up`. On a user-auth space it also removes the space's IdP trust and its actor
+  ledger, so every actor grant is lost. Its dry run and its receipt say so, and a later `up` then
+  needs `cotal up --user-auth --idp <auth base URL>` and each actor granted again with
+  `cotal actor grant`.
 
 `history` needs the mesh up; `store` and `all` refuse while any recorded mesh process may still be
 running or any same-root recorded broker endpoint remains reachable (run `cotal down` first). On a
@@ -1603,7 +1612,8 @@ stopped, the clean runs. After a healthy committed restore,
 `restore-fallback` is the only supported way to remove the recorded unchanged old-store inode; it
 never deletes the active target, requires both the exact attempt id and `--force`, and retires the
 completed restore journal so a later `down --preserve-state` can start a new backup cycle. After a
-registry restore it also requires `--discard-history`, as `backup cleanup-fallback` does. After an
+restore that left history or workflow runs out it also requires `--discard-history`, as
+`backup cleanup-fallback` does. After an
 `--accept-missing-source` restore there is no old store, so it only retires the journal.
 
 ## reset
@@ -1616,7 +1626,8 @@ cotal reset space <space> [--dry-run] [-y|--yes] [--json|--plain]
 Both routes select a space this machine started. A space with a locally started registration is
 selected by it. A controller stack that a completed `down` stopped has no registration; its
 prepared record and stack journal at the same root name its broker address, store and mode, and a
-reset keeps both, so a later `up` starts it again. A stack none of whose members ever started has
+reset keeps both, so a later `up` starts it again. After `reset space` of a user-auth space, that
+`up` needs `--user-auth --idp <auth base URL>`, as described below. A stack none of whose members ever started has
 no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. A stack whose last
 operation is not a completed `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each
 refusal names one reason and the command that clears it. A space that may still run names
@@ -1687,7 +1698,10 @@ entries.
 `reset space <space>` adds local identity cleanup through the existing native
 clean-all operation. This route currently requires Linux, a space selected as above and a
 plain-NATS loopback listener. It removes a locally started registration; a stopped controller stack
-keeps its prepared record and stack journal. TLS-first, remote, shared-root
+keeps its prepared record and stack journal. On a user-auth space it also removes the IdP trust and
+the actor ledger, so every actor grant is lost. The preview and the receipt say so on their own
+line: a later `up` needs `cotal up --user-auth --idp <auth base URL>`, and each actor needs
+`cotal actor grant` again. TLS-first, remote, shared-root
 and non-Linux targets refuse. It applies the same maintenance, deployment and
 process-custody guards as store reset. It does not stop a process to become
 eligible.
@@ -1790,7 +1804,8 @@ brokers are proven gone, or for 30 minutes when they cannot be. Until then `up`,
 partial artifact, the clone and the broker files, each matched by inode, and a create to another
 directory does the same before it starts, then backs up the cut's recorded store, a custom
 `--store-dir` one included. A create naming the partial artifact refuses `CONFLICT`
-and names that recovery.
+and names that recovery. The release's receipt names `cotal backup create <directory>` and
+`cotal up` as its next steps.
 
 `backup inspect` reads the bounded manifest and exact declared file-name inventory. It does not
 hash snapshot or checkpoint contents. `backup verify` additionally reads each named regular file
@@ -1829,14 +1844,18 @@ read path refuses unsupported file-protection environments rather than using a w
 `backup recover <full-attempt-id>` uses the original root's pre-commit restore journal, not a
 manifest path or selected-space guess. It rolls the attempt back once it is stale: its restore
 process and every recorded watchdog and broker are proven dead, and either every broker this root
-started is proven gone or the claim's deadline has passed. Commit intent forbids rollback.
+started is proven gone or the claim's deadline has passed. Commit intent forbids rollback. The
+receipt names `cotal up`, which resumes the space from its preserved state, and
+`cotal backup restore <directory>`, which tries the restore again, as its next steps.
 `backup cleanup-fallback <full-attempt-id>` requires the matching healthy active restore and
 removes only its unchanged retained old-store identity; it never removes the restored target.
 A restore made with `--accept-missing-source` replaced a missing source and retains no old store,
 so its cleanup removes nothing and only retires the journal. A later `down --preserve-state` then
-starts a new backup cycle. A registry restore leaves every other stream out, so its old store holds
-the only copy of that history. Its `--dry-run` warns with `HISTORY_ONLY_IN_PREVIOUS_STORE`, and the
-cleanup refuses `USAGE_INVALID` (exit 1) and deletes nothing unless `--discard-history` is given.
+starts a new backup cycle. A registry restore leaves every other stream out, chat and DM history
+and workflow runs included, and a full restore of an artifact with no workflow runs leaves the runs
+out, so its old store holds the only copy of them. Its `--dry-run` warns with
+`HISTORY_ONLY_IN_PREVIOUS_STORE` and names what it left out, and the cleanup refuses
+`USAGE_INVALID` (exit 1) and deletes nothing unless `--discard-history` is given.
 That refusal names the flag and does not print the command help.
 Both review full paths and default to Cancel. Scripts need `--yes`; `--dry-run` reads the plan
 without taking a maintenance lock or writing. Apply rechecks the reviewed journal revision under
@@ -1844,8 +1863,8 @@ the native lock, preserves unknown outcomes and never retries a deletion. No liv
 or process kill is supplied.
 A restore's full attempt id has the form `restore-<uuid>`. `backup recover` also takes an
 interrupted create's `backup-<uuid>`, as described above. `cotal status` shows the attempt a root
-holds under Maintenance, with its state and next step. For a registry restore that step includes
-`--discard-history`. A refusal for the wrong state names the next step
+holds under Maintenance, with its state and next step. For a restore that left history or workflow
+runs out that step includes `--discard-history`. A refusal for the wrong state names the next step
 for the recorded one. A completed `cleanup-fallback` retires the journal, so a repeated cleanup
 refuses with `TARGET_NOT_FOUND` and says the root holds no restore attempt.
 
@@ -1866,8 +1885,8 @@ active journal was written. Its `seatResume` field says whether retained seats w
 manager's resume (`requested`) or dropped by a registry restore (`not-requested`). It does not
 confirm that any seat joined. Its `restored` and `recreatedEmpty` fields name the streams the
 restore brought back and the ones it recreated empty. A registry restore brings back channel settings only, so chat and DM
-history start empty. Its receipt says so with a `HISTORY_NOT_RESTORED` warning, and `previousStore`
-names the store the restore set aside, which holds the only copy of that history. Its next step says
+history and workflow runs start empty. Its receipt says so with a `HISTORY_NOT_RESTORED` warning, and `previousStore`
+names the store the restore set aside, which holds the only copy of them. Its next step says
 that `backup cleanup-fallback` deletes that store only with `--discard-history`.
 `up --restore --restore-only registry` prints the same two lines. `--store-dir` names a store the restore creates, so a path that
 already exists, or whose parent directory does not, refuses `USAGE_INVALID` (exit 1) before anything
@@ -1880,13 +1899,14 @@ artifact (`artifact`) is missing. A restore that fails after it
 began names its attempt in the text and in the JSON target, which also carries `journalState`, and
 its remedy gives the next step for that state. `up --restore`
 remains as the equivalent startup form. After its startup lines it names the restore attempt and
-gives the cleanup step that retires it, with `--discard-history` for a registry restore. Unlike the other
+gives the cleanup step that retires it, with `--discard-history` for a restore that left history or
+workflow runs out. Unlike the other
 backup modes, `backup restore` runs the connector seed first, as `up` does, because it resumes seats.
 
 Three commands refuse an active restore. `down --preserve-state`, in each of its forms, refuses
 `LIFECYCLE_BLOCKED` (exit 2) and stops nothing: a new cut begins only after the restore journal is
 retired, so it names the attempt and `backup cleanup-fallback` as the next step, with
-`--discard-history` after a registry restore. `team boot`
+`--discard-history` after a restore that left history or workflow runs out. `team boot`
 resumes only a stopped stack whose manager never launched, and a restored stack's manager already
 ran, so start it with bare `cotal up` instead. `cotal up -f` boots a fresh mesh, so it starts only
 once the restore is retired. While the restored broker runs, it refuses `CONFLICT`, exit 2, naming
@@ -1917,8 +1937,11 @@ cut with the runs. A user-mode full backup holds no workflow run store, because 
 lifecycle heads name credential rows in the auth store, which a backup does not carry; its restore
 recreates the run stores empty and says so. An artifact in the earlier `cotal-space-backup/v1`
 format still restores; it holds no workflow run, so the run stores come back empty and the restore
-says so. Each restore lists what
-it restored and what it recreated empty. Artifacts are exclusively created `0700`;
+says so. `backup create` says so too when its artifact holds no runs, as a registry or user-mode
+artifact does. After a restore that left the runs out, the store it set aside holds their only copy:
+its receipt says so with a `RUNS_NOT_RESTORED` warning that names that store, and
+`backup cleanup-fallback` deletes it only with `--discard-history`, as for a registry restore. Each
+restore lists what it restored and what it recreated empty. Artifacts are exclusively created `0700`;
 snapshot/checkpoint files and
 the manifest are `0600`; `manifest.json` is written last with exact sizes and SHA-256 values. The
 directory is trusted operator input: hashes detect corruption, not malicious rewriting. So
@@ -2299,6 +2322,12 @@ live broker to read or delete from: `space delete` refuses it with `TARGET_UNAVA
 For a stopped stack it names `cotal reset store <space> --yes`, which removes the stored streams, and
 `space forget`, which removes only its local record. For a space that never ran it names only
 `space forget`, because no streams were stored.
+
+The dry run also reads the space's workflow runs from its records bucket and lists each run that
+has not finished, with its recorded state. Deleting the streams removes those runs, and a run still
+waiting for an answer cannot be answered or resumed afterwards. To read a run's open request first,
+run `cotal up`, then `cotal run show <run>`. The typed confirmation says how many unfinished runs go
+with the space, and the receipt lists the runs it removed.
 
 On a space this machine started, the apply refuses `LIFECYCLE_BLOCKED` while the space's own stack
 still runs here, before any broker connection. On a controller root that is any service instance of
