@@ -239,6 +239,11 @@ export type RunJournalRow =
       /** When the step began and, once settled, ended (epoch ms). */
       readonly startedAt: number;
       readonly endedAt?: number;
+      /** On a settled `race` that took a branch's value, that branch. */
+      readonly winner?: string;
+      /** On a step in a branch that lost a `race`, that race's step key. The program never read
+       *  what the step settled with, so an answer it holds was not acted on. */
+      readonly lostRace?: string;
       /** What an open pause asks, present only while it is open. */
       readonly asks?: string;
       readonly addressee?: string;
@@ -249,7 +254,8 @@ export type RunJournalRow =
       readonly onExpiry?: string;
       /** The accepted answer of a settled pause: named by a checkpoint's settled result, and for an
        * `ask`, whose result is the value alone, read from the answer record its last attempt's settle
-       * named. Absent for open and expired pauses and ordinary steps. */
+       * named. A pause cancelled after it accepted an answer carries that answer too, read the same
+       * way. Absent for open and expired pauses and ordinary steps. */
       readonly answer?: {
         readonly answerId: string;
         readonly value?: unknown;
