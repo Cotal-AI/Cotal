@@ -29,6 +29,31 @@ type UserManagerFollow = (
   prepare: (signal: AbortSignal, deadline: number) => Promise<void>,
 ) => Promise<EpAttributedReply>;
 
+/** Callers whose `manager-caller` bearer was refused accepted-row read on the legacy rail (#4122). */
+const unissuedManagerCallers = new Set<string>();
+
+export function managerCallerIssuanceProbe(
+  token: string,
+  space: string,
+  caller: EpCaller,
+): { mayBeIssued: boolean; cacheKey: string } {
+  let act: Record<string, unknown> | undefined;
+  try {
+    const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as {
+      act?: Record<string, unknown>;
+    };
+    act = payload.act;
+  } catch { /* already validated by managerCallerBinding */ }
+  const scopes = Array.isArray(act?.scope)
+    ? act.scope.filter((s): s is string => typeof s === "string").sort()
+    : [];
+  const parent = typeof act?.parent === "string" ? act.parent : "";
+  const cacheKey = `${space}\0${caller.owner}\0${caller.actor}\0${caller.uid}\0${parent}\0${scopes.join(",")}`;
+  if (unissuedManagerCallers.has(cacheKey)) return { mayBeIssued: false, cacheKey };
+  if (parent && !scopes.includes("run")) return { mayBeIssued: false, cacheKey };
+  return { mayBeIssued: true, cacheKey };
+}
+
 /** A control connection never replaces the seat's presence, messages or standing bearer source. */
 export async function invokeUserManager(
   config: ManagerConfig,
@@ -63,12 +88,16 @@ export async function invokeUserManager(
     if (signal?.aborted) onAbort();
     signal?.throwIfAborted();
     // Issued interactive views and eligible managed run views carry their own accepted-row read
-    // (SPEC 13.15). A managed view without that issuance remains on its legacy rail: the broker
-    // refuses the read as a RequestError whose cause is the permission violation.
-    try {
-      caller = await issuedUserCaller(nc, config.space, String(connectOpts.name), caller);
-    } catch (e) {
-      if (!isPermissionDenied(e)) throw e;
+    // (SPEC 13.15). A managed view without `run` is never issued, and any view whose accepted-row
+    // read is refused by the broker stays on its legacy rail without re-probing every poll (#4122).
+    const probe = managerCallerIssuanceProbe(token, config.space, caller);
+    if (probe.mayBeIssued) {
+      try {
+        caller = await issuedUserCaller(nc, config.space, String(connectOpts.name), caller);
+      } catch (e) {
+        if (!isPermissionDenied(e)) throw e;
+        unissuedManagerCallers.add(probe.cacheKey);
+      }
     }
   };
   // The describe spends what is left of the follow's deadline, so a silent manager reports itself.

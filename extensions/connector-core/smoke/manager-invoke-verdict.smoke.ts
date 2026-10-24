@@ -30,6 +30,7 @@
 import { EpEnvelopeError, EP_UNANSWERED, EP_UNBOUND_RESPONDER, managerCallerBinding } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
+import { managerCallerIssuanceProbe } from "../src/manager-call.js";
 
 let pass = 0, fail = 0;
 /** A cell RECORDS its verdict; it never throws. A throwing cell takes every cell below it with it,
@@ -146,7 +147,21 @@ check("user spawn delegates follow to its standing endpoint before executing the
   followedOnMain && spawned.ok && (spawned.data as { name?: string })?.name === "followed" &&
   (spawning as unknown as { ep: unknown }).ep === standing);
 
-const EXPECTED_CELLS = 21;
+const interactiveProbe = managerCallerIssuanceProbe(token(claims), cfg.space, binding.caller);
+const managedNoRunProbe = managerCallerIssuanceProbe(
+  token({ ...claims, act: { ...claims.act, parent: `${owner}.cli`, scope: ["spawn"] } }),
+  cfg.space,
+  binding.caller,
+);
+const managedWithRunProbe = managerCallerIssuanceProbe(
+  token({ ...claims, act: { ...claims.act, parent: `${owner}.cli`, scope: ["spawn", "run"] } }),
+  cfg.space,
+  binding.caller,
+);
+check("interactive and run-scoped managed bearers probe accepted-row issuance while un-scoped managed bearers skip it",
+  interactiveProbe.mayBeIssued === true && managedNoRunProbe.mayBeIssued === false && managedWithRunProbe.mayBeIssued === true);
+
+const EXPECTED_CELLS = 22;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {
