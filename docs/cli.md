@@ -698,13 +698,14 @@ on the way out: `failed` when no child was spawned yet, or with the child's proc
 the next `up` or `down` settles it from evidence. Members it already started keep running, and it
 names them and the next step: `cotal up`
 finishes the start, and `cotal down --yes` stops them. When only its broker started and the space
-was not registered yet, it names that broker's pid, `cotal down --yes` and then `cotal up`. A bare
-`down` interrupted the same way exits with the same codes and names the members still running;
-`cotal down --yes` finishes the stop. When it had signalled a member that had not yet exited, it also
-names that stop's request: `cotal down --yes` stops the member again while it runs, and once it has
-exited, `cotal down --abandon-stop <request-id> --yes` finishes the stop. Any command interrupted
-while the CLI is still loading, before the command begins, exits with the same codes and says it did
-nothing.
+was not registered yet, it names that broker's pid, `cotal down --yes` and then `cotal up`. An `up`
+interrupted while it writes a new space's trust material leaves the space new, so the next `up`
+writes all of it again. A bare `down` interrupted the same way exits with the same codes and names
+the members still running; `cotal down --yes` finishes the stop. When it had signalled a member that
+had not yet exited, it also names that stop's request: `cotal down --yes` stops the member again
+while it runs, and once it has exited, `cotal down --abandon-stop <request-id> --yes` finishes the
+stop. Any command interrupted while the CLI is still loading, before the command begins, exits with
+the same codes and says it did nothing.
 
 `up` runs the `nats-server` on PATH when one answers `--version`, and the bundled one otherwise. One
 on PATH must report version 2.12 or newer. An older one, or one that reports no version, refuses

@@ -4876,9 +4876,13 @@ async function authSetup(
   let auth: SpaceAuth | undefined = await getSpaceAuth(store, space);
   if (!auth) {
     auth = await createSpaceAuth(space);
-    await putSpaceAuth(store, auth); // strips the $SYS seed at rest, but leaves the in-memory `auth` intact …
-    await retainSystemSigningSeed(store, auth); // … and the host keeps the seed itself, beside the record, for own-broker caller issuance
-    await provisionMembershipCreds(auth, cotalRoot(), space); // … so the observer can still be minted here (fresh-space only)
+    // The trust record is written last. Until it exists the next up treats the space as fresh and
+    // mints all of this again, so an up stopped partway never leaves a space without its $SYS creds.
+    await provisionMembershipCreds(auth, cotalRoot(), space); // the observer is minted while the $SYS seed is in memory (fresh-space only)
+    // Smoke only: hold a new space with part of its material written, so a signal can land there.
+    if (process.env.COTAL_SMOKE_HOLD_IN_SPACE_AUTH === "1") await new Promise((done) => setTimeout(done, 60_000));
+    await retainSystemSigningSeed(store, auth); // the host keeps the seed itself, beside the record, for own-broker caller issuance
+    await putSpaceAuth(store, auth); // strips the $SYS seed at rest
     // A fresh space's $SYS material was just minted from the seed this branch holds in memory, so
     // the ASK is already satisfied, so say so rather than rotating a one-second-old account, and never
     // report a rotation that did not happen.

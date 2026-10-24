@@ -136,6 +136,9 @@
  *     `cotal down --abandon-stop <request> --yes` with the stop's request. Once the daemon exits,
  *     `down --yes` refuses `LIFECYCLE_BLOCKED` naming the same command, which stops the rest of the
  *     stack.
+ * 17. An `up` interrupted while it writes a new space's trust material, held there by
+ *     `COTAL_SMOKE_HOLD_IN_SPACE_AUTH` with part of it written. It exits 130, and the next `up`
+ *     writes all of it again and starts the stack, delivery included.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
@@ -148,7 +151,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, MIN_FILE_STORE, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, MIN_FILE_STORE, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -1455,6 +1458,26 @@ try {
     check("down --yes then refuses LIFECYCLE_BLOCKED naming the same down --abandon-stop", refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(refused.env.error.remedy?.includes(`cotal down --abandon-stop ${request} --yes`)), shown(refused));
     const abandoned = cli(root, "down", "--abandon-stop", String(request), "--yes", "--json");
     check("and down --abandon-stop with that request stops the rest of the stack", abandoned.status === 0 && Boolean(abandoned.env?.warnings?.some((warning) => warning.code === "STOP_ABANDONED")) && gone(space, "stack-broker"), shown(abandoned));
+  }
+
+  // 17. An up interrupted while it writes a new space's trust material.
+  {
+    const space = "fresh-auth";
+    const root = prepare(space);
+    const port = await freePort();
+    const held = join(root, ".cotal", spaceSegment(space), "membership-observer.creds");
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json"], { cwd: root, env: { ...env, COTAL_SMOKE_HOLD_IN_SPACE_AUTH: "1" }, stdio: ["ignore", "ignore", "pipe"] });
+    let upErr = "";
+    child.stderr!.on("data", (chunk: Buffer) => { upErr += chunk.toString(); });
+    const holding = await until(() => existsSync(held), 120_000);
+    child.kill("SIGINT");
+    await exited(child);
+    check("an up interrupted while it writes a new space's trust material exits 130", holding && child.exitCode === 130, { holding, exitCode: child.exitCode, stderr: upErr.slice(-400) });
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json");
+    track(space);
+    check("the next up writes it again and starts the stack, delivery included", started.status === 0 && pidOf(space, "stack-delivery") !== null, shown(started));
+    const last = cli(root, "down", "--yes", "--json");
+    check("and down --yes stops it", last.status === 0, shown(last));
   }
 } finally {
   for (const root of roots) cli(root, "down", "--yes", "--json");
