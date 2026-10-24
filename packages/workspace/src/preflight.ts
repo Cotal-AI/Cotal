@@ -1,6 +1,6 @@
 import { createConnection } from "node:net";
 import { mintCreds, newIdentity, probeConnect, isReachable } from "@cotal-ai/core";
-import { loadMeshes, pruneMesh } from "./mesh-registry.js";
+import { loadMeshes } from "./mesh-registry.js";
 import type { MeshTarget } from "./mesh-target.js";
 import { stoppedLoopbackListener } from "./pid.js";
 
@@ -204,29 +204,8 @@ export async function readNatsInfoGreeting(
   });
 }
 
-/**
- * Drop registry entries whose broker is gone — a `cotal up` that crashed or was `kill -9`'d without
- * `cotal down` leaves a record behind. This is liveness-only and we hold NO creds for these meshes,
- * so it uses the silent TCP+INFO {@link isReachable} probe — NOT a credless `probeConnect`, whose
- * auth-rejection-as-liveness would log a broker auth error on every live AUTH mesh it sweeps.
- * `isReachable` is true for any live broker (open or auth, since INFO precedes auth); only a truly
- * dead one (refused/timeout) prunes. An EXPLICIT call (never wired into resolution itself), so
- * registry mutation stays opt-in: callers that act on the registry (`spawn`/`use`/`meshes`, the
- * manager control commands) invoke it; `<TAB>` completion must not.
- *
- * A dead broker is never enough to delete a record: {@link pruneMesh} keeps both an
- * operator-registered (`cotal meshes add`) mesh and an `up` / pre-origin one on a liveness miss,
- * and this reports them as `offline` instead. Mismatch deletion is a different path.
- *
- * **Deletion needs CONFIRMATION, not one timeout.** Pruning is destructive: a wrongly pruned mesh
- * costs the operator a re-`up` (or, for a remote one, the exact registration line again) and every
- * command in between fails on a mesh that was live all along. `isReachable`'s default budget is 1s, which a
- * perfectly healthy broker across a slow or jittery link (a relayed overlay VPN, a loaded host)
- * misses routinely — one such blip silently unregistered a live remote mesh. So a first failure
- * only makes it a CANDIDATE: confirm with a second, longer probe and prune only if that also
- * fails. A live-but-slow broker keeps its entry; a genuinely dead one still prunes on the next
- * sweep, one extra probe later.
- */
+/** Confirm a missed TCP+INFO liveness probe with a longer budget before reporting offline.
+ *  This probe holds no credentials and cannot establish a mismatch or authorize deletion. */
 const PRUNE_CONFIRM_TIMEOUT_MS = 5_000;
 
 /** The confirming budget for a single target's preflight. Larger than {@link PRUNE_CONFIRM_TIMEOUT_MS}
@@ -238,8 +217,6 @@ export const PREFLIGHT_CONFIRM_TIMEOUT_MS = 8_000;
  *  every origin, because a liveness miss is not a deletion. A surface that lists meshes renders
  *  that as a state instead of probing every broker a second time. */
 export interface MeshSweep {
-  /** Spaces whose dead record was dropped. Empty after a liveness-only sweep. */
-  pruned: string[];
   /** Spaces kept despite a dead broker. */
   offline: string[];
 }
@@ -253,8 +230,9 @@ export async function brokerAnswers(server: string): Promise<boolean> {
   return stoppedLoopbackListener(server) === undefined && await isReachable(server, { timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS });
 }
 
+/** Sweep liveness without deleting records. Catalog entries are not probed. */
 export async function pruneStaleMeshes(): Promise<MeshSweep> {
-  const sweep: MeshSweep = { pruned: [], offline: [] };
+  const sweep: MeshSweep = { offline: [] };
   await Promise.all(
     loadMeshes().map(async (m) => {
       // A catalog snapshot is registry preparation, not broker discovery. Catalog-owned entries are
@@ -263,8 +241,7 @@ export async function pruneStaleMeshes(): Promise<MeshSweep> {
       // selected target is allowed to connect.
       if (m.origin === "catalog") return;
       if (await brokerAnswers(m.server)) return;
-      // pruneMesh, not removeMesh: a liveness miss keeps the record (manual and up alike).
-      (pruneMesh(m.space) ? sweep.pruned : sweep.offline).push(m.space);
+      sweep.offline.push(m.space);
     }),
   );
   return sweep;

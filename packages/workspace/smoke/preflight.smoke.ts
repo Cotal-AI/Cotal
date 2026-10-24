@@ -17,9 +17,12 @@
  * Run: pnpm smoke:preflight
  */
 import { strict as assert } from "node:assert";
+import fs from "node:fs";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mock } from "node:test";
 import type { MeshTarget, PreflightFailure } from "@cotal-ai/workspace"; // erased at runtime — safe before the COTAL_HOME sandbox
 
 // Sandbox the registry BEFORE importing core — homeCotalDir() reads COTAL_HOME per call, so the
@@ -39,6 +42,7 @@ const {
   removeMesh,
   loadMeshes,
   meshFile,
+  meshesDir,
   preflightOrThrow,
   renderWorkspaceError,
   reachableOrThrow,
@@ -59,6 +63,19 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
+
+// Spy on the builtin the built workspace imports, while retaining real filesystem operations.
+async function registryListings<T>(run: () => Promise<T>): Promise<{ value: T; listings: number }> {
+  const listing = mock.method(fs, "readdirSync");
+  syncBuiltinESMExports();
+  try {
+    const value = await run();
+    return { value, listings: listing.mock.calls.filter((c) => String(c.arguments[0]) === meshesDir()).length };
+  } finally {
+    listing.mock.restore();
+    syncBuiltinESMExports();
+  }
+}
 
 // A closed loopback port — probeConnect refuses fast (no listener), so every probe below is "unreachable".
 const DEAD = "nats://127.0.0.1:14991";
@@ -258,17 +275,27 @@ check("pruneStaleMeshes keeps every dead entry as offline", loadMeshes().length 
 const DEAD_2 = "nats://127.0.0.1:14989";
 recordMesh({ space: "ours", server: DEAD_2, root: "/tmp/p3", mode: "open", origin: "up", ts: new Date(0).toISOString() });
 recordMesh({ space: "theirs", server: DEAD_2, root: "/tmp/p3", mode: "open", origin: "manual", ts: new Date(0).toISOString() });
-const sweep = await pruneStaleMeshes();
+const listingControl = await registryListings(async () => loadMeshes());
+check("registry listing counter observes a real registry load", listingControl.listings === 1, listingControl);
+const swept = await registryListings(() => pruneStaleMeshes());
+const sweep = swept.value;
+check("liveness sweep lists the registry once, without a no-op prune read per offline record", swept.listings === 1, swept);
 check("sweep KEEPS the `up` record", findMesh("ours") !== undefined, loadMeshes());
 check("sweep KEEPS the operator-registered record", findMesh("theirs") !== undefined, loadMeshes());
-check("sweep reports both as offline (none pruned)", sweep.pruned.length === 0 && sweep.offline.includes("ours") && sweep.offline.includes("theirs"), sweep);
+check("sweep reports only offline state", Object.keys(sweep).join(",") === "offline" && sweep.offline.includes("ours") && sweep.offline.includes("theirs"), sweep);
 assert.throws(() => resolveMeshTarget("/nonexistent/cwd", { offline: sweep.offline }), /no mesh running/);
 check("all-offline is still no-meshes; both records remain", findMesh("ours") !== undefined && findMesh("theirs") !== undefined);
 check("pruneMesh reports refusing to delete a manual record", pruneMesh("theirs") === false && findMesh("theirs") !== undefined);
-check("pruneMesh reports refusing to delete an `up` record on liveness", pruneMesh("ours") === false && findMesh("ours") !== undefined);
+const offlinePreflight = await registryListings(() => preflightOrThrow({ ...T, space: "ours", source: "registry" }).then(() => undefined, (e: unknown) => e));
+check("unreachable preflight refuses without reading the registry for a no-op prune", offlinePreflight.listings === 0 && offlinePreflight.value instanceof ConnectRefusal && offlinePreflight.value.code === "TARGET_UNAVAILABLE", offlinePreflight);
+check("unreachable preflight keeps the `up` record", findMesh("ours") !== undefined);
 check("pruneMesh reports nothing removed for an absent record", pruneMesh("never-recorded") === false);
-check("pruneMesh mismatch still drops an `up` record", pruneMesh("ours", "mismatch") === true && findMesh("ours") === undefined);
-check("pruneMesh mismatch still refuses a manual record", pruneMesh("theirs", "mismatch") === false && findMesh("theirs") !== undefined);
+check("pruneMesh mismatch still drops an `up` record", pruneMesh("ours") === true && findMesh("ours") === undefined);
+recordMesh({ space: "pre-origin", server: DEAD_2, root: "/tmp/p3", mode: "open", ts: new Date(0).toISOString() });
+check("pruneMesh mismatch drops a pre-origin record", pruneMesh("pre-origin") === true && findMesh("pre-origin") === undefined);
+recordMesh({ space: "catalog-kept", server: DEAD_2, root: "/tmp/p3", mode: "open", origin: "catalog", catalogOwner: "test-account", ts: new Date(0).toISOString() });
+check("pruneMesh mismatch refuses a catalog record", pruneMesh("catalog-kept") === false && findMesh("catalog-kept") !== undefined);
+removeMesh("catalog-kept");
 // …and the copy stops telling the operator to `cotal up` a mesh that runs somewhere else.
 const manualT = { ...T, space: "theirs", origin: "manual" as const };
 check("unreachable copy for a registered mesh names `cotal meshes rm`, not `cotal up`", (() => {

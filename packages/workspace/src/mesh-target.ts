@@ -266,7 +266,7 @@ export function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget
     if (!auth) {
       const found = listSpaceAccounts(authDir(m.root));
       if (found.length) {
-        const removed = readOnly ? false : pruneMesh(m.space, "mismatch");
+        const removed = readOnly ? false : pruneMesh(m.space);
         throw new MeshTargetError(
           "stale-auth-root",
           `registry entry "${m.space}" points at ${m.root}, whose on-disk auth is now for "${found.join('", "')}"`,

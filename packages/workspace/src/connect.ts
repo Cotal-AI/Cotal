@@ -959,7 +959,7 @@ export async function preflightOrThrow(target: MeshTarget, probeCreds?: string, 
   // record is one an automatic sweep may delete. Liveness (`unreachable`) keeps an `up` record as
   // `offline`; mismatch (creds rejected / mode flipped) still drops it. Manual never deletes.
   // The message reports what ACTUALLY happened, so it never claims a removal that the registry refused.
-  const pruned = !readOnly && r.prune ? pruneMesh(target.space, r.kind === "unreachable" ? "gone" : "mismatch") : false;
+  const pruned = !readOnly && r.prune && r.kind !== "unreachable" ? pruneMesh(target.space) : false;
   const kind = r.kind === "unreachable" || r.kind === "slow-link" || r.kind === "broker-stopped" ? "transient" : "permanent";
   throw workspaceRefusal({ kind: "preflight", failure: r.kind, target, pruned, ...(r.pid === undefined ? {} : { pid: r.pid }) }, { kind, code: preflightCode(r.kind) });
 }

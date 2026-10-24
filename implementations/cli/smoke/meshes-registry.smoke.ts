@@ -764,7 +764,7 @@ try {
   check("sweep KEEPS a dead mesh this machine started", findMesh("local-dead")?.space === "local-dead", loadMeshes());
   check("sweep KEEPS a dead pre-origin record (absent origin = `up`)", findMesh("legacy-dead")?.space === "legacy-dead", loadMeshes());
   check("sweep KEEPS a dead operator-registered mesh", findMesh("remote-dead")?.space === "remote-dead", loadMeshes());
-  check("sweep reports every dead record as offline", sweep.offline.includes("remote-dead") && sweep.offline.includes("local-dead") && sweep.offline.includes("legacy-dead") && sweep.pruned.length === 0, sweep);
+  check("sweep reports every dead record as offline", sweep.offline.includes("remote-dead") && sweep.offline.includes("local-dead") && sweep.offline.includes("legacy-dead"), sweep);
   const sweep2 = await pruneStaleMeshes();
   check("a second sweep still keeps them (not a one-time reprieve)", findMesh("remote-dead") !== undefined && findMesh("local-dead") !== undefined && sweep2.offline.includes("remote-dead") && sweep2.offline.includes("local-dead"), sweep2);
   // The keep invariant is proven. Drop the local `up` fixtures so later `rm` emptiness
@@ -793,8 +793,8 @@ try {
   // teardown, liveness pruning and a different account must never remove or overwrite them.
   recordMesh({ space: "catalog_one", server: LIVE, root: shared, mode: "user", origin: "catalog", catalogOwner: "acct-a", catalogSlug: "catalog_one", catalogName: "Catalog one", ts: new Date(0).toISOString() });
   recordMesh({ space: "catalog_two", server: LIVE, root: shared, mode: "user", origin: "catalog", catalogOwner: "acct-b", catalogSlug: "catalog_two", catalogName: "Catalog two", ts: new Date(0).toISOString() });
-  check("a liveness or mismatch prune never removes a discovered entry",
-    pruneMesh("catalog_one", "mismatch") === false && findMesh("catalog_one") !== undefined, findMesh("catalog_one"));
+  check("a mismatch prune never removes a discovered entry",
+    pruneMesh("catalog_one") === false && findMesh("catalog_one") !== undefined, findMesh("catalog_one"));
   check("a root teardown keeps discovered entries", removeMeshesByRoot(shared).length === 0 && findMesh("catalog_one") !== undefined, loadMeshes());
   const { removeCatalogMeshes } = await import("@cotal-ai/workspace");
   check("account cleanup removes only that account's discovered entries",
