@@ -5106,7 +5106,7 @@ cotal actor list
 | `--sub <subject>` | none | The IdP subject (shown by `cotal login`) the actor belongs to |
 | `--owner <u_…>` | none | The derived owner token (alternative to `--sub`) |
 | `--full` | off | Fill each ACL flag left off with its wide default; without it, `grant` refuses unless all three are named |
-| `--scope <a,b>` | `spawn,role:default` with `--full` | Capability scope (`''` = none; `spawn` = may run agents; `role:<r>` = may delegate role r; `admin` = cross-agent control; `supervise` = eligible for the closed remote manager-service view when the host enables it) |
+| `--scope <a,b>` | `spawn,role:default` with `--full` | Capability scope (`''` = none; `spawn` = may run agents; `run` = may start workflow runs; `role:<r>` = may delegate role r; `admin` = cross-agent control; `supervise` = eligible for the closed remote manager-service view when the host enables it). Any other name is refused |
 | `--allow-subscribe <a,b>` | `>` (all channels) with `--full` | Channel read ACL; the user's envelope, their agents can never read beyond it |
 | `--allow-publish <a,b>` | `>` (all channels) with `--full` | Channel post ACL; also the envelope for their agents' posting |
 | `--role <r>` | none | Role (scopes the task-queue consumer) |
@@ -5121,7 +5121,10 @@ ledger refuses `list` rather than report no rows. On a static or open space the 
 actor grants apply only to a space started with `cotal up --user-auth`, and `grant` and `revoke`
 refuse that way before asking for `--sub`, `--owner` or the ACL flags.
 Otherwise a usage error refuses with exit 1 before any authority is read, and one refusal names every
-missing input: `--sub` or `--owner`, and for `grant` the ACL flags left off without `--full`.
+missing input: `--sub` or `--owner`, and for `grant` the ACL flags left off without `--full`. An
+input that is not valid refuses the same way, naming each field and why: the actor, `--owner`,
+`--role`, `--parent`, a channel pattern, or a `--scope` name other than `admin`, `run`, `spawn`,
+`supervise` and `role:<r>`. Nothing is written.
 `grant --full` is the **full** envelope (all channels; scope `spawn,role:default`, so it may spawn and may delegate the default role). A
 `grant` that leaves off `--scope`, `--allow-subscribe` or `--allow-publish` without `--full` is
 refused and writes nothing. A re-grant **replaces the whole row**, not the one field you name, so to add a capability spell
