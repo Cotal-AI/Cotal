@@ -139,6 +139,12 @@ try {
     (a1 as { ok?: boolean }).ok === true && ((a1 as { data?: { goalId?: string } }).data?.goalId === g1), a1);
   const early = await readGoalResult(actx, { endpoint: MANAGER_ENDPOINT, caller: runner, goalId: g1 });
   check("...and no `failed` terminal was unwound onto it", early === undefined, early);
+  // The acceptance floor names the whole seat triple, owner included, as the spawn floor does: a
+  // successor adopting this relay reads the seat from the floor, and the note carries no copy.
+  const accepted = await readGoalIndex(actx, { endpoint: MANAGER_ENDPOINT, caller: runner, goalId: g1 });
+  check("the turn's acceptance floor records the seat's owner, and its note does not repeat it",
+    accepted?.allocated?.owner === DEV_OWNER && accepted.allocated.actor === seat.id && accepted.allocated.uid === seat.lifecycleUid
+      && accepted.note !== undefined && !("owner" in (JSON.parse(accepted.note) as object)), accepted);
 
   console.log("\n3. the seat pulls and yields under ITS OWN credential: the relay rows are in the agent baseline");
   seatNc = await connect({ servers: broker.servers, ...standaloneConnectOpts({ creds: seatCreds, tls: false }), maxReconnectAttempts: 0 });
@@ -197,7 +203,7 @@ try {
   await broker.stop().catch(() => {});
 }
 
-const EXPECTED_CELLS = 13;
+const EXPECTED_CELLS = 14;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "TURN RELAY AUTH SMOKE OK ✅" : "TURN RELAY AUTH SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
