@@ -49,10 +49,11 @@ import {
   type ServiceDefinitionInput,
   type UserAuthInfo,
   unparsableDaemonCreds,
+  resolveMeshTarget,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
 import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
-import { jetStreamDisabled, jetStreamDisabledRefusal } from "../lib/broker-store-health.js";
+import { jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, storeFull } from "../lib/broker-store-health.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { definitionListeners, exposedPlaintext, listenerRow, type StackListener } from "../lib/stack-listeners.js";
@@ -485,6 +486,23 @@ function reusedWithoutJetStream(caught: unknown, brokerReused: boolean, root: st
   return jetStreamDisabledRefusal(disabled, root, space, "up cannot check the space's streams on it", "its running members were left as they are", { root, space }, manager?.process?.pid);
 }
 
+/** The broker's store over its recorded cap, read over an observer credential after a member failed
+ *  to start. Every write is refused until there is room, a delivery daemon's lease included.
+ *  Undefined while the store is under its cap, with no cap recorded, or when it cannot be read. */
+async function storeFullAfterStart(root: string, space: string): Promise<ReturnType<typeof storeFull>> {
+  let used: number | undefined;
+  try { used = await readStoredBytes(resolveMeshTarget(root, { space, readOnly: true }), "up-diagnosis"); } catch { used = undefined; }
+  return used === undefined ? undefined : storeFull(root, space, used);
+}
+
+/** The two ways out of a full store for an up whose member could not start: making room purges the
+ *  space's channel history, and raising the cap keeps it but needs the broker restarted, so the
+ *  manager's own process is ended first where it runs, as a full store refuses its stop. */
+function fullStoreUpRemedy(root: string, space: string): string {
+  const pid = serviceInstances(space, STACK_DEFINITION.manager).map((row) => row.record.value).find((value) => observeServiceProcess(value) === "running")?.process?.pid;
+  return `from ${root}, make room with cotal history clear --yes, which purges all of this space's channel history, then run cotal up again; to keep that history, ${pid !== undefined ? `end the manager on this host with kill -TERM ${pid}, which stops its agents by its default policy, then ` : ""}run cotal down --yes and cotal up --max-file-store <bytes> with a larger cap`;
+}
+
 /** The running broker of an unregistered space: what an up stopped before registration leaves. */
 function strandedBroker(space: string): ServiceInstance | undefined {
   if (findMesh(space)) return undefined;
@@ -909,10 +927,13 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     // A member that could not connect to a broker which ran out of open files names only that; the
     // broker's log names the cause, and a running broker keeps the limit it started with.
     const starved = pending && failure && pending.role !== "broker" ? brokerOutOfFilesLog(space) : undefined;
-    const cause = pending && failure ? ` (${pending.role}: ${failure.message}${starved !== undefined ? `; the broker's log${starved ? ` at ${starved}` : ""} records that it ran out of open files` : ""})` : "";
+    // A member that writes to the store, as delivery writes its lease, cannot start while the store
+    // is over its cap: the broker refuses that write as every other until there is room.
+    const full = pending && failure && pending.role !== "broker" && starved === undefined ? await storeFullAfterStart(root, space) : undefined;
+    const cause = pending && failure ? ` (${pending.role}: ${failure.message}${starved !== undefined ? `; the broker's log${starved ? ` at ${starved}` : ""} records that it ran out of open files` : full ? `; the broker's JetStream store ${full.path} is full at its --max-file-store cap of ${full.cap} bytes, so it refuses every write` : ""})` : "";
     // A refusal or failure with no member started or reused leaves nothing of the stack running.
     const none = !uncertain && !journal.members.some((row) => row.state === "started" || row.state === "reused");
-    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, none ? `the controller stack started no member${cause}; nothing was retried` : `the controller stack did not start every planned member${cause}; started members were kept and nothing was retried`, { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: starved !== undefined ? `stop the stack with cotal down --yes from ${root}, raise the open-file limit (ulimit -n) of the shell that runs cotal up, then run cotal up there again` : !uncertain && failure?.remedy ? failure.remedy : `inspect the stack's members with cotal service --space ${shellWord(space)} before another cotal up; a later bare cotal down stops only the recorded members` });
+    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, none ? `the controller stack started no member${cause}; nothing was retried` : `the controller stack did not start every planned member${cause}; started members were kept and nothing was retried`, { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: starved !== undefined ? `stop the stack with cotal down --yes from ${root}, raise the open-file limit (ulimit -n) of the shell that runs cotal up, then run cotal up there again` : full ? fullStoreUpRemedy(root, space) : !uncertain && failure?.remedy ? failure.remedy : `inspect the stack's members with cotal service --space ${shellWord(space)} before another cotal up; a later bare cotal down stops only the recorded members` });
   }
   if (loginBlock) {
     mark("manager", { state: "not-attempted", code: "AUTH_REQUIRED" });

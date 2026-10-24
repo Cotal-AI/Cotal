@@ -971,14 +971,22 @@ refuses `CONFLICT`, and nothing is adopted. A stack definition saved for another
 same space name refuses `CONFLICT`, naming that folder and every stack definition saved for it;
 `space forget` removes them once that folder's stack is stopped. A preserve or resume that
 never recorded its outcome stays with its own maintenance attempt. A member that exits before
-readiness is recorded as failed with its exit code, and the refusal names its log with
+readiness is recorded as failed with its exit code, and the refusal quotes the last line it logged
+during that launch and names its log with
 `cotal service logs <definition> --instance <id> --space <space>`. When the broker this `up` started cannot
 create the space's streams, `up` stops that broker again, so the next `up` starts a fresh one. It
 fails `OPERATION_FAILED`, exit 5, and names the cause when the broker's log shows it ran out of
 open files, with raising `ulimit -n` as its next step. Otherwise its next step names that log. When
 another member, such as the manager, exits before readiness and the broker's log shows it ran out of
 open files, `up` names that log and that cause. A running broker keeps the open-file limit it started
-with, so its next step is `cotal down --yes`, then a higher `ulimit -n`, then `cotal up`.
+with, so its next step is `cotal down --yes`, then a higher `ulimit -n`, then `cotal up`. When such a
+member exits before readiness while the space's store holds more than its recorded
+`--max-file-store` cap, `up` names the store and the cap, because the broker refuses every write
+until there is room, the delivery daemon's lease included. Its next step makes room with
+`cotal history clear --yes`, which purges the space's channel history, then runs `cotal up` again.
+To keep that history, it names `cotal down --yes` and `cotal up --max-file-store <bytes>` with a
+larger cap, after `kill -TERM <pid>` for a manager that still runs, as a full store refuses the
+manager's stop.
 
 Before it launches a broker, the controller binds the broker address once, and so does the legacy
 launcher that an unprepared folder or `up -f` starts. When another process holds it, `up` refuses
@@ -3049,7 +3057,9 @@ recorded, so the Next starts with `kill -TERM <pid>` for the stack's manager on 
 When the space holds more bytes than the `--max-file-store` cap this machine recorded for its
 broker, the broker refuses every write, so the `Store` row reads `full` with the bytes stored, the
 cap and the store's path. The first Next is `cotal history clear --space <space> --yes`, which makes
-room by purging the space's channel history. The bytes are the space account's own, as
+room by purging the space's channel history. The `Delivery responder` row then says that the full
+store refuses the daemon's lease, so `up` starts the daemon only once there is room. The bytes are
+the space account's own, as
 `$JS.API.INFO` reports them; the cap counts every account on the broker. A broker started without
 a cap sizes its store from the free disk, and `status` does not compare that.
 
@@ -8183,7 +8193,9 @@ controller's final provider check. Providers still run as the current OS user, n
 
 Process readiness waits up to one second, or its deadline when that is shorter, for the process to
 exit. One that exits by then fails the start with `OPERATION_FAILED`, exit 5, and its exit code is
-recorded; a restart whose replacement exits so is partial, exit 4, and names that exit code. A live
+recorded; a restart whose replacement exits so is partial, exit 4, and names that exit code. A
+background start also quotes the last line the process logged during that launch, and says its log
+records the cause when it logged nothing. A live
 creation-pinned direct process is reported Running. HTTP readiness uses
 a bounded loopback request with credentials omitted and redirects disabled. Its success is
 Reachable, not proof that the child owns that listener or serves a native endpoint. Status labels

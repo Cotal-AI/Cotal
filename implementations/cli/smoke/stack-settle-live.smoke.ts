@@ -39,7 +39,11 @@
  *     history and name the manager's SIGTERM that keeps it. After that clear `send` stores again. When
  *     the manager instead ends on its own host's SIGTERM, `down` stops the rest and keeps the delivery
  *     credential, because the full store refused the daemon's release, and the next `up` with a larger
- *     cap waits out that lease and starts every member with the history kept. A store that refused a
+ *     cap waits out that lease and starts every member with the history kept. Left over its cap, the
+ *     store ends the delivery daemon once its lease lapses: its log quotes the refused create and
+ *     names no other daemon, `status` says the full store refuses its lease, and `up` fails naming
+ *     the store, quoting that line, and giving `history clear` or the SIGTERM route, after which it
+ *     starts the daemon. A store that refused a
  *     write for permission makes the broker disable JetStream: `down`, `service stop stack-manager`
  *     and `up` refuse `DEPENDENCY_UNAVAILABLE` naming the logged failure and the manager's SIGTERM on
  *     its host, `status` leads with that SIGTERM, and once it ends the manager `down` and `up` work. A project folder renamed while its stack runs: the broker names
@@ -617,6 +621,39 @@ try {
     check("up with a larger cap right after waits out that lease and starts every member", again.status === 0 && again.env?.outcome === "ok", shown(again));
     const after = await channelMessages(root, space, "general");
     check("the history is kept", typeof before === "number" && before > 0 && after === before, { before, after });
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+  }
+
+  // 3i. A space over its cap ends its delivery daemon. The lease key expires and the broker refuses
+  // the create that would take it again, which says nothing of another daemon. The up that would
+  // start the daemon again names the full store and the line the daemon logged.
+  {
+    const space = "fulllease";
+    const root = prepare(space);
+    const up = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--max-file-store", "70000000", "--json");
+    track(space);
+    check("up with a 70 MB cap starts", up.status === 0, shown(up));
+    const store = readStackJournal(root)!.journal.broker!.storeDir;
+    const refused = await fillStore(root, space);
+    check("rig: the broker refuses a publish once the store is over its cap", (refused as { code?: unknown } | undefined)?.code === 10023, String(refused));
+    check("the delivery daemon exits once its lease lapses on the full store", await until(() => gone(space, "stack-delivery"), 120_000));
+    const logs = cli(root, "service", "logs", "stack-delivery", "--json");
+    check("its log quotes the broker's refusal of the new lease and names no other daemon",
+      /could not re-acquire it \(insufficient resources\); it serves only under its lease, so it exits/.test(logs.stdout) && !/taken shard/.test(logs.stdout), logs.stdout.slice(-1200));
+    const plain = cli(root, "status", "--plain");
+    check("status says the full store refuses the delivery lease", plain.stdout.includes("the full store refuses its lease"), plain.stdout);
+    const managerPid = pidOf(space, "stack-manager");
+    const restart = cli(root, "up", "--json");
+    check("up fails OPERATION_FAILED, exit 5, quoting the daemon's line and naming the full store, then history clear and the SIGTERM that keeps the history",
+      restart.status === 5 && restart.env?.error?.code === "OPERATION_FAILED"
+        && restart.env.error.message.includes("the last line it logged is: ✗ delivery: acquiring the lease for shard 0 failed: insufficient resources. Not binding.")
+        && restart.env.error.message.includes(`the broker's JetStream store ${store} is full at its --max-file-store cap of 70000000 bytes, so it refuses every write`)
+        && restart.env.error.remedy === `from ${root}, make room with cotal history clear --yes, which purges all of this space's channel history, then run cotal up again; to keep that history, end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run cotal down --yes and cotal up --max-file-store <bytes> with a larger cap`
+        && managerPid !== null, shown(restart));
+    check("history clear --yes makes room", cli(root, "history", "clear", "--yes", "--json").status === 0);
+    const again = cli(root, "up", "--json");
+    track(space);
+    check("up then starts the delivery daemon", again.status === 0 && !gone(space, "stack-delivery"), shown(again));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
   }
 

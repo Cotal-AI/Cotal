@@ -1240,9 +1240,9 @@ async function runStartedDelivery(
            noteLease("held", `a lease watch event found its lease key gone and re-acquired it at revision ${revision}`);
          } catch (e) {
            revision = undefined;
-           console.error(
-             `✗ delivery: a lease watch event found the key gone and another daemon has taken shard ${shard} (${(e as Error).message}), exiting so the holder is single`,
-           );
+           console.error(isCasLoss(e)
+             ? `✗ delivery: a lease watch event found the key gone and another daemon has taken shard ${shard} (${(e as Error).message}), exiting so the holder is single`
+             : `✗ delivery: a lease watch event found its lease key for shard ${shard} gone and it could not re-acquire it (${(e as Error).message}); it serves only under its lease, so it exits`);
            shutdown(1);
          }
          return;
@@ -1351,13 +1351,14 @@ async function runStartedDelivery(
               await resumeServing(`it won the atomic create at revision ${revision}`);
               noteLease("held", `found its lease key gone (renew: ${why}) and re-acquired it at revision ${revision}`);
             } catch (e) {
-              // Refused: a live lease exists that is not ours, so a replacement daemon holds this
-              // shard. THIS is the genuine loss, and it exits, WITHOUT a revision to release, or
-              // the exit would delete the replacement's row.
+              // Either way it exits WITHOUT a revision to release, or the exit could delete a
+              // replacement's row. Only the create's expected-sequence refusal says a live lease that
+              // is not ours exists, which is the genuine loss. Any other refusal, such as 10023 from
+              // a store over its cap, leaves this process with no lease, and it is quoted as it came.
               revision = undefined;
-              console.error(
-                `✗ delivery: lost the lease (${why}) and another daemon has taken shard ${shard} (${(e as Error).message}), exiting so the holder is single`,
-              );
+              console.error(isCasLoss(e)
+                ? `✗ delivery: lost the lease (${why}) and another daemon has taken shard ${shard} (${(e as Error).message}), exiting so the holder is single`
+                : `✗ delivery: found its lease key for shard ${shard} gone (renew: ${why}) and could not re-acquire it (${(e as Error).message}); it serves only under its lease, so it exits`);
               shutdown(1);
             }
             return;
