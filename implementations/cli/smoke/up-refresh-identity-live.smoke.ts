@@ -17,8 +17,8 @@
  * Run: pnpm smoke:up-refresh-identity:live
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { delimiter, join, resolve } from "node:path";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { assertScratchHeld, makeScratch } from "../../../bin/smoke/_scratch.js";
@@ -32,7 +32,7 @@ const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
 
 let passed = 0;
-const EXPECTED_CHECKS = 29 + 9 + 13 + 5 + 14; // namedSpaceElsewhere + storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
+const EXPECTED_CHECKS = 29 + 9 + 13 + 5 + 14 + 4; // namedSpaceElsewhere + storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord + foregroundPreReadyExit
 const check = (name: string, ok: boolean, detail?: unknown): void => {
   if (!ok) throw new Error(`FAIL: ${name}${detail === undefined ? "" : `\n${JSON.stringify(detail, null, 2)}`}`);
   passed++;
@@ -416,6 +416,31 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
   }
 }
 
+/** #3535 — a fresh foreground `up` records the mesh only once its broker serves, so a broker that
+ *  exits before then leaves no record, and the report must not claim one. A nats-server first on
+ *  PATH that answers `--version` and then exits 1 is that broker. {@link foregroundCrashKeepsRecord}
+ *  is the control: a broker killed after it serves still reports the record it keeps. */
+async function foregroundPreReadyExit(): Promise<void> {
+  const fixture = await makeFixture("fg-preready");
+  process.env.COTAL_HOME = fixture.home;
+  process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
+  const { findMesh } = await import("@cotal-ai/workspace");
+  const space = "fg-preready";
+  const bin = mkdtempSync(join(scratch, "fg-preready-bin-"));
+  writeFileSync(join(bin, "nats-server"), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "nats-server: v2.15.0"; exit 0; fi\nexit 1\n', { mode: 0o755 });
+  try {
+    const up = cotal({ ...fixture, env: { ...fixture.env, PATH: `${bin}${delimiter}${fixture.env.PATH}` } }, ["up", "--foreground", "--open", "--server", fixture.server, "--space", space]);
+    check("a broker that exits before it serves makes the foreground `up` exit 1", up.status === 1, { status: up.status, stdout: up.stdout, stderr: up.stderr });
+    check("...and leaves no record of the mesh", findMesh(space) === undefined, findMesh(space));
+    check("...which the report says", up.stderr.includes(`✗ nats-server exited unexpectedly (code 1); the mesh "${space}" is not recorded at ${fixture.server}; log: see the terminal output above`), up.stderr);
+    check("...with no kept-record claim or repair command", !/stays recorded|lists it offline|repair:/.test(up.stderr), up.stderr);
+  } finally {
+    rmSync(bin, { recursive: true, force: true });
+    rmSync(fixture.home, { recursive: true, force: true });
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+}
+
 /** #1697 — `--host` takes a bind HOST, not a URL and not a host:port. Both refusals used to be
  *  reachable only past the IPv6 bracketing: a URL was wrapped into `nats://[nats://…]:4222`, which
  *  nothing validated — with no `--server` the garbage string reached the registry comparison and
@@ -485,6 +510,7 @@ try {
   await storeRecordRepair();
   await preFieldWarning();
   await foregroundCrashKeepsRecord();
+  await foregroundPreReadyExit();
   if (passed !== EXPECTED_CHECKS)
     throw new Error(`FAIL: expected ${EXPECTED_CHECKS} checks, ran ${passed}`);
   console.log(`\nUP REFRESH IDENTITY LIVE SMOKE OK ✅ (${passed} checks passed)`);

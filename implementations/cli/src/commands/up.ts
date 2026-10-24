@@ -2000,6 +2000,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // Unrecording (and the exit code below) both depend on WHY the broker is gone. `stopping` is
     // true only for the intended shutdown `stop()` drives (Ctrl-C, SIGTERM) — everything else here
     // (a crash, an OOM kill, a signal from outside `up`) leaves the record and its store in place.
+    // Both branches read the registry, where only a record naming THIS broker's server and root is its own.
+    const mine = findMesh(space);
+    const recorded = mine !== undefined && mine.server === server && mine.root === cotalRoot();
     if (stopping) {
       // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
       // (a concurrent `up`, or a different-port re-up that recorded after us) may have replaced our
@@ -2008,8 +2011,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // replace it with a hand-registered one carrying the same server + root; that record outlives
       // this broker by design (it is the operator's, and only they remove it), so unrecording it on
       // our exit would delete a registration this process never owned.
-      const mine = findMesh(space);
-      if (mine && mine.origin !== "manual" && mine.server === server && mine.root === cotalRoot()) {
+      if (recorded && mine.origin !== "manual") {
         removeMesh(space);
         if (getCurrent() === space) clearCurrent();
       }
@@ -2020,10 +2022,14 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // supervising unit's restart takes the refresh path against the recorded store rather than
       // racing a second broker into existence. Foreground stdio is inherited (its own log lines
       // are already on this terminal, above), so there is no `.cotal/nats.log` to name here.
+      // A fresh boot records the mesh only once its broker serves (`serveReadyListener`), so a
+      // broker that exits before then leaves no record to keep or repair, and the report says so.
       const detail = signal ? `signal ${signal}` : `code ${code}`;
       console.error(
         c.red(
-          `✗ nats-server exited unexpectedly (${detail}); the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline); log: see the terminal output above; repair: \`cotal up --server ${server} --space ${space}\``,
+          recorded
+            ? `✗ nats-server exited unexpectedly (${detail}); the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline); log: see the terminal output above; repair: \`cotal up --server ${server} --space ${space}\``
+            : `✗ nats-server exited unexpectedly (${detail}); the mesh "${space}" is not recorded at ${server}; log: see the terminal output above`,
         ),
       );
       // A foreground broker under `Restart=on-failure` must exit non-zero on a crash so the unit
