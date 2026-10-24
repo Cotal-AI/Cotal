@@ -600,10 +600,9 @@ async function migrate(values: RunValues, planes: Planes, runId: string | undefi
   }
   const endpoint = values.endpoint ?? "manager";
   const record = await readRunRecord(planes.kv, endpoint, runId);
-  if (record === undefined) {
-    console.error(`run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be migrated`);
-    process.exit(1);
-  }
+  // A run ID nothing records is refused as `run show` refuses it; the check writes nothing either way.
+  if (record === undefined)
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be checked`, { target: { space: planes.space, endpoint, run: runId }, remedy: "list the recorded runs with cotal run" });
   const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, takeoverId);
   const source = sourceOf(values.file);
   let report: MigrateReport;

@@ -53,6 +53,12 @@ function scriptOf(file: string | undefined): SimScript {
       if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid scripted checkpoint '${name}': ${problem}`, { target: { file } });
     }
   }
+  for (const [name, entry] of Object.entries((script.turns ?? {}) as Record<string, unknown>)) {
+    for (const result of Array.isArray(entry) ? entry : [entry]) {
+      const problem = turnResultProblem(result);
+      if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid scripted turn '${name}': ${problem}`, { target: { file } });
+    }
+  }
   return script as SimScript;
 }
 
@@ -69,6 +75,21 @@ function checkpointResultProblem(result: unknown): string | undefined {
   if (unknown !== undefined) return `unknown field '${unknown}'`;
   if (fields.by !== undefined && typeof fields.by !== "string") return "by must be a string";
   if (fields.artifact !== undefined && typeof fields.artifact !== "string") return "artifact must be a string";
+  return undefined;
+}
+
+/** Why a scripted turn result is not one `turn()` can return, or undefined. The simulator hands the
+ *  entry to the program as it is, so a status a live turn never yields is refused here rather than
+ *  branched on. */
+function turnResultProblem(result: unknown): string | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return "a result must be an object";
+  const fields = result as Record<string, unknown>;
+  if (fields.status !== "done" && fields.status !== "blocked" && fields.status !== "handoff") return "status must be \"done\", \"blocked\" or \"handoff\"";
+  if ("at" in fields) return "at is stamped from virtual time and cannot be scripted";
+  const known = new Set(["status", "to", "note"]);
+  const unknown = Object.keys(fields).find((key) => !known.has(key));
+  if (unknown !== undefined) return `unknown field '${unknown}'`;
+  if (fields.note !== undefined && typeof fields.note !== "string") return "note must be a string";
   return undefined;
 }
 

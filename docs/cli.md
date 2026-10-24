@@ -6710,7 +6710,8 @@ credential (`--local` only; the manager serves no run-migrate command). It print
 migration is admissible, every orphaned step with its verdict and code, and exits 0 on admissible
 and non-zero on not. An edited program that does not validate is refused before the replay, with
 each problem's code, position, cause and fix. It writes nothing: the commit that would file the
-migration is not reachable yet, and the report says so. `check` refuses `--adopt`, `--release` and `--discard-approvals`, since they decide what a
+migration is not reachable yet, and the report says so. A run ID with no record on the endpoint is refused
+`TARGET_NOT_FOUND`, exit 2, as `run show` refuses it. `check` refuses `--adopt`, `--release` and `--discard-approvals`, since they decide what a
 commit does and the check files nothing. `--timeout` sets the default
 limit of a checkpoint, `ask` or turn that sets none of its own (default 1h). A checkpoint that
 expires under `onExpiry: "fail"` says in its L4007 whether the deadline came from its own `timeout`
@@ -6967,7 +6968,9 @@ loop counts or an execution schedule. Simulation uses the native simulator with 
 script. It executes no JavaScript handler and invents no unscripted outcome. A scripted
 checkpoint result needs a `status` of `resolved` or `expired` and may carry `value`, `by` and
 `artifact`; any other shape, a scripted `at` included, is refused `SCHEMA_INVALID`, because the
-simulator stamps `at` from virtual time. When the script has no result for an effect, the
+simulator stamps `at` from virtual time. A scripted turn result needs a `status` of `done`, `blocked` or
+`handoff` and may carry `to` and `note`; any other shape, a scripted `at` included, is refused the
+same way. When the script has no result for an effect, the
 simulation does not complete: it exits 5 with `OPERATION_FAILED`, the message names the step and the
 entry to add, and `target.step` carries the step. When the program itself fails under the script,
 as a checkpoint scripted `expired` under the default `onExpiry: "fail"` does with L4007, the
