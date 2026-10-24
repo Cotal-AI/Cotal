@@ -9,7 +9,7 @@
  */
 import { isAbsolute, resolve as resolvePath, dirname } from "node:path";
 import { parseDocument, LineCounter } from "yaml";
-import { assertValidChannel, assertValidName, isConcreteChannel, isLoopbackLiteral, token } from "@cotal-ai/core";
+import { assertValidChannel, assertValidName, isConcreteChannel, isLoopbackLiteral, utf16Problem, token } from "@cotal-ai/core";
 import { MeshManifestSchema, type RawManifest } from "./schema.js";
 import type { AgentPolicy, PersonaPermissions, ResolvedAgent, ResolvedChannel, ResolvedManifest } from "./model.js";
 import { ManifestError, type ManifestIssue } from "./errors.js";
@@ -17,6 +17,9 @@ import { ManifestError, type ManifestIssue } from "./errors.js";
 /** Parse + validate a manifest source into the resolved model. `sourcePath` anchors relative
  *  persona refs and locates errors. */
 export function resolveManifest(src: string, sourcePath: string): ResolvedManifest {
+  // Parsed as UTF-8, a UTF-16 file would be one string the schema calls the wrong shape.
+  const encoding = utf16Problem(src);
+  if (encoding) throw new ManifestError(sourcePath, [{ message: `${encoding}; save it as UTF-8` }]);
   const lc = new LineCounter();
   const doc = parseDocument(src, { lineCounter: lc });
   // Best-effort location: try the exact node, then walk up the path (union/object-level errors

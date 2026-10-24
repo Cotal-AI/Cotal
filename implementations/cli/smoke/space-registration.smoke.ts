@@ -13,10 +13,15 @@
  * another Cotal home: create, down and status there name that home. A folder path with a control
  * character or a bidirectional formatting mark is refused by create and up before anything is written. A stopped stack whose broker
  * bind does not serve its recorded address refuses up and is started again with the --host it names.
+ * A space name over 64 characters is refused by create, `up --space`, `space add` and `meshes add`
+ * before anything is written, and `up` of a longer name an earlier release prepared refuses before its
+ * journal is written.
  * A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
  * no installed provider, ones naming a missing or invalid channels file, and one with an invalid
- * default channels file, have refused and left the root as it was. Create and a later `up` write the
+ * default channels file, have refused and left the root as it was; a default channels file that
+ * begins with a UTF-8 byte-order mark seeds as the JSON after it, and one saved as UTF-16 is refused
+ * by its encoding. Create and a later `up` write the
  * default persona when the root has none, and leave an edited one byte-identical. Under umask 0002,
  * create makes `.cotal` and its persona catalog 0700. A registration
  * whose root is not an absolute path is refused at the space claim on the controller route and on the
@@ -170,6 +175,14 @@ setCurrent("keep");
   const fromScript = await json(["space", "add", "--from", "https://hosted.test"]);
   check("--from without a terminal is USAGE_INVALID and names --file", refused(fromScript, 1, "USAGE_INVALID") && /--file/.test(fromScript.env?.error?.remedy ?? ""), shown(fromScript));
   check("--from over http is USAGE_INVALID", refused(await json(["space", "add", "--from", "http://hosted.test"]), 1, "USAGE_INVALID"));
+  // A space added from elsewhere is carried by the same local files as one created here.
+  for (const length of [65, 117]) {
+    const long = "r".repeat(length), limit = `the space name has ${length} characters, and a space name holds at most 64`;
+    const added = await json(["space", "add", long, "--server", LIVE, "--mode", "open", "--root", root, "--force", "--yes"]);
+    check(`space add of a ${length}-character name is USAGE_INVALID, exit 1, naming the limit`, refused(added, 1, "USAGE_INVALID") && (added.env?.error?.message ?? "").startsWith(limit), shown(added));
+    const meshes = await run(["meshes", "add", long, "--server", LIVE, "--mode", "open", "--root", root, "--force"]);
+    check(`meshes add of a ${length}-character name exits 1 naming the limit`, meshes.status === 1 && meshes.stderr.includes(limit), shown(meshes));
+  }
   check("no usage refusal wrote anything", JSON.stringify(registryFiles()) === JSON.stringify(before));
 }
 
@@ -706,6 +719,26 @@ if (process.platform === "linux") {
     check(`a name cotal up cannot start (${name}) is USAGE_INVALID`, refused(bad, 1, "USAGE_INVALID") && /letters, digits, underscores or hyphens/.test(bad.env?.error?.message ?? ""), shown(bad));
   }
   check("no refused create prepared anything or made a .cotal", ["other", "a", "a b", "dot.name", "é"].every((name) => findPreparedSpace(name) === undefined) && !existsSync(join(spare, ".cotal")) && !existsSync(join(home, "absent")));
+  // A space name holds at most 64 characters, so its hex fits every local file name that carries it.
+  const longName = "y".repeat(65), longest = "y".repeat(64);
+  const tooLong = await json(["space", "create", longName], spare);
+  check("a 65-character name is USAGE_INVALID naming the 64-character limit, and nothing is written",
+    refused(tooLong, 1, "USAGE_INVALID") && (tooLong.env?.error?.message ?? "").startsWith("the space name has 65 characters, and a space name holds at most 64") && findPreparedSpace(longName) === undefined && !existsSync(join(spare, ".cotal")), shown(tooLong));
+  const upTooLong = await json(["up", "--server", DEAD, "--space", longName], spare);
+  check("up --space with a 65-character name is USAGE_INVALID before anything is written", refused(upTooLong, 1, "USAGE_INVALID") && /at most 64/.test(upTooLong.env?.error?.message ?? "") && !existsSync(join(spare, ".cotal")), shown(upTooLong));
+  const fits = await json(["space", "create", longest], spare);
+  check("control: a 64-character name is prepared", fits.status === 0 && findPreparedSpace(longest) !== undefined, shown(fits));
+  check("control: forget it", (await json(["space", "forget", longest])).status === 0 && findPreparedSpace(longest) === undefined);
+  rmSync(join(spare, ".cotal"), { recursive: true, force: true });
+  // An earlier release prepared longer names; up there refuses before its journal is written.
+  const earlier = mkdtempSync(join(home, "earlier-"));
+  mkdirSync(join(earlier, ".cotal"), { mode: 0o700 });
+  recordPreparedSpace({ space: "y".repeat(100), root: earlier, ts: new Date().toISOString() });
+  const upEarlier = await json(["up", "--server", DEAD], earlier);
+  check("up of a 100-character space an earlier release prepared is USAGE_INVALID naming space forget, and writes no journal",
+    refused(upEarlier, 1, "USAGE_INVALID") && /has 100 characters/.test(upEarlier.env?.error?.message ?? "") && (upEarlier.env?.error?.remedy ?? "").includes(`cotal space forget ${"y".repeat(100)}`) && !existsSync(join(earlier, ".cotal", "stack-controller.json")), shown(upEarlier));
+  removePreparedSpace("y".repeat(100));
+  rmSync(earlier, { recursive: true, force: true });
   const add = await json(["space", "add", "demo", "--server", LIVE, "--root", root]);
   check("adding a prepared name is CONFLICT, naming cotal up", refused(add, 2, "CONFLICT") && /cotal up/.test(add.env?.error?.remedy ?? "") && findMesh("demo") === undefined, shown(add));
 
@@ -799,6 +832,22 @@ if (process.platform === "linux") {
       refused(badSeed, 1, "SCHEMA_INVALID") && (badSeed.env?.error?.message ?? "").includes(seedPath) && (badSeed.env?.error?.message ?? "").includes(named) &&
         cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(badSeed));
   }
+  // The `✗` line quotes the parser's excerpt of a file that is not JSON with its control characters
+  // escaped, so an escape sequence in a cloned file never reaches the terminal.
+  const escSeed = join(fresh, "esc-channels.json");
+  writeFileSync(escSeed, '{"channels": \u001b[2J}');
+  const escaped = await run(["up", "--open", "--channels", escSeed, "--server", server], { LC_ALL: "C.UTF-8" }, fresh);
+  check("up with a --channels file holding an escape sequence quotes its excerpt escaped, exit 1, and leaves the root unchanged",
+    escaped.status === 1 && escaped.stderr.startsWith("✗ ") && escaped.stderr.includes('"{"channels": \\u001b[2J}"') && !/[\u0000-\u0009\u000b-\u001f\u007f]/u.test(escaped.stdout + escaped.stderr) &&
+      cotalFiles() === beforeRuntime.files, shown(escaped));
+  unlinkSync(escSeed);
+  const utf16Seed = join(fresh, "utf16-channels.json");
+  writeFileSync(utf16Seed, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('{"channels":{}}', "utf16le")]));
+  const utf16 = await json(["up", "--open", "--channels", utf16Seed, "--server", server], fresh);
+  check("up with a --channels file saved as UTF-16 is USAGE_INVALID, exit 1, naming its encoding and the step to save it as UTF-8",
+    refused(utf16, 1, "USAGE_INVALID") && utf16.env?.error?.message === `the channels file ${utf16Seed} cannot be read: it is saved as UTF-16, and Cotal reads only UTF-8` &&
+      utf16.env?.error?.remedy === `save ${utf16Seed} as UTF-8` && cotalFiles() === beforeRuntime.files, shown(utf16));
+  unlinkSync(utf16Seed);
   // The default file is read once the root is settled, so it refuses after the stack lock's layout
   // exists and before a store, a broker or a registration.
   const defaultSeed = join(fresh, ".cotal", "channels.json");
@@ -817,11 +866,18 @@ if (process.platform === "linux") {
         !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(fifoDefault));
     unlinkSync(defaultSeed);
   }
+  // A channels file that begins with a UTF-8 byte-order mark, as some Windows editors save one, seeds
+  // as the JSON after it.
+  writeFileSync(defaultSeed, '\uFEFF{"channels":{"bomseed":{"description":"saved with a BOM"}}}');
 
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");
   check("up in its root starts it under its name, and the prepared record goes", up.status === 0 && started?.root === fresh && started.server === server && started.origin === "up" && findPreparedSpace("demo") === undefined, shown(up));
   check("the selection still names it", getCurrent() === "demo", getCurrent());
+  const bomSeeded = await json(["channel", "show", "bomseed", "--space", "demo"]);
+  check("a default channels file that begins with a UTF-8 byte-order mark seeds its channels",
+    bomSeeded.status === 0 && JSON.stringify(bomSeeded.env?.result ?? null).includes("saved with a BOM"), shown(bomSeeded));
+  unlinkSync(defaultSeed);
   const reads = await json(["space", "show", "demo"]);
   check("space show now reports its broker answering", reads.env?.result.kind === "space" && reads.env.result.check === "reachable", reads.env?.result);
   // Another up of the running space refreshes it: it writes back a default persona that went

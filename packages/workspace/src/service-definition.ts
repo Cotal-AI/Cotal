@@ -48,6 +48,30 @@ export function schemaErrorLocation(errors: readonly { keyword: string; instance
   return last.keyword === "additionalProperties" ? ` at ${at}, which the schema does not declare` : last.keyword === "required" ? ` at ${at}, which is required` : ` at ${at}`;
 }
 
+const READINESS_FIELDS: Readonly<Record<string, readonly string[]>> = { process: ["type", "timeoutMs"], http: ["type", "url", "expectedStatus", "timeoutMs"], adapter: ["type", "timeoutMs"] };
+
+/** The rule a `readiness` value breaks, for a schema that stopped there. The schema offers three
+ *  shapes at once, so its own error names only the field. A field name is printed only when it is a
+ *  plain identifier, and no value is echoed. Undefined when no rule here is broken. */
+function readinessProblem(readiness: unknown): string | undefined {
+  if (typeof readiness !== "object" || readiness === null || Array.isArray(readiness)) return "readiness must be an object with a type of process, http or adapter and a timeoutMs";
+  const value = readiness as Record<string, unknown>;
+  if (value.type === undefined) return "readiness.type is required: process, http or adapter";
+  const fields = typeof value.type === "string" && Object.hasOwn(READINESS_FIELDS, value.type) ? READINESS_FIELDS[value.type]! : undefined;
+  if (!fields) return "readiness.type must be process, http or adapter";
+  const extra = Object.keys(value).find((key) => !fields.includes(key));
+  if (extra !== undefined) return `${/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(extra) ? `readiness.${extra} is` : "readiness has a field that is"} not a field of ${value.type} readiness, which takes ${fields.join(", ")}`;
+  const missing = fields.find((field) => value[field] === undefined);
+  if (missing !== undefined) return `readiness.${missing} is required for ${value.type} readiness, which takes ${fields.join(", ")}`;
+  const whole = (n: unknown, min: number, max: number): boolean => typeof n === "number" && Number.isInteger(n) && n >= min && n <= max;
+  if (!whole(value.timeoutMs, 1, 120000)) return "readiness.timeoutMs must be a whole number of milliseconds from 1 to 120000";
+  if (value.type === "http") {
+    if (typeof value.url !== "string" || !/^http:\/\/(127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?\//.test(value.url)) return "readiness.url must be an http:// URL on 127.0.0.1 or [::1] with a path, such as http://127.0.0.1:8080/health";
+    if (!whole(value.expectedStatus, 100, 599)) return "readiness.expectedStatus must be a whole number from 100 to 599";
+  }
+  return undefined;
+}
+
 /** Check a case-sensitive definition name before deriving its case-safe storage key. */
 export function serviceDefinitionName(value: string): string {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value))
@@ -69,7 +93,11 @@ export function parseServiceDefinitionInput(raw: string, selectedSpace: string):
   // Validator details can contain user-controlled property names. Never publish the raw input or
   // the validator's mutable error array as a diagnostic; only an identifier-shaped location.
   const validator = definitionValidator();
-  if (!validator(input)) return refuse(`input does not match the version-1 definition schema${schemaErrorLocation(validator.errors)}`);
+  if (!validator(input)) {
+    const stopped = validator.errors?.at(-1)?.instancePath ?? "";
+    const readiness = stopped === "/readiness" || stopped.startsWith("/readiness/") ? readinessProblem((input as { readiness?: unknown }).readiness) : undefined;
+    return refuse(readiness ?? `input does not match the version-1 definition schema${schemaErrorLocation(validator.errors)}`);
+  }
   if (input.space !== selectedSpace) return refuse(`the definition names ${token(input.space) === input.space ? `space "${input.space}"` : "another space"}, and the selected space is "${selectedSpace}"`);
   if (input.launch.type === "process") {
     if (!nativeString(input.launch.executable) || !nativeString(input.launch.cwd) || input.launch.args.some((arg) => arg.includes("\0")))

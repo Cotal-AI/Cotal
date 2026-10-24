@@ -72,6 +72,7 @@ export async function openUserChatSession(target: MeshTarget, options: {
   readonly read: readonly string[];
   readonly post: readonly string[];
   readonly ttlSec: number;
+  readonly reopen: (channel: string) => string;
 }): Promise<NativeChatSession> {
   const space = target.space;
   if (target.mode !== "user" || target.userAuth === undefined)
@@ -178,7 +179,7 @@ export async function openUserChatSession(target: MeshTarget, options: {
     allowSubscribe: [...options.read], allowPublish: [...options.post], expiresAt: expiresAtMs,
   };
   // Register the participant listeners before the endpoint starts; the session owns them until close.
-  const session = new NativeChatSession({ endpoint, identity, retire });
+  const session = new NativeChatSession({ endpoint, identity, retire, reopen: options.reopen });
   try {
     await endpoint.start();
   } catch (e) {
