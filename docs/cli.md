@@ -5886,8 +5886,10 @@ user-auth agents. `team remove` retires a returned deployment by its full ID wit
 [Recorded team views](#recorded-team-views). `spawn -f` no longer deploys a manifest; an additive
 ledger written by that older path is torn down with `cotal down -f <file> --run <id>`. `up -f`,
 `team deploy` and `team remove` take `--dry-run` to print the plan without mutating anything.
-`topology` validates the manifest and renders its channel / role / ACL graph. See
-[Define a team](define-a-team.md) and the [manifest reference](manifest.md).
+`topology` validates the manifest and renders its channel / role / ACL graph. Given a folder
+instead of a manifest file, `topology view` and `up -f` refuse with exit 1, naming the path and
+that it is a directory. See [Define a team](define-a-team.md) and the
+[manifest reference](manifest.md).
 
 ## ext
 
