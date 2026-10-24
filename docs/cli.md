@@ -761,7 +761,8 @@ they name that project; otherwise the next step is to remove the link and prepar
 `space create`. A `.cotal` link that leads nowhere makes them refuse `TARGET_NOT_FOUND`, exit 2,
 naming where it leads. `status` there does not read the folder's boot and additive attempt
 inventories through the link. It warns `COTAL_DIR_LINKED`, or `COTAL_DIR_DANGLING` for a link that
-leads nowhere, with the same next step, and exits 4. `space create` in a copy whose records name
+leads nowhere, with the same next step, and exits 4. For a linked folder, its selected space names
+the same refusal, and Next gives that step in place of starting the space with `cotal up`. `space create` in a copy whose records name
 another root says so and names that root, and in a linked folder it names the link.
 
 A journal that is not valid JSON, as an interrupted write or a full disk can leave it, makes `up`,
