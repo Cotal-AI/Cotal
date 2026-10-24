@@ -130,6 +130,17 @@ rejects(
   "L3013",
   'async function f(n) { await checkpoint(n, "ok?", { timeout: "10m" }); }',
 );
+rejects(
+  "a record-form branch key with a reserved character would forge a scope path",
+  "L3025",
+  'await parallel({ "a/b": async () => 1 }, { name: "p" });',
+);
+// A fanOut's first argument is its items, so their property names are not branch keys. The keys it
+// does mint are refused at run time (keys.smoke.ts).
+accepts(
+  "a fanOut's items are not read as branch keys",
+  'await fanOut({ "a/b": 1 }, async (x) => x, { name: "f", key: (x) => x });',
+);
 
 // ---- 5) closed option bags answer with a signature ----------------------------------------
 
