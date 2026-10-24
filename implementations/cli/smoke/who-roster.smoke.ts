@@ -322,17 +322,19 @@ try {
     check(`who ${format} redacts broker URL secrets from an offline refusal`, read.status === 2 && hidden, { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr) });
   }
   for (const format of ["--json", "--plain"] as const) {
+    // Under --json the envelope alone reports a refusal, and stderr stays empty.
+    const reportOf = (r: { stderr: string; envelope?: Envelope }) => format === "--json" ? (r.stderr === "" ? r.envelope?.error?.message ?? "" : "") : r.stderr;
     const refused = await run(["who", "--space", "not-registered-raw", "--server", urlCases[0]!.server, format]);
     const unsaid = [urlUser, urlPassword, urlToken].every((marker) => !refused.stdout.includes(marker) && !refused.stderr.includes(marker));
     const detailRefused = shown(refused);
     check(`who ${format} refuses a --server with a user and password before the raw read, without printing them`,
-      refused.status === 1 && unsaid && /--server must not embed credentials; the command did not run/.test(refused.stderr) && (format !== "--json" || refused.envelope?.error?.code === "USAGE_INVALID"),
+      refused.status === 1 && unsaid && /--server must not embed credentials; the command did not run/.test(reportOf(refused)) && (format !== "--json" || refused.envelope?.error?.code === "USAGE_INVALID"),
       { status: detailRefused.status, stdout: redactUrlMarkers(detailRefused.stdout), stderr: redactUrlMarkers(detailRefused.stderr) });
     // A query token passes that check, so this read reaches the raw path and its refusal.
     const read = await run(["who", "--space", "not-registered-raw", "--server", urlCases.find((entry) => entry.label === "query")!.server, format]);
     const hidden = [urlUser, urlPassword, urlToken].every((marker) => !read.stdout.includes(marker) && !read.stderr.includes(marker));
     const detail = shown(read);
-    check(`who ${format} redacts broker URL secrets from a raw refusal`, read.status === 2 && hidden && read.stderr.includes("wss://127.0.0.1:1/mesh"), { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr) });
+    check(`who ${format} redacts broker URL secrets from a raw refusal`, read.status === 2 && hidden && reportOf(read).includes("wss://127.0.0.1:1/mesh"), { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr) });
     const invalid = await run(["whoami", "--space", "openmesh", "--server", urlCases.find((entry) => entry.shown === null)!.server, format]);
     const safe = [urlUser, urlPassword, urlToken].every((marker) => !invalid.stdout.includes(marker) && !invalid.stderr.includes(marker));
     const shownInvalid = shown(invalid);

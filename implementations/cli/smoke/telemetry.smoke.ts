@@ -222,7 +222,7 @@ for (const { level, extra, name } of [
   const s = sandbox();
   const bogus = await s.run(["version", "--json"], { COTAL_TELEMETRY: "bogus" });
   await settled();
-  check("COTAL_TELEMETRY=bogus refuses USAGE_INVALID before the command runs, sending nothing", bogus.status === 1 && bogus.sent.length === 0 && bogus.envelope?.outcome === "refused" && (bogus.envelope?.error as Body | undefined)?.code === "USAGE_INVALID" && /COTAL_TELEMETRY must be off, minimal or regular/.test(bogus.stderr), shown(bogus));
+  check("COTAL_TELEMETRY=bogus refuses USAGE_INVALID before the command runs, sending nothing", bogus.status === 1 && bogus.sent.length === 0 && bogus.envelope?.outcome === "refused" && (bogus.envelope?.error as Body | undefined)?.code === "USAGE_INVALID" && /COTAL_TELEMETRY must be off, minimal or regular/.test(String((bogus.envelope?.error as Body | undefined)?.message)) && bogus.stderr === "", shown(bogus));
   const bogusTelemetry = await s.run(["telemetry"], { COTAL_TELEMETRY: "bogus" });
   check("…and cotal telemetry itself refuses it the same way", bogusTelemetry.status === 1 && /COTAL_TELEMETRY must be off, minimal or regular/.test(bogusTelemetry.stderr), shown(bogusTelemetry));
   for (const intakeUrl of ["not-a-url", "ftp://127.0.0.1/v1/telemetry"]) {

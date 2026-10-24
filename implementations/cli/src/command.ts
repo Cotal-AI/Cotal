@@ -166,10 +166,16 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   }
   // Rendered in the run's scope, so the `Mesh:` heading keeps the note on how the run chose its space.
   const report = () => renderReport(commandFailureReport(failure), plain ? "plain" : "rich", terminalWidth(process.stderr));
-  writeSync(2, `${scope ? runOperation(scope, report) : report()}
+  const writeReport = () => writeSync(2, `${scope ? runOperation(scope, report) : report()}
 `);
-  // The refusal is on stderr and its exit status below stands whether or not the envelope lands.
-  if (json) try { writeSync(1, envelopeLine(failureEnvelope(cmd.name, failure, warnings))); } catch (error) { reportLostOutput(error as NodeJS.ErrnoException); }
+  // Under --json the envelope alone reports the failure. Its text report goes to stderr only when the
+  // envelope cannot be written, and the exit status below stands either way.
+  if (!json) writeReport();
+  else try { writeSync(1, envelopeLine(failureEnvelope(cmd.name, failure, warnings))); }
+  catch (error) {
+    reportLostOutput(error as NodeJS.ErrnoException);
+    try { writeReport(); } catch { /* stderr failed too; the exit status still says so */ }
+  }
   debugStacks(failure);
   process.exit(exitCode(failure.outcome, failure.code));
 }

@@ -148,10 +148,10 @@ accepts(() => assertProtectedEntry("the path", "/home/dev/Projects", stat(DIR | 
 accepts(() => assertProtectedEntry("the declared adapter path", "/home/dev/bin/nats-server", stat(FILE | 0o775), { policy }), "a UPG group-writable adapter file");
 accepts(() => assertProtectedEntry("the path", "/tmp", stat(DIR | 0o1777, 0, 0), { ancestor: true, policy }), "a root-owned sticky ancestor");
 refused(() => assertProtectedEntry("the path", "/tmp", stat(DIR | 0o1777, 0, 0), { policy }),
-  /: \/tmp is writable by every local account$/, "chmod o-w /tmp", "a root-owned sticky adapter entry keeps the entry rule");
+  /: \/tmp is writable by every local account$/, "chmod go-w /tmp", "a root-owned sticky adapter entry keeps the entry rule");
 refused(() => assertProtectedEntry("the project root", "/home/dev/shared", stat(DIR | 0o777), { ancestor: true, policy }),
   /^the project root is not protected against other local writers: \/home\/dev\/shared is writable by every local account$/,
-  "chmod o-w /home/dev/shared", "world write, even with a private group");
+  "chmod go-w /home/dev/shared", "world write, even with a private group, removes group write in the same step");
 refused(() => assertProtectedEntry("the path", "/home/eve", stat(DIR | 0o755, 1001, 1001), { ancestor: true, policy }),
   /: \/home\/eve is owned by another account$/, "use a physical path owned by you or root, without symlinks", "a foreign owner");
 refused(() => assertProtectedEntry("the path", "/home/dev/link", stat(0o120777, ME, 1000, true), { ancestor: true, policy }),
@@ -189,7 +189,7 @@ try {
   chmodSync(open, 0o777);
   refused(() => protectedLocalDirectory(open, "the project root", local),
     `the project root is not protected against other local writers: ${open} is writable by every local account`,
-    `chmod o-w ${shellPath(open)}`, "a real world-writable directory");
+    `chmod go-w ${shellPath(open)}`, "a real directory its group and every account can write, in one step");
   const grouped = join(dir, "grouped");
   mkdirSync(grouped);
   chmodSync(grouped, 0o770);
@@ -226,7 +226,7 @@ try {
   chmodSync(mixed, 0o770);
   refused(() => protectedLocalDirectory(mixed, "the project root", local),
     `the project root is not protected against other local writers: ${mixed} is group-writable and the private-group proof is unavailable: getent is not installed; ${open} is writable by every local account`,
-    `chmod g-w ${shellPath(mixed)}; chmod o-w ${shellPath(open)}`, "a group-writable folder under a world-writable parent");
+    `chmod go-w ${shellPath(mixed)} ${shellPath(open)}`, "a group-writable folder under a world-writable parent, in one chmod");
   const link = join(dir, "link");
   symlinkSync(grouped, link);
   refused(() => protectedLocalDirectory(link, "the path", local), /: .*\/link is a symbolic link$/,

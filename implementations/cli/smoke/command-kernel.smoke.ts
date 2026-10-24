@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandUsage, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
@@ -247,11 +247,14 @@ async function completionOut(positionals: string[]): Promise<string> {
   const sandbox = mkdtempSync(join(tmpdir(), "cotal-output-exit-"));
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")));
   const run = (...words: string[]) => runWith({}, ...words);
-  const runWith = (extra: Record<string, string>, ...words: string[]) => {
-    const r = spawnSync(process.execPath, [...process.execArgv, fixture, ...words], {
+  const spawnProbe = (extra: Record<string, string>, stdout: "pipe" | number, words: string[]) =>
+    spawnSync(process.execPath, [...process.execArgv, fixture, ...words], {
       encoding: "utf8",
+      stdio: ["pipe", stdout, "pipe"],
       env: { ...env, COTAL_HOME: join(sandbox, "home"), XDG_CONFIG_HOME: join(sandbox, "cfg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", ...extra },
     });
+  const runWith = (extra: Record<string, string>, ...words: string[]) => {
+    const r = spawnProbe(extra, "pipe", words);
     const lines = r.stdout.split("\n").filter(Boolean);
     return { status: r.status, stdout: r.stdout, stderr: r.stderr, envelope: lines.length === 1 && lines[0]!.startsWith("{") ? JSON.parse(lines[0]!) : undefined };
   };
@@ -268,11 +271,24 @@ async function completionOut(positionals: string[]): Promise<string> {
     assert.equal(conflict.envelope?.error?.code, "CONFLICT", "a refusal's envelope carries its stable code");
     assert.deepEqual(conflict.envelope?.error?.cause, { code: "E_LEASE", outcome: "not-executed" }, "a refusal's envelope keeps the native cause");
     assert.deepEqual(conflict.envelope?.target, { space: "s1" }, "a refusal's envelope names its target");
-    assert.match(conflict.stderr, /the lease is held[\s\S]*wait for the holder to release it/u, "a refusal prints its message and remedy on stderr");
+    assert.equal(conflict.stderr, "", "under --json the envelope alone reports a refusal, with nothing on stderr");
 
     const human = run("probe", "--fail", "conflict");
     assert.equal(human.status, 2, "a refusal without --json exits 2 as well");
     assert.equal(human.stdout, "", "a refusal without --json writes nothing on stdout");
+    assert.match(human.stderr, /the lease is held[\s\S]*wait for the holder to release it/u, "a refusal without --json prints its message and remedy on stderr");
+
+    // A stdout the envelope cannot be written to: the text report goes to stderr instead.
+    const readOnly = join(sandbox, "read-only");
+    writeFileSync(readOnly, "");
+    const readOnlyFd = openSync(readOnly, "r");
+    try {
+      const lost = spawnProbe({}, readOnlyFd, ["probe", "--json", "--fail", "conflict"]);
+      assert.equal(lost.status, 2, "a refusal whose envelope cannot be written still exits 2");
+      assert.match(lost.stderr, /could not write to stdout[\s\S]*the lease is held[\s\S]*wait for the holder to release it/u, "a refusal whose envelope cannot be written prints its report on stderr");
+    } finally {
+      closeSync(readOnlyFd);
+    }
 
     const usage = run("probe", "--json", "--fail", "usage");
     assert.equal(usage.status, 1, "a usage refusal raised by the command exits 1");

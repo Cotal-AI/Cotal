@@ -168,8 +168,10 @@ one JSON document on stdout. Most commands have one, among them `cotal status`, 
 | `error` | Present when the outcome is not `ok` or `no-op`: `{code, message, remedy, cause}`. `remedy` is the step to take, present when the refusal names one, and the text report prints it under Next. `cause` keeps an endpoint's own code, outcome and safe detail |
 | `changed` | What a command that did not succeed changed anyway |
 
-Diagnostics stay on stderr. A usage error under `--json` is a `refused` envelope with code
-`USAGE_INVALID`, and the help it names stays off stdout. A word that names none of a command's
+Diagnostics stay on stderr. A command that refuses or fails under `--json` reports it with the
+envelope alone and writes no text report on stderr. The text report goes to stderr only when the
+envelope cannot be written to stdout, and the exit code is the same either way. A usage error under
+`--json` is a `refused` envelope with code `USAGE_INVALID`, and the help it names stays off stdout. A word that names none of a command's
 subcommands and is near none of them is a usage error that lists the subcommands the command takes.
 A command without a JSON output refuses `--json` as an unknown option.
 
@@ -2425,6 +2427,8 @@ allowed. New control directories, the persona catalog `.cotal/agents` included, 
 even with a group-writable umask. An unsafe existing path refuses before the
 prepared record is written, without changing its permissions. The refusal names every unsafe path
 in the chain at once, the reason and one remedy such as `chmod g-w <paths>` that lists each path.
+A path that its group and every account can write gets `chmod go-w`, since `chmod o-w` alone would
+leave the group write that refuses next, and the other group and world gaps join that one command.
 When a symlink is the gap, the remedy names the physical path the folder resolves to.
 It starts nothing and leaves the selection as it is. `cotal up` applies the same rule to the root
 it starts in, before it writes anything, so it never starts a stack that `down` would refuse to
@@ -2681,7 +2685,7 @@ refusal names the file. A missing file is `TARGET_NOT_FOUND`, exit 2. A director
 a file the client cannot parse are `SCHEMA_INVALID`, exit 1, with the cause: no complete JWT block,
 no seed block, an invalid seed, or Windows (CRLF) line endings. A file in a folder that another
 account can write, or below one, is refused `PERMISSION_DENIED`, exit 2, as `auth mint` refuses to
-write one there: the refusal names the folder, and its Next is the `chmod`, such as `chmod o-w <dir>`.
+write one there: the refusal names the folder, and its Next is one `chmod`, such as `chmod go-w <dir>`.
 A file that other accounts can read is still used, with a warning on stderr that gives the
 `chmod 600` command. `join --creds` reads its file the same way. A credential the broker rejects is `PERMISSION_DENIED`, exit 2. When the
 credential's own permissions name one other space, the refusal names that space, such as
