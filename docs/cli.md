@@ -939,7 +939,9 @@ Before it launches a broker, the controller binds the broker address once, and s
 launcher that an unprepared folder or `up -f` starts. When another process holds it, `up` refuses
 `CONFLICT`, names the address and the bind error, and launches nothing. A
 first start names another `--server` as its next step, and a stack that ran keeps its recorded
-address. When no member started, the refusal says the stack
+address. On Linux, when nothing listens there and a connection's local end holds the port, the
+refusal says so in place of another process. For a closed connection in TIME-WAIT, its next step is
+to wait up to a minute and run `up` again. When no member started, the refusal says the stack
 started no member. A text `up` prints one `Starting <definition>` line
 on stderr before each member it starts, with the readiness timeout it waits for. A started stack's
 Next offers `cotal spawn --space <space>`, or `cotal up` to add the manager after `--no-manager`,

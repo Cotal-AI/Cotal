@@ -21,14 +21,16 @@
  * fixes it, where the broker used to exit naming the cause only in its log, and status names the same
  * step in place of `cotal up`. Every broker address the cells after
  * those use is held by a loopback listener that never answers NATS, so a regression still cannot
- * start a broker there.
+ * start a broker there. On Linux, two cells hold one by a client connection's local end instead,
+ * open and then in TIME-WAIT, with nothing listening, and need the refusal to say which.
  *
  * Run: pnpm smoke:up-usage-refusal
  */
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createServer, type AddressInfo } from "node:net";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
+import { connect, createServer, type AddressInfo } from "node:net";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -152,6 +154,39 @@ try {
   const bind = run(["up", "--server", `nats://127.0.0.1:${held}`], unprepared);
   check("the legacy route refuses a held address CONFLICT, exit 2, naming the address, and launches nothing",
     bind.status === 2 && /CONFLICT/.test(bind.stderr) && new RegExp(`another process holds the broker address 127\\.0\\.0\\.1:${held}`).test(bind.stderr) && !started(unprepared), shown(bind));
+
+  // A port nothing listens on can still refuse the bind: an open client connection's local end holds
+  // it, and after that client closes first, its TIME-WAIT holds it for up to a minute. The refusal
+  // says which, and a TIME-WAIT's next step is to wait, since no process holds it. Only Linux's
+  // kernel table shows it.
+  if (process.platform === "linux") {
+    const states = (port: number) => ["/proc/net/tcp", "/proc/net/tcp6"].flatMap((table) => readFileSync(table, "utf8").split("\n").slice(1))
+      .map((row) => row.trim().split(/\s+/)).filter(([, local]) => local && Number.parseInt(local.slice(local.lastIndexOf(":") + 1), 16) === port).map(([, , , state]) => state);
+    const peer = createServer((socket) => socket.on("end", () => socket.end()).on("error", () => {}));
+    const at = await new Promise<number>((resolve) => peer.listen(0, "127.0.0.1", () => resolve((peer.address() as AddressInfo).port)));
+    const client = connect(at, "127.0.0.1");
+    await once(client, "connect");
+    const port = client.localPort!;
+    const open = run(["up", "--server", `nats://127.0.0.1:${port}`, "--json"], prepared);
+    const openLegacy = run(["up", "--server", `nats://127.0.0.1:${port}`], unprepared);
+    check("a port an open connection holds with no listener refuses CONFLICT on both routes, saying so and naming no process to stop",
+      open.status === 2 && open.envelope?.error?.code === "CONFLICT"
+        && (open.envelope.error.message ?? "").includes(`nothing listens at the stack's broker address 127.0.0.1:${port}, but an open connection's local end holds its port (bind failed: address already in use)`)
+        && (open.envelope.error.remedy ?? "").includes(`close the connection that holds 127.0.0.1:${port} and run cotal up again`) && !(open.envelope.error.remedy ?? "").includes("stop the process")
+        && openLegacy.status === 2 && openLegacy.stderr.includes(`nothing listens at the broker address 127.0.0.1:${port}, but an open connection's local end holds its port`) && !started(unprepared), { open: shown(open), legacy: shown(openLegacy) });
+    client.end();
+    await once(client, "close");
+    peer.close();
+    const waiting = states(port);
+    check("after the client closed first, its port is in TIME-WAIT with no listener", waiting.length > 0 && waiting.every((state) => state === "06"), waiting);
+    const timeWait = run(["up", "--server", `nats://127.0.0.1:${port}`, "--json"], prepared);
+    const timeWaitLegacy = run(["up", "--server", `nats://127.0.0.1:${port}`], unprepared);
+    check("a port in TIME-WAIT with no listener refuses CONFLICT on both routes, saying so, with waiting as the next step",
+      timeWait.status === 2 && timeWait.envelope?.error?.code === "CONFLICT"
+        && (timeWait.envelope.error.message ?? "").includes(`nothing listens at the stack's broker address 127.0.0.1:${port}, but a closed connection in TIME-WAIT still holds its port (bind failed: address already in use)`)
+        && (timeWait.envelope.error.remedy ?? "").includes("wait up to a minute for the TIME-WAIT to clear and run cotal up again") && !(timeWait.envelope.error.remedy ?? "").includes("stop the process")
+        && timeWaitLegacy.status === 2 && timeWaitLegacy.stderr.includes(`nothing listens at the broker address 127.0.0.1:${port}, but a closed connection in TIME-WAIT still holds its port`) && !started(unprepared), { timeWait: shown(timeWait), legacy: shown(timeWaitLegacy) });
+  }
 
   // The scheme's case and a bare trailing slash are not part of the address: a prepared root records
   // one spelling, so a later up in the other is not refused as another address.
