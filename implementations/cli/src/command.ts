@@ -1,7 +1,7 @@
 import { writeSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { isAbsolute, resolve } from "node:path";
-import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
+import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
   CommandFailure,
   commandFailureReport,
@@ -368,16 +368,23 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
 
 /** A parse error as a refusal. Node's message is trimmed to its first sentence, and the hint its tail
  *  carries is given as the remedy in this CLI's words: a word that starts with `-` goes after `--`,
- *  and an option value that starts with `-` is written `--name=value`. */
+ *  an option value that starts with `-` is written `--name=value`, and an option given with no value,
+ *  last or before another of the command's options, is named with its placeholder. */
 function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[]): { message: string; remedy?: string } {
   const message = parseErrorMessage(cmd, error);
   if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" && cmd.positionals !== undefined)
     return { message, remedy: "to pass a word that starts with \"-\", put -- before it" };
+  const missingValue = (flag: FlagSpec) => ({ message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}` });
+  const bare = /^Option '(?:-[^,']+, )?--([^ ']+) <value>' argument missing/.exec(error.message)?.[1];
+  const last = bare === undefined ? undefined : cmd.flags?.find((item) => item.name === bare);
+  if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && last) return missingValue(last);
   const long = /use '--([^=']+)=-XYZ'/.exec(error.message)?.[1];
   const flag = long === undefined ? undefined : cmd.flags?.find((item) => item.name === long);
   if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && flag) {
     const at = rest.findIndex((word) => word === `--${flag.name}` || (flag.short !== undefined && word === `-${flag.short}`));
     const value = at < 0 ? undefined : rest[at + 1];
+    if (value !== undefined && cmd.flags?.some((item) => value === `--${item.name}` || value.startsWith(`--${item.name}=`) || (item.short !== undefined && value === `-${item.short}`)))
+      return missingValue(flag);
     if (value?.startsWith("-")) return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${value}` };
   }
   return { message };

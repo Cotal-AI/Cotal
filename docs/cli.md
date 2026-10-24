@@ -99,7 +99,8 @@ typed word cannot clear the screen or retitle the terminal. A usage error is fou
 connectors or writes configuration. Help, version and completion never do either.
 A word that starts with `-` reads as an option. A message or name that starts with one goes after
 `--`, which the refusal names, and an option value that starts with one is written `--limit=-1`,
-which the refusal gives. A short option takes its value after a space, so `-c=general` is refused
+which the refusal gives. An option given with no value, last or just before another option, is
+refused naming the option and its placeholder. A short option takes its value after a space, so `-c=general` is refused
 rather than read as the value `=general`. An option typed with a typographic dash, as pasted from
 typeset text, is refused naming the option it meant, rather than read as a positional.
 
@@ -1675,7 +1676,11 @@ After an `--accept-missing-source` restore there is no old store, so it only ret
 An attempt the root's maintenance record does not name refuses with `TARGET_NOT_FOUND`, exit 2, and
 deletes nothing. A repeat after a completed cleanup is such an attempt, and its refusal says the
 restore has settled and names `cotal status`. Without `--force`, `restore-attempt` and
-`restore-fallback` name the command to run with its `--attempt`.
+`restore-fallback` name the command to run with its `--attempt`. `restore-attempt` refuses the same
+way, with `TARGET_NOT_FOUND`, for an attempt the record does not name, and with `LIFECYCLE_BLOCKED`
+for a recorded attempt past its pre-commit point, which recovers forward. Without `--attempt` both
+verbs refuse with `USAGE_INVALID`. Each refusal's Next names the attempt the root records and its
+step.
 
 ## reset
 

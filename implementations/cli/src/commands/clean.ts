@@ -62,6 +62,14 @@ export function userAuthTrustNote(done: boolean): string {
 }
 type Target = (typeof TARGETS)[number];
 
+/** The Next a restore verb's refusal gives: the attempt this root's maintenance record names and its
+ *  step, or `none` when the root records no maintenance state. */
+function recordedAttemptStep(root: string, journal: ReturnType<typeof readMaintenanceJournal>, none: string): string {
+  if (!journal) return none;
+  const recorded = maintenanceNextStep(root, journal);
+  return `this root's maintenance record names attempt ${recorded.attemptId} (state ${journal.state})${recorded.next ? `; ${recorded.next}` : ""}`;
+}
+
 /** `cotal clean <history|store|all>` - one configurable cleanup verb.
  *   - `history`: purge the retained message backlog on the RUNNING broker (CHAT, plus DMs with
  *     `--dms`) via the least-privilege purger cred. `cotal history clear` is a thin alias.
@@ -105,12 +113,21 @@ export async function clean(args: ParsedArgs): Promise<void> {
     // The explicit pre-commit recovery action: roll back one exact stale attempt. A live claim
     // (any recorded owner alive, or the deadline not elapsed while a broker it started is not
     // proven gone) is always refused.
-    if (!values.attempt) throw new Error("clean restore-attempt requires --attempt <id>");
+    if (!values.attempt)
+      throw new MissingFlags("clean restore-attempt requires --attempt <id>, the pre-commit restore attempt to roll back", recordedAttemptStep(root, readMaintenanceJournal(root), "this root holds no restore attempt; `cotal status` shows the root's maintenance state"));
     const lock = acquireMaintenanceLock(root);
     try {
       const journal = readMaintenanceJournal(root);
-      if (!journal || journal.state !== "restore-ready" || journal.restore.attemptId !== values.attempt)
-        throw new Error(`no pre-commit restore attempt ${values.attempt} is recorded${journal ? ` (maintenance state is ${journal.state}${"restore" in journal ? ` for attempt ${journal.restore.attemptId}` : ""})` : ""}`);
+      if (!journal || !("restore" in journal) || journal.restore.attemptId !== values.attempt)
+        throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no maintenance record at this root names restore attempt ${values.attempt}; nothing was rolled back`, {
+          target: { root, attemptId: values.attempt },
+          remedy: recordedAttemptStep(root, journal, "this root holds no restore attempt; `cotal status` shows the root's maintenance state"),
+        });
+      if (journal.state !== "restore-ready")
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore attempt ${values.attempt} is ${journal.state}, past the pre-commit point, so it recovers forward instead of rolling back; nothing was rolled back`, {
+          target: { root, attemptId: values.attempt, state: journal.state },
+          remedy: maintenanceNextStep(root, journal).next ?? "`cotal status` shows the root's maintenance state",
+        });
       rollbackRestoreWithBroker(lock, { unrecordedOwnersDead: attemptProcessesGone(root) });
       console.log(c.green(`✓ rolled back stale restore attempt ${values.attempt}`));
       console.log(c.dim("  the preserved source is back at ready; resume with `cotal up` or retry `cotal up --restore`"));
@@ -120,21 +137,18 @@ export async function clean(args: ParsedArgs): Promise<void> {
     return;
   }
   if (target === "restore-fallback") {
-    if (!values.attempt) throw new Error("clean restore-fallback requires --attempt <id>");
+    if (!values.attempt)
+      throw new MissingFlags("clean restore-fallback requires --attempt <id>, the completed restore whose old store it removes", recordedAttemptStep(root, readMaintenanceJournal(root), "this root holds no restore attempt; `cotal status` shows the root's maintenance state"));
     const lock = acquireMaintenanceLock(root);
     try {
       // A restore that left something out set its old store aside as the only copy of it.
       const journal = readMaintenanceJournal(root);
       // A completed fallback cleanup retires the journal, so a repeat finds no record of its attempt.
-      if (!journal || !("restore" in journal) || journal.restore.attemptId !== values.attempt) {
-        const recorded = journal ? maintenanceNextStep(root, journal) : undefined;
+      if (!journal || !("restore" in journal) || journal.restore.attemptId !== values.attempt)
         throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no maintenance record at this root names restore attempt ${values.attempt}; nothing was deleted`, {
           target: { root, attemptId: values.attempt },
-          remedy: journal && recorded
-            ? `this root's maintenance record names attempt ${recorded.attemptId} (state ${journal.state})${recorded.next ? `; ${recorded.next}` : ""}`
-            : "this root holds no restore attempt: a completed restore-fallback retires its journal, so the restore has settled and a repeat has nothing to remove; `cotal status` shows the root's maintenance state",
+          remedy: recordedAttemptStep(root, journal, "this root holds no restore attempt: a completed restore-fallback retires its journal, so the restore has settled and a repeat has nothing to remove; `cotal status` shows the root's maintenance state"),
         });
-      }
       const active = journal.state === "active" && journal.restore.attemptId === values.attempt && !journal.restore.cleanup ? journal : undefined;
       const leftOut = active ? restoreLeftOut(active) : undefined;
       const onlyCopy = leftOut ? active?.restore.previousSource?.identity.path : undefined;
