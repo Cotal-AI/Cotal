@@ -251,63 +251,78 @@ interrupted. Ctrl-C ends it at once: `watch` exits 130, and the other three exit
 
 ## Commands
 
-| Area | Command | Purpose |
+| Section | Command | Purpose |
 |---|---|---|
-| Set up & lifecycle | [`setup`](#setup) | Prepare a space, application and runtimes; opt into startup separately |
-| Set up & lifecycle | [`update`](#update) | Reconcile first-party extensions and check or opt into a coherent CLI upgrade |
-| Set up & lifecycle | [`up`](#up) | Start a local mesh (nats-server + JetStream), or boot a whole manifest with `-f` |
-| Set up & lifecycle | [`down`](#down) | Stop the whole stack, selected registered components, or a manifest deploy |
-| Set up & lifecycle | [`backup`](#backups) | Create an offline full-space or registry-only artifact from a preserved cut |
-| Set up & lifecycle | [`clean`](#clean) | Configurable cleanup: purge history (live), or wipe the local store / identity (stopped) |
-| Set up & lifecycle | [`reset`](#reset) | Preview or reset one stopped local store or space identity |
-| Set up & lifecycle | [`space`](#selecting-a-space) | List the spaces this machine can reach, or show one in full |
-| Set up & lifecycle | [`use`](#selecting-a-space) | Select the space commands target when none is named, or show the selection |
-| Set up & lifecycle | [`meshes`](#mesh-registry) | List, register and drop meshes; `space` replaces its listing |
-| Set up & lifecycle | [`sync`](#mesh-registry) | Refresh the signed-in account's advertised spaces |
-| Set up & lifecycle | [`status`](#mesh-registry) | Read-only diagnostics for setup, processes, and the selected mesh |
-| Agents & personas | [`spawn`](#spawn) | Launch an agent from a persona (foreground, or `--detach` via the manager) |
-| Agents & personas | [`models`](#models) | List connector model catalogs and variants from the manager |
-| Agents & personas | [`ps`](#managed-seats) | List managed agents and their mesh status |
-| Agents & personas | [`stop`](#managed-seats) | Ask the manager to stop a managed agent |
-| Agents & personas | [`attach`](#managed-seats) | Stream and drive a managed agent's terminal (pty runtime) |
-| Agents & personas | [`input`](#input) | Type one line into a managed agent's terminal without attaching |
-| Agents & personas | [`persona`](#persona) | List, show, edit, create, or remove local personas |
-| Agents & personas | [`supervise`](#supervise) | Deprecated and hidden from help: run a manager daemon; use the `manager` service preset |
-| Agents & personas | [`service`](#service) | Save, start, stop and inspect owned local services, from a preset or a definition file |
-| Agents & personas | [`daemon`](#daemon) | Linux: serve the local machine daemon's control endpoint, read its status, sign it in, check and request its own registration with a space |
-| Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
-| Agents & personas | [`seats`](#seats) | List the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
-| Agents & personas | [`endpoint deregister`](#endpoint-deregister) | Remove the service registration of an instance whose host is gone, when the broker affirms nothing is subscribed on its rail |
-| Agents & personas | [`reconcile-gate`](#reconcile-gate) | Unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
-| Messaging & watching | [`who`](#who) | The live roster of the selected space, and whether a manager runs each seat |
-| Messaging & watching | [`whoami`](#whoami) | The identity this CLI acts under, and what it may read, post and do |
-| Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
-| Messaging & watching | [`describe` / `invoke`](#endpoint-control) | Resolve a v0.4 service's command surface off the wire; invoke one command by name |
-| Messaging & watching | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
-| Messaging & watching | [`chat`](#chat) | Open a live session under its own identity: terminal view, `--plain` lines, or `--stdio` for programs |
-| Messaging & watching | [`channels`](#channels) | Inspect or set the channel registry |
-| Messaging & watching | [`history`](#history) | Read retained messages, or clear them |
-| Messaging & watching | [`pending`](#pending) | Inspect one DM durable's native counts and bounded candidate IDs |
-| Messaging & watching | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
-| Messaging & watching | [Web dashboard](#web) | Browser dashboard, run as the `web` service preset (installed as the `@cotal-ai/web` extension) |
-| Extensions & misc | [`linear`](#linear) | Serve the official Linear MCP server as an endpoint agents can call (installed as the `@cotal-ai/linear` extension) |
-| Auth & meshes | [`mint`](#mint) | Mint a creds file for a space (static auth mode) |
-| Auth & meshes | [`login`](#login) | Sign in to a per-user-auth mesh's IdP (once per machine) |
-| Auth & meshes | [`logout`](#login) | Revoke the IdP session and clear the cached login |
-| Auth & meshes | [`actor`](#actor) | Manage a user-auth space's actor ledger (grant / revoke / list) |
-| Auth & meshes | [`doctor`](#doctor) | Credential-health diagnosis and repair (`doctor auth`) |
-| Auth & meshes | [`join`](#join) | Join a space as your own presence (interactive) |
-| Manifest | [`topology`](#manifest-deploys) | Validate and view a mesh manifest's access graph (read-only) |
-| Extensions & misc | [`ext`](#ext) | List, install and remove operator CLI extensions |
-| Extensions & misc | [`docs`](#docs) | Read this version's protocol and CLI docs, offline |
-| Extensions & misc | [`config`](#config) | Show and set your preferences: the defaults your commands use |
-| Extensions & misc | [`completion`](#completion) | Report, print or install shell completion |
-| Extensions & misc | [`feedback`](#feedback) | Send feedback to the Cotal developers |
-| Extensions & misc | [`telemetry`](#telemetry) | Show or set the anonymous usage telemetry level (`off`, `minimal`, `regular`) |
-| Extensions & misc | [`deliver`](#server-daemons) | Deprecated and hidden from help: run the delivery daemon; use the `delivery` service preset |
-| Workflow runs | [`run`](#run) | Operate durable workflow runs: start, resume, list, inspect, answer a checkpoint, check an edited program with migrate |
-| Extensions & misc | [`feedback-intake`](#server-daemons) | Deprecated and hidden from help: run a feedback intake server; use the `feedback-intake` service preset |
-| Extensions & misc | [`auth-service`](#server-daemons) | Deprecated and hidden from help: run a user-auth space's auth service by hand; use the `auth-service` service preset |
+| Setup | [`setup`](#setup) | Prepare a space, application and runtimes; opt into startup separately |
+| Setup | [`help`](#running-it) | List the commands, or show one command's help |
+| Setup | [`version`](#running-it) | Print this binary's version and each installed extension's |
+| Setup | [`ext`](#ext) | List, install and remove operator CLI extensions |
+| Setup | [`config`](#config) | Show and set your preferences: the defaults your commands use |
+| Setup | [`telemetry`](#telemetry) | Show or set the anonymous usage telemetry level (`off`, `minimal`, `regular`) |
+| Setup | [`update`](#update) | Reconcile first-party extensions and check or opt into a coherent CLI upgrade |
+| Setup | [`completion`](#completion) | Report, print or install shell completion |
+| Setup | [`docs`](#docs) | Read this version's protocol and CLI docs, offline |
+| Mesh | [`up`](#up) | Start a local mesh (nats-server + JetStream), or boot a whole manifest with `-f` |
+| Mesh | [`down`](#down) | Stop the whole stack, selected registered components, or a manifest deploy |
+| Mesh | [`backup`](#backups) | Create an offline full-space or registry-only artifact from a preserved cut |
+| Mesh | [`clean`](#clean) | Configurable cleanup: purge history (live), or wipe the local store / identity (stopped) |
+| Mesh | [`reset`](#reset) | Preview or reset one stopped local store or space identity |
+| Mesh | [`meshes`](#mesh-registry) | List, register and drop meshes; `space` replaces its listing |
+| Mesh | [`space`](#selecting-a-space) | List the spaces this machine can reach, or show one in full |
+| Mesh | [`sync`](#mesh-registry) | Refresh the signed-in account's advertised spaces |
+| Mesh | [`status`](#mesh-registry) | Read-only diagnostics for setup, processes, and the selected mesh |
+| Mesh | [`doctor`](#doctor) | Credential-health diagnosis and repair (`doctor auth`) |
+| Mesh | [`use`](#selecting-a-space) | Select the space commands target when none is named, or show the selection |
+| Mesh | [`join`](#join) | Join a space as your own presence (interactive) |
+| Mesh | [`topology`](#manifest-deploys) | Validate and view a mesh manifest's access graph (read-only) |
+| Messaging | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
+| Messaging | [`chat`](#chat) | Open a live session under its own identity: terminal view, `--plain` lines, or `--stdio` for programs |
+| Messaging | [`channel`](#channel) | Read channel metadata and observed members, or change a channel's settings |
+| Messaging | [`history`](#history) | Read retained messages, or clear them |
+| Messaging | [`feedback`](#feedback) | Send feedback to the Cotal developers |
+| Messaging | [`pending`](#pending) | Inspect one DM durable's native counts and bounded candidate IDs |
+| Agents | [`spawn`](#spawn) | Launch an agent from a persona (foreground, or `--detach` via the manager) |
+| Agents | [`models`](#models) | List connector model catalogs and variants from the manager |
+| Agents | [`app-identity`](#plumbing) | Plumbing for a Claude app conversation's identity on a local mesh; you never run it directly |
+| Agents | [`start`](#spawn) | Removed: `cotal start` was merged into `cotal spawn --detach` |
+| Agents | [`stop`](#managed-seats) | Ask the manager to stop a managed agent |
+| Agents | [`ps`](#managed-seats) | List managed agents and their mesh status |
+| Agents | [`attach`](#managed-seats) | Stream and drive a managed agent's terminal (pty runtime) |
+| Agents | [`input`](#input) | Type one line into a managed agent's terminal without attaching |
+| Agents | [`persona`](#persona) | List, show, edit, create, or remove local personas |
+| Agents | [`personas`](#persona) | The legacy persona parser, kept during the migration to `persona` |
+| Observe | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
+| Observe | [`who`](#who) | The live roster of the selected space, and whether a manager runs each seat |
+| Observe | [`whoami`](#whoami) | The identity this CLI acts under, and what it may read, post and do |
+| Observe | [`describe`](#endpoint-control) | Read a native endpoint's authorized, digest-verified command contracts |
+| Observe | [`invoke`](#endpoint-control) | Invoke one native command by name, with schema validation and an attributed result receipt |
+| Observe | [`watch`](#watch) | Follow authorized activity without starting, stopping or attaching agents |
+| Observe | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
+| Manager | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
+| Manager | [`reconcile-gate`](#reconcile-gate) | Unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
+| Manager | [`deregister-instance`](#endpoint-deregister) | Hidden from `cotal help`: the old spelling of `endpoint deregister`, which refuses and names it |
+| Manager | [`seats`](#seats) | List the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
+| Manager | [`supervise`](#supervise) | Deprecated and hidden from `cotal help`: run a manager daemon; use the `manager` service preset |
+| Manager | [`manager`](#manager-maintenance) | Inspect retained local seats or repair an owned manager gate |
+| Manager | [`feedback-intake`](#server-daemons) | Deprecated and hidden from `cotal help`: run a feedback intake server; use the `feedback-intake` service preset |
+| Manager | [`deliver`](#deliver) | Deprecated and hidden from `cotal help`: run the delivery daemon; use the `delivery` service preset |
+| Manager | [`run`](#run) | Operate durable workflow runs: start, resume, list, inspect, answer a checkpoint, check an edited program with migrate |
+| Manager | [`agent-bearer`](#plumbing) | Plumbing that prints a fresh bearer for a spawned user-auth agent; you never run it directly |
+| Manager | [`auth-service`](#server-daemons) | Deprecated and hidden from `cotal help`: run a user-auth space's auth service by hand; use the `auth-service` service preset |
+| Manager | [`daemon`](#daemon) | Linux: serve the local machine daemon's control endpoint, read its status, sign it in, check and request its own registration with a space |
+| Services | [`service`](#service) | Save, start, stop and inspect owned local services, from a preset or a definition file |
+| Identity | [`mint`](#auth-mint) | Moved: credential minting is `cotal auth mint` |
+| Identity | [`actor`](#actor) | Manage a user-auth space's actor ledger (grant / revoke / list) |
+| Identity | [`service-endpoint`](#service-endpoint) | Decide and inspect service endpoint registrations on the space's auth service |
+| Identity | [`login`](#login) | Sign in to a per-user-auth mesh's IdP (once per machine) |
+| Identity | [`logout`](#login) | Revoke the IdP session and clear the cached login |
+| Identity | [`auth`](#auth-mint) | Mint credentials, inspect account metadata, manage actor grants and export a protected account signer |
+| Teams | [`team`](#manifest-deploys) | Inspect teams, boot a fresh mesh from a manifest, or add its channels and agents to a running one |
+| Endpoints | [`endpoint`](#endpoint-authoring) | Save endpoint references, author contracts offline, inspect or invoke native endpoints, and deregister a departed instance |
+
+The table has one row per command `cotal help --all` lists, under the section it lists it in.
+Installed extensions add their own: `@cotal-ai/linear` adds the [`linear`](#linear) command, and
+`@cotal-ai/web` adds the [web dashboard](#web) as a service preset.
 
 The manifest modes of `up`, `spawn`, and `down` (`-f <cotal.yaml>`) plus `topology` are covered
 together under [Manifest deploys](#manifest-deploys).
