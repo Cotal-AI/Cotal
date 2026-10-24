@@ -7,8 +7,9 @@ import * as tmux from "./src/driver.js";
 import { TmuxRuntime, tmuxRuntimeProvider, tmuxTerminalProvider } from "./src/runtime.js";
 import { registry } from "@cotal-ai/core";
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const SESSION = "cotal-tmux-smoke";
 let passed = 0;
@@ -172,6 +173,55 @@ await rejects(
 tmux.closeWindow(waitProbe.windowId);
 await tmux.waitForPaneExit(waitProbe.paneId, { timeoutMs: 500 });
 ok("waitForPaneExit resolves after the pane is authoritatively absent", true);
+
+console.log("\n── failed reads name their operation ───────────");
+
+// A tmux first on PATH that refuses capture-pane and the session-name read and passes every other
+// call to the real tmux, so the pane still lists as running.
+const shimDir = mkdtempSync(join(tmpdir(), "tmux-shim-"));
+const realTmux = execFileSync("sh", ["-c", "command -v tmux"], { encoding: "utf8" }).trim();
+writeFileSync(
+  join(shimDir, "tmux"),
+  `#!/bin/sh\ncase "$2 $4" in "capture-pane "*|"display-message #S") echo "shim: refused" >&2; exit 1;; esac\nexec '${realTmux}' "$@"\n`,
+  { mode: 0o700 },
+);
+const readProbe = tmux.openWindow(SESSION, "read-fail", "sleep 30", "/tmp", { focus: false });
+const caught = (fn: () => unknown): Error | undefined => {
+  try {
+    fn();
+  } catch (err) {
+    return err as Error;
+  }
+  return undefined;
+};
+const savedPath = process.env.PATH;
+const savedTmux = process.env.TMUX;
+const stderrWrite = process.stderr.write;
+let callerStderr = "";
+try {
+  process.env.PATH = `${shimDir}:${savedPath}`;
+  const capture = caught(() => tmux.capturePane(readProbe.paneId, readProbe.serverPid));
+  ok("a refused capture of a running pane names the read and keeps the failed call as cause",
+    /^tmux: couldn't capture pane %\d+: shim: refused/.test(capture?.message ?? "") && capture?.cause instanceof Error);
+  process.env.TMUX ??= "/tmux-shim,1,0";
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    callerStderr += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+  const session = caught(() => tmux.currentSession());
+  process.stderr.write = stderrWrite;
+  ok("a refused session-name read names the read and keeps the failed call as cause",
+    /^tmux: couldn't read current session name: shim: refused/.test(session?.message ?? "") && session?.cause instanceof Error);
+  ok("a refused session-name read keeps tmux's stderr off the caller's", callerStderr === "");
+} finally {
+  process.stderr.write = stderrWrite;
+  if (savedPath === undefined) delete process.env.PATH;
+  else process.env.PATH = savedPath;
+  if (savedTmux === undefined) delete process.env.TMUX;
+  else process.env.TMUX = savedTmux;
+  rmSync(shimDir, { recursive: true, force: true });
+}
+tmux.closeWindow(readProbe.windowId);
 
 console.log("\n── regression: numeric session name (#131) ──────");
 
