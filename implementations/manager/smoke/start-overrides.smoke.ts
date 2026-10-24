@@ -276,7 +276,8 @@ const j = (v: unknown) => JSON.stringify(v);
 // the details and rendered text #873 kept. The envelope is the activation saga's retired-gate refusal.
 {
   let thrown: unknown;
-  registry.register({ ...recCon, name: "smoke-refuses", buildLaunch: () => { throw thrown; } });
+  const refusingCon: Connector = { ...recCon, name: "smoke-refuses", buildLaunch: () => { throw thrown; } };
+  registry.register(refusingCon);
   const refusedWith = (e: unknown) => {
     thrown = e;
     return mgr.startAgent({ name: "plain", agent: "smoke-refuses", events: false });
