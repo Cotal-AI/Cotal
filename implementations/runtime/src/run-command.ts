@@ -1166,6 +1166,13 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     try { assertLifecycleToken(values.on, "instanceId"); }
     catch { usage("--on requires the full manager instance id as cotal ps prints it"); }
   }
-  if ((values.json || values.plain) && values.local && !["ps", "journal", "answer", "amend"].includes(verb)) usage("the local drive does not implement structured or plain receipts; use the hosted form");
+  // A local drive, a revoke and a check print text only. Name the manager's form where one takes the
+  // flag, and the same command without it where none does.
+  if ((values.json || values.plain) && values.local && !["ps", "journal", "answer", "amend"].includes(verb)) {
+    const flag = values.json ? "--json" : "--plain";
+    if (verb === "start" || verb === "resume")
+      usage(`run ${raw} --local prints no ${flag} output`, `drop --local to ${raw} it on the manager, which takes ${flag}: cotal run ${verb === "start" ? "start <file>" : `resume ${a}`} ${flag}`);
+    usage(`run ${raw} prints no ${flag} output`, `run it without ${flag}: ${verb === "revoke" ? `cotal run revoke ${a} --local --by <who> --reason <text>` : `cotal run check ${a} <program>`}`);
+  }
   return { values, verb, ...(a === undefined ? {} : { a }), ...(b === undefined ? {} : { b }) };
 }

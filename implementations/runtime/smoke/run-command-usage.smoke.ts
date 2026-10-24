@@ -53,6 +53,23 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
   c("no verb at all is the list command, not a refusal", !(bare instanceof Error) && bare.verb === "ps", bare);
 }
 
+// --json and --plain on a form that prints text only name a form that takes the flag, or the same
+// command without it, and print no help. They used to say "use the hosted form" to revoke and check,
+// which have none.
+{
+  const cases: [string, string[], Record<string, string | boolean>, string, string][] = [
+    ["revoke --local --json", ["revoke", "run-1"], { local: true, by: "a", reason: "b", json: true }, "run revoke prints no --json output", "run it without --json: cotal run revoke run-1 --local --by <who> --reason <text>"],
+    ["check --plain", ["check", "run-1", "p.cotal.js"], { plain: true }, "run check prints no --plain output", "run it without --plain: cotal run check run-1 <program>"],
+    ["start --local --json", ["start", "p.cotal.js"], { local: true, "admit-read": "none", "admit-publish": "none", json: true }, "run start --local prints no --json output", "drop --local to start it on the manager, which takes --json: cotal run start <file> --json"],
+    ["resume --local --json", ["resume", "run-1"], { local: true, json: true }, "run resume --local prints no --json output", "drop --local to resume it on the manager, which takes --json: cotal run resume run-1 --json"],
+  ];
+  for (const [what, positionals, values, message, remedy] of cases) {
+    const got = gate(positionals, values);
+    c(`${what} names the supported form and prints no help`,
+      usageRefusal(got, message) && isCommandFailure(got) && got.message === message && got.remedy === remedy && got.selfContained === true, got);
+  }
+}
+
 // A local start's ceiling entry is a channel or a pattern; one the wire layer would rewrite is refused by name.
 {
   const local = (read: string, publish: string) => gate(["start"], { local: true, file: "p.cotal.js", "admit-read": read, "admit-publish": publish });
