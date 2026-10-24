@@ -31,6 +31,7 @@ import { completingFlagValue, positionalsForCompletion } from "../lib/completion
 import { listDeclaredChannels } from "../lib/personas.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
 import { streamsAbsent } from "../lib/space-streams.js";
+import { scriptLine } from "../watch-data.js";
 
 const dmsFlag = { name: "dms", type: "boolean", description: "also read DM history (needs a DM read grant); with clear, also clear DMs" } as const;
 const forceFlag = { name: "force", type: "boolean", description: "removed spelling; use history clear --yes" } as const;
@@ -260,7 +261,7 @@ export async function history(args: ParsedArgs): Promise<void> {
       writeStreamRecord(streamRecord("history", "snapshot", target, { ...result, completeness, warnings }));
       process.exitCode = partial ? exitCode("partial", "OPERATION_PARTIAL") : exitCode("ok");
     } else {
-      writeResult(presentation, { command: "history", target, result, completeness, warnings, ...(partial ? { partial } : {}) }, (r) => historyView(r, conn.space, names, since));
+      writeResult(presentation, { command: "history", target, result, completeness, warnings, ...(partial ? { partial } : {}) }, (r) => historyView(r, conn.space, names, since, live !== undefined));
     }
     if (!live) return;
     await live.follow(result.items, (item) => keep(item, undefined, v.from, v.grep), presentation, target, names, () => stopping);
@@ -494,7 +495,7 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
             remember(entry.item.id);
             names.set(entry.item.from.id, entry.item.from.name);
             if (presentation === "json") writeStreamRecord(streamRecord("history", "event", target, entry.item));
-            else line(itemLine(entry.item, names));
+            else line(followLine(entry.item));
           } else if (entry.gap) {
             outage = false;
             if (presentation === "json") writeStreamRecord(streamRecord("history", "gap", target, { reason: entry.gap }));
@@ -526,11 +527,12 @@ function where(item: HistoryItem, names: ReadonlyMap<string, string>): string {
   return `DM to ${item.to === null ? "?" : names.get(item.to) ?? item.to}`;
 }
 
-function itemLine(item: HistoryItem, names: ReadonlyMap<string, string>): Cell {
-  return `${shownTime(item.ts)}  ${where(item, names)}  ${item.from.name}: ${item.text}`;
+/** A followed message, in the line `watch --plain` writes after its `[space]` prefix. */
+function followLine(item: HistoryItem): string {
+  return scriptLine(item.ts, item.from.name || item.from.id, item.channel !== null ? `#${item.channel}` : `DM to ${item.to ?? "not attributed"}`, item.text);
 }
 
-function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string, string>, since: Since | undefined): Report {
+function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string, string>, since: Since | undefined, follow = false): Report {
   const scope = r.channels.length === 1 && !r.dms ? `#${r.channels[0]}` : r.dms ? "every channel and DMs" : "every channel";
   const notes: Cell[] = [];
   const filtered = r.window.since !== null || r.window.from !== null || r.window.grep !== null;
@@ -558,7 +560,9 @@ function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string,
     sections: [
       {
         blocks: [
-          ...(r.items.length
+          // A follow prints the window as the lines its live messages use.
+          ...(follow && r.items.length ? [{ kind: "lines" as const, lines: r.items.map((item) => `[${space}] ${followLine(item)}`) }] : []),
+          ...(!follow && r.items.length
             ? [{
                 kind: "table" as const,
                 columns: [{ key: "ts", label: "TIME" }, { key: "where", label: "WHERE" }, { key: "from", label: "FROM" }, { key: "text", label: "MESSAGE" }],

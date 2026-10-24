@@ -379,8 +379,14 @@ try {
   const shownLine = await fp.until((l) => l.includes("a plain line"));
   fp.child.kill("SIGINT");
   await fp.exited;
-  check("--follow --plain appends each matching message as a line", shownLine && fp.lines.some((l) => /#ops\s+bob: a plain line/.test(l)) && !fp.lines.some((l) => l.includes("filtered out")), fp.lines.slice(-4));
-  check("a followed line shows the local time, not the ISO time", fp.lines.some((l) => /bob: a plain line/.test(l) && !/^\d{4}-\d\d-\d\dT/.test(l)), fp.lines.slice(-4));
+  // A followed line is written as watch --plain writes one: [space] time, sender, destination, text.
+  const scriptShape = (l: string, sender: string, destination: string, text: string) => new RegExp(`^\\[${space}\\] \\d\\d:\\d\\d:\\d\\d  ${sender}  ${destination}  ${text}$`).test(l);
+  check("--follow --plain appends each matching message as a line in watch --plain's form", shownLine && fp.lines.some((l) => scriptShape(l, "bob", "#ops", "a plain line")) && !fp.lines.some((l) => l.includes("filtered out")), fp.lines.slice(-4));
+  const prefill = follow(["history", "general", "--follow", "--plain", "--limit", "1"]);
+  const prefilled = await prefill.until((l) => /replay to new members/.test(l));
+  prefill.child.kill("SIGINT");
+  await prefill.exited;
+  check("a follow prints its window in the same form as its live lines", prefilled && prefill.lines.some((l) => scriptShape(l, "\\S+", "#general", ".+")) && !prefill.lines.some((l) => /^TIME\s+WHERE/.test(l)), prefill.lines);
 
   // A follow whose credential expires ends on its own, with the refusal a one-shot read of that file gets.
   const brief = join(home, "brief.creds");

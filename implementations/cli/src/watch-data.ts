@@ -19,9 +19,20 @@ export function observedText(text: string): { text: string; omittedCodeUnits: nu
   return { text: shown, omittedCodeUnits: text.length - shown.length };
 }
 
+/** A line's 24-hour local time. */
+function feedTime(ts: number | string): string {
+  const date = new Date(ts);
+  return Number.isFinite(date.getTime()) ? date.toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "time not reported";
+}
+
+/** One message as `watch --plain` writes it after its `[space]` prefix: time, sender, destination and
+ *  text. `history --follow` writes its lines the same way, so a script reads both feeds alike. */
+export function scriptLine(ts: number | string, sender: string, destination: string, text: string): string {
+  return oneLine(`${feedTime(ts)}  ${sender}  ${destination}  ${text}`);
+}
+
 export function feedLine(entry: FeedEntry): string {
-  const date = new Date(entry.ts);
-  const time = Number.isFinite(date.getTime()) ? date.toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "time not reported";
+  const time = feedTime(entry.ts);
   const sender = entry.from.name || entry.from.id;
   const destination = entry.channel ? `#${entry.channel}` : entry.toService ? `role ${entry.toService}` : `DM to ${entry.toIds?.join(", ") || "not attributed"}`;
   const body = observedText(entry.text);
@@ -31,7 +42,7 @@ export function feedLine(entry: FeedEntry): string {
       if (event && typeof event === "object" && "type" in event && typeof event.type === "string") return oneLine(`${time}  ${sender}  reported ${event.type.toLowerCase().replaceAll("_", " ")}`);
     } catch { /* A non-JSON event remains attributed text. */ }
   }
-  return oneLine(`${time}  ${sender}  ${destination}  ${body.text}${body.omittedCodeUnits ? ` [${body.omittedCodeUnits} text code units not shown]` : ""}`);
+  return scriptLine(entry.ts, sender, destination, `${body.text}${body.omittedCodeUnits ? ` [${body.omittedCodeUnits} text code units not shown]` : ""}`);
 }
 
 /** Read views use facts already normalized by MeshView, without inferring task or membership state. */

@@ -4548,7 +4548,10 @@ them in a `CHANNELS_DENIED` warning. DM history and `--since` by sequence are no
 user-auth identity. A part that could not be read is a warning and a `partial` run (exit 4): the
 retention, a replay policy, the channel list when a channel is named, or one channel of several.
 
-`--follow` prints the window and then each new message until interrupted. A lost connection is
+`--follow` prints the window and then each new message until interrupted, each as one line in the
+form `watch --plain` uses: `[<space>] <time>  <sender>  <destination>  <text>`, with a 24-hour local
+time and `#<channel>` or `DM to <principal>` as the destination. A purge by `history clear` is not
+announced to a follow or to `watch`; messages sent after it keep arriving. A lost connection is
 reported in one line while the follow re-establishes it, so a follow outlives a broker restart. A
 credential that can no longer connect ends the follow. It may have expired, or the broker may now
 reject it, as after `reset space`. The follow then ends with the refusal a one-shot command with that
