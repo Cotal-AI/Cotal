@@ -89,7 +89,8 @@ continuing. A full receipt must match both sequences. Partial effects remain
 without rollback; unknown effects are not replayed. Runtime requests must match
 that manager. Windows boot apply refuses, because protected service records cannot
 be read there. `spawn -f` no longer deploys a manifest.
-User-auth agent apply, existing cards, defaults and reapply refuse;
+User-auth agent apply, existing cards and defaults refuse, and reapplying an identical settled
+deployment changes nothing;
 `team remove` applies only to returned static agent-only teams and requires native
 retired slot/head plus cleanup evidence for every original UID. Mixed/channel,
 open/user-auth and legacy removal effects still refuse. Boot previews show the manager PID record even when its process is

@@ -8,7 +8,7 @@ import { verifyOriginalIncarnations } from "../lib/team-retained.js";
 import { hashManifestSource, listLedgerFiles } from "../lib/manifest/ledger.js";
 import { loadManifest } from "../lib/manifest/index.js";
 import { additiveChannelAttemptSettled, listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, writeAdditiveChannelReceipt, writeAdditiveChannelStep, writeAdditiveTeamAttempt, type AdditiveChannelReceipt, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
-import { readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
+import { cardsWithoutLiveDelivery, LIVE_DELIVERY_REMEDY, readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
 import { openAdditiveChannelWriter } from "../lib/team-additive-native.js";
 import { cotalRoot } from "../lib/paths.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
@@ -41,8 +41,9 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
     throw new CommandFailure("refused", "CONFLICT", "the manifest authentication mode differs from this registered mesh; no identity mode was substituted", { target: { root, space, recordedMode: registered.mode, requestedMode } });
   if (registered.mode === "open" && manifest.channels.some((channel) => channel.deliveryClass === "durable"))
     throw new CommandFailure("refused", "UNSUPPORTED", "an open mesh has no durable delivery daemon; no durable channel card was created", { target: { root, space } });
-  if (manifest.channels.some((channel) => channel.deliveryClass !== "live"))
-    throw new CommandFailure("refused", "UNSUPPORTED", "channel-only additive apply currently needs explicit live delivery on every card; inherited or durable delivery needs a verified daemon before creation", { target: { root, space } });
+  const notLive = cardsWithoutLiveDelivery(manifest.channels);
+  if (notLive)
+    throw new CommandFailure("refused", "UNSUPPORTED", `channel-only additive apply creates a card only with explicit live delivery, and ${notLive.cards} ${notLive.verb} not set deliveryClass: live; inherited or durable delivery needs a verified daemon first, so nothing was created`, { target: { root, space, cards: notLive.names }, remedy: LIVE_DELIVERY_REMEDY });
   try { for (const channel of manifest.channels) validateChannelConfig(cardOf(channel)); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "a declared channel card exceeds native policy or text limits; no intent or channel was written", { target: { root, space } }); }
   let source: string;

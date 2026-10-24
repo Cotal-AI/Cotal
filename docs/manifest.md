@@ -99,9 +99,13 @@ unsupported `variant:` is refused.
 
 ## Channel grants
 
-A channel carries its registry card (`description`, `instructions`, `replay`, …;
-[SPEC §7](../SPEC.md#7-channels)) plus three lists of agent names, the same verbs Cotal
-uses everywhere ([channels & permissions](channels-and-permissions.md)):
+A channel carries its registry card ([SPEC §7](../SPEC.md#7-channels)): `description`,
+`instructions`, `replay`, `replayWindow` and `deliveryClass` (`live` / `durable`). A key the
+channel sets overrides the same key in `defaults`. `cotal team deploy` adds a channel to a running
+mesh only when its card sets `deliveryClass: live`. `cotal up -f` and `cotal team boot` seed
+either class, except on an open mesh, which runs no delivery daemon and refuses `durable`. The
+channel also carries three lists of agent names, the same verbs Cotal uses everywhere
+([channels & permissions](channels-and-permissions.md)):
 
 | Verb | ACL | Meaning |
 |---|---|---|
