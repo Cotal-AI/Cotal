@@ -50,6 +50,12 @@ export const onRequest = async (context: Ctx): Promise<Response> => {
     if (sh.ok) return installerResponse(await sh.text());
   }
 
+  // The generated source is retained for agent bundles, with one public HTML reference.
+  if (slug === 'dashboard-api') {
+    url.pathname = '/api/dashboard/';
+    return Response.redirect(url.href, 301);
+  }
+
   // /install.sh on any host: same script, same readable content type.
   if (slug === 'install.sh') {
     const sh = await next();

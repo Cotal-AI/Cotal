@@ -4,7 +4,7 @@
 import type { APIRoute, GetStaticPaths } from 'astro';
 import { getCollection } from 'astro:content';
 import { PROMPT_FENCE } from '../prompt';
-import { dashboardPages } from '../../scripts/dashboard-api.mjs';
+import { dashboardBase, dashboardPages } from '../../scripts/dashboard-api.mjs';
 import dashboardSpec from '../generated/dashboard.openapi.json';
 
 const isIndex = (id: string) => id === '' || id === 'index';
@@ -22,11 +22,14 @@ function restorePrompt(body: string): string {
 
 export const getStaticPaths: GetStaticPaths = async () => {
   const docs = await getCollection('docs');
+  const dashboardReference = docs.find((entry) => entry.id === 'dashboard-api');
+  if (!dashboardReference) throw new Error('Missing generated dashboard Markdown');
   return [
-    ...docs.filter((entry) => !isIndex(entry.id))
+    ...docs.filter((entry) => !isIndex(entry.id) && entry.id !== 'dashboard-api')
       .map((entry) => ({ params: { slug: entry.id }, props: { entry } })),
     ...dashboardPages(dashboardSpec).map((page) => ({
-      params: { slug: page.slug }, props: { markdown: page.markdown },
+      params: { slug: page.slug },
+      props: page.slug === dashboardBase ? { entry: dashboardReference } : { markdown: page.markdown },
     })),
   ];
 };

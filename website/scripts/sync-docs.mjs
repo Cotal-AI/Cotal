@@ -19,7 +19,7 @@ import { decodeString } from 'micromark-util-decode-string';
 import { normalizeUri } from 'micromark-util-sanitize-uri';
 import { parse as parseHtml, parseFragment } from 'parse5';
 import { PROMPT_FENCE } from '../src/prompt.js';
-import { dashboardMarkdown, loadDashboardSpec } from './dashboard-api.mjs';
+import { dashboardBase, dashboardMarkdown, loadDashboardSpec } from './dashboard-api.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
@@ -121,6 +121,8 @@ const sources = groups.flatMap((g) => g.files);
 // Slugs we publish, keyed by source path so a design note cannot take the route of a
 // published page that shares its name.
 const knownSlugs = new Map(sources.map((rel) => [rel, slugFor(basename(rel).replace(/\.md$/, ''))]));
+// This source feeds Markdown and agent bundles; the plugin owns its HTML reference.
+knownSlugs.set('docs/dashboard-api.md', dashboardBase);
 
 // The site publishes only SPEC.md and top-level docs pages, so one of these the group map
 // leaves out is drift, and every other repo file stays on GitHub.
@@ -383,7 +385,7 @@ for (const group of groups) {
       ext = 'mdx';
     }
     writeFileSync(join(outDir, `${slug}.${ext}`), fm + imports + md);
-    items.push({ label: title, slug });
+    if (rel !== 'docs/dashboard-api.md') items.push({ label: title, slug });
   }
   sidebar.push({ label: group.label, items });
 }

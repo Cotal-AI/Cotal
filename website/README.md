@@ -34,8 +34,9 @@ to update `docs/dashboard-api.md`. The build refuses stale generated Markdown.
 Wire message and presence schemas come from `spec/cotal.schema.json`.
 
 The sync publishes the bundled contract at `/dashboard.openapi.json`. Each plugin
-page under `/api/dashboard/` has a Markdown twin. The canonical Markdown page also
-puts the operations into the existing llms indexes and connector docs bundle.
+page under `/api/dashboard/` has a Markdown twin. The generated Markdown source feeds the existing llms indexes and connector docs
+bundle. It is served at `/api/dashboard.md` and has no second HTML reference;
+`/dashboard-api/` redirects to `/api/dashboard/`.
 `npm test` checks reference generation; the build checks the published artifacts.
 After building packages, run `pnpm smoke:web-openapi` from the repository root for
 HTTP and SSE conformance against a private broker.

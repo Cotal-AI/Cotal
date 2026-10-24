@@ -12,8 +12,8 @@ const sidebar = JSON.parse(readFileSync(new URL('./src/generated/sidebar.json', 
 export default defineConfig({
   // The deploy origin. Drives sitemap, canonical URLs and absolute llms.txt links.
   site: 'https://docs.cotal.ai',
-  // The pi guide moved from /agent-frameworks; keep the published URL alive.
-  redirects: { '/agent-frameworks': '/connect-pi' },
+  // Preserve old entry points while each reference has one public destination.
+  redirects: { '/agent-frameworks': '/connect-pi', '/dashboard-api': '/api/dashboard/' },
   integrations: [
     starlight({
       title: 'Cotal',
@@ -43,7 +43,7 @@ export default defineConfig({
             '',
             '- [Agent setup prompt](https://docs.cotal.ai/prompt.md): self-contained setup runbook for coding agents; fetch it and run its commands directly',
             '- [Quickstart](https://docs.cotal.ai/getting-started.md): install and start a local mesh with `npx cotal-ai setup --destination local --harness claude --project . --space main --no-input && npx cotal-ai up --root . --space main --detach`, then `npx cotal-ai spawn --detach`; verify with `npx cotal-ai status`',
-            '- [Dashboard HTTP](https://docs.cotal.ai/dashboard-api.md): seven read operations, session authentication and SSE events; schema at https://docs.cotal.ai/dashboard.openapi.json',
+            '- [Dashboard HTTP](https://docs.cotal.ai/api/dashboard.md): seven read operations, session authentication and SSE events; schema at https://docs.cotal.ai/dashboard.openapi.json',
             '- [API reference](https://docs.cotal.ai/api-reference.md): choose an interface for CLI automation, native endpoint commands, TypeScript libraries or agent tools',
             '- [MCP tool catalog](https://docs.cotal.ai/mcp-tools.md): message peers from inside a session (`cotal_send` / `cotal_dm` / `cotal_anycast`) and spawn teammates (`cotal_spawn` / `cotal_persona`)',
             '- [Define a team](https://docs.cotal.ai/define-a-team.md): declare a team and its channels in one `cotal.yaml`, launch with `cotal up -f`',

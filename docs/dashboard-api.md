@@ -1,4 +1,4 @@
-# Dashboard HTTP reference
+# Dashboard HTTP API
 
 > **Reference** (informative) · **For:** dashboard client authors · **Source:** [OpenAPI description](../implementations/web/openapi.json)
 
