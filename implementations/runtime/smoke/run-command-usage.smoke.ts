@@ -284,6 +284,20 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   rmSync(dir, { recursive: true, force: true });
 }
 
+// Validation is offline, so its scope line names the broker's message limit among what it did not
+// check: a valid program over that limit is still refused by a hosted start.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-validate-scope-"));
+  const program = join(dir, "ok.cotal.js");
+  writeFileSync(program, 'log("hi");\n');
+  const out: string[] = [];
+  const log = console.log;
+  console.log = (...a: unknown[]) => { out.push(a.map(String).join(" ")); };
+  try { await runWorkflow({ values: { plain: true }, positionals: ["validate", program], raw: [] }); } finally { console.log = log; }
+  c("validate says it checked no broker message limit", out.join("\n").includes("No mesh, authority, runtime, application or broker message limit was checked."), out);
+  rmSync(dir, { recursive: true, force: true });
+}
+
 // A workflow source that cannot be read is refused naming its path and the cause, before any plane.
 {
   const dir = mkdtempSync(join(tmpdir(), "run-source-"));

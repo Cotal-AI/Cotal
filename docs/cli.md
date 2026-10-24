@@ -6831,7 +6831,8 @@ cotal r simulate ./workflow.cotal.js --handler ./results.json
 ```
 
 These three forms are offline and reject mesh or caller selection. Validation checks the
-language. A program that does not validate is refused by all three with every problem listed: its
+language and nothing a broker decides, so a valid program over the broker's message limit is still
+refused by a hosted `start`. A program that does not validate is refused by all three with every problem listed: its
 code, position, cause and fix, as a hosted `start` lists them. `--json` carries them under
 `result.problems`. A warning leaves the program valid. All three print it on stderr with its code,
 position, cause and fix, and `validate --json` lists it under `result.warnings`. One is L3021, a `fanOut` over a list written in the call whose items carry no
