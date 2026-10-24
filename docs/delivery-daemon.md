@@ -141,6 +141,11 @@ timeout.
 without taking the single-flight lease because another daemon holds it, or because a crashed
 holder's lease has not expired yet. A lease write the credential is not allowed to make is reported
 as a denial naming the refused subject and operation, never as another daemon holding the lease.
+A lease write the broker refuses for another reason, such as the insufficient-resources answer of a
+store over its `--max-file-store` cap, is quoted as the broker gave it. A running daemon whose lease
+key expired creates it again. Only a create refused because a live lease exists makes it say that
+another daemon has taken the shard. Any other refusal is quoted, with the line saying it could not
+re-acquire the lease, and the daemon exits all the same, because it serves only under its lease.
 `up` says so and exits non-zero instead of printing a healthy control plane over a
 daemon that is not there. The daemon writes its own reason to `.cotal/delivery.<key>.log`, the log
 for the space it serves ([Config](config.md#project-files)). That path is project-local. Detached
