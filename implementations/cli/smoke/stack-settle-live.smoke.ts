@@ -313,7 +313,7 @@ try {
       word.status === 1 && word.env?.error?.code === "USAGE_INVALID" && word.env.error.message === '--server "hallo welt": the broker address must be one nats:// or tls:// URL; nothing was saved' && serviceDefinitionStore(space).read("bad-word") === undefined, shown(word));
     const credential = addBroker("bad-cred", "nats://user:secret@127.0.0.1:4999");
     check("an address with a credential is refused without printing it",
-      credential.status === 1 && credential.env?.error?.code === "USAGE_INVALID" && /^--server \(not printed/.test(credential.env.error.message) && !`${credential.stdout}${credential.stderr}`.includes("secret") && serviceDefinitionStore(space).read("bad-cred") === undefined, shown(credential));
+      credential.status === 1 && credential.env?.error?.code === "USAGE_INVALID" && credential.env.error.message === "--server must not embed credentials; the command did not run" && !`${credential.stdout}${credential.stderr}`.includes("secret") && serviceDefinitionStore(space).read("bad-cred") === undefined, shown(credential));
     const brokerFile = (server: string) => ({ schemaVersion: 1 as const, space, launch: { type: "adapter" as const, adapter: "nats-broker", options: { root, config: brokerConfig, binary: brokerBinary, server } }, readiness: { type: "adapter" as const, timeoutMs: 30_000 } });
     const badFile = join(home, "bad-server.json");
     writeFileSync(badFile, JSON.stringify(brokerFile("nats://127.0.0.1:4999x")));
