@@ -174,7 +174,7 @@ const QUESTION = "Which one?";
   check("in a prepared space's folder, before its first up, that space is the target and the refusal is its own",
     envelope(inDelta)?.target?.space === "delta" && envelope(inDelta)?.error?.code === "TARGET_UNAVAILABLE" && envelope(inDelta)?.error?.remedy?.includes(delta) === true &&
       envelope(inDelta)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") === true &&
-      !/^! this targets/m.test(inDelta.stderr) && /^Mesh: delta$/m.test(inDeltaText.stderr) && !/alpha/.test(inDeltaText.stdout + inDeltaText.stderr), { json: shown(inDelta), text: shown(inDeltaText) });
+      !/^! this targets/m.test(inDelta.stderr) && /^Mesh: delta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(inDeltaText.stderr) && !/alpha/.test(inDeltaText.stdout), { json: shown(inDelta), text: shown(inDeltaText) });
   // The listing, `space show` and `use` there name it as the target too.
   const listed = run(["space", "--json"], delta), listedText = run(["space"], delta), shownSpace = run(["space", "show"], delta), used = run(["use", "--json"], delta), usedText = run(["use"], delta);
   check("in that folder space marks it as this folder's, and space show and use name it as the target there",
