@@ -6002,7 +6002,9 @@ are not findings. An expired one is an `EXPORTED_CREDENTIAL_EXPIRED` warning. On
 expired names `cotal auth mint <label> --identity <file> --out <file>`, which signs the same key
 again with the same grants. One whose key was revoked, or that an earlier space identity issued,
 names a mint with a new key instead, because the broker refuses that key and `auth mint --identity`
-refuses a revoked one.
+refuses a revoked one. For an agent file, that mint names the file's read and post channels and its
+role with `--allow-subscribe`, `--allow-publish` and `--role`, since a new key holds only the grants
+its mint names.
 A run with no findings says so in its heading only when nothing else is printed. While an exported
 file needs attention, or a credential is unbounded by request, the heading starts `No findings;` and
 names each, such as `2 exported credential files need attention`. The exit code stays 0.

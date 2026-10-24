@@ -6,7 +6,8 @@
  *  2. After `down`, without `--yes` it refuses USAGE_INVALID (exit 1). With `--yes` it records the
  *     key from the creds file in the account JWT's revocations, and again by public key it reports
  *     the same time and changes nothing. doctor auth lists the file as revoked, naming a mint with a
- *     new key, and its heading says one exported file needs attention. A creds file another account
+ *     new key and the file's read, post and role grants, and its heading says one exported file needs
+ *     attention. A creds file another account
  *     issued refuses CONFLICT.
  *  3. After `up`, the broker refuses the revoked credential, another minted credential still reads,
  *     and the channel history is kept. `auth mint --identity` refuses the revoked key, CONFLICT, and
@@ -78,7 +79,7 @@ try {
   const sent = cli(root, "send", "-c", "general", "kept through the revocation", "--json");
   check("a message is stored on general", sent.status === 0, shown(sent));
   const leaked = join(creds, "leaked.creds"), kept = join(creds, "kept.creds");
-  const mintLeaked = cli(root, "auth", "mint", "leaked", "--no-expiry", "--out", leaked, "--json");
+  const mintLeaked = cli(root, "auth", "mint", "leaked", "--no-expiry", "--allow-subscribe", "general", "--allow-publish", "general", "--role", "rev", "--out", leaked, "--json");
   const mintKept = cli(root, "auth", "mint", "kept", "--no-expiry", "--out", kept, "--json");
   const key = String(mintLeaked.env?.result?.identity ?? "");
   check("auth mint writes two credentials", mintLeaked.status === 0 && mintKept.status === 0 && /^U[A-Z2-7]{55}$/.test(key), { leaked: shown(mintLeaked), kept: shown(mintKept) });
@@ -113,8 +114,9 @@ try {
     const doctor = cli(root, "doctor", "auth", "--json");
     const exported = (doctor.env?.result?.exported ?? []) as { path: string; state: string; repair: string | null }[];
     const listed = exported.find((row) => row.path === leaked);
-    check("doctor auth lists the revoked file, and its repair is a mint with a new key, since --identity refuses that key",
-      listed?.state === "revoked" && listed.repair?.includes("auth mint --identity refuses that key; mint a new key:") === true && listed.repair.includes("auth mint leaked --out <new file>")
+    check("doctor auth lists the revoked file, and its repair is a mint with a new key and the file's grants, since --identity refuses that key",
+      listed?.state === "revoked" && listed.repair?.includes("auth mint --identity refuses that key; mint a new key with the grants this file holds:") === true
+        && listed.repair.includes("auth mint leaked --allow-subscribe general --allow-publish general --role rev --out <new file>")
         && exported.find((row) => row.path === kept)?.state === "unbounded", { exported, doctor: shown(doctor) });
     const heading = cli(root, "doctor", "auth");
     check("  and its heading says there are no findings and that one exported file needs attention",
