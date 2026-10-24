@@ -5122,8 +5122,9 @@ is allowed, and nothing creates registry metadata.
 
 When the channel's replay is on, the session holds its retained messages in the replay window in
 its inbox. The inbox keeps at most 500 unread messages, so a channel that holds more replays only
-its newest 500 and the oldest are dropped. `cotal history <channel> --limit <n>` reads further
-back. `channel show` names the bound in its `Chat replay` row.
+its newest 500 and the oldest are dropped. One `inbox` gap reports how many were dropped.
+`cotal history <channel> --limit <n>` reads further back. `channel show` names the bound in its
+`Chat replay` row.
 
 The terminal view needs a terminal for input and output; without one, `chat` refuses and names
 `--plain` and `--stdio`. `--plain` is the line flow, with a separate confirmation for each send,
@@ -5290,8 +5291,9 @@ A `live` gap means the connection dropped or is reconnecting, so live channel me
 missed until it returns. Its reason defaults to
 `connection <state>: live channel messages may be missed until it returns`. An `inbox` gap means
 the held buffer was full: channel messages were dropped and direct messages were left for the broker
-to redeliver. When a write waits for stdout to drain, or more than 4 MiB of records are waiting, the
-session stops reading stdin until stdout drains.
+to redeliver. Its reason counts each kind that happened. One gap covers the drops of up to a second,
+and a replay past the bound is one gap when the session starts. When a write waits for stdout to
+drain, or more than 4 MiB of records are waiting, the session stops reading stdin until stdout drains.
 
 `end` is the last record. Its `reason` is `input closed` when stdin ended, `interrupted`,
 `terminated` or `hangup` when SIGINT, SIGTERM or SIGHUP ended input, and `session ended` when the

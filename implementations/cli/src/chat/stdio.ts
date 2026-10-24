@@ -408,8 +408,9 @@ export class StdioParticipant {
 
   private async finish(reason: string): Promise<CloseReport | undefined> {
     if (this.ended) return undefined;
-    this.ended = true;
+    // Unsubscribing reports what the session has not reported yet, such as a full inbox's drops.
     this.unsubscribe();
+    this.ended = true;
     let close: CloseReport;
     try {
       close = await this.session.close();

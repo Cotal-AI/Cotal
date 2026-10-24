@@ -77,6 +77,10 @@ function classify(e: unknown): { outcome: "refused"; code: RefusalCode; message:
 
 const refusedUsage = (message: string) => ({ outcome: "refused" as const, code: "USAGE_INVALID" as const, message });
 
+/** How long a full inbox's drops wait for more before one gap reports them all, so a replay past the
+ *  bound or a burst of traffic is one gap with its total. */
+const GAP_COALESCE_MS = 1_000;
+
 /**
  * Refuse a channel outside the session's read or post grant before any effect, so the broker's
  * refusal and its subject never reach the caller. A session opened on no channel holds no grant,
@@ -163,6 +167,9 @@ export class NativeChatSession implements AdmittedChatSession {
   private closed: Promise<CloseReport> | undefined;
   /** Why the session ended itself, when it could not continue. */
   private lost: string | undefined;
+  /** What the full inbox let go that no gap has reported yet. */
+  private overflow = { channelDropped: 0, directedDeferred: 0 };
+  private overflowTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly onMessage = (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta);
   /** The endpoint drops its connection during a reconnect this session asked for. That outage was
    *  reported when the reconnect started, so the state stays reconnecting until it is back. */
@@ -207,12 +214,18 @@ export class NativeChatSession implements AdmittedChatSession {
 
   subscribe(listener: (event: SessionEvent) => void): () => void {
     this.listeners.add(listener);
+    // Drops so far, such as a replay's past the inbox bound, are reported with the early events.
+    this.reportOverflow();
     const early = this.early ?? [];
     this.early = undefined;
     for (const e of early) {
       try { listener(e); } catch { /* a listener fault never breaks delivery */ }
     }
-    return () => this.listeners.delete(listener);
+    // A front end unsubscribes before it closes the session, so it hears the drops first.
+    return () => {
+      this.reportOverflow();
+      this.listeners.delete(listener);
+    };
   }
 
   // ---- receive ---------------------------------------------------------------------------------
@@ -225,8 +238,27 @@ export class NativeChatSession implements AdmittedChatSession {
     const disp = this.engine.accept(m, d, meta, mentionsMe);
     if (disp.kind === "surface") this.emit({ type: "message", message: disp.message });
     const over = this.engine.takeOverflow();
-    if (over.channelDropped || over.directedDeferred)
-      this.emit({ type: "gap", scope: "inbox", reason: `buffer full: ${over.channelDropped} channel message(s) dropped, ${over.directedDeferred} direct message(s) left for broker redelivery` });
+    if (!over.channelDropped && !over.directedDeferred) return;
+    this.overflow = {
+      channelDropped: this.overflow.channelDropped + over.channelDropped,
+      directedDeferred: this.overflow.directedDeferred + over.directedDeferred,
+    };
+    this.overflowTimer ??= setTimeout(() => this.reportOverflow(), GAP_COALESCE_MS);
+    this.overflowTimer.unref?.();
+  }
+
+  /** One gap for every drop since the last one, naming only the kinds that happened. */
+  private reportOverflow(): void {
+    clearTimeout(this.overflowTimer);
+    this.overflowTimer = undefined;
+    const { channelDropped, directedDeferred } = this.overflow;
+    if (!channelDropped && !directedDeferred) return;
+    this.overflow = { channelDropped: 0, directedDeferred: 0 };
+    const parts = [
+      ...(channelDropped ? [`${channelDropped} channel message(s) dropped`] : []),
+      ...(directedDeferred ? [`${directedDeferred} direct message(s) left for broker redelivery`] : []),
+    ];
+    this.emit({ type: "gap", scope: "inbox", reason: `buffer full: ${parts.join(", ")}` });
   }
 
   surfaced(keys: readonly string[]): void {
@@ -426,6 +458,7 @@ export class NativeChatSession implements AdmittedChatSession {
       ep.off("connection", this.onConnection);
       ep.off("presence", this.onPresence);
       ep.off("warning", this.onWarning);
+      this.reportOverflow();
       this.engine.clear();
       let stopped = true;
       try { await ep.stop(); } catch { stopped = false; }
