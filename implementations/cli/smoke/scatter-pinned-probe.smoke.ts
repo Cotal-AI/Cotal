@@ -50,10 +50,10 @@ const {
 } = await import("@cotal-ai/core");
 const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
 const { Manager } = await import("../../manager/src/manager.js");
-const { pinnedLivenessProbe } = await import("../src/lib/control.js");
+const { managerRailGone, pinnedLivenessProbe } = await import("../src/lib/control.js");
 const { pickFreePort } = await import("../../../packages/core/smoke/_free-port.js");
 
-const EXPECTED_CELLS = 21; // predicted 14: +1 for the counter's own positive control (3a), +2 for the never-asked fallback the mutation pass found uncovered, +4 for section 6's prefix/superstring pair (review)
+const EXPECTED_CELLS = 27; // predicted 14: +1 for the counter's own positive control (3a), +2 for the never-asked fallback the mutation pass found uncovered, +4 for section 6's prefix/superstring pair (review), +4 for section 7's spawn census, +2 for section 8's removal
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -108,7 +108,7 @@ try {
 
   /** One connection under a `control-caller-privileged` instrument pinned to exactly `pins` — the
    *  credential the CLI re-mints after its freeze, built here the same way and from the same seed. */
-  const openPinned = async (pins: string[]): Promise<{ nc: NatsConnection; caller: EpCaller }> => {
+  const openPinned = async (pins: string[]): Promise<{ nc: NatsConnection; caller: EpCaller; creds: string }> => {
     const id = newIdentity();
     const uid = mintLifecycleUid();
     const creds = await mintCreds(auth, id, "control-caller-privileged", {
@@ -117,8 +117,23 @@ try {
     });
     const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
     conns.push(nc);
-    return { nc, caller: { owner: DEV_OWNER, actor: id.id, uid } };
+    return { nc, caller: { owner: DEV_OWNER, actor: id.id, uid }, creds };
   };
+  /** The real binary in the live manager's root, run as a child so this process keeps serving both
+   *  managers while it runs. Its home and config are this suite's own. Each call that connects names
+   *  `--space`: both roots record the one space, so the registry keeps only the corpse's root, and
+   *  this folder alone would resolve to the default broker address instead of this suite's. */
+  const cliEnv: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(cliEnv)) if (key.startsWith("COTAL_")) delete cliEnv[key];
+  Object.assign(cliEnv, { HOME: join(dir, "cli-home"), XDG_CONFIG_HOME: join(dir, "cli-xdg"), COTAL_HOME: process.env.COTAL_HOME, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off" });
+  const cli = (args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> => new Promise((resolve) => {
+    const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts"), ...args], { cwd: rootLive, env: cliEnv, stdio: ["ignore", "pipe", "pipe"] });
+    kids.push(child);
+    let stdout = "", stderr = "";
+    child.stdout!.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
 
   console.log("1. the freeze names both, because a record is all the freeze knows");
   const observer = await openPinned([IID_LIVE, IID_CORPSE]);
@@ -238,6 +253,38 @@ try {
   const prefixVerdict = await pair.probeLiveness(PREFIX_ID);
   check("THE POINT: the id that is a PREFIX of the refused one keeps its own verdict, from its own rail",
     prefixVerdict === "gone" && pair.livenessOf(PREFIX_ID) === "gone", { prefixVerdict, row: pair.livenessOf(PREFIX_ID), pairViolations });
+
+  console.log("7. an unpinned spawn's census asks the broker the same question, so the corpse costs no deadline");
+  // The live manager has no agent application, so it keeps off the class queue and no manager takes
+  // the launch. Asking the corpse for its status waited out a 10 s describe and hid that reason.
+  const census = await openPinned([IID_LIVE, IID_CORPSE]);
+  const censusAuth = { creds: census.creds, epCaller: census.caller };
+  check("managerRailGone affirms the corpse gone", await managerRailGone(SPACE, SERVERS, censusAuth, IID_CORPSE));
+  check("...and never calls a live manager gone", !(await managerRailGone(SPACE, SERVERS, censusAuth, IID_LIVE)));
+  // A live manager never answers the probe, so the census stops it once the manager's own status is in.
+  const settled = new AbortController();
+  const abortedAt = performance.now();
+  setTimeout(() => settled.abort(), 100);
+  const abortedVerdict = await managerRailGone(SPACE, SERVERS, censusAuth, IID_LIVE, settled.signal);
+  const abortedMs = performance.now() - abortedAt;
+  check("...and an aborted probe of a live manager settles false at once, not at its 5 s budget", !abortedVerdict && abortedMs < 2_000, { abortedVerdict, abortedMs });
+  const spawnedAt = performance.now();
+  const unpinned = await cli(["spawn", "nobody", "-d", "--json", "--space", SPACE]);
+  const spawnMs = performance.now() - spawnedAt;
+  let refusal: { error?: { code?: string; message?: string }; warnings?: { code: string; message: string }[] } | undefined;
+  try { refusal = JSON.parse(unpinned.stdout); } catch { /* reported below */ }
+  check("an unpinned spawn skips the corpse without waiting out its 10 s describe, names it in a warning and gives the reason the live manager reports",
+    spawnMs < 10_000 && unpinned.status === 2 && refusal?.error?.code === "TARGET_UNAVAILABLE" && refusal.error.message === "no manager of yours takes unpinned launches: none that answered has an agent application installed; nothing was launched"
+      && Boolean(refusal.warnings?.some((w) => w.code === "MANAGER_SILENT" && w.message.startsWith(`manager ${IID_CORPSE} was skipped: its registration is stale`))),
+    { spawnMs, status: unpinned.status, out: unpinned.stdout.slice(0, 900), err: unpinned.stderr.slice(-600) });
+
+  console.log("8. ps names a removal that works on this space, and the legacy spelling refuses without its usage");
+  const ps = await cli(["ps", "--space", SPACE]);
+  check("ps lists the corpse as stale and names endpoint deregister from this space's own root",
+    ps.status === 4 && ps.stdout.includes(`remove the record from this space's own root: cotal endpoint deregister manager ${IID_CORPSE} --yes`), { status: ps.status, out: ps.stdout.slice(-700) });
+  const legacy = await cli(["deregister-instance", "--instance", IID_CORPSE]);
+  check("deregister-instance refuses naming endpoint deregister, and prints no usage after it",
+    legacy.status === 1 && legacy.stderr.includes("the legacy deregistration spelling no longer executes") && legacy.stderr.includes("cotal endpoint deregister <class> <full-instance-id>") && !/^(Usage|Options)$/m.test(legacy.stderr), legacy.stderr);
 } finally {
   for (const nc of conns) { try { await nc.drain(); } catch { /* ignore */ } }
   await live?.stop().catch(() => {});

@@ -133,7 +133,7 @@ async function askManagerEp(
       : auth.epCaller!;
     // P2 item 3 `--on <instance>`: pin the resolve to the exact manager instance's `inst` route so a
     // multi-manager space addresses the intended manager, never whichever wins the class anycast.
-    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000, ...(instanceId !== undefined ? { instanceId } : {}) });
+    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000, ...(instanceId !== undefined ? { instanceId } : {}), ...(pin?.signal ? { signal: pin.signal } : {}) });
     let target: EpVerbTarget | undefined;
     let sendArgs = args;
     if (mapped.self) target = { mode: "self" };
@@ -184,7 +184,7 @@ async function askManagerEp(
     const id = randomUUID();
     intent = { requestId: id, ...(followsGoal ? { requestedGoalId: id } : {}) };
     if (pin?.journal) await pin.journal.beforeSubmit(intent);
-    const invokeOpts = { ...(target ? { target } : {}), deadlineMs: timeoutMs ?? 10_000, id };
+    const invokeOpts = { ...(target ? { target } : {}), deadlineMs: timeoutMs ?? 10_000, id, ...(pin?.signal ? { signal: pin.signal } : {}) };
     const submit = async (signal?: AbortSignal) => {
       const answer = await invokeRepairingSplit(nc, space, service, mapped.command, sendArgs, { ...invokeOpts, ...(signal ? { signal } : {}) });
       const data = answer.reply.data as { goalId?: unknown; fingerprint?: unknown; name?: unknown; owner?: unknown; actor?: unknown; uid?: unknown } | undefined;
@@ -302,6 +302,8 @@ export interface ManagerPin {
     beforeSubmit(intent: ManagerRequestIntent): void | Promise<void>;
     accepted(receipt: ManagerRequestReceipt): void | Promise<void>;
   };
+  /** Stops the resolve and the request waiting, for a caller that no longer needs the answer. */
+  signal?: AbortSignal;
 }
 
 /** `--on <instance>`: address ONE manager instance instead of the class queue. Shared by
@@ -817,6 +819,26 @@ export async function refuseUnregisteredManager(space: string, server: string, a
     target,
     remedy: running.length === 1 ? `run it again with --on ${running[0]}, or without --on` : "run it again with --on naming one of them",
   });
+}
+
+/** Whether the broker affirms that nothing is subscribed on manager `instanceId`'s own rail, so its
+ *  registration outlived its host. The probe settles on the broker's no-responders answer, so a gone
+ *  manager costs no reply deadline. A live manager never answers the probe, which then runs its whole
+ *  budget, so a caller that also asks the manager itself passes `signal` and fires it once that
+ *  answer arrives. Any other outcome, an aborted probe or one this credential cannot send included,
+ *  is `false`. */
+export async function managerRailGone(space: string, server: string, auth: ControlAuth, instanceId: string, signal?: AbortSignal): Promise<boolean> {
+  const who = controlCaller(auth);
+  if ("refusal" in who || signal?.aborted) return false;
+  const aborted = new Promise<false>((resolve) => signal?.addEventListener("abort", () => resolve(false), { once: true }));
+  try {
+    return await withControlConnection(server, auth, (nc) => Promise.race([
+      epProbeInstanceInterest(nc, space, BASELINE_LIFECYCLE_ENDPOINT, instanceId, who.caller, { deadlineMs: PROBE_DEADLINE_MS }).then((verdict) => verdict === "gone"),
+      aborted,
+    ]));
+  } catch {
+    return false;
+  }
 }
 
 /** The manager instances the space's registry lists as live, frozen as a scatter freezes them. An

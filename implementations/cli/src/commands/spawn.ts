@@ -53,7 +53,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, loadLaunchPersonaFile, personaFileReference, PersonaSourceError, inputDisabledByFlag, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, wrapWords, writeResult, type OutputWarning, type RefusalCode, type Report,
+  CommandFailure, loadLaunchPersonaFile, personaFileReference, PersonaSourceError, inputDisabledByFlag, jsonFlag, plainFlag, presentationOf, recordOperationWarning, renderReport, terminalWidth, wrapWords, writeResult, type OutputWarning, type RefusalCode, type Report,
   agentActorTokenKey,
   agentCredsKey,
   agentSecretFilePaths,
@@ -100,7 +100,7 @@ import { displayCmd } from "../lib/self-exec.js";
 import { entryScript } from "../seed/paths.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
-import { askManager, describeUnanswered, failIfNotOk, liveManagerIds, onInstance, refuseUnregisteredManager, refuseWithoutLiveManager, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
+import { askManager, describeUnanswered, failIfNotOk, liveManagerIds, managerRailGone, onInstance, refuseUnregisteredManager, refuseWithoutLiveManager, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
 import { managerPin, managersWithPersona, rerunOn } from "../lib/manager-choice.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
@@ -693,28 +693,47 @@ export async function launchManagedPersona(
 }
 
 /** Why no manager received an unpinned launch. A manager whose boot inventory found no agent
- *  application leaves the class queue, so when every live one reports that on its own instance rail
- *  the refusal names the application to add. A seat (`flags` undefined) does not read the census
- *  as the operator. `agent` is the harness this caller would choose, for the install hint. */
+ *  application leaves the class queue, so when every live one that answered reports that on its own
+ *  instance rail the refusal names the application to add. A manager the broker affirms gone is
+ *  skipped and named in a warning, so its registration costs no deadline and hides no reason. A seat
+ *  (`flags` undefined) does not read the census as the operator. `agent` is the harness this caller
+ *  would choose, for the install hint. */
 async function unservedClassLaunch(flags: ConnectFlags | undefined, t: ControlTarget, agent: string | undefined, at: { target: object; native: object }): Promise<CommandFailure> {
-  if (flags && await noManagerTakesClassLaunches(flags, t).catch(() => false)) {
+  const census = flags ? await classLaunchCensus(flags, t).catch(() => undefined) : undefined;
+  for (const instanceId of census?.gone ?? [])
+    recordOperationWarning({ code: "MANAGER_SILENT", target: { space: t.space, managerInstanceId: instanceId }, message: `manager ${instanceId} was skipped: its registration is stale (the broker reports nothing subscribed on its rail; its host is gone and never deregistered)` });
+  if (census?.noApplication) {
     const name = agent ?? DEFAULT_CONNECTOR, pkg = OFFICIAL_CONNECTORS[name];
-    return new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager of yours takes unpinned launches: none has an agent application installed; nothing was launched", { ...at,
+    return new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager of yours takes unpinned launches: none ${census.gone.length ? "that answered " : ""}has an agent application installed; nothing was launched`, { ...at,
       remedy: `add one where the manager runs, such as ${pkg ? `\`cotal ext add ${pkg}\`` : `\`cotal ext add <npm-package>\` for "${name}"`}, then restart that manager; it reads its agent applications when it starts` });
   }
   return new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager of yours received this unpinned launch; nothing was launched", { ...at, remedy: "run the spawn again, or pin one manager with --on <instance> from cotal ps" });
 }
 
-/** True when the registry lists a live manager and each one's own status says it runs agents but
- *  takes no unpinned launch. Status has no scatter route, so each is read pinned to its instance. */
-async function noManagerTakesClassLaunches(flags: ConnectFlags, t: ControlTarget): Promise<boolean> {
+/** What the registered managers say about unpinned launches. `noApplication` holds when one answered
+ *  and each one that answered says it runs agents but takes no unpinned launch; `gone` lists the
+ *  managers skipped because the broker affirms nothing subscribed on their rail. Status has no
+ *  scatter route, so each is read pinned to its instance, racing the rail probe: whichever settles
+ *  first stops the other, so neither a live manager nor a gone one is waited out. */
+async function classLaunchCensus(flags: ConnectFlags, t: ControlTarget): Promise<{ noApplication: boolean; gone: string[] }> {
+  const gone: string[] = [];
+  let answered = 0;
   for (const instanceId of await liveManagerIds(t.space, t.server, t.auth)) {
     const pinned = await resolveControlTarget(flags, "control-caller-privileged", instanceId, { onRefusal: "throw" });
-    const status = await askManager(pinned.space, pinned.server, "managerStatus", undefined, pinned.auth, "owner", 5_000, { instanceId });
+    const settled = new AbortController();
+    const status = await Promise.race([
+      managerRailGone(pinned.space, pinned.server, pinned.auth, instanceId, settled.signal).then((isGone) => isGone ? undefined : new Promise<never>(() => {})),
+      askManager(pinned.space, pinned.server, "managerStatus", undefined, pinned.auth, "owner", 5_000, { instanceId, signal: settled.signal }),
+    ]).finally(() => settled.abort());
+    if (status === undefined) {
+      gone.push(instanceId);
+      continue;
+    }
     const data = status.data as { classSpawn?: unknown; execution?: unknown } | undefined;
-    if (!status.ok || data?.classSpawn !== false || data.execution === "none") return false;
+    if (!status.ok || data?.classSpawn !== false || data.execution === "none") return { noApplication: false, gone };
+    answered++;
   }
-  return true;
+  return { noApplication: answered > 0, gone };
 }
 
 /** The harness the manager's `spawn` resolves for this persona, read with the same fields `start` sends. */

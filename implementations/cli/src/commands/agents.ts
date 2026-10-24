@@ -399,11 +399,15 @@ export function seatMissRefusal(
  *  - `not-probed` / `probe-refused`: this command could not ask. That is a fact about the command,
  *    not the instance, and saying so is what keeps a local gap from reading as a remote fault.
  */
-function silentManager(liveness: ScatterInstanceLiveness | undefined, instanceId: string): { state: Styled; remedy?: string } {
+function silentManager(liveness: ScatterInstanceLiveness | undefined, instanceId: string, mode?: string): { state: Styled; remedy?: string } {
+  // A static space's own root holds the authority that removes the record. Any other space has none,
+  // so only the manager's own clean stop removes it, and that needs its host.
   if (liveness === "gone")
     return {
       state: { text: "registration is stale (the broker reports nothing subscribed on its rail; its host is gone and never deregistered)", tone: "failed" },
-      remedy: `remove the record: cotal deregister-instance --instance ${instanceId}`,
+      remedy: mode === "auth"
+        ? `remove the record from this space's own root: cotal endpoint deregister manager ${instanceId} --yes`
+        : "if its host is still available, start that manager there again and stop it cleanly, as with cotal service start <name> then cotal service stop <name> --yes; if the host is gone, no supported command removes this record",
     };
   const why =
     liveness === "probe-refused"
@@ -580,7 +584,7 @@ export interface PsResult {
  *  instance of its own is still listed under the manager that returned it. `noApplication` is
  *  `status`'s reading that no agent application is set up here, so an empty list's Next agrees with
  *  the one `status` gives. */
-function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false): Report {
+function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false, mode?: string): Report {
   const empty = result.kind === "slots" ? "No active static slots." : "No managed agents.";
   const blocksFor = (rows: readonly unknown[]): Block[] =>
     !rows.length ? [{ kind: "lines", lines: [{ text: empty, tone: "hint" }] }]
@@ -603,7 +607,7 @@ function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, rea
     sections: result.managers.map((m): Section => {
       const title = `manager ${m.instanceId}`;
       if (m.state === "silent") {
-        const silent = silentManager(m.liveness, m.instanceId);
+        const silent = silentManager(m.liveness, m.instanceId, mode);
         return { title, blocks: [{ kind: "lines", lines: [silent.state, ...(silent.remedy ? [{ text: `↳ ${silent.remedy}`, tone: "hint" } as const] : [])] }] };
       }
       if (m.state === "contract-mismatch") return { title, blocks: [{ kind: "lines", lines: [{ text: "contract mismatch; seats not listed", tone: "failed" }] }] };
@@ -636,7 +640,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
   const command = slots ? "slots" : "ps";
   const kind = slots ? "slots" : "seats";
   const census = await readSeats(v, command, await managerPin(v, "cotal ps"));
-  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf, !result.items.length && noApplicationHere());
+  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf, !result.items.length && noApplicationHere(), census.mode);
   writeResult(
     presentation,
     {
@@ -724,6 +728,8 @@ export interface SeatCensus {
   readonly warnings: OutputWarning[];
   readonly rowsOf: Map<string, unknown[]>;
   readonly partial?: { message: string; remedy: string };
+  /** The space's mode, which decides how a stale registration is removed. */
+  readonly mode?: string;
 }
 
 /** Read the managed seats the way `ps` lists them: from one manager when `on` pins it or the caller
@@ -833,7 +839,7 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
           : "retry, or read one manager with `cotal ps --on <instance>`",
       }
     : undefined;
-  return { target, items, managers, warnings, rowsOf, ...(partial ? { partial } : {}) };
+  return { target, items, managers, warnings, rowsOf, mode: t.mode, ...(partial ? { partial } : {}) };
 }
 
 /** Re-establishment backoff, in order; the last value is the cap and repeats forever. A seat that
