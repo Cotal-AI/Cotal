@@ -1,6 +1,26 @@
-import { accessSync, constants, realpathSync, statSync, type Stats } from "node:fs";
+import { accessSync, constants, lstatSync, readdirSync, realpathSync, statSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { CommandFailure, homeCotalDir, protectedLocalDirectory } from "@cotal-ai/workspace";
+import { c, CommandFailure, homeCotalDir, protectedLocalDirectory } from "@cotal-ai/workspace";
+
+/** What a store directory holds: the broker's `jetstream` tree and Cotal's generation marker. */
+const STORE_ENTRIES = new Map<string, (stat: Stats) => boolean>([
+  ["jetstream", (stat) => stat.isDirectory()],
+  [".cotal-store-id", (stat) => stat.isFile()],
+]);
+
+/** The entries of the directory `dir` that are not part of a store, sorted. A store entry of the
+ *  wrong kind, such as a `jetstream` link or file, is not part of it either. */
+export function foreignStoreEntries(dir: string): string[] {
+  return readdirSync(dir).filter((entry) => !STORE_ENTRIES.get(entry)?.(lstatSync(join(dir, entry)))).sort();
+}
+
+/** The names of the store entries, the only entries a store cleanup removes. */
+export const STORE_ENTRY_NAMES: readonly string[] = [...STORE_ENTRIES.keys()];
+
+/** Up to five entry names, then how many more there are. */
+export function listEntries(entries: readonly string[]): string {
+  return entries.length > 5 ? `${entries.slice(0, 5).join(", ")} and ${entries.length - 5} more` : entries.join(", ");
+}
 
 /** The entry at `path`, or nothing when it is missing. A path under a regular file is missing too,
  *  so the walk up reaches that file and names it. */
@@ -44,4 +64,14 @@ export function assertStoreDirArgument(value: string, root: string): void {
   if (existing === path) return;
   try { accessSync(existing, constants.W_OK | constants.X_OK); }
   catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `the --store-dir path ${path} cannot be created, because this account cannot write ${existing}; nothing was started or written`, { target: { storeDir: path }, remedy: "name a store directory this account can create, or create it with the right owner first" }); }
+}
+
+/** Warn when an explicit `--store-dir` already holds files that are not part of a store. `up`
+ *  starts on it, but `clean` and `reset` refuse to remove a store directory that holds them. */
+export function warnForeignStoreEntries(value: string): void {
+  const path = resolve(value);
+  if (!statIfPresent(path)?.isDirectory()) return;
+  const foreign = foreignStoreEntries(path);
+  if (foreign.length)
+    console.error(c.yellow(`! the --store-dir ${path} also holds ${listEntries(foreign)}; the broker writes its store beside them, and cotal clean store and cotal reset store will refuse this directory while they are there`));
 }

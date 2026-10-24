@@ -2,7 +2,8 @@
  *  chunk-handoff timeout. Both halves assert the same contract from opposite ends: a failed attempt
  *  publishes nothing, keeps nothing, and leaves the cut retryable at the SAME destination. A restore
  *  or create interrupted by Ctrl-C inside its claim names its recovery, which works once its
- *  processes are gone, before the claim deadline. */
+ *  processes are gone, before the claim deadline. A create into a missing folder and a restore of a
+ *  missing path refuse TARGET_NOT_FOUND before any lock. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -32,6 +33,8 @@ const BACKUP_STAGES = {
   chunk: /smoke-injected failure at the first snapshot chunk/,
   close: /smoke-injected failure after snapshot close/,
   manifest: /smoke-injected failure before manifest publication/,
+  // A full disk names its cause and directory, what was and was not written, and a retry.
+  nospace: /ran out of disk space \(ENOSPC\) writing the backup in [^\n]*artifact-nospace; it removed the partial backup and published none, and the preserved cut is still ready[\s\S]*free space on the disk that holds [^\n]*artifact-nospace, then run cotal backup create [^\n]*artifact-nospace again/,
 } as const;
 
 const journalState = (root: string): string | undefined => {
@@ -121,6 +124,26 @@ async function backupStageFaultScenario(): Promise<void> {
     assert.equal(journalState(root), "ready");
     const sourceBefore = lstatSync(sourcePath, { bigint: true });
 
+    // A path that names nothing is refused before any lock, saying whether its folder or the
+    // artifact is missing.
+    const nowhere = join(root, "no-such-folder", "artifact");
+    const createMissing = run("backup", "create", nowhere, "--json");
+    assert.equal(createMissing.status, 2, `a create into a missing folder refuses, exit 2\n${createMissing.stdout}${createMissing.stderr}`);
+    const created = JSON.parse(createMissing.stdout) as { error?: { code?: string; message?: string }; target?: { missing?: string } };
+    assert.equal(created.error?.code, "TARGET_NOT_FOUND", "a create into a missing folder is TARGET_NOT_FOUND");
+    assert.equal(created.target?.missing, "folder", "it says the folder is missing");
+    assert.match(created.error?.message ?? "", /there is no folder \S*no-such-folder to create the backup in/, "it names that folder");
+    for (const [path, missing] of [[nowhere, "folder"], [join(root, "no-such-artifact"), "artifact"]] as const) {
+      const restore = run("backup", "restore", path, "--json");
+      assert.equal(restore.status, 2, `a restore of a missing ${missing} refuses, exit 2\n${restore.stdout}${restore.stderr}`);
+      const restored = JSON.parse(restore.stdout) as { error?: { code?: string }; target?: { directory?: string; missing?: string } };
+      assert.equal(restored.error?.code, "TARGET_NOT_FOUND", `a restore of a missing ${missing} is TARGET_NOT_FOUND`);
+      assert.equal(restored.target?.missing, missing, `it says the ${missing} is missing`);
+      assert.equal(restored.target?.directory, path, "it names the path");
+    }
+    assert.equal(journalState(root), "ready", "the refused create and restores leave the cut ready");
+    assert.deepEqual(attemptResidue(root), [], "the refused create and restores leave nothing in the attempts dir");
+
     for (const [stage, injected] of Object.entries(BACKUP_STAGES)) {
       const destination = join(root, `artifact-${stage}`);
       const faulted = spawnSync(tsx, [cliPath, "backup", "create", destination], {
@@ -131,6 +154,9 @@ async function backupStageFaultScenario(): Promise<void> {
       });
       assert.notEqual(faulted.status, 0, `${stage} fault must fail the backup\nstdout:\n${faulted.stdout}`);
       assert.match(faulted.stderr, injected, `${stage} fault reports its injected failure`);
+      // The cleanup completed, so the next step is the same create, not a recovery.
+      assert.match(faulted.stderr, new RegExp(`then run cotal backup create \\S*artifact-${stage} again`), `${stage} fault names the same create as its next step`);
+      if (stage !== "nospace") assert.match(faulted.stderr, /the preserved cut is still ready; fix the cause in the native detail/, `${stage} fault says the cut is still ready`);
       assert.equal(journalState(root), "ready", `${stage} fault returns the maintenance journal to ready`);
       assert.equal(existsSync(destination), false, `${stage} fault leaves no unpublished artifact at the destination`);
       assert.deepEqual(attemptResidue(root), [], `${stage} fault leaves no clone, config, or broker residue in the attempts dir`);

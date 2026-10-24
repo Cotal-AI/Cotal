@@ -12,7 +12,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { connect } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { createSuite, freePort } from "@cotal-ai/smoke-kit";
@@ -45,6 +45,7 @@ type Envelope = {
     meshes: { current: string | null; unreadable: { file: string; error: string }[]; items: Mesh[] };
     selected: { resolved: boolean; code?: string; space?: string; server?: string | null; connection?: string };
     maintenance?: { root: string; space: string | null; state: string; attemptId: string | null; next: string | null } | null;
+    store?: { state: string; at?: string; cause?: string; path?: string | null };
     hints: string[];
   } | null;
   warnings: { code: string; target: unknown; message: string }[];
@@ -295,6 +296,33 @@ if (!brokerDisplayOnly) {
   check("status --components --plain is refused before any probe, exit 1", plainOnly.status === 1 && plainOnly.stdout === "" && /--components checks the selected mesh/.test(plainOnly.stderr), shown(plainOnly));
   const all = run(["status", "--components", "--all"]);
   check("status --components --all is refused before any probe, exit 1", all.status === 1 && all.stdout === "" && /--components checks the selected mesh/.test(all.stderr), shown(all));
+}
+
+// ── a store write failure the running local broker logged is shown with its cause and file ───────
+{
+  const { home, run } = sandbox();
+  const server = ["--server", `nats://127.0.0.1:${await freePort()}`];
+  const none = run(["status", ...server, "--json"]);
+  check("control: with no broker recorded here, the store is not checked", none.envelope?.result?.store?.state === "not-checked", shown(none));
+  // A legacy root's broker: its pidfile names a live process, and its log holds an earlier broker's
+  // error, one logged before this broker's start under the same process ID, then this broker's own.
+  const pid = process.pid, stamp = "2026/10/23 19:38:44.773287";
+  writeFileSync(join(home, ".cotal", "nats.pid"), `${pid}\n`, { mode: 0o600 });
+  const log = join(home, ".cotal", "nats.log");
+  writeFileSync(log, [
+    `[1] ${stamp} [ERR] Filestore [CHAT_s] Critical write error: write /old/msgs/1.blk: file too large`,
+    `[${pid}] ${stamp} [ERR] Filestore [CHAT_s] Critical write error: write /reused/msgs/1.blk: file too large`,
+    `[${pid}] ${stamp} [INF] Starting nats-server`,
+    "",
+  ].join("\n"), { mode: 0o600 });
+  const started = run(["status", ...server, "--json"]);
+  check("an error from another broker, or from before this broker started, is not reported", started.envelope?.result?.store?.state === "none-recorded", shown(started));
+  appendFileSync(log, `[${pid}] ${stamp} [ERR] Filestore [CHAT_s] Critical write error: write /store/msgs/1.blk: no space left on device\n`);
+  const failed = run(["status", ...server, "--json"]);
+  const store = failed.envelope?.result?.store;
+  check("status --json names this broker's store write failure with its time, cause and file", store?.state === "write-failed" && store.at === "2026/10/23 19:38:44" && store.cause === "no space left on device" && store.path === "/store/msgs/1.blk", shown(failed));
+  const plain = run(["status", ...server, "--plain"]);
+  check("the report shows a Store row and leads Next with down", /Store: +write failed at 2026\/10\/23 19:38:44: no space left on device - \/store\/msgs\/1\.blk/.test(plain.stdout) && /cotal down +Free space on the disk that holds \/store\/msgs\/1\.blk first/.test(plain.stdout), plain.stdout);
 }
 
 // ── a nats-server on PATH below the broker floor ─────────────────────────────────────────────────

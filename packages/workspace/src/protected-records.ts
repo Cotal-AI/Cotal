@@ -319,6 +319,15 @@ export function protectedLocalEntry(path: string, what = "the path", policy?: Pr
   if (gaps.length) throw protectionRefusal(what, gaps);
 }
 
+/** {@link protectedLocalEntry} for a directory together with the named entries in it, read together
+ *  so one refusal names each gap in the directory, its entries and the directories above it. */
+export function protectedLocalEntries(directory: string, names: readonly string[], what = "the path", policy?: ProtectedPathPolicy): void {
+  const posix = requireLocalRecordAccess() === "posix";
+  const gaps = posix ? [directory, ...names.map((name) => join(directory, name))].flatMap((path) => protectionGap(path, lstatSync(path), { policy }) ?? []) : [];
+  gaps.push(...directoryChainGaps(dirname(directory), what, policy));
+  if (gaps.length) throw protectionRefusal(what, gaps);
+}
+
 /** Every gap on `path` and the directories above it, deepest first. */
 function directoryChainGaps(path: string, what: string, policy?: ProtectedPathPolicy): ProtectionGap[] {
   const posix = requireLocalRecordAccess() === "posix";

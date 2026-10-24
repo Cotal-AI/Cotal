@@ -380,6 +380,15 @@ export function stackManagerAbsent(root: string, space: string): boolean {
   } catch { return false; }
 }
 
+/** The pid of this root's running stack manager for `space`, so a read it did not answer can name
+ *  it. Undefined when the root records no stack for `space` or its records cannot be read. */
+export function runningStackManagerPid(root: string, space: string): number | undefined {
+  try {
+    if (readStackJournal(root)?.journal.space !== space) return undefined;
+    return serviceInstances(space, STACK_DEFINITION.manager).find((row) => observeServiceProcess(row.record.value) === "running")?.record.value.process?.pid;
+  } catch { return undefined; }
+}
+
 /** The controller stack definition a legacy component name stands for in `space`, when that
  *  definition is saved there. A controller stack names its members stack-<role>. */
 export function stackMemberFor(space: string, name: string): string | undefined {
