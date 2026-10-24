@@ -4220,8 +4220,9 @@ cotal chat [<channel>] [--name <n>] [--plain | --stdio]   [--space <s>] [--serve
 
 `chat` opens one live session in the selected space, under an identity of its own. Each opening is
 a new principal with its own inbox and presence, so two windows are two sessions, and leaving ends
-the session. `--name` sets its display label; the default is your OS login and host with a short
-suffix. The label carries no authority. When another live participant already carries the label,
+the session. `--name` sets its display label, 1 to 128 characters, not blank and without control
+characters; a longer label is refused as `USAGE_INVALID`. The default is your OS login and host with
+a short suffix. The label carries no authority. When another live participant already carries the label,
 the session still opens and warns on stderr, naming that participant, because a direct message by the
 name refuses as ambiguous while both are present.
 
