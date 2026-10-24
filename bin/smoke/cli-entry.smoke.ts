@@ -4,7 +4,9 @@
  * Bare `cotal`, help and version read local metadata only, and every usage error is refused before
  * any effect: no connector seed, no config write. An alias resolves to the same command as its name
  * (help, refusal and parse), and a word that only prefixes a command selects nothing. A short flag
- * parses as its long form, and a wrong-case short flag or a missing value is refused. `version --json`
+ * parses as its long form, and a wrong-case short flag or a missing value is refused. So is a flag typed
+ * with a typographic dash, naming the dash and the flag; after `--`, or naming no flag, such a word is
+ * an argument. A usage refusal escapes the control bytes of each word it quotes. `version --json`
  * writes one envelope, and a usage error under `--json` is one refusal envelope. `--no-color` and
  * `--no-input` are accepted by every command in any position before `--`. A command an official
  * extension adds, run or asked for help before that extension is added, names the package to add.
@@ -412,7 +414,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     wide.status === 0 && wide.stdout.includes(`  ${longLine}\n`) && !wide.stdout.includes("…"), shown(wide));
   const card = `---\nname: h\nrole: "r\\e]0;PWN\\aR"\ndescription: "d\\e[2JD"\n---\nbody ${E}B\n`;
   const piped = cotal(["personas", "show", "h"], hostile, noSeed);
-  check("personas show piped writes the file byte for byte", piped.status === 0 && piped.stdout.endsWith(`\n${card}`), shown(piped));
+  check("personas show piped writes the file byte for byte and nothing else", piped.status === 0 && piped.stdout === card, shown(piped));
   for (const argv of [["persona", "create", "q", "--role"], ["persona", "create", "q", "--model"], ["personas", "new", "q", "--role"]]) {
     const r = cotal([...argv, `v${E}`, "--prompt", "body", "--subscribe", ""], persona, noSeed);
     check(`cotal ${argv.join(" ")} refuses control characters`,
@@ -492,6 +494,29 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   refused("a prefix of a command selects nothing", cotal(["spaw"]), /unknown command: spaw/);
   refused("a prefix of an aliased command selects nothing", cotal(["hist"]), /unknown command: hist/);
   refused("help for a seeded command that is not installed yet seeds nothing", cotal(["web", "--help"]), /unknown command: web - run `cotal help`/);
+  // A word the refusal quotes cannot reach the terminal as a control sequence.
+  for (const [what, args, shownAs] of [
+    ["an unknown command", ["x\u001b[2J"], "unknown command: x\\u001b[2J"],
+    ["help for an unknown command", ["help", "x\u001b]0;T\u0007"], "unknown command: x\\u001b]0;T\\u0007"],
+    ["an unknown subcommand", ["ext", "x\u001b]0;T\u0007"], 'no subcommand "x\\u001b]0;T\\u0007"'],
+    ["help for an unknown subcommand", ["help", "ext", "x\u001b[2J"], 'no subcommand "x\\u001b[2J"'],
+    ["an unknown option", ["status", "--x\u001b[2J"], "'--x\\u001b[2J'"],
+  ] as const) {
+    const r = cotal([...args], undefined, noSeed);
+    check(`${what} quotes the word with its control bytes escaped`, r.status === 1 && r.stderr.includes(shownAs) && !/[\u0007\u001b]/.test(r.stderr), shown(r));
+  }
+}
+
+// ── A flag typed with a typographic dash, as autocorrect writes `--` ──────────────────────────────
+{
+  refused("an en-dash flag is refused naming the dash and the flag", cotal(["down", "\u2013yes"]), /\u2013yes starts with a typographic dash, so it is not an option\n\s+type the option with hyphens: --yes/);
+  refused("an em-dash flag after an argument is refused the same way", cotal(["history", "general", "\u2014limit", "1"]), /\u2014limit starts with a typographic dash[^]*hyphens: --limit/);
+  refused("a minus-sign short flag names the short flag", cotal(["history", "general", "\u2212j"]), /\u2212j starts with a typographic dash[^]*hyphens: -j$/m);
+  refused("a command's own flags are what it names, wherever the word stands", cotal(["send", "-c", "general", "hallo", "\u2013json"]), /\u2013json starts with a typographic dash[^]*hyphens: --json/);
+  const noFlag = cotal(["history", "\u2013nichts"], undefined, noSeed);
+  check("a dash word that names no flag is still the argument it reads as", !/typographic dash/.test(noFlag.stderr) && /"\u2013nichts"/.test(noFlag.stderr), shown(noFlag));
+  const terminated = cotal(["send", "-c", "general", "--", "\u2013json"], undefined, noSeed);
+  check("after -- a dash word that names a flag is an argument as typed", terminated.status !== 1 && !/typographic dash/.test(terminated.stderr), shown(terminated));
 }
 
 // ── A `✗` line shows the control characters of an argument it repeats as escapes ─────────────────

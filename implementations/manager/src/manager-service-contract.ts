@@ -1071,6 +1071,8 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
           errorMessage: { type: "string" },
           startedAt: { type: "number" },
           endedAt: { type: "number" },
+          winner: { type: "string" },
+          lostRace: { type: "string" },
           asks: { type: "string" },
           addressee: { type: "string" },
           deadlineAt: { type: "number" },

@@ -1,4 +1,5 @@
 import type { Command } from "@cotal-ai/core";
+import { oneLine } from "@cotal-ai/workspace";
 import { OFFICIAL_COMMANDS } from "../ext-loader.js";
 
 /** The optimal string alignment distance between `a` and `b`: insertions, deletions, substitutions
@@ -52,11 +53,11 @@ function commandWords(commands: readonly Command[], word: string): string[] {
 export function unknownCommandMessage(commands: readonly Command[], word: string): string {
   const pkg = Object.hasOwn(OFFICIAL_COMMANDS, word) ? OFFICIAL_COMMANDS[word] : undefined;
   if (pkg) return `no installed extension provides command "${word}" - install it with \`cotal ext add ${pkg}\``;
-  return `unknown command: ${word} - ${suggestThen(word, commandWords(commands, word), "run `cotal help` to list commands")}`;
+  return `unknown command: ${oneLine(word)} - ${suggestThen(word, commandWords(commands, word), "run `cotal help` to list commands")}`;
 }
 
 /** The usage line for a first word that names none of `surface`'s subcommands, with the nearest. */
 export function unknownSubcommandMessage(path: string, surface: Pick<Command, "subcommands">, word: string): string {
   const words = (surface.subcommands ?? []).filter((sub) => !sub.hidden).flatMap((sub) => [sub.name, ...(sub.aliases ?? [])]);
-  return `cotal ${path} has no subcommand "${word}" - ${suggestThen(word, words, `run \`cotal help ${path}\``)}`;
+  return `cotal ${path} has no subcommand "${oneLine(word)}" - ${suggestThen(word, words, `run \`cotal help ${path}\``)}`;
 }

@@ -524,9 +524,11 @@ try {
     check("no broker instance was recorded", serviceInstances(space, "stack-broker").length === 0, serviceInstances(space, "stack-broker").map((row) => row.record.value.state));
     const nothing = cli(root, "down", "--yes", "--json");
     check("down --yes there stops nothing and exits 0", nothing.status === 0 && nothing.env?.outcome === "no-op", shown(nothing));
-    const moved = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    // Nor a mode: the refused up asked for static auth, and the next one may ask for an open stack.
+    const moved = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--open", "--no-manager", "--json");
     track(space);
     check("the next up starts at another address while the program still holds the first", moved.status === 0, shown(moved));
+    check("and in the open mode it asked for, which the refused up did not pin", moved.env?.result !== undefined && JSON.stringify(moved.env.result).includes('"mode":"open"'), shown(moved));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
     await new Promise<void>((done) => holder.close(() => done()));
   }

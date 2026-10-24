@@ -119,11 +119,12 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
 const homeUp = run(["up", "--server", "nats://127.0.0.1:1", "--json"], home);
 check("up in the home folder is one CONFLICT refusal, exit 2, naming a project folder", homeUp.status === 2 && homeUp.envelope?.error?.code === "CONFLICT" && /is your home folder/.test(homeUp.envelope.error.message ?? "") && /space create <space> --root <dir>/.test(homeUp.stdout), shown(homeUp));
 check("it wrote no persona, pidfile or store in the home's .cotal", !existsSync(join(home, ".cotal", "agents")) && !existsSync(join(home, ".cotal", "nats.pid")) && !existsSync(join(home, ".cotal", "nats")), existsSync(join(home, ".cotal")) ? readdirSync(join(home, ".cotal")) : []);
-// With no stack there, down and its preview say there is nothing to stop or preview.
+// With no stack there and none started or registered on this machine, down and its preview say
+// there is nothing to stop or preview, and name `cotal up` in a project as status does.
 const homeDown = run(["down", "--yes"], home);
-check("down --yes in a home with no stack is TARGET_NOT_FOUND, nothing to stop", homeDown.status === 2 && /there is no stack at this folder's root, so there is nothing to stop/.test(homeDown.stderr), shown(homeDown));
+check("down --yes in a home with no stack is TARGET_NOT_FOUND, nothing to stop, and names `cotal up` in a project", homeDown.status === 2 && /there is no stack at this folder's root, and this machine has no stack started or registered, so there is nothing to stop/.test(homeDown.stderr) && homeDown.stderr.includes("run `cotal up` in a project"), shown(homeDown));
 const homePreview = run(["down", "--dry-run", "--json"], home);
-check("down --dry-run in a home with no stack is TARGET_NOT_FOUND, nothing to preview", homePreview.status === 2 && homePreview.envelope?.error?.code === "TARGET_NOT_FOUND" && /nothing to preview/.test(homePreview.envelope.error.message ?? ""), shown(homePreview));
+check("down --dry-run in a home with no stack is TARGET_NOT_FOUND, nothing to preview, and names `cotal up` in a project", homePreview.status === 2 && homePreview.envelope?.error?.code === "TARGET_NOT_FOUND" && /no stack started or registered, so there is nothing to preview/.test(homePreview.envelope.error.message ?? "") && homePreview.envelope.error.remedy === "run `cotal up` in a project", shown(homePreview));
 
 // A loopback listener that accepts and never answers NATS holds every broker address below.
 const holder = createServer((socket) => socket.on("error", () => {}));

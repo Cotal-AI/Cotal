@@ -1,4 +1,5 @@
 import { writeSync } from "node:fs";
+import { parseArgs } from "node:util";
 import { isAbsolute, resolve } from "node:path";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
@@ -26,6 +27,7 @@ import {
   localeIsUtf8,
   operationWarnings,
   outputDeclarationProblems,
+  oneLine,
   preferencesFolderWarning,
   recordOperationWarning,
   renderReport,
@@ -305,13 +307,13 @@ export interface RunCliOptions {
 
 /** A usage refusal on stderr, then `cmd`'s help when one is given. Plain output and a locale without
  *  UTF-8 have no refusal mark, so there the refusal is the classified report, which names its outcome
- *  in words. */
+ *  in words. Either way the words it quotes are escaped, as the report escapes every text. */
 function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command): void {
   const report = plain || !localeIsUtf8();
   if (report) writeSync(2, `${renderReport(commandFailureReport(failure), plain ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
   else {
-    stderrLine("✗ ", failure.message, c.red);
-    if (failure.remedy) stderrLine("  ", failure.remedy, c.dim);
+    stderrLine("✗ ", oneLine(failure.message), c.red);
+    if (failure.remedy) stderrLine("  ", oneLine(failure.remedy), c.dim);
   }
   if (!cmd) return;
   if (report) console.error("");
@@ -336,6 +338,7 @@ function usageExit(message: string, cmd?: Command, json = false, plain = false, 
  *  text, which is read as a positional. */
 function misspelledOption(cmd: Command, rest: readonly string[]): { message: string; remedy: string } | undefined {
   const names = new Set<string>([...(cmd.flags ?? []).map((flag) => flag.name), ...GLOBAL_FLAGS]);
+  const shorts = new Set<string>((cmd.flags ?? []).flatMap((flag) => (flag.short ? [flag.short] : [])));
   for (const [index, word] of rest.entries()) {
     if (word === "--") return undefined;
     const previous = rest[index - 1];
@@ -344,7 +347,8 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
     const flag = short && cmd.flags?.find((item) => item.short === short[1] && item.type === "string");
     if (short && flag) return { message: `${word} gives -${short[1]} the value "=${short[2]}"`, remedy: `write -${short[1]} ${short[2]} or --${flag.name}=${short[2]}` };
     const typed = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)/u.exec(word);
-    if (typed && names.has(typed[1]!)) return { message: `${word} starts with a typographic dash, so it is not an option`, remedy: `type the option with hyphens: --${typed[1]}` };
+    if (typed && (names.has(typed[1]!) || shorts.has(typed[1]!)))
+      return { message: `${word} starts with a typographic dash, so it is not an option`, remedy: `type the option with hyphens: ${names.has(typed[1]!) ? "--" : "-"}${typed[1]}` };
   }
   return undefined;
 }
