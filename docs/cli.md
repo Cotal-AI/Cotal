@@ -2217,8 +2217,9 @@ read refuses both with `SCHEMA_INVALID`, exit 1, naming its file.
 user-auth space under `userAuth` and the catalog's `id`, `slug`, `kind` and `role`. It leaves
 credential paths out. A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
 so is a bare `space show` with nothing selected. Each entry under `prepared` has `space`, `root`,
-`preparedAt` and `current`, and `space show` of a prepared space gives those with the kind
-`prepared-space` and `rootMissing`, which is true when its project folder no longer exists.
+`preparedAt`, `current` and `rootMissing`, which is true when its project folder no longer exists,
+and `space show` of a prepared space gives those with the kind `prepared-space`. The listing marks
+such a folder `(no longer exists)` and names `cotal space forget <space>` for it instead of `cotal up`.
 
 `space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. A name
 that starts with `-`, given or named by a bundle, refuses with `USAGE_INVALID`, exit 1, before
@@ -2282,7 +2283,8 @@ it starts in, before it writes anything, so it never starts a stack that `down` 
 stop from that root. `cotal up` starts a space only under a name of 1 to 64 letters, digits,
 underscores or hyphens that starts with a letter, digit or underscore, because a name that starts
 with `-` cannot be passed as a flag value. `space create` refuses any other name, such as `café` or
-`-x`, with `USAGE_INVALID`, exit 1, before anything is written, and `cotal up` refuses a `--space`
+`-x`, with `USAGE_INVALID`, exit 1, before anything is written, with a `remedy` that says which
+characters a name can use, and `cotal up` refuses a `--space`
 that starts with `-` the same way. The limit is 64 because each local file that carries a space spells its name twice over,
 and a file name holds at most 255 bytes. `cotal up` refuses a longer name that an earlier release
 prepared the same way, before it starts anything, and names `cotal space forget` and a shorter name.
@@ -2321,7 +2323,8 @@ running while any stack member's process may still run. The refusal names one su
 writes nothing: the registration, the selection and the root's files stay. A member whose process
 is gone without its stop receipt does not block, and the result warns with `STACK_MEMBER_UNSETTLED`
 that it was never stopped cleanly. A prepared space is forgotten the same way, and the `.cotal/`
-that `space create` made stays. Forgetting the selected space clears the selection. Forget also
+that `space create` made stays. A prepared record that cannot be read names no folder, so forgetting
+its space removes only that file, and the result's `root` is null. Forgetting the selected space clears the selection. Forget also
 removes the per-space preferences saved under that name, so a later space with the same name starts
 without them, and the receipt lists each removed key and value so you can set them again. If that
 removal fails after the record is gone, the run is `partial` and names the `config unset` to finish it,
@@ -2418,7 +2421,9 @@ the space instead, run `cotal down --yes` in its root, then `space forget`. On a
 project folder. It changes only the selection:
 it starts nothing and does not check the broker, so a stopped or prepared space can be selected and
 the command that targets it reports that. Selecting the selected space again is a `no-op`. A name that is not
-registered is refused with `TARGET_NOT_FOUND`, exit 2, and the selection stays. Bare `use` reports
+registered or prepared is refused with `TARGET_NOT_FOUND`, exit 2, naming the known spaces, and the
+selection stays. That refusal has no `Mesh:` heading, and its remedy names `cotal use --clear` only
+while a space is selected. Bare `use` reports
 the selection. Inside a project whose root has one registered or prepared space other than the
 selection, `use` also says that commands in the folder target that space, and `--json` gives it as
 `folder`. A selection that names a space no longer registered is reported with a
@@ -2621,8 +2626,12 @@ A registry directory that exists but cannot be read, such as one without read pe
 regular file in its place, refuses the same way, naming the directory, and `meshes` gives the read
 error. Only an absent directory is an empty registry. The folder of prepared spaces,
 `~/.cotal/prepared`, refuses the same way when it exists and cannot be read, on every command that
-reads it, such as `space`, `space create`, `use <name>` and `up`, and so does a record in it that
-does not parse or is not a prepared space record. A record removed between listing and reading
+reads it, such as `space`, `space create`, `use <name>` and `up`. A file in its place is named as
+`<path> is a file, not a folder`, with the step that moves it aside. A record in it that does not parse
+or is not a prepared space record refuses only a command about the space its file is named for, such
+as `use <space>`. Other commands skip it with the warning `PREPARED_RECORD_SKIPPED`, which names the
+file and `cotal space forget <space>`, the step that removes it, and `status` lists it under
+`meshes.unreadable` and exits 4. A record removed between listing and reading
 is omitted from that listing. A keyed read also treats a record removed during its read as absent;
 parse, shape and other read failures still refuse by name. Recording or removing a mesh also sweeps
 the directory for an older-format record of the same space. Any error listing the directory for

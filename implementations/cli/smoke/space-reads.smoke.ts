@@ -132,9 +132,10 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   const swap = json(["use", "alpha"]);
   check("use reports the selection it replaced", swap.status === 0 && swap.env?.result.current === "alpha" && swap.env.result.previous === "beta" && swap.env.target?.space === "alpha", shown(swap));
   const unknown = json(["use", "nope"]);
-  check("use refuses an unregistered name with TARGET_NOT_FOUND and keeps the selection", unknown.status === 2 && unknown.env?.error?.code === "TARGET_NOT_FOUND" && getCurrent() === "alpha", shown(unknown));
+  check("use refuses an unregistered name with TARGET_NOT_FOUND, naming the known spaces, and keeps the selection",
+    unknown.status === 2 && unknown.env?.error?.code === "TARGET_NOT_FOUND" && (unknown.env.error.message as string).startsWith(`no space named "nope" is registered or prepared here; known spaces: alpha, beta`) && getCurrent() === "alpha", shown(unknown));
   const unknownHuman = run(["use", "nope"]);
-  check("the refusal of an unregistered name is headed with that name, as space forget's is", unknown.env?.target?.space === "nope" && unknownHuman.stderr.startsWith("Mesh: nope\n"), shown(unknownHuman));
+  check("the refusal of an unregistered name has no target and no Mesh heading", unknown.env?.target === null && unknownHuman.stderr.startsWith("Request refused\n"), shown(unknownHuman));
   const two = json(["use", "alpha", "beta"]);
   check("use with two names is a usage error", two.status === 1 && two.env?.error?.code === "USAGE_INVALID", shown(two));
   const listed = json(["space"]);
@@ -151,8 +152,10 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   const clearText = run(["use", "beta"]) && run(["use", "--clear"]);
   check("its receipt says what was cleared", clearText.status === 0 && /cleared the selection \(was beta\)/.test(clearText.stdout), shown(clearText));
   const none = json(["use", "none"]);
-  check("an unknown name's refusal names --clear", none.status === 2 && /cotal use --clear/.test(none.env?.error?.remedy ?? ""), shown(none));
+  check("with nothing selected, an unknown name's refusal does not name --clear", none.status === 2 && none.env?.error?.remedy === "see the registered and prepared spaces with `cotal space`", shown(none));
   run(["use", "alpha"]);
+  const kept = json(["use", "none"]);
+  check("with a space selected, an unknown name's refusal names --clear", kept.status === 2 && /cotal use --clear/.test(kept.env?.error?.remedy ?? "") && getCurrent() === "alpha", shown(kept));
 }
 
 // ── show ─────────────────────────────────────────────────────────────────────────────────────────────
