@@ -3743,7 +3743,12 @@ one envelope whose `result` is:
 `target` is `{space, scope: "all-managers"}` for the class scatter, and
 `{space, scope: "manager", managerInstanceId}` for `--on` or a user-auth mesh. A manager that is not
 `answered` makes the read `partial` (exit 4), with a `MANAGER_SILENT`, `MANAGER_REFUSED` or
-`MANAGER_CONTRACT_MISMATCH` warning naming it.
+`MANAGER_CONTRACT_MISMATCH` warning naming it. A `silent` manager whose `liveness` is `gone` is a
+registration its host never removed. On an auth space its row names `cotal endpoint deregister
+manager <id> --yes`, run from the space's own root. On any other space only that manager's own clean
+stop removes it, so the row names starting it again and stopping it if its host is still available,
+and says no supported command removes the record if the host is gone. The row stays and the read
+stays `partial`.
 
 `--slots --wide` is refused: `--slots` lists durable static slot rows, `--wide` prints live seat facts, and the two answer different questions. Across a multi-manager scatter, `--slots` prints each manager's rows under its own instance header, the same way the plain `ps` scatter does.
 

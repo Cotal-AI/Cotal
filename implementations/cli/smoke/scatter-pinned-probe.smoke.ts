@@ -53,7 +53,7 @@ const { Manager } = await import("../../manager/src/manager.js");
 const { managerRailGone, pinnedLivenessProbe } = await import("../src/lib/control.js");
 const { pickFreePort } = await import("../../../packages/core/smoke/_free-port.js");
 
-const EXPECTED_CELLS = 25; // predicted 14: +1 for the counter's own positive control (3a), +2 for the never-asked fallback the mutation pass found uncovered, +4 for section 6's prefix/superstring pair (review), +4 for section 7's spawn census
+const EXPECTED_CELLS = 27; // predicted 14: +1 for the counter's own positive control (3a), +2 for the never-asked fallback the mutation pass found uncovered, +4 for section 6's prefix/superstring pair (review), +4 for section 7's spawn census, +2 for section 8's removal
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -278,6 +278,13 @@ try {
       && Boolean(refusal.warnings?.some((w) => w.code === "MANAGER_SILENT" && w.message.startsWith(`manager ${IID_CORPSE} was skipped: its registration is stale`))),
     { spawnMs, status: unpinned.status, out: unpinned.stdout.slice(0, 900), err: unpinned.stderr.slice(-600) });
 
+  console.log("8. ps names a removal that works on this space, and the legacy spelling refuses without its usage");
+  const ps = await cli(["ps", "--space", SPACE]);
+  check("ps lists the corpse as stale and names endpoint deregister from this space's own root",
+    ps.status === 4 && ps.stdout.includes(`remove the record from this space's own root: cotal endpoint deregister manager ${IID_CORPSE} --yes`), { status: ps.status, out: ps.stdout.slice(-700) });
+  const legacy = await cli(["deregister-instance", "--instance", IID_CORPSE]);
+  check("deregister-instance refuses naming endpoint deregister, and prints no usage after it",
+    legacy.status === 1 && legacy.stderr.includes("the legacy deregistration spelling no longer executes") && legacy.stderr.includes("cotal endpoint deregister <class> <full-instance-id>") && !/^(Usage|Options)$/m.test(legacy.stderr), legacy.stderr);
 } finally {
   for (const nc of conns) { try { await nc.drain(); } catch { /* ignore */ } }
   await live?.stop().catch(() => {});
