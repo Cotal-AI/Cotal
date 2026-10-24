@@ -9,7 +9,8 @@
  *     new key and the file's read, post and role grants, and its heading says one exported file needs
  *     attention. A creds file another account
  *     issued refuses CONFLICT. A word that is no public key and names no file, and a missing file,
- *     refuse TARGET_NOT_FOUND naming the path; a 0644 file refuses with its chmod.
+ *     refuse TARGET_NOT_FOUND naming the path; a 0644 file refuses with its chmod. The stack's own
+ *     system-account credentials refuse UNSUPPORTED, naming `cotal up --rotate-sys`.
  *  3. After `up`, the broker refuses the revoked credential, and the refusal names the revocation and
  *     a new key with the file's grants, for `who` and `send`; `whoami --creds` reports when the key
  *     was revoked. Another minted credential still reads, and the channel history is kept. `auth mint
@@ -144,6 +145,14 @@ try {
     const open = cli(root, "auth", "revoke-credential", loose, "--yes", "--json");
     check("a creds file other accounts can read refuses PERMISSION_DENIED, with the chmod that fixes it",
       open.status === 2 && open.env?.error?.code === "PERMISSION_DENIED" && open.env.error.remedy === `chmod 600 ${shellPath(loose)}`, shown(open));
+    const spaceDir = readdirSync(join(root, ".cotal")).find((name) => name.startsWith("space."));
+    for (const file of ["connection-evictor.creds", "membership-observer.creds"]) {
+      const sys = cli(root, "auth", "revoke-credential", join(root, ".cotal", spaceDir ?? "", file), "--yes", "--json");
+      check(`the stack's own ${file} refuses UNSUPPORTED as a system-account credential, with --rotate-sys as its Next`,
+        sys.status === 2 && sys.env?.error?.code === "UNSUPPORTED"
+          && sys.env.error.message === `the credential was issued by space ${space}'s system account, and auth revoke-credential revokes only credentials the space's own account issued; nothing was revoked`
+          && sys.env.error.remedy === `cotal down --yes, then cotal up --rotate-sys, from ${root}, issues a new system account and retires this one's credentials; full backups taken before it can no longer be restored`, shown(sys));
+    }
     check("  and none of them changes the account record", accountDigest(root) === unchanged);
   }
 

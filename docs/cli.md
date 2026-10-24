@@ -5849,7 +5849,10 @@ It stops one credential that `auth mint` wrote and keeps the space's store and e
 credential. Name the credential by its user public key, which the mint receipt reports as its
 identity, or by its creds file, which must be private to you and issued by this space's account. A
 word that is not a user public key and names no file refuses `TARGET_NOT_FOUND` and says both. A
-file from another account refuses `CONFLICT`. The command records the key in the space's account,
+file from another account refuses `CONFLICT`. A file the space's system account issued, such as the
+stack's `connection-evictor` and `membership-observer` credentials, refuses `UNSUPPORTED`. Its Next
+is `cotal down --yes`, then `cotal up --rotate-sys`, which issues a new system account and retires
+the old one's credentials, and after which earlier full backups no longer restore (see [up](#up)). The command records the key in the space's account,
 re-signed by the space's operator, and the broker refuses that key from its next start.
 
 The broker loads a revocation only when it starts, so the space must be stopped: run
