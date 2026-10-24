@@ -15,6 +15,9 @@
  *     and no empty agent table; the deploy preview's TLS row reads as `team show` reads it.
  *  F. `team boot` on the stack that is up says so and offers `team deploy` with the same file, or
  *     `cotal down`, instead of naming the stop the stack lacks.
+ *  G. folder `b` takes a fresh channel-only `team boot` of its own space on a second port. Its
+ *     receipt, `team show <id>` and the inventory name the record's kind, state, next action and
+ *     auth mode in words; the JSON keeps the recorded values.
  *
  * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
  * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
@@ -29,14 +32,14 @@ import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } fro
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
 const TSX = join(WT, "node_modules", ".bin", "tsx");
-const SERVER = `nats://127.0.0.1:${await freePort()}`;
-const SPACE = `team-views-${process.pid}`;
+const SERVER = `nats://127.0.0.1:${await freePort()}`, SERVER_B = `nats://127.0.0.1:${await freePort()}`;
+const SPACE = `team-views-${process.pid}`, SPACE_B = `team-boot-${process.pid}`;
 
 const base = mkdtempSync(join(tmpdir(), "cotal-team-views-"));
-const home = join(base, "home"), configDir = join(base, "xdg"), s = join(base, "s");
+const home = join(base, "home"), configDir = join(base, "xdg"), s = join(base, "s"), b = join(base, "b");
 // The product refuses a local-record store that is not private, so every folder here is 0700.
-for (const dir of [home, configDir, s]) mkdirSync(dir, { mode: 0o700 });
-const sandbox = recordSmokeSandbox({ root: s, cotalHome: home, xdgConfigHome: configDir });
+for (const dir of [home, configDir, s, b]) mkdirSync(dir, { mode: 0o700 });
+const sandboxes = new Map([s, b].map((root) => [root, recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir })]));
 const env: Record<string, string> = {};
 for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("COTAL_") && key !== "FORCE_COLOR") env[key] = value;
 Object.assign(env, { HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_PROMPT: "1" });
@@ -44,7 +47,7 @@ Object.assign(env, { HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, C
 const { check, finish } = createSuite();
 const cotal = (cwd: string, ...args: string[]) => {
   const options = { cwd, env, encoding: "utf8" as const, timeout: 180_000 };
-  assertSmokeSandboxDown(sandbox, args, options);
+  assertSmokeSandboxDown(sandboxes.get(cwd), args, options);
   const run = spawnSync(TSX, [CLI, ...args], options);
   return { status: run.status, stdout: run.stdout, stderr: run.stderr, out: `${run.stdout}${run.stderr}` };
 };
@@ -55,15 +58,16 @@ const answered = (run: ReturnType<typeof cotal>) => { const e = envelope(run.std
 /** A text read that completed: exit 0, with its caveat in the report on stdout and not on stderr. */
 const reported = (run: ReturnType<typeof cotal>, caveat: string) => run.status === 0 && run.stdout.includes(caveat) && !run.stderr.includes(caveat);
 
-const manifest = (name: string, space: string, channels: Record<string, string>, { head = "", open = false } = {}) => {
-  writeFileSync(join(s, name), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  servers: ${SERVER}\n${open ? "  auth: false\n" : ""}${head}channels:\n${Object.entries(channels).map(([channel, extra]) => `  ${channel}:\n    description: The ${channel} channel.\n${extra}`).join("")}`);
+const manifest = (name: string, space: string, channels: Record<string, string>, { head = "", open = false, dir = s, server = SERVER } = {}) => {
+  writeFileSync(join(dir, name), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  servers: ${server}\n${open ? "  auth: false\n" : ""}${head}channels:\n${Object.entries(channels).map(([channel, extra]) => `  ${channel}:\n    description: The ${channel} channel.\n${extra}`).join("")}`);
 };
 manifest("live.yaml", SPACE, { live1: "    deliveryClass: live\n", live2: "    deliveryClass: live\n" });
 manifest("inherit.yaml", SPACE, { design: "", ops: "    replay: true\n", fine: "    deliveryClass: live\n" });
+manifest("boot.yaml", SPACE_B, { bootch: "    deliveryClass: live\n" }, { dir: b, server: SERVER_B });
 manifest("open.yaml", SPACE, { lobby: "    deliveryClass: live\n" }, { open: true });
 manifest("defaults.yaml", SPACE, { dops: "", own: "    replay: true\n" }, { head: "defaults:\n  replay: false\n  replayWindow: 2h\n  deliveryClass: live\n" });
 
-let up = false;
+let up = false, bUp = false;
 try {
   check("space create prepares the folder", cotal(s, "space", "create", SPACE).status === 0);
   up = true;
@@ -149,7 +153,31 @@ try {
     second.status === 2 && blocked?.code === "LIFECYCLE_BLOCKED" && blocked.message === `"${SPACE}" is already up at this root and no cotal down has stopped it; a team boot starts only a stopped stack, so nothing was booted`, second.out.slice(-800));
   check("its Next offers team deploy with the same manifest, or cotal down",
     blocked?.remedy === `add this manifest's channels and agents to the running stack with cotal team deploy ${join(s, "live.yaml")}, or stop it with cotal down before a team boot`, blocked);
+
+  console.log("\nG. a fresh boot's records in words");
+  check("space create prepares folder b", cotal(b, "space", "create", SPACE_B).status === 0);
+  bUp = true;
+  const booted = cotal(b, "team", "boot", "boot.yaml");
+  check("team boot starts the fresh stack in b, and its receipt names the auth mode in words",
+    booted.status === 0 && /Auth mode:\s+static auth\n/.test(booted.stdout) && !booted.stdout.includes("static-auth"), booted.out.slice(-1200));
+  const bootId = /cotal team show ([0-9a-f]{16})/.exec(booted.stdout)?.[1] ?? "";
+  const freshShow = cotal(b, "team", "show", bootId);
+  check("team show <boot id> names its kind, state, next action and auth mode in words",
+    /Kind:\s+fresh boot\n/.test(freshShow.stdout) && /Auth mode:\s+static auth\n/.test(freshShow.stdout) && /Recorded state:\s+boot returned\n/.test(freshShow.stdout) &&
+      /Next action:\s+inspect the stack\n/.test(freshShow.stdout) && !/broker-boot-returned|inspect-selected-stack/.test(freshShow.stdout), freshShow.stdout);
+  const freshJson = envelope(cotal(b, "team", "show", bootId, "--json").stdout)?.result;
+  check("its JSON keeps the recorded values", freshJson?.recordedState === "broker-boot-returned" && freshJson.nextAction === "inspect-selected-stack" && freshJson.authMode === "auth", freshJson);
+  const freshList = cotal(b, "team");
+  check("the inventory row names them in words", new RegExp(`${bootId}\\s+fresh boot\\s+boot returned\\s+inspect the stack`).test(freshList.stdout), freshList.stdout);
+  check("the boot preview names the requested auth mode in words", /Auth mode request:\s+static auth\n/.test(cotal(b, "team", "boot", "boot.yaml", "--dry-run").stdout));
+  const additiveShow = cotal(s, "team", "show", deployment);
+  check("an additive team show names its state and auth mode in words",
+    /Auth mode:\s+static auth\n/.test(additiveShow.stdout) && /Recorded state:\s+channels created\n/.test(additiveShow.stdout), additiveShow.stdout);
 } finally {
+  if (bUp) {
+    const down = cotal(b, "down", "--yes");
+    check("down --yes stops the stack in b", down.status === 0, down.out.slice(-600));
+  }
   if (up) {
     const down = cotal(s, "down", "--yes");
     check("down --yes stops the stack", down.status === 0, down.out.slice(-600));

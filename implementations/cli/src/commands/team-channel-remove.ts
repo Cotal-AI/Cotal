@@ -7,6 +7,7 @@ import { listAdditiveTeamAttempts, removedAdditiveDeploymentIds, type AdditiveTe
 import { CARD_TERMINAL_PHASES, openChannelCardRegistry, readChannelMemberImpact, writeChannelRemovalAttempt, writeChannelRemovalReceipt, writeChannelRemovalStep, type CardObservation, type CardReceipt, type ChannelRemovalAttempt, type ChannelRemovalStep, type RemovedChannel } from "../lib/team-channel-removal.js";
 import { classifyCard, removedCard, type CardSettlement } from "../lib/team-removal-reconcile.js";
 import { listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
+import { authModeText } from "../lib/team-text.js";
 import { canPrompt } from "./meshes-wizard.js";
 import type { TeamValues } from "./team.js";
 
@@ -328,7 +329,7 @@ export async function removeChannelTeam(deploymentId: string, values: TeamValues
   if (!run!.intentAttempted && run!.failure) throw run!.failure;
   const done = run!, failure = done.failure ?? lockFailure;
   writeResult(presentationOf(values), { command: "team remove", target, result: { kind: "channel-team-removal", deploymentId, server: brokerAddressForDisplay(original.server) ?? "not displayable", authMode: original.authMode, returnedReceipt: done.returned, channels: done.outcomes, impact: phase.preview, retainedIntent: done.intentAttempted, historyPurged: false, grantsChanged: false, readersStopped: false, readerExclusivity: "not-established", completeCleanup: false, retryAuthorized: false }, warnings: phase.closeUnconfirmed() ? [{ code: "WRITER_CLOSE_UNCONFIRMED", target, message: "Closing the scoped registry writer was not confirmed; recorded outcomes stand." }] : [], ...(failure ? { failure } : {}) }, (data): Report => ({ sections: [{ title: data.returnedReceipt ? "Channel cards removed" : "Channel card removal incomplete", blocks: [
-    { kind: "fields", rows: [["Deployment", deploymentId], ["Auth mode", data.authMode], ["Removed or already absent", `${data.channels.filter((row) => row.outcome === "deleted" || row.outcome === "absent").length} of ${receipt.createdChannels.length}`], ["Full removal receipt", data.returnedReceipt ? "recorded" : "not confirmed"], ["Retained history", "kept"], ["Grants and readers", "unchanged"]] },
+    { kind: "fields", rows: [["Deployment", deploymentId], ["Auth mode", authModeText(data.authMode)], ["Removed or already absent", `${data.channels.filter((row) => row.outcome === "deleted" || row.outcome === "absent").length} of ${receipt.createdChannels.length}`], ["Full removal receipt", data.returnedReceipt ? "recorded" : "not confirmed"], ["Retained history", "kept"], ["Grants and readers", "unchanged"]] },
     { kind: "table", columns: [{ key: "channel", label: "Channel" }, { key: "created", label: "Create revision" }, { key: "outcome", label: "Outcome" }], rows: cardOutcomeRows(receipt, data.channels) },
     { kind: "lines", lines: [CARD_SCOPE_NOTE] },
   ] }] }));
@@ -359,6 +360,6 @@ export function cardImpactBlocks(data: CardImpact): Report["sections"][number]["
 
 function previewView(data: CardImpact): Report {
   return { sections: [
-    { title: "Channel card removal impact", blocks: [{ kind: "fields", rows: [["Deployment", data.deploymentId], ["Space", data.space], ["Broker", data.server], ["Auth mode", data.authMode]] }, ...cardImpactBlocks(data)] },
+    { title: "Channel card removal impact", blocks: [{ kind: "fields", rows: [["Deployment", data.deploymentId], ["Space", data.space], ["Broker", data.server], ["Auth mode", authModeText(data.authMode)]] }, ...cardImpactBlocks(data)] },
   ] };
 }
