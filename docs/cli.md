@@ -2239,8 +2239,10 @@ says its recorded folder no longer exists.
 
 `space forget <name>` removes a registration this machine keeps. It stops nothing, deletes nothing on
 the broker, and keeps the files under its root. It refuses a space this machine is running with
-`LIFECYCLE_BLOCKED`, because `cotal down` stops it and drops the record, and a discovered space with
-`CONFLICT`, because its catalog keeps it. A space whose root holds its stack journal counts as
+`LIFECYCLE_BLOCKED`, because `cotal down` stops it, and a discovered space with `CONFLICT`, because
+its catalog keeps it. A stack `cotal up` started stays a prepared space at its root after that
+`down`, so the refusal names `cotal down` and then `space forget` again. A legacy root's `down` drops
+the record, and the refusal says so. A space whose root holds its stack journal counts as
 running while any stack member's process may still run. The refusal names one such member and
 writes nothing: the registration, the selection and the root's files stay. A member whose process
 is gone without its stop receipt does not block, and the result warns with `STACK_MEMBER_UNSETTLED`

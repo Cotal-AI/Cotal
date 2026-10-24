@@ -537,8 +537,9 @@ function createdView(r: SpaceCreated): Report {
 /**
  * `cotal space forget <name>` removes a registration this machine keeps. It stops nothing and
  * deletes nothing on a broker, and the root's files stay. A space this machine is running is
- * stopped with `cotal down`, which also drops its record, and a discovered space follows its
- * catalog. A stack member whose process is gone without its stop receipt does not block, and the
+ * stopped with `cotal down` first. A legacy root's down drops its record, while a stack `cotal up`
+ * started stays a prepared space at its root, so a second forget removes it. A discovered space
+ * follows its catalog. A stack member whose process is gone without its stop receipt does not block, and the
  * result warns about each one. Forgetting the selected space clears the selection. A prepared space
  * is forgotten the same way, and the `.cotal/` folder `space create` made stays. The stopped stack
  * definitions saved for the space at its root are removed with it, so the name can start elsewhere;
@@ -562,14 +563,18 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     throw refuse("CONFLICT", `"${name}" is listed by a signed-in space catalog, so this machine does not own its registration`, target, "it is removed when the catalog no longer lists it and `cotal sync` runs");
   let unsettled: string[] = [];
   if (m.origin !== "manual") {
-    let running: string | undefined;
+    let running: string | undefined, stack = false;
     try {
       running = liveMeshOwner(m.root, m.space);
       unsettled = unsettledStackMembers(m.root, m.space);
+      stack = running !== undefined && readStackJournal(m.root)?.journal.space === name;
     } catch (e) {
       throw refuse("LIFECYCLE_BLOCKED", `could not tell whether "${name}" is running from ${m.root}: ${(e as Error).message}`, target, "check it with `cotal status`");
     }
-    if (running) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${m.root} (${running})`, target, `stop it with \`cotal down\` in ${m.root}, which also drops its record`);
+    // A stack's down keeps the space prepared at its root, so it is forgotten by a second forget.
+    if (running) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${m.root} (${running})`, target, stack
+      ? `stop it with \`cotal down\` in ${m.root}, which keeps it as a prepared space there, then run \`cotal space forget ${name}\` again`
+      : `stop it with \`cotal down\` in ${m.root}, which also drops its record`);
   }
   const release = releaseStackDefinitions(m.root, name);
   removeMesh(name);

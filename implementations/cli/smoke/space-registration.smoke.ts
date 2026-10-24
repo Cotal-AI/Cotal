@@ -7,7 +7,9 @@
  * serves, so the open broker serves the names that are added and refuses one it does not. A forget
  * removes the space's per-space preferences with it, refuses on a preferences file it cannot read,
  * and is partial when it cannot remove them, naming the chmod first when other accounts can write
- * their folder. On Linux, a space started as a controller
+ * their folder. A forget of a running space names `cotal down`: on a legacy root it says that down
+ * drops the record, and for a controller stack, whose down keeps it prepared, it names forget again.
+ * On Linux, a space started as a controller
  * stack is written as its stack journal and instance records, with nothing launched. A stack journal
  * whose members this home has no record of, with a live manager, stands for a stack running under
  * another Cotal home: create, down and status there name that home. A folder path with a control
@@ -347,6 +349,7 @@ setCurrent("keep");
   recordMesh({ space: "running", server: LIVE, root: ownedRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   const live = await json(["space", "forget", "running"]);
   check("a space this machine is running is LIFECYCLE_BLOCKED, naming cotal down", refused(live, 2, "LIFECYCLE_BLOCKED") && /cotal down/.test(live.env?.error?.remedy ?? "") && findMesh("running") !== undefined, shown(live));
+  check("...and on a legacy root, whose down drops the record, the remedy says so", live.env?.error?.remedy === `stop it with \`cotal down\` in ${ownedRoot}, which also drops its record`, live.env?.error);
 
   // `cotal up` runs a space as a controller stack: service instances with no pidfile. The stack
   // journal and instance records are written here as a stack leaves them, and nothing is launched. A
@@ -393,6 +396,8 @@ setCurrent("keep");
     const running = await json(["space", "forget", "stackrun"]);
     check("a space whose controller stack still runs is LIFECYCLE_BLOCKED, naming the member and cotal down",
       refused(running, 2, "LIFECYCLE_BLOCKED") && /stack-broker/.test(running.env?.error?.message ?? "") && /cotal down/.test(running.env?.error?.remedy ?? ""), shown(running));
+    check("...and since a stack's down keeps it as a prepared space, the remedy names forget again",
+      running.env?.error?.remedy === `stop it with \`cotal down\` in ${runningRoot}, which keeps it as a prepared space there, then run \`cotal space forget stackrun\` again`, running.env?.error);
     check("...and it writes nothing: the registration, the selection and the stack journal stay",
       JSON.stringify(registryFiles()) === JSON.stringify(before) && getCurrent() === selected && readFileSync(stackJournalPath(runningRoot), "utf8") === journal, shown(running));
 
