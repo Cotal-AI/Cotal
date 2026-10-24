@@ -717,6 +717,8 @@ try {
   process.exit = ((code?: number) => { throw new Error(`exit ${code}: ${LOGS.join("\n")}`); }) as never;
   let hostedOut = "", localOut = "", ps = "";
   let hostedRefusal: { outcome?: unknown; code?: unknown } | undefined, unknownRun: { outcome?: unknown; code?: unknown; message?: unknown } | undefined;
+  let unknownPin: { outcome?: unknown; code?: unknown; message?: unknown; remedy?: unknown } | undefined, pinMs = -1, pinnedPs = "";
+  const madeUp = mintLifecycleUid();
   try {
     hostedOut = await cli(["start"], { file }).then((out) => out, (e: Error) => { hostedRefusal = e as typeof hostedRefusal; return `threw: ${e.message}`; });
     localOut = await cli(["start"], { file, local: true, "admit-read": "none", "admit-publish": "none" }).then((out) => out, (e: Error) => `threw: ${e.message}`);
@@ -725,6 +727,13 @@ try {
     process.stdout.write = ((chunk: string | Uint8Array) => { LOGS.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)); return true; }) as typeof process.stdout.write;
     try { ps = await cli(["ps"], { json: true }); } finally { process.stdout.write = realWrite; }
     await cli(["show", "run-00000000000000000000000000000000"], { json: true }).catch((e: unknown) => { unknownRun = e as typeof unknownRun; });
+    // A pin that names no running manager is refused before any describe, so it does not wait out
+    // the describe's deadline, and it names the manager that does run.
+    const startedAt = Date.now();
+    await cli(["ps"], { on: madeUp }).catch((e: unknown) => { unknownPin = e as typeof unknownPin; });
+    pinMs = Date.now() - startedAt;
+    const named = /the one running is ([a-z0-9]+)\./.exec(String(unknownPin?.message ?? ""))?.[1];
+    if (named !== undefined) pinnedPs = await cli(["ps"], { on: named }).then(() => "ok", (e: Error) => `threw: ${e.message}`);
   } finally {
     console.log = realLog;
     console.error = realError;
@@ -737,6 +746,11 @@ try {
   c("B3. `cotal run ps` still reads there, and lists nothing", listed?.command === "run" && listed.outcome === "ok" && listed.target?.space === spaceB
     && listed.result?.kind === "runs" && Array.isArray(listed.result.items) && listed.result.items.length === 0, ps);
   c("B4. `cotal run show` of a run the manager holds no record of is refused TARGET_NOT_FOUND for the command kernel", unknownRun?.outcome === "refused" && unknownRun.code === "TARGET_NOT_FOUND" && String(unknownRun.message).includes("no record"), unknownRun);
+  c("B5. `cotal run ps --on <id>` naming no running manager is refused TARGET_NOT_FOUND at once, naming the pin and the manager that runs",
+    unknownPin?.outcome === "refused" && unknownPin.code === "TARGET_NOT_FOUND" && pinMs < 5_000
+      && String(unknownPin.message).startsWith(`--on ${madeUp} names no manager running for space ${spaceB}; the one running is `) && !/ep\.v1|rail|SPEC/.test(String(unknownPin.message))
+      && /^run it again with --on [a-z0-9]+, or without --on$/.test(String(unknownPin.remedy)), { unknownPin, pinMs });
+  c("B6. and the manager it names is the running one: `run ps --on` that id reads", pinnedPs.includes("ok"), pinnedPs);
   await mgr.stop();
   mgr = undefined;
 } catch (e) {
@@ -764,7 +778,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 76;
+const EXPECTED_CELLS = 78;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

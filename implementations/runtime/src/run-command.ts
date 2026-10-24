@@ -741,7 +741,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
   try {
     // Only the operator's own unpinned instrument holds the registry rows `ps` scatters on; a seat's
     // credential and a user's manager view hold none.
-    if (!seat && auth.bearer === undefined && auth.managerInstanceId === undefined) await refuseWithoutLiveManager(nc, t.space);
+    if (!seat && auth.bearer === undefined && (auth.managerInstanceId === undefined || values.on !== undefined)) await refuseWithoutLiveManager(nc, t.space, values.on);
     // A logged-in user's manager view is issued at the callout (SPEC 13.15): its generation is read
     // back from this connection's accepted row, and every request rides `ep.v1` under it.
     const caller = auth.bearer !== undefined && auth.managerInstanceId !== undefined
@@ -815,11 +815,12 @@ async function chatStreamGone(nc: NatsConnection, space: string): Promise<boolea
 
 /** A hosted verb on a space whose registry lists no live manager is refused here, as `ps` refuses
  *  it, rather than after the describe has waited out its whole deadline for an answer no manager
- *  can send. Any other registry outcome, an unreadable registry included, leaves the describe to
- *  decide. */
-async function refuseWithoutLiveManager(nc: NatsConnection, space: string): Promise<void> {
+ *  can send. So is an `on` pin that names none of the live managers, with the ones that run. Any
+ *  other registry outcome, an unreadable registry included, leaves the describe to decide. */
+async function refuseWithoutLiveManager(nc: NatsConnection, space: string, on?: string): Promise<void> {
+  let live: Awaited<ReturnType<typeof freezeExpectedSet>>;
   try {
-    await freezeExpectedSet(await jetstreamManager(nc, { checkAPI: false }), space, BASELINE_LIFECYCLE_ENDPOINT);
+    live = await freezeExpectedSet(await jetstreamManager(nc, { checkAPI: false }), space, BASELINE_LIFECYCLE_ENDPOINT);
   } catch (e) {
     if (!(e instanceof EpEnvelopeError) || !noLiveInstances(e)) return;
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space to host or read its workflow runs", {
@@ -828,6 +829,14 @@ async function refuseWithoutLiveManager(nc: NatsConnection, space: string): Prom
       remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none",
     });
   }
+  // A pin that names none of the running managers can only wait out its describe, so it is refused
+  // here, with the managers that do run.
+  if (on === undefined || live.some((instance) => instance.instanceId === on)) return;
+  const ids = live.map((instance) => instance.instanceId);
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `--on ${on} names no manager running for space ${space}; ${ids.length === 1 ? `the one running is ${ids[0]}` : `the ones running are ${ids.join(", ")}`}. Nothing was sent`, {
+    target: { space, requestedManagerInstance: on },
+    remedy: ids.length === 1 ? `run it again with --on ${ids[0]}, or without --on` : "run it again with --on naming one of them",
+  });
 }
 
 /** A spawned static seat that shells out to the rendered `cotal run answer …` command must answer as
