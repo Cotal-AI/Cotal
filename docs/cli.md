@@ -5283,7 +5283,13 @@ cotal channel remove <name> [--purge] [--yes]
 metadata, not every channel with traffic. `show` includes inherited replay and delivery settings.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. With `--follow --json`, it emits membership NDJSON
-records. A missing feed remains unknown rather than an empty confirmed census. A lost connection is
+records. A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
+census with no member for a name that has no saved entry and no retained messages is refused with
+`TARGET_NOT_FOUND`, listing the registered channels, or naming the registered spelling when only the
+case differs. A channel with a saved entry or retained messages and no member reads as empty. A
+follow shows the census again only when it changes: a poll that observes the same members writes no
+record and prints nothing, and the `end` record's `lastAsOf` is the last poll the follow read. A follow's
+view offers no command to follow. A lost connection is
 one `TARGET_UNAVAILABLE` error record, or one line, while the follow re-establishes it, and a `gap`
 record and the current census follow once the feed answers again, so a follow outlives a broker
 restart. A credential that can no longer connect ends the follow with the refusal a one-shot
@@ -6375,7 +6381,10 @@ offers none. A
 candidate that holds a control character, such as a persona file name with an escape sequence or a
 newline in it, is not offered. `persona` still lists that file with the characters escaped. A
 persona catalog folder that cannot be read fails the completion of a persona name, so the shell
-offers none, and with `COTAL_COMPLETE_DEBUG=1` it prints the folder. The bash
+offers none, and with `COTAL_COMPLETE_DEBUG=1` it prints the folder. A record it skips, such as a
+prepared space record that does not parse, is named on stderr only under that flag too. The stubs
+discard stderr, so run the completion by hand to see it, as
+`COTAL_COMPLETE_DEBUG=1 cotal __complete persona show ''` does. The bash
 and zsh stubs complete file names where a value takes a path. The fish stub offers only cotal's own
 candidates.
 
@@ -6739,7 +6748,8 @@ greater than 9007199254740991, and a refusal names the value it rejected.
 ## Plumbing
 
 `cotal __complete <words…>` is the internal entry the shell-completion stubs call to emit candidates
-for the current command line; you never run it directly. `cotal agent-bearer` is machine-facing
+for the current command line; you run it directly only to debug a completion, with
+`COTAL_COMPLETE_DEBUG=1`. `cotal agent-bearer` is machine-facing
 plumbing on user-auth meshes: spawned agents exec it to print a fresh short-lived bearer from their
 spawn-time secret; you never run it directly either. Its local arm uses `--dir` to discover the
 capability-gated loopback service. A remotely enrolled, already-granted agent instead receives

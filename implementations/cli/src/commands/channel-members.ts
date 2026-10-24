@@ -1,7 +1,7 @@
 import { CotalEndpoint, subjectMatches, type FlagValues, type MembershipSnapshot } from "@cotal-ai/core";
 import { brokerAddressForDisplay, CommandFailure, exitCode, streamRecord, writeStreamRecord, writeResult, renderReport, terminalWidth, type ConnectRefusal, type Presentation, type Report } from "@cotal-ai/workspace";
 import { connectOrThrow, credentialEnded, userViewAuthOrExit } from "../lib/connect.js";
-import type { channelFlags } from "./channels.js";
+import { refuseUnknownChannel, type channelFlags } from "./channels.js";
 
 type Values = FlagValues<typeof channelFlags>;
 interface Members {
@@ -59,7 +59,7 @@ export async function channelMembers(values: Values, channel: string, presentati
   };
   const show = (next: Members) => {
     emit("event", next);
-    if (presentation !== "json") console.log(renderReport(membersView(next), presentation, terminalWidth(process.stdout)));
+    if (presentation !== "json") console.log(renderReport(membersView(next, true), presentation, terminalWidth(process.stdout)));
   };
   // A dropped connection or a failed read ends the follow only once its credential can no longer
   // connect, with the refusal a one-shot command with it gets. Otherwise it is reported once, and the
@@ -108,9 +108,10 @@ export async function channelMembers(values: Values, channel: string, presentati
           show(next);
           continue;
         }
-        if (JSON.stringify(last) === JSON.stringify(next)) continue;
+        // Each poll moves the feed's timestamps, so a read that observed the same census is not a change.
+        const same = census(last) === census(next);
         last = next;
-        show(next);
+        if (!same) show(next);
       }
     })().catch(() => interrupted(false)).finally(() => { reading = undefined; });
   };
@@ -132,7 +133,7 @@ export async function channelMembers(values: Values, channel: string, presentati
       process.once("SIGINT", interrupt);
       process.once("SIGTERM", terminate);
       emit("snapshot", last);
-      if (presentation !== "json") console.log(renderReport(membersView(last), presentation, terminalWidth(process.stdout)));
+      if (presentation !== "json") console.log(renderReport(membersView(last, true), presentation, terminalWidth(process.stdout)));
       if (last.asOf === null) emit("gap", { reason: "The membership feed has no successful poll yet." });
       watch = await ep.watchMembership(changed, watchClosed);
       await ended;
@@ -175,13 +176,21 @@ export async function channelMembers(values: Values, channel: string, presentati
     if (streaming) emit("end", { reason, lastAsOf: last?.asOf ?? null });
   }
   if (refusal && presentation !== "json") throw refusal.failure();
+  // An established census with no member does not show whether the name is a channel the space has.
+  if (!streaming && last?.asOf != null && !last.members.length) await refuseUnknownChannel(channel, values, target, "members");
   if (!streaming && last) writeResult(presentation, {
     command: "channel", target, result: { kind: "membership", ...last },
     ...(last.asOf === null ? { completeness: "partial" as const, partial: { message: "The membership feed has no successful poll to establish a census.", remedy: "Check the selected space's delivery service." } } : {}),
   }, membersView);
 }
 
-function membersView(result: Members): Report {
+/** Whether the feed has a census, and which members it observed with which membership. */
+function census(result: Members | undefined): string {
+  return JSON.stringify(result && [result.asOf !== null, result.members.map(({ id, name, live, durable }) => [id, name, live, durable])]);
+}
+
+/** A follow already shows each change, so its view offers no command to follow. */
+function membersView(result: Members, following = false): Report {
   return { space: result.space, sections: [
     { title: `Members · #${result.channel}`, blocks: [
       { kind: "fields", rows: [["Space", result.space], ["Feed observed", result.asOf === null ? "no successful poll reported" : new Date(result.asOf).toISOString()]] },
@@ -191,6 +200,6 @@ function membersView(result: Members): Report {
       } : { kind: "lines", lines: [result.asOf === null ? "Membership is not established. An empty feed does not prove there are no members." : "No members in this feed snapshot."] },
       { kind: "lines", lines: [{ text: "Broker-derived observations, not access grants. This does not establish whether an agent is working or blocked.", tone: "hint" }] },
     ] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch members ${result.channel} --follow`, description: "Follow membership observations; Ctrl-C leaves without changing members" }] }] },
+    ...following ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `cotal ch members ${result.channel} --follow`, description: "Follow membership observations; Ctrl-C leaves without changing members" }] }] }],
   ] };
 }

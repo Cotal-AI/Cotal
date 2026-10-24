@@ -123,7 +123,7 @@ export async function channels(args: ParsedArgs): Promise<void> {
     writeResult(presentation, { command: "channel", target, result: { action, name, space: connection.space, registry, scope: "configured channel metadata" } }, registryView);
     return;
   }
-  if (action === "remove") await refuseUnknownRemoval(name!, values, target);
+  if (action === "remove") await refuseUnknownChannel(name!, values, target, "remove");
   if (action === "remove" && !await confirmRemoval(name!, connection.space, values, presentation)) {
     writeResult(presentation, { command: "channel", target, result: { action: "cancelled", channel: name }, noOp: true }, () => ({ sections: [{ blocks: [{ kind: "lines", lines: ["Channel removal cancelled. Nothing was deleted."] }] }] }));
     return;
@@ -166,13 +166,13 @@ export async function channels(args: ParsedArgs): Promise<void> {
   ] }));
 }
 
-/** A remove names a channel the space has: one with a saved entry or retained messages. Any other
- *  name, often a typo or another case of a registered one, is refused with the registered channels
- *  before anything is confirmed or deleted. The registry is read on the operator credential, as
- *  `cotal channel` reads it, because the writer and purger may not read it. When the registry or the
- *  history cannot be read with this credential, such as an explicit `--creds` without that grant, the
- *  remove goes ahead and reports what the broker does with it. */
-async function refuseUnknownRemoval(name: string, values: Values, target: object): Promise<void> {
+/** A remove, or a members read that observed no member, names a channel the space has: one with a
+ *  saved entry or retained messages. Any other name, often a typo or another case of a registered
+ *  one, is refused with the registered channels before anything is confirmed or deleted. The registry
+ *  is read on the operator credential, as `cotal channel` reads it, because the writer and purger may
+ *  not read it. When the registry or the history cannot be read with this credential, such as an
+ *  explicit `--creds` without that grant, the command goes ahead and reports what it found. */
+export async function refuseUnknownChannel(name: string, values: Values, target: object, action: "members" | "remove"): Promise<void> {
   const reader = await connectOrThrow(values, "operator");
   const auth = reader.bearer ? { bearer: reader.bearer, sentinelCreds: reader.sentinelCreds } : { creds: reader.creds };
   let registry: ChannelRegistryFile;
@@ -186,8 +186,8 @@ async function refuseUnknownRemoval(name: string, values: Values, target: object
   const spelled = registered.find((channel) => channel.toLowerCase() === name.toLowerCase());
   const known = registered.length ? `registered channels: ${registered.map((channel) => `#${channel}`).join(", ")}` : "this space registers no channels";
   throw new CommandFailure("refused", "TARGET_NOT_FOUND",
-    `#${name} has no saved entry and no retained messages; ${spelled ? `channel names are case-sensitive, and the registered one is #${spelled}` : known}`,
-    { target, remedy: spelled ? `name it as registered: cotal channel remove ${spelled}` : "name a channel the space has; cotal ch lists the registered ones" });
+    `#${name} has ${action === "members" ? "no observed members, " : ""}no saved entry and no retained messages; ${spelled ? `channel names are case-sensitive, and the registered one is #${spelled}` : known}`,
+    { target, remedy: spelled ? `name it as registered: cotal channel ${action} ${spelled}` : "name a channel the space has; cotal ch lists the registered ones" });
 }
 
 /** A saved setting in the receipt, in the words `channel show` uses for it. */

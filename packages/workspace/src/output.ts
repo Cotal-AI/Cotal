@@ -173,8 +173,8 @@ export function isCommandFailure(e: unknown): e is CommandFailure {
 
 /** The space one command run resolved, as {@link recordOperationSpace} set it, the note
  *  {@link recordOperationSpaceNote} recorded on how it was chosen, and the warnings
- *  {@link recordOperationWarning} recorded. */
-export interface OperationScope { space?: string; spaceNote?: { space: string; text: string }; warnings?: OutputWarning[] }
+ *  {@link recordOperationWarning} recorded. `quiet` keeps those warnings off stderr. */
+export interface OperationScope { space?: string; spaceNote?: { space: string; text: string }; warnings?: OutputWarning[]; quiet?: boolean }
 
 // Kept on a global key so two copies of this module share one scope, as the failure brand does.
 const operationScope = ((globalThis as { [key: symbol]: unknown })[Symbol.for("cotal.operationScope")] ??= new AsyncLocalStorage<OperationScope>()) as AsyncLocalStorage<OperationScope>;
@@ -207,12 +207,14 @@ export function operationSpaceNote(space: string): string | undefined {
 }
 
 /** Record a warning about what this command's operation resolved. It is printed on stderr at once,
- *  before the command acts on it, and every envelope of the run carries it. A warning already
- *  recorded in this run is not repeated. Outside {@link runOperation} it does nothing. */
+ *  before the command acts on it, unless the scope is quiet, and every envelope of the run carries it.
+ *  A warning already recorded in this run is not repeated. Outside {@link runOperation} it does
+ *  nothing. */
 export function recordOperationWarning(warning: OutputWarning): void {
   const scope = operationScope.getStore();
   if (!scope || scope.warnings?.some((w) => w.code === warning.code && w.message === warning.message)) return;
   (scope.warnings ??= []).push(warning);
+  if (scope.quiet) return;
   // Wrapped to the terminal like the report it precedes, each continuation line under the text.
   const lines = wrapWords(warning.message, terminalWidth(process.stderr) - 2);
   process.stderr.write(`${lines.map((line, i) => `${i === 0 ? "!" : " "} ${line}`).join("\n")}\n`);

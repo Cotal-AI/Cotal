@@ -680,8 +680,9 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       }
     }
   }
-  // A failure raised after the command recorded the space it resolved is reported in that space.
-  const scope: OperationScope = {};
+  // A failure raised after the command recorded the space it resolved is reported in that space. A
+  // completion writes its warnings, as its errors, only under COTAL_COMPLETE_DEBUG.
+  const scope: OperationScope = cmd.name === "__complete" && !debugFlag("COTAL_COMPLETE_DEBUG") ? { quiet: true } : {};
   const execute = async () => {
     if (opts.extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);

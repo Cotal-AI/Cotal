@@ -6,7 +6,8 @@
  * line to add where it points, and a group-writable one with the chmod that fixes it. An edited owned
  * stub or block is refused with `--force` as its way out, which keeps startup content outside the
  * markers. A completer that fails writes its reason to stderr only under COTAL_COMPLETE_DEBUG, which
- * an empty value, `0`, `false` or `off`, in any case, leaves off.
+ * an empty value, `0`, `false` or `off`, in any case, leaves off, and so does the warning for a
+ * prepared space record a completion skips.
  *
  * Run: pnpm smoke:completion-status
  */
@@ -415,6 +416,26 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const r = complete(value);
     check(`COTAL_COMPLETE_DEBUG=${value} names the malformed record on stderr`, r.status === 1 && r.stdout === "" && r.stderr.startsWith("cotal __complete: ") && r.stderr.includes("broken.json does not parse as a mesh record"), shown(r));
   }
+}
+
+// A prepared space record that does not parse is skipped, and the space completion still offers the
+// others. Its warning goes to stderr only under COTAL_COMPLETE_DEBUG, as a completer's error does.
+{
+  const s = sandbox();
+  const project = join(s.home, "proj");
+  mkdirSync(project);
+  const created = spawnSync(process.execPath, [BIN, "space", "create", "kept"], { cwd: project, env: { ...HOST_ENV, HOME: s.home, XDG_CONFIG_HOME: s.xdg, COTAL_HOME: join(s.home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8" });
+  writeFileSync(join(s.home, ".cotal", "prepared", "space.ffff.json"), "{ not json", { mode: 0o600 });
+  const complete = (value?: string) => s.run(["__complete", "use", ""], value === undefined ? {} : { COTAL_COMPLETE_DEBUG: value });
+  const unset = complete();
+  check("rig: a space completion over a prepared record that does not parse offers the space it can read", created.status === 0 && unset.status === 0 && unset.stdout === "kept\n:nofiles\n", { created: created.stderr.slice(0, 400), unset: shown(unset) });
+  check("COTAL_COMPLETE_DEBUG unset writes no warning for the skipped record", unset.stderr === "", shown(unset));
+  for (const value of ["", "0", "off", "FALSE"]) {
+    const r = complete(value);
+    check(`COTAL_COMPLETE_DEBUG=${value} writes no warning for the skipped record`, r.status === 0 && r.stderr === "", shown(r));
+  }
+  const debug = complete("1");
+  check("COTAL_COMPLETE_DEBUG=1 names the skipped record on stderr and still offers the space", debug.status === 0 && debug.stdout === "kept\n:nofiles\n" && debug.stderr.includes("space.ffff.json does not parse as a prepared space record") && debug.stderr.includes("so it is skipped"), shown(debug));
 }
 
 // ── A modified owned integration names its way out ──────────────────────────────────────────────────
