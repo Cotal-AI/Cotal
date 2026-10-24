@@ -214,7 +214,10 @@ output scrolls.
 On a terminal, a long value, line, warning or failure wraps at spaces, and each continuation line
 starts under the text it continues. A labeled value with a word too wide to fit beside its label,
 such as an identity, starts on the line under the label. A word wider than the line, such as a path,
-keeps a line of its own and is never split. Help wraps the same way, including the title of `cotal help --all`.
+keeps a line of its own and is never split. A command wraps as one word, so a copied line never holds
+part of one: a command under Next, and a command a sentence names after other words, in backticks
+or not, from its `cotal` to its last argument. A line that starts with a command, such as a usage
+line, wraps at its spaces. Help wraps the same way, including the title of `cotal help --all`.
 
 A question that defaults to No, such as the one before `history clear`, `down`, `channel remove` or
 `persona remove`, is answered by typing: `y` or `yes`, in any case, then Enter confirms it. Enter

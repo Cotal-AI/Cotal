@@ -139,6 +139,22 @@ check("below 20 columns nothing is wrapped", wrapWords("a b c d e f g h i j k l 
 // Broken at its spaces, "[--server" would still fit on the first line and leave "<url>]" alone.
 const kept = wrapWords(["[--a <x>]", "[--server <url>]"], 20);
 check("given words are kept whole", JSON.stringify(kept) === JSON.stringify(["[--a <x>]", "[--server <url>]"]), kept);
+// A command wraps as one word, so a copied line never holds part of one. With a long space name,
+// "cotal reset store" used to end one line and the name start the next.
+const longName = `b541_${"x".repeat(56)}_la`;
+const named = wrapWords(`remove its stored streams with cotal reset store ${longName} --yes, or remove only the local record with cotal space forget ${longName}`, 78);
+check("a command a line names wraps as one word, from its cotal to its last argument",
+  JSON.stringify(named) === JSON.stringify(["remove its stored streams with", `cotal reset store ${longName} --yes,`, "or remove only the local record with", `cotal space forget ${longName}`]), named);
+const prose = wrapWords("run cotal down --yes then cotal up from the root folder again", 24);
+check("a command ends before a word of prose", JSON.stringify(prose) === JSON.stringify(["run cotal down --yes", "then cotal up from the", "root folder again"]), prose);
+const ticked = wrapWords("the restore left it stopped; start it with `cotal up --space restored-space` in its folder", 30);
+check("a command in backticks wraps as one word", JSON.stringify(ticked) === JSON.stringify(["the restore left it stopped;", "start it with", "`cotal up --space restored-space`", "in its folder"]), ticked);
+const quoted = wrapWords("it refuses with `this would migrate the machine-wide store` and stops", 30);
+check("a quote in backticks that is no command wraps at its spaces", JSON.stringify(quoted) === JSON.stringify(["it refuses with `this would", "migrate the machine-wide", "store` and stops"]), quoted);
+const usage = wrapWords("cotal up [--foreground|--detach] [--open] [--space <s>]", 40);
+check("a line that starts with a command, as a usage line does, wraps at its spaces", JSON.stringify(usage) === JSON.stringify(["cotal up [--foreground|--detach]", "[--open] [--space <s>]"]), usage);
+const listed = renderReport({ sections: [{ title: "Verdict", blocks: [{ kind: "commands", items: [{ command: `cotal reset store ${longName} --yes`, description: "Remove only this stopped store" }] }] }] }, "plain", 80).split("\n");
+check("a command in a command list keeps one line, however wide", listed.includes(`  cotal reset store ${longName} --yes`) && listed.includes("    Remove only this stopped store"), listed);
 const fits = (text: string, width: number) => text.split("\n").every((line) => displayWidth(line) <= width);
 const longFields = { sections: [{ blocks: [{ kind: "fields" as const, rows: [["id", "x"], ["server", "nats://broker.example.com:4222 with a note that runs well past the line"]] as [string, string][] }] }] };
 const longField = renderReport(longFields, "plain", 60);
