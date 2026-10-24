@@ -221,6 +221,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       assert.equal(driftedRoot.status, 2, "valid root-chain drift refuses a full restore with exit 2, not an unknown outcome");
       assert.match(driftedRoot.stderr, /authority fingerprint does not match current trust state/);
       assert.match(driftedRoot.stderr, /CONFLICT/, "root-chain drift is a CONFLICT refusal");
+      assert.ok(driftedRoot.stderr.includes(`its channel registry still restores here with cotal backup restore ${artifact} --only registry`), `its Next names the registry restore, which does not check the trust state\n${driftedRoot.stderr}`);
       assert.equal(readFileSync(journalPath, "utf8"), journalBefore, "root-chain drift leaves the ready journal byte-identical");
       const sourceAfterDrift = lstatSync(join(root, ".cotal", "nats"), { bigint: true });
       assert.equal(sourceAfterDrift.dev, sourceBefore.dev);
