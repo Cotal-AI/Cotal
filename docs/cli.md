@@ -982,7 +982,10 @@ queries. Duplicate names and `--instance` with multiple names are usage errors. 
 
 Bare `down --dry-run` reads local process records for one registered space at the current
 project root. A root with no `.cotal/` directory, or with no stack registered at it, refuses
-`TARGET_NOT_FOUND`, exit 2, because there is no stack there to preview. A root whose stack is
+`TARGET_NOT_FOUND`, exit 2, because there is no stack there to preview. Its next step is the folder
+where `cotal up` started a stack, or, when this machine has no stack started or registered at all,
+`cotal up` in a project, as `cotal status` says. A bare `down` in such a folder refuses the same
+way. A root whose stack is
 already stopped shows the no-op described below instead. In the machine home, a stack an earlier
 release started there is read the same way, and the Next names `cotal down --preserve-state`, its
 stop, or says that none of it is running. Add `--space <name>` to

@@ -114,7 +114,7 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
   const out = `${r.stdout}${r.stderr}`;
   check(
     "a valid dry run reaches the command body",
-    r.status === 2 && /there is no stack at this folder's root, so there is nothing to preview/.test(out),
+    r.status === 2 && /there is no stack at this folder's root, and this machine has no stack started or registered, so there is nothing to preview/.test(out),
     { status: r.status, out: out.slice(0, 400) },
   );
   check(
