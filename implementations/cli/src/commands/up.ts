@@ -902,7 +902,19 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         const runtimes = [...new Set(agents.map((agent) => agent.launch?.runtime).filter((value): value is string => typeof value === "string"))];
         if (runtimes.length > 1) throw new Error(`resume inventory requires multiple runtimes: ${runtimes.join(", ")}`);
         const resumeServer = values.server ?? (typeof launch.server === "string" ? launch.server : DEFAULT_SERVER);
-        const requestedStore = values["store-dir"] ?? (typeof launch.storeDir === "string" ? launch.storeDir : journal.source.path);
+        // A resume starts what `down --preserve-state` recorded. Another value is a new start, which
+        // follows a normal `down` of the resumed mesh.
+        const preservedOnly = (flag: string, given: string | number, what: string, preserved: string) => new CommandFailure("refused", "CONFLICT", `${flag} ${given} is not the ${what} that down --preserve-state recorded here (${preserved}), and a resume starts what it recorded; nothing was started`, {
+          target: { root, space: journal.space, flag, given: String(given), preserved },
+          remedy: `resume with cotal up without ${flag}; to use ${given}, stop the resumed mesh with cotal down, then run cotal up ${flag} ${given}`,
+        });
+        const givenStore = values["store-dir"];
+        if (givenStore !== undefined && resolve(givenStore) !== journal.source.path) {
+          let same = false;
+          try { same = sameStoreIdentity(readStoreIdentity(resolve(givenStore)), journal.source); } catch { same = false; }
+          if (!same) throw preservedOnly("--store-dir", givenStore, "store", journal.source.path);
+        }
+        const requestedStore = givenStore ?? (typeof launch.storeDir === "string" ? launch.storeDir : journal.source.path);
         // Ordinary up resumes the exact preserved source: a different valid store passed via
         // --store-dir must not consume this maintenance cut under the recorded space's trust.
         if (!sameStoreIdentity(readStoreIdentity(resolve(requestedStore)), journal.source))
@@ -915,9 +927,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         const resumeMaxFileStore = journaledMaxFileStore(launch.maxFileStore);
         const requestedMaxFileStore = parseMaxFileStore(values["max-file-store"]);
         if (requestedMaxFileStore !== undefined && requestedMaxFileStore !== resumeMaxFileStore)
-          throw new Error(`--max-file-store ${requestedMaxFileStore} is not the preserved launch cap (${resumeMaxFileStore ?? "unset"}); ordinary up resumes exactly the preserved cap - omit --max-file-store`);
+          throw preservedOnly("--max-file-store", requestedMaxFileStore, "file store cap", resumeMaxFileStore === undefined ? "no cap" : String(resumeMaxFileStore));
         if (values.runtime && runtimes[0] && values.runtime !== runtimes[0])
-          throw new Error(`--runtime ${values.runtime} contradicts the preserved agent runtime ${runtimes[0]}; omit it to resume the same principals`);
+          throw preservedOnly("--runtime", values.runtime, "agent runtime", runtimes[0]);
         const resumeRuntime = values.runtime ?? runtimes[0] ?? "pty";
         // Admit every seat checkpoint the cut wrote and take custody, BEFORE the resume attempt is
         // journalled and long before a manager starts. A refusal here costs nothing because
