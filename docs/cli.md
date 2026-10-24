@@ -223,7 +223,10 @@ still work there.
 Output that cannot be written, for example to a full disk, is reported in one line on stderr, and
 the command stops with exit 3, or with the non-zero status it had already set. It may have stopped
 partway, so check what it did before you retry. A reader that closes the output early, as `| head`
-does, ends the command quietly with the status it had already set, or 0.
+does, ends the command quietly with the status it had already set, or 0. A command that follows a
+stream, such as `watch`, `history --follow`, `console` or `channel members --follow`, notices the
+closed reader at its next line, so on a quiet mesh it runs until a message arrives or it is
+interrupted. Ctrl-C ends it at once: `watch` exits 130, and the other three exit 0.
 
 ## Commands
 
@@ -5760,7 +5763,8 @@ observer stream's row bound. A longer message is cut there, and its line ends wi
 shown and the read that shows it whole: `cotal history <channel>`, or `cotal history --dms` for a
 direct message. Authenticated observer views keep direct messages out of
 the channel tap. Opening this view never launches, stops or attaches an agent. If the reader
-of the stream closes it, as `| head` does, the observer stops the same way.
+of the stream closes it, as `| head` does, the observer stops at its next line, so on a quiet mesh it
+runs until a message arrives or Ctrl-C ends it with exit 130.
 
 ### Named agent status
 
