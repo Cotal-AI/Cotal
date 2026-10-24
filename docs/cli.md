@@ -611,7 +611,8 @@ native stack in this terminal. A contradictory mode pair refuses before setup or
 unqualified `up` from a folder that inherits the machine's home `.cotal` refuses before seeding:
 prepare that folder with `space create <space> --root .`, then run `up --root .`. In the home folder
 itself, whose `.cotal` holds this machine's own records, `up` refuses `CONFLICT` and names a project
-folder, as `space create` does there. A home that already holds a stack an earlier release started
+folder, as `space create` does there. In a folder that is, or is in, a control directory, `up`
+refuses `CONFLICT` before anything is started or written and names the project folder to run it from. A home that already holds a stack an earlier release started
 there keeps starting it in place, and `up --root <dir>` from the home starts that prepared project.
 When `--root` names another prepared project, run bare
 `cotal down` from that project folder: bare down
@@ -2437,7 +2438,11 @@ prepared the same way, before it starts anything, and names `cotal space forget`
 `space add` and `meshes add` refuse a longer name with `USAGE_INVALID`, exit 1, and write no
 record, because a space added from elsewhere is carried by the same files.
 It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
-space's root, and the home folder, whose `.cotal` holds this machine's own records. For a folder
+space's root, and the home folder, whose `.cotal` holds this machine's own records. It refuses a
+folder that is, or is in, a control directory, which is a project's `.cotal` or the Cotal home,
+judged by the path given and by the path its links lead to, with `CONFLICT` and nothing written. The
+next step names the project folder that `.cotal` belongs to. A project folder inside another project,
+outside its `.cotal`, is a project of its own. For a folder
 another space uses, the next step names creating it in another folder with `--root <dir>`, and
 starting, selecting or forgetting the space that uses the folder. A folder this
 account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so
