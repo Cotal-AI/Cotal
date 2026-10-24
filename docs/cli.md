@@ -1938,7 +1938,10 @@ broker address they will bind before they move or start anything. While another 
 there they refuse `CONFLICT` (exit 2), name the address and leave the cut unchanged. It claims the cut, reflink/copies the stopped source to a
 private attempt clone, and opens only that clone on a random loopback bootstrap broker with an
 independent parent/deadline watchdog. A bootstrap broker that does not accept connections within
-15 seconds fails the command. Creation returns one JSON/plain receipt after cleanup.
+15 seconds fails the command. Each maintenance-login reload waits for the broker's acknowledgement
+for up to 15 seconds, bounded by the operation deadline. A rejection, broker exit or missing
+acknowledgement fails the command before the next phase receives its login.
+Creation returns one JSON/plain receipt after cleanup.
 A published artifact plus incomplete cleanup is partial and retains the artifact and original
 attempt; it is not a reason to repeat creation blindly. It validates the canonical stream and pull-consumer inventory,
 writes native snapshots with consumers excluded, and stores conservative contiguous ACK-floor
