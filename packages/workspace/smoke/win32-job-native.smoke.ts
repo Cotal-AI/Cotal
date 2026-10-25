@@ -102,10 +102,12 @@ try {
   check("J12 a running program has no exit code", (await one.call("rootExit")).value === null);
   const tokens = new Map([seen.detached, seen.attached].map((pid) => [pid, nativeWin32CreationToken(pid)!]));
   await one.call("terminate", 7);
-  let emptied = false;
-  for (const deadline = Date.now() + 10_000; Date.now() < deadline && !emptied; await sleep(100)) emptied = ((await one.call("jobProcesses")).value as number[]).length === 0;
+  // The holder keeps the program's handle, so an exited program may stay listed under its own PID.
+  let left: number[] = [];
+  for (const deadline = Date.now() + 10_000; Date.now() < deadline; await sleep(100)) if ((left = (await one.call("jobProcesses")).value as number[]).every((pid) => pid === launched.pid)) break;
+  console.log(JSON.stringify({ exitedProgramListed: left.includes(launched.pid) }));
   check("J13 terminate empties the job and the program exits with its code",
-    emptied && (await one.call("rootExit")).value === 7 && [...tokens].every(([pid, token]) => !alive(pid, token)), { emptied });
+    left.every((pid) => pid === launched.pid) && (await one.call("rootExit")).value === 7 && [...tokens].every(([pid, token]) => !alive(pid, token)), { left });
 
   const two = helper();
   const secondLog = join(root, "two.log");
@@ -117,6 +119,7 @@ try {
   for (const deadline = Date.now() + 10_000; Date.now() < deadline && (exit = await two.call("rootExit")).value === null; await sleep(100));
   const remaining = (await two.call("jobProcesses")).value as number[];
   check("J14 the program's own exit leaves its children in the job", exit.value === 3 && remaining.includes(secondSeen.detached) && remaining.includes(secondSeen.attached), { exit, remaining });
+  console.log(JSON.stringify({ exitedProgramListed: remaining.includes(second.pid) }));
   process.kill(two.pid);
   check("J15 the holder's death ends every member, so no member holds the job",
     await until(() => [...secondTokens].every(([pid, token]) => !alive(pid, token)) && !alive(second.pid, second.token)), [...secondTokens]);
