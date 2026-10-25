@@ -356,7 +356,7 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Manager | [`feedback-intake`](#server-daemons) | Deprecated and hidden from `cotal help`: run a feedback intake server; use the `feedback-intake` service preset |
 | Manager | [`deliver`](#deliver) | Deprecated and hidden from `cotal help`: run the delivery daemon; use the `delivery` service preset |
 | Manager | [`run`](#run) | Operate durable workflow runs: start, resume, list, inspect, answer a checkpoint, check an edited program with migrate |
-| Manager | [`agent-bearer`](#plumbing) | Plumbing that prints a fresh bearer for a spawned user-auth agent; you never run it directly |
+| Manager | [`agent-bearer`](#plumbing) | Hidden from `cotal help`: plumbing that prints a fresh bearer for a spawned user-auth agent; you never run it directly |
 | Manager | [`auth-service`](#server-daemons) | Deprecated and hidden from `cotal help`: run a user-auth space's auth service by hand; use the `auth-service` service preset |
 | Manager | [`daemon`](#daemon) | Linux: serve the local machine daemon's control endpoint, read its status, sign it in, check and request its own registration with a space |
 | Services | [`service`](#service) | Save, start, stop and inspect owned local services, from a preset or a definition file |
@@ -7152,7 +7152,7 @@ greater than 9007199254740991, and a refusal names the value it rejected.
 for the current command line; you run it directly only to debug a completion, with
 `COTAL_COMPLETE_DEBUG=1`. `cotal agent-bearer` is machine-facing
 plumbing on user-auth meshes: spawned agents exec it to print a fresh short-lived bearer from their
-spawn-time secret; you never run it directly either. Its local arm uses `--dir` to discover the
+spawn-time secret; you never run it directly either, so `cotal help` leaves it out. Its local arm uses `--dir` to discover the
 capability-gated loopback service. A remotely enrolled, already-granted agent instead receives
 `--exchange-url <https://base>` in its launch argv: that arm sends `{owner, actor, actorToken}` to the
 pinned public exchange with no local capability, follows no redirects, and refuses every non-HTTPS

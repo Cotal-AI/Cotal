@@ -650,6 +650,8 @@ const authCommands: Command[] = [
   {
     kind: "command",
     name: "agent-bearer",
+    // Spawned agents exec it; people never run it, so help leaves it out.
+    hidden: true,
     group: "Manager",
     summary: "print one fresh agent bearer for a spawned user-mode agent (machine-facing; exec'd by agent endpoints)",
     usage: "cotal agent-bearer [--dir <state-dir> | --exchange-url <https://base>] --space <s> --owner <u_…> --actor <a> --token-file <path>",

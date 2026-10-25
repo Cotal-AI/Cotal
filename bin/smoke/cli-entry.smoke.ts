@@ -165,6 +165,10 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("help lists every command group under the entry screen, and no hidden command",
     everyday !== -1 && setup > everyday && /^\s+send\s/m.test(help.stdout) && /^\s+endpoint, ep\s/m.test(help.stdout)
       && !/^\s+start\b/m.test(help.stdout) && !help.stdout.includes("--all"), shown(help));
+  // A command its docs call plumbing, which spawned agents exec, is left out and still answers.
+  const bearerHelp = cotal(["help", "agent-bearer"]);
+  check("help leaves out agent-bearer, and its own help still prints", !/^\s+agent-bearer\b/m.test(help.stdout)
+    && bearerHelp.status === 0 && bearerHelp.stdout.includes("cotal agent-bearer"), shown(bearerHelp));
   // `--all`, which scripts written before help listed every command still pass, changes nothing and
   // is offered nowhere.
   const all = cotal(["help", "--all"]);
