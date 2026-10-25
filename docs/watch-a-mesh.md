@@ -48,7 +48,7 @@ tiles strip, and toggleable lenses:
 | `d` | the DM lens: per-peer roll-up and threads (god-view only; shows "DMs hidden" under chat-only creds) |
 | `t`, then `v` / `1`–`3` | the topology lens: who-talks-to-whom, as a swimlane, a heat matrix, or a ring map, with the broker's own membership overlaid when the delivery daemon serves it (a header pill reads live, stale, traffic-only, or unreadable) |
 | `/` | search / filter the feed |
-| `:` | the command palette |
+| `Ctrl-P` | the modal command palette |
 | `D` | kill the selected agent (control-gated, below) |
 | arrows / `h` `l` | move focus; select a row for its detail card |
 | `?` · `b` · `q` | help · back to overview · quit |
@@ -61,7 +61,7 @@ on an open mesh, or rides your bearer on a user-auth mesh), calls the manager ov
 rails, and keeps nothing. That gate is `canControl`, decided by whether that path can produce a
 caller at all (a raw `--creds` file cannot), and it is independent of `canWrite`, which gates
 chat. `D` kills the selected agent behind a confirm (`y` graceful stop, `f` force-kill), and the
-`:` palette adds `spawn <persona> [name]` (waits for the join, like `cotal spawn --detach`),
+`Ctrl-P` palette adds **Spawn agent** (waits for the join, like `cotal spawn --detach`),
 `status <agent>`, `ps`, `purge` (type the space name to confirm, like the space delete), and
 `delchan <channel>` (type the channel name to confirm): the web dashboard's channel delete, run
 from the console. It is core's `clearChannel` (a filtered history purge plus the registry entry)
@@ -74,6 +74,23 @@ status line. On a space with several managers, `D`, `:status`, and `a` are pinne
 --detach` and `cotal purge` do without `--on`. A manager that does not answer keeps its last known
 rows and is named as silent. A manager that answers with an error is named with that error and its
 old rows are withheld rather than shown as current.
+
+Choose **Spawn agent** in the palette to open the launch form. Searching for `spawn` or
+`new agent` finds the same action. Set an application, persona,
+model, name and optional first request, then choose **Launch agent**. Empty application,
+model and name fields keep the CLI's native defaults. Events are off by default in the
+console and can be enabled in the form. A space that requires events refuses an explicit
+opt-out. The form runs `spawn --detach` and reports its joined receipt or failure. An
+unconfirmed outcome must be inspected before another launch. The agent runs in the background;
+use the roster's attach action where supported. `Esc` returns from the form to the palette.
+The modal palette replaces the old `:` shortcut.
+Complete typed commands such as `spawn <persona> [name]` still work.
+
+Selecting `dm` or `call` lists agents and endpoints. `attach` and `status` list seats from
+the manager, including seats absent from presence. `msg` and `delchan` list channels;
+`ask` lists advertised roles. Use the arrows and Enter to choose. Messaging commands then
+wait for text before sending. You can also type a complete command, or use Tab to complete
+an `@agent` or `#channel` token. Empty lists and manager read failures are shown in the palette.
 
 `a` on a roster agent (or `:attach <agent>`) suspends the console and hands the terminal to the
 seat: it is `cotal attach` run in place, the same one-use holder-bound mesh session, the same
