@@ -37,6 +37,9 @@
  *      one refuses CONFLICT naming its expiry and stays as it was; --replace with --out is refused
  *  11. an agent mint lists its grants; --identity keeps them unless a flag replaces one; doctor auth
  *      lists each --out file with its state, and an expired one's repair re-mints it in place
+ *  12. a label whose persona file cannot be read as a persona, even with every grant flag, or sets
+ *      a role that is not one word → refused (exit 1) naming the file and the persona command that
+ *      says or fixes it, printing none of its values, nothing minted; a role flag mints past that role
  *
  * Every cell dispatches real argv through `runCli` (the binary's entry: spec parsing, then the
  * registered runner), never a hand-built ParsedArgs. It runs in a child, because the kernel writes a
@@ -695,6 +698,26 @@ try {
     const nothing = envelope(exportedOnly.out).warnings?.find((warning) => warning.code === "NOTHING_REPLACED")?.message ?? "";
     check("--replace on a label with only --out files names doctor auth without prescribing a key re-sign",
       exportedOnly.code === 0 && nothing.includes(`exported files are unchanged; inspect them with \`cotal doctor auth --space ${SPACE}\``) && !nothing.includes("--identity") && !nothing.includes("signs its key again"), exportedOnly.out);
+  }
+
+  // ── 12. a persona file the label cannot use is named, and its values stay unprinted ──────────
+  {
+    const agents = join(root, ".cotal", "agents");
+    mkdirSync(agents, { recursive: true });
+    writeFileSync(join(agents, "broken.md"), "---\nname: broken\nsubscribe: [geheim]\nallowSubscribe: [general]\n---\nReads outside its allow list.\n");
+    writeFileSync(join(agents, "spaced.md"), "---\nname: spaced\nrole: bau meister\n---\nA role with a space.\n");
+    const standing = (label: string) => agentSecretFilePaths(root, SPACE, label).creds;
+    const unreadable = "/.cotal/agents/broken.md for this label could not be read as a persona, so no credential was minted; file values and secret material were not printed";
+    const broken = await runMint(["broken"]);
+    check("a persona file that cannot be read as a persona refuses the mint, naming the file and persona show",
+      broken.code === 1 && broken.out.includes(unreadable) && broken.out.includes("see what is wrong with it with cotal persona show broken, then fix it and mint again") && !broken.out.includes("geheim") && !existsSync(standing("broken")), broken.out);
+    const flagged = await runMint(["broken", "--allow-subscribe", "general", "--allow-publish", "general", "--role", "ok"]);
+    check("  every grant flag still reads the file, so the same refusal comes", flagged.code === 1 && flagged.out.includes(unreadable) && !existsSync(standing("broken")), flagged.out);
+    const spaced = await runMint(["spaced"]);
+    check("a persona role that is not one word refuses, naming the file and persona edit without the role",
+      spaced.code === 1 && spaced.out.includes("/.cotal/agents/spaced.md for this label sets a role that is not one word of letters, digits, _ or -") && spaced.out.includes("give it such a role with cotal persona edit spaced, then mint again") && !spaced.out.includes("bau meister") && !existsSync(standing("spaced")), spaced.out);
+    const roled = await runMint(["spaced", "--role", "ok"]);
+    check("  a --role flag replaces that role and mints", roled.code === 0 && existsSync(standing("spaced")), roled.out);
   }
 
   console.log(`\nMINT-PROVISION SMOKE OK ✅  (${pass} passed)`);
