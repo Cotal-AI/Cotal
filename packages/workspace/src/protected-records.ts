@@ -146,7 +146,7 @@ export function readLocalRecordSource(path: string, limit = LOCAL_INPUT_LIMIT, p
     // Permission is named with the folder that withholds it, which is often not the file itself.
     if (code === "EACCES" || code === "EPERM") {
       const folder = unsearchableFolder(path);
-      throw new CommandFailure("refused", "PERMISSION_DENIED", folder ? `${folder} cannot be read by this account (${code}), so ${path} was not read` : `${path} cannot be read by this account (${code})`, { target: { path, ...(folder ? { folder } : {}) }, remedy: folder ? `make it readable by you, for example with chmod u+rx ${folder}` : `make it readable by you, for example with chmod u+r ${path}` });
+      throw new CommandFailure("refused", "PERMISSION_DENIED", folder ? `${folder} cannot be read by this account (${code}), so ${path} was not read` : `${path} cannot be read by this account (${code})`, { target: { path, ...(folder ? { folder } : {}) }, remedy: folder ? `make it readable by you, for example with chmod u+rx ${shellPath(folder)}` : `make it readable by you, for example with chmod u+r ${shellPath(path)}` });
     }
     throw new CommandFailure("refused", "PERMISSION_DENIED", posix ? `the local record source ${path} could not be opened without following links` : `the local record source ${path} could not be opened`, { target: { path } });
   }
