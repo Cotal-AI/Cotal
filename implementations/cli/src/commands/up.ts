@@ -17,6 +17,7 @@ import {
   lstatSync,
   realpathSync,
   readdirSync,
+  rmdirSync,
   unlinkSync,
   type Stats,
 } from "node:fs";
@@ -191,7 +192,7 @@ import { resolveSpace } from "../lib/status.js";
 import { c, stderrLine } from "../ui.js";
 import { admitAndRestoreSeatCheckpoints, type StaleCheckpointConsent } from "../lib/seat-resume.js";
 import { natsServerLabel, resolveNatsServer } from "../lib/nats-bin.js";
-import { cotalPath, cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
+import { cotalPath, cotalRoot, homeHoldsStack, linkedCotalRefusal } from "../lib/paths.js";
 import { detachedNext, renderDetachedSummary } from "../lib/up-report.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { upSystemdSupervisionWarning } from "../lib/systemd-supervision.js";
@@ -337,7 +338,7 @@ export const upFlags: FlagSpec[] = [
   { name: "server", type: "string", value: "<url>", description: "listen URL; a stack's first up records it and later ups keep it" },
   { name: "host", type: "string", value: "<host>", description: "bind host override (an IP/hostname, not a URL; the URL is --server)" },
   { name: "space", type: "string", value: "<s>", description: "space name (default: the folder's)" },
-  { name: "root", type: "string", value: "<dir>", description: "use this existing prepared local root instead of the current folder" },
+  { name: "root", type: "string", value: "<dir>", description: "start the project in this folder instead of the current one; it must already have its own .cotal" },
   { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
   { name: "max-file-store", type: "string", value: "<bytes>", description: "JetStream file storage cap in bytes (default: nats-server's dynamic cap). Fixed at broker start and recorded for the next `up`; a legacy root also keeps it across `down --preserve-state`" },
   { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json)" },
@@ -418,7 +419,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (spaceTooLong) throw new CommandFailure("refused", "USAGE_INVALID", `${spaceTooLong}; nothing was started or written`, { remedy: `choose a space name of at most ${SPACE_NAME_MAX} characters` });
   // A prepared or controller-owned root has no route that serves TLS, so any TLS input refuses here,
   // once and naming the route that does, before the checks below send it from one TLS form to another.
-  const tlsRoot = typeof args.values.root === "string" ? resolve(args.values.root) : cotalRoot();
+  const tlsRoot = typeof args.values.root === "string" ? resolve(args.values.root) : freshFolderRoot(args.values) ?? cotalRoot();
   if (!args.values.file && requestsTls(args.values) && !readMaintenanceJournal(tlsRoot)) controllerStackApplies(tlsRoot, (args.values.space as string | undefined) ?? folderSpace(), args.values);
   // A --tls-cert broker serves TLS only, and its address says so, so every client dials tls:// and
   // checks the certificate against the address it names.
@@ -430,7 +431,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   // its own checks for maintenance re-entries, which do not pass through this validation.
   parsePositiveIntegerFlag("--max-sessions", args.values["max-sessions"] as string | undefined);
   parseMaxFileStore(args.values["max-file-store"] as string | undefined);
-  if (typeof args.values["store-dir"] === "string") assertStoreDirArgument(args.values["store-dir"], typeof args.values.root === "string" ? resolve(args.values.root) : cotalRoot());
+  if (typeof args.values["store-dir"] === "string") assertStoreDirArgument(args.values["store-dir"], typeof args.values.root === "string" ? resolve(args.values.root) : freshFolderRoot(args.values) ?? cotalRoot());
   const restoreOnly = args.values["restore-only"];
   if (restoreOnly !== undefined && restoreOnly !== "registry") throw new CommandFailure("refused", "USAGE_INVALID", `--restore-only takes registry (got ${JSON.stringify(restoreOnly)})`);
   if (!args.values.restore && (restoreOnly !== undefined || args.values["accept-missing-source"] === true)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore-only and --accept-missing-source require --restore <dir>");
@@ -439,15 +440,18 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (args.values.root !== undefined) preparedUpRoot(String(args.values.root));
   else if (!(args.values.file && args.values["dry-run"] === true)) {
     const inheritedRoot = inheritedMachineHomeRoot();
-    if (inheritedRoot)
-      throw new CommandFailure("refused", "CONFLICT", "this folder inherits the machine's home .cotal; up did not start a stack in that home root", { target: { root: process.cwd(), inheritedRoot }, remedy: "prepare this folder with cotal space create <space> --root ., then use cotal up --root ." });
-    const home = machineHomeRoot();
-    if (home && !homeHoldsStack(home))
-      throw new CommandFailure("refused", "CONFLICT", `${home} is your home folder, whose .cotal holds this machine's own records, so up started no stack there`, { target: { root: home }, remedy: "prepare a project folder with cotal space create <space> --root <dir>, then run cotal up there, or pass --root <dir> from here" });
+    if (inheritedRoot) {
+      if (!freshFolderRoot(args.values))
+        throw new CommandFailure("refused", "CONFLICT", "this folder inherits the machine's home .cotal; up did not start a stack in that home root", { target: { root: process.cwd(), inheritedRoot }, remedy: "prepare this folder with cotal space create <space> --root ., then run cotal up again from this folder" });
+    } else {
+      const home = machineHomeRoot();
+      if (home && !homeHoldsStack(home))
+        throw new CommandFailure("refused", "CONFLICT", `${home} is your home folder, whose .cotal holds this machine's own records, so up started no stack there`, { target: { root: home }, remedy: "prepare a project folder with cotal space create <space> --root <dir>, then run cotal up there, or pass --root <dir> from here" });
+    }
   }
   if (args.values.restore !== undefined) refuseControllerCut(args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot(), "up --restore");
   if (!(args.values.file && args.values["dry-run"] === true)) {
-    const root = args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot();
+    const root = args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : freshFolderRoot(args.values) ?? cotalRoot();
     // A path with a control character or a bidirectional formatting mark is refused before any write.
     const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
     if (pathProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${pathProblem}; nothing was started or written`, { target: { root }, remedy: "rename the folder without those characters, then run cotal up there" });
@@ -541,6 +545,16 @@ function upHostProblem(host: string | undefined, server: string | undefined): { 
   return undefined;
 }
 
+/** The invoking folder, when a bare `up` makes it its own project root: the only `.cotal` above it is
+ *  the machine home's, and that home holds no stack. The folder has no records of its own, so `up`
+ *  starts it as it starts a folder with no `.cotal` above it. A manifest or a restore still needs a
+ *  prepared folder. */
+function freshFolderRoot(values: ParsedArgs["values"]): string | undefined {
+  if (values.root !== undefined || values.file !== undefined || values.restore !== undefined) return undefined;
+  const home = inheritedMachineHomeRoot();
+  return home !== undefined && !homeHoldsStack(home) ? resolve(process.cwd()) : undefined;
+}
+
 function inheritedMachineHomeRoot(): string | undefined {
   const root = machineHomeRoot();
   return root !== undefined && canonicalRoot(process.cwd()) !== canonicalRoot(root) ? root : undefined;
@@ -550,12 +564,6 @@ function inheritedMachineHomeRoot(): string | undefined {
 function machineHomeRoot(): string | undefined {
   const root = cotalRoot();
   return canonicalRoot(root) === canonicalRoot(homedir()) || canonicalRoot(join(root, ".cotal")) === canonicalRoot(homeCotalDir()) ? root : undefined;
-}
-
-/** Whether the machine home already holds a stack an earlier release started there: a registration,
- *  a maintenance attempt, or a space account. Such a stack still starts, resumes and stops in place. */
-function homeHoldsStack(root: string): boolean {
-  return localMeshesForRoot(root).length > 0 || readMaintenanceJournal(root) !== undefined || soleSpaceOf(authDir(root)) !== undefined;
 }
 
 /** An explicit root is an existing local workspace, not a hint to find another ancestor or
@@ -750,6 +758,13 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
     // The broker reads an explicit channels file only once it is being prepared, so a file it would
     // refuse is named here, before the stack journal or anything else is written.
     if (typeof args.values.channels === "string") readChannelsFile(resolve(args.values.channels));
+    // A fresh folder under the machine home gets its own `.cotal` before anything resolves the root, so
+    // every later step uses this folder. A run that stops before writing there removes it again.
+    const fresh = args.values.root === undefined ? freshFolderRoot(args.values) : undefined;
+    if (fresh) {
+      mkdirSync(join(fresh, ".cotal"), { mode: 0o700 });
+      console.error(c.dim(`made ${join(fresh, ".cotal")} for this folder's records; the machine's home .cotal was not used`));
+    }
     const root = args.values.root === undefined ? undefined : preparedUpRoot(String(args.values.root));
     const previousCwd = process.cwd();
     // Path flags still mean paths relative to the invoking directory, not the selected root.
@@ -772,9 +787,23 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
       }
     }
     try { return await runUp(invocation, inheritedLock, () => { adopted = true; }, freshTeamBoot, restoreSink); }
+    catch (error) {
+      if (fresh) removeEmptyRecords(join(fresh, ".cotal"));
+      throw error;
+    }
     finally { if (root) process.chdir(previousCwd); }
   } finally {
     if (inheritedLock && !adopted) releaseMaintenanceLock(inheritedLock);
+  }
+}
+
+/** Remove the `.cotal` a failed `up` made for a fresh folder when the run wrote nothing in it. One
+ *  that holds anything stays, as the run's records. */
+function removeEmptyRecords(path: string): void {
+  try { rmdirSync(path); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOTEMPTY" && code !== "EEXIST") console.error(c.yellow(`! ${path} was left in place (${code ?? "an error"})`));
   }
 }
 

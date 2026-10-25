@@ -18,7 +18,9 @@
  * local broker can serve, a host name included, is refused the same way in an unprepared and a
  * prepared folder, as the short classified report with an example on the port passed. In the home
  * folder, whose `.cotal` holds the machine's own records, `up` refuses CONFLICT and writes nothing
- * there, and `down` and `down --dry-run` there find no stack. In a prepared folder whose broker store
+ * there, and `down` and `down --dry-run` there find no stack. A fresh folder under the home makes its
+ * own `.cotal` on a bare `up`, and removes it when a later check refuses, while `up -f` there, or `up`
+ * under a home that holds a stack, refuses CONFLICT and writes nothing. In a prepared folder whose broker store
  * this account cannot write, `up` refuses PERMISSION_DENIED naming the store and the `chmod` that
  * fixes it, where the broker used to exit naming the cause only in its log, and status names the same
  * step in place of `cotal up`. A `server.conf` that is a symlink, and a trust record this account
@@ -202,6 +204,31 @@ const homeDown = run(["down", "--yes"], home);
 check("down --yes in a home with no stack is TARGET_NOT_FOUND, nothing to stop, and names `cotal up` in a project", homeDown.status === 2 && /there is no stack at this folder's root, and this machine has no stack started or registered, so there is nothing to stop/.test(homeDown.stderr) && homeDown.stderr.includes("run `cotal up` in a project"), shown(homeDown));
 const homePreview = run(["down", "--dry-run", "--json"], home);
 check("down --dry-run in a home with no stack is TARGET_NOT_FOUND, nothing to preview, and names `cotal up` in a project", homePreview.status === 2 && homePreview.envelope?.error?.code === "TARGET_NOT_FOUND" && /no stack started or registered, so there is nothing to preview/.test(homePreview.envelope.error.message ?? "") && homePreview.envelope.error.remedy === "run `cotal up` in a project", shown(homePreview));
+
+// A fresh folder under the home, whose only .cotal above it is the home's, becomes its own project
+// root on a bare up. A run refused before it writes there leaves the folder as it was. A manifest
+// start there, or any start under a home that holds a stack, still needs a prepared folder.
+if (process.platform !== "win32") {
+  mkdirSync(join(home, ".cotal"), { recursive: true, mode: 0o700 });
+  const nested = join(home, "Desktop", "fresh");
+  mkdirSync(nested, { recursive: true, mode: 0o755 });
+  const nestedRecords = join(realpathSync(nested), ".cotal");
+  const homeWrites = () => ["agents", "nats", "auth"].filter((name) => existsSync(join(home, ".cotal", name)));
+  const runtimeUp = run(["up", "--runtime", "nosuch", "--server", "nats://127.0.0.1:1"], nested);
+  check("a bare up in a fresh folder under the home makes the folder's own .cotal and reaches its own checks", runtimeUp.status === 2 && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(runtimeUp.stderr) && runtimeUp.stderr.includes(`made ${nestedRecords} for this folder's records; the machine's home .cotal was not used`), shown(runtimeUp));
+  check("that refused up removed the .cotal it made and wrote nothing in the home's", !existsSync(nestedRecords) && homeWrites().length === 0, homeWrites());
+  const inherited = "this folder inherits the machine's home .cotal; up did not start a stack in that home root";
+  const prepare = "prepare this folder with cotal space create <space> --root ., then run cotal up again from this folder";
+  const manifestUp = run(["up", "-f", "cotal.yaml", "--json"], nested);
+  check("up -f there still refuses CONFLICT, exit 2, naming space create and up from the folder, and writes nothing", manifestUp.status === 2 && manifestUp.envelope?.error?.code === "CONFLICT" && manifestUp.envelope.error.message === inherited && manifestUp.envelope.error.remedy === prepare && !existsSync(nestedRecords), shown(manifestUp));
+  const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+  process.env.COTAL_HOME = join(home, ".cotal");
+  recordMesh({ space: "homestack", server: "nats://127.0.0.1:1", root: home, mode: "auth", ts: new Date().toISOString() });
+  const holdsUp = run(["up", "--server", "nats://127.0.0.1:1", "--json"], nested);
+  removeMesh("homestack");
+  delete process.env.COTAL_HOME;
+  check("under a home that holds a stack, a bare up there refuses the same way and writes nothing", holdsUp.status === 2 && holdsUp.envelope?.error?.code === "CONFLICT" && holdsUp.envelope.error.message === inherited && holdsUp.envelope.error.remedy === prepare && !existsSync(nestedRecords), shown(holdsUp));
+}
 
 // A loopback listener that accepts and never answers NATS holds every broker address below.
 const holder = createServer((socket) => socket.on("error", () => {}));
