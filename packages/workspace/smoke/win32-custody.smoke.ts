@@ -89,6 +89,8 @@ try {
   const unicode = await raw(() => [JSON.stringify({ request, proof: "\u00e9".repeat(44) }) + "\n"]);
   check("C15 a proof of non-ASCII characters is dropped and the custodian keeps serving",
     !unicode.includes("result") && JSON.stringify(await custodyRequest(path, key, instanceId, { op: "status" })) === JSON.stringify(status) && served.length === 3);
+  const padded = await raw((nonce, client) => [JSON.stringify({ request, proof: mac(key, instanceId, "request", client, nonce, request), pad: "x".repeat(70 * 1024) }) + "\n"]);
+  check("C16 an authenticated frame over the limit is dropped even with its newline", !padded.includes("result") && served.length === 3);
   const started = Date.now();
   const idle = await new Promise<number>((resolve) => { const socket = connect(path); socket.on("close", () => resolve(Date.now() - started)); socket.on("error", () => {}); });
   check("C14 a connection that never authenticates is closed at the deadline", idle >= 4_500 && idle < 9_000, idle);
