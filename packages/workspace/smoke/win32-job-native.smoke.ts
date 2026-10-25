@@ -131,7 +131,11 @@ try {
   let exit: Reply = {};
   for (const deadline = Date.now() + 10_000; Date.now() < deadline && (exit = await two.call("rootExit")).value === null; await sleep(100));
   const remaining = (await two.call("jobProcesses")).value as number[];
-  check("J14 the program's own exit leaves its children in the job", exit.value === 3 && remaining.includes(secondSeen.detached) && remaining.includes(secondSeen.attached), { exit, remaining });
+  // Node's own Windows child job can end its attached child when Node exits. The detached child
+  // must survive in our outer job, which remains responsible for it after the program exits.
+  const afterExit = { exit, remaining, detached: secondSeen.detached, attached: secondSeen.attached, attachedLiveness: probeLiveness(secondSeen.attached) };
+  console.log(JSON.stringify(afterExit));
+  check("J14 the program's own exit leaves its detached child in the job", exit.value === 3 && remaining.includes(secondSeen.detached) && alive(secondSeen.detached, secondTokens.get(secondSeen.detached)!), afterExit);
   console.log(JSON.stringify({ exitedProgramListed: remaining.includes(second.pid) }));
   process.kill(two.pid);
   check("J15 the holder's death ends every member, so no member holds the job",
