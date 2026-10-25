@@ -2911,7 +2911,8 @@ endpoint response or OS unit-state check. Legacy PID-file rows are labeled separ
 whose controller stack serves the selected space, its members are the `stack-` rows here, the
 legacy rows and the stored-state hint are omitted, and when the stack does not answer or a member's
 process is gone, Next offers `cotal up --root <root>` first, with `<root>` quoted when a shell would
-split it. When a service of the space outside the stack runs one of this root's records, such as a
+split it. On a stack whose last `up` was `--no-manager` it adds `--no-manager`, and a manager record
+an earlier `up` left does not count as a stopped member. When a service of the space outside the stack runs one of this root's records, such as a
 `delivery` preset started after `cotal down stack-delivery`, `up` refuses until it stops, so Next
 first names that service's `svc stop` with its instance, as the refusal does, and then
 `up --root`. In open or static-auth mode, an unreachable `--server` address other than the recorded

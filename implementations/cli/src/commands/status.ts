@@ -1760,8 +1760,9 @@ function nextActions(r: StatusResult): Section {
   // A stopped broker is resumed, not restarted. A local controller stack that does not answer,
   // or one with a member whose process is gone, otherwise restarts its stopped members from its
   // own records. One whose last operation a member keeps unsettled is named the way out that
-  // `up` and `down` name instead.
-  const memberGone = r.services?.instances?.some((row) => row.definition.startsWith("stack-") && row.observedProcess === "gone") === true;
+  // `up` and `down` name instead. A stack started with --no-manager leaves its manager out by choice,
+  // so a manager record an earlier up left is not a stopped member, and the restart keeps the flag.
+  const memberGone = r.services?.instances?.some((row) => row.definition.startsWith("stack-") && row.observedProcess === "gone" && !(r.folder.noManager && row.definition === STACK_DEFINITION.manager)) === true;
   // A connection to a `--server` address other than the recorded one does not say whether the stack
   // answers; the hint `readSelected` adds names that address. A user-auth space is probed on its own path.
   const dialed = r.selected.resolved ? r.selected : undefined;
@@ -1800,7 +1801,7 @@ function nextActions(r: StatusResult): Section {
     // records, so each is stopped first, with the stop `up` names.
     const held = r.folder.heldServices ?? [], space = r.selected.space;
     items.unshift(...held.map((row) => ({ command: `${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${space} --yes`, description: `Stop the ${row.definition} service, which runs this root's ${row.record} (pid ${row.pid}) outside the stack` })),
-      { command: `${cmd} up --root ${shellWord(r.selected.root)}`, description: held.length ? "Then restart this stack's stopped members from its recorded inputs" : "Restart this stack's stopped members from its recorded inputs" });
+      { command: `${cmd} up --root ${shellWord(r.selected.root)}${r.folder.noManager ? " --no-manager" : ""}`, description: held.length ? "Then restart this stack's stopped members from its recorded inputs" : "Restart this stack's stopped members from its recorded inputs" });
   }
   // A stack whose folder was deleted stops only from this machine's records.
   if (r.selected.resolved && r.selected.rootGone) items.unshift({ command: `${cmd} down --space ${r.selected.space} --yes`, description: "Stop the stack whose folder is gone and free its name" });

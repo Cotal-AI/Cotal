@@ -122,6 +122,9 @@
  *     next `up` refuses `LIFECYCLE_BLOCKED` naming its pid and `cotal down --yes`, and starts
  *     nothing; following it, `down --yes` then `up` start the stack. A `down` interrupted while it
  *     waits on a frozen manager exits 130 naming the members still running and `cotal down --yes`.
+ *     An `up --no-manager` then leaves the manager record the full `up` wrote gone: `status` offers
+ *     no restart for it, and once delivery is killed its restart Next keeps `--no-manager`, so
+ *     following it starts no manager.
  * 13b. The same interruption of an `up --no-manager`. It names `cotal down --yes`, then
  *     `cotal up --no-manager`, and the `down --yes` that settles it names `up --no-manager` as its
  *     Next. Following it starts no manager.
@@ -1431,6 +1434,22 @@ try {
     check("a down interrupted on a frozen manager exits 130 naming the members still running and cotal down --yes", held && stopping.exitCode === 130 && downErr.includes("broker, delivery, manager are still running") && downErr.includes("cotal down --yes"), { held, exitCode: stopping.exitCode, stderr: downErr.slice(-400) });
     const last = cli(root, "down", "--yes", "--json");
     check("and down --yes stops it", last.status === 0, shown(last));
+    // The manager record the full up wrote stays, gone, under an up that leaves the manager out.
+    const without = cli(root, "up", "--no-manager", "--json");
+    track(space);
+    const statusNext = () => { const run = cli(root, "status"); return { run, next: run.stdout.slice(run.stdout.indexOf("\nNext\n") + 6).split("\n")[0] ?? "" }; };
+    const running = statusNext();
+    check("status on that --no-manager stack offers no restart for the earlier manager record", without.status === 0 && running.run.status === 0 && gone(space, "stack-manager") && !running.run.stdout.includes("Restart this stack's stopped members"), { next: running.next, ...shown(running.run) });
+    const delivery = pidOf(space, "stack-delivery");
+    if (delivery !== null && alive(delivery)) process.kill(delivery, "SIGKILL");
+    await until(() => gone(space, "stack-delivery"), 10_000);
+    const crashed = statusNext();
+    check("with its delivery gone, the restart Next keeps --no-manager", crashed.next.includes(`up --root ${root} --no-manager`) && crashed.next.includes("Restart this stack's stopped members"), { next: crashed.next, ...shown(crashed.run) });
+    const restarted = cli(root, "up", "--root", root, "--no-manager", "--json");
+    track(space);
+    check("following it restarts delivery and starts no manager", restarted.status === 0 && !gone(space, "stack-delivery") && gone(space, "stack-manager"), shown(restarted));
+    const end = cli(root, "down", "--yes", "--json");
+    check("and down --yes stops that stack", end.status === 0, shown(end));
   }
 
   // 13b. The same interruption of an up given --no-manager. Bare up adds the manager, so each route
