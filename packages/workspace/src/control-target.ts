@@ -90,7 +90,7 @@ export async function resolveControlTarget(
   // connect helper takes the selected space or this folder's.
   const withSpace = flags.creds
     ? flags.space === undefined && flags.server !== undefined ? { ...flags, space: soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE } : flags
-    : { ...flags, offline: flags.offline ?? (flags.space ? [] : (await pruneStaleMeshes()).offline) };
+    : { ...flags, offline: flags.offline ?? (flags.space ? [] : (await pruneStaleMeshes(flags.server)).offline) };
   // USER MODE: manager calls exchange the current ledger authority for a concrete instance view.
   // `connectOrExit` refuses control-caller-* on a user mesh (those profiles carry freeze rows the
   // bearer does not hold), so the mode is peeked here and the user path taken explicitly.
@@ -192,7 +192,7 @@ export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?:
   if (flags.server && flags.space && !findMesh(flags.space)) return undefined;
   // Sweep first when no space is named, as the operator resolution does, so a kept dead record is
   // not a live candidate here either and the seat picks the same mesh the operator path would.
-  const offline = flags.space ? [] : (await pruneStaleMeshes()).offline;
+  const offline = flags.space ? [] : (await pruneStaleMeshes(flags.server)).offline;
   const mesh = resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server, offline });
   if (seatSpace && mesh.space !== seatSpace) return undefined;
   const at = { space: mesh.space, server: mesh.server, root: mesh.root, mode: mesh.mode, ...(mesh.policy ? { policy: mesh.policy } : {}) };

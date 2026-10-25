@@ -230,11 +230,13 @@ export async function brokerAnswers(server: string): Promise<boolean> {
   return stoppedLoopbackListener(server) === undefined && await isReachable(server, { timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS });
 }
 
-/** Sweep liveness without deleting records. Catalog entries are not probed. */
-export async function pruneStaleMeshes(): Promise<MeshSweep> {
+/** Sweep liveness without deleting records. Catalog entries are not probed. Given the `--server` a
+ *  command resolves with, only the records at that address are probed: that resolve reads no other
+ *  record's liveness, and a command given `--server` dials no other broker. */
+export async function pruneStaleMeshes(server?: string): Promise<MeshSweep> {
   const sweep: MeshSweep = { offline: [] };
   await Promise.all(
-    loadMeshes().map(async (m) => {
+    loadMeshes().filter((m) => server === undefined || m.server === server).map(async (m) => {
       // A catalog snapshot is registry preparation, not broker discovery. Catalog-owned entries are
       // never pruned from liveness and must not be probed here either: `meshes`, `use`, and a
       // space-less control command may prepare hundreds of registrations, while only the command's

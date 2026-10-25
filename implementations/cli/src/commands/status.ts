@@ -1013,11 +1013,11 @@ function deliveryDetail(live: boolean, responder: DeliveryResponderState): strin
   return deliveryRowSuffix(live, responder, `${displayCmd()} status --components`).replace(/^ · /, "") || null;
 }
 
-/** The recorded meshes. Only the selected one is checked unless `--all` asks for every one; each
- *  check dials that record's own address with its own recorded TLS requirement. A bare TCP/INFO
- *  probe would green-light a plaintext broker that has substituted for a TLS-required mesh — the
- *  FAIL1 attack — so a list that only asks "is anything listening" cannot report on the one property
- *  the record claims. */
+/** The recorded meshes. Only the selected one is checked, and only when the command dials its
+ *  recorded address, unless `--all` asks for every one; each check dials that record's own address
+ *  with its own recorded TLS requirement. A bare TCP/INFO probe would green-light a plaintext broker
+ *  that has substituted for a TLS-required mesh — the FAIL1 attack — so a list that only asks "is
+ *  anything listening" cannot report on the one property the record claims. */
 async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: Gaps): Promise<StatusResult["meshes"]> {
   // A registry file that cannot be read is named, and the readable records are still listed and
   // checked. Only an absent directory or pointer is an empty registry or no current mesh.
@@ -1045,7 +1045,9 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
   // A record this needs that cannot be read is already named above.
   let folder: string | null = null;
   try { folder = folderSpaceOverSelection(cwd, current) ?? null; } catch (e) { if (!isMeshRegistryError(e)) throw e; }
-  const chosen = selected.ok ? selected.target.space : undefined;
+  const chosen = selected.ok ? selected.target : undefined;
+  // A `--server` that names another address is the only broker dialed for the selected space.
+  const checked = (m: MeshEntry) => all || (m.space === chosen?.space && m.server === chosen.server);
   const items = await Promise.all(
     entries.map(async (m) => ({
       space: m.space,
@@ -1057,7 +1059,7 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
       eventsRequired: m.policy?.events === "required",
       modeChecked: m.unchecked !== true,
       current: m.space === current,
-      check: all || m.space === chosen ? ((await isReachable(m.server, m.tlsRequired ? { tls: true } : {})) ? "reachable" as const : "unreachable" as const) : "not-checked" as const,
+      check: checked(m) ? ((await isReachable(m.server, m.tlsRequired ? { tls: true } : {})) ? "reachable" as const : "unreachable" as const) : "not-checked" as const,
       catalog: m.origin === "catalog" ? { name: m.catalogName && m.catalogName !== m.space ? m.catalogName : null, fetchedAt: m.catalogFetchedAt ?? null, error: m.catalogError ?? null } : null,
     })),
   );
@@ -1610,7 +1612,7 @@ function brokerOverview(r: StatusResult): Section {
         const detail = [`${entry.mode === "user" ? "user sign-in" : entry.mode === "auth" ? "static auth" : "open"}${entry.modeChecked ? "" : ", not checked"}`, entry.origin === "catalog" ? "saved catalog entry" : entry.origin === "manual" ? "registered endpoint" : "local registration", entry.tlsRequired ? "TLS required" : "", entry.catalog?.error ? "catalog refresh failed" : ""].filter(Boolean).join(" · ");
         return {
           space: selected ? cell(`→ ${entry.space}`, "selected") : entry.space,
-          state: selected && r.selected.resolved ? connectionCell(r.selected) : entry.check === "not-checked" ? stateCell("not checked", "hint") : stateCell(entry.check === "reachable" ? "reachable" : "unreachable", entry.check === "reachable" ? "ok" : "failed"),
+          state: selected && r.selected.resolved && entry.check !== "not-checked" ? connectionCell(r.selected) : entry.check === "not-checked" ? stateCell("not checked", "hint") : stateCell(entry.check === "reachable" ? "reachable" : "unreachable", entry.check === "reachable" ? "ok" : "failed"),
           detail: cell(detail, "hint"),
         };
       }),

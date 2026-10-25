@@ -3088,8 +3088,10 @@ cannot be displayed safely is `null` in JSON, `unavailable` in text, and names a
 `BROKER_ADDRESS_INVALID` warning with a partial result. Its broker component is refused.
 
 Only the selected mesh is checked. Its row in the recorded meshes dials its address with its
-recorded TLS requirement, and every other row reads `not checked`. `--all` checks every recorded
-mesh, including discovered ones, each with its own recorded TLS requirement.
+recorded TLS requirement, and every other row reads `not checked`. When `--server` names another
+address, that address is the only broker dialed, and the selected mesh's row also reads
+`not checked`. `--all` checks every recorded mesh, including discovered ones, each with its own
+recorded TLS requirement.
 
 `status --json` writes one envelope whose `target` is `{space, scope}`, where `space` is the selected
 space or `null` and `scope` is `selected` or `all`. Its `result` is the report the text draws:
