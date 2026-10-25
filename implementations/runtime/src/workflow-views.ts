@@ -33,13 +33,14 @@ export function printRunList(space: string | undefined, items: readonly RunListR
 type StepRow = Extract<RunJournalRow, { kind: "step" }>;
 type AnswerFacts = { readonly value?: unknown; readonly by?: string; readonly artifact?: string; readonly at?: number; readonly answerId: string };
 
-/** The characters of an answer's value the Answers table prints; `--json` carries the value whole. */
+/** The characters of an answer's value the Answers table and an answer's receipt print; `--json`
+ *  carries the value whole. */
 const ANSWER_VALUE_SHOWN = 120;
 const shownValue = (value: unknown): string => {
   const text = [...JSON.stringify(value)];
   return text.length > ANSWER_VALUE_SHOWN ? `${text.slice(0, ANSWER_VALUE_SHOWN - 1).join("")}…` : text.join("");
 };
-const valueCut = (answer: AnswerFacts) => Object.hasOwn(answer, "value") && [...JSON.stringify(answer.value)].length > ANSWER_VALUE_SHOWN;
+const valueCut = (answer: { readonly value?: unknown }) => Object.hasOwn(answer, "value") && [...JSON.stringify(answer.value)].length > ANSWER_VALUE_SHOWN;
 
 /** One answer or amendment line of a settled pause. */
 function answerRow(step: string, record: string, answer: AnswerFacts, artifacts: boolean): Record<string, string> {
@@ -134,13 +135,14 @@ export function runReceipt(action: string, space: string | undefined, result: un
   const valueGiven = answer !== undefined && Object.hasOwn(answer, "value");
   const answerRows: [string, string][] = answer === undefined ? [] : [
     ["Step", answer.step],
-    ["Value", valueGiven ? JSON.stringify(answer.value) : "no value; --value was not given"],
+    ["Value", valueGiven ? shownValue(answer.value) : "no value; --value was not given"],
     ...(answer.artifact !== undefined ? [["Artifact", answer.artifact]] as [string, string][] : []),
     ...(typeof reply.answerId === "string" ? [["Answer id", reply.answerId]] as [string, string][] : []),
     ...(typeof reply.supersedes === "string" ? [["Supersedes", reply.supersedes]] as [string, string][] : []),
   ];
+  const cut = valueGiven && valueCut(answer);
   writeResult(presentationOf(values), { command: "run", target: { space: space ?? null, requestedManagerInstance: values.on ?? null, ...(runId ? { run: runId } : {}) }, result: { kind: "run-receipt", action, result, ...(answer ? { answer: { ...answer, valueGiven } } : {}) } }, () => ({ sections: [
-    { title: action === "start" ? "Workflow started" : action === "resume" ? "Workflow resumed" : action === "amend" ? "Amendment recorded" : "Answer accepted", blocks: [{ kind: "fields", rows: [["Space", space ?? "not reported"], ...(runId ? [["Run", runId]] as [string, string][] : []), ...(values.on ? [["Requested manager", values.on]] as [string, string][] : []), ...answerRows] }, { kind: "lines", lines: [{ text: "The native host accepted this operation. This receipt does not claim workflow completion.", tone: "hint" }] }] },
+    { title: action === "start" ? "Workflow started" : action === "resume" ? "Workflow resumed" : action === "amend" ? "Amendment recorded" : "Answer accepted", blocks: [{ kind: "fields", rows: [["Space", space ?? "not reported"], ...(runId ? [["Run", runId]] as [string, string][] : []), ...(values.on ? [["Requested manager", values.on]] as [string, string][] : []), ...answerRows] }, { kind: "lines", lines: [...(cut ? [{ text: `A value longer than ${ANSWER_VALUE_SHOWN} characters is cut here; --json carries it whole.`, tone: "hint" as const }] : []), { text: "The native host accepted this operation. This receipt does not claim workflow completion.", tone: "hint" }] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal r show ${runToken(runId)}${values.local ? " --local" : managerPin(values)}`, description: "Read the recorded outcome and pending requests" }] }] },
   ] }));
 }

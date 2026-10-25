@@ -1610,9 +1610,11 @@ function brokerOverview(r: StatusResult): Section {
       rows: entries.map((entry) => {
         const selected = r.selected.resolved && entry.space === r.selected.space;
         const detail = [`${entry.mode === "user" ? "user sign-in" : entry.mode === "auth" ? "static auth" : "open"}${entry.modeChecked ? "" : ", not checked"}`, entry.origin === "catalog" ? "saved catalog entry" : entry.origin === "manual" ? "registered endpoint" : "local registration", entry.tlsRequired ? "TLS required" : "", entry.catalog?.error ? "catalog refresh failed" : ""].filter(Boolean).join(" · ");
+        // The selected connection describes this row only when it dialed the row's address; under
+        // `--all` with a `--server` that names another, the row shows its own address's check.
         return {
           space: selected ? cell(`→ ${entry.space}`, "selected") : entry.space,
-          state: selected && r.selected.resolved && entry.check !== "not-checked" ? connectionCell(r.selected) : entry.check === "not-checked" ? stateCell("not checked", "hint") : stateCell(entry.check === "reachable" ? "reachable" : "unreachable", entry.check === "reachable" ? "ok" : "failed"),
+          state: selected && r.selected.resolved && entry.check !== "not-checked" && r.selected.server !== null && r.selected.server === entry.server ? connectionCell(r.selected) : entry.check === "not-checked" ? stateCell("not checked", "hint") : stateCell(entry.check === "reachable" ? "reachable" : "unreachable", entry.check === "reachable" ? "ok" : "failed"),
           detail: cell(detail, "hint"),
         };
       }),

@@ -349,6 +349,13 @@ let P = "";
   const long = "z".repeat(1000);
   reset();
   await wf(["amend", cid, "/checkpoint:approve#0"], { by: "smoke", value: JSON.stringify(long) });
+  // Its receipt printed the whole value on one line; it is cut there the same way.
+  c("the amend receipt cuts the long value, and a line says so and points to --json",
+    lines().some((l) => /^ +Value: +"z{100,}…$/.test(l)) && !captured().includes(long) && Math.max(...lines().map((l) => l.length)) < 400
+      && captured().includes("A value longer than 120 characters is cut here; --json carries it whole."),
+    { longest: Math.max(...lines().map((l) => l.length)) });
+  const amendReceipt = (await envelopeOf(["amend", cid, "/checkpoint:approve#0"], { by: "smoke", value: JSON.stringify(long) }))?.result as { answer?: { value?: unknown } } | undefined;
+  c("the amend receipt's --json carries the long value whole", amendReceipt?.answer?.value === long, typeof amendReceipt?.answer?.value);
   reset();
   await wf(["journal", cid]);
   const amendedLine = lines().find((l) => l.includes("/checkpoint:approve#0") && l.includes("amended")) ?? "";
@@ -809,7 +816,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 89;
+const DECLARED = 91;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

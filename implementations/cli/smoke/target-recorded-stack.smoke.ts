@@ -342,8 +342,9 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
 
 // A service instance record of a prepared space cut short, as an interrupted write leaves it, is named
 // with its path and the move that sets it aside, and left as it is. Status warns about it and gives
-// that step under Next, in place of `cotal up`. Any other saved record cut short keeps the plain
-// refusal, with no step to move it.
+// that step under Next, in place of `cotal up`. A definition of a service you added is named with its
+// way out by service and its verbs. Any other saved record cut short keeps the plain refusal, with no
+// step to move it.
 {
   const prepared = realpathSync(mkdtempSync(join(home, "records-")));
   check("rig: prepare sr there", run(["space", "create", "sr", "--json"], prepared).status === 0);
@@ -372,6 +373,29 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
   const moved = run(["service", "--space", "sr", "--json"], prepared);
   check("moved aside as the step says, service reads the space again", moved.status === 0 && moved.envelope?.outcome === "ok", shown(moved));
   check("…and status no longer warns about it", !(run(["status", "--json"], prepared).envelope?.warnings ?? []).some((w) => w.code === "SERVICE_INSTANCES_UNAVAILABLE"));
+  // A definition of a service you added, cut short, is named by service and its verbs with its path,
+  // the move that sets it aside and the add that saves it again. A stack member's keeps the plain refusal.
+  {
+    const definitions = join(home, ".cotal", "services", Buffer.from("sr").toString("hex"), "definitions");
+    mkdirSync(definitions, { recursive: true, mode: 0o700 });
+    const added = join(definitions, `${Buffer.from("echo").toString("hex")}.json`);
+    writeFileSync(added, cut, { mode: 0o600 });
+    const step = `move it aside, as mv ${added} ${added}.old does, then add the service again from its declaration with \`cotal service add echo --space sr --file <declaration>\``;
+    const definitionMessage = `the saved local record ${added} is not valid JSON, as an interrupted write or a full disk can leave it; nothing was inferred from it and it was left as it is`;
+    for (const args of [["service", "--space", "sr"], ["service", "show", "echo", "--space", "sr"], ["service", "stop", "echo", "--space", "sr", "--yes"]]) {
+      const r = run([...args, "--json"], prepared);
+      check(`a cut definition of a service you added: ${args.slice(0, args[1] === "--space" ? 1 : 2).join(" ")} refuses SCHEMA_INVALID, exit 1, naming the record, the move and the add`,
+        r.status === 1 && r.envelope?.error?.code === "SCHEMA_INVALID" && r.envelope.error.message === definitionMessage && r.envelope.error.remedy === step && (r.envelope.target as { path?: string } | null)?.path === added, shown(r));
+    }
+    check("…and the definition record is left as it was", readFileSync(added).equals(cut));
+    rmSync(added);
+    const member = join(definitions, `${Buffer.from("stack-manager").toString("hex")}.json`);
+    writeFileSync(member, cut, { mode: 0o600 });
+    const r = run(["service", "--space", "sr", "--json"], prepared);
+    check("a cut stack member's definition keeps the plain refusal and no step",
+      r.status === 1 && r.envelope?.error?.code === "SCHEMA_INVALID" && r.envelope.error.message === "local record input is not valid UTF-8 JSON; document contents are not echoed" && r.envelope.error.remedy === undefined, shown(r));
+    rmSync(member);
+  }
   // Any other saved record cut short keeps the plain refusal and no step: an install, uninstall or
   // unit-action attempt, or a supervisor receipt, can be what holds a native step back.
   // `service` reads the attempts; down's census reads the receipts, and carries the refusal as its cause.

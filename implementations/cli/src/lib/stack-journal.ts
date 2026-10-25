@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, rmdirSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
+import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
@@ -21,6 +21,14 @@ export type StackRole = (typeof STACK_ROLES)[number];
  *  another name is never swept into the stack, whatever its adapter. */
 export const STACK_DEFINITION: Readonly<Record<StackRole, string>> = { broker: "stack-broker", auth: "stack-auth", delivery: "stack-delivery", manager: "stack-manager" };
 export const STACK_ADAPTER: Readonly<Record<StackRole, string>> = { broker: "nats-broker", auth: "auth-service", delivery: "delivery", manager: "manager-service" };
+
+/** The way out a service command names for a saved definition at `path` that does not parse: one you
+ *  added is moved aside and added again from its declaration. A stack member's definition is the
+ *  stack's, so it keeps the plain refusal. */
+export function addedDefinitionStep(name: string, path: string, space: string): string | undefined {
+  if ((Object.values(STACK_DEFINITION) as string[]).includes(name)) return undefined;
+  return `move it aside, as mv ${shellPath(path)} ${shellPath(`${path}.old`)} does, then add the service again from its declaration with \`cotal service add ${name} --space ${space} --file <declaration>\``;
+}
 
 export const STACK_MODES = ["auth", "open", "user"] as const;
 export type StackMode = (typeof STACK_MODES)[number];

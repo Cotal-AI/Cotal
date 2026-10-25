@@ -873,11 +873,16 @@ same way, is left as it is. `up`, `down`, `service` and `reset store` refuse it 
 exit 1. `service` names its path and the `mv` that moves it aside, and so do the others for a stack
 that has run. Once it is moved, Cotal no longer tracks the process that record names, so stop that
 process yourself if it still runs. For a stopped space, `status` warns
-`SERVICE_INSTANCES_UNAVAILABLE` and gives the same step under Next, in place of `cotal up`. Any
-other saved record that is not valid JSON, such as a native install, uninstall or unit-action
-attempt, a supervisor receipt, a service definition or an endpoint reference, is refused
-`SCHEMA_INVALID` with no step: an attempt or receipt can be what holds a native step back, so
-nothing says to move it.
+`SERVICE_INSTANCES_UNAVAILABLE` and gives the same step under Next, in place of `cotal up`. The
+definition of a service you added that is not valid JSON is left as it is too. `service` and its
+verbs, such as `service show`, `service add` and `service stop`, refuse it `SCHEMA_INVALID`, exit 1,
+naming its path, the `mv` that moves it aside, and `cotal service add <name> --space <space> --file <declaration>`,
+which adds the service again. An instance of it that still runs can then be stopped by its full
+instance ID. Any other saved record that is not valid JSON, such as a native install, uninstall or
+unit-action attempt, a supervisor receipt, a stack member's definition or an endpoint reference, is
+refused `SCHEMA_INVALID` with no step: an attempt or receipt can be what holds a native step back,
+so nothing says to move it. Other commands that read the definition of a service you added keep
+that plain refusal, and `status` shows the saved definitions as unavailable.
 
 A controller stack opens three listeners. The broker serves clients at its `--server` port, and a
 websocket for the browser console's mesh session on a port `up` picks, which is always plaintext.
@@ -3094,7 +3099,8 @@ Only the selected mesh is checked. Its row in the recorded meshes dials its addr
 recorded TLS requirement, and every other row reads `not checked`. When `--server` names another
 address, that address is the only broker dialed, and the selected mesh's row also reads
 `not checked`. `--all` checks every recorded mesh, including discovered ones, each with its own
-recorded TLS requirement.
+recorded TLS requirement. Each row then shows the check of its own address, the selected mesh's
+row included when `--server` names another.
 
 `status --json` writes one envelope whose `target` is `{space, scope}`, where `space` is the selected
 space or `null` and `scope` is `selected` or `all`. Its `result` is the report the text draws:
@@ -6828,8 +6834,9 @@ program's checkpoint result has no `value`. `--value` is refused with `SCHEMA_IN
 anything is sent when the record would not hold what you typed: an object that names a key twice,
 a number outside the range JSON carries (such as `1e999`), or a value nested more than 1000 levels
 deep. An empty or blank `--artifact` is refused with `USAGE_INVALID`. The receipt of `answer` and
-`amend` names the step, the value it filed or that none was given, any artifact and the answer id. With `--json` they are in
-`result.answer`, where `valueGiven` says whether a value was sent. `amend` records a changed
+`amend` names the step, the value it filed or that none was given, any artifact and the answer id. A value longer than
+120 characters is cut there too, with a line that says so. With `--json` they are in
+`result.answer`, whole, where `valueGiven` says whether a value was sent. `amend` records a changed
 position on a settled checkpoint or `ask`: it files a new answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
 settled and the run keeps the answer it acted on. A step that is still open or settled without an
 answer refuses an amend. So does a run ID that no run is recorded under, and that refusal says no
