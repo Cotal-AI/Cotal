@@ -7162,7 +7162,9 @@ file refuses an empty one or one that is not valid UTF-8 with `SCHEMA_INVALID`, 
 sends anything, because a run's source must not be empty and its text is never replaced. A hosted
 start sends the program to the manager in one message, so a program over the broker's message limit
 (`max_payload`) is refused `UNSUPPORTED` with its size and the limit, and nothing is sent. Resume uses the host's recorded program. Hosted answers
-and amendments are attributed to the authenticated caller, never a supplied name. `check <run-id> <file>`
+and amendments are attributed to the authenticated caller, never a supplied name. Local answers and
+amendments require `--by <who>`; a missing or empty value refuses `USAGE_INVALID` before contacting
+the broker, with a JSON refusal under `--json`. `check <run-id> <file>`
 replays the run's recorded journal
 against the edited program and prints whether the migration is admissible, and it files no migration. Revocation keeps
 the existing local trust and explicit actor/reason requirements and does not cancel a task.

@@ -1146,6 +1146,8 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     }
   }
   if (verb === "revoke" && (values.local !== true || !values.by?.trim() || !values.reason?.trim())) usage("run revoke requires --local --by <actor> --reason <text> under the existing trust checks");
+  if ((verb === "answer" || verb === "amend") && values.local === true && !values.by)
+    usage(`run ${verb} --local requires --by <who>; nothing was written`, "add --by <who> to name the local answerer");
   if (values.by !== undefined && values.local !== true) usage("the hosted manager records the authenticated caller; --by is only for the local path");
   if ((verb === "start" || verb === "resume") && values.endpoint !== undefined && values.local !== true) usage("a hosted run uses the manager's endpoint; --endpoint is only for the local path");
   if (values.value !== undefined) checkAnswerValue(values.value, usage);
