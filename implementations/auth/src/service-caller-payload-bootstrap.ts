@@ -4,7 +4,7 @@ import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node
 import { encodeUser, fmtCreds } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import {
-  EpEnvelopeError, canonicalJson, contractDigest, credsClaims, dialerFor, epAuthBucket, isAccountNkey, newIdentity, recordsBucket,
+  EpEnvelopeError, canonicalJson, contractDigest, credsClaims, dialerFor, epAuthBucket, isAccountNkey, nativeNkeySigner, newIdentity, recordsBucket,
 } from "@cotal-ai/core";
 import { openAuthorityClient } from "./authority-client.js";
 import { openLifecycleRegistry, registryMaxPayload, registryServerId, registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
@@ -19,7 +19,7 @@ export async function mintServiceCallerPayloadObserverCreds(sys: { pub: string; 
   const id = newIdentity(), prefix = `_INBOX_${id.id}`, user = fromSeed(enc.encode(id.seed));
   const jwt = await encodeUser("service-caller-payload-observer", fromPublic(id.id), fromPublic(sys.pub),
     { pub: { allow: ["$SYS.REQ.SERVER.*.VARZ"] }, sub: { allow: [`${prefix}.>`] } },
-    { signer: fromSeed(enc.encode(sys.signingSeed)), exp: Math.floor(Date.now() / 1000) + 60 });
+    { signer: nativeNkeySigner(enc.encode(sys.signingSeed)), exp: Math.floor(Date.now() / 1000) + 60 });
   return dec.decode(fmtCreds(jwt, user));
 }
 export interface ServiceCallerPayloadBootstrap {

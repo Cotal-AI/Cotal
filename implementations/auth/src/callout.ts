@@ -32,7 +32,7 @@ import {
   type AuthorizationRequest,
 } from "@nats-io/jwt";
 import { createAccount, createCurve, fromCurveSeed, fromPublic, fromSeed } from "@nats-io/nkeys";
-import { assertInboxConnId, calloutReaderId, newIdentity, principalKey, principalTags, token } from "@cotal-ai/core";
+import { assertInboxConnId, calloutReaderId, nativeNkeySigner, newIdentity, principalKey, principalTags, token } from "@cotal-ai/core";
 import type { JWTVerifyGetKey, CryptoKey } from "jose";
 import { validateUserToken, type ValidatedUserToken } from "./token.js";
 import { SESSION_EXP, ENDPOINT_CALLER_EXP, ENDPOINT_CALLER_RECHECK } from "./permissions.js";
@@ -194,8 +194,8 @@ export interface StartAuthCalloutOpts {
 export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOpts): { done: Promise<void> } {
   if (!opts.xkeySeed) throw new Error("auth callout: xkey seed is required - refusing to start a callout that would receive bearer tokens unsealed");
   const xkp = fromCurveSeed(new TextEncoder().encode(opts.xkeySeed)); // throws on non-curve seeds
-  const responseSigner = fromSeed(new TextEncoder().encode(opts.authAccount.signingSeed));
-  const userSigner = fromSeed(new TextEncoder().encode(opts.dataAccount.signingSeed));
+  const responseSigner = nativeNkeySigner(new TextEncoder().encode(opts.authAccount.signingSeed));
+  const userSigner = nativeNkeySigner(new TextEncoder().encode(opts.dataAccount.signingSeed));
   if (!opts.space) throw new Error("auth callout: space is required");
   if (typeof opts.recordIssuance !== "function") throw new Error("auth callout: recordIssuance is required - refusing to start a callout whose successes leave no native-key issuance evidence");
   const serviceAuthority = opts.serviceAuthority;

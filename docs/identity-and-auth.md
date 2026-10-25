@@ -46,6 +46,11 @@ The **provisioner** is whoever holds the account signing key. It mints profile-s
 credentials and pre-creates the durables agents may only *bind* (their DM inbox, their
 role's task queue). The manager hosts it today, but nothing is manager-special about it;
 privilege attaches to the signer, and a space can run without a manager.
+
+User-credential and auth-callout JWT signing uses Node's native Ed25519 implementation. NATS
+libraries still encode keys and JWTs and verify incoming JWTs. The signer produces the same
+signature bytes for the same key and payload; permissions, expiry and issuer checks are unchanged.
+
 The temporary native provisioner can request `$SYS.REQ.USER.INFO` for its own connection.
 The broker's configured system account maps the service to that requester. The reply can bind
 its public user/account and serving server to the local pins without a system credential.
