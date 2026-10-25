@@ -1,6 +1,6 @@
 import { accessSync, constants, realpathSync, statSync, type Stats } from "node:fs";
 import { delimiter, dirname, isAbsolute, resolve } from "node:path";
-import { CommandFailure, oneLine, parseServiceDefinitionInput, protectedLocalDirectory, protectedLocalEntry, resolveOnPath, type ServiceDefinitionInput } from "@cotal-ai/workspace";
+import { CommandFailure, oneLine, parseServiceDefinitionInput, protectedLocalDirectory, protectedLocalEntry, resolveOnPath, shellPath, type ServiceDefinitionInput } from "@cotal-ai/workspace";
 import { decodeLocalJson, ProtectedRecordStore, protectedCredentialReference, readLocalRecordSource, type LocalRecordSnapshot } from "./protected-records.js";
 
 import { resolveServiceAdapter } from "./service-adapters.js";
@@ -56,8 +56,8 @@ function assertLaunchPath(path: string, kind: "executable" | "working directory"
   try { accessSync(path, folder ? constants.R_OK | constants.X_OK : constants.X_OK); }
   catch {
     throw folder
-      ? refusal(`cannot be read and entered by you (mode ${mode})`, `let yourself read and enter it with chmod u+rx ${shown}`, false)
-      : refusal(`is not executable by you (mode ${mode})`, `make it executable with chmod u+x ${shown}`, false);
+      ? refusal(`cannot be read and entered by you (mode ${mode})`, `let yourself read and enter it with chmod u+rx ${shellPath(path)}`, false)
+      : refusal(`is not executable by you (mode ${mode})`, `make it executable with chmod u+x ${shellPath(path)}`, false);
   }
 }
 

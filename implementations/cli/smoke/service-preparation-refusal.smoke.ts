@@ -100,7 +100,7 @@ const root = mkdtempSync(join(home, "project-"));
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off" };
 const run = (args: string[], extra: NodeJS.ProcessEnv = {}) => {
   const r = spawnSync(process.execPath, [BIN, ...args, "--json"], { cwd: root, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
@@ -481,6 +481,37 @@ if (process.platform === "linux") {
   check("with each put back, the start runs it", started.status === 0 && typeof id === "string", shown(started));
   check("rig: its instance stops", run(["service", "stop", "moved", "--instance", String(id), "--space", "b1", "--yes"]).status === 0);
   check("rig: the definition is forgotten", run(["service", "remove", "moved", "--space", "b1", "--yes"]).status === 0);
+}
+
+// Permission repairs keep spaces and apostrophes in one shell argument. Only the printed chmod on
+// these owned fixtures is executed; no process is launched.
+if (process.getuid?.() !== 0) {
+  const dir = realpathSync(mkdtempSync(join(home, "quoted-launch-")));
+  const script = join(dir, "run 'quoted' script.sh"), work = join(dir, "work folder"), file = join(dir, "definition.json");
+  writeFileSync(script, "#!/bin/sh\nexit 0\n", { mode: 0o600 });
+  mkdirSync(work, { mode: 0o700 });
+  writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: script, args: [], cwd: work }, readiness: { type: "process", timeoutMs: 3000 } }));
+  const repair = (name: string, prefix: string, command: string) => {
+    const refused = run(["service", "add", name, "--file", file, "--space", "b1"]);
+    const expected = `${prefix}${command}, then run the command again`;
+    const safe = refused.status === 2 && refused.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && refused.envelope.error.remedy === expected;
+    check(`${name} permission refusal quotes its path as one shell argument`, safe, shown(refused));
+    if (safe) {
+      const applied = spawnSync("/bin/sh", ["-c", command], { cwd: root, env, encoding: "utf8", timeout: 5000 });
+      check(`${name} printed repair applies to its owned fixture`, applied.status === 0, { status: applied.status, stderr: applied.stderr });
+      const added = run(["service", "add", name, "--file", file, "--space", "b1"]);
+      check(`${name} can be added after applying the printed repair`, added.status === 0, shown(added));
+    }
+  };
+  try {
+    repair("quoted-executable", "make it executable with ", `chmod u+x '${dir}/run '\\''quoted'\\'' script.sh'`);
+    chmodSync(script, 0o700);
+    chmodSync(work, 0o000);
+    repair("quoted-directory", "let yourself read and enter it with ", `chmod u+rx '${work}'`);
+  } finally {
+    chmodSync(work, 0o700);
+    chmodSync(script, 0o700);
+  }
 }
 
 // A definition records the root it was added in. After a forget, a space of the same name prepared
