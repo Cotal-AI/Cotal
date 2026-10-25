@@ -181,8 +181,9 @@ export function assertStoreDirArgument(value: string, root: string): void {
  *  folder it writes first, `jetstream` inside the store once a broker made it, or else the store
  *  itself. A store this account cannot search hides its `jetstream`, so the store is that folder.
  *  nats-server tests that folder when it starts and exits, naming the cause only in its log.
- *  The sentence and the next step, or undefined when it can write it or neither folder exists. A
- *  folder this account cannot read or search either needs those back too, which `u+w` leaves out. */
+ *  The sentence and the next step, or undefined when the write target is writable and the store root
+ *  readable, or neither exists. A folder without read or search access needs those back too, which
+ *  `u+w` leaves out. */
 export function storeWriteProblem(storeDir: string): { path: string; message: string; remedy: string } | undefined {
   const jetstream = join(storeDir, "jetstream");
   let inner: Stats | undefined;
@@ -190,7 +191,7 @@ export function storeWriteProblem(storeDir: string): { path: string; message: st
   catch (error) { if (!["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error; }
   const path = inner?.isDirectory() ? jetstream : statIfPresent(storeDir)?.isDirectory() ? storeDir : undefined;
   if (path === undefined) return undefined;
-  try { accessSync(path, constants.W_OK | constants.X_OK); return undefined; }
+  try { accessSync(path, constants.W_OK | constants.X_OK); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "EACCES" && code !== "EPERM" && code !== "EROFS") throw error;
@@ -205,6 +206,15 @@ export function storeWriteProblem(storeDir: string): { path: string; message: st
       ? { path, message: `the broker store ${path} is not writable by this account (${code}), so the broker cannot start JetStream there`, remedy: `make it writable by you, for example with chmod -R u+w ${shellPath(path)}` }
       : { path, message: `the broker store ${path} is not readable or writable by this account (${code}), so the broker cannot start JetStream there`, remedy: `make it readable and writable by you, for example with chmod -R u+rwX ${shellPath(path)}` };
   }
+  // Writable jetstream children do not show whether startup can read the store root. Check that
+  // root separately; jetstream without read access can still serve and retain messages.
+  try { accessSync(storeDir, constants.R_OK | constants.X_OK); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EACCES" && code !== "EPERM") throw error;
+    return { path: storeDir, message: `the broker store ${storeDir} is not readable by this account (${code}), so the broker cannot open its store`, remedy: `make it readable and writable by you, for example with chmod -R u+rwX ${shellPath(storeDir)}` };
+  }
+  return undefined;
 }
 
 /** The `store_dir` a broker configuration names for `storeDir`: relative to `root` when the store
