@@ -377,7 +377,7 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
       child.once("exit", (code) => { clearTimeout(timer); res(code); });
     });
     check("the record survives the crash", findMesh(space) !== undefined, findMesh(space));
-    check("a killed broker makes the foreground `up` exit 1, the crash arm's code, not Node's unsettled-await 13", exitCode === 1, { exitCode, stdout, stderr });
+    check("a killed broker makes the foreground `up` exit 5, a failed run's code, not Node's unsettled-await 13", exitCode === 5, { exitCode, stdout, stderr });
     check("...stderr names 'exited unexpectedly'", /exited unexpectedly/.test(stderr), stderr);
     check("...and 'stays recorded'", /stays recorded/.test(stderr), stderr);
     check("...and the repair command naming this space", stderr.includes(`cotal up --server ${fixture.server} --space ${space}`), stderr);

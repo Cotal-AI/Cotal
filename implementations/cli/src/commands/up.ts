@@ -183,6 +183,7 @@ import {
   SPACE_NAME_MAX,
   spaceNameTooLong,
   MIN_FILE_STORE,
+  exitCode,
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
@@ -2135,15 +2136,27 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // racing a second broker into existence. Foreground stdio is inherited (its own log lines
       // are already on this terminal, above), so there is no `.cotal/nats.log` to name here.
       const detail = signal ? `signal ${signal}` : `code ${code}`;
+      // Retention is read from the registry, not assumed: a broker that exits before it first
+      // answers was never recorded. A registry that cannot be read is not claimed either way, and
+      // the read cannot throw past this handler, which still has to exit.
+      let retention: string;
+      try {
+        const mine = findMesh(space);
+        retention = mine && mine.server === server && mine.root === cotalRoot() ? `the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline)` : `the mesh "${space}" was not recorded`;
+      } catch {
+        retention = `whether the mesh "${space}" stays recorded could not be read`;
+      }
       console.error(
         c.red(
-          `✗ nats-server exited unexpectedly (${detail}); the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline); log: see the terminal output above; repair: \`cotal up --server ${server} --space ${space}\``,
+          `✗ nats-server exited unexpectedly (${detail}); ${retention}; log: see the terminal output above; repair: \`cotal up --server ${server} --space ${space}\``,
         ),
       );
       // A foreground broker under `Restart=on-failure` must exit non-zero on a crash so the unit
       // restarts it; exiting 0 here (as an unconditional `code ?? 0` used to) looked like a clean
-      // stop and left the unit sitting dead.
-      if (activationFinished) process.exit(code ?? 1);
+      // stop and left the unit sitting dead. A broker that exited 0, as after an external `down`,
+      // still exits 0. Any other exit is a failed run, 5, not the broker's own code, which the exit
+      // table would read as a usage error (1) or a refusal (2).
+      if (activationFinished) process.exit(code === 0 ? 0 : exitCode("failed", "OPERATION_FAILED"));
     }
   });
 

@@ -754,6 +754,10 @@ its version on the `Broker executable` line, and `--json` carries them as `resul
 `OPERATION_FAILED`, exit 5, naming that file, its exit code or signal, and its log `.cotal/nats.log`.
 The next step is to read that log, then fix the file or take it off PATH, and run `cotal up` again. A
 broker still running when the wait ends leaves the outcome unconfirmed, `OPERATION_UNKNOWN`, exit 3.
+A foreground `up` whose broker exits on its own stops its members and exits 5, or 0 when the broker
+exited 0, as it does after an external `down`. Its line names the exit code or signal, and says the
+mesh stays recorded only when the registry holds that broker's record. A broker that exits before
+`up` recorded the mesh leaves it unrecorded, and the line says so.
 
 The generated broker configuration is owner-private (`0600`) in open and authenticated modes,
 even with a group-writable umask. `up` creates `.cotal`, the broker store and the persona catalog
