@@ -545,7 +545,15 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   const journal = readMaintenanceJournal(root);
   if (!journal) throw notReady(root, undefined);
   const destinationPath = resolve(destination);
-  if (lstatSync(destinationPath, { throwIfNoEntry: false })) {
+  let destinationExists: boolean;
+  try { destinationExists = lstatSync(destinationPath, { throwIfNoEntry: false }) !== undefined; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOTDIR" && code !== "ELOOP") throw error;
+    const problem = code === "ENOTDIR" ? "contains a parent that is not a directory" : "contains a symbolic-link loop";
+    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} ${problem} (${code}); nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath) }, native: { code }, remedy: "name a destination with an existing directory as its parent", selfContained: true });
+  }
+  if (destinationExists) {
     // The partial artifact of an interrupted create is named with the command that removes it.
     const partial = journal.state === "claimed" && journal.claim.ownedPaths?.some((owned) => owned.label === "destination" && owned.path === destinationPath) ? journal.claim.attemptId : undefined;
     throw new CommandFailure("refused", "CONFLICT", partial ? `the backup destination ${destinationPath} is the partial artifact of interrupted backup attempt ${partial}; backup create writes only a new directory` : "the backup destination already exists; backup create writes only a new directory", { target: { directory: destinationPath }, remedy: partial ? `remove it with cotal backup recover ${partial} --yes, then run this create again` : "name a directory that does not exist yet" });
