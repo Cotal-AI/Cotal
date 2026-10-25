@@ -58,8 +58,8 @@ function replaceNotes(replaced: Replaced | undefined, standing: boolean, profile
   return [{ code: "NOTHING_REPLACED", target: { space, name }, message: `--replace found no standing credential named "${name}", so this is a new standing credential and it replaced nothing; exported files are unchanged; inspect them with \`cotal doctor auth --space ${space}\`` }];
 }
 
-/** The grants a replaced agent credential that this space's account issued held, read from its own
- *  claims. Another profile's or issuer's rows say nothing about this space's agent grants. */
+/** Declared grants of a replaced agent credential whose issuer matches this space's account.
+ *  This metadata is used only for a warning, never for authority or grant inheritance. */
 function heldGrants(standing: string, space: string, account: string): AgentGrants | undefined {
   const claims = credsClaims(standing);
   return claims.name === "agent" && (claims.nats?.issuer_account ?? claims.iss) === account ? agentGrants(claims.nats ?? {}, space) : undefined;
@@ -68,11 +68,11 @@ function heldGrants(standing: string, space: string, account: string): AgentGran
 const grantText = (grants: AgentGrants) => `read ${channelList(grants.read)}, post ${channelList(grants.post)} and ${grants.role ? `role ${grants.role}` : "no role"}`;
 const sameChannels = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((channel) => b.includes(channel));
 
-/** A replacement holds only the grants its persona file or grant flags name, not the replaced
+/** A replacement holds only the grants its persona file, --identity or grant flags name, not the replaced
  *  credential's, so grants that differ from those are named, with the flags that name the replaced ones. */
 function replacedGrantsChanged(held: AgentGrants | undefined, grants: AgentGrants | null, space: string, name: string): OutputWarning[] {
   if (!held || !grants || sameChannels(held.read, grants.read) && sameChannels(held.post, grants.post) && held.role === grants.role) return [];
-  return [{ code: "REPLACED_GRANTS_CHANGED", target: { space, name, grants: { read: grants.read, post: grants.post, role: grants.role }, replacedGrants: held }, message: `the credential this replaced held ${grantText(held)}, and this one holds ${grantText(grants)}: a replacement holds only the grants its persona file or its grant flags name, and \`${grantMintFlags(held).trim()}\` names the replaced ones` }];
+  return [{ code: "REPLACED_GRANTS_CHANGED", target: { space, name, grants: { read: grants.read, post: grants.post, role: grants.role }, replacedGrants: held }, message: `the credential this replaced held ${grantText(held)}, and this one holds ${grantText(grants)}: a replacement holds only the grants its persona file, --identity or its grant flags name, and \`${grantMintFlags(held).trim()}\` names the replaced ones` }];
 }
 
 /** A replaced credential with no expiry claim is not revoked by its replacement, so any copy of it
