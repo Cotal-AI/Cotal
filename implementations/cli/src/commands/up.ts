@@ -4106,8 +4106,12 @@ export async function claimSpace(space: string, server: string, root: string): P
     throw new CommandFailure("refused", "CONFLICT", `space "${space}" is registered to a mesh at ${existing.server} (${existing.root}) - it is ${existing.origin === "catalog" ? "owned by a signed-in space catalog" : "registered by hand"}, so \`cotal up\` neither takes it over nor reclaims the name`, { target, remedy: existing.origin === "catalog" ? "use a different `--space`, or remove access at the IdP and run `cotal sync`" : manualClaimRemedy(space, existing.server) });
   if (relative)
     throw new CommandFailure("refused", "CONFLICT", `space "${space}" is registered to ${existing.root}, which is not an absolute path - \`cotal up\` did not take the name`, { target, remedy: `drop that record with \`cotal meshes rm ${space}\`, or start this stack under a different \`--space\`` });
-  if (await isReachable(existing.server))
-    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is already in use by a mesh at ${existing.server} (${existing.root})`, { target, remedy: "pick a different `--space`, or `cotal down` it first" });
+  if (await isReachable(existing.server)) {
+    // A space name is this machine's, so a separate space here needs a name of its own.
+    let controller = false;
+    try { controller = readStackJournal(existing.root)?.journal.space === space; } catch { /* named with the legacy stop */ }
+    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is already in use by a mesh at ${existing.server} (${existing.root})`, { target, remedy: `start a separate space in this folder with cotal up --space <name>, naming one no other folder uses, or stop "${space}" first with cotal down${controller ? " --yes" : ""} in ${shellWord(existing.root)}` });
+  }
   // The recorded root is this root only where it physically resolves, so it is resolved before any
   // comparison, and one that cannot be resolved refuses. A dead holder at another root keeps its name
   // while that root holds a preserved cut or a restore: taking it would cut that root's recovery off

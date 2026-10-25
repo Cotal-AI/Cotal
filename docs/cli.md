@@ -637,7 +637,10 @@ with `CONFLICT` and asks for `--space`. With no
 the same space from the same folder starts from the URL that mesh recorded; an explicit `--server`
 stays fail-loud on collision. When the named space runs from another folder on this machine,
 `up --space` refuses `CONFLICT`, exit 2, naming that folder, with or without `--server`, `--json` or
-`--plain`, and writes nothing in the folder it ran from. A background boot also brings up the control plane (delivery daemon in auth
+`--plain`, and writes nothing in the folder it ran from. A bare `up` whose space, `main` when the
+folder names none, runs from another folder refuses `CONFLICT` as well. Its Next names
+`cotal up --space <name>` to start a separate space in this folder, and the `cotal down` that stops
+the other one in its own folder. A background boot also brings up the control plane (delivery daemon in auth
 mode, then the manager). `--no-manager` is the broker-only mode: it boots
 the broker (and the delivery daemon in auth mode) and starts no manager, so there is no manager
 pidfile to leave stale. A refresh under the flag of a mesh whose manager is live refuses rather

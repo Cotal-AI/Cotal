@@ -20,7 +20,8 @@
  * folder, whose `.cotal` holds the machine's own records, `up` refuses CONFLICT and writes nothing
  * there, and `down` and `down --dry-run` there find no stack. A fresh folder under the home makes its
  * own `.cotal` on a bare `up`, and removes it when a later check refuses, while `up -f` there, or `up`
- * under a home that holds a stack, refuses CONFLICT and writes nothing. In a prepared folder whose broker store
+ * under a home that holds a stack, refuses CONFLICT and writes nothing. A bare `up` whose space runs from
+ * another folder refuses CONFLICT naming `cotal up --space <name>` and the `cotal down` in that folder. In a prepared folder whose broker store
  * this account cannot write, `up` refuses PERMISSION_DENIED naming the store and the `chmod` that
  * fixes it, where the broker used to exit naming the cause only in its log, and status names the same
  * step in place of `cotal up`. A `server.conf` that is a symlink, and a trust record this account
@@ -31,14 +32,14 @@
  *
  * Run: pnpm smoke:up-usage-refusal
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { connect, createServer, type AddressInfo } from "node:net";
 import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createSuite } from "@cotal-ai/smoke-kit";
+import { createSuite, freePort } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -332,6 +333,27 @@ try {
       beside.status === 2 && /CONFLICT/.test(beside.stderr) && /holds the controller stack of space upusagejournal/.test(beside.stderr)
         && /cotal team deploy cotal\.yaml/.test(beside.stderr) && /cotal team boot cotal\.yaml/.test(beside.stderr) && !started(journalRoot), shown(beside));
   }
+
+  // A bare up whose space runs from another folder names a separate space for this folder, and the
+  // stop for the other one in its own folder. A child process that sends the broker's greeting
+  // stands in for that folder's broker, since `run` blocks this process while up probes it.
+  const other = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-other-")));
+  const fresh = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-fresh-")));
+  process.on("exit", () => { for (const dir of [other, fresh]) rmSync(dir, { recursive: true, force: true }); });
+  const greeter = spawn(process.execPath, ["-e", `require("node:net").createServer((s) => { s.on("error", () => {}); s.write('INFO {"server_id":"other","proto":1}\\r\\n'); }).listen(0, "127.0.0.1", function () { console.log(this.address().port); });`], { stdio: ["ignore", "pipe", "inherit"] });
+  const greeting = Number((await once(greeter.stdout!, "data"))[0].toString().trim());
+  const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+  process.env.COTAL_HOME = join(home, ".cotal");
+  recordMesh({ space: "main", server: `nats://127.0.0.1:${greeting}`, root: other, mode: "auth", origin: "up", ts: now });
+  const inUse = run(["up", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
+  // A regression that took the name over started a stack, which is stopped before the cell fails.
+  if (started(fresh)) run(["down", "--yes"], fresh);
+  removeMesh("main");
+  delete process.env.COTAL_HOME;
+  greeter.kill();
+  check("a bare up whose space runs from another folder refuses CONFLICT, exit 2, naming cotal up --space <name> and the down in that folder",
+    inUse.status === 2 && /Code:\s+CONFLICT/.test(inUse.stderr) && inUse.stderr.includes(`space "main" is already in use by a mesh at nats://127.0.0.1:${greeting} (${other})`)
+      && inUse.stderr.includes(`start a separate space in this folder with cotal up --space <name>, naming one no other folder uses, or stop "main" first with cotal down in ${other}`), shown(inUse));
 } finally {
   holder.close();
 }
