@@ -3385,7 +3385,7 @@ cotal spawn [<persona>] [--file <persona-file>] [-d | --foreground] [--dry-run] 
 ```
 
 A bare `spawn` runs the application in this terminal, on every kind of mesh, and no manager is
-involved. Its exit, or the terminal's, may end the agent. A manager runs the launch only when you
+involved unless you pick one when it asks where to run, as described below. Its exit, or the terminal's, may end the agent. A manager runs the launch only when you
 ask for one. `--detach` (`-d`) hands it to a manager, waits until the agent joins, and returns
 without attaching. `--on <instance>` hands it to that manager and attaches this terminal to the
 agent (see [Managed launch view](#managed-launch-view)). Attaching needs usable input and output
@@ -3397,6 +3397,31 @@ with `TARGET_NOT_FOUND` and a missing connector with `DEPENDENCY_UNAVAILABLE`, b
 and the connector refusal names the `cotal ext add` that installs it. `--file` (`-f`) names a
 persona file, never a manifest: manifests deploy with `cotal team deploy <file>`, and a manifest
 passed to `--file` is refused with that command.
+
+On a terminal, a bare `spawn` on a user-auth mesh where several of your managers are live asks
+where the agent runs before it does anything else. The managers listed are the ones the exchange
+counts for a manager selection, so the question comes up only when `spawn -d` would ask which
+manager to use. `This terminal` is the default and runs it as above. Picking a manager launches the
+agent there and attaches this terminal, as `--on` does, and a `Manager chosen` receipt names the
+`--on` that skips the question. No manager credential is held while you answer. `--foreground`,
+`--file` and `--live-only` keep the spawn in this terminal without asking, and so does a command
+that cannot ask: no terminal on stdin and stdout, `--no-input`, or `COTAL_NO_PROMPT=1`. Cancelling
+the question does nothing and exits 0.
+
+A managed launch on a terminal, picked at a question or named with `--on`, asks which folder the
+agent works in when you give no `-C` and the manager is not known to run on this host. Only a
+manager whose presence reports this machine's host name counts as being on this host, so a manager
+that reports no host is asked about too. Enter keeps `Manager's workspace (default)`: no folder is
+sent, and the manager uses its workspace root, as a launch without `-C` does. A folder you type is
+sent as typed to that manager, which resolves it on its own host with `resolve-cwd` before
+anything is launched. This terminal does not read or rewrite the path, so a Windows manager takes a
+drive or UNC path from any client. A folder the manager cannot use is shown with its reason and
+asked again, with your text left to edit. The question holds no manager credential: the folder is
+checked under a view of that manager acquired after you answer, and the launch acquires its own. A
+`Folder chosen` receipt names the folder and the host, and for a typed folder it gives the command
+with the `--on` and `-C` that skip the questions. Cancelling does nothing and exits 0. `spawn -d`
+with no `--on`, which the exchange gives to your only live manager, does not ask, and neither does
+a command that cannot ask or one with `--json`.
 
 On a user-auth mesh that runs elsewhere, a spawn in this terminal provisions its agent with your
 login, through the agent-provisioning endpoint the mesh advertises. A mesh that advertises none is
@@ -3489,7 +3514,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--role <r>` | persona's `role:` | Role override |
 | `--model <m>`, `-m` | persona's `model:` | Model override |
 | `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers) |
-| `--cwd <dir>`, `-C` | this cwd; on a managed launch, the serving manager's workspace root | Working directory to root the agent at. On a managed launch, a relative path resolves against the manager's workspace root, not your shell, and a directory that does not exist on the serving manager's host is refused before launch. |
+| `--cwd <dir>`, `-C` | this cwd; on a managed launch, the serving manager's workspace root | Working directory to root the agent at. On a managed launch, a relative path resolves against the manager's workspace root, not your shell, and a directory that does not exist on the serving manager's host is refused before launch. Without it, a terminal asks for the folder when the manager is not known to run on this host. |
 | `--prompt <text>`, `-p` | none | Initial prompt auto-submitted at start |
 | `--opt <k=v>` | none | Connector-specific launch option, repeatable. Wins per key over the persona's `launchOptions:`; a connector with no option surface refuses it |
 | `--resume <id>` | none | Fork an existing session id into the mesh; only connectors that declare resume support accept it (see [the matrix](connectors.md)). The manager records the source session id, and `ps --wide` shows it. On a managed launch with `--on <instance>`, a Claude session held on this host is carried to that instance first ([Resume a session](connect-claude.md#resume-a-session)); carrying one needs `--on` |
@@ -4188,7 +4213,9 @@ Next would run it. The question and a `Manager chosen` receipt, with the manager
 and the `--on` that skips the question, go to stderr. Cancelling the question does nothing and
 exits 0. Without a terminal on stdin and stdout, with `--no-input`, with `--json`, which implies
 `--no-input`, or with `COTAL_NO_PROMPT=1`, the command refuses as above. A `--json` caller passes
-`--on`, and the result's `target.managerInstanceId` names the manager that answered.
+`--on`, and the result's `target.managerInstanceId` names the manager that answered. A bare `spawn` asks where the agent runs
+before any of this, and a managed launch on a manager that is not known to run on this host then
+asks for its folder (see [spawn](#spawn)).
 
 A trusted hosted composition may opt into an [interactive local primary](embedding.md#interactive-manager-primary).
 Under that policy, unpinned human control selects the genuine local Manager up front, even when your

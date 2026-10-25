@@ -1,5 +1,6 @@
+import type { Readable, Writable } from "node:stream";
 import { BASELINE_LIFECYCLE_ENDPOINT, invokeCommand, remoteManagerActors, resolveService, type Presence } from "@cotal-ai/core";
-import { CommandFailure, DEFAULT_MANAGER_NAME, instanceIdShaped, renderReport, resolveMeshTarget, terminalWidth } from "@cotal-ai/workspace";
+import { CommandFailure, DEFAULT_MANAGER_NAME, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, terminalWidth } from "@cotal-ai/workspace";
 import { askManager, liveManagerIds, onInstance, onInstanceId, resolveControlTarget } from "./control.js";
 import { openEndpointConnection } from "./endpoint-client.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -187,6 +188,24 @@ async function severalLive(failure: CommandFailure, readRoster: () => Promise<re
   return ids.map((instanceId) => candidateOf(instanceId, roster.find((p) => p.card.id === `${owner}.${remoteManagerActors(instanceId).supervisor}` && p.status !== "offline")));
 }
 
+/** Your managers newest first, as each is offered in a question: by name, with its instance id and
+ *  the host, activity and process start its presence reports. */
+function managerOptions(managers: readonly ManagerCandidate[]): { newest: ManagerCandidate[]; options: { value: number; label: string; hint: string }[] } {
+  const newest = [...managers].sort((a, b) => (b.since ?? "").localeCompare(a.since ?? ""));
+  return { newest, options: newest.map((m, index) => ({ value: index, label: m.name ?? m.instanceId, hint: [m.instanceId, m.host ?? "host not reported (started by an older cotal)", m.activity, m.since ? `since ${m.since}` : null, index === 0 ? "most recent" : null].filter(Boolean).join(" · ") })) };
+}
+
+/** Record `chosen` as this terminal's pick among `managers` and write the `Manager chosen` receipt,
+ *  with `argv` again pinned to it, to stderr. */
+function choose(chosen: ManagerCandidate, managers: readonly ManagerCandidate[], argv: readonly string[]): ManagerCandidate {
+  pick = { manager: chosen, selector: selectorFor(chosen, managers) };
+  process.stderr.write(`${renderReport({ sections: [{ title: "Manager chosen", blocks: [
+    { kind: "fields", rows: [["Manager", chosen.name ?? chosen.instanceId], ["Instance", chosen.instanceId], ["Host", chosen.host ?? "not reported (started by an older cotal)"]] },
+    { kind: "lines", lines: [{ text: `To choose it without this question: ${rerunOn(argv, pick.selector)}`, tone: "hint" }] },
+  ] }] }, "rich", terminalWidth(process.stderr))}\n`);
+  return chosen;
+}
+
 /**
  * The manager to rerun a command on, asked on this terminal after its unpinned manager selection
  * was refused among several live managers: the most recently started is listed first and is the
@@ -197,11 +216,11 @@ async function severalLive(failure: CommandFailure, readRoster: () => Promise<re
 export async function pickManager(failure: CommandFailure, readRoster: () => Promise<readonly Presence[]>, argv: readonly string[]): Promise<ManagerCandidate | null | undefined> {
   const managers = await severalLive(failure, readRoster);
   if (!managers) return undefined;
-  const newest = [...managers].sort((a, b) => (b.since ?? "").localeCompare(a.since ?? ""));
+  const { newest, options } = managerOptions(managers);
   const prompts = await import("./prompts.js");
   const picked = await prompts.select({
     message: `${managers.length} of your managers are live. Which one should run this?`,
-    options: newest.map((m, index) => ({ value: index, label: m.name ?? m.instanceId, hint: [m.instanceId, m.host ?? "host not reported (started by an older cotal)", m.activity, m.since ? `since ${m.since}` : null, index === 0 ? "most recent" : null].filter(Boolean).join(" · ") })),
+    options,
     initialValue: 0,
     output: process.stderr,
   });
@@ -209,12 +228,129 @@ export async function pickManager(failure: CommandFailure, readRoster: () => Pro
     prompts.cancel("nothing was done - no manager was chosen", { output: process.stderr });
     return null;
   }
-  const chosen = newest[picked]!;
-  process.stderr.write(`${renderReport({ sections: [{ title: "Manager chosen", blocks: [
-    { kind: "fields", rows: [["Manager", chosen.name ?? chosen.instanceId], ["Instance", chosen.instanceId], ["Host", chosen.host ?? "not reported (started by an older cotal)"]] },
-    { kind: "lines", lines: [{ text: `To choose it without this question: ${rerunOn(argv, selectorFor(chosen, managers))}`, tone: "hint" }] },
-  ] }] }, "rich", terminalWidth(process.stderr))}\n`);
-  return chosen;
+  return choose(newest[picked]!, managers, argv);
+}
+
+/**
+ * Where a spawn that names no launch mode runs, asked on this terminal when several of your
+ * managers are live on the user-auth mesh `values` resolve to: in this terminal, the default, or
+ * launched by one of them and attached here, as `--on` does. The managers are the ones the exchange
+ * counts for an unpinned manager selection, read from its refusal. A selection it grants instead is
+ * dropped, and so is any refusal of a manager selection, which leaves the spawn in this terminal; any
+ * other failure is thrown. No manager credential is held while the question waits. Undefined when
+ * nothing is asked or this terminal is chosen, and null when the question is cancelled.
+ */
+export async function askSpawnPlace(values: { space?: unknown; server?: unknown }, argv: readonly string[]): Promise<ManagerCandidate | null | undefined> {
+  const flags = targetFlags(values);
+  let mode: string | undefined;
+  try { mode = resolveMeshTarget(process.cwd(), flags).mode; } catch { /* not a registered mesh: the spawn resolves its own target */ }
+  if (mode !== "user") return undefined;
+  let failure: CommandFailure | undefined;
+  try {
+    await resolveControlTarget(flags, "control-caller-privileged", undefined, { onRefusal: "throw" });
+  } catch (error) {
+    failure = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure() : undefined;
+    if (!failure) throw error;
+  }
+  if (!failure) return undefined;
+  const managers = await severalLive(failure, () => rosterOf(flags));
+  if (!managers) {
+    if (failure.code === "PERMISSION_DENIED") return undefined;
+    throw failure;
+  }
+  const { newest, options } = managerOptions(managers);
+  const prompts = await import("./prompts.js");
+  const picked = await prompts.select({
+    message: `${managers.length} of your managers are live. Where should the agent run?`,
+    options: [{ value: -1, label: "This terminal", hint: "default" }, ...options],
+    initialValue: -1,
+    output: process.stderr,
+  });
+  if (prompts.isCancel(picked)) {
+    prompts.cancel("nothing was done - no place was chosen", { output: process.stderr });
+    return null;
+  }
+  return picked === -1 ? undefined : choose(newest[picked]!, managers, argv);
+}
+
+/** A manager with the `--on` value that picks it. */
+export interface ManagerSelection {
+  readonly manager: ManagerCandidate;
+  readonly selector: string;
+}
+
+/** The manager this terminal picked for the running command, if it picked one. */
+let pick: ManagerSelection | undefined;
+
+/** The manager that `instanceId` names, as this terminal picked it or as your live managers'
+ *  presence shows it, with the `--on` value that picks it. Presence is read with the roster's
+ *  read-only view, so no manager credential is acquired. Off a user-auth mesh, whose presence does
+ *  not carry instance ids, or for a manager presence does not show, its host is unknown. */
+export async function managerSelection(values: { on?: unknown; space?: unknown; server?: unknown }, instanceId: string): Promise<ManagerSelection> {
+  if (pick?.manager.instanceId === instanceId) return pick;
+  const flags = targetFlags(values);
+  let mode: string | undefined;
+  try { mode = resolveMeshTarget(process.cwd(), flags).mode; } catch { /* not a registered mesh: presence names no instance */ }
+  const manager = mode === "user" ? (await yourLiveManagers(flags)).find((m) => m.instanceId === instanceId) : undefined;
+  return { manager: manager ?? candidateOf(instanceId, undefined), selector: String(values.on ?? instanceId) };
+}
+
+/** A folder a manager resolved on its host with `resolve-cwd`, or its reason for refusing the path. */
+export type FolderCheck = { readonly cwd: string } | { readonly refusal: string };
+
+/** `argv` with `-C <folder>` before a `--` that ends the flags. */
+function withCwd(argv: readonly string[], folder: string): string[] {
+  const end = argv.indexOf("--");
+  return end === -1 ? [...argv, "-C", folder] : [...argv.slice(0, end), "-C", folder, ...argv.slice(end)];
+}
+
+/** What a launch without `-C` uses, as the folder question and its receipt name it. */
+const MANAGER_WORKSPACE = "Manager's workspace (default)";
+
+/**
+ * The folder on the selected manager's host that an agent it launches works in, asked on this
+ * terminal. Enter keeps the manager's workspace, where a launch without `-C` runs, and gives
+ * undefined. A typed path is passed as typed to `check`, which has that manager resolve it on its
+ * host, because only the manager knows its own path rules. A path it refuses is shown with the
+ * manager's reason and asked again, with the typed text to edit.
+ * The question and a `Folder chosen` receipt go to `io.output`, stderr by default. Null when the
+ * question is cancelled.
+ */
+export async function askManagerFolder(
+  selection: ManagerSelection,
+  argv: readonly string[],
+  check: (path: string) => Promise<FolderCheck>,
+  io: { input?: Readable; output?: Writable } = {},
+): Promise<string | null | undefined> {
+  const output = io.output ?? process.stderr;
+  const host = selection.manager.host ?? "the manager's host";
+  const prompts = await import("./prompts.js");
+  let typed = "";
+  for (;;) {
+    const answer = await prompts.text({
+      message: `Which folder on ${host} should the agent work in?`,
+      placeholder: `${MANAGER_WORKSPACE}; type an absolute path to change it`,
+      initialValue: typed,
+      input: io.input,
+      output,
+    });
+    if (prompts.isCancel(answer)) {
+      prompts.cancel("nothing was done - no folder was chosen", { output });
+      return null;
+    }
+    typed = answer ?? "";
+    const checked = typed ? await check(typed) : undefined;
+    if (checked && "refusal" in checked) {
+      prompts.log.warn(`the manager on ${host} cannot use it: ${checked.refusal}`, { output });
+      continue;
+    }
+    const folder = checked?.cwd;
+    output.write(`${renderReport({ sections: [{ title: "Folder chosen", blocks: [
+      { kind: "fields", rows: [["Folder", folder ?? MANAGER_WORKSPACE], ["Host", selection.manager.host ?? "not reported"]] },
+      ...(folder === undefined ? [] : [{ kind: "lines" as const, lines: [{ text: `To choose it without this question: ${rerunOn(withCwd(argv, folder), selection.selector)}`, tone: "hint" as const }] }]),
+    ] }] }, "rich", terminalWidth(output as { isTTY?: boolean; columns?: number }))}\n`);
+    return folder;
+  }
 }
 
 /** `failure` restated as the choice it is, when it is the refusal of an unpinned manager selection
