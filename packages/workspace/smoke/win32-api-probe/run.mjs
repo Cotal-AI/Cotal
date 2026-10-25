@@ -25,9 +25,10 @@ if (process.argv[2] === "--hold") {
   const runs = [
     ["probe as a non-detached Node child (inside Node's job)", probe, ["all"], false],
     ["probe as a detached Node child", probe, ["all"], true],
-    ["probe under the restricted token", probe, ["run-restricted", probe, "all", "--as-restricted"], false],
+    ["probe with console-less helpers", probe, ["all", "--no-console"], false],
+    ["probe as the non-admin restricted child", probe, ["run-restricted", probe, "all", "--as-restricted", "--no-console"], false],
     ["system ID, unpackaged", sysid, [], false],
-    ["system ID under the restricted token", probe, ["run-restricted", sysid], false],
+    ["system ID as the non-admin restricted child", probe, ["run-restricted", sysid], false],
     ["custodian started non-detached by Node, Node killed", probe, ["node-chain", process.execPath, self, "0"], false],
     ["custodian started detached by Node, Node killed", probe, ["node-chain", process.execPath, self, "1"], false],
   ];
