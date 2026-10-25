@@ -326,7 +326,7 @@ try {
     const besideService = cli(home, "space", "delete", space, "--yes", "--json");
     check("space delete beside it refuses LIFECYCLE_BLOCKED, naming its service stop and then the delete again",
       besideService.status === 2 && besideService.env?.error?.code === "LIFECYCLE_BLOCKED" && /^services of this space still run here \(idle\)/.test(besideService.env.error.message) &&
-        besideService.env.error.remedy === `stop each service with cotal service stop idle --instance ${String(idle)} --space ${space} --yes, then run cotal space delete ${space} again`, shown(besideService));
+        besideService.env.error.remedy === `stop each service with \`cotal service stop idle --instance ${String(idle)} --space ${space} --yes\`, then run \`cotal space delete ${space}\` again`, shown(besideService));
     const idleStop = cli(root, "service", "stop", "idle", "--instance", String(idle), "--space", space, "--yes", "--json");
     check("the named service stop stops it", idleStop.status === 0, shown(idleStop));
     // The typed confirmation was given for the message counts it showed, so a message stored while it

@@ -261,7 +261,7 @@ try {
   cli("space", "forget", "crash");
   const moved = join(base, "moved $x 'q'");
   renameSync(root, moved);
-  const adopt = /adopt it with cotal space create crash --adopt --root (.+?); this machine/.exec(cliIn(moved, "whoami").out)?.[1];
+  const adopt = /adopt it with `cotal space create crash --adopt --root (.+?)`; this machine/.exec(cliIn(moved, "whoami").out)?.[1];
   check("a folder moved with its stack journal names space create --adopt with the new folder quoted", shellWords(adopt) === `${moved}\n`, adopt);
   rmSync(home, { recursive: true, force: true });
   rmSync(base, { recursive: true, force: true });

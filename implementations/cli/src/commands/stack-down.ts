@@ -166,7 +166,7 @@ function disabledJetStreamStop(journal: StackJournal, manager: Member, write: No
 function scopeRefusals(journal: StackJournal): string | undefined {
   const maintenance = stackMaintenanceFence(journal.root, journal);
   if (maintenance.fenced) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance attempt; the controller stack was not stopped under it", { target: { root: journal.root } });
-  stackScopeRefusals(journal, "bare cotal down");
+  stackScopeRefusals(journal, "bare `cotal down`");
   return maintenance.admittedRestore;
 }
 

@@ -993,7 +993,7 @@ export async function withMatchingKeys(error: unknown, runId: string, stepKey: s
   // A step name comes from the program, so it is escaped and quoted before the terminal shows it.
   const quoted = (key: string) => `'${oneLine(key).replaceAll("'", `'\\''`)}'`;
   const remedy = matches.length === 1
-    ? `the open request ${quoted(matches[0]!)} matches; answer it with cotal run answer ${runId} ${quoted(matches[0]!)} --value '<json>'${values.on ? ` --on ${values.on}` : ""}`
+    ? `the open request ${quoted(matches[0]!)} matches; answer it with \`cotal run answer ${runId} ${quoted(matches[0]!)} --value '<json>'${values.on ? ` --on ${values.on}` : ""}\``
     : `the open requests that match are ${matches.map(quoted).join(", ")}; pass one of them as the step`;
   return new CommandFailure(error.outcome, error.code, error.message, { remedy, target: error.target, ...(error.native ? { native: error.native } : {}) });
 }

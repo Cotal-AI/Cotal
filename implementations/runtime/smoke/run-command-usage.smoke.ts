@@ -454,9 +454,9 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const one = await withMatchingKeys(notFound(), "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "Proceed?"), row("/checkpoint:done#0", "pending", "Done?")));
   c("an answer to a checkpoint's name names its open key and the command, with the code and message kept",
     one instanceof CommandFailure && one.code === "TARGET_NOT_FOUND" && one.message === "the run has no open checkpoint at frage"
-    && one.remedy === "the open request '/checkpoint:frage#0' matches; answer it with cotal run answer run-1 '/checkpoint:frage#0' --value '<json>'", one);
+    && one.remedy === "the open request '/checkpoint:frage#0' matches; answer it with `cotal run answer run-1 '/checkpoint:frage#0' --value '<json>'`", one);
   const pinned = await withMatchingKeys(notFound(), "run-1", "frage", { on: "mgr-1" }, view(row("/checkpoint:frage#0", "pending", "Proceed?")));
-  c("the suggested command keeps an explicit --on", pinned instanceof CommandFailure && pinned.remedy?.endsWith(" --on mgr-1") === true, pinned);
+  c("the suggested command keeps an explicit --on", pinned instanceof CommandFailure && pinned.remedy?.endsWith(" --on mgr-1`") === true, pinned);
   const two = await withMatchingKeys(notFound(), "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "A?"), row("/fanOut:x#0/checkpoint:frage#1", "pending", "B?")));
   c("several matching open keys are listed to pick from", two instanceof CommandFailure && two.remedy === "the open requests that match are '/checkpoint:frage#0', '/fanOut:x#0/checkpoint:frage#1'; pass one of them as the step", two);
   const settled = notFound();
