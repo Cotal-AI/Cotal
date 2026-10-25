@@ -505,6 +505,18 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     return 1;
   }
 
+  // npm replaces the live package tree. Keep custody until it and the verified reconcile
+  // finish, even when the terminal sends Ctrl-C during that replacement.
+  let interrupted = 0;
+  const interrupt = (code: number): void => {
+    if (interrupted) return;
+    interrupted = code;
+    rt.err(c.yellow("Interrupt received; finishing installation and reconciliation before exiting."));
+  };
+  const onInt = (): void => interrupt(130);
+  const onTerm = (): void => interrupt(143);
+  process.on("SIGINT", onInt);
+  process.on("SIGTERM", onTerm);
   try {
   rt.out(c.bold("cotal-ai binary"));
   rt.out(c.dim(`installing cotal-ai@${targetVersion} into npm's global installation; this ${current} process remains loaded until the verified global copy takes over`));
@@ -544,9 +556,13 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     return child.status ?? 1;
   }
   rt.out(c.green(`✓ cotal-ai@${targetVersion} installed globally and reconciled`));
-  return 0;
+  return interrupted;
   } finally {
-    releaseGlobal();
+    try { releaseGlobal(); }
+    finally {
+      process.off("SIGINT", onInt);
+      process.off("SIGTERM", onTerm);
+    }
   }
 }
 
@@ -660,6 +676,10 @@ async function runGlobalProcess(
   try {
     const child = withInstallUmask(() => spawn(file, args, {
       env,
+      // A separate process group keeps terminal interrupts out of npm's live replacement.
+      // Keep the ChildProcess referenced and await close; this is not a background update.
+      detached: true,
+      windowsHide: true,
       windowsVerbatimArguments,
       ...(inherit ? { stdio: "inherit" as const } : {}),
     }));
