@@ -157,6 +157,44 @@ async function registeredManagersWithPersona(flags: { space?: string; server?: s
   return holding;
 }
 
+/** A live manager of yours that runs an agent, with the shortest `--on` value that picks it. */
+export interface RunningOn {
+  readonly instanceId: string;
+  readonly selector: string;
+  readonly host: string | null;
+}
+
+/** Which live manager of yours runs the agent `name`, as each reports when asked: `custodian`, the
+ *  manager a host says holds it, is asked first. `runsOn` is `null` when none reports it, and
+ *  `custodian` is that manager when it is live, whether or not it reports the agent. A manager that
+ *  cannot be asked is left out. On a static or open mesh the managers are those the space's
+ *  registry lists. */
+export async function whereAgentRuns(values: { space?: unknown; server?: unknown }, name: string, custodian?: string): Promise<{ runsOn: RunningOn | null; custodian: RunningOn | null }> {
+  const flags = targetFlags(values);
+  const user = resolveMeshTarget(process.cwd(), flags).mode === "user";
+  let managers: ManagerCandidate[];
+  if (user) managers = await yourLiveManagers(flags);
+  else {
+    const t = await resolveControlTarget(flags, "control-caller-privileged", undefined, { onRefusal: "throw" });
+    managers = (await liveManagerIds(t.space, t.server, t.auth)).map((instanceId) => candidateOf(instanceId, undefined));
+  }
+  const found = (m: ManagerCandidate): RunningOn => ({ instanceId: m.instanceId, selector: user ? selectorFor(m, managers) : m.instanceId, host: m.host });
+  const kept = managers.find((m) => m.instanceId === custodian);
+  for (const manager of kept ? [kept, ...managers.filter((m) => m !== kept)] : managers) {
+    try {
+      const pinned = await resolveControlTarget(flags, "control-caller-privileged", manager.instanceId, { onRefusal: "throw" });
+      const row = await askManager(pinned.space, pinned.server, "status", { name }, pinned.auth, "owner", 5_000, { instanceId: manager.instanceId });
+      if (row.ok) return { runsOn: found(manager), custodian: kept ? found(kept) : null };
+    } catch { /* a manager that cannot be asked is not named */ }
+  }
+  return { runsOn: null, custodian: kept ? found(kept) : null };
+}
+
+/** Whether presence on the mesh `values` resolve to shows a live peer named `name`. */
+export async function nameOnline(values: { space?: unknown; server?: unknown }, name: string): Promise<boolean> {
+  return (await rosterOf(targetFlags(values))).some((p) => p.card.name === name && p.status !== "offline");
+}
+
 /** `argv` with `--on` set to `selector`, replacing a `--on` it already holds. `--on` goes before a
  *  `--` that ends the flags, so it is still read as a flag. */
 function withPin(argv: readonly string[], selector: string): string[] {

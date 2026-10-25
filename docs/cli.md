@@ -3437,13 +3437,30 @@ On a user-auth mesh that runs elsewhere, a spawn in this terminal provisions its
 login, through the agent-provisioning endpoint the mesh advertises. A mesh that advertises none is
 refused in one line. The line names the remedies: ask the mesh operator to advertise one, run the
 agent where the mesh runs, or add `-d` to launch it through one of your managers. A one-time
-enrollment, described below, also stands in for the endpoint.
+enrollment, described below, also stands in for the endpoint. An answer from the endpoint other
+than a 401, which names `cotal login`, or a held name, described next, says whether the agent was
+provisioned is unknown (`OPERATION_UNKNOWN`, exit 3).
+
+A spawn whose name is already taken checks what holds it. When a live manager of yours runs that
+agent, or presence or the mesh reports it online, the spawn launches nothing, says where it runs,
+and exits 0 with the outcome `no-op`. In a terminal it then attaches to that agent. With `-d`,
+`--json`, or no terminal it prints the `cotal attach <name> --on <manager>` command instead. When
+the mesh answers that the name is held by a lifecycle that does not run
+([Held agent names](identity-and-auth.md#held-agent-names)), the spawn releases that one lifecycle
+by its UID with your login and asks for the name again, for a managed launch and a spawn in this
+terminal alike. Nothing is adopted: the agent starts under a new lifecycle. While the mesh says the
+name is still retiring, the spawn asks again every 5 seconds for up to 2 minutes, then refuses
+`LIFECYCLE_BLOCKED`. A release the mesh cannot confirm is `OPERATION_UNKNOWN` and is not repeated.
+A lifecycle that a live manager of yours holds without reporting it running is not released: it may
+still be starting there, so the spawn refuses `CONFLICT` and names that manager. Any other held-name
+refusal stands as the manager or the mesh gave it, as `CONFLICT`.
 
 On a user-auth mesh, an ordinary spawn in this terminal without `--name` allocates the first free actor
 in the persona's series: `default_agent`, `default_agent_2`, `default_agent_3`, and so on. Held
-local material and existing grants are occupied, even when no presence is visible. Allocation
-preserves the existing session and its credentials. An explicit `--name`, a signed enrollment,
-and a managed handoff pin an identity and refuse a collision instead of renaming it. Authorization,
+local material, existing grants and a name whose agent is online are occupied; local material and
+grants count even when no presence is visible. A name held only by a lifecycle that does not run is
+released and reused, as above. Allocation preserves the existing session and its credentials. An explicit `--name`, a
+signed enrollment, and a managed handoff pin an identity and never rename it. Authorization,
 network and malformed-provisioning failures are not reasons to try another name.
 
 For a foreground spawn onto a remote user-auth mesh, a one-time enrollment may stand in for a cached
@@ -8674,7 +8691,12 @@ without bounds. Ctrl-C, termination and closed output end the view, not the serv
 
 `auth retire <full-lifecycle-uid> [--space <space>] [--yes]` validates the native UID and resolves
 the selected auth target. A lifecycle UID is 26 to 32 lowercase letters and digits, and
-`cotal ps --wide` shows each seat's. The CLI then refuses `UNSUPPORTED` (exit 2): the registered auth
+`cotal ps --wide` shows each seat's. On a user-auth mesh that runs elsewhere and advertises an
+agent-provisioning endpoint, it releases that one lifecycle there with your login
+([Held agent names](identity-and-auth.md#held-agent-names)) and reports the mesh's answer: revoked,
+already revoked (`no-op`), `TARGET_NOT_FOUND` (exit 2) for a lifecycle the mesh does not list, or
+`OPERATION_UNKNOWN` (exit 3) for a release the mesh could not confirm, which is not repeated. A
+revoked lifecycle may still be retiring. On any other mesh the CLI refuses `UNSUPPORTED` (exit 2): the registered auth
 endpoint accepts retirement only from the requester's own current serve identity and gate, which this
 CLI does not have. It neither borrows a manager identity nor substitutes the interactive or managed
 loopback host doors. `--yes` cannot create authority, and no retirement request is sent. The refusal

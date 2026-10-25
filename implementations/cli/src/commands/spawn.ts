@@ -48,6 +48,7 @@ import {
   type FlagValues,
   type LaunchOpts,
   type LaunchSpec,
+  type AgentLifecycleRelease,
   type ManagedLifecycleHandoff,
   type ParsedArgs,
   type SecretStore,
@@ -95,6 +96,7 @@ import {
   type MeshTarget,
   type SpaceMaterialComposition,
   recordOperationSpace,
+  resolveMeshTarget,
 } from "@cotal-ai/workspace";
 import { c, stderrLine } from "../ui.js";
 import { liveMeshNames } from "../lib/live-names.js";
@@ -112,6 +114,8 @@ import { callerHarness, missingPersona, spawnPersona, spawnUsesManager } from ".
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
 import { attachSeat } from "./agents.js";
+import { AgentAlreadyRunning, heldAnswer, settleHeldName } from "../lib/held-name.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { extensionNames, materializeExtension } from "../ext-loader.js";
 import { claimManagedHandoff, holdsManagedHandoff, managedHandoffRefusal } from "../managed-handoff.js";
 import {
@@ -385,7 +389,7 @@ async function provisionFreshForeground<T>(
     try {
       return { name, provisioned: await provision(name) };
     } catch (e) {
-      if (!autoName || !(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError)) throw e;
+      if (!autoName || !(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError || e instanceof AgentAlreadyRunning)) throw e;
       occupied.add(name);
     }
   }
@@ -644,7 +648,7 @@ export async function launchManagedPersona(
   const toStdout = !observer && presentationOf(values) !== "json";
   (toStdout ? console.log : console.error)(renderReport({ sections: [{ title: "Managed launch", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Manager selector", on ?? t.auth.managerInstanceId ?? "native class selection"], ["Persona", ref], ["File source", managerConfigRef ? `${managerConfigRef} · manager execution host` : "selected manager's persona catalog"], ["File transfer", "none"]] }, { kind: "lines", lines: [{ text: "The accepting manager validates its own visible file before allocation. No local file is uploaded, and a pin never selects a replacement manager.", tone: "hint" }] }] }] }, presentationOf(values) === "plain" ? "plain" : "rich", terminalWidth(toStdout ? process.stdout : process.stderr)));
   for (const line of wrapWords("waiting for the manager: it answers when it refuses the launch, or when the agent joins or exits (at most about 30s) …", terminalWidth(process.stderr))) console.error(c.dim(line));
-  const reply = await askManager(t.space, t.server, "start", {
+  const start = () => askManager(t.space, t.server, "start", {
     name: ref,
     identity: values.name,
     role: values.role,
@@ -676,9 +680,22 @@ export async function launchManagedPersona(
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
     // `--on <instance>` pins the spawn to that exact manager instance (P2 item 3 multi-manager).
   }, t.auth, "owner", START_TIMEOUT_MS, { instanceId: on });
+  // A refusal before execution launched nothing, so the launch is sent again once a name held by a
+  // lifecycle that is not running is released. A name that runs is not launched a second time.
+  let reply: Awaited<ReturnType<typeof start>>;
+  try {
+    let mesh: MeshTarget | undefined;
+    try { mesh = resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server }); } catch { /* no registered mesh: nothing to release */ }
+    reply = await settleHeldName(flags, start, (o) => "value" in o && !o.value.ok && o.value.nativeOutcome === "not-executed"
+      ? heldAnswer({ code: o.value.code, details: o.value.details, message: o.value.error ?? "" }, values.name) : undefined, meshRelease(mesh));
+  } catch (e) {
+    if (!(e instanceof AgentAlreadyRunning)) throw e;
+    if (observer) throw new CommandFailure("refused", "CONFLICT", `${e.message}; nothing new was launched`, { target: { space: t.space, agent: e.agent, managerInstanceId: e.manager?.instanceId ?? null } });
+    return reportAlreadyRunning(e, values, t.space, t.server);
+  }
   const target = { space: t.space, managerInstanceId: reply.managerInstanceId ?? on ?? null, managerEpoch: reply.managerEpoch ?? null, ...(reply.intent ? { requestId: reply.intent.requestId, requestedGoalId: reply.intent.requestedGoalId ?? null } : {}), ...(reply.request ? { acceptedGoalId: reply.request.goalId ?? null } : {}) };
   if (!reply.ok) {
-    const refusal: Record<string, RefusalCode> = { "permission-denied": "PERMISSION_DENIED", "unauthenticated": "AUTH_REQUIRED", "not-found": "TARGET_NOT_FOUND", "unavailable": "TARGET_UNAVAILABLE", "bad-request": "SCHEMA_INVALID", "failed-precondition": "LIFECYCLE_BLOCKED", "already-exists": "CONFLICT", "unimplemented": "UNSUPPORTED" };
+    const refusal: Record<string, RefusalCode> = { "permission-denied": "PERMISSION_DENIED", "unauthenticated": "AUTH_REQUIRED", "not-found": "TARGET_NOT_FOUND", "unavailable": "TARGET_UNAVAILABLE", "bad-request": "SCHEMA_INVALID", "failed-precondition": "LIFECYCLE_BLOCKED", "already-exists": "CONFLICT", "conflict": "CONFLICT", "unimplemented": "UNSUPPORTED" };
     const code = reply.code === undefined ? undefined : refusal[reply.code];
     const native = { code: reply.code, outcome: reply.nativeOutcome, ...(reply.request || reply.intent ? { detail: { request: reply.request ?? null, intent: reply.intent ?? null, observation: reply.observationCause ?? null } } : {}) };
     // The broker attested that no manager received an unpinned launch: none takes the class queue.
@@ -732,6 +749,40 @@ export async function launchManagedPersona(
   if (verdict.kind === "failed") throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but attachment did not complete; no replacement was launched", { target, changed: [result], native: { detail: { message: verdict.message } }, remedy: "inspect the original agent and reattach; do not relaunch" });
   if (verdict.kind === "gone" && observer) throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but its exact native terminal was unavailable before setup could open the view; no replacement was launched", { target, changed: [result], remedy: "inspect the original lifecycle and manager before another startup" });
   console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target unavailable" : verdict.reason === "detached" ? "Detached" : "Attach session ended", blocks: [{ kind: "fields", rows: [["Agent", d.name], ["Identity", d.id], ["Manager", reply.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Leaving the view sent no stop request. The original lifecycle was not replaced.", tone: "hint" }] }] }] }, "rich", terminalWidth(process.stderr)));
+}
+
+/** The mesh's release of one agent lifecycle, when `mesh` is a remote user-auth mesh that advertises
+ *  an agent-provisioning endpoint and the auth provider can call it there. */
+function meshRelease(mesh: MeshTarget | undefined): ((lifecycleUid: string, agent: string) => Promise<AgentLifecycleRelease>) | undefined {
+  const ua = mesh?.mode === "user" && mesh.userAuth?.remote ? mesh.userAuth : undefined;
+  const url = ua?.endpoints?.agentProvisioningUrl;
+  if (!ua || !url) return undefined;
+  const provider = resolveAuthProvider();
+  if (!provider.releaseAgentLifecycle) return undefined;
+  return (lifecycleUid, agent) => provider.releaseAgentLifecycle!({ url, idpUrl: ua.idp.url, lifecycleUid, actor: agent });
+}
+
+/** The agent a spawn asked for already runs, so nothing new is launched: say where it runs, then
+ *  attach to it in this terminal unless the spawn was detached or cannot attach, or print the
+ *  command that does. */
+async function reportAlreadyRunning(running: AgentAlreadyRunning, values: { detach?: boolean; creds?: string; json?: boolean; plain?: boolean }, space: string, server: string | undefined): Promise<void> {
+  const where = running.manager;
+  const attach = where ? `${displayCmd()} attach ${shellWord(running.agent)} --on ${shellWord(where.selector)}` : null;
+  const presentation = presentationOf(values);
+  const now = where !== null && !values.detach && presentation !== "json" && canPrompt();
+  const place = where ? `on ${where.selector}${where.host && where.host !== where.selector ? ` (${where.host})` : ""}` : "on the mesh, not on a manager of yours";
+  writeResult(presentation, {
+    command: "spawn",
+    target: { space, agent: running.agent, managerInstanceId: where?.instanceId ?? null },
+    result: { kind: "already-running", name: running.agent, managerInstanceId: where?.instanceId ?? null, host: where?.host ?? null, attach },
+    noOp: true,
+  }, (r) => ({ sections: [{ title: "Already running", blocks: [{ kind: "lines", lines: [
+    `${r.name} is already running ${place}; nothing new was launched.`,
+    { text: now ? "Attaching to it now." : r.attach ? `Attach to it: ${r.attach}` : "To start a second agent, pick another name with --name <other>.", tone: "hint" },
+  ] }] }] }));
+  if (!now) return;
+  const verdict = await attachSeat({ space, server, creds: values.creds, name: running.agent }, { on: where!.instanceId, reconnect: true, onRefusal: "throw" });
+  if (verdict.kind === "failed") stderrLine("! ", `${running.agent} could not be attached: ${verdict.message}; attach to it with ${attach}`, c.yellow);
 }
 
 /** Whether the manager `on` pins can launch an agent in `path`, answered by its `resolve-cwd` over
@@ -1373,7 +1424,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     lifecycleUid = remote.material.lifecycleUid;
   } else if (remoteProvisioningUrl) {
     const selected = await provisionFreshForeground(requested, values.name === undefined, (candidate) =>
-      provisionRemoteUserForeground(target, candidate, { provisioningUrl: remoteProvisioningUrl }));
+      provisionRemoteUserForeground(target, candidate, { provisioningUrl: remoteProvisioningUrl }))
+      .catch((e: unknown) => { if (e instanceof AgentAlreadyRunning) return e; throw e; });
+    if (selected instanceof AgentAlreadyRunning) return reportAlreadyRunning(selected, values, target.space, target.server);
     name = selected.name;
     const remote = selected.provisioned;
     userAuth = remote.userAuth;
@@ -1742,8 +1795,10 @@ async function provisionRemoteUserForeground(
     // no-login gate names the `cotal login --idp …` line, a refusal carries the mesh's own reason.
     if (!provider.postAgentProvisioning)
       return fail(`the registered auth provider "${provider.name}" cannot provision agents on a remote mesh - run the agent where the mesh runs`);
+    // A name held by a lifecycle that is not running is released and asked for again.
     try {
-      body = await provider.postAgentProvisioning({ url: source.provisioningUrl, idpUrl, actor: name });
+      body = await settleHeldName({ space }, () => provider.postAgentProvisioning!({ url: source.provisioningUrl, idpUrl, actor: name }), (o) => "error" in o
+        ? heldAnswer({ code: (o.error as { code?: unknown } | null)?.code, details: (o.error as { details?: unknown } | null)?.details, message: rejectionText(o.error) }, name) : undefined, meshRelease(target));
     } catch (e) {
       materialClaim.release();
       // No sign-in refuses before any request. Any failure after the request, an endpoint refusal

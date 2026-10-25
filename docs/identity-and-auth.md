@@ -628,6 +628,35 @@ sentence naming the exact recovery, and static agent/observer/admin minting is r
 outright. The refusal is deny-new: a static cred signed before the space flipped stays
 broker-valid until the signing key is rotated ([security model](security.md)).
 
+### Held agent names
+
+A host answers a managed enrollment or an agent provisioning for a name another lifecycle holds
+with HTTP 409, and nothing is enrolled or provisioned. The stock auth service answers
+`{ "error": "<reason>" }`. A host that knows more answers a typed body:
+
+```json
+{ "error": "<reason>", "code": "AGENT_LIFECYCLE_HELD",
+  "held": { "agentId": "<registration id>", "lifecycleUid": "<uid>",
+            "custody": { "state": "known", "kind": "remote-manager", "managerInstanceId": "<instance>" },
+            "presence": "offline" } }
+```
+
+`custody.state` is `known`, `absent` or `unavailable`, and `custody.kind` is `foreground` or
+`remote-manager`. `presence` is `online`, `offline` when the agent is known to be absent, or
+`unavailable` when the host cannot tell. The client keeps that answer verbatim and passes it to the
+spawn as a `details` entry of kind `ai.cotal.auth.agent-lifecycle-held`, with the actor it was for.
+
+A mesh's agent-provisioning endpoint also releases one lifecycle, with the same login bearer.
+`GET <endpoint>` lists the caller's registrations as
+`{ "agents": [{ "id", "lifecycleUid", "actor", "revoked", "connection", ... }] }`, and
+`DELETE <endpoint>/<id>` revokes one: `{ "ok": true, "removed": true }`, or
+`{ "ok": true, "removed": false, "alreadyRevoked": true }` for one already revoked. A 404 is a
+registration it does not have and a 503 is a release it could not confirm. The client releases only
+the unrevoked registration at the one lifecycle it was asked for, and refuses when the list holds
+more than one. A revoked registration may still be retiring, so the name it held can stay refused
+for a while after the release. [`cotal spawn`](cli.md#spawn) and `cotal auth retire` use this
+release.
+
 ## The IdP callout contract
 
 Any OIDC identity provider that issues **EdDSA/Ed25519** JWTs plugs in here directly; a provider that

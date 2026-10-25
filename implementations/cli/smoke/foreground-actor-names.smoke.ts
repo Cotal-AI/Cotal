@@ -18,28 +18,39 @@ if (process.argv[2] === "agent-bearer") {
 if (process.argv[2] === "worker") {
   await import("../src/index.js");
   const { runCli } = await import("../src/command.js");
-  const { registry, eventChannel } = await import("@cotal-ai/core");
+  const { registry, eventChannel, AGENT_LIFECYCLE_HELD, agentLifecycleHeld, EpEnvelopeError } = await import("@cotal-ai/core");
   type Connector = import("@cotal-ai/core").Connector;
   const { cotalAuthProvider } = await import("@cotal-ai/auth");
   // With no FOREGROUND_NAMES_URL the real provider runs. This fixture has no sign-in, so it refuses
   // before any request.
   if (process.env.FOREGROUND_NAMES_URL) {
     registry.unregister("auth-provider", cotalAuthProvider.name);
-    // The provisioning double throws what the real provider throws for each answer: no failure
-    // carries a code, and a 401 names the login.
+    // The provisioning double throws what the real provider throws for each answer: a typed held
+    // 409 is a conflict carrying the host's answer, no other failure carries a code, and a 401 names
+    // the login. Its release lists and deletes the way the real provider does.
+    const url = process.env.FOREGROUND_NAMES_URL!;
     const provisioningDouble: typeof cotalAuthProvider = {
       ...cotalAuthProvider,
       async postAgentProvisioning({ actor }: { actor: string }) {
-        const response = await fetch(process.env.FOREGROUND_NAMES_URL!, {
+        const response = await fetch(url, {
           method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actor }),
         });
         if (response.ok) return response.json();
-        const reason = ((await response.json().catch(() => ({}))) as { error?: string }).error;
-        throw new Error(
-          response.status === 401
-            ? `the mesh refused this login for agent provisioning: ${reason} - your session may have expired; re-run \`cotal login --idp https://idp.example/api/auth\``
-            : `the mesh refused to provision agent "${actor}": ${reason}`,
-        );
+        const body = await response.json().catch(() => ({}));
+        const reason = (body as { error?: string }).error;
+        if (response.status === 401)
+          throw new Error(`the mesh refused this login for agent provisioning: ${reason} - your session may have expired; re-run \`cotal login --idp https://idp.example/api/auth\``);
+        const held = agentLifecycleHeld(body);
+        if (response.status === 409 && held)
+          throw new EpEnvelopeError("conflict", `the mesh did not provision agent "${actor}": ${reason}`, [{ kind: AGENT_LIFECYCLE_HELD, code: "AGENT_LIFECYCLE_HELD", actor, held }], "not-executed");
+        throw Object.assign(new Error(`the mesh's agent-provisioning endpoint answered HTTP ${response.status}: ${reason}; whether "${actor}" was provisioned is unknown`), { status: response.status, reason });
+      },
+      async releaseAgentLifecycle({ lifecycleUid, actor }: { lifecycleUid: string; actor?: string }) {
+        const { agents } = await (await fetch(`${url}/agents`)).json() as { agents: { id: string; lifecycleUid: string; actor: string; revoked: boolean }[] };
+        const row = agents.find((r) => r.lifecycleUid === lifecycleUid && r.actor === actor && !r.revoked);
+        if (!row) return { outcome: "not-found" as const };
+        const answer = await (await fetch(`${url}/agents/${row.id}`, { method: "DELETE" })).json() as { removed?: boolean };
+        return { outcome: answer.removed ? "revoked" as const : "already-revoked" as const, agentId: row.id, actor: row.actor };
       },
       async postAgentEnrollment({ url }: { url: string }) {
         const response = await fetch(url, { method: "POST" });
@@ -79,6 +90,12 @@ const idp = { url: "https://idp.example/api/auth", issuer: "https://idp.example"
 const granted = new Set<string>();
 const requests: string[] = [];
 const redeemed: string[] = [];
+const released: string[] = [];
+// A registration the host still holds for "stale_name" at a lifecycle that does not run; the first
+// request after its release is answered "still retiring", as a mesh answers while it retires.
+const liveUid = mintLifecycleUid();
+const registrations = new Map([["agt_stale_name", { id: "agt_stale_name", lifecycleUid: mintLifecycleUid(), actor: "stale_name", revoked: false, connection: "offline" }]]);
+let retiringAnswers = 1;
 const provisioning = createServer(async (request, response) => {
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -93,9 +110,31 @@ const provisioning = createServer(async (request, response) => {
     }));
     return;
   }
+  // The agent list and the release of one registration, as the release contract documents.
+  if (request.method === "GET" && request.url === "/agents") {
+    response.end(JSON.stringify({ health: "live", stockRegistration: "available", scope: "own", agents: [...registrations.values()] }));
+    return;
+  }
+  if (request.method === "DELETE" && request.url?.startsWith("/agents/")) {
+    const row = registrations.get(request.url.slice("/agents/".length));
+    released.push(row?.actor ?? "?");
+    if (row) row.revoked = true;
+    response.end(JSON.stringify({ ok: true, removed: true }));
+    return;
+  }
   const { actor } = JSON.parse(Buffer.concat(chunks).toString()) as { actor: string };
   requests.push(actor);
-  if (actor === "denied") {
+  const stale = registrations.get(`agt_${actor}`);
+  if (actor.startsWith("live_name") && actor !== "live_name_2") {
+    response.statusCode = 409;
+    response.end(JSON.stringify({ error: "fixture_live", code: "AGENT_LIFECYCLE_HELD", held: { agentId: `agt_${actor}`, lifecycleUid: liveUid, custody: { state: "known", kind: "foreground" }, presence: "online" } }));
+  } else if (stale && !stale.revoked) {
+    response.statusCode = 409;
+    response.end(JSON.stringify({ error: "fixture_stale", code: "AGENT_LIFECYCLE_HELD", held: { agentId: stale.id, lifecycleUid: stale.lifecycleUid, custody: { state: "absent" }, presence: "offline" } }));
+  } else if (stale && retiringAnswers-- > 0) {
+    response.statusCode = 409;
+    response.end('{"error":"that agent name is still retiring; retry in a few minutes"}');
+  } else if (actor === "denied") {
     response.statusCode = 403;
     response.end('{"error":"fixture_denied"}');
   } else if (actor === "expired") {
@@ -239,6 +278,28 @@ try {
   assert.equal(await unavailable.closed, 3, `a failing endpoint's outcome is unconfirmed: ${unavailable.output}`);
   assert(/Outcome: unknown/.test(unavailable.output) && /Code:\s+OPERATION_UNKNOWN/.test(unavailable.output), `a 5xx stays an unknown outcome: ${unavailable.output}`);
   assert.deepEqual(requests.slice(beforeUnavailable), ["unavailable"], "a failing endpoint is not retried under another actor");
+  // A name the host holds at a lifecycle that does not run is released by its exact UID and the
+  // agent starts under that same name, once the mesh stops saying it is still retiring.
+  writePersona("stale_name");
+  const staleStart = requests.length;
+  const stale = launch(["--name", "stale_name"]);
+  assert(await stale.ready, `a name held by a lifecycle that does not run starts after its release: ${stale.output}`);
+  assert(stale.output.split(/\r?\n/).includes("FIXTURE_READY stale_name stale_name stale_name"), "the released name runs under that same name");
+  assert.deepEqual([released, requests.slice(staleStart)], [["stale_name"], ["stale_name", "stale_name", "stale_name"]], "one release, then the same name asked for until it was granted");
+  await stop(stale);
+  // A name whose holder is online is never released: an implicit launch takes the next number,
+  // and an explicit one launches nothing and says where it runs, as a success.
+  writePersona("live_name");
+  const liveStart = requests.length;
+  const nextFree = launch();
+  assert(await nextFree.ready, `an implicit launch past an online holder runs: ${nextFree.output}`);
+  assert(nextFree.output.split(/\r?\n/).includes("FIXTURE_READY live_name_2 live_name_2 live_name_2"), "it runs under the next number");
+  assert.deepEqual([released.length, requests.slice(liveStart)], [1, ["live_name", "live_name_2"]], "the online holder was not released");
+  await stop(nextFree);
+  const named = launch(["--name", "live_name"]);
+  assert.equal(await named.ready, false, "an explicit name whose holder is online launches nothing new");
+  assert.equal(await named.closed, 0, `it is a success, not a refusal: ${named.output}`);
+  assert(/live_name is already running/.test(named.output) && released.length === 1, `it says the agent already runs, and released nothing: ${named.output}`);
   // An install can replace the bin link a seat was started through: get.cotal.ai writes a shell
   // launcher over `~/.local/bin/cotal`, which `npm i -g` had made a link to `dist/cotal.js`. The seat
   // runs its bearer command for every renewal for as long as it lives, so that command must name the
@@ -260,7 +321,7 @@ try {
     assert.equal(renewal.stdout.trim(), "foreground-names-fixture-bearer", `the bearer command still runs after an install replaced the bin link: ${JSON.stringify(bearerCmd)} ${renewal.stderr}`);
   }
   console.log("FOREGROUND ACTOR NAMING: all real-process collision controls passed");
-  emitSentinel({ passed: 33 + relinkChecks, failed: 0 });
+  emitSentinel({ passed: 42 + relinkChecks, failed: 0 });
   passed = true;
 } finally {
   for (const worker of workers) await stop(worker);

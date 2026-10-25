@@ -84,7 +84,7 @@ import {
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, EpErrorCode, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -965,10 +965,12 @@ interface ProvisionedUserAgent {
 }
 
 /** A user-mode provisioning refusal. `refused` is the host's code when the host refused the
- *  enrollment and the attempt removed every secret it had staged, so it left nothing behind. */
+ *  enrollment and the attempt removed every secret it had staged, so it left nothing behind, and
+ *  `details` are that refusal's own, such as a host's typed held answer. */
 interface UserAgentRefusal {
   error: string;
   refused?: EpErrorCode;
+  details?: EpErrorDetail[];
 }
 
 interface ManagedAgent {
@@ -4603,7 +4605,7 @@ export class Manager {
       const refusal = material === undefined && !unshredded.length ? caughtEnvelope(e) : undefined;
       return {
         error: `agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}`,
-        ...(refusal?.outcome === "not-executed" ? { refused: refusal.code } : {}),
+        ...(refusal?.outcome === "not-executed" ? { refused: refusal.code, ...(refusal.details ? { details: refusal.details } : {}) } : {}),
       };
     }
   }
@@ -6326,7 +6328,7 @@ export class Manager {
       // manager's agent) refuses cleanly at accept, rather than minting the collision and black-
       // holing on the broker/auth refusal (a pinned name live under another manager MUST refuse).
       if (this.nameInUse(identityName))
-        return { ok: false, error: `the name "${identityName}" is hard-pinned (${opts.resolved ? "manifest-declared" : "--name/identity override"}) but is already held by a live incarnation (managed here, an unmanaged foreground/connector session, or another manager's agent); a pinned same-name collision refuses at accept - pick another name or despawn the existing one` };
+        return { ok: false, code: "already-exists", error: `the name "${identityName}" is hard-pinned (${opts.resolved ? "manifest-declared" : "--name/identity override"}) but is already held by a live incarnation (managed here, an unmanaged foreground/connector session, or another manager's agent); a pinned same-name collision refuses at accept - pick another name or despawn the existing one` };
       name = identityName;
     } else {
       name = this.uniqueName(identityName);
@@ -6465,7 +6467,7 @@ export class Manager {
         });
         if ("error" in prep) {
           if (prep.refused !== undefined) hooks?.onUndone?.(prep.refused);
-          return { ok: false, error: prep.error };
+          return { ok: false, error: prep.error, ...(prep.details ? { details: prep.details } : {}) };
         }
         // THE HOST'S UID WINS (#1972). On the local arm this is the value passed in, unchanged. On
         // the hosted enrollment arm the host selected it, and from here every lifecycle-keyed thing
@@ -9142,7 +9144,9 @@ export class Manager {
       // outcome unknown.
       if (acceptance === undefined) {
         const details = reply.details;
-        rejectAccept(new EpEnvelopeError(undone ?? "failed-precondition", reply.error ?? "spawn refused at accept", details, effectStarted && undone === undefined ? undefined : "not-executed"));
+        // A hard-pinned name a live incarnation holds is the one refusal here that names its own code.
+        const code = undone ?? (reply.code === "already-exists" ? "already-exists" : "failed-precondition");
+        rejectAccept(new EpEnvelopeError(code, reply.error ?? "spawn refused at accept", details, effectStarted && undone === undefined ? undefined : "not-executed"));
         return;
       }
       // H1: `run` CATCHES its own body (a throw in buildLaunch/runtime.spawn) and RESOLVES `{ok:false}`
