@@ -771,7 +771,9 @@ warning. `clean store`, `clean all`, `reset store` and `reset space` refuse such
 [clean](#clean) and [reset](#reset) describe. A controller stack whose recorded store folder is
 missing, as after it was removed by hand, starts its broker on a new empty store there and warns
 `STORE_MISSING`: the space's history starts empty. A legacy root whose last broker served a missing
-folder warns the same.
+folder warns the same. When a controller stack's broker logged damage in a stored file since it
+started, as `status` shows in its `Store` row, `up` warns `STORE_DAMAGE_LOGGED` with the broker's
+words. It still starts the stack and repairs nothing.
 
 A file you own is set to `0600` through the open file. A symlink, a file another user owns or a name
 that is not a regular file is refused and left unchanged. A private directory is set to `0700`
@@ -3080,7 +3082,7 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `selected` | `{resolved: false, code, message}` when no mesh resolves, where `message` states why and `hints` carries the step (`code` is `registry-unreadable` when the registry directory or a record could not be read, and a `not-started` prepared space adds its `space` and `root`); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels`, `membershipFeed` and `spaceStreams`. `spaceStreams.state` is `present`, `absent` or `not-checked`; it is read for an auth or user space and an open space this machine started. When `absent`, `root` is this machine's stack of the space and `stack` is `running` or `stopped`, each `null` when unknown. `storedBytes` is what the space's account holds in the broker's JetStream file store, `null` when it was not read |
 | `services` | Selected-space local owned records: `space`, `state` (`read`, `partial` or `not-checked`), non-atomic `observedAt`, public definition/instance projections and explicit scope. An unreadable family is `null`; stored readiness is historical. Older serialized snapshots may omit this observation, which is not an empty inventory. |
 | `stackManager` | The selected space's running stack manager: `instanceId`, `pid` and `endpoint`, which is `answered`, `not-answering` or `unchecked`. Absent when no stack manager runs |
-| `store` | What the selected space's running local broker logged about writing its JetStream store: `state` `write-failed` with `pid`, `log`, `at`, `cause`, `path` and `jetStreamDisabled`, true when the broker then disabled JetStream; `full` with `used`, `cap` and `path` when the space holds more than its broker's recorded cap; `none-recorded` with `pid` and `log`; or `not-checked` with a `reason`. Absent when no space resolves |
+| `store` | What the selected space's running local broker logged about its JetStream store: `state` `write-failed` with `pid`, `log`, `at`, `cause`, `path` and `jetStreamDisabled`, true when the broker then disabled JetStream; `full` with `used`, `cap` and `path` when the space holds more than its broker's recorded cap; `damaged` with `pid`, `log`, `at` and the broker's `warning` when it logged damage in a stored file; `none-recorded` with `pid` and `log`; or `not-checked` with a `reason`. Absent when no space resolves |
 | `hints` | The hints, in the order the report prints them |
 
 `store` covers only a broker whose log is on this machine: a controller stack's `stack-broker`
@@ -3095,6 +3097,15 @@ permission error, or free space for a full disk. Then `cotal up` starts the brok
 broker also disabled JetStream, which `store.jetStreamDisabled` shows, the manager's stop cannot be
 recorded, so the Next starts with `kill -TERM <pid>` for the stack's manager on this host, then
 `cotal down --yes` and `cotal up`.
+
+When the broker logged damage in a stored file since it started, the `Store` row reads
+`damage logged` with its time and the broker's own words. The recognized warnings cover a message
+block whose records do not parse (`indexCacheBuf corrupt`), which the broker rebuilds without the
+messages from the damage on; a stream whose recovery rolled back past what a consumer had delivered;
+and a stream metafile that fails its checksum, which the broker does not load. It keeps serving what
+it can still read, so `history` holds only that. These warnings do not necessarily populate the
+`STREAM.INFO` lost-data field. For a controller stack the Next is `cotal service logs stack-broker`.
+`status` repairs nothing.
 
 When the space holds more bytes than the `--max-file-store` cap this machine recorded for its
 broker, the broker refuses every write, so the `Store` row reads `full` with the bytes stored, the
@@ -5451,7 +5462,10 @@ Reads the newest retained messages in the selected space, newest last: one chann
 channel the identity may read. The channel may be written as `#general`, and a name holding `*` or
 `>` is refused with `name one concrete channel, without wildcards` before connecting. A channel with
 no retained messages and no saved entry warns `CHANNEL_NOT_FOUND`, names the channels that hold
-messages, and reports no replay policy for it. `--limit` bounds the read, and `--since`, `--from` and `--grep` then
+messages, and reports no replay policy for it. When the space's broker runs on this machine and logged
+damage in a stored file since it started, `history` warns `STORE_DAMAGE_LOGGED` with the broker's
+words, because it serves only what it can still read. The read stays complete, as it read the stream
+the broker serves. A broker whose log is not on this machine is not checked. `--limit` bounds the read, and `--since`, `--from` and `--grep` then
 filter that window on this machine. They do not search the whole stream, and with older retained
 messages behind the window the report says that `--from` and `--grep` searched only the messages
 read. At `--limit 1000`, the most it reads, the report says older retained messages are not shown and

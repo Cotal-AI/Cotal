@@ -32,6 +32,7 @@ import { completingFlagValue, positionalsForCompletion } from "../lib/completion
 import { listDeclaredChannels } from "../lib/personas.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
 import { streamsAbsent } from "../lib/space-streams.js";
+import { brokerStoreWrite, storeDamageNotice } from "../lib/broker-store-health.js";
 import { scriptLine } from "../watch-data.js";
 
 const dmsFlag = { name: "dms", type: "boolean", description: "also read DM history (needs a DM read grant); with clear, also clear DMs" } as const;
@@ -294,8 +295,13 @@ export async function history(args: ParsedArgs): Promise<void> {
       if (e instanceof CommandFailure) throw e;
       throw new CommandFailure("failed", "OPERATION_FAILED", `history could not be read: ${e instanceof Error ? e.message : String(e)}`, { target });
     });
-    // A channel the space lacks was read in full; only the other warnings name a part not read.
-    const unread = warnings.filter((w) => w.code !== "CHANNEL_NOT_FOUND").length;
+    // Damage the space's broker on this machine logged since it started is named. A broker whose log
+    // is not on this machine is not checked.
+    const damage = conn.root ? brokerStoreWrite(conn.root, conn.space) : undefined;
+    if (damage?.state === "damaged") warnings.push({ code: "STORE_DAMAGE_LOGGED", target, message: storeDamageNotice(damage) });
+    // A channel the space lacks was read in full, and the stream was read as the broker serves it;
+    // only the other warnings name a part not read.
+    const unread = warnings.filter((w) => w.code !== "CHANNEL_NOT_FOUND" && w.code !== "STORE_DAMAGE_LOGGED").length;
     const partial = unread
       ? { message: `history could not read ${unread === 1 ? "one part" : `${unread} parts`} of what it reports; the warnings name ${unread === 1 ? "it" : "each"}` }
       : undefined;
