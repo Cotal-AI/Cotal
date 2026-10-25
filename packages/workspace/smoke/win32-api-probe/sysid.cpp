@@ -2,8 +2,9 @@
 // process. Diagnostic only, run through run.mjs. Prints the Source the ID came from and a SHA-256
 // of the ID, never the ID itself, twice per run to show it is stable within a process.
 //
-// Build from a VsDevCmd prompt (x64 or arm64):
-//   cl /nologo /O2 /MT /EHsc /std:c++17 /permissive- /W4 /I "%WindowsSdkDir%Include\%WindowsSDKVersion%cppwinrt" /Fe:sysid.exe sysid.cpp /link windowsapp.lib
+// Build from a VsDevCmd prompt (x64 or arm64). C++/WinRT needs C++20 here: under C++17 it reaches
+// for <experimental/coroutine>, which current MSVC refuses (STL1011).
+//   cl /nologo /O2 /MT /EHsc /std:c++20 /permissive- /W4 /I "%WindowsSdkDir%Include\%WindowsSDKVersion%cppwinrt" /Fe:sysid.exe sysid.cpp /link windowsapp.lib
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Security.Cryptography.h>
