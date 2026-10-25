@@ -19,7 +19,8 @@
  * Driven through the built binary in a sandboxed COTAL_HOME, from a folder that is not a project and
  * from two prepared projects. No broker is started.
  *
- * `service logs` on a log this account cannot read is refused PERMISSION_DENIED with a chmod step.
+ * `service logs` on a log this account cannot read is refused PERMISSION_DENIED with a chmod step,
+ * and `--follow` ends with that refusal as its error record.
  *
  * Run: pnpm smoke:service-target-hint
  */
@@ -137,6 +138,14 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const step = `chmod u+rw ${log}`;
     check("service logs on a log it cannot read is PERMISSION_DENIED, exit 2, naming the log and chmod u+rw",
       closed.status === 2 && closedEnvelope?.outcome === "refused" && closedEnvelope.error?.code === "PERMISSION_DENIED" && closedEnvelope.error.message === `the log ${log} cannot be read by this account (EACCES); nothing was read or changed` && closedEnvelope.error.remedy === `make it readable by you, for example with ${step}`, shown(closed));
+    // --follow used to end OPERATION_FAILED, exit 5, "the bounded private log read failed", with no
+    // file, cause or step.
+    const followed = run(["service", "logs", "printer", "--follow", "--json"], l);
+    let records: { type?: string; data?: { code?: string; message?: string; remedy?: string; reason?: string } }[] = [];
+    try { records = followed.stdout.trim().split("\n").map((line) => JSON.parse(line) as (typeof records)[number]); } catch { records = []; }
+    const failed = records.find((r) => r.type === "error")?.data;
+    check("logs --follow on it ends with one PERMISSION_DENIED error record naming the log, cause and chmod u+rw, exit 2",
+      followed.status === 2 && failed?.code === "PERMISSION_DENIED" && failed.message === closedEnvelope?.error?.message && failed.remedy === closedEnvelope?.error?.remedy && records.at(-1)?.type === "end" && records.at(-1)?.data?.reason === "read-failed", shown(followed));
     const opened = spawnSync("sh", ["-c", step], { cwd: l, encoding: "utf8" }), reread = run(["service", "logs", "printer"], l);
     check("running that step reads the log again", opened.status === 0 && reread.status === 0 && reread.stdout.includes("tick"), shown(reread));
   } finally {
