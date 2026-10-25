@@ -6946,7 +6946,11 @@ material, and is the path on a bare broker with no manager or for a run with no 
 `--by <who>` and print the same receipt as the hosted path, and `start --local` requires
 `--admit-read` and `--admit-publish` (comma-separated
 patterns or `none`), the run's channel ceiling. An entry that is not a channel or a pattern, such as
-`a b`, is refused `USAGE_INVALID` naming it. On a
+`a b`, is refused `USAGE_INVALID` naming it. When the run's status records that its program failed
+under this drive, `start --local` and `resume --local` fail `OPERATION_FAILED`, exit 5, naming the
+run, its language code and the first line of its message. Their Next is
+`cotal run show <runId> --local`, which prints the whole message. Any other error the drive ends on
+stays `unknown`, exit 3. On a
 user-auth mesh the host's own manager refuses the family by name, and `--local` has no credential
 there. A participant's manager started with `cotal supervise` hosts a logged-in user's runs through
 its issuing host: the auth callout issues the user's manager connection, and every `run` verb rides

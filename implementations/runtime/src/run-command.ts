@@ -454,7 +454,17 @@ async function drive(
       onLog: (line: { readonly scope: string; readonly values: readonly unknown[] }) => console.log(`run ${runId}: log ${logLineText(line)}`),
     };
     if (a.mode === "new") console.log(`starting run ${runId} on endpoint ${endpoint} in space ${planes.space}`);
-    const out = a.mode === "new" ? await startRun(planes.js, planes.jsm, req) : await driveRun(planes.js, planes.jsm, req);
+    let out: DriveOutcome;
+    try {
+      out = a.mode === "new" ? await startRun(planes.js, planes.jsm, req) : await driveRun(planes.js, planes.jsm, req);
+    } catch (e) {
+      // The driver records a program that failed on the run's status under this drive's lease, then
+      // rethrows its error. Only that record makes the outcome failed; any other throw stays unknown.
+      const status = (await readRunRecord(req.kv, endpoint, runId).catch(() => undefined))?.status?.value;
+      if (status?.state !== "failed" || status.holder !== who.id || status.epoch !== epoch || status.fencingToken !== fencingToken) throw e;
+      const show = `cotal run show ${runId} --local${endpoint === "manager" ? "" : ` --endpoint ${endpoint}`}`;
+      throw new CommandFailure("failed", "OPERATION_FAILED", `run ${runId} failed${status.failure?.code ? ` (${status.failure.code})` : ""}: ${(status.failure?.message ?? (e as Error).message).split("\n")[0]}`, { target: { space: planes.space, endpoint, run: runId }, remedy: `read its recorded failure with ${show}` });
+    }
     reportOutcome(runId, out);
   } finally {
     await mediator.nc.drain().catch(() => mediator.nc.close());

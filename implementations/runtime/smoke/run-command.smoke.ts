@@ -14,6 +14,9 @@
  * command's, so the completing program here is pure and the durable effect exercised end-to-end is
  * a checkpoint — its resolve path needs no timer.
  *
+ * A local start whose program fails reports the failure the run's status records: `OPERATION_FAILED`,
+ * exit 5, the first line of the message, and `run show --local` as the next step.
+ *
  * Run: pnpm smoke:runtime-run-command   (needs nats-server on PATH; part of smoke:ci)
  */
 import { spawn } from "node:child_process";
@@ -471,6 +474,26 @@ let P = "";
   c("and the reason names the handle and the rule, so an operator knows what to write instead",
     refused !== undefined && refused.message.includes("is not in this run's roster") && refused.message.includes("dev#u"),
     refused?.message?.slice(0, 200));
+  c("the start reports the recorded failure as failed OPERATION_FAILED, exit 5, naming the run and its local read",
+    isCommandFailure(refused) && refused.outcome === "failed" && refused.code === "OPERATION_FAILED" && exitCode(refused.outcome, refused.code) === 5
+      && refused.message.startsWith(`run ${aid} failed`) && refused.remedy === `read its recorded failure with cotal run show ${aid} --local`,
+    refused);
+}
+
+// A failure whose message runs over several lines is reported by its first line, as the record keeps
+// it whole for `run show` to print line by line.
+{
+  reset();
+  const THROWS = join(sd, "throws.cotal.js");
+  writeFileSync(THROWS, 'throw "erste Zeile\\nzweite Zeile"\n');
+  const refused = await wf(["start"], { file: THROWS }).then(() => undefined, (e: Error) => e);
+  const tid = startedId() ?? "";
+  const rec = await record(tid);
+  c("a program that throws a two-line message is recorded failed with the whole message",
+    rec?.status?.value.state === "failed" && rec.status.value.failure?.message.includes("erste Zeile\nzweite Zeile") === true, rec?.status?.value);
+  c("...and its start fails OPERATION_FAILED with only the first line, so no newline reaches the one-line report",
+    isCommandFailure(refused) && refused.code === "OPERATION_FAILED" && refused.message.endsWith("erste Zeile") && !refused.message.includes("\n") && !refused.message.includes("zweite"),
+    refused?.message);
 }
 
 // ── 6b) a parked run survives its driver dying: a fresh holder's resume attaches and completes ─
@@ -816,7 +839,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 91;
+const DECLARED = 94;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
