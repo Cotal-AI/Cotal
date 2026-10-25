@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/cli": patch
+"@cotal-ai/connector-core": patch
 ---
 
 `cotal up` in a new folder under your home folder, such as `~/Desktop/test`, now starts there. Once
