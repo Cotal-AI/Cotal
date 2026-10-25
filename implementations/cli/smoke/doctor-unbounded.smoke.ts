@@ -151,6 +151,9 @@ try {
     const now = Math.floor(Date.now() / 1000);
     const expiredLabel = join(credsDir, "erin.creds");
     const expiredIncarnation = join(credsDir, `frank.${mintLifecycleUid()}.creds`);
+    // An observer's replacement is minted with --profile observer again, and no manager runs it.
+    const expiredObserver = join(credsDir, "grace.creds");
+    writeFileSync(expiredObserver, await mintCreds(auth, newIdentity(), "observer", { expiresAt: now - 60 }), { mode: 0o600 });
     writeFileSync(expiredLabel, await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid(), expiresAt: now - 60, allowSubscribe: ["general", "ops"], allowPublish: ["general"], role: "rev" }), { mode: 0o600 });
     writeFileSync(expiredIncarnation, await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid(), expiresAt: now - 60 }), { mode: 0o600 });
     const { envelope, code } = await diagnose();
@@ -163,9 +166,10 @@ try {
     assert.equal(item(expiredIncarnation)?.state, "expired", "fixture: the incarnation file has expired");
     assert.match(item(expiredIncarnation)?.repair ?? "", /^inspect this original lifecycle under its manager/, "an expired incarnation keeps the managed guidance");
     assert.ok(!item(expiredIncarnation)?.repair?.includes("--replace"), "  and names no --replace");
-    assert.equal(envelope.result.findings, 3, "the three files are findings");
+    assert.equal(item(expiredObserver)?.repair, `if \`${displayCmd()} auth mint\` wrote it, replace it with ${replaceFor("grace", " --profile observer")}`, "an expired observer label's file names --replace with --profile observer, and no managed renewal");
+    assert.equal(envelope.result.findings, 4, "the four files are findings");
     assert.equal(code, 5, "exit 5");
-    for (const path of [incarnation, expiredLabel, expiredIncarnation]) rmSync(path);
+    for (const path of [incarnation, expiredLabel, expiredIncarnation, expiredObserver]) rmSync(path);
   }
 
   // 5. Control: without the unbounded and expired files the same root has no findings.
