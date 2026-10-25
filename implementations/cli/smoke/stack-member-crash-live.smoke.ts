@@ -26,8 +26,9 @@
  *     pin and never signals that process. A record whose pin matches that live process refuses
  *     `down stack-broker` and bare `down`, naming its path and pid in the message and the Next, and
  *     the `down stack-broker` dry run warns with that refusal. Once the process ends, `down
- *     stack-broker` refuses on the running manager, naming its exact `cotal service stop`, its dry
- *     run warns with that refusal, and `down` removes the record.
+ *     stack-broker` refuses on the running manager and a service the user added, naming each exact
+ *     `cotal service stop` with the added service's first, then bare `down`, and its dry run warns
+ *     with that refusal. Once that service stops, `down` stops the stack and removes the record.
  *  7. Started again with its delivery member stopped with SIGSTOP, as a hang, `down --yes` sends
  *     SIGKILL once 15 seconds pass after SIGTERM, and a `STOP_ESCALATED` warning names the member
  *     and its pid. It keeps the delivery credential, since that daemon never released its lease, so
@@ -221,8 +222,13 @@ try {
   check("...and the record stays and the process was not signalled", existsSync(record) && alive(held));
   other.kill("SIGKILL");
   for (let i = 0; i < 50 && alive(held); i++) await sleep(100);
-  // With that process gone, the running manager is what the broker's stop would cut off. The stop
-  // refuses naming its exact stop, and its dry run warns with the same refusal.
+  // With that process gone, the running manager and a service the user added are what the broker's
+  // stop would cut off. The stop refuses naming each exact stop, and its dry run warns with the same
+  // refusal. Bare `down` refuses beside that service, so the Next names its stop before bare `down`.
+  writeFileSync(join(base, "idle.json"), JSON.stringify({ schemaVersion: 1, space: "crash", launch: { type: "process", executable: process.execPath, args: ["-e", "setTimeout(() => {}, 600000)"], cwd: root }, readiness: { type: "process", timeoutMs: 10000 } }));
+  const idleAdded = cli("service", "add", "idle", "--file", join(base, "idle.json"), "--space", "crash", "--json");
+  const idle = (doc(cli("service", "start", "idle", "--space", "crash", "--json"))?.result as { instanceId?: string } | undefined)?.instanceId;
+  check("rig: a service the user added runs beside the manager", idleAdded.status === 0 && typeof idle === "string", idleAdded.out);
   const instances = JSON.parse(cli("service", "--json").stdout).result?.instances as { definition: string; instanceId: string; observedProcess: string }[] | undefined;
   const managerId = instances?.find((row) => row.definition === "stack-manager" && row.observedProcess === "running")?.instanceId;
   const managerPreview = cli("down", "stack-broker", "--dry-run", "--json");
@@ -233,6 +239,12 @@ try {
       && refusal.remedy?.includes(`cotal service stop stack-manager --instance ${managerId} --space crash --yes`) === true && !refusal.remedy.includes("<name>"), managerBlocked.out);
   check("...and its dry run exits 0 and warns with that refusal",
     managerPreview.status === 0 && doc(managerPreview)?.warnings?.length === 1 && doc(managerPreview)?.warnings?.[0]?.message === `the real stop would refuse: ${refusal?.message}; ${refusal?.remedy}`, managerPreview.out);
+  check("...whose Next names the added service's stop first, then bare down, or the manager's stop and the broker stop again",
+    refusal?.remedy === `stop the services outside the stack first with \`cotal service stop idle --instance ${idle} --space crash --yes\`, then stop the whole stack with bare \`cotal down\`, or also run \`cotal service stop stack-manager --instance ${managerId} --space crash --yes\` and then stop the broker again`, managerBlocked.out);
+  const idleStop = cli("service", "stop", "idle", "--instance", String(idle), "--space", "crash", "--yes", "--json");
+  check("the named service stop stops it", idleStop.status === 0, idleStop.out);
+  const idleRemoved = cli("service", "remove", "idle", "--space", "crash", "--yes", "--json");
+  check("rig: its definition is removed again", idleRemoved.status === 0, idleRemoved.out);
   const after = cli("down", "--yes", "--json");
   check("once that process ends, bare down completes and removes its record, saying its process is gone", after.status === 0 && doc(after)?.warnings?.some((w) => w.code === "STALE_PROCESS_RECORD" && w.message === stale("removed", held, "gone")) === true && !existsSync(record), after.out);
 
