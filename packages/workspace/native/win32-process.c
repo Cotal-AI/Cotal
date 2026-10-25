@@ -7,6 +7,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <wchar.h>
 
 static napi_value unreadable(napi_env env) {
@@ -87,6 +88,59 @@ static napi_value user_sid(napi_env env, napi_callback_info info) {
   napi_status status = napi_create_string_utf16(env, (const char16_t *)text, NAPI_AUTO_LENGTH, &value);
   LocalFree(text);
   return status == napi_ok ? value : NULL;
+}
+
+// The firmware table provider for raw SMBIOS data, 'RSMB'.
+#define RSMB_PROVIDER 0x52534D42u
+
+// This machine's SMBIOS system UUID (structure type 1), as GetSystemFirmwareTable documents it.
+// SMBIOS 2.6 and later store its first three fields little-endian. A UUID the firmware left unset,
+// all zeros or all ones, identifies no machine and is refused.
+static napi_value machine_uuid(napi_env env, napi_callback_info info) {
+  (void)info;
+  UINT size = GetSystemFirmwareTable(RSMB_PROVIDER, 0, NULL, 0);
+  if (size < 8) return fail(env, "GetSystemFirmwareTable");
+  BYTE *data = HeapAlloc(GetProcessHeap(), 0, size);
+  if (data == NULL) return refuse(env, "firmware table allocation failed");
+  UINT read = GetSystemFirmwareTable(RSMB_PROVIDER, 0, data, size);
+  BYTE uuid[16];
+  int found = 0;
+  DWORD length = 0;
+  if (read >= 8 && read <= size) memcpy(&length, data + 4, sizeof(length));
+  if (read >= 8 && read <= size && length <= read - 8) {
+    const BYTE *p = data + 8, *end = data + 8 + length;
+    while (!found && end - p >= 4) {
+      BYTE type = p[0], formatted = p[1];
+      if (formatted < 4 || end - p < formatted) break;
+      if (type == 1 && formatted >= 0x19) { memcpy(uuid, p + 8, sizeof(uuid)); found = 1; break; }
+      if (type == 127) break;
+      const BYTE *q = p + formatted;
+      while (end - q >= 2 && (q[0] != 0 || q[1] != 0)) q++;
+      if (end - q < 2) break;
+      p = q + 2;
+    }
+  }
+  BYTE major = 0, minor = 0;
+  if (read >= 8) { major = data[1]; minor = data[2]; }
+  HeapFree(GetProcessHeap(), 0, data);
+  if (!found) return refuse(env, "the firmware reports no SMBIOS system UUID");
+  int zeros = 1, ones = 1;
+  for (int i = 0; i < 16; i++) { zeros &= uuid[i] == 0x00; ones &= uuid[i] == 0xFF; }
+  if (zeros || ones) return refuse(env, "the firmware's SMBIOS system UUID is unset");
+  if (major > 2 || (major == 2 && minor >= 6)) {
+    BYTE swapped[16];
+    memcpy(swapped, uuid, sizeof(swapped));
+    for (int i = 0; i < 4; i++) uuid[i] = swapped[3 - i];
+    uuid[4] = swapped[5]; uuid[5] = swapped[4];
+    uuid[6] = swapped[7]; uuid[7] = swapped[6];
+  }
+  char text[37];
+  int written = snprintf(text, sizeof(text), "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+    uuid[0], uuid[1], uuid[2], uuid[3], uuid[4], uuid[5], uuid[6], uuid[7], uuid[8], uuid[9], uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]);
+  if (written != 36) return refuse(env, "the SMBIOS system UUID could not be formatted");
+  napi_value value;
+  if (napi_create_string_utf8(env, text, 36, &value) != napi_ok) return NULL;
+  return value;
 }
 
 // One launched job per process. Its handle is never finalized from JS: closing the last handle
@@ -182,14 +236,16 @@ static napi_value launch(napi_env env, napi_callback_info info) {
   if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, &created, sizeof(HANDLE), NULL, NULL)) { step = "UpdateProcThreadAttribute(job)"; goto failed; }
   if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, sizeof(inherited), NULL, NULL)) { step = "UpdateProcThreadAttribute(handles)"; goto failed; }
   startup.StartupInfo.cb = sizeof(startup);
-  startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+  // Detached and hidden, as a Node spawn with `detached` and `windowsHide` starts a program.
+  startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+  startup.StartupInfo.wShowWindow = SW_HIDE;
   startup.StartupInfo.hStdInput = input;
   startup.StartupInfo.hStdOutput = output;
   startup.StartupInfo.hStdError = output;
   startup.lpAttributeList = attributes;
   // Suspended, so membership and the creation pin are read before the child runs any code.
   if (!CreateProcessW(strings[0], strings[1], NULL, NULL, TRUE,
-      EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | CREATE_SUSPENDED,
+      EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS | CREATE_SUSPENDED,
       strings[3], strings[2], &startup.StartupInfo, &child)) { step = "CreateProcessW"; goto failed; }
   if (!IsProcessInJob(child.hProcess, created, &member)) { step = "IsProcessInJob"; goto failed; }
   if (!member) { SetLastError(ERROR_INVALID_DATA); step = "job membership verification"; goto failed; }
@@ -300,6 +356,7 @@ NAPI_MODULE_INIT() {
   napi_property_descriptor properties[] = {
     { "creationToken", NULL, creation_token, NULL, NULL, NULL, napi_enumerable, NULL },
     { "userSid", NULL, user_sid, NULL, NULL, NULL, napi_enumerable, NULL },
+    { "machineUuid", NULL, machine_uuid, NULL, NULL, NULL, napi_enumerable, NULL },
     { "launch", NULL, launch, NULL, NULL, NULL, napi_enumerable, NULL },
     { "rootExit", NULL, root_exit, NULL, NULL, NULL, napi_enumerable, NULL },
     { "jobProcesses", NULL, job_processes, NULL, NULL, NULL, napi_enumerable, NULL },

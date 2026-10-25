@@ -4,7 +4,7 @@ import { isAbsolute, join } from "node:path";
 import type { MeshLaunchSpec, ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, MANAGER_PIDFILE, answerServiceObservations, assertManagerName, assertRecordIdentity, canonicalLocalProcessPath,
-  consumeManagerShutdownIntent, protectedCredentialReference, protectedLocalDirectory, publishServiceIdentity,
+  consumeManagerShutdownIntent, localRecordAccess, protectedCredentialReference, protectedLocalDirectory, publishServiceIdentity,
   publishServiceStopReceipt, readLocalRecordSource, readServiceIdentity,
   readServiceStopReceipts, readServiceStopRequest, resolveNativeServiceTarget,
   serviceMetadataDigest, serviceOperationId, serviceStopRequestPath, stopReservationPath,
@@ -44,12 +44,13 @@ export function managerServiceChild(args: ParsedArgs): ManagerServiceChild {
   }
   if (args.positionals.length) throw new CommandFailure("refused", "USAGE_INVALID", "the native manager child takes no positional targets");
   const root = String(values.root), stateDirectory = String(values["state-directory"]);
-  if ((process.platform !== "linux" && process.platform !== "darwin") || !isAbsolute(root) || !isAbsolute(stateDirectory)) throw new CommandFailure("refused", "UNSUPPORTED", "the native manager child requires protected absolute paths and a Linux or macOS process creation identity");
+  if ((process.platform !== "linux" && process.platform !== "darwin" && process.platform !== "win32") || !isAbsolute(root) || !isAbsolute(stateDirectory)) throw new CommandFailure("refused", "UNSUPPORTED", "the native manager child requires protected absolute paths and a Linux, macOS or Windows process creation identity");
   protectedLocalDirectory(root);
   protectedLocalDirectory(join(root, ".cotal"));
   protectedLocalDirectory(stateDirectory);
+  // Windows protects the directory with the access list Cotal sets and has no POSIX owner or mode.
   const directory = lstatSync(stateDirectory);
-  if (directory.uid !== process.getuid!() || (directory.mode & 0o077) !== 0) throw new CommandFailure("refused", "PERMISSION_DENIED", "the native manager launch state must be an owned private directory");
+  if (localRecordAccess() !== "windows-acl" && (directory.uid !== process.getuid!() || (directory.mode & 0o077) !== 0)) throw new CommandFailure("refused", "PERMISSION_DENIED", "the native manager launch state must be an owned private directory");
   const target = resolveNativeServiceTarget(root, String(values.space), String(values.server));
   const context = Object.freeze({ space: target.space, instanceId: serviceOperationId(values["service-instance"]), launchRequestId: serviceOperationId(values["launch-request"]), stateDirectory });
   for (const [field, minimum, maximum] of [["console-port", 0, 65535], ["ws-port", 1, 65535], ["max-sessions", 1, Number.MAX_SAFE_INTEGER]] as const) {

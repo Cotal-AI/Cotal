@@ -7621,7 +7621,6 @@ explicitly grant the invoking user with `cotal auth grant cli --sub <subject>`, 
 before `cotal team boot <file>`. Do not start the manager between preparation and that stop. A
 static-auth or open preparation uses `cotal up --no-manager` before `cotal down`. No implicit owner
 grant or borrowed caller is substituted. A previously attempted manager is never adopted.
-Windows cannot apply, because the stack's process services need Linux or macOS machine and boot identity.
 
 `--space` must agree with the manifest. Hand-registered and discovered spaces are not local boot
 targets. Public broker addresses and fresh-attempt views omit URL user info, queries and fragments;
@@ -7987,8 +7986,8 @@ by this operation. The presets are described below. A preset is not installed un
 supervisor.
 On Windows, local records use the access-list model described under `up`. There, `cotal ext add`
 and the setup seed record a service receipt for an extension that declares service adapters or
-presets, and starting one of its process services refuses Unsupported, because the process driver
-needs Linux or macOS machine and boot identity.
+presets, and its process services run under a custodian as
+[Owned process services](#owned-process-services) describes.
 
 ### Service presets
 
@@ -8364,8 +8363,9 @@ does not acquire that mechanism from its name or preset.
 The direct-process driver pins the machine, the boot, the OS user and each process's start. On
 Linux these are the machine ID, the kernel boot ID and the process start ticks. On macOS they are
 the hardware UUID, the boot session UUID and the process start in microseconds, read through the
-bundled binding described under the identity pins above. Windows still refuses: its generic process
-custody needs a stable machine, boot, owner and subsecond creation pin before any signal is safe.
+bundled binding described under the identity pins above. On Windows they are a machine identity,
+the account's SID and each process's creation time, read through the same binding. Windows records
+no boot pin. The custodian described below holds each instance's job instead, and a restart ends it.
 
 Instance reports separate recorded supervisor policy from supervisor discovery, which remains not
 checked by this direct-process driver. A recorded `none` means no supervisor assigned by this
@@ -8465,10 +8465,25 @@ Install dry-run makes only the bounded native directory read above; uninstall
 dry-run reads the exact recorded unit and private-store directory. Neither
 allocates an instance, enables autostart nor removes a receipt or unit.
 
-Process definitions support `service start/stop/restart/status/logs <name>`. The driver currently
-requires Linux or macOS stable machine identity, boot identity and readable process-creation tokens. It
+Process definitions support `service start/stop/restart/status/logs <name>`. The driver requires a
+stable machine identity and readable process-creation tokens. Linux and macOS add the boot identity.
+Windows adds the account's SID and a custodian that holds the service's job, described below. It
 refuses another platform instead of using PID-only ownership. It launches executable and argv
 separately without a shell. No broker, manager or other dependency is started implicitly.
+
+On Windows each background instance runs under its own custodian. The custodian is a detached
+Cotal process that creates the program inside a new job object. The job ends every member when its
+last handle closes and allows no breakaway, and only the custodian holds that handle. So a
+custodian that exits for any reason, a restart of the computer included, ends the service and
+everything it started. Commands reach the custodian over a named pipe and prove that they hold the
+instance's 32-byte capability, and the custodian proves the same back before anything is done. The
+capability lives in a protected file beside the instance records, which name only that file. A stop
+terminates the whole job and waits until it is empty, and its receipt records the signal
+`job-terminate`. When the program has exited but processes it started still run, `service status`
+reports the process as `members-running` rather than gone, and a stop ends them. `cotal down`
+refuses a stack with such a member and names that stop. Windows has no foreground start. A
+manager's agents run in its job, so a manager stop without `--with-agents` is refused while the job
+still holds them.
 
 Instance IDs are assigned once and printed in full. With several records, scripts need
 `--instance <full-id>`; a terminal can choose from those IDs. `start --new-instance` explicitly

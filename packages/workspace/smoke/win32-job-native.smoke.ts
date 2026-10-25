@@ -75,6 +75,11 @@ try {
   const sid = win32ProcessBinding().userSid();
   const whoami = execFileSync(join(process.env.SystemRoot!, "System32", "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8" }).trim();
   check("J1 the user SID is this account's token SID", /^S-1-5-21(-\d+)+$/.test(sid) && whoami.endsWith(`"${sid}"`), { sid, whoami });
+  // A test-only oracle: the CIM product UUID is the same SMBIOS field.
+  const machine = win32ProcessBinding().machineUuid();
+  const cim = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "(Get-CimInstance Win32_ComputerSystemProduct).UUID"], { encoding: "utf8", timeout: 30_000 }).trim();
+  check("J17 the machine identity is the SMBIOS system UUID, stable across reads",
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(machine) && machine === cim.toLowerCase() && win32ProcessBinding().machineUuid() === machine, { machine, cim });
 
   const one = helper();
   check("J2 a job reader before any launch refuses", (await one.call("jobProcesses")).error === "this process holds no launched job");

@@ -41,7 +41,7 @@ function nativeIdentity(input: unknown): NativeServiceIdentity {
 /** Publish from the real native child before its endpoint is constructed. This is an immutable
  *  same-UID launch binding, not readiness, an authenticated response or an exported caller grant. */
 export function publishServiceIdentity(context: IdentityContext, native: NativeServiceIdentity): void {
-  if (process.platform !== "linux" && process.platform !== "darwin") throw new CommandFailure("refused", "UNSUPPORTED", "the native process binding requires the supported Linux or macOS service driver; no PID-only identity was substituted");
+  if (process.platform !== "linux" && process.platform !== "darwin" && process.platform !== "win32") throw new CommandFailure("refused", "UNSUPPORTED", "the native process binding requires the supported Linux, macOS or Windows service driver; no PID-only identity was substituted");
   const self = identityRecord(process.pid);
   if (!("token" in self)) throw new CommandFailure("refused", "UNSUPPORTED", "the native service has no process creation identity for its launch binding");
   const value: ServiceIdentityBinding = { schemaVersion: 1, space: context.space, instanceId: context.instanceId, launchRequestId: context.launchRequestId, process: self, native: nativeIdentity(native), observedAt: new Date().toISOString() };
@@ -81,7 +81,7 @@ export function servedContractPath(context: IdentityContext): string {
 /** Write once, from the same cluster artifacts the child published and registered, before its
  *  serving startup receipt. A serving revision-33 child therefore always has this file. */
 export function publishServedContract(context: IdentityContext, value: { endpoint: string; clusterDigest: string; document: unknown }): void {
-  if (process.platform !== "linux" && process.platform !== "darwin") throw new CommandFailure("refused", "UNSUPPORTED", "the served-contract binding requires the supported Linux or macOS service driver");
+  if (process.platform !== "linux" && process.platform !== "darwin" && process.platform !== "win32") throw new CommandFailure("refused", "UNSUPPORTED", "the served-contract binding requires the supported Linux, macOS or Windows service driver");
   const self = identityRecord(process.pid);
   if (!("token" in self)) throw new CommandFailure("refused", "UNSUPPORTED", "the native service has no process creation identity for its served-contract binding");
   try { endpointToken(value.endpoint); } catch { return invalid(); }

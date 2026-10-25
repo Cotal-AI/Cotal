@@ -9,7 +9,7 @@ import { protectedLocalDirectory, readLocalRecordSource } from "./protected-reco
  *  this path never reclaims legacy records. Native initialization follows only after the claim. */
 export function claimServicePid(context: LocalProcessContext, template: string): () => void {
   const self = identityRecord(process.pid);
-  if ((process.platform !== "linux" && process.platform !== "darwin") || !("token" in self)) throw new CommandFailure("refused", "UNSUPPORTED", "native service custody requires a Linux or macOS process creation identity; no PID-only record was published");
+  if ((process.platform !== "linux" && process.platform !== "darwin" && process.platform !== "win32") || !("token" in self)) throw new CommandFailure("refused", "UNSUPPORTED", "native service custody requires a Linux, macOS or Windows process creation identity; no PID-only record was published");
   const path = canonicalLocalProcessPath(template, context);
   protectedLocalDirectory(dirname(path));
   try { writeSecretFileCreateOnly(path, String(self.pid)); }
