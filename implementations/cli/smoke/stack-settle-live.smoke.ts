@@ -122,6 +122,9 @@
  *     next `up` refuses `LIFECYCLE_BLOCKED` naming its pid and `cotal down --yes`, and starts
  *     nothing; following it, `down --yes` then `up` start the stack. A `down` interrupted while it
  *     waits on a frozen manager exits 130 naming the members still running and `cotal down --yes`.
+ * 13b. The same interruption of an `up --no-manager`. It names `cotal down --yes`, then
+ *     `cotal up --no-manager`, and the `down --yes` that settles it names `up --no-manager` as its
+ *     Next. Following it starts no manager.
  * 14. An `up` stopped after it recorded its broker's launch and before it recorded the child. The
  *     `COTAL_SMOKE_HOLD_AFTER_LAUNCH_RECORD` hold keeps the launch in that window; a listener that
  *     holds the port is refused before any launch is recorded. Interrupted there by SIGINT or
@@ -1399,7 +1402,7 @@ try {
     check("the up still waits on broker readiness when it is interrupted", pinned && child.exitCode === null, { pinned, exitCode: child.exitCode });
     child.kill("SIGINT");
     await exited(child);
-    check("the interrupted up exits 130 naming its unregistered broker's pid and cotal down --yes", child.exitCode === 130 && upErr.includes(`its broker keeps running as pid ${broker}`) && upErr.includes("cotal down --yes"), { exitCode: child.exitCode, stderr: upErr.slice(-400) });
+    check("the interrupted up exits 130 naming its unregistered broker's pid, cotal down --yes and then cotal up", child.exitCode === 130 && upErr.includes(`its broker keeps running as pid ${broker}. Run cotal down --yes, then cotal up.`), { exitCode: child.exitCode, stderr: upErr.slice(-400) });
     if (broker !== null) process.kill(broker, "SIGCONT");
     check("the killed up left its broker running and the space unregistered", broker !== null && alive(broker) && findMesh(space) === undefined, { broker, registered: findMesh(space) !== undefined });
     const blocked = cli(root, "up", "--json");
@@ -1426,6 +1429,34 @@ try {
     await exited(stopping);
     if (manager !== null) process.kill(manager, "SIGCONT");
     check("a down interrupted on a frozen manager exits 130 naming the members still running and cotal down --yes", held && stopping.exitCode === 130 && downErr.includes("broker, delivery, manager are still running") && downErr.includes("cotal down --yes"), { held, exitCode: stopping.exitCode, stderr: downErr.slice(-400) });
+    const last = cli(root, "down", "--yes", "--json");
+    check("and down --yes stops it", last.status === 0, shown(last));
+  }
+
+  // 13b. The same interruption of an up given --no-manager. Bare up adds the manager, so each route
+  // keeps the flag.
+  {
+    const space = "stranded-nm";
+    const root = prepare(space);
+    const port = await freePort();
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    let upErr = "";
+    child.stderr!.on("data", (chunk: Buffer) => { upErr += chunk.toString(); });
+    const pinned = await until(() => pidOf(space, "stack-broker") !== null, 120_000);
+    const broker = pidOf(space, "stack-broker");
+    if (broker !== null) process.kill(broker, "SIGSTOP");
+    track(space);
+    check("the --no-manager up still waits on broker readiness when it is interrupted", pinned && child.exitCode === null, { pinned, exitCode: child.exitCode });
+    child.kill("SIGINT");
+    await exited(child);
+    if (broker !== null) process.kill(broker, "SIGCONT");
+    check("the interrupted --no-manager up exits 130 naming cotal down --yes, then cotal up --no-manager", child.exitCode === 130 && upErr.includes(`its broker keeps running as pid ${broker}. Run cotal down --yes, then cotal up --no-manager.`), { exitCode: child.exitCode, stderr: upErr.slice(-400) });
+    const nextOf = (run: Run) => run.stdout.slice(run.stdout.indexOf("\nNext\n") + 6).split("\n")[0] ?? "";
+    const stopped = cli(root, "down", "--yes");
+    check("down --yes stops that broker and its Next keeps --no-manager", stopped.status === 0 && nextOf(stopped).includes("up --no-manager") && await until(() => broker === null || !alive(broker), 10_000), { next: nextOf(stopped), ...shown(stopped) });
+    const started = cli(root, "up", "--no-manager", "--json");
+    track(space);
+    check("following it starts the stack with no manager", started.status === 0 && pidOf(space, "stack-delivery") !== null && pidOf(space, "stack-manager") === null, shown(started));
     const last = cli(root, "down", "--yes", "--json");
     check("and down --yes stops it", last.status === 0, shown(last));
   }
