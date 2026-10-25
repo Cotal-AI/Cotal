@@ -22,5 +22,5 @@ export function isStreamNotFound(e: unknown): boolean {
  *  name is a `JetStreamApiError` with `code: 10148`, and the client gives it no class of its own. A
  *  create whose config equals it returns that consumer instead. */
 export function isConsumerAlreadyExists(e: unknown): boolean {
-  return Number((e as { code?: unknown } | null | undefined)?.code) === 10148;
+  return isJetStreamMissing(e, 10148);
 }
