@@ -95,6 +95,11 @@ export async function clean(args: ParsedArgs): Promise<void> {
   const dryRun = values["dry-run"] === true;
   if (dryRun && target !== "store" && target !== "all")
     throw new CommandFailure("refused", "USAGE_INVALID", `--dry-run previews clean store and clean all only, not clean ${target}`);
+  // --space, --server and --creds pick the running mesh that `history` purges. Every other target acts
+  // on the root of the folder it runs in, which no flag selects, so they are refused there before any read.
+  const meshFlags = (["space", "server", "creds"] as const).filter((flag) => values[flag] !== undefined).map((flag) => `--${flag}`);
+  if (meshFlags.length && target !== "history")
+    throw new CommandFailure("refused", "USAGE_INVALID", `${meshFlags.join(", ")} ${meshFlags.length === 1 ? "picks" : "pick"} the mesh for clean history only; clean ${target} acts on the root of the folder it runs in, so nothing was read or removed`, { remedy: `run cotal clean ${target} in the project folder of the root to clean, without ${meshFlags.join(" or ")}` });
   if (!values.force && !dryRun) {
     // The restore verbs act on one attempt, so the command to run names it, as given or as a placeholder.
     const attempt = target === "restore-attempt" || target === "restore-fallback" ? ` --attempt ${values.attempt || "<id>"}` : "";

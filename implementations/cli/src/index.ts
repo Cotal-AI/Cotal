@@ -304,7 +304,7 @@ const baseCommands: Command[] = [
     summary:
       "configurable cleanup - history/store/all, plus explicit committed-restore fallback cleanup",
     usage:
-      "cotal clean <history|store|all> --force [--dms] [--space <s>] [--server <url>] [--creds <path>] [--store-dir <dir>] | cotal clean <store|all> --dry-run [--store-dir <dir>] | cotal clean <restore-attempt|restore-fallback> --attempt <id> --force [--discard-history]",
+      "cotal clean history --force [--dms] [--space <s>] [--server <url>] [--creds <path>] | cotal clean <store|all> --force [--store-dir <dir>] | cotal clean <store|all> --dry-run [--store-dir <dir>] | cotal clean <restore-attempt|restore-fallback> --attempt <id> --force [--discard-history]",
     positionals: "<history|store|all|restore-attempt|restore-fallback>",
     flags: [
       ...targetFlags,
