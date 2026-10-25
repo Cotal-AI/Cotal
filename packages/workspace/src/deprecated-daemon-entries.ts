@@ -33,8 +33,8 @@ export function deprecatedDaemonEntryWarning(entry: DeprecatedDaemonEntry): stri
   return `! cotal ${entry} is deprecated and will be removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}. Use ${replacement}.`;
 }
 
-/** The summary `help --all` and the entry's own help show: marked deprecated, with its removal
- *  release and the service preset that replaces it. */
+/** The summary the entry's own help shows: marked deprecated, with its removal release and the
+ *  service preset that replaces it. */
 export function deprecatedDaemonEntrySummary(entry: keyof typeof DEPRECATED_DAEMON_PRESETS, summary: string): string {
   return `(deprecated, removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}; use the ${DEPRECATED_DAEMON_PRESETS[entry]} service preset) ${summary}`;
 }

@@ -22,8 +22,8 @@
  *    (e.g. `stop --model` was accepted-and-ignored, now a usage error); the dead `--drive` flag
  *    is gone.
  *
- * It also checks the Commands table in docs/cli.md against the registry: one row per command
- * `cotal help --all` lists, under the section help lists it in, linked to a heading of that page.
+ * It also checks the Commands table in docs/cli.md against the registry: one row per command,
+ * hidden ones included, under the section help lists it in, linked to a heading of that page.
  *
  * Run: pnpm smoke:flag-inventory
  */
@@ -495,16 +495,16 @@ for (const cmd of commands) {
   }
 }
 
-// The Commands table in docs/cli.md has one row per command `cotal help --all` lists, under the
-// section it lists it in. The composition root also registers `daemon`, which GOLDEN leaves out, so
-// it is imported only after the golden check above.
+// The Commands table in docs/cli.md has one row per command, the hidden ones `cotal help` leaves
+// out included, under the section help lists it in. The composition root also registers `daemon`,
+// which GOLDEN leaves out, so it is imported only after the golden check above.
 await import("../daemon/command.js");
 const helpAll = registry.all<Command>("command").filter((cmd) => !cmd.name.startsWith("__"));
 const doc = readFileSync(new URL("../../docs/cli.md", import.meta.url), "utf8");
 const tableStart = doc.indexOf("\n## Commands\n");
 const table = doc.slice(tableStart, doc.indexOf("\n## ", tableStart + 1));
 const rows = [...table.matchAll(/^\| ([^|]+?) \| \[`([^`]+)`\]\(#([^)]+)\) \|/gm)].map((match) => ({ section: match[1]!, name: match[2]!, anchor: match[3]! }));
-assert.deepEqual(rows.map((row) => row.name).sort(), helpAll.map((cmd) => cmd.name).sort(), "the docs Commands table has one row per command help --all lists");
+assert.deepEqual(rows.map((row) => row.name).sort(), helpAll.map((cmd) => cmd.name).sort(), "the docs Commands table has one row per command, hidden ones included");
 for (const row of rows) assert.equal(row.section, helpAll.find((cmd) => cmd.name === row.name)?.group ?? "Commands", `the docs Commands table puts \`${row.name}\` under its help section`);
 // Each row links a heading of the page, slugged as GitHub and the docs site slug it: a repeated
 // heading takes `-1`, `-2` and so on.

@@ -15,8 +15,7 @@ For the other integration interfaces, see the [API reference](api-reference.md).
 ```bash
 npm install -g cotal-ai   # puts `cotal` on your PATH (needs Node 22+)
 cotal                     # the selected space, common commands, and where to start
-cotal help                # compact actions and selected context (also `cotal --help`)
-cotal help --all          # every command group, including hidden commands
+cotal help                # the same, then every command group (also `cotal --help`)
 cotal help <command> [<subcommand>]   # one command's or subcommand's usage and flags
 cotal version             # cotal-ai version + each installed extension's (also `cotal --version`, `cotal -V`)
 cotal version --json      # the same as one JSON document (also `-j`)
@@ -43,7 +42,7 @@ itself do (exit 1), rather than print the command's help. A subcommand's help gi
 usage, from `cotal` through its arguments, and lists only the options that subcommand takes.
 `-v` is not a version flag.
 
-Some commands have short aliases, listed in `cotal help --all` and under Shorthands in each
+Some commands have short aliases, listed in `cotal help` and under Shorthands in each
 command's help: `sp` (spawn), `a` (attach), `s` (status), `r` (run), `x` (ext), `h` (history),
 `t` (team), `p` (persona), `ch` (channel), `w` (watch), `ep` (endpoint), `mgr` (manager), `svc` and
 `services` (service), and `cfg` (config). Subcommands can have their own, such as
@@ -221,7 +220,7 @@ part of one: a command under Next, and a command a sentence names in backticks a
 from its `cotal` to its closing backtick, whatever words its arguments are. A command that holds a
 backtick itself, as a quoted path can, is named between double backticks, as Markdown writes such code,
 and wraps whole to the matching pair. A line that starts with a command, such as a usage line, wraps at
-its spaces. Help wraps the same way, including the title of `cotal help --all`.
+its spaces. Help wraps the same way, including the title of `cotal help`.
 
 A question that defaults to No, such as the one before `history clear`, `down`, `channel remove` or
 `persona remove`, is answered by typing: `y` or `yes`, in any case, then Enter confirms it. Enter
@@ -370,7 +369,8 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Teams | [`team`](#manifest-deploys) | Inspect teams, boot a fresh mesh from a manifest, or add its channels and agents to a running one |
 | Endpoints | [`endpoint`](#endpoint-authoring) | Save endpoint references, author contracts offline, inspect or invoke native endpoints, and deregister a departed instance |
 
-The table has one row per command `cotal help --all` lists, under the section it lists it in.
+The table has one row per command, including the hidden ones `cotal help` leaves out, under the
+section help lists it in.
 Installed extensions add their own: `@cotal-ai/linear` adds the [`linear`](#linear) command, and
 `@cotal-ai/web` adds the [web dashboard](#web) as a service preset.
 
@@ -2951,8 +2951,9 @@ For one-shot messages, choose one destination with `--to/-t`, `--channel/-c` or 
 `cotal send -t reviewer "Please inspect the patch"`. Message receipts do not repeat the body.
 They distinguish storage from delivery and say that no reply listener remains active.
 
-Bare `cotal` and `cotal help` show a compact list of useful actions. Use `cotal help --all` for
-the full command catalogue. `cotal cfg` is the shorthand for `cotal config`. Its default view
+Bare `cotal` shows a compact list of useful actions. `cotal help` shows the same list, then every
+command by group. `cotal help --all`, the spelling from before help listed every command, prints the
+same. A hidden command, such as a deprecated daemon entry, is left out and still runs. `cotal cfg` is the shorthand for `cotal config`. Its default view
 shows effective values and sources; `config --verbose` adds the storage path and revision.
 
 Status starts with This machine, groups registrations under Brokers, then shows the selected
@@ -4571,7 +4572,7 @@ cotal supervise [--execution runtime|none] [--runtime <name>] [--space <s>] [--s
 ```
 
 `supervise` is a deprecated entry kept for existing units, scripts and containers, and help and
-completion omit it. `help --all` and `help supervise` mark it deprecated and name the `manager`
+completion omit it. `help supervise` marks it deprecated and names the `manager`
 preset. It accepts the same flags and prints a warning on every run naming the
 `manager` service preset and the release that removes it; see
 [deprecated daemon entries](UPGRADING.md#deprecated-daemon-entries). The manager that `cotal up`
@@ -7099,8 +7100,8 @@ Two long-lived infra roles ship with the CLI. They are not part of everyday oper
 daemon comes up automatically with `cotal up --detach` in auth mode.
 
 `deliver`, `auth-service` and `feedback-intake` are deprecated entries kept for existing units and
-scripts, as is `supervise`; help and completion omit them. `help --all` and each entry's own help
-mark it deprecated, with its removal release and the preset that replaces it. Each accepts its existing flags and
+scripts, as is `supervise`; help and completion omit them. Each entry's own help
+marks it deprecated, with its removal release and the preset that replaces it. Each accepts its existing flags and
 prints a warning on every run naming its service preset and the release that removes it. The
 delivery daemon and auth service that `cotal up` starts run the same code through hidden entries
 and print no warning. New setups use `cotal service add <name> --preset <preset>`; see

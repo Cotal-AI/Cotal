@@ -5,15 +5,16 @@ import { printCommandList, printHelpPath } from "../help.js";
 import { unknownCommandMessage } from "../lib/nearest-word.js";
 import { cliVersion, extensionVersions, readExtensionVersions } from "../lib/version.js";
 
-export const helpFlags = [{ name: "all", type: "boolean", description: "also list hidden commands" }] as const;
+/** `--all`, the older way to ask for every command, which help now always lists. It is accepted and
+ *  changes nothing, and neither help nor completion offers it. */
+export const helpFlags = [{ name: "all", type: "boolean", description: "accepted for scripts written before help listed every command; it changes nothing" }] as const;
 
-/** `cotal help [command…] [--all]`: the command list, or the help of the command the words name.
- *  The words are literal nesting: a command (or its alias), then one of its subcommands. */
+/** `cotal help [command…]`: every command, or the help of the command the words name. The words
+ *  are literal nesting: a command (or its alias), then one of its subcommands. */
 export async function help(args: ParsedArgs): Promise<void> {
-  const values = args.values as FlagValues<typeof helpFlags>;
   const [word, ...path] = args.positionals;
   const commands = commandSurface();
-  if (word === undefined) return printCommandList(commands, values.all === true);
+  if (word === undefined) return printCommandList(commands);
   const cmd = findCommand(commands, word);
   if (!cmd || cmd.name.startsWith("__")) throw new Error(unknownCommandMessage(commands, word));
   printHelpPath(cmd, path);

@@ -80,8 +80,10 @@ const baseCommands: Command[] = [
     name: "help",
     group: "Setup",
     summary: "list the commands, or show one command's help",
+    usage: "cotal help [command…]",
     positionals: "[command…]",
     flags: helpFlags,
+    flagNames: [],
     run: help,
   },
   {

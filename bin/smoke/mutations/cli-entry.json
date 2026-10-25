@@ -112,12 +112,12 @@
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
-      "name": "help --all hides hidden commands",
+      "name": "help lists hidden commands",
       "file": "implementations/cli/src/help.ts",
-      "find": "  return commands.filter((cmd) => !cmd.name.startsWith(\"__\") && (all || !cmd.hidden));\n",
-      "replace": "  return commands.filter((cmd) => !cmd.name.startsWith(\"__\") && (!cmd.hidden || (all && false)));\n",
-      "expectRed": "help --all lists hidden commands",
-      "cell": "help --all lists hidden commands",
+      "find": "  return commands.filter((cmd) => !cmd.name.startsWith(\"__\") && !cmd.hidden);\n",
+      "replace": "  return commands.filter((cmd) => !cmd.name.startsWith(\"__\"));\n",
+      "expectRed": "help lists every command group under the entry screen, and no hidden command",
+      "cell": "help lists every command group under the entry screen, and no hidden command",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",
       "afterRestore": "pnpm --filter cotal-ai... build"
     },

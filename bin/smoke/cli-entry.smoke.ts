@@ -114,7 +114,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const fresh = cotal([]);
   local("bare cotal prints the entry screen and writes nothing", fresh);
   check("a fresh machine is pointed to setup", /^No space is selected\.$/m.test(fresh.stdout) && /^Start here\n  cotal setup  /m.test(fresh.stdout), shown(fresh));
-  check("the entry screen names common commands and where the rest are", /^Everyday\n  cotal ps  /m.test(fresh.stdout) && /^More\n  cotal help --all  /m.test(fresh.stdout), shown(fresh));
+  check("the entry screen names common commands and where the rest are", /^Everyday\n  cotal ps  /m.test(fresh.stdout) && /^More\n  cotal help  /m.test(fresh.stdout), shown(fresh));
   const ghost = cotal([], (home) => writeFileSync(join(home, "current-mesh"), "ghost\n"));
   local("bare cotal with a selected space writes nothing", ghost);
   check("the entry screen names the selected space, and says when it is not recorded here", ghost.stdout.startsWith("ghost · not recorded · "), shown(ghost));
@@ -160,12 +160,19 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const help = cotal(["help"]);
   local("help prints the command list and writes nothing", help);
   check("--help and -h print the same list", same(help, cotal(["--help"])) && same(help, cotal(["-h"])));
-  check("help hides hidden commands and says how to show them", !/^\s+start\b/m.test(help.stdout) && help.stdout.includes("cotal help --all"), shown(help));
+  // The entry screen leads and every command group follows it, with no flag to ask for them.
+  const everyday = help.stdout.search(/^Everyday$/m), setup = help.stdout.search(/^Setup$/m);
+  check("help lists every command group under the entry screen, and no hidden command",
+    everyday !== -1 && setup > everyday && /^\s+send\s/m.test(help.stdout) && /^\s+endpoint, ep\s/m.test(help.stdout)
+      && !/^\s+start\b/m.test(help.stdout) && !help.stdout.includes("--all"), shown(help));
+  // `--all`, which scripts written before help listed every command still pass, changes nothing and
+  // is offered nowhere.
   const all = cotal(["help", "--all"]);
   local("help --all writes nothing", all);
-  check("help --all lists hidden commands", /^\s+start\b/m.test(all.stdout), shown(all));
+  check("help --all prints the same list, and neither help help nor completion offers it", same(help, all)
+    && !cotal(["help", "help"]).stdout.includes("--all") && !cotal(["__complete", "help", "--"]).stdout.includes("--all"), shown(all));
   for (const { alias, cmd } of aliases)
-    check(`help lists alias ${alias} beside ${cmd.name}`, new RegExp(`^\\s+${cmd.name}(, [^ ]+)*, ${alias}(,|\\s)`, "m").test(all.stdout), shown(all));
+    check(`help lists alias ${alias} beside ${cmd.name}`, new RegExp(`^\\s+${cmd.name}(, [^ ]+)*, ${alias}(,|\\s)`, "m").test(help.stdout), shown(help));
   const spawnHelp = cotal(["help", "spawn"]);
   local("help spawn writes nothing", spawnHelp);
   check("command help shows the usage and the aliases", /^Usage\n  cotal spawn /m.test(spawnHelp.stdout) && /^Shorthands\n  cotal sp$/m.test(spawnHelp.stdout), shown(spawnHelp));

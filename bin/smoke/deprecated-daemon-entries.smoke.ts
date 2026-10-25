@@ -1,8 +1,8 @@
 /**
  * Deprecated daemon entries: `supervise`, `deliver`, `auth-service` and `feedback-intake` keep their
  * pre-cut argv for the units, scripts and containers written before the CLI redesign, hidden from
- * help and completion. `help --all` and the entry's own help mark it deprecated and name its preset;
- * they listed it unmarked. Each run prints one stderr line naming its service preset and the removal
+ * help and completion. The entry's own help marks it deprecated and names its preset; it used to
+ * list it unmarked. Each run prints one stderr line naming its service preset and the removal
  * release, which is one value for all four and is recorded in docs/UPGRADING.md. Stdout and the run
  * itself stay the entry's own. `up` launches a hidden twin of `supervise`, `deliver` and
  * `auth-service` that has the same parser, validation and runner without the warning.
@@ -60,7 +60,7 @@ for (const [entry, preset] of Object.entries(DEPRECATED_DAEMON_PRESETS) as [keyo
   const command = registry.all<Command>("command").find((row) => row.name === entry);
   check(`${entry} is still a registered entry`, command !== undefined);
   check(`${entry} is hidden from help and completion`, command?.hidden === true);
-  check(`${entry} is marked deprecated where help --all and its own help show it, naming ${preset}`, command?.summary.startsWith(`(deprecated, removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}; use the ${preset} service preset) `) === true, command?.summary);
+  check(`${entry} is marked deprecated where its own help shows it, naming ${preset}`, command?.summary.startsWith(`(deprecated, removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}; use the ${preset} service preset) `) === true, command?.summary);
   check(`${entry} keeps its pre-cut argv`, (() => { try { parseCommandArgs(command!, lines[entry].slice(1)); return true; } catch { return false; } })());
   check(`${entry} names the registered ${preset} preset`, presets.has(preset) && warning.includes(`--preset ${preset} `), warning);
   check(`${entry} names the shared removal release`, warning.includes(` removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}.`), warning);
