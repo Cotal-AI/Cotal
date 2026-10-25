@@ -2922,8 +2922,9 @@ interrupted before it recorded an outcome, and left some members running and oth
 named under the selected space as `Half started` or `Half stopped`, with the members on each side.
 Next then offers the command that finishes it first: `cotal up --root <root>` for an `up`, with
 the root shell-quoted when needed and `--no-manager` kept when it was chosen, or
-`cotal down --yes` for a `down`, followed by `cotal up --root <root>` to restart instead. `--json`
-carries it as `folder.stackUnfinished`, with `kind`, `id`, `running` and `stopped`. An `up` cut off
+`cotal down --yes` for a `down`, followed by `cotal up --root <root>` to restart instead.
+The restart root is also shell-quoted after an interrupted `down` or when recreating deleted
+space streams. `--json` carries it as `folder.stackUnfinished`, with `kind`, `id`, `running` and `stopped`. An `up` cut off
 before it registered the space leaves the selected space prepared and not started, and `status`
 names its stack's block or unfinished operation and the same Next under it. When that `up` left
 members running, the next `up` cannot finish it, so Next offers `cotal down --yes` and then

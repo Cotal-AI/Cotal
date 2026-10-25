@@ -1783,14 +1783,14 @@ function nextActions(r: StatusResult): Section {
         ? [{ command: restart, description: `Finish starting the stack: the last up ended before ${roleList(part.stopped)} started` }]
         : [{ command: `${cmd} down --yes`, description: `Stop what the last up started: it ended before it registered the space, so up cannot finish it` }, { command: restart, description: "Then start the stack again" }]
       : [{ command: `${cmd} down --yes`, description: `Finish stopping the stack: the last down ended with ${roleList(part.running)} still running` },
-        ...(part.stopped.length ? [{ command: `${cmd} up --root ${stack.root}`, description: "Or restart this stack's stopped members from its recorded inputs" }] : [])]));
+        ...(part.stopped.length ? [{ command: `${cmd} up --root ${shellWord(stack.root)}`, description: "Or restart this stack's stopped members from its recorded inputs" }] : [])]));
   } else if (r.selected.resolved && r.selected.spaceStreams.state === "absent") {
     // Up creates the streams again only while the stack's other members are stopped.
     const stack = r.selected.spaceStreams.stack;
     if (own && stack === "running")
       items.unshift({ command: `${cmd} down --yes`, description: "Stop the stack its space was deleted under" }, { command: `${cmd} up`, description: "Then start it again; up creates the space's streams, empty" });
     else if (own)
-      items.unshift({ command: `${cmd} up --root ${r.selected.root}`, description: stack === "stopped" ? "Create the space's streams again, empty, and restart the stack's stopped members" : `Create the space's streams again, empty; while the stack runs, stop it first with ${cmd} down --yes` });
+      items.unshift({ command: `${cmd} up --root ${shellWord(r.selected.root)}`, description: stack === "stopped" ? "Create the space's streams again, empty, and restart the stack's stopped members" : `Create the space's streams again, empty; while the stack runs, stop it first with ${cmd} down --yes` });
     else {
       const absent = spaceStreamsAbsent(r.selected.space, r.selected.spaceStreams.root ?? undefined, stack ?? undefined);
       extra.push(`${absent.message}; ${absent.remedy}`);
