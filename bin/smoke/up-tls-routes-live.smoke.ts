@@ -50,8 +50,7 @@ import { strict as assert } from "node:assert";
 import { spawnSync, spawn as spawnProc } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { DEFAULT_SPACE } from "@cotal-ai/core";
+import { basename, join } from "node:path";
 import { canonicalLocalProcessPath, DELIVERY_PIDFILE } from "@cotal-ai/workspace";
 import net from "node:net";
 import tls from "node:tls";
@@ -957,7 +956,8 @@ async function main(): Promise<void> {
     // Stop ONLY the delivery daemon, so the refresh below has one to relaunch — and so the argv
     // grepped afterwards is provably the NEW child. Without this control the assertion would be
     // satisfied by the original, correctly-flagged daemon still running.
-    const pidFile = canonicalLocalProcessPath(DELIVERY_PIDFILE, { root: cwd, space: DEFAULT_SPACE });
+    // A bare up names a new project's space after its folder.
+    const pidFile = canonicalLocalProcessPath(DELIVERY_PIDFILE, { root: cwd, space: basename(cwd) });
     assert.ok(existsSync(pidFile), `CONTROL: fresh TLS up must leave a delivery pidfile:\n${up.out}`);
     const oldPid = Number(readFileSync(pidFile, "utf8").trim());
     try { process.kill(oldPid, "SIGTERM"); } catch { /* already gone */ }
@@ -1011,7 +1011,7 @@ async function main(): Promise<void> {
       `GATE FAILED (S10): no-CA send pruned the registry:\n${send.out}`);
 
     const meshes = cotal(["meshes"], home, cwd);
-    assert.match(meshes.out, /tls-required|main/,
+    assert.match(meshes.out, new RegExp(`tls-required|${basename(cwd)}`),
       `GATE FAILED (S10): registry entry gone after no-CA connect:\n${meshes.out}`);
 
     // Mirror hazard: replace TLS listener with plaintext on the same port; status must not say tls-trust.
