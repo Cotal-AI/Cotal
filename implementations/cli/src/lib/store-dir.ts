@@ -179,17 +179,31 @@ export function assertStoreDirArgument(value: string, root: string): void {
 
 /** Why a broker could not start JetStream on the store `storeDir`: this account cannot write the
  *  folder it writes first, `jetstream` inside the store once a broker made it, or else the store
- *  itself. nats-server tests that folder when it starts and exits, naming the cause only in its log.
- *  The sentence and the next step, or undefined when it can write it or neither folder exists. */
+ *  itself. A store this account cannot search hides its `jetstream`, so the store is that folder.
+ *  nats-server tests that folder when it starts and exits, naming the cause only in its log.
+ *  The sentence and the next step, or undefined when it can write it or neither folder exists. A
+ *  folder this account cannot read or search either needs those back too, which `u+w` leaves out. */
 export function storeWriteProblem(storeDir: string): { path: string; message: string; remedy: string } | undefined {
   const jetstream = join(storeDir, "jetstream");
-  const path = statIfPresent(jetstream)?.isDirectory() ? jetstream : statIfPresent(storeDir)?.isDirectory() ? storeDir : undefined;
+  let inner: Stats | undefined;
+  try { inner = statIfPresent(jetstream); }
+  catch (error) { if (!["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error; }
+  const path = inner?.isDirectory() ? jetstream : statIfPresent(storeDir)?.isDirectory() ? storeDir : undefined;
   if (path === undefined) return undefined;
   try { accessSync(path, constants.W_OK | constants.X_OK); return undefined; }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "EACCES" && code !== "EPERM" && code !== "EROFS") throw error;
-    return { path, message: `the broker store ${path} is not writable by this account (${code}), so the broker cannot start JetStream there`, remedy: `make it writable by you, for example with chmod -R u+w ${path}` };
+    let readable = true;
+    try { accessSync(path, constants.R_OK | constants.X_OK); }
+    catch (error) {
+      const readCode = (error as NodeJS.ErrnoException).code;
+      if (readCode !== "EACCES" && readCode !== "EPERM") throw error;
+      readable = false;
+    }
+    return readable
+      ? { path, message: `the broker store ${path} is not writable by this account (${code}), so the broker cannot start JetStream there`, remedy: `make it writable by you, for example with chmod -R u+w ${path}` }
+      : { path, message: `the broker store ${path} is not readable or writable by this account (${code}), so the broker cannot start JetStream there`, remedy: `make it readable and writable by you, for example with chmod -R u+rwX ${path}` };
   }
 }
 
