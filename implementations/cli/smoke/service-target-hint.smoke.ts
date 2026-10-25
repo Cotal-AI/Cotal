@@ -39,7 +39,7 @@ const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-service-hint-"));
 const neutral = join(home, "neutral");
 mkdirSync(neutral);
-process.on("exit", () => rmSync(home, { recursive: true, force: true }));
+process.on("exit", (code) => { if (code === 0) rmSync(home, { recursive: true, force: true }); });
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
@@ -129,16 +129,21 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   try { instanceId = (JSON.parse(started?.stdout ?? "") as { result?: { instanceId?: string } }).result?.instanceId; } catch { instanceId = undefined; }
   const log = join(home, ".cotal", "services", Buffer.from("sl").toString("hex"), "instances", `${Buffer.from(instanceId ?? "").toString("hex")}.log`);
   check("rig: a started process service writes its log", started?.status === 0 && existsSync(log), started && shown(started));
-  chmodSync(log, 0o000);
-  const closed = run(["service", "logs", "printer", "--json"], l);
-  let closedEnvelope: { outcome?: string; error?: { code?: string; message?: string; remedy?: string } } | undefined;
-  try { closedEnvelope = JSON.parse(closed.stdout) as typeof closedEnvelope; } catch { closedEnvelope = undefined; }
-  const step = `chmod u+rw ${log}`;
-  check("service logs on a log it cannot read is PERMISSION_DENIED, exit 2, naming the log and chmod u+rw",
-    closed.status === 2 && closedEnvelope?.outcome === "refused" && closedEnvelope.error?.code === "PERMISSION_DENIED" && closedEnvelope.error.message === `the log ${log} cannot be read by this account (EACCES); nothing was read or changed` && closedEnvelope.error.remedy === `make it readable by you, for example with ${step}`, shown(closed));
-  const opened = spawnSync("sh", ["-c", step], { cwd: l, encoding: "utf8" }), reread = run(["service", "logs", "printer"], l);
-  check("running that step reads the log again", opened.status === 0 && reread.status === 0 && reread.stdout.includes("tick"), shown(reread));
-  run(["service", "stop", "printer", "--yes"], l);
+  try {
+    chmodSync(log, 0o000);
+    const closed = run(["service", "logs", "printer", "--json"], l);
+    let closedEnvelope: { outcome?: string; error?: { code?: string; message?: string; remedy?: string } } | undefined;
+    try { closedEnvelope = JSON.parse(closed.stdout) as typeof closedEnvelope; } catch { closedEnvelope = undefined; }
+    const step = `chmod u+rw ${log}`;
+    check("service logs on a log it cannot read is PERMISSION_DENIED, exit 2, naming the log and chmod u+rw",
+      closed.status === 2 && closedEnvelope?.outcome === "refused" && closedEnvelope.error?.code === "PERMISSION_DENIED" && closedEnvelope.error.message === `the log ${log} cannot be read by this account (EACCES); nothing was read or changed` && closedEnvelope.error.remedy === `make it readable by you, for example with ${step}`, shown(closed));
+    const opened = spawnSync("sh", ["-c", step], { cwd: l, encoding: "utf8" }), reread = run(["service", "logs", "printer"], l);
+    check("running that step reads the log again", opened.status === 0 && reread.status === 0 && reread.stdout.includes("tick"), shown(reread));
+  } finally {
+    if (existsSync(log)) chmodSync(log, 0o600);
+    const stopped = run(["service", "stop", "printer", "--yes"], l);
+    check("the fixture's process service is stopped", stopped.status === 0, shown(stopped));
+  }
 }
 
 finish();
