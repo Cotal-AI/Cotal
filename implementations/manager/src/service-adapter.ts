@@ -8,7 +8,7 @@ import {
   colorEnabled, commandIsCotalSupervisor, controllerAttemptBinding, cutController, localProcessPath, maintenanceAdmitsStackWork, publishServiceStopRequest,
   readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessRecord, readServiceStopReceipts, removePidPair, readServiceStopRequest, releaseRetainedServiceStop, clearRetainedRefusedServiceStopRequest,
   clearAbandonedServiceStopRequest, connectUserControlOrThrow, credentialRefusalMessage, disarmManagerShutdownIntent, isCommandFailure, managerShutdownIntentArmedBy, protectedLocalDirectory,
-  releaseExitedServiceStopReservation, reserveNativeServiceStop, resolveNativeServiceTarget, serviceAdapterAttempt, serviceMetadataDigest,
+  releaseExitedServiceStopReservation, requestLocalStop, reserveNativeServiceStop, resolveNativeServiceTarget, serviceAdapterAttempt, serviceMetadataDigest,
   stopReservationPath, userViewAuth, type LocalProcess, type NativeServiceStopRequest, type ProcessIdentityRecord, type ServiceAdapterAttempt, type ServiceAdapterContext,
   type ServiceAdapterStopAbandonment, type ServiceAdapterStopContext, type ServiceAdapterStopPlan, type ServiceAdapterStopRefusal, type ServiceAdapterStopResult,
   type ServicePreset,
@@ -97,7 +97,7 @@ async function stop(context: ServiceAdapterStopContext & { requestId: string; pl
   try { published = readServiceStopRequest(context) !== undefined; } catch { published = true; }
   if (!published) releaseExitedServiceStopReservation(stopReservationPath(pidPath));
   const reservation = reserveNativeServiceStop(stopReservationPath(pidPath));
-  let submitted = false, releasable = true;
+  let submitted = false, releasable = true, clearWake: ((gone: boolean) => void) | undefined;
   try {
     const current = await prepareStop(context);
     if (current.scopeSha256 !== context.plan.scopeSha256 || current.withAgents !== context.withAgents || current.evidence !== context.plan.evidence || serviceMetadataDigest(current.native) !== serviceMetadataDigest(context.plan.native) || serviceMetadataDigest(current.preserved ?? null) !== serviceMetadataDigest(context.plan.preserved ?? null)) throw new CommandFailure("refused", "CONFLICT", "the manager impact or native incarnation changed after confirmation; no signal was sent");
@@ -114,7 +114,10 @@ async function stop(context: ServiceAdapterStopContext & { requestId: string; pl
     context.signal.throwIfAborted();
     if (assertRecordIdentity(context.process).kind !== "match") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the manager process changed after its stop handoff; no successor was signalled");
     submitted = true;
-    process.kill(context.process.pid, "SIGTERM");
+    // Windows has no SIGTERM to deliver, so the manager is woken through its cooperative local stop
+    // capability, under the reservation this stop holds.
+    if (process.platform === "win32") clearWake = requestLocalStop(pidPath, { target: context.process, stopper: { pid: reservation.stopper.pid, marker: stopReservationPath(pidPath) } });
+    else process.kill(context.process.pid, "SIGTERM");
     const deadline = Date.now() + 30000;
     while (Date.now() < deadline) {
       context.signal.throwIfAborted();
@@ -138,7 +141,10 @@ async function stop(context: ServiceAdapterStopContext & { requestId: string; pl
   } catch (error) {
     if (error instanceof CommandFailure) throw error;
     throw new CommandFailure(submitted || !releasable ? "unknown" : "refused", submitted || !releasable ? "OPERATION_UNKNOWN" : "LIFECYCLE_BLOCKED", submitted || !releasable ? "the native manager stop submission or observation was not confirmed; its original request was retained and not retried" : "the native manager preflight did not establish its exact current scope; no stop was submitted");
-  } finally { if (releasable) reservation.release(); }
+  } finally {
+    clearWake?.(assertRecordIdentity(context.process).kind !== "match");
+    if (releasable) reservation.release();
+  }
 }
 
 /** Settle an ordinary request that outlived its stop call from this launch's own evidence: its

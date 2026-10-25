@@ -155,13 +155,18 @@ function custodianEntry(): string {
 
 /** Start a detached custodian that launches `program` in its job. The launch and the capability
  *  reach it on stdin, never in its arguments or environment. It answers on stdout once the program
- *  runs, and the custodian's own pin is read here before the answer is accepted. */
-export async function startWin32Custodian(input: { program: string; args: readonly string[]; cwd: string; env: NodeJS.ProcessEnv; log: string; instanceId: string }, key: Buffer): Promise<Win32Custody & { process: ProcessIdentityRecord }> {
+ *  runs, and the custodian's own pin is read here before the answer is accepted. `spawned` receives
+ *  the custodian's pin and pipe as soon as it runs, before its program does. */
+export async function startWin32Custodian(input: { program: string; args: readonly string[]; cwd: string; env: NodeJS.ProcessEnv; log: string; instanceId: string }, key: Buffer, spawned?: (custodian: ProcessIdentityRecord, pipe: string) => void): Promise<Win32Custody & { process: ProcessIdentityRecord }> {
   if (process.platform !== "win32") throw new Error("Windows process custody runs only on Windows");
   if (key.length !== 32) throw new Error("a custody capability is 32 bytes");
   const pipe = `\\\\.\\pipe\\cotal-custody-${randomBytes(16).toString("hex")}`;
   const launch: Win32JobLaunch = { application: input.program, commandLine: windowsCommandLine(input.program, input.args), cwd: input.cwd, environment: windowsEnvironmentBlock(input.env), log: input.log };
   const child = spawn(process.execPath, [custodianEntry()], { detached: true, env: {}, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+  child.once("spawn", () => {
+    const token = nativeWin32CreationToken(child.pid!);
+    if (token !== undefined) spawned?.({ pid: child.pid!, token }, pipe);
+  });
   try {
     const answer = await new Promise<string>((resolve, reject) => {
       let text = "";

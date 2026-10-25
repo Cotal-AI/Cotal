@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync, type Stats } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { CommandFailure, assertRecordIdentity, shellPath, boundedValue, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, oneLine, targetErrorCode, workspaceErrorParts, type MeshTargetError } from "@cotal-ai/workspace";
+import { CommandFailure, assertRecordIdentity, shellPath, boundedValue, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, oneLine, targetErrorCode, workspaceErrorParts, type MeshTargetError, localRecordAccess, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
 import { serviceInstallIntents } from "./service-install-intent.js";
 import { serviceUninstallIntents } from "./service-uninstall-intent.js";
@@ -10,14 +10,18 @@ import { serviceUnitActionStore } from "./service-unit-action.js";
 import { selfArgv } from "./self-exec.js";
 import { loadServiceAdapter, resolveServiceAdapter, sameServiceAdapterPin, type LoadedServiceAdapter, type ResolvedServiceAdapter } from "./service-adapters.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
-import { instanceProjection, observeServiceProcess, processServiceHost, requireProcessIdentity, serviceInstances, serviceInstanceStore, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
+import { instanceProjection, observeServiceProcess, processServiceHost, requireProcessIdentity, serviceInstances, serviceInstanceStore, type ServiceCustody, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
 import { maintenanceStackView, STACK_DEFINITION, stackMemberRecord } from "./stack-journal.js";
+import { askCustodian, custodiedPlatform, custodyLog, removeCustodyCapability, startCustodiedService } from "./service-custody-win32.js";
 
 export const PROCESS_SERVICE_CAPABILITIES = Object.freeze({ multiInstance: true, foreground: true, logs: true, install: false });
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 /** How long a launch with process readiness waits for an immediate exit before it reports the process running. */
 const PROCESS_SETTLE_MS = 1000;
 const gone = (state: string) => state === "gone" || state === "previous-boot" || state === "foreign-pid";
+/** A log this account may read and append to. Windows protects it with the access list Cotal sets
+ *  when it creates the file and has no POSIX owner or mode to check, as for every local record. */
+const privateLog = (info: Stats) => info.isFile() && (localRecordAccess() === "windows-acl" || info.uid === process.getuid!() && (info.mode & 0o077) === 0);
 /** A record with no creation pin whose own state says no child exists: its launch failed before
  *  a process did. There is nothing to stop. */
 const neverLaunched = (value: ServiceInstance) => !value.process && gone(observeServiceProcess(value));
@@ -249,7 +253,8 @@ function executable(definition: ServiceDefinitionInput): string {
 
 function environment(definition: ServiceDefinitionInput): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
-  for (const key of ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM", "COLORTERM", "NO_COLOR", "FORCE_COLOR", "COTAL_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"]) if (process.env[key] !== undefined) env[key] = process.env[key];
+  // LOCALAPPDATA locates Cotal's own folder on Windows when COTAL_HOME is unset, as HOME does elsewhere.
+  for (const key of ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM", "COLORTERM", "NO_COLOR", "FORCE_COLOR", "COTAL_HOME", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"]) if (process.env[key] !== undefined) env[key] = process.env[key];
   // Variable names are not secrets, so a missing one is named with the child variable it feeds.
   const missing = Object.entries(definition.envRefs ?? {}).filter(([, source]) => process.env[source] === undefined);
   if (missing.length) {
@@ -279,7 +284,7 @@ function rotateServiceLog(path: string): void {
   let info;
   try { info = lstatSync(path); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
-  if (!info.isFile() || info.uid !== process.getuid!() || (info.mode & 0o077) !== 0) throw new Error("unprotected log target");
+  if (!privateLog(info)) throw new Error("unprotected log target");
   if (info.size >= LOG_ROTATE_BYTES) renameSync(path, `${path}.1`);
 }
 
@@ -508,9 +513,10 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
   // retired, with the journal's own IDs, and only while the definition has no instance record.
   if (options.replacement && (options.brokerInstance || options.newInstance || options.instance !== undefined)) throw new CommandFailure("refused", "UNSUPPORTED", "a journaled stack replacement is started only under its own IDs; no launch was allocated");
   const { program, adapter: declaredAdapter, cliInvocation, env, launcher } = prepareProcessService(definition);
+  if (options.foreground && custodiedPlatform()) throw new CommandFailure("refused", "UNSUPPORTED", "on Windows a service runs in the background under the custodian that holds its job; a terminal-attached foreground child was not substituted", { remedy: `start it in the background with cotal service start ${definition.name} --space ${value.space}` });
   if (declaredAdapter && (options.newInstance && !declaredAdapter.declaration.capabilities.multiInstance || options.foreground && !declaredAdapter.declaration.capabilities.foreground)) throw new CommandFailure("refused", "UNSUPPORTED", "the selected adapter does not declare this multi-instance or foreground capability; no launch was allocated");
   const hold = held ?? serviceDefinitionStore(value.space).pin(definition);
-  let child: ChildProcess | undefined, unpinned: (() => void) | undefined;
+  let child: ChildProcess | undefined, unpinned: (() => void) | undefined, spawnedCustody: ServiceCustody | undefined;
   try {
     assertNoServiceUnitAttempts(value.space, definition.name);
     const rows = serviceInstances(value.space, definition.name);
@@ -561,9 +567,13 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
     const instance: ServiceInstance = { schemaVersion: 1, instanceId: id, definition: definition.name, definitionRevision: definition.record.revision, space: value.space, host: processServiceHost(), requestId: launchRequestId, launchRequestId, state: "starting", launcher, readiness: "not-checked", supervisor: "none", ...(options.attempt ? { attempt: { attemptId: options.attempt.attemptId } } : {}), ...(declaredAdapter ? { adapter: declaredAdapter.pin, ...(declaredAdapter.declaration.stop === "native" ? { nativeStopRequired: true as const } : declaredAdapter.declaration.stop === "kernel-exit" ? { kernelStopRequired: true as const } : {}) } : {}), foreground: options.foreground === true, createdAt: selected?.record.value.createdAt ?? now, updatedAt: now };
     const store = serviceInstanceStore(value.space);
     store.commit(id, selected, instance);
+    // The replaced incarnation's custodian is gone, so its capability opens nothing.
+    removeCustodyCapability(value.space, selected?.record.value.custody);
     let row = store.read(id)!;
-    // Until the child's identity is recorded, an interrupt records this launch on its way out.
+    // Until the child's identity is recorded, an interrupt records this launch on its way out. On
+    // Windows that is its custodian, which can still be asked for the job once it is recorded.
     unpinned = () => {
+      if (spawnedCustody) { row = transition(row, { custody: spawnedCustody, state: "unknown", readiness: "not-checked" }); return; }
       if (child?.pid === undefined) { row = transition(row, { state: "failed", readiness: "not-checked" }); return; }
       let identity;
       try { identity = requireProcessIdentity(child.pid); } catch { identity = undefined; }
@@ -616,33 +626,61 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
     let exited = false;
     let done!: () => void;
     const exit = new Promise<void>((resolve) => { done = resolve; });
-    try {
-      if (!options.foreground) {
+    let identity: ProcessIdentityRecord;
+    if (custodiedPlatform()) {
+      // Windows: a custodian creates the program inside a kill-on-close job and reports its pin.
+      let started;
+      try {
         rotateServiceLog(path);
-        log = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
-        const info = fstatSync(log);
-        if (!info.isFile() || info.uid !== process.getuid!() || (info.mode & 0o077) !== 0) throw new Error("unprotected log target");
-        logFrom = info.size;
+        logFrom = custodyLog(path);
+        started = await startCustodiedService(row.record.value, { ...launch, env }, path, (custody) => { spawnedCustody = custody; });
+      } catch (error) {
+        row = transition(row, spawnedCustody ? { custody: spawnedCustody, state: "unknown", readiness: "not-checked" } : { state: "failed", readiness: "not-checked" });
+        throw new CommandFailure(spawnedCustody ? "unknown" : "failed", spawnedCustody ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", `the custodied process launch did not report a running service child (${(error as Error).message}); its instance receipt was retained`, { target: instanceProjection(row) });
       }
-      child = spawn(launch.program, [...launch.args], { cwd: launch.cwd, env, shell: false, detached: !options.foreground, stdio: options.foreground ? "inherit" : ["ignore", log!, log!] });
-      if (!options.foreground) child.unref();
-      child.once("exit", (code, signal) => { exited = true; exitCode = code; exitSignal = signal; done(); });
-      await new Promise<void>((resolve, reject) => { child!.once("spawn", resolve); child!.once("error", reject); });
-    } catch {
-      row = transition(row, { state: "failed", readiness: "not-checked" });
-      throw new CommandFailure("failed", "OPERATION_FAILED", "the native process launch failed before a service child was established; its instance receipt was retained", { target: instanceProjection(row) });
-    } finally { if (log !== undefined) closeSync(log); }
-    if (!child.pid) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the launch has no confirmed process ID; its instance intent was retained and no retry was made", { target: instanceProjection(row) });
-    let identity;
-    try { identity = requireProcessIdentity(child.pid); }
-    catch {
-      if (!exited) child.kill("SIGTERM");
-      await Promise.race([exit, delay(3000)]);
-      row = transition(row, { state: exited ? "failed" : "unknown", ...(exited ? { exit: { code: exitCode, signal: exitSignal } } : {}) });
-      throw new CommandFailure(exited ? "failed" : "unknown", exited ? "OPERATION_FAILED" : "OPERATION_UNKNOWN", "the child could not be creation-pinned; its native child handle was asked to exit, and no replacement was launched", { target: instanceProjection(row) });
+      identity = started.process;
+      row = transition(row, { process: identity, custody: started.custody });
+      unpinnedLaunches.delete(unpinned);
+      // The custodian holds the program; this launch watches its pin to notice an early exit.
+      const pinned = identity;
+      const watch = setInterval(() => {
+        if (assertRecordIdentity(pinned).kind === "match") return;
+        clearInterval(watch);
+        exited = true;
+        done();
+      }, 100);
+      watch.unref();
+      exit.then(async () => {
+        try { exitCode = (await askCustodian(row, { op: "status" })).root.exit; } catch { /* The custodian already left with its job; the log keeps the cause. */ }
+      });
+    } else {
+      try {
+        if (!options.foreground) {
+          rotateServiceLog(path);
+          log = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+          const info = fstatSync(log);
+          if (!info.isFile() || info.uid !== process.getuid!() || (info.mode & 0o077) !== 0) throw new Error("unprotected log target");
+          logFrom = info.size;
+        }
+        child = spawn(launch.program, [...launch.args], { cwd: launch.cwd, env, shell: false, detached: !options.foreground, stdio: options.foreground ? "inherit" : ["ignore", log!, log!] });
+        if (!options.foreground) child.unref();
+        child.once("exit", (code, signal) => { exited = true; exitCode = code; exitSignal = signal; done(); });
+        await new Promise<void>((resolve, reject) => { child!.once("spawn", resolve); child!.once("error", reject); });
+      } catch {
+        row = transition(row, { state: "failed", readiness: "not-checked" });
+        throw new CommandFailure("failed", "OPERATION_FAILED", "the native process launch failed before a service child was established; its instance receipt was retained", { target: instanceProjection(row) });
+      } finally { if (log !== undefined) closeSync(log); }
+      if (!child.pid) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the launch has no confirmed process ID; its instance intent was retained and no retry was made", { target: instanceProjection(row) });
+      try { identity = requireProcessIdentity(child.pid); }
+      catch {
+        if (!exited) child.kill("SIGTERM");
+        await Promise.race([exit, delay(3000)]);
+        row = transition(row, { state: exited ? "failed" : "unknown", ...(exited ? { exit: { code: exitCode, signal: exitSignal } } : {}) });
+        throw new CommandFailure(exited ? "failed" : "unknown", exited ? "OPERATION_FAILED" : "OPERATION_UNKNOWN", "the child could not be creation-pinned; its native child handle was asked to exit, and no replacement was launched", { target: instanceProjection(row) });
+      }
+      row = transition(row, { process: identity });
+      unpinnedLaunches.delete(unpinned);
     }
-    row = transition(row, { process: identity });
-    unpinnedLaunches.delete(unpinned);
     // A process that exits at once never ran: process readiness first gives it a moment to do so,
     // and that exit is then settled below with the code this parent observed.
     if (value.readiness.type === "process") await Promise.race([exit, delay(Math.min(PROCESS_SETTLE_MS, value.readiness.timeoutMs))]);
@@ -730,6 +768,39 @@ export function preflightProcessServiceStop(definition: ServiceDefinitionSnapsho
 /** How long a process stop waits after SIGTERM before it sends SIGKILL. */
 export const PROCESS_STOP_GRACE_MS = 15_000;
 
+/** Windows generic stop: the custodian terminates the instance's whole job, so a program that already
+ *  exited is stopped with the members it left. The receipt names the program only when it was still
+ *  running; the stop completes once the custodian, which holds the job, has exited. */
+async function stopCustodiedProcess(current: ServiceInstanceSnapshot, initial: ReturnType<typeof observeServiceProcess>) {
+  let row = current;
+  if ((initial !== "running" && initial !== "members-running") || !row.record.value.process) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the selected process is foreign, unreadable or unresolved; it was not signalled", { target: instanceProjection(row) });
+  const held = await askCustodian(row, { op: "status" });
+  if (commandIsCotalSupervisor([held.program, ...held.args].join(" "))) throw new CommandFailure("refused", "UNSUPPORTED", "generic process stop cannot bypass manager agent-impact guards; use its supported service adapter. No job was terminated", { target: instanceProjection(row) });
+  const program = { ...row.record.value.process }, custodian = row.record.value.custody!.custodian;
+  row = transition(row, { state: "stopping", requestId: randomUUID() });
+  const ended = await askCustodian(row, { op: "terminate", code: 1 });
+  for (const deadline = Date.now() + 5000; assertRecordIdentity(custodian).kind === "match" && Date.now() < deadline;) await delay(100);
+  if (ended.members.length || ended.root.exit === null || assertRecordIdentity(custodian).kind === "match") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the service's job did not confirm it emptied${ended.members.length ? `; process ${ended.members.join(", ")} still ran in it` : ""}; its record was retained and no restart was attempted`, { target: instanceProjection(row) });
+  removeCustodyCapability(row.record.value.space, row.record.value.custody);
+  const processStop = initial === "running" ? { processStop: { kind: "process-exit" as const, requestId: row.record.value.requestId, process: program, signal: "job-terminate" as const, observedAt: new Date().toISOString() } } : {};
+  return { instance: transition(row, { state: "stopped", readiness: "not-checked", ...processStop }), noOp: false };
+}
+
+/** Windows: a program with a native or kernel-exit stop policy exited on its own, and its job still
+ *  holds processes. Those end with the job, so a manager's agents end only on `--with-agents`. The
+ *  custodian terminates the job to empty, and the record settles as an exit no stop explains. */
+async function endLeftoverJob(current: ServiceInstanceSnapshot, membersMayEnd: boolean) {
+  const row = current;
+  const held = await askCustodian(row, { op: "status" });
+  if (!membersMayEnd && held.members.length) throw new CommandFailure("refused", "UNSUPPORTED", `the service's program exited while its job still holds process ${held.members.join(", ")}, which would end with it; nothing was stopped`, { target: instanceProjection(row), remedy: `end them with cotal service stop ${row.record.value.definition} --instance ${row.name} --space ${row.record.value.space} --with-agents --yes` });
+  const custodian = row.record.value.custody!.custodian;
+  const ended = await askCustodian(row, { op: "terminate", code: 1 });
+  for (const deadline = Date.now() + 5000; assertRecordIdentity(custodian).kind === "match" && Date.now() < deadline;) await delay(100);
+  if (ended.members.length || assertRecordIdentity(custodian).kind === "match") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the service's job did not confirm it emptied${ended.members.length ? `; process ${ended.members.join(", ")} still ran in it` : ""}; its record was retained`, { target: instanceProjection(row) });
+  removeCustodyCapability(row.record.value.space, row.record.value.custody);
+  return { instance: settleExitedInstance(row), noOp: false };
+}
+
 /** Only the stored creation-pinned process is signalled. Every escalation rechecks its identity. */
 export async function stopProcessService(definition: ServiceDefinitionSnapshot, selected: ServiceInstanceSnapshot, held?: DefinitionHold, native?: { plan?: ServiceAdapterStopPlan; withAgents: boolean; preserved?: ServiceAdapterPreservedStop; requestId?: string }, kernel?: { plan?: ServiceAdapterKernelStopPlan }) {
   const hold = held ?? serviceDefinitionStore(definition.record.value.space).pin(definition);
@@ -749,6 +820,7 @@ export async function stopProcessService(definition: ServiceDefinitionSnapshot, 
       if (retained) throw retainedNativeStop(definition, row, retained);
       // Already gone without a stop of ours: record that exit under this lock; nothing is signalled.
       if (goneWithoutStop(row.record.value)) return { instance: settleExitedInstance(row), noOp: true };
+      if (initial === "members-running") return await endLeftoverJob(row, native?.withAgents === true);
       if (initial !== "running" || !row.record.value.process) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "native stop has no current attributable process or retained returned receipt; disappearance was not treated as completion", { target: instanceProjection(row) });
       if (!native?.plan) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "native service stop requires its current caller-scoped impact and explicit confirmation; generic signals were not used");
       const plan = serviceAdapterStopPlan(native.plan, row.record.value.process);
@@ -758,15 +830,23 @@ export async function stopProcessService(definition: ServiceDefinitionSnapshot, 
       // A preserved-exit caller journals its attempt first and passes that attempt's request ID.
       if (native.preserved && !native.requestId) throw new CommandFailure("refused", "USAGE_INVALID", "a preserved-exit stop needs its journaled attempt's request ID; no request was published");
       const requestId = native.requestId ?? randomUUID(), target = { ...row.record.value.process }, began = Date.now();
+      if (custodiedPlatform() && !native.withAgents) {
+        // A Windows manager's agents run in its job and end with it, so a stop that keeps them refuses.
+        const others = (await askCustodian(row, { op: "status" })).members.filter((pid) => pid !== target.pid);
+        if (others.length) throw new CommandFailure("refused", "UNSUPPORTED", `on Windows the manager's job also holds process ${others.join(", ")}, which would end with it; nothing was stopped`, { target: instanceProjection(row), remedy: `stop it with its agents, cotal service stop ${definition.name} --instance ${row.name} --space ${row.record.value.space} --with-agents --yes` });
+      }
       row = transition(row, { state: "stopping", requestId });
       let returned = false;
       try {
         const raw = await adapterCall((signal) => provider.stop!({ ...adapterContext(definition, row.record.value), process: target, withAgents: native.withAgents, ...(native.preserved ? { preserved: { ...native.preserved } } : {}), requestId, plan, signal }), 45000);
         returned = true;
         const result = serviceAdapterStopResult(raw);
+        // A Windows custodian exits a moment after the job it held empties.
+        for (const deadline = Date.now() + 5000; custodiedPlatform() && observeServiceProcess(row.record.value) === "members-running" && Date.now() < deadline;) await delay(100);
         // The terminal kind must answer the submitted request: a preserved stop returns only
         // `preserved-exit-returned`, an ordinary stop only `returned`.
         if (result.nativeStop !== (native.preserved ? "preserved-exit-returned" : "returned") || result.requestId !== requestId || result.scopeSha256 !== plan.scopeSha256 || result.process.pid !== target.pid || result.process.token !== target.token || Date.parse(result.observedAt) < began - 1000 || Date.parse(result.observedAt) > Date.now() + 1000 || !gone(observeServiceProcess(row.record.value))) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native service did not confirm both its original returned stop and the exact process exit");
+        removeCustodyCapability(row.record.value.space, row.record.value.custody);
         return { instance: transition(row, { state: "stopped", readiness: "not-checked", nativeStop: result }), noOp: false, nativeStop: result };
       } catch (error) {
         const refused = !returned && isCommandFailure(error) && error.outcome === "refused";
@@ -784,6 +864,7 @@ export async function stopProcessService(definition: ServiceDefinitionSnapshot, 
     if (row.record.value.kernelStopRequired) throw new CommandFailure("refused", "UNSUPPORTED", "the retained instance requires its exact kernel-exit stop policy from its pinned adapter; no generic signal path was substituted");
     if (native?.withAgents) throw new CommandFailure("refused", "UNSUPPORTED", "generic process stop does not accept an agent-reap policy");
     if (gone(initial)) return { instance: transition(row, { state: "stopped", readiness: "not-checked" }), noOp: true };
+    if (custodiedPlatform()) return await stopCustodiedProcess(row, initial);
     if (initial !== "running" || !row.record.value.process) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the selected process is foreign, unreadable or unresolved; it was not signalled", { target: instanceProjection(row) });
     const command = readProcessCommand(row.record.value.process.pid);
     if (command.kind !== "command" || commandIsCotalSupervisor(command.command)) throw new CommandFailure("refused", "UNSUPPORTED", "generic process stop cannot bypass manager agent-impact guards or an unreadable process role; use its supported service adapter. No signal was sent", { target: instanceProjection(row) });
@@ -844,6 +925,7 @@ async function stopKernelService(definition: ServiceDefinitionSnapshot, current:
   // to a signal, and no kernel-exit receipt is written.
   if (goneWithoutStop(value)) return { instance: settleExitedInstance(row), noOp: true };
   if (value.state === "stopping") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "an earlier broker stop request is retained without its exact-exit receipt; it was not resubmitted", { target: instanceProjection(row) });
+  if (initial === "members-running") return await endLeftoverJob(row, true);
   if (initial !== "running" || !value.process) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the broker has no current attributable process or retained exact-exit receipt; disappearance was not treated as a completed stop", { target: instanceProjection(row) });
   if (!kernel?.plan) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a broker stop requires its current exact scope and explicit confirmation; no signal was sent");
   const confirmed = serviceAdapterKernelStopPlan(kernel.plan);
@@ -853,13 +935,16 @@ async function stopKernelService(definition: ServiceDefinitionSnapshot, current:
   const fresh = serviceAdapterKernelStopPlan(await adapterCall((signal) => provider.prepareKernelStop!({ ...adapterContext(definition, value), process: target, signal }), 15000));
   if (fresh.scopeSha256 !== confirmed.scopeSha256 || serviceMetadataDigest(fresh.binding) !== serviceMetadataDigest(confirmed.binding)) throw new CommandFailure("refused", "CONFLICT", "the broker binding or dependant scope changed after confirmation; no signal was sent", { target: instanceProjection(row) });
   hold.check();
-  const role = readProcessCommand(target.pid);
+  // On Windows the custodian reports the exact program it launched, which is the broker's role.
+  const role = custodiedPlatform() ? await askCustodian(row, { op: "status" }).then((held) => ({ kind: "command" as const, command: [held.program, ...held.args].join(" ") }), () => ({ kind: "unreadable" as const })) : readProcessCommand(target.pid);
   if (role.kind !== "command" || commandIsCotalSupervisor(role.command) || assertRecordIdentity(target).kind !== "match") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the broker process identity or role could not be re-established immediately before the signal; no signal was sent", { target: instanceProjection(row) });
   const requestId = randomUUID();
   row = transition(row, { state: "stopping", requestId });
   try {
     if (assertRecordIdentity(target).kind !== "match") throw new Error("identity changed");
-    process.kill(target.pid, "SIGTERM");
+    // Windows has no SIGTERM to deliver: the custodian terminates the broker's job.
+    if (custodiedPlatform()) await askCustodian(row, { op: "terminate", code: 1 });
+    else process.kill(target.pid, "SIGTERM");
   } catch {
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the exact broker signal was not confirmed delivered to the pinned process; its stop request was retained and no exit was attributed to it", { target: instanceProjection(row) });
   }
@@ -871,9 +956,11 @@ async function stopKernelService(definition: ServiceDefinitionSnapshot, current:
       try { trace = provider.observeKernelStop!({ ...adapterContext(definition, row.record.value), process: target }); }
       catch { /* The observed exit stands; an unreadable trace is reported as retained, never removed. */ }
       const kernelStop = serviceAdapterKernelStopResult({ kind: "kernel-exit", requestId, scopeSha256: confirmed.scopeSha256, process: target, observation: "exact-process-exit", brokerShutdownTrace: trace, cleanup: "not-checked", observedAt: new Date().toISOString() });
+      removeCustodyCapability(row.record.value.space, row.record.value.custody);
       return { instance: transition(row, { state: "stopped", readiness: "not-checked", kernelStop }), noOp: false, kernelStop };
     }
-    if (state !== "running") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the broker exit could not be attributed; its stop request was retained", { target: instanceProjection(row) });
+    // A Windows custodian outlives its emptied job by a moment before it exits.
+    if (state !== "running" && state !== "members-running") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the broker exit could not be attributed; its stop request was retained", { target: instanceProjection(row) });
     await delay(100);
   }
   throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the broker did not exit within its stop window; the request was retained without force kill or restart", { target: instanceProjection(row), remedy: "inspect the exact broker instance before another action; a later stop of this instance is refused until it is reconciled" });
@@ -924,7 +1011,7 @@ export function removeStoppedInstanceRecord(definition: ServiceDefinitionSnapsho
 export function removeStoppedInstanceRecords(space: string, name: string): string[] {
   const rows = removableServiceInstances(space, name), removed: string[] = [];
   try {
-    for (const row of rows) { serviceInstanceStore(space).commit(row.name, row, undefined); removed.push(row.name); }
+    for (const row of rows) { serviceInstanceStore(space).commit(row.name, row, undefined); removeCustodyCapability(space, row.record.value.custody); removed.push(row.name); }
   } catch (error) {
     if (!removed.length) throw error;
     throw new CommandFailure("partial", "OPERATION_PARTIAL", "some stopped instance records were removed, but the definition was kept after another record changed", { target: { space, name }, changed: removed.map((instanceId) => ({ kind: "stopped-instance-record", instanceId })), remedy: "inspect the remaining records before another removal; no process was signalled and logs were retained" });
@@ -961,7 +1048,7 @@ export function readOwnedLogTail(path: string, tail: number) {
   try {
     const info = fstatSync(fd);
     if (![info.size, info.dev, info.ino].every((number) => Number.isSafeInteger(number) && number >= 0)) throw new CommandFailure("refused", "UNSUPPORTED", "this log's native file coordinates cannot be represented safely; no approximate byte offsets were reported");
-    if (!info.isFile() || info.uid !== process.getuid!() || (info.mode & 0o077) !== 0) throw new CommandFailure("refused", "PERMISSION_DENIED", "the service log is not an owned private regular file");
+    if (!privateLog(info)) throw new CommandFailure("refused", "PERMISSION_DENIED", "the service log is not an owned private regular file");
     // Read back 1 MiB at a time until the bytes hold `tail` whole lines, the file's start or the bound.
     const limit = Math.min(info.size, LOG_TAIL_BYTES), chunks: Buffer[] = [];
     let start = info.size, newlines = 0;
@@ -989,7 +1076,7 @@ function lastLoggedLine(path: string, from: number): string | undefined {
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return undefined; }
   try {
     const info = fstatSync(fd);
-    if (!info.isFile() || info.uid !== process.getuid!() || (info.mode & 0o077) !== 0 || info.size <= from) return undefined;
+    if (!privateLog(info) || info.size <= from) return undefined;
     const length = Math.min(info.size - from, 8192), bytes = Buffer.alloc(length);
     let read = 0;
     while (read < length) { const count = readSync(fd, bytes, read, length - read, info.size - length + read); if (!count) break; read += count; }
@@ -1014,7 +1101,7 @@ export function serviceLogSlice(space: string, id: string, position: { offset: n
   try {
     const info = fstatSync(fd);
     if (![info.size, info.dev, info.ino].every((number) => Number.isSafeInteger(number) && number >= 0)) throw new CommandFailure("refused", "UNSUPPORTED", "this log's native file coordinates cannot be represented safely; no approximate byte offsets were reported");
-    if (!info.isFile() || info.uid !== process.getuid!() || (info.mode & 0o077) !== 0) throw new CommandFailure("refused", "PERMISSION_DENIED", "the selected service log is not an owned private regular file");
+    if (!privateLog(info)) throw new CommandFailure("refused", "PERMISSION_DENIED", "the selected service log is not an owned private regular file");
     const replaced = position !== undefined && (position.dev !== info.dev || position.ino !== info.ino);
     const truncated = position !== undefined && !replaced && info.size < position.offset;
     let offset = position && !replaced && !truncated ? position.offset : 0;

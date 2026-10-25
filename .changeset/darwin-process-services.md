@@ -10,4 +10,4 @@ process's start in microseconds, read through the bundled binding, where Linux p
 boot ID and start ticks. A background start leads its own process group, and a stop signals and
 waits for that whole group, as on Linux. The manager's native child, its stop reservation and the
 native service identity records accept the same pins. Before, each of these refused with
-`UNSUPPORTED` on macOS. Windows still refuses.
+`UNSUPPORTED` on macOS.
