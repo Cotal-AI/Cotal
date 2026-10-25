@@ -54,6 +54,10 @@ export interface MeshTarget {
    *  the broker is down: an `up` mesh is restarted with `cotal up`, a `manual` one runs somewhere
    *  this machine does not control (so the local remedy is `cotal meshes rm`, not `cotal up`). */
   origin?: MeshEntry["origin"];
+  /** For a broker address `--server` supplied: the address this machine records for the target's
+   *  space, when it records one for this root. A probe of another address says nothing about that
+   *  space's mesh, and surfaces read this to say which address did not answer. */
+  recordedServer?: string;
   /** `<root>/.cotal/agents` — the persona catalog for this mesh. */
   personaRoot: string;
   /** For `local-space`: the root's `.cotal/` holds records but names no space, as after `space
@@ -670,7 +674,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // delete a live registered mesh, and pre-pruning would block a live-override recovery). Mark it so
     // preflight classifies the failure as non-registry / no-prune.
     const overriding = flags.server !== undefined && flags.server !== m.server;
-    return targetFromEntry(m, flags.server ?? m.server, overriding ? "flag-space-override" : "flag-space", flags.readOnly);
+    const target = targetFromEntry(m, flags.server ?? m.server, overriding ? "flag-space-override" : "flag-space", flags.readOnly);
+    return overriding ? { ...target, recordedServer: m.server } : target;
   }
 
   if (flags.server) {
@@ -692,9 +697,13 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       // shows several tenants (or an unreadable one), `--server` alone cannot pick, same as the bare
       // local branch below.
       assertRootIsSingleTenant(onServer[0].root);
-      return targetFromEntry(onServer[0], flags.server, "flag-server", flags.readOnly);
+      return { ...targetFromEntry(onServer[0], flags.server, "flag-server", flags.readOnly), recordedServer: onServer[0].server };
     }
-    return localTarget(findCotalRoot(cwd), flags.server, "flag-server", flags.readOnly);
+    // The folder's own space may be recorded here at another address; nothing records the default
+    // space a folder with no records resolves to.
+    const local = localTarget(findCotalRoot(cwd), flags.server, "flag-server", flags.readOnly);
+    const recorded = findMesh(local.space);
+    return recorded && canonicalRoot(recorded.root) === canonicalRoot(local.root) ? { ...local, recordedServer: recorded.server } : local;
   }
 
   const meshes = loadMeshes();

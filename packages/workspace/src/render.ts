@@ -125,6 +125,13 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
   const server = brokerAddressForDisplay(t.server) ?? "an invalid broker address";
   switch (kind) {
     case "unreachable":
+      // A broker address `--server` supplied that is not the one recorded for this space says nothing
+      // about whether that space's mesh runs: name the address that did not answer, and the recorded
+      // one when there is one. The recorded broker is never tried in its place.
+      if ((t.source === "flag-server" || t.source === "flag-space-override") && t.recordedServer !== t.server)
+        return t.recordedServer === undefined
+          ? parts(`nothing answered at ${server}, the broker address --server named`, "check that address and that a broker runs there")
+          : parts(`nothing answered at ${server}, the broker address --server named`, `check that address, or drop --server to reach "${t.space}" at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}, where it is recorded`);
       // Nothing records the default space that was assumed for a folder whose records name no
       // space, so the folder is what to name, with the step that prepares a space in it again.
       if (t.namesNoSpace)

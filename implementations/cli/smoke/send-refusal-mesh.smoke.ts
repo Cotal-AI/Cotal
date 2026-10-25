@@ -5,6 +5,10 @@
  * `--mention`. The refusal also says what to run next, in `error.remedy` and the human report.
  * A `--creds` credential that may not read presence used to wait out a five-second Direct Get
  * timeout and exit 3 with an unknown `timeout`; it is refused with `PERMISSION_DENIED`.
+ * A `--server` nothing answers at used to be reported as the space's mesh recorded at its root but
+ * not running, with `cotal up` as the Next, and in a folder with no space as a `main` mesh recorded
+ * there. `send` and `history` now name the address that did not answer and, from the space's root or
+ * with `--space`, the broker recorded for it, and the space's history is unchanged.
  *
  * Starts one static-auth broker owned by this suite, registers its space under a sandboxed
  * COTAL_HOME, and drives the built binary from the space's root.
@@ -29,7 +33,7 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   target: { space?: string; name?: string } | null;
-  error?: { code: string; remedy?: string };
+  error?: { code: string; message?: string; remedy?: string };
 }
 
 const { check, finish } = createSuite();
@@ -53,8 +57,8 @@ const releaseBroker = teardownOnSignal(broker, dir);
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-const run = (args: string[]) => {
-  const r = spawnSync(process.execPath, [BIN, ...args], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
+const run = (args: string[], cwd = root) => {
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 60_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout ?? "") as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
@@ -88,6 +92,26 @@ try {
   writeFileSync(adminCreds, await mintCreds(auth, newIdentity(), "admin"), { mode: 0o600 });
   const denied = run(["send", "-c", "general", "hello", "--creds", adminCreds, "--server", servers, "--space", space, "--json"]);
   check("creds: a credential that may not read presence is refused PERMISSION_DENIED with the space", denied.status === 2 && denied.envelope?.error?.code === "PERMISSION_DENIED" && denied.envelope.target?.space === space, shown(denied));
+
+  // A --server nothing answers at names that address. The space's own broker still answers and is
+  // only named, never tried in its place, so nothing reaches its history.
+  const kept = run(["send", "-c", "general", "kept", "--space", space]);
+  const history = () => (JSON.parse(run(["history", "general", "--space", space, "--json"]).stdout) as { result?: { items?: { text?: string }[] } }).result?.items?.map((m) => m.text).join("|");
+  const before = history();
+  const closed = `nats://127.0.0.1:${await freePort()}`;
+  const unanswered = `nothing answered at ${closed}, the broker address --server named`;
+  for (const args of [["send", "-c", "general", "x", "--server", closed], ["history", "general", "--server", closed], ["send", "-c", "general", "x", "--space", space, "--server", closed]]) {
+    const r = run([...args, "--json"]);
+    check(`${args.slice(0, 2).join(" ")}${args.includes("--space") ? " --space" : ""} --server <closed>: refused TARGET_UNAVAILABLE, exit 2, naming that address and the space's recorded broker`,
+      r.status === 2 && r.envelope?.error?.code === "TARGET_UNAVAILABLE" && r.envelope.error.message === unanswered
+        && r.envelope.error.remedy === `check that address, or drop --server to reach "${space}" at ${servers}, where it is recorded`, shown(r));
+  }
+  const empty = mkdtempSync(join(dir, "empty-"));
+  const bare = run(["send", "-c", "general", "x", "--server", closed, "--json"], empty);
+  check("from a folder with no space, it names that address and no recorded mesh",
+    bare.status === 2 && bare.envelope?.error?.code === "TARGET_UNAVAILABLE" && bare.envelope.error.message === unanswered
+      && bare.envelope.error.remedy === "check that address and that a broker runs there" && !bare.stdout.includes("recorded at"), shown(bare));
+  check("the space's history is unchanged", kept.status === 0 && before === "kept" && history() === before, { kept: shown(kept), before, after: history() });
 } catch (error) {
   check("scenario completed", false, (error as Error).stack ?? String(error));
 } finally {

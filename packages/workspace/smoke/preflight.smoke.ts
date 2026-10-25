@@ -198,6 +198,17 @@ check("message: unreachable keeps `no mesh running at` and names the recorded ro
 check("message: unreachable + pruned still names the recorded root (liveness no longer deletes)",
   preflightMessage("unreachable", T, true).includes(`recorded at ${T.root}`) && preflightMessage("unreachable", T, true).includes(`no mesh running at ${DEAD}`) && !preflightMessage("unreachable", T, true).includes("stale registry entry - removed"));
 check("message: prune flag does not change the unreachable sentence (record is kept)", preflightMessage("unreachable", T, true) === preflightMessage("unreachable", T, false));
+// A broker address `--server` supplied that is not the recorded one says nothing about the recorded
+// mesh: the sentence names that address, and the recorded broker only where one is recorded.
+check("message: an unreachable overriding --server names that address and the space's recorded broker", (() => {
+  const m = preflightMessage("unreachable", { ...T, source: "flag-space-override", recordedServer: "nats://127.0.0.1:14993" }, false);
+  return m === `✗ nothing answered at ${DEAD}, the broker address --server named - check that address, or drop --server to reach "alpha" at nats://127.0.0.1:14993, where it is recorded`;
+})(), preflightMessage("unreachable", { ...T, source: "flag-space-override", recordedServer: "nats://127.0.0.1:14993" }, false));
+check("message: an unreachable --server with no recorded broker names only that address, and no recorded mesh",
+  preflightMessage("unreachable", { ...T, source: "flag-server" }, false) === `✗ nothing answered at ${DEAD}, the broker address --server named - check that address and that a broker runs there`,
+  preflightMessage("unreachable", { ...T, source: "flag-server" }, false));
+check("message: a --server that is the recorded broker still names the recorded mesh as not running",
+  preflightMessage("unreachable", { ...T, source: "flag-server", recordedServer: DEAD }, false) === preflightMessage("unreachable", T, false));
 for (const kind of ["registry-creds-rejected", "registry-open-now-auth", "creds-rejected", "open-wants-auth"] as const)
   check(`message: ${kind} names the server + leads with ✗`, (() => {
     const m = preflightMessage(kind, T, true);
@@ -251,6 +262,8 @@ check("resolveMeshTarget: --space + overriding --server → source 'flag-space-o
   const t = resolveMeshTarget("/nonexistent/cwd", { space: "team-ov", server: "nats://127.0.0.1:19998" });
   return t.source === "flag-space-override" && t.server === "nats://127.0.0.1:19998";
 })());
+check("resolveMeshTarget: an overriding --server carries the space's recorded broker as recordedServer",
+  resolveMeshTarget("/nonexistent/cwd", { space: "team-ov", server: "nats://127.0.0.1:19998" }).recordedServer === "nats://127.0.0.1:14993");
 check("resolveMeshTarget: --space + --server EQUAL to recorded → still 'flag-space' (registry-owned)",
   resolveMeshTarget("/nonexistent/cwd", { space: "team-ov", server: "nats://127.0.0.1:14993" }).source === "flag-space");
 check("resolveMeshTarget: --space without --server → 'flag-space'",
