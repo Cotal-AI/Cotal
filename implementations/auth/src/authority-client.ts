@@ -26,8 +26,8 @@
  */
 import { jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser } from "@nats-io/jwt";
-import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { EpEnvelopeError, admissionBucket, dialerFor, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, BASELINE_LIFECYCLE_ENDPOINT, epCallerGrantRows, instanceOnlyManagerCapabilities, type EpCaller, type PlaneConnTuple } from "@cotal-ai/core";
+import { fromPublic } from "@nats-io/nkeys";
+import { nativeNkeySigner, EpEnvelopeError, admissionBucket, dialerFor, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, BASELINE_LIFECYCLE_ENDPOINT, epCallerGrantRows, instanceOnlyManagerCapabilities, type EpCaller, type PlaneConnTuple } from "@cotal-ai/core";
 import { chatAuthorityWriteSubjects } from "./chat-session-store.js";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 import { environmentManagerAdmissionIndexBucket } from "./environment-manager-admission-index.js";
@@ -574,7 +574,7 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
   const uninterrupted = Boolean(opts.planeCandidate || opts.toolResultCustody);
   const identity = newIdentity();
   const grants = opts.grants(identity.id);
-  const signer = fromSeed(new TextEncoder().encode(opts.dataAccount.signingSeed));
+  const signer = nativeNkeySigner(new TextEncoder().encode(opts.dataAccount.signingSeed));
   const mint = async (): Promise<string> =>
     encodeUser(
       opts.label,

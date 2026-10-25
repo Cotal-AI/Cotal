@@ -15,6 +15,7 @@
  * expiry and renewal owner.
  */
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
+import { nativeNkeySigner } from "./nkey-signer.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
 import { randomBytes } from "node:crypto";
@@ -978,7 +979,7 @@ export async function mintCreds(
   profile: Profile,
   opts: MintOpts = {},
 ): Promise<string> {
-  const signer = fromSeed(new TextEncoder().encode(auth.account.signingSeed));
+  const signer = nativeNkeySigner(new TextEncoder().encode(auth.account.signingSeed));
   const pr = principalOf(identity, opts.principal, opts.lifecycleUid);
   // Serve rows are INTERNAL to mintCreds behind the §13.1 fence: the exported permissionsFor
   // refuses "endpoint-serve" (so a direct caller can never obtain unfenced serve rows), and only
@@ -1117,7 +1118,7 @@ export async function mintPublicUserJwt(
   if (validDates.exp === undefined) throw new Error(`mintPublicUserJwt: profile "${profile}" must be bounded`);
   const jwt = await encodeUser(profile, fromPublic(publicId), fromPublic(auth.account.pub),
     { ...perms, tags: userTags(profile, pr) },
-    { signer: fromSeed(new TextEncoder().encode(auth.account.signingSeed)), ...validDates });
+    { signer: nativeNkeySigner(new TextEncoder().encode(auth.account.signingSeed)), ...validDates });
   // Same composed-credential bound as mintCreds (see MAX_MINTED_JWT_BYTES): this JWT is presented
   // on a real CONNECT line by the remote manager, so it is priced against the same budget before
   // any fallible finalize step below. None of this function's profiles read allowSubscribe/
@@ -1171,7 +1172,7 @@ export async function mintServiceCalloutJwt(
     { endpointServe: serve, serveIssuance: gate });
   const jwt = await encodeUser(identity.name, fromPublic(connection.userNkey), fromPublic(auth.account.pub),
     { ...permissions, tags: principalTags(principal.owner, principal.actor) },
-    { signer: fromSeed(new TextEncoder().encode(auth.account.signingSeed)), exp: expiresAt });
+    { signer: nativeNkeySigner(new TextEncoder().encode(auth.account.signingSeed)), exp: expiresAt });
   if (Buffer.byteLength(jwt, "utf8") > MAX_MINTED_JWT_BYTES)
     throw new Error("service callout mint exceeds the native JWT byte limit");
   const credentialId = rawDigest(jwt).replace("sha256:", "sha256-");
@@ -2968,7 +2969,7 @@ export async function mintMembershipObserverCreds(auth: SpaceAuth, identity: Ide
     throw new Error(
       "mintMembershipObserverCreds: no in-memory system-account signing seed - the observer can only be minted from a system account that is being (re)provisioned, because the trust record carries no $SYS seed. Rotate the system account to mint a fresh one (`cotal down` then `cotal up --rotate-sys`); a plain re-`up` reuses the existing account and its existing creds.",
     );
-  const signer = fromSeed(new TextEncoder().encode(auth.sys.signingSeed));
+  const signer = nativeNkeySigner(new TextEncoder().encode(auth.sys.signingSeed));
   const perms = membershipObserverPermissions(auth.account.pub);
   // Bounded exp: the observer is `rotation-renewed` — it carries the matrix's default
   // lifetime so a copied cred becomes broker-dead, but there is NO online renewal (the $SYS seed is
@@ -3002,7 +3003,7 @@ export async function mintAccountCensusCreds(
   if (!isUserNkey(identity.id) || user.getPublicKey() !== identity.id) throw new Error("account census identity does not match its user key");
   const jwt = await encodeUser("account-census", fromPublic(identity.id), fromPublic(auth.sys.pub), {
     pub: { allow: [connzRequestSubject(auth.account.pub)] }, sub: { allow: [`${prefix}.>`] },
-  }, { signer: fromSeed(new TextEncoder().encode(auth.sys.signingSeed)), exp });
+  }, { signer: nativeNkeySigner(new TextEncoder().encode(auth.sys.signingSeed)), exp });
   if (exp <= Math.floor(Date.now() / 1000)) throw new Error("account census credential expired before release");
   return new TextDecoder().decode(fmtCreds(jwt, user));
 }
@@ -3033,7 +3034,7 @@ export async function mintConnectionEvictorCreds(auth: SpaceAuth, identity: Iden
     throw new Error(
       "mintConnectionEvictorCreds: no in-memory system-account signing seed - the evictor can only be minted from a system account that is being (re)provisioned, because the trust record carries no $SYS seed. Rotate the system account to mint a fresh one (`cotal down` then `cotal up --rotate-sys`); a plain re-`up` reuses the existing account and its existing creds.",
     );
-  const signer = fromSeed(new TextEncoder().encode(auth.sys.signingSeed));
+  const signer = nativeNkeySigner(new TextEncoder().encode(auth.sys.signingSeed));
   // Bounded exp: `rotation-renewed`, same posture as the observer above.
   const validDates = userValidDates("connection-evictor", opts);
   const userJwt = await encodeUser(
