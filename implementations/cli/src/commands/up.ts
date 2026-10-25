@@ -9,10 +9,7 @@ import {
   mkdirSync,
   readFileSync,
   existsSync,
-  openSync,
-  fstatSync,
   statSync,
-  readSync,
   closeSync,
   lstatSync,
   realpathSync,
@@ -1294,7 +1291,6 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   if (!values.file && controllerStackApplies(meshRoot, values.space ?? folderSpace(), values)) {
     const stackSpace = values.space ?? folderSpace();
     recordOperationSpace(stackSpace);
-    const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? unrecordedStackServer(meshRoot, stackSpace, values.host);
     const stackMode = requestedStackMode(values);
     const presentation = presentationOf(values);
     // A foreground up holds a stack only one terminal holds. Over a stack that already runs without
@@ -1313,6 +1309,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // A foreground terminal holds the start as well, so a signal during it stops what it started.
       const start = async () => {
         try {
+          const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
           if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
           await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
         } finally { releaseMaintenanceLock(stackLock); }
@@ -2160,8 +2157,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
 /** The address of a prepared stack that neither a journal nor a registration records, as after a
  *  damaged journal was removed once `down` had dropped the registration. Its saved broker definition
  *  names it. With none, a root that holds this space's trust or a store from an earlier start refuses
- *  rather than start at the default address; only a fresh prepared root starts there. */
-function unrecordedStackServer(root: string, space: string, host: string | undefined): string {
+ *  rather than start at another address; only a fresh prepared root chooses an available address. */
+async function unrecordedStackServer(root: string, space: string, host: string | undefined): Promise<string> {
   const launch = serviceDefinitionStore(space).read(STACK_DEFINITION.broker)?.record.value.launch;
   const saved = launch?.type === "adapter" && typeof launch.options.server === "string" ? launch.options.server : undefined;
   if (saved !== undefined) {
@@ -2170,7 +2167,7 @@ function unrecordedStackServer(root: string, space: string, host: string | undef
   }
   if (listSpaceAccounts(authDir(root)).includes(space) || existsSync(join(root, ".cotal", "nats")))
     throw new MissingFlags(`no stack journal, registration or saved broker definition records the address "${space}" ran at in ${root}, which holds its earlier trust or store; nothing was started`, "run cotal up --server <url> with the address it ran at", { root, space });
-  return host ? reconcileHostAndServer(host, undefined) : DEFAULT_SERVER;
+  return freshStackServer(host ? reconcileHostAndServer(host, undefined) : DEFAULT_SERVER, host);
 }
 
 /** A start over the broker a committed restore left running here. `up -f` boots a fresh mesh, so its
@@ -3743,8 +3740,6 @@ export interface DetachOpts {
   /** Channel-registry seed in memory (the `cotal up -f` manifest path), used instead of reading a
    *  `--channels` file. Takes precedence over {@link channels}. */
   seed?: ChannelRegistryFile;
-  /** Live boot lines, tailed from the server's log file (safe for a detached child). */
-  onLine?: (line: string) => void;
   /** PUBLIC-exchange daemon argv (`--exchange-public-port` et al), threaded verbatim to the
    *  auth-service daemon when THIS boot starts it. */
   publicExchange?: string[];
@@ -3834,9 +3829,7 @@ export function openBrokerLog(path: string): number {
 /**
  * Start a background nats-server (JetStream), wait until it's reachable, pre-create the
  * space's streams, and leave it running detached (pid in `.cotal/nats.pid`). Used by
- * `up --detach`. When `onLine` is given, boot output is tailed from the
- * log file and forwarded — the child writes to the file (not a pipe), so it survives the
- * parent exiting.
+ * `up --detach`. The child writes to the log file, so it survives the parent exiting.
  */
 export async function startMeshDetached(
   // The `= {}` default is gone with the optional transport: an options object that can be omitted
@@ -3846,20 +3839,13 @@ export async function startMeshDetached(
   const { server, space, useAuth, storeDir, seedFile, transport, setup, args, bin, source, version } = await prepareBrokerStart(opts);
   const logPath = cotalPath("nats.log");
   const fd = openBrokerLog(logPath);
-  const startOffset = fstatSync(fd).size;
   const listenerStartedAt = new Date().toISOString();
   const child = spawn(bin, args, { cwd: cotalRoot(), detached: true, stdio: ["ignore", fd, fd] });
   closeSync(fd);
   await recordSpawnedListener(child, listenerStartedAt, opts.boundListener);
   child.unref();
 
-  let tailing = Boolean(opts.onLine);
-  if (opts.onLine) tailLines(logPath, startOffset, opts.onLine, () => !tailing);
-  try {
-    await awaitSpawnedListener({ child, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: logPath, boundListener: opts.boundListener });
-  } finally {
-    tailing = false;
-  }
+  await awaitSpawnedListener({ child, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: logPath, boundListener: opts.boundListener });
   const { authService, controlPlane } = await serveReadyListener({
     child, server, space, storeDir, setup, seedFile, transport,
     host: opts.host,
@@ -4208,29 +4194,6 @@ function seedPersonaAfterUp(root: string, quiet = false): void {
   if (written && !quiet) console.log(c.dim(`  wrote ${written.what}: ${written.path}`));
 }
 
-/** Poll a growing log file and forward newly-appended lines until `stopped()` is true. */
-function tailLines(path: string, from: number, onLine: (l: string) => void, stopped: () => boolean): void {
-  let offset = from;
-  const tick = () => {
-    if (stopped()) return;
-    try {
-      const size = statSync(path).size;
-      if (size > offset) {
-        const fd = openSync(path, "r");
-        const buf = Buffer.alloc(size - offset);
-        readSync(fd, buf, 0, buf.length, offset);
-        closeSync(fd);
-        offset = size;
-        for (const line of buf.toString("utf8").split("\n")) if (line.trim()) onLine(line);
-      }
-    } catch {
-      // file may not exist yet on the first ticks — keep polling
-    }
-    setTimeout(tick, 150);
-  };
-  setTimeout(tick, 150);
-}
-
 async function waitReady(server: string, creds?: string, tls = false): Promise<boolean> {
   for (let i = 0; i < 50; i++) {
     // An open listener answers the plaintext probe before any handshake, so TLS is checked either way.
@@ -4411,18 +4374,43 @@ async function assertFreshTeamBindAvailable(server: string, host: string, space:
   });
 }
 
+/** Choose only a first implicit address. A saved or explicitly requested address is never moved.
+ * The broker still validates and binds its own listener; this inspection cannot reserve the port. */
+async function freshStackServer(server: string, bindHost?: string): Promise<string> {
+  const url = new URL(server);
+  const host = (bindHost ?? url.hostname).replace(/^\[|\]$/g, "");
+  const reserved = new Set(loadMeshes().map((mesh) => {
+    const address = new URL(mesh.server);
+    return `${address.hostname}:${address.port || "4222"}`;
+  }));
+  let candidate = server;
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const address = new URL(candidate);
+    if (!reserved.has(`${address.hostname}:${address.port || "4222"}`)) {
+      try {
+        await freePort(host, Number(address.port) || 4222);
+        return candidate;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+      }
+    }
+    candidate = await serverWithFreePort(server, host);
+  }
+  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no unreserved local broker address could be selected; no broker was started");
+}
+
 async function serverWithFreePort(server: string, host: string): Promise<string> {
   const url = new URL(server);
   url.port = String(await freePort(host));
   return url.toString();
 }
 
-function freePort(host: string): Promise<number> {
+function freePort(host: string, requestedPort = 0): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = createServer();
     srv.unref();
     srv.once("error", reject);
-    srv.listen(0, host, () => {
+    srv.listen(requestedPort, host, () => {
       const addr = srv.address();
       const port = typeof addr === "object" && addr ? addr.port : undefined;
       srv.close((err) => {

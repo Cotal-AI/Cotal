@@ -1,0 +1,72 @@
+{
+  "suite": [
+    "implementations/cli/smoke/setup-start-live.smoke.ts"
+  ],
+  "grades": "suite",
+  "guard": "fresh local stacks avoid reserved addresses, setup preserves confirmed native refusals, and contradictory child results remain unknown",
+  "command": "pnpm --filter @cotal-ai/cli build >/dev/null && pnpm exec tsx implementations/cli/smoke/setup-start-live.smoke.ts",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/setup-start-live.json",
+  "progressPattern": "\u2713",
+  "mutations": [
+    {
+      "name": "fresh implicit startup keeps the reserved default",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "        : await freshStackServer(requestedServer, values.host);",
+      "replace": "        : requestedServer;",
+      "expectRed": "a fresh implicit startup avoids another registration's address",
+      "cell": "a fresh implicit startup avoids another registration's address",
+      "command": "pnpm --filter @cotal-ai/cli build >/dev/null && pnpm exec tsx implementations/cli/smoke/setup-start-live.smoke.ts --case=address",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the native child loses its classified failure",
+      "file": "implementations/cli/src/commands/setup-start.ts",
+      "find": "        if (receipt.success) await new Promise<void>((resolve) => process.send!(receipt.data, () => resolve()));",
+      "replace": "        void receipt;",
+      "expectRed": "setup preserves the native child's confirmed CONFLICT",
+      "cell": "setup preserves the native child's confirmed CONFLICT",
+      "command": "pnpm --filter @cotal-ai/cli build >/dev/null && pnpm exec tsx implementations/cli/smoke/setup-start-live.smoke.ts --case=refusal",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "setup drops the classified startup diagnostic",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "      const diagnostic = known && startup.stackAttempted && !startup.stack ? known.message : undefined;",
+      "replace": "      const diagnostic = undefined;",
+      "expectRed": "public setup retains the actionable classified diagnostic",
+      "cell": "public setup retains the actionable classified diagnostic",
+      "command": "pnpm --filter @cotal-ai/cli build >/dev/null && pnpm exec tsx implementations/cli/smoke/setup-start-live.smoke.ts --case=refusal",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a child receipt is accepted despite a contradictory exit code",
+      "file": "implementations/cli/src/commands/setup-start.ts",
+      "find": "          if (exitCode(receipt.outcome, receipt.code) === code) {",
+      "replace": "          if (true) {",
+      "expectRed": "a mismatched-exit child result remains unknown without exposing raw diagnostics",
+      "cell": "a mismatched-exit child result remains unknown without exposing raw diagnostics",
+      "command": "pnpm --filter @cotal-ai/cli build >/dev/null && pnpm exec tsx implementations/cli/smoke/setup-start-live.smoke.ts --case=refusal",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "native startup validation runs only after connector reconciliation",
+      "file": "implementations/cli/src/commands/setup-start.ts",
+      "find": "  validate: validateChild,\n",
+      "replace": "",
+      "expectRed": "native startup validates version mismatch before connector reconciliation",
+      "cell": "native startup validates version mismatch before connector reconciliation",
+      "command": "pnpm --filter @cotal-ai/cli build >/dev/null && pnpm exec tsx implementations/cli/smoke/setup-start-live.smoke.ts --case=validation",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a confirmed startup refusal is still presented as unknown",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "  const localStartup: Cell = s.failure?.outcome === \"refused\" ? \"Command refused\"",
+      "replace": "  const localStartup: Cell = false ? \"Command refused\"",
+      "expectRed": "the human setup report distinguishes a confirmed refusal from an unknown command",
+      "cell": "the human setup report distinguishes a confirmed refusal from an unknown command",
+      "command": "pnpm --filter @cotal-ai/cli build >/dev/null && pnpm exec tsx implementations/cli/smoke/setup-start-live.smoke.ts --case=refusal",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    }
+  ]
+}
