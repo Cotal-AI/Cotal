@@ -28,7 +28,7 @@ const run = (cwd: string, ...args: string[]) => {
 };
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(-2000), stderr: r.stderr.slice(-1000) });
 const project = (name: string) => {
-  const path = join(home, name); mkdirSync(path);
+  const path = join(home, name); mkdirSync(path, { mode: 0o700 });
   const r = run(path, "space", "create", name, "--root", path);
   check(`${name} is prepared through the CLI`, r.status === 0, shown(r));
   return path;
@@ -43,7 +43,7 @@ const selected = process.argv.find((arg) => arg.startsWith("--case="))?.slice(7)
 const active: string[] = [];
 try {
   check("the built CLI exists", existsSync(BIN));
-  const held = join(home, "held"); mkdirSync(held); mkdirSync(join(held, ".cotal"));
+  const held = join(home, "held"); mkdirSync(held, { mode: 0o700 }); mkdirSync(join(held, ".cotal"), { mode: 0o700 });
   const reserve = run(held, "space", "add", "held", "--server", "nats://127.0.0.1:4222", "--root", held, "--mode", "open", "--force", "--yes");
   check("a real space-add command reserves the default address without a listener", reserve.status === 0, shown(reserve));
 
@@ -99,7 +99,7 @@ try {
         else {
           const value = { type: "setup-start-failure", root: ${JSON.stringify(root)}, space: mode === "wrong-space" ? "other" : "refused", pid: process.pid, outcome: "refused", code: "CONFLICT", message: "fixture refusal" };
           if (mode === "malformed") value.extra = "unexpected";
-          process.send(value, () => mode === "duplicate" ? process.send(value, () => process.exit(2)) : process.exit(mode === "mismatched-exit" ? 1 : 2));
+          await new Promise(() => process.send(value, () => mode === "duplicate" ? process.send(value, () => process.exit(2)) : process.exit(mode === "mismatched-exit" ? 1 : 2)));
         }
       }`);
       process.env.NODE_OPTIONS = `${host.NODE_OPTIONS ?? ""} --import=${pathToFileURL(hook).href}`;
@@ -131,7 +131,7 @@ try {
 
   if (!selected || selected === "validation") {
     const root = project("validation");
-    const empty = join(home, "unprepared"); mkdirSync(empty);
+    const empty = join(home, "unprepared"); mkdirSync(empty, { mode: 0o700 });
     const nativeEnv = { ...env }; delete nativeEnv.COTAL_SKIP_CONNECTOR_SEED;
     for (const [path, version, label] of [[root, "0.0.0-invalid", "version mismatch"], [empty, JSON.parse(readFileSync(join(ROOT, "bin/package.json"), "utf8")).version as string, "changed preparation"]]) {
       const before = existsSync(join(env.XDG_CONFIG_HOME!, "cotal/extensions/extensions.json")) ? readFileSync(join(env.XDG_CONFIG_HOME!, "cotal/extensions/extensions.json"), "utf8") : undefined;
