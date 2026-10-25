@@ -1,5 +1,17 @@
 # @cotal-ai/auth
 
+## 0.101.2
+
+### Patch Changes
+
+- d57e596: Use Node's native Ed25519 signer for NATS user credentials, auth-callout responses and authority-client renewals, reducing signing CPU cost while preserving the existing key formats, signature bytes and authorization checks.
+- Updated dependencies [9acfc57]
+- Updated dependencies [d57e596]
+- Updated dependencies [427f28b]
+  - @cotal-ai/core@0.101.2
+  - @cotal-ai/workspace@0.101.2
+  - @cotal-ai/lang@0.101.2
+
 ## 0.101.1
 
 ### Patch Changes
