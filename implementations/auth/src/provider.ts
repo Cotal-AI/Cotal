@@ -18,7 +18,7 @@ import { isLoopbackLiteral, registry, type AuthPreflightInput, type AuthPrefligh
 import { assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
-import { AgentGrantConflictError, EP_ERROR_CODES, EpEnvelopeError, type EpEffectOutcome, type EpErrorCode } from "@cotal-ai/core";
+import { AGENT_LIFECYCLE_HELD, AgentGrantConflictError, EP_ERROR_CODES, EpEnvelopeError, agentLifecycleHeld, type AgentLifecycleRelease, type EpEffectOutcome, type EpErrorCode } from "@cotal-ai/core";
 import { parseServiceAuthorityEnvelope, parseServiceAuthorityRequest } from "@cotal-ai/core";
 import { readRemoteServiceAuthorityInfo, postRemoteServiceAuthority, serviceAuthorityUrl, withServiceAuthorityBudget, assertServiceViewFreshness } from "./service-authority-client.js";
 import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
@@ -375,13 +375,15 @@ export const cotalAuthProvider: AuthProvider = {
    *  — so a refused or lost response never leaks an agent's exchange secret. Redirects are refused
    *  for the same reason the retained-validation client refuses them: a 302 could walk the login
    *  proof, and the enrollment it authorizes, onto another host. A host 4xx is its refusal, so it
-   *  enrolled nothing: that rejects as a `permission-denied` envelope whose outcome is `not-executed`.
+   *  enrolled nothing: that rejects as a `permission-denied` envelope whose outcome is `not-executed`,
+   *  or as `conflict` for a 409, which carries the host's typed held answer when it sent one.
    *  A 5xx or no answer says nothing about what the host did, so that failure keeps no outcome. */
   async enrollRemoteManagedAgent({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagedAgentEnrollmentRequest }): Promise<RemoteManagedAgentEnrollmentResult> {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "enrolling a managed agent");
     try {
       return await postManagerAuthority(endpoint, idpUrl, authorization, request, "managed agent enrollment") as RemoteManagedAgentEnrollmentResult;
     } catch (error) {
+      if (error instanceof ManagerAuthorityRefusal && error.status === 409) throw heldConflict(error.message, error.body, request.target.actor);
       if (error instanceof ManagerAuthorityRefusal && error.status < 500)
         throw new EpEnvelopeError("permission-denied", error.message, undefined, "not-executed");
       throw error;
@@ -444,16 +446,53 @@ export const cotalAuthProvider: AuthProvider = {
     const body: unknown = await readAuthResponseJson(res, `the mesh's agent-provisioning endpoint at ${url}`);
     if (!res.ok) {
       const reason = (body as { error?: string }).error ?? `HTTP ${res.status}`;
-      // 401 is the one refusal with a local remedy; everything else is the mesh's own word. The
-      // endpoint is the deployment's, and nothing pins what its refusal left behind, so no answer
-      // carries a code.
-      throw new Error(
-        res.status === 401
-          ? `the mesh refused this login for agent provisioning: ${reason} - your session may have expired; re-run \`cotal login --idp ${idpUrl}\``
-          : `the mesh refused to provision agent "${actor}": ${reason}`,
-      );
+      // 401 is the one refusal with a local remedy, and a typed held answer says the name is held,
+      // so nothing was provisioned. Anything else is the mesh's own word: the endpoint is the
+      // deployment's, and nothing pins what its answer left behind, so it carries no code.
+      if (res.status === 401)
+        throw new Error(`the mesh refused this login for agent provisioning: ${reason} - your session may have expired; re-run \`cotal login --idp ${idpUrl}\``);
+      if (res.status === 409 && agentLifecycleHeld(body)) throw heldConflict(`the mesh did not provision agent "${actor}": ${reason}`, body, actor);
+      throw Object.assign(new Error(`the mesh's agent-provisioning endpoint answered HTTP ${res.status}: ${reason}; whether "${actor}" was provisioned is unknown`), { status: res.status, reason });
     }
     return body;
+  },
+
+  async releaseAgentLifecycle({ url, idpUrl, lifecycleUid, actor }: { url: string; idpUrl: string; lifecycleUid: string; actor?: string }): Promise<AgentLifecycleRelease> {
+    const session = requireIdpSession(homeCotalDir(), idpUrl);
+    const call = async (method: "GET" | "DELETE", target: string): Promise<{ status: number; body: unknown }> => {
+      let res: Response;
+      try {
+        res = await fetch(target, { method, redirect: "manual", headers: { authorization: `Bearer ${session.token}` }, signal: AbortSignal.timeout(30_000) });
+      } catch (e) {
+        throw new Error(`the mesh's agent endpoint did not answer at ${target} (${e instanceof Error ? e.message : String(e)})`);
+      }
+      if (res.status >= 300 && res.status < 400)
+        throw new Error(`the mesh's agent endpoint answered ${res.status} with redirect Location ${JSON.stringify(res.headers.get("location") ?? "")} - redirects are refused so the login proof cannot be walked onto another host`);
+      return { status: res.status, body: await readAuthResponseJson(res, `the mesh's agent endpoint at ${target}`) };
+    };
+    const reasonOf = (r: { status: number; body: unknown }) => (r.body as { error?: unknown } | null)?.error;
+    const listed = await call("GET", url);
+    if (listed.status === 401)
+      throw new Error(`the mesh refused this login when listing its agents: ${String(reasonOf(listed) ?? "HTTP 401")} - your session may have expired; re-run \`cotal login --idp ${idpUrl}\``);
+    if (listed.status !== 200 || !Array.isArray((listed.body as { agents?: unknown } | null)?.agents))
+      throw new Error(`the mesh's agent endpoint answered HTTP ${listed.status} when listing its agents${typeof reasonOf(listed) === "string" ? `: ${reasonOf(listed)}` : ""}`);
+    // Only the registrations at this exact lifecycle, never another of the same name.
+    const atUid = ((listed.body as { agents: unknown[] }).agents).filter((row): row is { id: string; actor: string; revoked: boolean } => {
+      const r = row as { id?: unknown; lifecycleUid?: unknown; actor?: unknown; revoked?: unknown } | null;
+      return typeof r?.id === "string" && typeof r.actor === "string" && typeof r.revoked === "boolean" && r.lifecycleUid === lifecycleUid && (actor === undefined || r.actor === actor);
+    });
+    const rows = atUid.filter((row) => !row.revoked);
+    if (rows.length === 0) return atUid.length ? { outcome: "already-revoked", agentId: atUid[0]!.id, actor: atUid[0]!.actor } : { outcome: "not-found" };
+    if (rows.length > 1) throw new Error(`the mesh lists ${rows.length} unrevoked registrations at lifecycle ${lifecycleUid}, so none was released`);
+    const row = rows[0]!;
+    const released = await call("DELETE", `${url.replace(/\/$/, "")}/${encodeURIComponent(row.id)}`);
+    const answer = released.body as { ok?: unknown; removed?: unknown; alreadyRevoked?: unknown } | null;
+    const at = { agentId: row.id, actor: row.actor };
+    if (released.status === 200 && answer?.ok === true && answer.removed === true) return { outcome: "revoked", ...at };
+    if (released.status === 200 && answer?.ok === true && answer.alreadyRevoked === true) return { outcome: "already-revoked", ...at };
+    if (released.status === 404) return { outcome: "not-found", ...at };
+    const reason = reasonOf(released);
+    return { outcome: "unknown", ...at, status: released.status, ...(typeof reason === "string" ? { reason } : {}) };
   },
 
   async requestConversationIdentity({ url, idpUrl, method, body }) {
@@ -758,11 +797,18 @@ async function postManagerAuthority(
  *  version of the manager whose requests this client sends. */
 const COTAL_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
-/** A host's non-2xx answer to a manager-authority request, with the HTTP status it answered. */
+/** A host's non-2xx answer to a manager-authority request, with the HTTP status and body it answered. */
 class ManagerAuthorityRefusal extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly body: unknown) {
     super(message);
   }
+}
+
+/** A host's 409 about `actor`: nothing was done, and its typed held answer, when it sent one, rides
+ *  verbatim with the actor it answered about. */
+function heldConflict(message: string, body: unknown, actor: string): EpEnvelopeError {
+  const held = agentLifecycleHeld(body);
+  return new EpEnvelopeError("conflict", message, held ? [{ kind: AGENT_LIFECYCLE_HELD, code: "AGENT_LIFECYCLE_HELD", actor, held }] : undefined, "not-executed");
 }
 
 /** A manager-authority refusal, with the host's reason verbatim. The protocol is closed, so a host
@@ -774,7 +820,7 @@ function managerAuthorityRefusal(what: string, request: unknown, body: unknown, 
   const skew = field !== undefined && carriesField(request, field)
     ? ` - version skew: this manager runs Cotal ${COTAL_VERSION} and the host's auth service predates the field "${field}" it sends; it needs a host at Cotal ${COTAL_VERSION} or later`
     : "";
-  return new ManagerAuthorityRefusal(`signed in, but ${what} was refused: ${reason}${skew}`, status);
+  return new ManagerAuthorityRefusal(`signed in, but ${what} was refused: ${reason}${skew}`, status, body);
 }
 
 function carriesField(value: unknown, field: string): boolean {

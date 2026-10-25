@@ -19,7 +19,7 @@ import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { mintLifecycleUid } from "@cotal-ai/core";
+import { AGENT_LIFECYCLE_HELD, mintLifecycleUid } from "@cotal-ai/core";
 import { jwtVerify } from "jose";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
@@ -167,7 +167,73 @@ console.log("A2) remote agent-provisioning client");
   check("an endpoint 503 carries no code", failing.code === undefined && failing.message.includes("fixture_503"));
   check("a 200 answer resolves", (await answer(200)).code === "resolved");
   check("each signed-in call sent one request", requests === 4);
+  check("an endpoint 503 says whether the agent was provisioned is unknown, not that it was refused",
+    failing.message === `the mesh's agent-provisioning endpoint answered HTTP 503: fixture_503; whether "agent" was provisioned is unknown`, failing.message);
   provisioning.close();
+  delete process.env.COTAL_HOME;
+  if (priorHome !== undefined) process.env.COTAL_HOME = priorHome;
+}
+
+// ---------- a held agent name, and the release of one exact lifecycle ----------
+console.log("A3) a held name's typed 409, and the release of one exact lifecycle");
+{
+  const home = mkdtempSync(join(tmpdir(), "cotal-release-home-"));
+  const priorHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = home;
+  const staleUid = mintLifecycleUid(), revokedUid = mintLifecycleUid(), unconfirmedUid = mintLifecycleUid(), twiceUid = mintLifecycleUid();
+  const held = { agentId: "agt_1", lifecycleUid: staleUid, custody: { state: "absent" }, presence: "offline" };
+  const rows = [
+    { id: "agt_1", lifecycleUid: staleUid, actor: "worker", revoked: false, connection: "offline" },
+    { id: "agt_2", lifecycleUid: revokedUid, actor: "worker", revoked: true, connection: "offline" },
+    { id: "agt_3", lifecycleUid: unconfirmedUid, actor: "worker", revoked: false, connection: "offline" },
+    { id: "agt_4", lifecycleUid: twiceUid, actor: "worker", revoked: false, connection: "offline" },
+    { id: "agt_5", lifecycleUid: twiceUid, actor: "worker", revoked: false, connection: "offline" },
+  ];
+  const seen: string[] = [];
+  const endpoint = createServer((req, res) => {
+    seen.push(`${req.method} ${req.url} ${req.headers.authorization ?? "-"}`);
+    const send = (status: number, body: unknown) => { res.statusCode = status; res.setHeader("content-type", "application/json"); res.end(JSON.stringify(body)); };
+    let raw = "";
+    req.on("data", (c) => { raw += c; });
+    req.on("end", () => {
+      if (req.method === "POST") {
+        const actor = (JSON.parse(raw) as { actor: string }).actor;
+        if (actor === "typed") return send(409, { error: "held", code: "AGENT_LIFECYCLE_HELD", held });
+        return send(409, { error: "that agent name is still retiring; retry in a few minutes" });
+      }
+      if (req.method === "GET") return send(200, { health: "live", stockRegistration: "available", scope: "own", agents: rows });
+      const row = rows.find((r) => req.url === `/agents/${r.id}`);
+      if (!row) return send(404, { error: "no such agent" });
+      if (row.id === "agt_3") return send(503, { error: "retirement unconfirmed" });
+      if (row.revoked) return send(200, { ok: true, removed: false, alreadyRevoked: true });
+      row.revoked = true;
+      return send(200, { ok: true, removed: true });
+    });
+  });
+  await new Promise<void>((r) => endpoint.listen(0, "127.0.0.1", r));
+  const url = `http://127.0.0.1:${(endpoint.address() as AddressInfo).port}/agents`;
+  const idpUrl = `${url}/idp`;
+  saveIdpSession(home, idpUrl, { token: "cached-login", expiresAt: Date.now() / 1000 + 600 });
+  const failure = async (actor: string) => {
+    try { await cotalAuthProvider.postAgentProvisioning!({ url, idpUrl, actor }); return undefined; }
+    catch (e) { return e as { code?: unknown; outcome?: unknown; details?: unknown; message: string; reason?: unknown }; }
+  };
+  const typed = await failure("typed");
+  check("a typed 409 is a conflict that executed nothing", typed?.code === "conflict" && typed.outcome === "not-executed", typed);
+  check("its held answer rides verbatim, with the actor it was about", JSON.stringify(typed?.details) === JSON.stringify([{ kind: AGENT_LIFECYCLE_HELD, code: "AGENT_LIFECYCLE_HELD", actor: "typed", held }]), typed?.details);
+  const retiring = await failure("other");
+  check("a 409 without the typed answer carries no code and the endpoint's reason", retiring?.code === undefined && retiring?.reason === "that agent name is still retiring; retry in a few minutes", retiring);
+  const release = (lifecycleUid: string) => cotalAuthProvider.releaseAgentLifecycle!({ url, idpUrl, lifecycleUid, actor: "worker" });
+  const revoked = await release(staleUid);
+  check("a release revokes the unrevoked registration at that exact lifecycle", revoked.outcome === "revoked" && revoked.agentId === "agt_1" && rows[0]!.revoked, revoked);
+  check("it listed with the login bearer, then deleted by the registration id", seen.slice(-2).join(" | ") === `GET /agents Bearer cached-login | DELETE /agents/agt_1 Bearer cached-login`, seen);
+  check("a lifecycle whose registration is revoked is already revoked, with no delete", (await release(revokedUid)).outcome === "already-revoked" && !seen.at(-1)!.startsWith("DELETE"), seen.at(-1));
+  check("a lifecycle the mesh does not list is not found", (await release(mintLifecycleUid())).outcome === "not-found");
+  const unconfirmed = await release(unconfirmedUid);
+  check("a 503 delete is unknown, with the status and reason", unconfirmed.outcome === "unknown" && unconfirmed.status === 503 && unconfirmed.reason === "retirement unconfirmed", unconfirmed);
+  await rejects("two unrevoked registrations at one lifecycle release neither", () => release(twiceUid), "2 unrevoked registrations");
+  check("and neither was deleted", rows[3]!.revoked === false && rows[4]!.revoked === false);
+  endpoint.close();
   delete process.env.COTAL_HOME;
   if (priorHome !== undefined) process.env.COTAL_HOME = priorHome;
 }

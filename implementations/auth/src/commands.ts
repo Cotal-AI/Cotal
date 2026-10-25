@@ -847,6 +847,31 @@ function ledgerlessTarget(values: { space?: string }): AuthTarget | undefined {
  *  found on disk. A prepared space that has not started has no mode yet. */
 interface AuthTarget { root: string; space: string; mode?: MeshTarget["mode"] }
 
+/** `auth retire <uid>` on a remote user-auth mesh that advertises an agent-provisioning endpoint:
+ *  release that one lifecycle there with this machine's login, and report what the mesh answered.
+ *  False when the selected mesh is not such a mesh, so the local path answers. */
+async function retireOnRemoteMesh(args: ParsedArgs): Promise<boolean> {
+  let mesh: MeshTarget;
+  try { mesh = resolveMeshTarget(process.cwd(), { ...(args.values as { space?: string }), readOnly: true }); } catch { return false; }
+  const ua = mesh.mode === "user" && mesh.userAuth?.remote ? mesh.userAuth : undefined;
+  const url = ua?.endpoints?.agentProvisioningUrl;
+  const provider = resolveAuthProvider();
+  if (!ua || !url || !provider.releaseAgentLifecycle) return false;
+  const lifecycleUid = args.positionals[1]!;
+  const target = { space: mesh.space, lifecycleUid };
+  const answer = await provider.releaseAgentLifecycle({ url, idpUrl: ua.idp.url, lifecycleUid });
+  const who = answer.actor === undefined ? `lifecycle ${lifecycleUid}` : `lifecycle ${lifecycleUid} of "${answer.actor}"`;
+  if (answer.outcome === "not-found")
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the mesh lists no registration at lifecycle ${lifecycleUid}, so nothing was released`, { target, remedy: "`cotal ps --wide` shows each seat's lifecycle uid" });
+  if (answer.outcome === "unknown")
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the mesh could not confirm the release of ${who} (HTTP ${answer.status}${answer.reason ? `: ${answer.reason}` : ""}); the release was not repeated`, { target, native: { detail: answer }, remedy: "run the same command again to ask the mesh once more" });
+  writeResult(presentationOf(args.values), { command: "auth retire", target, result: answer, noOp: answer.outcome === "already-revoked" }, () => ({ sections: [{ title: answer.outcome === "revoked" ? "Lifecycle revoked" : "Already revoked", blocks: [{ kind: "lines", lines: [
+    answer.outcome === "revoked" ? `The mesh revoked ${who}.` : `The mesh had already revoked ${who}.`,
+    { text: "Its retirement may still be finishing; a spawn under that name waits for it.", tone: "hint" },
+  ] }] }] }));
+  return true;
+}
+
 function localAuthTarget(values: { space?: string }): AuthTarget {
   try { const target = resolveMeshTarget(process.cwd(), { ...values, readOnly: true }); return { root: target.root, space: target.space, mode: target.mode }; }
   catch (error) {
@@ -870,6 +895,7 @@ async function authGroup(args: ParsedArgs): Promise<void> {
     action.validate(request); return action.run(request);
   }
   if (mode === "retire") {
+    if (await retireOnRemoteMesh(args)) return;
     const target = localAuthTarget(args.values as { space?: string });
     // Revoking the one credential keeps the store; rotating the space identity is the wider lever.
     throw new CommandFailure("refused", "UNSUPPORTED", "this CLI cannot retire a lifecycle: the registered auth endpoint accepts retirement only from the caller's own current serve identity and gate, so no request was sent", {

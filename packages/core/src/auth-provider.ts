@@ -66,6 +66,56 @@ export class AgentGrantConflictError extends Error {
   }
 }
 
+/** A host's typed answer that an agent name is held by one lifecycle: the body of its HTTP 409
+ *  whose `code` is `AGENT_LIFECYCLE_HELD`, on a managed enrollment or on agent provisioning.
+ *  `agentId` is the host's registration id, `presence` is `offline` only when the agent is
+ *  positively absent, and `unavailable` means the host could not tell. */
+export interface AgentLifecycleHeld {
+  agentId: string;
+  lifecycleUid: string;
+  custody: { state: "known" | "absent" | "unavailable"; kind?: "foreground" | "remote-manager"; managerInstanceId?: string };
+  presence: "online" | "offline" | "unavailable";
+}
+
+/** The `details[]` kind that carries a host's {@link AgentLifecycleHeld} answer, verbatim, on the
+ *  `conflict` refusal of a managed spawn or an agent provisioning: `{ kind, code, actor, held }`,
+ *  with the actor the host answered about. */
+export const AGENT_LIFECYCLE_HELD = "ai.cotal.auth.agent-lifecycle-held";
+
+/** The {@link AgentLifecycleHeld} a value carries, or `undefined` when it is not that closed shape.
+ *  Takes a host's 409 body (`{ code: "AGENT_LIFECYCLE_HELD", held }`) or a `details[]` list. */
+export function agentLifecycleHeld(value: unknown): AgentLifecycleHeld | undefined {
+  const entry = Array.isArray(value) ? value.find((d) => (d as { kind?: unknown } | null)?.kind === AGENT_LIFECYCLE_HELD) : value;
+  if ((entry as { code?: unknown } | null)?.code !== "AGENT_LIFECYCLE_HELD") return undefined;
+  const held = (entry as { held?: unknown }).held as Partial<AgentLifecycleHeld> | null | undefined;
+  const custody = held?.custody as Partial<AgentLifecycleHeld["custody"]> | null | undefined;
+  const text = (v: unknown) => typeof v === "string" && v.length > 0;
+  if (!held || !text(held.agentId) || !text(held.lifecycleUid) || !custody) return undefined;
+  if (!["known", "absent", "unavailable"].includes(custody.state as string) || !["online", "offline", "unavailable"].includes(held.presence as string)) return undefined;
+  if ((custody.kind !== undefined && custody.kind !== "foreground" && custody.kind !== "remote-manager") || (custody.managerInstanceId !== undefined && !text(custody.managerInstanceId))) return undefined;
+  return {
+    agentId: held.agentId!,
+    lifecycleUid: held.lifecycleUid!,
+    custody: { state: custody.state!, ...(custody.kind ? { kind: custody.kind } : {}), ...(custody.managerInstanceId ? { managerInstanceId: custody.managerInstanceId } : {}) },
+    presence: held.presence!,
+  };
+}
+
+/** A host's answer to releasing one exact agent lifecycle, as it gave it. `revoked` and
+ *  `already-revoked` say the registration is revoked, not that its retirement has finished, so the
+ *  name may still be retiring. `not-found` is a lifecycle the host lists no registration for, and
+ *  `unknown` a release the host could not confirm. */
+export interface AgentLifecycleRelease {
+  outcome: "revoked" | "already-revoked" | "not-found" | "unknown";
+  /** The host's registration id the release addressed, when it found one. */
+  agentId?: string;
+  /** The actor that registration names, when it found one. */
+  actor?: string;
+  /** The host's HTTP status and reason, when it answered something other than a release. */
+  status?: number;
+  reason?: string;
+}
+
 /**
  * The one extension kind an identity/auth implementation registers so a composition root can turn
  * on USER-MODE auth (the human-owner identity plane over per-agent NATS identity) WITHOUT importing
@@ -330,14 +380,27 @@ export interface AuthProvider extends Extension {
    * (a 302 could walk the proof onto another host), and every failure MUST throw one sentence
    * with the exact operator action — not signed in names the `cotal login --idp …` line, an
    * endpoint refusal surfaces the endpoint's own reason. No sign-in throws with `code`
-   * `"signed-out"`, before any request. A failure after the request carries no such code, an
-   * endpoint 401 or 403 included: the endpoint is the deployment's, and nothing pins what its
-   * refusal left behind. The caller owns validating the returned
+   * `"signed-out"`, before any request. An HTTP 409 whose body is a typed
+   * {@link AgentLifecycleHeld} answer rejects as a `conflict` envelope, outcome `not-executed`,
+   * with that answer as its {@link AGENT_LIFECYCLE_HELD} detail. Any other failure after the
+   * request carries no code, an endpoint 401 or 403 included: the endpoint is the deployment's,
+   * and nothing pins what its refusal left behind. Such an answer carries the HTTP `status` and
+   * the endpoint's `reason`. The caller owns validating the returned
    * material's shape; this method proves and carries, it does not interpret. Optional: a
    * provider without a remote-provisioning story simply lacks it, and the caller refuses with
    * its own named message.
    */
   postAgentProvisioning?(opts: { url: string; idpUrl: string; actor: string }): Promise<unknown>;
+  /**
+   * CLIENT side of releasing one exact agent lifecycle on a REMOTE mesh's agent-provisioning
+   * endpoint, with this machine's login proof for `idpUrl`: list the registrations at `url`, and
+   * revoke the unrevoked one whose lifecycle is `lifecycleUid` (and whose actor is `actor`, when
+   * given). Returns the host's answer as it gave it; a lifecycle it lists no registration for is
+   * `not-found`. Only that one registration is addressed, never another lifecycle of the same
+   * name. Throws one sentence when the endpoint cannot be read or refuses the caller. Optional, as
+   * {@link postAgentProvisioning} is.
+   */
+  releaseAgentLifecycle?(opts: { url: string; idpUrl: string; lifecycleUid: string; actor?: string }): Promise<AgentLifecycleRelease>;
   /** Present the signed-in human's proof to a discovered conversation-identity authority. The
    * caller validates the selected registration and endpoint before this call. The provider keeps
    * the proof private, refuses non-HTTPS destinations and redirects, and performs one request only.
