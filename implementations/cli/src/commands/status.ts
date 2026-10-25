@@ -1231,7 +1231,15 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     return { resolved: false, code: "moved-folder", message: moved.message };
   }
   const preflight = await preflightTarget(target);
-  if (!preflight.ok) return { ...base, connection: preflight.kind, ...(preflight.pid === undefined ? {} : { brokerPid: preflight.pid }), staleRecord: preflight.prune, snapshot: { state: "skipped", reason: "broker not connected" } };
+  if (!preflight.ok) {
+    // A `--server` address that is not the one recorded for the space says nothing about whether its
+    // stack runs, so Next names that address as the refusal of other commands does.
+    if (preflight.kind === "unreachable" && (target.source === "flag-server" || target.source === "flag-space-override") && target.recordedServer !== target.server) {
+      const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target, pruned: preflight.prune });
+      hints.push(remedy === undefined ? message : `${message}; ${remedy}`);
+    }
+    return { ...base, connection: preflight.kind, ...(preflight.pid === undefined ? {} : { brokerPid: preflight.pid }), staleRecord: preflight.prune, snapshot: { state: "skipped", reason: "broker not connected" } };
+  }
   // The mesh-level statement of the same axis (#1576). The folder section says what this machine's
   // delivery PROCESS is doing; this says whether the SPACE currently has a bound responder, which is
   // the question "can I spawn into this mesh right now" actually reduces to. An operator reading a
@@ -1746,6 +1754,11 @@ function nextActions(r: StatusResult): Section {
   // own records. One whose last operation a member keeps unsettled is named the way out that
   // `up` and `down` name instead.
   const memberGone = r.services?.instances?.some((row) => row.definition.startsWith("stack-") && row.observedProcess === "gone") === true;
+  // A connection to a `--server` address other than the recorded one does not say whether the stack
+  // answers; the hint `readSelected` adds names that address. A user-auth space is probed on its own path.
+  const dialed = r.selected.resolved ? r.selected : undefined;
+  const elsewhere = dialed !== undefined && dialed.mode !== "user" && (dialed.source === "flag-server" || dialed.source === "flag-space-override")
+    && r.meshes.items.find((m) => m.space === dialed.space)?.server !== dialed.server;
   const stack = servedStack(r.folder, r.selected), own = stack !== undefined;
   const block = own ? r.folder.stackBlock : undefined;
   if (r.selected.resolved && r.selected.connection === "broker-stopped") items.unshift({ command: `kill -CONT ${r.selected.brokerPid}`, description: "Resume the stopped broker process so it answers again" });
@@ -1774,7 +1787,7 @@ function nextActions(r: StatusResult): Section {
       const absent = spaceStreamsAbsent(r.selected.space, r.selected.spaceStreams.root ?? undefined, stack ?? undefined);
       extra.push(`${absent.message}; ${absent.remedy}`);
     }
-  } else if (own && r.selected.resolved && r.store?.state !== "full" && (memberGone || r.selected.connection !== "ok" && r.selected.connection !== "reachable"))
+  } else if (own && r.selected.resolved && r.store?.state !== "full" && (memberGone || !elsewhere && r.selected.connection !== "ok" && r.selected.connection !== "reachable"))
     items.unshift({ command: `${cmd} up --root ${shellWord(r.selected.root)}`, description: "Restart this stack's stopped members from its recorded inputs" });
   // A stack whose folder was deleted stops only from this machine's records.
   if (r.selected.resolved && r.selected.rootGone) items.unshift({ command: `${cmd} down --space ${r.selected.space} --yes`, description: "Stop the stack whose folder is gone and free its name" });
