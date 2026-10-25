@@ -71,6 +71,7 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean; self?: 
   managerStatus: { command: "status" },
   start: { command: "spawn" },
   resolveAgent: { command: "resolve-agent" },
+  resolveCwd: { command: "resolve-cwd" },
   stop: { command: "despawn", targeted: true },
   stopSelf: { command: "stop", self: true },
   attach: { command: "attach", targeted: true },

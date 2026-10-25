@@ -25,7 +25,9 @@
  *   H: no trust text may name auth/auth.json in F's output.
  *   J: with two of the owner's managers up, one started with `--name`, an unpinned `ps` lists each
  *      one by name with its host and gives the command again with `--on` for each, by name where
- *      the name picks it; `ps --on <name>` is answered and `who --all` shows the name.
+ *      the name picks it; `ps --on <name>` is answered and `who --all` shows the name. On a
+ *      terminal a bare `spawn` asks where the agent runs, this terminal first, and a launch pinned
+ *      to a manager whose presence reports this host asks no folder.
  *   K: a managed spawn the host refuses at enrollment, for a role outside the caller's grant, is
  *      refused as PERMISSION_DENIED with the host's reason, and no secret staged for the agent
  *      remains under the manager's root.
@@ -552,6 +554,28 @@ try {
   const scripted = await onTerminal(undefined, { COTAL_NO_PROMPT: "1" });
   ok("J: with COTAL_NO_PROMPT=1 the terminal is not asked and the refusal stands",
     scripted.code === 2 && /of your managers are live, and this command needs exactly one of them/.test(scripted.out) && !/Which one should run this/.test(scripted.out), scripted.out.slice(-900));
+  // A bare spawn on a terminal asks where the agent runs, with this terminal first and the default,
+  // and Ctrl-C does nothing. A launch pinned to a manager whose presence reports this host asks no
+  // folder; it is refused for the persona its catalog lacks, so nothing is launched.
+  const spawnOnTerminal = async (args: string[], until: RegExp, keys: string | undefined) => {
+    const env = Object.fromEntries(Object.entries({ ...childHomeEnv(callerHome), TERM: "xterm-256color" }).filter((entry): entry is [string, string] => entry[1] !== undefined));
+    const pty = cotalPty(args, { cwd: callerRoot, env });
+    let raw = "", code: number | undefined;
+    pty.onData((data) => { raw += data; });
+    pty.onExit((e) => { code = e.exitCode; });
+    for (let i = 0; i < 600 && code === undefined && !until.test(clean(raw)); i++) await sleep(100);
+    if (keys !== undefined && code === undefined) pty.write(keys);
+    for (let i = 0; i < 600 && code === undefined; i++) await sleep(100);
+    if (code === undefined) pty.kill();
+    return { code, out: clean(raw) };
+  };
+  const place = await spawnOnTerminal(["spawn", "--space", space], /Where should the agent run/, "\x03");
+  ok("J: on a terminal, a bare spawn asks where the agent runs, with this terminal first and the managers after it",
+    /\d+ of your managers are live\. Where should the agent run\?/.test(place.out) && /This terminal[\s\S]*j-one/.test(place.out), place.out.slice(-1200));
+  ok("J: cancelling that question does nothing and exits 0", place.code === 0 && place.out.includes("nothing was done - no place was chosen"), place);
+  const local = await spawnOnTerminal(["spawn", "-d", "--space", space, "--on", "j-one"], /Request refused|Which folder/, undefined);
+  ok("J: a launch pinned to a manager whose presence reports this host asks no folder",
+    local.code === 2 && /Managed launch/.test(local.out) && !/Which folder/.test(local.out), local.out.slice(-900));
 
   // K: a managed spawn the host refuses at enrollment is refused, not unknown. The caller's grant no
   // longer carries admin, so the envelope walk applies, and the persona's role is not in its scope.

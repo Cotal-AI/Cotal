@@ -1,0 +1,3 @@
+# The folder question a managed launch asks on a terminal keeps the manager's workspace on Enter,
+# sends a typed folder to the manager's check as typed, and asks again when the manager refuses it.
+smoke:manager-folder
