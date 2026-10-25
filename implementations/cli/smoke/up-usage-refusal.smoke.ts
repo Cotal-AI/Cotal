@@ -65,6 +65,7 @@ const run = (args: string[], cwd = folder) => {
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 900), stderr: r.stderr.slice(0, 900) });
 
 const cases: { args: string[]; message: RegExp }[] = [
+  { args: ["-d", "--foreground"], message: /choose --foreground or --detach, not both/ },
   { args: ["--max-sessions", "0"], message: /--max-sessions must be a positive integer/ },
   { args: ["--max-sessions", "abc"], message: /--max-sessions must be a positive integer/ },
   { args: ["--max-file-store", "0"], message: /--max-file-store must be a positive integer/ },
