@@ -462,7 +462,6 @@ export function validateUpArguments(args: ParsedArgs): void {
     // A restore and a manifest name their own store.
     if (args.values.restore === undefined && args.values.file === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : undefined);
   }
-  folderNamedSpace(args.values);
 }
 
 /** Every launch route writes under the root's .cotal first, or makes it when it is missing. A folder
@@ -576,10 +575,11 @@ function folderNamedSpace(values: ParsedArgs["values"]): string | undefined {
   return space;
 }
 
-/** Whether `root` holds no records that name a space: no `.cotal`, an empty one, or one with no
- *  account, prepared space, registration, stack journal, runtime record, broker configuration or
- *  maintenance attempt. */
+/** Whether no record names a space for `root`: this machine prepared and registered none there, and
+ *  it has no `.cotal`, an empty one, or one with no account, stack journal, runtime record, broker
+ *  configuration or maintenance attempt. */
 function recordsNameNoSpace(root: string): boolean {
+  if (preparedSpaceAt(root) || meshesForRoot(root).length) return false;
   const control = join(root, ".cotal");
   let entries: string[];
   try { entries = readdirSync(control); }
