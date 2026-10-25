@@ -7,6 +7,7 @@
  * Cotal's own install, as the launcher runs it, names `cotal update` as the fix. The account database and
  * the ACL read are injected, so no case reads this machine's accounts or ACLs. A record this account
  * may not open names the folder that withholds it, as does a store folder it may not enter or write,
+ * each chmod step quoting a path a shell would split,
  * and a link keeps the no-follow refusal. Only `win32` selects the Windows record model; the platform
  * is passed in, so that runs here. Broker-free.
  *
@@ -335,6 +336,30 @@ if (process.getuid?.() !== 0) {
     assert.equal(readLocalRecordSource(join(base, "absent.json")), undefined, "an absent file is no record");
   } finally {
     try { chmodSync(join(base, "shut"), 0o700); } catch { /* already restored */ }
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
+// 6a. Under a Cotal home whose path has spaces, both chmod steps quote the path, so a copied step
+//     names that one path. They used to print it bare, and a shell split it into several.
+if (process.getuid?.() !== 0) {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "cotal protected read ")));
+  try {
+    const shut = join(base, "my cotal home");
+    mkdirSync(shut, { mode: 0o700 });
+    const record = join(shut, "record.json");
+    writeFileSync(record, "{}", { mode: 0o600 });
+    const refused = (): CommandFailure | undefined => { try { readLocalRecordSource(record); } catch (error) { return error as CommandFailure; } return undefined; };
+    chmodSync(record, 0o000);
+    const file = refused();
+    chmodSync(record, 0o600);
+    assert.equal(file?.remedy, `make it readable by you, for example with chmod u+r '${record}'`, "an unreadable file's chmod quotes its path");
+    chmodSync(shut, 0o000);
+    const folder = refused();
+    chmodSync(shut, 0o700);
+    assert.equal(folder?.remedy, `make it readable by you, for example with chmod u+rx '${shut}'`, "an unsearchable folder's chmod quotes its path");
+  } finally {
+    try { chmodSync(join(base, "my cotal home"), 0o700); } catch { /* already restored */ }
     rmSync(base, { recursive: true, force: true });
   }
 }
