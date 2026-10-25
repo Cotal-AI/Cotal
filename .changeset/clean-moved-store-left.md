@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/cli": patch
+"@cotal-ai/connector-core": patch
 ---
 
 A `clean store`, `clean all`, `reset store` or `reset space` whose removal stops inside the
