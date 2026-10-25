@@ -462,14 +462,16 @@ static int mode_node_chain(const wchar_t *node, const wchar_t *script, const wch
          pinned, field(line, "in_job="), c, r, l);
   } else {
     int alive = pinned && WaitForSingleObject(custodian, 2000) == WAIT_TIMEOUT && WaitForSingleObject(root, 0) == WAIT_TIMEOUT && WaitForSingleObject(leaf, 0) == WAIT_TIMEOUT;
-    if (custodian) TerminateProcess(custodian, KILLED);
+    if (pinned) TerminateProcess(custodian, KILLED);
     int r = pinned && exited(root, WAIT_MS, &code), l = pinned && exited(leaf, WAIT_MS, &code);
     cell(id, alive && r && l, "node parent killed (detached): pinned=%d custodian_in_job=%lu survived_node=%d then custodian killed: root_exited=%d leaf_exited=%d",
          pinned, field(line, "in_job="), alive, r, l);
   }
-  if (custodian) { TerminateProcess(custodian, KILLED); CloseHandle(custodian); }
-  if (root) { TerminateProcess(root, KILLED); CloseHandle(root); }
-  if (leaf) { TerminateProcess(leaf, KILLED); CloseHandle(leaf); }
+  // Only processes whose creation pins tie them to this run are ever terminated by pid.
+  if (pinned) { TerminateProcess(custodian, KILLED); TerminateProcess(root, KILLED); TerminateProcess(leaf, KILLED); }
+  if (custodian) CloseHandle(custodian);
+  if (root) CloseHandle(root);
+  if (leaf) CloseHandle(leaf);
   child_close(&helper);
   return g_failed ? 1 : 0;
 }
@@ -628,15 +630,20 @@ static void job_cells(void) {
   leaf_pid = field(line, "leaf=");
   HANDLE tree_root = root_pid ? OpenProcess(access, FALSE, root_pid) : NULL;
   leaf = leaf_pid ? OpenProcess(access, FALSE, leaf_pid) : NULL;
-  int alive = tree_root && leaf && WaitForSingleObject(tree_root, 0) == WAIT_TIMEOUT && WaitForSingleObject(leaf, 0) == WAIT_TIMEOUT;
+  // A pid from the custodian's line counts only when its creation time follows the custodian's.
+  unsigned long long custodian_at = 0;
+  pinned = tree_root && leaf && creation(custodian.process, &custodian_at) && creation(tree_root, &root_at) && creation(leaf, &leaf_at)
+           && root_at >= custodian_at && leaf_at >= root_at;
+  int alive = pinned && WaitForSingleObject(tree_root, 0) == WAIT_TIMEOUT && WaitForSingleObject(leaf, 0) == WAIT_TIMEOUT;
   TerminateProcess(custodian.process, KILLED);
   WaitForSingleObject(custodian.process, WAIT_MS);
-  r = tree_root && exited(tree_root, WAIT_MS, &code_root);
-  l = leaf && exited(leaf, WAIT_MS, &code_leaf);
-  cell("J7", got >= 0 && alive && r && l, "%s alive_before=%d custodian killed: root_exited=%d (0x%lx) leaf_exited=%d (0x%lx)",
-       line, alive, r, code_root, l, code_leaf);
-  if (tree_root) { TerminateProcess(tree_root, KILLED); CloseHandle(tree_root); }
-  if (leaf) { TerminateProcess(leaf, KILLED); CloseHandle(leaf); }
+  r = pinned && exited(tree_root, WAIT_MS, &code_root);
+  l = pinned && exited(leaf, WAIT_MS, &code_leaf);
+  cell("J7", got >= 0 && alive && r && l, "%s pinned=%d alive_before=%d custodian killed: root_exited=%d (0x%lx) leaf_exited=%d (0x%lx)",
+       line, pinned, alive, r, code_root, l, code_leaf);
+  if (pinned) { TerminateProcess(tree_root, KILLED); TerminateProcess(leaf, KILLED); }
+  if (tree_root) CloseHandle(tree_root);
+  if (leaf) CloseHandle(leaf);
   child_close(&custodian);
 }
 
