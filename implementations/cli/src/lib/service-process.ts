@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { CommandFailure, assertRecordIdentity, boundedValue, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, oneLine, targetErrorCode, workspaceErrorParts, type MeshTargetError } from "@cotal-ai/workspace";
+import { CommandFailure, assertRecordIdentity, shellPath, boundedValue, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, oneLine, targetErrorCode, workspaceErrorParts, type MeshTargetError } from "@cotal-ai/workspace";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
 import { serviceInstallIntents } from "./service-install-intent.js";
 import { serviceUninstallIntents } from "./service-uninstall-intent.js";
@@ -921,11 +921,18 @@ export function readServiceLog(space: string, id: string, tail: number) {
   return readOwnedLogTail(path, tail);
 }
 
-/** The last `tail` lines of an owned private log file, from at most its last 1 MiB. */
+/** The last `tail` lines of an owned private log file, from at most its last 1 MiB. A log this
+ *  account cannot read is refused with the step that gives its owner read and write back. */
 export function readOwnedLogTail(path: string, tail: number) {
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { lines: [] as string[], omittedBytes: 0, path }; throw error; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { lines: [] as string[], omittedBytes: 0, path };
+    if (code === "EACCES" || code === "EPERM")
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the log ${path} cannot be read by this account (${code}); nothing was read or changed`, { target: { path }, remedy: `make it readable by you, for example with chmod u+rw ${shellPath(path)}` });
+    throw error;
+  }
   try {
     const info = fstatSync(fd);
     if (![info.size, info.dev, info.ino].every((number) => Number.isSafeInteger(number) && number >= 0)) throw new CommandFailure("refused", "UNSUPPORTED", "this log's native file coordinates cannot be represented safely; no approximate byte offsets were reported");

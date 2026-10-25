@@ -2606,13 +2606,13 @@ there that finds no broker at the default address says that no space is register
 the folder and names the same step. That refusal has no `Mesh:` line, and its `target` names only
 the folder, because no space was resolved there.
 
-A command given `--server` dials only that address. In open or static-auth mode, when nothing
-answers there and it is not the address this machine records for the space, the
-`TARGET_UNAVAILABLE` refusal says that nothing
-answered at the address `--server` named, and does not call the space's mesh stopped. From the
-space's root, or with `--space`, its Next names the broker recorded for the space and says to drop
-`--server` to reach it; elsewhere it says to check the address. The recorded broker is never dialed
-in its place.
+In open or static-auth mode, an unanswered `--server` address that differs from the registration
+retained by target resolution gives `TARGET_UNAVAILABLE`, naming the address that did not answer.
+Its Next names the recorded broker and says to drop `--server` to reach it. If resolution retained
+no registration, the Next says to check the address instead. The request is not sent to the
+recorded broker in its place, but target resolution without `--space` can separately probe recorded
+brokers before it probes the explicit address. This refusal wording does not describe the
+infrastructure report from `status`.
 
 `space delete <name> --dry-run` reads the registered broker in open or static-auth mode.
 It requires the broker's mode to match the registration, and a static connection must
@@ -4721,7 +4721,9 @@ cotal service remove <name> [--instance <id>] [--yes]
 A service is a saved definition in one space plus the instances started from it. Bare `service`
 lists the definitions, their instances and the installed presets. Nothing starts a dependency for
 you: starting the manager does not start its broker. `--json` writes one envelope for every form,
-and `logs --follow --json` writes one record per line.
+and `logs --follow --json` writes one record per line. Without `--follow`, `logs` refuses a log file this account
+cannot read with `PERMISSION_DENIED` (exit 2), naming the file and `chmod u+rw`, quoted when a
+shell would split the path, and reads and changes nothing.
 
 ### Adding a service
 
