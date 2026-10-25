@@ -1,0 +1,15 @@
+{
+  "suite": ["extensions/cmux/smoke.ts"],
+  "guard": "cmux refuses unsafe environment names before creating its shell launcher",
+  "command": "pnpm smoke:cmux",
+  "completionMarker": "CMUX SMOKE COMPLETE",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/cmux/smoke/mutations/env-names.json",
+  "mutations": [{
+    "name": "allow shell syntax in environment names",
+    "file": "extensions/cmux/src/runtime.ts",
+    "find": "    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k))\n      throw new Error(`cmux: refusing to render unsafe env var name ${JSON.stringify(k)}`);\n",
+    "replace": "",
+    "expectRed": "FAIL: unsafe env name is refused",
+    "cell": "unsafe env name is refused"
+  }]
+}
