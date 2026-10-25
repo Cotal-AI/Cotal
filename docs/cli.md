@@ -6948,7 +6948,8 @@ material, and is the path on a bare broker with no manager or for a run with no 
 patterns or `none`), the run's channel ceiling. An entry that is not a channel or a pattern, such as
 `a b`, is refused `USAGE_INVALID` naming it. When the run's status records that its program failed
 under this drive, `start --local` and `resume --local` fail `OPERATION_FAILED`, exit 5, naming the
-run, its language code and the first line of its message. Their Next is
+run and its language code with that code's title. A failure whose code has no title shows the first
+line of its recorded message instead, with control characters escaped. Their Next is
 `cotal run show <runId> --local`, which prints the whole message. Any other error the drive ends on
 stays `unknown`, exit 3. On a
 user-auth mesh the host's own manager refuses the family by name, and `--local` has no credential

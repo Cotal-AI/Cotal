@@ -70,7 +70,7 @@ import {
   type RunHostPlanes,
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
-import { CheckpointNotAmendable, CheckpointNotOpen, DurationError, isDuration, LangErrors, parseDuration, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
+import { CATALOG, CheckpointNotAmendable, CheckpointNotOpen, DurationError, isDuration, LangErrors, parseDuration, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
 import {
   boundedValue,
   CommandFailure,
@@ -462,8 +462,12 @@ async function drive(
       // rethrows its error. Only that record makes the outcome failed; any other throw stays unknown.
       const status = (await readRunRecord(req.kv, endpoint, runId).catch(() => undefined))?.status?.value;
       if (status?.state !== "failed" || status.holder !== who.id || status.epoch !== epoch || status.fencingToken !== fencingToken) throw e;
+      // A language code is named by its catalog title. Other recorded text is untrusted, so only its
+      // first line is shown, and the report escapes its control characters.
+      const code = status.failure?.code;
+      const why = code !== undefined && Object.hasOwn(CATALOG, code) ? `: ${code} ${CATALOG[code as keyof typeof CATALOG]}` : `${code !== undefined ? ` (${code})` : ""}: ${(status.failure?.message ?? (e as Error).message).split("\n")[0]}`;
       const show = `cotal run show ${runId} --local${endpoint === "manager" ? "" : ` --endpoint ${endpoint}`}`;
-      throw new CommandFailure("failed", "OPERATION_FAILED", `run ${runId} failed${status.failure?.code ? ` (${status.failure.code})` : ""}: ${(status.failure?.message ?? (e as Error).message).split("\n")[0]}`, { target: { space: planes.space, endpoint, run: runId }, remedy: `read its recorded failure with ${show}` });
+      throw new CommandFailure("failed", "OPERATION_FAILED", `run ${runId} failed${why}`, { target: { space: planes.space, endpoint, run: runId }, remedy: `read its recorded failure with ${show}` });
     }
     reportOutcome(runId, out);
   } finally {

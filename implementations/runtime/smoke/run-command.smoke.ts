@@ -15,7 +15,8 @@
  * a checkpoint — its resolve path needs no timer.
  *
  * A local start whose program fails reports the failure the run's status records: `OPERATION_FAILED`,
- * exit 5, the first line of the message, and `run show --local` as the next step.
+ * exit 5, its language code's catalog title or else the first line of the message, and
+ * `run show --local` as the next step.
  *
  * Run: pnpm smoke:runtime-run-command   (needs nats-server on PATH; part of smoke:ci)
  */
@@ -32,7 +33,7 @@ import {
   revokeRunAdmission,
 } from "@cotal-ai/core";
 import { authDir, exitCode, isCommandFailure, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
-import type { JournalEntry } from "@cotal-ai/lang";
+import { CATALOG, type JournalEntry } from "@cotal-ai/lang";
 import { runWorkflow, journalOutcomeOf, journalStepRow } from "../src/index.js";
 import { printRunDetail } from "../src/workflow-views.js";
 import { pickFreePort } from "./_free-port.js";
@@ -480,6 +481,17 @@ let P = "";
     refused);
 }
 
+// A failure with a language code is named by that code's catalog title, not by its recorded text.
+{
+  reset();
+  const NULLED = join(sd, "nulled.cotal.js");
+  writeFileSync(NULLED, 'const v = null;\nlog("x", v.x);\n');
+  const refused = await wf(["start"], { file: NULLED }).then(() => undefined, (e: Error) => e);
+  const nid = startedId() ?? "";
+  c("a program reading a field of null fails its local start with L4010 and that code's catalog title",
+    isCommandFailure(refused) && refused.code === "OPERATION_FAILED" && refused.message === `run ${nid} failed: L4010 ${CATALOG.L4010}`, refused?.message);
+}
+
 // A failure whose message runs over several lines is reported by its first line, as the record keeps
 // it whole for `run show` to print line by line.
 {
@@ -839,7 +851,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 94;
+const DECLARED = 95;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
