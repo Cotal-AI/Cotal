@@ -10,7 +10,8 @@
  *
  * Run: pnpm smoke:status-report
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { connect } from "node:net";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -156,6 +157,21 @@ if (!brokerDisplayOnly) {
   check("…and the report says not checked for it", /alpha\s+not checked/.test(otherPlain.stdout), otherPlain.stdout);
   const same = run(["status", "--space", "alpha", "--server", `nats://127.0.0.1:${a}`, "--json"]);
   check("control: a --server that names the recorded address checks it", byName(same.envelope).alpha === "unreachable", byName(same.envelope));
+  // Under `--all` with a `--server` that names another address, the selected row shows its own
+  // address's check: a recorded address that answers reads reachable while `--server` does not.
+  // The greeter runs in its own process, because `run` blocks this one.
+  const greeter = spawn(process.execPath, ["-e", `const s = require("node:net").createServer((c) => { c.on("error", () => {}); c.end('INFO {"server_id":"row","version":"2.12.12","proto":1,"max_payload":1048576}\\r\\n'); }); s.listen(0, "127.0.0.1", () => console.log(s.address().port));`], { stdio: ["ignore", "pipe", "inherit"] });
+  try {
+    const [port] = (await once(greeter.stdout!, "data")) as [Buffer];
+    const add = run(["meshes", "add", "gamma", "--server", `nats://127.0.0.1:${port.toString().trim()}`, "--mode", "open", "--root", home, "--force"]);
+    check("control: gamma is registered at an address that answers", add.status === 0, shown(add));
+    const allOther = run(["status", "--space", "gamma", "--all", "--server", `nats://127.0.0.1:${await freePort()}`, "--json"]);
+    check("--all with a --server that names another address checks the selected registration's own address", byName(allOther.envelope).gamma === "reachable" && allOther.envelope?.result?.selected.connection === "unreachable", { items: byName(allOther.envelope), connection: allOther.envelope?.result?.selected.connection });
+    const allOtherPlain = run(["status", "--space", "gamma", "--all", "--server", `nats://127.0.0.1:${await freePort()}`, "--plain"]);
+    check("…and its row reports that check, not the --server connection", /-> gamma\s+reachable/.test(allOtherPlain.stdout) && /Connection:\s+unreachable/.test(allOtherPlain.stdout), allOtherPlain.stdout);
+  } finally {
+    greeter.kill();
+  }
 }
 
 // ── a folder's maintenance journal is shown with its full attempt and next step ──────────────────
