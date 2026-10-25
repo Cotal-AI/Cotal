@@ -207,6 +207,22 @@ const holder = createServer((socket) => socket.on("error", () => {}));
 const held = await new Promise<number>((resolve) => holder.listen(0, "127.0.0.1", () => resolve((holder.address() as AddressInfo).port)));
 const started = (root: string) => existsSync(join(root, ".cotal", "nats.pid"));
 try {
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-read-")));
+    roots.push(root);
+    const store = join(root, ".cotal", "nats");
+    run(["space", "create", "readstore", "--root", root, "--json"]);
+    mkdirSync(join(store, "jetstream"), { recursive: true, mode: 0o700 });
+    chmodSync(store, 0o300);
+    try {
+      const closed = run(["up", "--server", `nats://127.0.0.1:${held}`, "--json"], root), status = run(["status", "--json"], root);
+      const step = `make it readable and writable by you, for example with chmod -R u+rwX ${store}`;
+      const hints = (JSON.parse(status.stdout || "{}") as { result?: { hints?: string[] } }).result?.hints ?? [];
+      check("a writable store root without read access is refused by name before a stack journal is written",
+        closed.status === 2 && closed.envelope?.error?.code === "PERMISSION_DENIED" && closed.envelope.error.message === `the broker store ${store} is not readable by this account (EACCES), so the broker cannot open its store; nothing was started or written` && closed.envelope.error.remedy === step && !existsSync(join(root, ".cotal", "stack-controller.json")), shown(closed));
+      check("status names the same read-access step instead of another up", hints.some((hint) => hint.includes(step)) && !hints.some((hint) => hint.includes("start it with `cotal up`")), shown(status));
+    } finally { chmodSync(store, 0o700); }
+  }
   const rotate = run(["up", "--server", `nats://127.0.0.1:${held}`, "--rotate-sys", "--json"], prepared);
   check("a prepared root refuses an option the controller stack has no route for, UNSUPPORTED, exit 2, naming it and why",
     rotate.status === 2 && rotate.envelope?.outcome === "refused" && rotate.envelope.error?.code === "UNSUPPORTED"
