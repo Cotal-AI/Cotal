@@ -1,0 +1,16 @@
+{
+  "suite": ["implementations/manager/smoke/startup-expiry.smoke.ts"],
+  "guard": "an expired PTY startup gate cannot answer a prompt printed during shutdown",
+  "command": "pnpm --filter @cotal-ai/seat build && pnpm smoke:startup-expiry",
+  "completionMarker": "STARTUP EXPIRY",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/fixtures/startup-expiry.mutations.json",
+  "mutations": [{
+    "name": "keep the output matcher active after disarm",
+    "file": "packages/seat/src/startup-confirm.ts",
+    "find": "    if (!this.active || this.sequence || !this.matcher.push(chunk)) return false;",
+    "replace": "    if (this.sequence || !this.matcher.push(chunk)) return false;",
+    "expectRed": "FAIL pty-late: no input after startup failure",
+    "cell": "no input after startup failure",
+    "afterRestore": "pnpm --filter @cotal-ai/seat build"
+  }]
+}

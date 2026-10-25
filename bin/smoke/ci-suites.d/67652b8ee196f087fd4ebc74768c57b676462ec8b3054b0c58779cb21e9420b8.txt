@@ -1,0 +1,2 @@
+# PTY startup confirmation expires before shutdown output can authorize input.
+smoke:startup-expiry
