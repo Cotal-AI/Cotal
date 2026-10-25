@@ -10,7 +10,6 @@ import {
   instancePinnedInstrumentCapabilities,
   invokeCommand,
   invokeRepairingSplit,
-  isAuthRejection,
   issuedUserCaller,
   mintCreds,
   parseEpSubject,
@@ -45,6 +44,7 @@ import { CommandFailure, ConnectRefusal, controlCaller, loadSpaceAuth, oneLine, 
 import { DEV_OWNER, EP_UNANSWERED, type SpaceAuth } from "@cotal-ai/core";
 import { c, staleStoreHint, stderrLine } from "../ui.js";
 import { cliVersion } from "./version.js";
+import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, notAdmittedRefusal } from "./dial-retry.js";
 import { nativeEndpointRefusal } from "./endpoint-errors.js";
 
 /** The control auth shape and target resolver live in `@cotal-ai/workspace` (shared with every
@@ -111,8 +111,8 @@ export type ControlReach = "owner" | "any";
  *  `standaloneConnectOpts` handles static credentials, a user bearer plus sentinel, and bare open
  *  meshes. The selected dialer matters: a user mesh behind an HTTPS edge has a `wss://` URL, which
  *  the raw node transport refuses even though endpoint, send, and spawn rails can reach it.
- *  A broker that refuses the credential at connect throws {@link brokerRefusedControl}: the
- *  connection never opened, so nothing was published to the manager. */
+ *  A connect the broker refuses or does not complete in time sends nothing, so it is tried again
+ *  ({@link dialWithRetry}); when every attempt ends that way, {@link notAdmittedRefusal} is thrown. */
 async function askManagerEp(
   space: string,
   server: string,
@@ -128,9 +128,15 @@ async function askManagerEp(
   const instanceId = pin?.instanceId ?? auth.managerInstanceId;
   const mapped = EP_COMMANDS[op];
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
-  const connectOpts = standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true });
-  const nc = await dialerFor(server)({ servers: server, ...connectOpts, maxReconnectAttempts: 0 }).catch((e: unknown) => {
-    throw isAuthRejection(e) ? brokerRefusedControl(e, space, instanceId, auth.bearer !== undefined) : e;
+  // Each attempt is a new connection, so a user bearer's connection nonce is minted afresh with it.
+  let connectOpts: Record<string, unknown> = {};
+  const nc = await dialWithRetry(() => {
+    connectOpts = standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true });
+    return dialerFor(server)({ servers: server, ...connectOpts, timeout: DIAL_TIMEOUT_MS, maxReconnectAttempts: 0 });
+  }).catch((e: unknown) => {
+    if (!(e instanceof DialNotAdmitted)) throw e;
+    throw notAdmittedRefusal(e, instanceId === undefined ? "this space's manager" : `manager instance ${instanceId}`, "nothing was sent to the manager",
+      { space, ...(instanceId === undefined ? {} : { managerInstanceId: instanceId }) }, auth.bearer !== undefined);
   });
   let request: ManagerRequestReceipt | undefined;
   let intent: ManagerRequestIntent | undefined;
@@ -244,17 +250,6 @@ async function askManagerEp(
       /* already closed */
     }
   }
-}
-
-/** A control credential the broker refused at connect, as a refusal that keeps the broker's words.
- *  On a user-auth mesh the auth service decides that at connect and logs why, as the view exchange
- *  decides it before; a refused view is transient there, so it is transient here too. */
-function brokerRefusedControl(e: unknown, space: string, instanceId: string | undefined, userAuth: boolean): ConnectRefusal {
-  const manager = instanceId === undefined ? "this space's manager" : `manager instance ${instanceId}`;
-  const message = `the broker refused this command's credential for ${manager} when it connected (${e instanceof Error ? e.message : String(e)}), so nothing was sent to the manager`;
-  const remedy = userAuth ? "the space's auth service logs why it refused this connection" : undefined;
-  return new ConnectRefusal(remedy ? `✗ ${message} - ${remedy}` : `✗ ${message}`, undefined, { cause: e, kind: "transient", code: "PERMISSION_DENIED",
-    ...(remedy ? { parts: { message, remedy } } : {}), target: { space, ...(instanceId === undefined ? {} : { managerInstanceId: instanceId }) } });
 }
 
 export interface ManagerRequestIntent {

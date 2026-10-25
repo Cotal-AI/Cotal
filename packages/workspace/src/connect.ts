@@ -41,7 +41,7 @@ import { findMesh, movedProject, pruneMesh, type UserAuthInfo } from "./mesh-reg
 import { isWorkspaceTargetError, resolveMeshTarget, resolveReadsLiveness, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
 import { renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
-import { CommandFailure, type RefusalCode } from "./output.js";
+import { CommandFailure, type NativeCause, type RefusalCode } from "./output.js";
 import { credentialFileExposure, localRecordAccess, protectedLocalDirectory } from "./protected-records.js";
 import { localStackRoot, spaceStreamsAbsent, spaceStreamsExpected } from "./space-streams.js";
 import { stoppedLoopbackListener } from "./pid.js";
@@ -346,20 +346,23 @@ export class ConnectRefusal extends Error {
   readonly parts: WorkspaceErrorParts | undefined;
   /** What the refusal is about, such as the file it names, for a structured command's `target`. */
   readonly target: Record<string, unknown> | undefined;
-  constructor(readonly rendered: string, readonly hint: string | undefined, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode; parts?: WorkspaceErrorParts; target?: Record<string, unknown> }) {
+  /** The transport's own words and detail, for a structured command's `error.cause`. */
+  readonly native: NativeCause | undefined;
+  constructor(readonly rendered: string, readonly hint: string | undefined, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode; parts?: WorkspaceErrorParts; target?: Record<string, unknown>; native?: NativeCause }) {
     super(rendered, options);
     this.name = "ConnectRefusal";
     this.kind = options.kind ?? "permanent";
     this.code = options.code;
     this.parts = options.parts;
     this.target = options.target;
+    this.native = options.native;
   }
 
   /** This refusal as a command's classified failure under its code: the message, and the remedy
    *  apart from it. */
   failure(): CommandFailure {
     const remedy = this.parts?.remedy ?? this.hint?.trim();
-    return new CommandFailure("refused", this.code, this.parts?.message ?? this.rendered.replace(/^✗ /, ""), { ...(remedy ? { remedy } : {}), ...(this.target ? { target: this.target } : {}) });
+    return new CommandFailure("refused", this.code, this.parts?.message ?? this.rendered.replace(/^✗ /, ""), { ...(remedy ? { remedy } : {}), ...(this.target ? { target: this.target } : {}), ...(this.native ? { native: this.native } : {}) });
   }
 }
 

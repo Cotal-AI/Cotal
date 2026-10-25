@@ -4234,10 +4234,13 @@ affects all interactive Manager verbs, not only `ps`. Select your remote Manager
 spawn, run or terminal operations. Explicit pins and managed-seat launching bindings keep their rules.
 There is no user flag for the policy, and stock `up` and recovery defaults do not enable it.
 
-A manager command whose credential the broker refuses at connect, such as a view the auth service no
-longer admits, sends nothing. It is refused `PERMISSION_DENIED`, exit 2, and the message keeps the
-broker's reason, such as `Authorization Violation`. On a user-auth mesh the space's auth service logs
-why it refused.
+A connection that the broker refuses, or that does not open within 5 seconds, sends nothing. A manager
+command then connects again, as do `send` and the other commands that open a one-shot connection, up
+to 4 attempts 1 second apart. A view the auth service refused for a moment, or an auth service that
+answered late, then just works. When every attempt fails the command says nothing was sent and is
+refused, exit 2: `PERMISSION_DENIED` when the broker refused each attempt, `TARGET_UNAVAILABLE` when
+none opened in time. The broker's own words stay in the native detail. On a user-auth mesh the space's
+auth service logs why it refused.
 
 A seat is reported as **not found** only when every reachable instance answered for itself. An
 instance that stayed silent past the deadline, or that refused the read rather than answering, said
