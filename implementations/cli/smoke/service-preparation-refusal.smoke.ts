@@ -31,7 +31,10 @@
  * status. A second instance whose readiness address the first one answers is refused before launch,
  * naming the address and that instance, and no instance is recorded for it. A process with process
  * readiness that exits at once fails its start, exit 5, recording its exit code, and its restart is
- * partial, exit 4, naming that exit code and its log.
+ * partial, exit 4, naming that exit code and its log. One that exits after readiness stays recorded
+ * running with its process gone and no exit code, and its `service status --instance` Next names
+ * that instance's `service logs`, which shows the line it logged. A running or stopped instance's
+ * status has no Next.
  *
  * On Linux, a stop ends the server a service's shell backgrounded, so its address is free and the
  * next start is reachable on its own. A server that left the service's process group with `setsid`
@@ -333,6 +336,35 @@ const answering = (port: number, status: number) => ({ type: "process", executab
   const after = run(["service", "status", "broken", "--space", "b1"]);
   check("status then shows it failed with exit code 1", after.envelope?.result?.recordedState === "failed" && (after.envelope.result.exit as { code?: number } | null)?.code === 1, after.envelope?.result);
   check("rig: the definition is forgotten", run(["service", "remove", "broken", "--space", "b1", "--yes"]).status === 0);
+}
+
+// A process that exits after its readiness was recorded, as a crash leaves it. Nothing observed its
+// exit, so its status names that instance's log; a running and a stopped instance name none.
+{
+  const statusText = (name: string, id: string) => spawnSync(process.execPath, [BIN, "service", "status", name, "--instance", id, "--space", "b1", "--plain"], { cwd: root, env, encoding: "utf8", timeout: 120_000 }).stdout;
+  const nextRows = (out: string) => { const lines = out.split("\n"), at = lines.indexOf("Next"); return at < 0 ? [] : lines.slice(at + 1).filter((line) => line.startsWith("  ")).map((line) => line.trim()); };
+  for (const [name, script] of [["late", "echo started; sleep 2; echo 'fatal: late' >&2; exit 7"], ["steady", "exec sleep 60"]]) {
+    const file = join(home, `${name}.json`);
+    writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: "/bin/sh", args: ["-c", script], cwd: root }, readiness: { type: "process", timeoutMs: 1000 } }));
+    check(`rig: ${name} is saved`, run(["service", "add", name, "--file", file, "--space", "b1"]).status === 0);
+  }
+  const late = run(["service", "start", "late", "--space", "b1"]), steady = run(["service", "start", "steady", "--space", "b1"]);
+  const lateId = String(late.envelope?.result?.instanceId), steadyId = String(steady.envelope?.result?.instanceId);
+  check("rig: both start and record readiness", late.status === 0 && steady.status === 0 && late.envelope?.result?.recordedState === "running", { late: shown(late), steady: shown(steady) });
+  let gone = run(["service", "status", "late", "--instance", lateId, "--space", "b1"]);
+  for (let i = 0; i < 40 && gone.envelope?.result?.observedProcess !== "gone"; i++) {
+    await new Promise((done) => setTimeout(done, 250));
+    gone = run(["service", "status", "late", "--instance", lateId, "--space", "b1"]);
+  }
+  check("the exited instance is still recorded running, with its process gone and no exit code or stop", gone.envelope?.result?.recordedState === "running" && gone.envelope.result.observedProcess === "gone" && gone.envelope.result.exit === null && gone.envelope.result.processStop === null, gone.envelope?.result);
+  const goneNext = nextRows(statusText("late", lateId));
+  check("its status Next names that instance's log", goneNext.length === 1 && goneNext[0]!.startsWith(`cotal service logs late --space b1 --instance ${lateId} `), goneNext);
+  const logs = run(["service", "logs", "late", "--space", "b1", "--instance", lateId]);
+  check("...which shows the line it logged before it exited", logs.status === 0 && ((logs.envelope?.result?.lines ?? []) as string[]).includes("fatal: late"), shown(logs));
+  check("a running instance's status has no Next", nextRows(statusText("steady", steadyId)).length === 0, statusText("steady", steadyId).slice(-400));
+  check("rig: steady stops", run(["service", "stop", "steady", "--space", "b1", "--yes"]).status === 0);
+  check("a stopped instance's status has no Next", nextRows(statusText("steady", steadyId)).length === 0, statusText("steady", steadyId).slice(-400));
+  for (const name of ["late", "steady"]) check(`rig: ${name} is stopped and forgotten`, run(["service", "stop", name, "--space", "b1", "--yes"]).status === 0 && run(["service", "remove", name, "--space", "b1", "--yes"]).status === 0);
 }
 
 // A second instance of a service whose readiness address its first instance answers.

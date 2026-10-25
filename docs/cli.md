@@ -4875,6 +4875,10 @@ start or stop that finds nothing to do says so and reports `no-op`.
 `status` names the file a running instance's process executes, as the kernel reports it, so the
 `stack-broker` row shows which `nats-server` serves the stack. `--json` carries it as `executable`.
 A stopped instance shows no running process, and a host with no `/proc` shows it as not readable.
+When an instance recorded as running has no process and no recorded stop, as when its process
+exits after readiness, `status` keeps its historical readiness and records no exit code or signal.
+Its Next names `cotal service logs <name> --space <space> --instance <id>`, where the process's own
+output is kept.
 
 `remove` forgets a definition once every instance is stopped and no unit is installed. It deletes
 those instances' logs and lists each file it deleted.
