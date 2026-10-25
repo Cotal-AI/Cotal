@@ -1143,8 +1143,8 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     }
     if (e instanceof UnregisteredRoot) {
       const message = `no space is registered or prepared here for ${e.root}`;
-      // A bare `up` in a folder whose records name no space starts the default space there, which
-      // then holds the folder, so the step that brings a forgotten space back is to prepare it again.
+      // A bare `up` in a folder whose records name no space starts a space named after the folder,
+      // which then holds it, so the step that brings a forgotten space back is to prepare it again.
       hints.push(e.namesNoSpace
         ? `prepare a space with \`${cmd} space create <name> --root ${shellWord(e.root)}\`, or select one with \`${cmd} use <name>\``
         : `run \`${cmd} up\` in ${e.root} to start one, or select a space with \`${cmd} use <name>\``);

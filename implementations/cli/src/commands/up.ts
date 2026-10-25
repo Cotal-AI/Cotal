@@ -21,7 +21,7 @@ import {
   unlinkSync,
   type Stats,
 } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   isReachable,
   dialerFor,
@@ -148,6 +148,7 @@ import {
   replaceDeadOrdinaryResumeListener,
   localProcessOwnerStatus,
   readMaintenanceJournal,
+  rootNamesNoSpace,
   readMaintenanceResumeDocument,
   seatCheckpointDir,
   readStoreIdentity,
@@ -211,7 +212,8 @@ import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/r
 import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
-import { checkSpaceFlagValue } from "./meshes-add.js";
+import { checkSpaceFlagValue, checkSpaceName } from "./meshes-add.js";
+import { checkLocalSpace } from "./space-registration.js";
 import { cleanedManifestStart, namedOpenConfig, retainedOpenSpace } from "../lib/legacy-start.js";
 import {
   bindReaches,
@@ -463,6 +465,7 @@ export function validateUpArguments(args: ParsedArgs): void {
     // A restore and a manifest name their own store.
     if (args.values.restore === undefined && args.values.file === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : undefined);
   }
+  folderNamedSpace(args.values);
 }
 
 /** Every launch route writes under the root's .cotal first, or makes it when it is missing. A folder
@@ -553,6 +556,40 @@ function freshFolderRoot(values: ParsedArgs["values"]): string | undefined {
   if (values.root !== undefined || values.file !== undefined || values.restore !== undefined) return undefined;
   const home = inheritedMachineHomeRoot();
   return home !== undefined && !homeHoldsStack(home) ? resolve(process.cwd()) : undefined;
+}
+
+/** The space a bare `up` starts in a new project: the name of the project folder, when no `--space`
+ *  names one and the folder's records name no space. The name passes the rules `space create`
+ *  applies, and a name another folder on this machine holds, running, stopped or prepared, refuses
+ *  rather than being taken over. Each refusal names `--space`, before anything is written. */
+function folderNamedSpace(values: ParsedArgs["values"]): string | undefined {
+  if (values.space !== undefined || values.root !== undefined || values.file !== undefined || values.restore !== undefined) return undefined;
+  const root = freshFolderRoot(values) ?? (machineHomeRoot() ? undefined : cotalRoot());
+  if (root === undefined || !recordsNameNoSpace(root)) return undefined;
+  const space = basename(resolve(root));
+  const named = `up names a new project's space after its folder, and`;
+  const checked = checkSpaceName(space);
+  const invalid = spaceNameTooLong(space) ?? (checked.ok ? undefined : checked.message.replace(/^✗ /, ""));
+  if (invalid)
+    throw new CommandFailure("refused", "USAGE_INVALID", `${named} the folder name ${JSON.stringify(space)} cannot be one: ${invalid}; nothing was started or written`, { target: { root }, remedy: "name the space with cotal up --space <name>", selfContained: true });
+  assertSelectionNotMoved(root, space);
+  const held = findMesh(space) ?? findPreparedSpace(space);
+  if (held)
+    throw new CommandFailure("refused", "CONFLICT", `${named} "${space}" is already ${"server" in held ? `registered at ${held.server}` : "prepared"} for ${held.root}; nothing was started or written`, { target: { root, space, heldBy: held.root }, remedy: "name this folder's space with cotal up --space <name>, naming one this machine does not use; cotal space lists the names in use" });
+  checkLocalSpace(space, root, "--root", false);
+  return space;
+}
+
+/** Whether `root` holds no records that name a space: no `.cotal`, an empty one, or one with no
+ *  account, prepared space, registration, stack journal, runtime record, broker configuration or
+ *  maintenance attempt. */
+function recordsNameNoSpace(root: string): boolean {
+  const control = join(root, ".cotal");
+  let entries: string[];
+  try { entries = readdirSync(control); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+  try { if (readMaintenanceJournal(root)) return false; } catch { return false; }
+  return entries.length === 0 || rootNamesNoSpace(root);
 }
 
 function inheritedMachineHomeRoot(): string | undefined {
@@ -758,6 +795,8 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
     // The broker reads an explicit channels file only once it is being prepared, so a file it would
     // refuse is named here, before the stack journal or anything else is written.
     if (typeof args.values.channels === "string") readChannelsFile(resolve(args.values.channels));
+    const folderNamed = folderNamedSpace(args.values);
+    if (folderNamed) args = { ...args, values: { ...args.values, space: folderNamed, __folderNamed: true } };
     // A fresh folder under the machine home gets its own `.cotal` before anything resolves the root, so
     // every later step uses this folder. A run that stops before writing there removes it again.
     const fresh = args.values.root === undefined ? freshFolderRoot(args.values) : undefined;
@@ -824,6 +863,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     __restoreAttempt?: string;
     __ordinaryResumeAttempt?: string;
     __invokedRoot?: string;
+    __folderNamed?: boolean;
   };
   if (freshTeamBoot && (!values.file || values.restore || values.__restoreAttempt || values.__ordinaryResumeAttempt || values["rotate-sys"] || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "fresh team boot accepts one manifest and its selected lifetime, not a restore, rotation or manager-free override");
   if (values["manager-name"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--manager-name names the manager a plain cotal up starts; it cannot be combined with --restore, --file or --no-manager");
@@ -929,7 +969,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // Refuse first-enable IdP failures and explicit pin conflicts before even recovery's lock
     // creates its layout. Existing recovery keeps its own recorded startup and trust checks.
     const stackSpace = values.space ?? folderSpace();
-    if (values.space === undefined) assertSelectionNotMoved(root, stackSpace);
+    if (values.space === undefined && unnamedDefault(root, stackSpace)) assertSelectionNotMoved(root, stackSpace);
     recordOperationSpace(stackSpace);
     if (!readMaintenanceJournal(root) && controllerStackApplies(root, stackSpace, values)) {
       const recordedStack = readStackJournal(root);
@@ -1920,6 +1960,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       console.log(c.dim(`Started ${executable}.`));
       console.log(c.green(renderDetachedSummary(detached)));
       if (unnamed) console.log(c.dim(`  This folder names no space, so up started the default space "${receiptSpace}"; pass --space <name> to start another`));
+      if (values.__folderNamed) console.log(c.dim(`  This new project's space is named after its folder, "${receiptSpace}"; pass --space <name> to start another`));
     }
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
@@ -4011,11 +4052,10 @@ function unnamedDefault(root: string, space: string): boolean {
   return space === DEFAULT_SPACE && soleSpaceOf(authDir(root)) === undefined && !preparedSpaceAt(root) && !localMeshesForRoot(root).length && !readStackJournal(root);
 }
 
-/** A bare `up` in a folder that names no space starts the default space. When the selected space
- *  is prepared in a folder that no longer exists, as after that folder was moved, the default is not
- *  what was meant, so `up` refuses with the step that prepares the selection here. */
+/** A bare `up` in a folder that names no space starts a space it names itself. When the selected
+ *  space is prepared in a folder that no longer exists, as after that folder was moved, that space is
+ *  not what was meant, so `up` refuses with the step that prepares the selection here. */
 function assertSelectionNotMoved(root: string, space: string): void {
-  if (!unnamedDefault(root, space)) return;
   const current = getCurrent();
   const prepared = current === undefined || current === space ? undefined : findPreparedSpace(current);
   if (!prepared || existsSync(prepared.root)) return;

@@ -630,15 +630,20 @@ When `--root` names another prepared project, run bare
 `cotal down` from that project folder: bare down
 stops the folder's stack, and `down --space` is not a remote replacement for that scope. With no
 `--space`, `up` runs the folder's space: the one its auth account names, else the one its stack or
-running mesh records, else the one prepared there, else `main`. A second `up` in the same folder
+running mesh records, else the one prepared there. A folder whose records name no space is a new
+project, and `up` names its space after the folder, the name `cotal up --space <folder name>` would
+give it. A folder name that is not a valid space name, such as one with a space in it, refuses
+`USAGE_INVALID`, exit 1. A name another folder on this machine registered or prepared, running or
+stopped, refuses `CONFLICT`, exit 2, and is not taken over. Both refusals write nothing and name
+`cotal up --space <name>`. A second `up` in the same folder
 runs the same space again. A folder whose stack and registrations name more than one space refuses
 with `CONFLICT` and asks for `--space`. With no
 `--server`, it auto-selects a free port if the default address is taken, and a later `cotal up` of
 the same space from the same folder starts from the URL that mesh recorded; an explicit `--server`
 stays fail-loud on collision. When the named space runs from another folder on this machine,
 `up --space` refuses `CONFLICT`, exit 2, naming that folder, with or without `--server`, `--json` or
-`--plain`, and writes nothing in the folder it ran from. A bare `up` whose space, `main` when the
-folder names none, runs from another folder refuses `CONFLICT` as well. Its Next names
+`--plain`, and writes nothing in the folder it ran from. A bare `up` whose folder names a space that
+runs from another folder refuses `CONFLICT` as well. Its Next names
 `cotal up --space <name>` to start a separate space in this folder, and the `cotal down` that stops
 the other one in its own folder. A background boot also brings up the control plane (delivery daemon in auth
 mode, then the manager). `--no-manager` is the broker-only mode: it boots
@@ -652,8 +657,8 @@ host and run [`supervise`](#supervise) against the remote broker; see
 [Run a mesh](run-a-mesh.md). `cotal up --detach` prints `✓ running in the background:` with
 `manager` listed (pidfile liveness, not a teardown boundary); with `--no-manager` the line lists
 only what actually started. Its receipt begins with `Mesh: <space>` and ends with a Next that names
-`cotal spawn` when a manager runs, and the stop. With no `--space`, in a folder that names no space,
-it also says that `up` started the default space `main`. For a stack an earlier release started in
+`cotal spawn` when a manager runs, and the stop. With no `--space`, in a new project, it also says
+that the space is named after the folder. For a stack an earlier release started in
 the machine home, the line names `cotal down --preserve-state`,
 because bare `down` refuses the home stack. With `--no-manager` it names `cotal up` first, because
 `--preserve-state` needs a manager. On POSIX, a foreground broker has its own session and process group.
@@ -2618,8 +2623,8 @@ finishes or settles it. `cotal up --space <name>` in a folder
 that is already another space's root refuses with `CONFLICT`, exit 2. `space add` refuses a prepared
 name. A prepared space records its folder by path, and moving the folder leaves nothing in it that
 names the space. A bare `cotal up` in a folder that names no space, while the selected space is
-prepared in a folder that no longer exists, refuses `TARGET_UNAVAILABLE`, exit 2, rather than start the
-default space there. Forget the space with `cotal space forget <name>`, prepare it again in its new
+prepared in a folder that no longer exists, refuses `TARGET_UNAVAILABLE`, exit 2, rather than start a
+space named after the folder there. Forget the space with `cotal space forget <name>`, prepare it again in its new
 folder with `cotal space create <name>`, then run `cotal up`. Until then, `space create` of that name
 says its recorded folder no longer exists.
 
@@ -2653,7 +2658,7 @@ folder does not start one, as [Running a service](#running-a-service) describes.
 finds no space for it, so remove a service before you forget its space to drop it at once.
 `status` in a forgotten space's root then selects no space and probes no broker. When nothing left
 in that root's `.cotal/` names a space, its next step is `cotal space create <name> --root <root>`,
-because a bare `cotal up` there would start the default space `main` in that folder. A command run
+because a bare `cotal up` there would start a space named after that folder. A command run
 there that finds no broker at the default address says that no space is registered or prepared for
 the folder and names the same step. That refusal has no `Mesh:` line, and its `target` names only
 the folder, because no space was resolved there.
