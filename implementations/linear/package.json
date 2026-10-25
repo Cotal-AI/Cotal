@@ -21,6 +21,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
     "test": "tsx smoke/protocol.smoke.ts && tsx smoke/account-refusals.smoke.ts",
+    "smoke:hosted": "tsx smoke/user-auth-serve.smoke.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
@@ -33,6 +34,8 @@
     "@cotal-ai/workspace": "*"
   },
   "devDependencies": {
+    "@cotal-ai/auth": "workspace:*",
+    "@cotal-ai/smoke-kit": "workspace:*",
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/workspace": "workspace:*"
   },

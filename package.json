@@ -704,6 +704,7 @@
     "smoke:cli-kernel": "tsx implementations/cli/smoke/command-kernel.smoke.ts",
     "smoke:service-preset-guidance": "tsx implementations/cli/smoke/service-preset-guidance.smoke.ts",
     "smoke:linear-accounts": "tsx implementations/linear/smoke/account-refusals.smoke.ts",
+    "smoke:linear-hosted": "tsx implementations/linear/smoke/user-auth-serve.smoke.ts",
     "smoke:cli-entry": "pnpm --filter cotal-ai... build && tsx bin/smoke/cli-entry.smoke.ts",
     "smoke:read-envelopes": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/read-envelopes.smoke.ts",
     "smoke:read-no-seed": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/read-no-seed.smoke.ts",
