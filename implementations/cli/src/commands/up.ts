@@ -189,7 +189,7 @@ import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/
 import { resolveSpace } from "../lib/status.js";
 import { c, stderrLine } from "../ui.js";
 import { admitAndRestoreSeatCheckpoints, type StaleCheckpointConsent } from "../lib/seat-resume.js";
-import { natsServerLabel, resolveNatsServer } from "../lib/nats-bin.js";
+import { natsServerLabel, resolveNatsServer, type NatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot, homeHoldsStack, linkedCotalRefusal } from "../lib/paths.js";
 import { detachedNext, renderDetachedSummary } from "../lib/up-report.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
@@ -2147,7 +2147,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     }
   });
 
-  await awaitSpawnedListener({ child, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: "the terminal output above", boundListener });
+  await awaitSpawnedListener({ child, executable: natsServer, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: "the terminal output above", boundListener });
   {
     // A DAEMON THAT DIES UNDER THIS RUNNING BROKER IS RESTARTED HERE (#2469). It exits on its own once
     // it cannot reach the broker, and a starved host makes a running broker look unreachable, so it can
@@ -3652,6 +3652,8 @@ async function recordSpawnedListener(child: ChildProcess, startedAt: string, bou
  */
 async function awaitSpawnedListener(l: {
   child: ChildProcess;
+  /** The nats-server that was spawned, named when its exit ends the wait. */
+  executable: NatsServer;
   server: string;
   space: string;
   creds?: string;
@@ -3664,7 +3666,7 @@ async function awaitSpawnedListener(l: {
   const { child, server, space } = l;
   let facts: BrokerFacts;
   try {
-    if (!(await waitReady(server, l.creds, l.tls))) throw new Error(`nats-server did not become reachable at ${server} - see ${l.log}`);
+    if (!(await waitReady(server, l.creds, l.tls))) throw exitedBeforeReady(l) ?? new Error(`nats-server did not become reachable at ${server} - see ${l.log}`);
     facts = await brokerVersion(server, space, l.creds);
   } catch (e) {
     await stopFailedListener(child);
@@ -3677,6 +3679,20 @@ async function awaitSpawnedListener(l: {
       ),
     );
   if (l.boundListener) await l.boundListener.verify();
+}
+
+/** The failure of a listener that exited before it answered: the executable, the exit code or signal
+ *  Node observed, and where its output went. Undefined when no exit was observed, so a listener that
+ *  only stayed silent keeps an unconfirmed outcome. */
+function exitedBeforeReady(l: { child: ChildProcess; executable: NatsServer; server: string; log: string }): CommandFailure | undefined {
+  const { exitCode, signalCode } = l.child;
+  if (exitCode === null && signalCode === null) return undefined;
+  const exit = exitCode !== null ? `exited with code ${exitCode}` : `was stopped by ${signalCode}`;
+  const { path, source } = l.executable;
+  return new CommandFailure("failed", "OPERATION_FAILED", `${natsServerLabel(l.executable)} ${exit} before it answered at ${l.server}; see ${l.log}`, {
+    target: { executable: path, ...(exitCode !== null ? { exitCode } : { signal: signalCode }), server: l.server, log: l.log },
+    remedy: source === "path" ? `read ${l.log}, then fix ${path} or take it off PATH so cotal uses its bundled nats-server, and run cotal up again` : `read ${l.log}, then run cotal up again`,
+  });
 }
 
 /**
@@ -3914,7 +3930,7 @@ export async function startMeshDetached(
   await recordSpawnedListener(child, listenerStartedAt, opts.boundListener);
   child.unref();
 
-  await awaitSpawnedListener({ child, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: logPath, boundListener: opts.boundListener });
+  await awaitSpawnedListener({ child, executable: { path: bin, source, version }, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: logPath, boundListener: opts.boundListener });
   const { authService, controlPlane } = await serveReadyListener({
     child, server, space, storeDir, setup, seedFile, transport,
     host: opts.host,
