@@ -7607,7 +7607,7 @@ explicitly grant the invoking user with `cotal auth grant cli --sub <subject>`, 
 before `cotal team boot <file>`. Do not start the manager between preparation and that stop. A
 static-auth or open preparation uses `cotal up --no-manager` before `cotal down`. No implicit owner
 grant or borrowed caller is substituted. A previously attempted manager is never adopted.
-Windows cannot apply, because the stack's process services need Linux machine and boot identity.
+Windows cannot apply, because the stack's process services need Linux or macOS machine and boot identity.
 
 `--space` must agree with the manifest. Hand-registered and discovered spaces are not local boot
 targets. Public broker addresses and fresh-attempt views omit URL user info, queries and fragments;
@@ -7974,7 +7974,7 @@ supervisor.
 On Windows, local records use the access-list model described under `up`. There, `cotal ext add`
 and the setup seed record a service receipt for an extension that declares service adapters or
 presets, and starting one of its process services refuses Unsupported, because the process driver
-needs Linux machine and boot identity.
+needs Linux or macOS machine and boot identity.
 
 ### Service presets
 
@@ -8347,11 +8347,11 @@ proof that an application, dependency or service is ready. Linux direct-process
 instances can use the owned systemd user-unit route described below. An adapter
 does not acquire that mechanism from its name or preset.
 
-The direct-process driver pins Linux machine/boot IDs and process start ticks.
-macOS and Windows still refuse: their generic process custody needs a stable
-machine, boot, owner and subsecond creation pin before any signal is safe.
-The existing macOS `ps -o lstart` timestamp has only second precision, so
-hashing it would not distinguish a PID reused within that second.
+The direct-process driver pins the machine, the boot, the OS user and each process's start. On
+Linux these are the machine ID, the kernel boot ID and the process start ticks. On macOS they are
+the hardware UUID, the boot session UUID and the process start in microseconds, read through the
+bundled binding described under the identity pins above. Windows still refuses: its generic process
+custody needs a stable machine, boot, owner and subsecond creation pin before any signal is safe.
 
 Instance reports separate recorded supervisor policy from supervisor discovery, which remains not
 checked by this direct-process driver. A recorded `none` means no supervisor assigned by this
@@ -8452,7 +8452,7 @@ dry-run reads the exact recorded unit and private-store directory. Neither
 allocates an instance, enables autostart nor removes a receipt or unit.
 
 Process definitions support `service start/stop/restart/status/logs <name>`. The driver currently
-requires Linux stable machine identity, boot identity and readable process-creation tokens. It
+requires Linux or macOS stable machine identity, boot identity and readable process-creation tokens. It
 refuses another platform instead of using PID-only ownership. It launches executable and argv
 separately without a shell. No broker, manager or other dependency is started implicitly.
 

@@ -49,6 +49,7 @@ export * from "./system-rotation.js";
 export * from "./telemetry.js";
 export * from "./win-cmd.js";
 export * from "./pid.js";
+export { darwinProcessBinding, type DarwinProcess, type DarwinProcessBinding } from "./darwin-process.js";
 export * from "./progress.js";
 export * from "./service-definition.js";
 export * from "./service-adapter.js";

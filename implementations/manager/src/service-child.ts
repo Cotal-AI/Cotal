@@ -44,7 +44,7 @@ export function managerServiceChild(args: ParsedArgs): ManagerServiceChild {
   }
   if (args.positionals.length) throw new CommandFailure("refused", "USAGE_INVALID", "the native manager child takes no positional targets");
   const root = String(values.root), stateDirectory = String(values["state-directory"]);
-  if (process.platform !== "linux" || !isAbsolute(root) || !isAbsolute(stateDirectory)) throw new CommandFailure("refused", "UNSUPPORTED", "the native manager child requires protected absolute paths and Linux process creation identity");
+  if ((process.platform !== "linux" && process.platform !== "darwin") || !isAbsolute(root) || !isAbsolute(stateDirectory)) throw new CommandFailure("refused", "UNSUPPORTED", "the native manager child requires protected absolute paths and a Linux or macOS process creation identity");
   protectedLocalDirectory(root);
   protectedLocalDirectory(join(root, ".cotal"));
   protectedLocalDirectory(stateDirectory);
