@@ -43,6 +43,7 @@ const linearCommand: Command = {
 };
 registry.register(linearCommand);
 
+export { linearUserAuthRegistration, linearUserAuthRequest, serveLinearUserAuth } from "./user-auth-serve.js";
 export { LinearUpstream, DEFAULT_LIMITS, type LinearInventory, type LinearLimits, type UpstreamReply } from "./upstream.js";
 export { LINEAR_MCP_ORIGIN, LINEAR_MCP_PATHS, linearMcpUrl, type LinearMode } from "./origin.js";
 export { loadAccount, type LinearAccount } from "./account.js";

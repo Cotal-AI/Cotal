@@ -118,6 +118,7 @@ export interface StartupConfirmFailure {
  * a gate that fails ends the seat the same way whichever one owns the child.
  */
 export class StartupConfirmGate {
+  private active = true;
   private readonly matcher: StartupConfirmMatcher;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pollTimer: ReturnType<typeof setTimeout> | undefined;
@@ -135,6 +136,7 @@ export class StartupConfirmGate {
   arm(diagnostic: ConnectorDiagnosticReader, failure: StartupConfirmFailure, pane?: {
     read(): string | undefined; key(key: "Down" | "Enter"): void;
   }): void {
+    if (!this.active) return;
     const fail = (message: string): void => {
       this.disarm();
       diagnostic.recordStop(message);
@@ -146,11 +148,11 @@ export class StartupConfirmGate {
     if (this.sequence) {
       if (!pane) { fail("Cotal startup confirmation failed: this runtime has no screen-based startup choices."); return; }
       const poll = (): void => {
-        if (Date.now() >= deadline) return;
+        if (!this.active || Date.now() >= deadline) return;
         try {
           const screen = pane.read();
           if (screen === undefined) { this.disarm(); return; }
-          if (Date.now() >= deadline) return;
+          if (!this.active || Date.now() >= deadline) return;
           const action = this.sequence!.observe(screen);
           if (action?.key) pane.key(action.key);
           if (action?.done) { this.disarm(); return; }
@@ -163,13 +165,14 @@ export class StartupConfirmGate {
 
   /** True once, for the chunk that completes the prompt; the runtime answers it with Enter. */
   push(chunk: string): boolean {
-    if (this.sequence || !this.matcher.push(chunk)) return false;
+    if (!this.active || this.sequence || !this.matcher.push(chunk)) return false;
     this.disarm();
     return true;
   }
 
-  /** A child that has exited can no longer fail its gate. */
+  /** End confirmation authority before stopping the child or processing further output. */
   disarm(): void {
+    this.active = false;
     clearTimeout(this.timer);
     clearTimeout(this.pollTimer);
     this.timer = undefined;

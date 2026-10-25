@@ -879,7 +879,78 @@ log("released", r.index);
     said.join(" | ").slice(0, 200));
 }
 
-const EXPECTED_CELLS = 64;
+// ── 15) a deadline that passed before its pause was minted ends the wait as its expiry does ────
+// Each pause read answers 30 ms late, so a 1ms deadline has passed by the time the first arm would
+// mint it.
+{
+  const slowKv = new Proxy(kv, {
+    get(target, property) {
+      if (property === "get") return async (...args: Parameters<typeof kv.get>) => {
+        const result = await target.get(...args);
+        if (args[0].startsWith(`cp.${EP}.`)) await wait(30);
+        return result;
+      };
+      const value = Reflect.get(target, property);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const late = new MeshHandler(
+    nc, slowKv, js, jsm,
+    { space: SPACE, endpoint: EP, runId: "r-wait-due", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
+    new EpfSettleWatcher(jsm, SPACE, 3_000),
+    now,
+  );
+  const consumerGone = async (id: string) =>
+    (await jsm.consumers.info(chatStream(SPACE), waitConsumerName(id)).then(() => "still-there", () => "gone")) === "gone";
+  const timedOut = tok("due-timeout");
+  const nothing = await late.wait({ event: { event: "message", channel: CHANNEL }, timeout: "1ms" }, ctx(timedOut).ctx)
+    .then((value) => value, (error: Error) => error.message);
+  c("a 1ms timeout that passed before its mint resolves null", nothing === null, nothing);
+  c("...minting no pause and leaving no consumer behind",
+    (await readCheckpointStatus(kv, { endpoint: EP, token: timedOut })) === undefined && await consumerGone(timedOut));
+  const quiet = await late.wait({ event: { event: "idle", channel: CHANNEL, duration: "1ms" } }, ctx(tok("due-idle")).ctx)
+    .then((value) => value as { channel?: string } | null, (error: Error) => error.message);
+  c("a 1ms idle window that passed before its mint returns the idle event",
+    typeof quiet === "object" && quiet?.channel === CHANNEL, JSON.stringify(quiet));
+  const outerFirst = tok("due-outer");
+  const outerOut = await late.wait({ event: { event: "idle", channel: CHANNEL, duration: "1h" }, timeout: "1ms" }, ctx(outerFirst).ctx)
+    .then((value) => value, (error: Error) => error.message);
+  c("an idle wait whose 1ms timeout passed before its mint resolves null", outerOut === null, outerOut);
+  const window = await readCheckpointStatus(kv, { endpoint: EP, token: outerFirst });
+  c("...and claims the idle window it did arm", window !== undefined && window.value.state !== "waiting", window?.value.state);
+
+  // A cancellation that lands while the consumer opens still wins, on that path as on the ordinary
+  // one: the branch lost the race before the wait could end.
+  const cancelOnOpen = (cancel: () => void) => new Proxy(jsm, {
+    get(target, property) {
+      const value = Reflect.get(target, property);
+      if (property !== "consumers") return typeof value === "function" ? value.bind(target) : value;
+      return new Proxy(value, {
+        get(consumers, name) {
+          const member = Reflect.get(consumers, name);
+          if (name !== "add") return typeof member === "function" ? member.bind(consumers) : member;
+          return async (...args: unknown[]) => { cancel(); return await member.apply(consumers, args); };
+        },
+      });
+    },
+  });
+  for (const [path, pauses, timeout] of [["a due", slowKv, "1ms"], ["an ordinary", kv, "1h"]] as const) {
+    const id = tok(`cancel-${timeout}`);
+    const { ctx: k, cancel } = ctx(id);
+    const racing = new MeshHandler(
+      nc, pauses, js, cancelOnOpen(() => cancel("the other branch won")),
+      { space: SPACE, endpoint: EP, runId: "r-wait-due", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
+      new EpfSettleWatcher(jsm, SPACE, 3_000),
+      now,
+    );
+    const outcome = await racing.wait({ event: { event: "message", channel: CHANNEL }, timeout }, k)
+      .then((value) => value, (error: Error) => error);
+    c(`${path} wait cancelled while its consumer opens ends Cancelled`, outcome instanceof Cancelled, outcome);
+    c(`...and leaves no consumer behind`, await consumerGone(id));
+  }
+}
+
+const EXPECTED_CELLS = 73;
 const ran = ok + fail;
 console.log(`mesh-wait.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

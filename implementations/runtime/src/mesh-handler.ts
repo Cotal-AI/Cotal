@@ -871,8 +871,7 @@ export class MeshHandler {
       endpoint: this.binding.endpoint,
       token: observeToken(ctx.requestId, req.attempt),
     };
-    await this.arm(ref, wake);
-    await this.settle(ref, ctx.signal);
+    if (!(await this.armUnlessDue(ref, wake, ctx.signal))) await this.settle(ref, ctx.signal);
     // Re-read the clock rather than trusting the arithmetic: the pause may have been settled by a
     // heartbeat-advanced deadline or by this host being away, and what decides whether there is
     // still time is where the clock actually is now.
@@ -932,7 +931,7 @@ export class MeshHandler {
     // step with nothing armed behind it, instead of leaving a timer to fire into a failed step.
     if (ctx.attempt > 0 && req.to !== undefined) await this.relayEscalation(req, ctx, ref.token, deadline);
 
-    await this.arm(ref, deadline);
+    if (await this.armUnlessDue(ref, deadline, ctx.signal)) return { outcome: "expired", at: this.now() };
 
     const settled = await this.settle(ref, ctx.signal, true);
     if (settled.settle === "expired") return { outcome: "expired", at: settled.ts };
@@ -1020,10 +1019,11 @@ export class MeshHandler {
     const outer = idleFor !== undefined && timeoutAt !== undefined
       ? { endpoint: this.binding.endpoint, token: waitTimeoutToken(ctx.requestId) }
       : undefined;
-    if (primary !== undefined) {
-      await this.arm(primary, idleFor !== undefined ? this.now() + idleFor : timeoutAt!);
-    }
-    if (outer !== undefined) await this.arm(outer, timeoutAt!);
+    // A deadline that passed before its pause was minted has nothing to settle. It ends the wait in
+    // the loop, once the channel is open under the run's read admission and after cancellation.
+    const primaryDue = primary !== undefined && await this.armUnlessDue(primary, idleFor !== undefined ? this.now() + idleFor : timeoutAt!, ctx.signal);
+    const outerDue = outer !== undefined && await this.armUnlessDue(outer, timeoutAt!, ctx.signal);
+    const timedOut = outer !== undefined ? outerDue : idleFor === undefined && primaryDue;
 
     const durable = waitConsumerName(ctx.requestId);
     const stream = chatStream(this.binding.space);
@@ -1046,6 +1046,12 @@ export class MeshHandler {
           if (outer !== undefined) await this.cancelTimer(outer);
           over = true;
           throw new Cancelled(ctx.signal.reason ?? "cancelled");
+        }
+        // A deadline that passed before its pause was minted, the timeout ahead of the idle window.
+        if (timedOut || idleFor !== undefined && primaryDue) {
+          if (outer !== undefined) await this.cancelTimer(timedOut ? primary! : outer);
+          over = true;
+          return timedOut ? null : { channel: ev.channel, at: this.now() };
         }
         // The deadline is durable and authoritative — a checkpoint's settle fact — and this is only
         // the OBSERVATION of it, so the cost of polling is lateness bounded by one poll rather than
@@ -1548,10 +1554,11 @@ export class MeshHandler {
    * terminal, carrying the TurnResult. The DEADLINE is double-covered: the manager arms a
    * goal-bound hold (its expiry commits `failed` reason `turn-deadline`), and this client arms its
    * OWN pause under the step's request id — the L4003 authority that survives a dead manager.
-   * DEATH likewise: the manager's reap hook fails pending turns `agent-down`, and this client
-   * watches presence itself (the L4002 authority when the manager died with the seat). The watch
-   * reads death the way `wait(down)` does: a superseded incarnation at once, a lapsed row only
-   * once it has stayed absent for {@link LAPSE_CONFIRM_MS} and its manager no longer runs the seat.
+   * DEATH: the manager's reap hook marks pending turns; death rides the deadline terminal as
+   * `agentDownAt`. This client's presence watch is the early L4002 authority even while the
+   * manager runs. The watch reads death the way `wait(down)` does: a superseded incarnation at
+   * once, a lapsed row only once it has stayed absent for {@link LAPSE_CONFIRM_MS} and its manager
+   * no longer runs the seat.
    *
    * Handoff honoring (lang §5.3) happens HERE: the scope's pending memo is spent at every turn's
    * begin, and when this turn targets its `to`, the link rides the submission (`handoffFrom`, the
@@ -2397,6 +2404,22 @@ export class MeshHandler {
     // #1508: every read and write below rides a client-side deadline, and a deadline that elapsed
     // because THIS PROCESS was off the CPU is not evidence about the plane. See `host-starvation`.
     return await servedDespiteStarvation(() => this.armOnce(ref, deadline), this.lag, `arming the pause ${ref.token}`, this.onStarved);
+  }
+
+  /** `arm`, answering `true` when the deadline passed before anything was minted for it. Only a
+   *  first arm finds that (`PauseOverdue`), and there is then no pause to settle, so a caller whose
+   *  deadline is its own outcome takes `true` as that outcome. Cancellation still wins. */
+  private async armUnlessDue(ref: CheckpointRef, deadline: number, signal: CancelSignal): Promise<boolean> {
+    try {
+      await this.arm(ref, deadline);
+      return false;
+    } catch (error) {
+      if (error instanceof PauseOverdue) {
+        if (signal.cancelled) throw new Cancelled(signal.reason ?? "cancelled");
+        return true;
+      }
+      throw error;
+    }
   }
 
   private async armOnce(ref: CheckpointRef, deadline: number): Promise<void> {

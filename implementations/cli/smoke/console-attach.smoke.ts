@@ -112,7 +112,15 @@ try {
   const psFrom = session.out.length;
   await session.command("ps");
   check(":ps lists the echo seat", await session.waitFor("agents: echo", 30_000, psFrom), clean(session.out.slice(psFrom)).match(/(agents: |ps: )[^│\n]*/)?.[0] ?? clean(session.out.slice(psFrom)).slice(-300));
-  await session.command("attach echo");
+  let pickFrom = session.mark();
+  await session.keys("\x10");
+  check("attach picker: the palette opens", await session.waitFor("Commands", 8_000, pickFrom));
+  await session.keys("attach");
+  pickFrom = session.mark();
+  await session.keys("\r");
+  check("attach picker: selecting the command lists its managed seat without mesh presence",
+    await session.waitFor("▸ echo", 30_000, pickFrom), clean(session.out.slice(pickFrom)).slice(-1000));
+  await session.keys("\r");
   check("attach: the console suspends and the seat's live screen streams in", await session.waitFor("ATTACH-ECHO-READY", 30_000), clean(session.out).slice(-600));
   const typedFrom = session.out.length;
   session.write("PING-4711");

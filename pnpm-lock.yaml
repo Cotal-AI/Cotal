@@ -619,9 +619,15 @@ importers:
         specifier: ^3.4.0
         version: 3.4.0
     devDependencies:
+      '@cotal-ai/auth':
+        specifier: workspace:*
+        version: link:../auth
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../../packages/workspace

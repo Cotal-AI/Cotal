@@ -4,6 +4,9 @@
 import type { APIRoute, GetStaticPaths } from 'astro';
 import { getCollection } from 'astro:content';
 import { PROMPT_FENCE } from '../prompt';
+import { httpReferences, referencePages } from '../../scripts/http-api.mjs';
+import dashboardSpec from '../generated/dashboard.openapi.json';
+import authSpec from '../generated/auth.openapi.json';
 
 const isIndex = (id: string) => id === '' || id === 'index';
 
@@ -20,16 +23,27 @@ function restorePrompt(body: string): string {
 
 export const getStaticPaths: GetStaticPaths = async () => {
   const docs = await getCollection('docs');
-  return docs
-    .filter((entry) => !isIndex(entry.id))
-    .map((entry) => ({ params: { slug: entry.id }, props: { entry } }));
+  const specs = { dashboard: dashboardSpec, auth: authSpec };
+  const referenceSlugs = new Set(httpReferences.map((reference) => reference.docSlug));
+  const referenceRoutes = httpReferences.flatMap((reference) => {
+    const entry = docs.find((entry) => entry.id === reference.docSlug);
+    if (!entry) throw new Error(`Missing generated ${reference.id} Markdown`);
+    return referencePages(reference, specs[reference.id as keyof typeof specs]).map((page) => ({
+      params: { slug: page.slug },
+      props: page.slug === reference.base ? { entry } : { markdown: page.markdown },
+    }));
+  });
+  return [
+    ...docs.filter((entry) => !isIndex(entry.id) && !referenceSlugs.has(entry.id))
+      .map((entry) => ({ params: { slug: entry.id }, props: { entry } })),
+    ...referenceRoutes,
+  ];
 };
 
 export const GET: APIRoute = ({ props }) => {
   const { entry } = props as { entry: { id: string; body?: string; data: { title?: string } } };
-  const title = entry.data.title ?? entry.id;
-  const body = restorePrompt((entry.body ?? '').trim());
-  const markdown = `# ${title}\n\n${body}\n`;
+  const markdown = typeof props.markdown === 'string' ? props.markdown
+    : `# ${entry.data.title ?? entry.id}\n\n${restorePrompt((entry.body ?? '').trim())}\n`;
   return new Response(markdown, {
     headers: {
       'content-type': 'text/markdown; charset=utf-8',

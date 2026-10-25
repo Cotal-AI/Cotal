@@ -26,3 +26,7 @@ public/.well-known/agent-skills/index.json
 # Every skill dir here is generated EXCEPT cotal-setup/, which is authored in place and committed.
 public/.well-known/agent-skills/*/
 !public/.well-known/agent-skills/cotal-setup/
+
+# Bundled dashboard contract, derived from implementations/web/openapi.json and spec/.
+public/dashboard.openapi.json
+public/auth.openapi.json

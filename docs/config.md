@@ -289,6 +289,9 @@ To deliberately add an environment name for a spawned agent, declare `spawn.env`
 { "spawn": { "env": ["MY_PROVIDER_API_KEY"] } }
 ```
 
+The tmux and cmux runtimes refuse environment names outside `[A-Za-z_][A-Za-z0-9_]*` before
+writing a launch command. Shell syntax in environment values remains literal.
+
 The listed names are added to the fixed boundary. That is also the opt-in for a host-session marker
 a persona has chosen to receive (`CLAUDE_CODE_CHILD_SESSION` and friends). A `COTAL_` name other
 than the machine-wide knobs above is refused and the seat is not launched: the launcher sets those

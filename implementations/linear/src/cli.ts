@@ -1,14 +1,15 @@
 /** Operator frontend over the native Linear client. No request or authority is substituted. */
 import { lstatSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { acquireLock, credsClaims, writeSecretFileCreateOnly, type ParsedArgs, type SpaceAuth } from "@cotal-ai/core";
-import { CommandFailure, recordOperationSpace, assertExternalCredentialExport, getSpaceAuth, hasUserAuthState, inputDisabledByFlag, isCommandFailure, presentationOf, protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource, resolveMeshTarget, resolveNativeServiceTarget, workspaceSecretStore, writeResult, type MeshTarget, type Report } from "@cotal-ai/workspace";
+import { acquireLock, credsClaims, resolveAuthProvider, writeSecretFileCreateOnly, type ParsedArgs, type SpaceAuth } from "@cotal-ai/core";
+import { CommandFailure, recordOperationSpace, assertExternalCredentialExport, getSpaceAuth, hasUserAuthState, inputDisabledByFlag, isCommandFailure, presentationOf, protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource, resolveMeshTarget, resolveNativeServiceTarget, userAuthStateDir, workspaceSecretStore, writeResult, type MeshTarget, type Report } from "@cotal-ai/workspace";
 import { accountMissing, assertAccountName, loadAccount, saveAccount, storedTokenPath } from "./account.js";
 import { loginAccount } from "./oauth.js";
 import { isLinearMode } from "./origin.js";
 import { DEFAULT_LIMITS, LinearUpstream } from "./upstream.js";
 import { emitInventory, emitUpstream } from "./presentation.js";
 import { assertLinearEndpointName, provisionLinearCaller, registerLinearEndpoint, renewalDelayMs, runLinearEndpoint } from "./serve.js";
+import { serveLinearUserAuth } from "./user-auth-serve.js";
 
 export const USAGE = `cotal linear account add <name> --mode <write|readonly> (--token-stdin | --token-file <path>)
 cotal linear account login <name> --mode <write|readonly>
@@ -142,9 +143,8 @@ async function forward(args: ParsedArgs, account: string, operation: string, run
   emitUpstream(args, account, operation, reply);
 }
 
-/** The static-auth mesh and the operator's own space authority, or a loud refusal. A per-user-auth
- *  mesh issues endpoint credentials through its remote auth service, which this package has no
- *  client for, so it is refused rather than signed locally. */
+/** The static issuer used by the standalone caller exporter and static serving path.
+ *  User-auth serving uses its remote authority and never enters this signer path. */
 async function staticAuthority(v: Record<string, unknown>, root?: string): Promise<{ target: MeshTarget; auth: SpaceAuth }> {
   const target = resolveMeshTarget(root ?? process.cwd(), { space: v.space as string | undefined, server: v.server as string | undefined, readOnly: true });
   recordOperationSpace(target.space);
@@ -166,6 +166,14 @@ export interface LinearServeLifecycle {
 /** Register and serve until SIGINT/SIGTERM, renewing the serve credential at 75% of its life.
  *  The embedding callback observes initialization, not a current endpoint response or cleanup. */
 export async function serveLinearAccount(account: string, endpoint: string, v: Record<string, unknown>, lifecycle?: LinearServeLifecycle): Promise<void> {
+  const selected = resolveMeshTarget(lifecycle?.root ?? process.cwd(), { space: v.space as string | undefined, server: v.server as string | undefined, readOnly: true });
+  recordOperationSpace(selected.space);
+  if (selected.mode === "user" || hasUserAuthState(selected.root, selected.space, { readOnly: true })) {
+    if (lifecycle) resolveNativeServiceTarget(lifecycle.root, selected.space, v.server as string | undefined);
+    return serveLinearUserAuth({ account, endpoint, space: selected.space, servers: selected.server, tls: selected.tlsRequired,
+      provider: resolveAuthProvider(), store: workspaceSecretStore(selected.root), dir: userAuthStateDir(selected.root, selected.space, { readOnly: true }),
+      upstream: new LinearUpstream(accountForRead(account)), ...(lifecycle ? { onInitialized: lifecycle.onInitialized } : {}) });
+  }
   const { target, auth } = await staticAuthority(v, lifecycle?.root);
   const upstream = new LinearUpstream(accountForRead(account));
   // Read the inventory first, so a broken account never becomes a registered endpoint.

@@ -8,6 +8,8 @@ wire contract: the normative subjects and schemas live in the [SPEC](../SPEC.md)
 lookup material for the commands, not a walkthrough; if you are new, start with
 [Getting started](getting-started.md).
 
+For the other integration interfaces, see the [API reference](api-reference.md).
+
 ## Running it
 
 ```bash
@@ -729,7 +731,16 @@ stop. Any command interrupted while the CLI is still loading, before the command
 the same codes and says it did nothing. `up` keeps that notice until its own takes over, so no moment
 of a detached start exits without one.
 
-`up` runs the `nats-server` on PATH when one answers `--version`, and the bundled one otherwise. One
+`up` runs the `nats-server` on PATH when one answers `--version`, and the bundled one otherwise. A
+broker start refuses a `nats-server` file that another local account could replace, or that sits in
+a folder another account could write, as the folder of a Homebrew install on macOS is. So when the
+one on PATH is like that and the bundled one is not, `up` runs the bundled one and never runs the
+one on PATH. The `Broker executable` line of `status` names the one it passed over, and `--json`
+carries it as `machine.natsServer.skipped` with the reason. A file that fails this rule is never
+run, not even for its version. When the bundled one is missing or fails the rule too, the one on PATH
+stays the choice: `status` shows why on that line, and `up` and `setup` refuse `PERMISSION_DENIED`
+(exit 2) before anything runs, naming each folder and the `chmod` that would fix it. A bundled one
+that fails the rule, with none on PATH, is refused the same way. One
 on PATH must report version 2.12 or newer. An older one, or one that reports no version, refuses
 `DEPENDENCY_UNAVAILABLE` (exit 2) before the broker starts, naming its path and version; upgrade it
 or take it off PATH. When `up` starts the broker, its receipt names the file, where it was found and
@@ -1136,7 +1147,9 @@ persistence error instead of trusting the value returned by stream info. A refre
 missing manager waits for that process to come up, then says so with its pid (`✓ restored in the
 background: manager (pid N)`). A manager that `up` starts and that exits at boot instead is reported
 as `! control plane degraded:` with the path of its log, and `up` then exits nonzero, whether it was a
-refresh, a first `--detach` boot or `up -f`. The same happens when another
+refresh, a first `--detach` boot or `up -f`. The degraded message preserves the failure's own
+recovery instructions. Spawn and retirement require a functioning control plane; follow the
+reported next step before retrying. The same happens when another
 `cotal supervise` takes over the manager pidfile before the started process comes up. A legacy
 refresh that finds everything already running prints only the `✓ mesh "<space>" already running`
 line. A controller refresh prints its members under `Controller stack already running`, and its JSON
@@ -2054,7 +2067,10 @@ broker address they will bind before they move or start anything. While another 
 there they refuse `CONFLICT` (exit 2), name the address and leave the cut unchanged. It claims the cut, reflink/copies the stopped source to a
 private attempt clone, and opens only that clone on a random loopback bootstrap broker with an
 independent parent/deadline watchdog. A bootstrap broker that does not accept connections within
-15 seconds fails the command. Creation returns one JSON/plain receipt after cleanup.
+15 seconds fails the command. Each maintenance-login reload waits for the broker's acknowledgement
+for up to 15 seconds, bounded by the operation deadline. A rejection, broker exit or missing
+acknowledgement fails the command before the next phase receives its login.
+Creation returns one JSON/plain receipt after cleanup.
 A published artifact plus incomplete cleanup is partial and retains the artifact and original
 attempt; it is not a reason to repeat creation blindly. It validates the canonical stream and pull-consumer inventory,
 writes native snapshots with consumers excluded, and stores conservative contiguous ACK-floor
@@ -5801,9 +5817,9 @@ account, inventory or reply.
 
 `serve` registers the account as an endpoint named by `--endpoint` and serves it until Ctrl-C. The
 name must be a reverse-DNS name in a namespace you own, such as `com.example.linear`; it is
-authorized for this mesh's local owner only because you configured it. `serve` reads the inventory
-first, so an account that cannot be reached is never registered. It then walks the same path every
-registered endpoint does: it publishes the contract to the contract store, opens the issuance gate,
+authorized for a static-auth mesh's local owner because you configured it. `serve` reads the inventory
+first, so an account that cannot be reached is never registered. On a static-auth mesh, it publishes
+the contract to the contract store, opens the issuance gate,
 registers a fresh instance, writes its ready status, and mints a scoped serve credential through
 the gate. Every step runs on short-lived executor credentials scoped to this one endpoint instance.
 The space signer stays in the `serve` process for renewal at 75% of the credential's life and is
@@ -5841,9 +5857,20 @@ refuse endpoint capabilities. `auth mint --endpoint` now covers supported untarg
 surfaces through live native resolution. Targeted/journaled/action issuance and caller/launch
 adapters are not supported.
 
-A per-user-auth mesh is refused by both `serve` and `caller`: there, endpoint and caller credentials
-come from the remote auth service, which this package does not support yet. Nothing falls back to a
-local signer. An open mesh is refused too, because it has no credentials to scope.
+On a user-auth mesh, `serve` uses the registered auth provider's service authority. The owner must
+approve the original service proposal and the operator must bind its endpoint name. Repeat the
+same command after approval. Its instance, registration body and request identities are retained;
+a changed account, target or embedded contract refuses instead of replacing them. The shared
+renewal source activates and renews the access bearer. The service verifies the signed bearer and
+embedded cluster before serving, and reports ready only after the broker flush and host acknowledgement.
+No local signer or ordinary enrolled agent is substituted.
+
+Stopping a user-auth service closes its serving connection, renewal source and Linear session.
+It retains the approved registration for a later start; stopping does not claim remote revocation.
+Use the space's service approval and exact caller-grant controls to revoke access. Callers need
+explicit instance-scoped grants through that remote authority. An account or visible registration
+does not grant invocation rights. The standalone `caller` credential exporter remains static-auth
+only. Open meshes refuse because they have no credential system to scope.
 
 Not represented yet, and listed under `unsupported` when the server advertises them: resource
 subscriptions, logging, progress notifications and experimental capabilities. The server cannot
@@ -8015,7 +8042,7 @@ authority.
 ### Native Linear service
 
 The `linear` service preset uses an existing native `account`, a reverse-DNS `endpoint` in a
-namespace you own, and the selected registered static-auth `root`. An optional `server` only
+namespace you own, and the selected registered static-auth or user-auth `root`. An optional `server` only
 repeats its broker. Account login/token setup remains a separate explicit operation. A start whose
 account has no record refuses with `TARGET_NOT_FOUND` and the `linear account add` route before a
 child is launched. That check reads the Cotal home of the process that runs `service start`. While
@@ -8027,9 +8054,10 @@ and the reverse-DNS endpoint name are checked when the service starts, and an in
 name refuses that start before a child is launched, leaving a failed instance record. The native
 static issuer, inventory, registration, credential renewal, request handling and deregistration
 stay in the Linear implementation. No generic caller authority, new account or broker dependency
-is supplied by the preset. User-auth and open spaces refuse instead of using another issuer.
+is supplied by the preset. User-auth spaces use their remote service authority and retain the
+original approved registration on restart. Open spaces refuse instead of using another issuer.
 
-An explicit start can allocate another instance through the native registration path. The preset
+On static-auth roots, an explicit start can allocate another instance through the native registration path. The preset
 declares foreground control through the shared terminal-bound lifetime; OS-supervised service
 control is not supported. The child keeps the selected
 root and registered TLS requirement and does not print upstream bodies or credentials into its
@@ -8038,8 +8066,9 @@ handlers. It does not claim a broker-flushed subscription, a fresh authenticated
 or upstream business-work completion. Reports label it process/adapter initialization, not
 endpoint-serving proof.
 
-Stop retains the native serve close and bounded deregistration policy. Original process exit
-still does not establish that deregistration or other cleanup completed. The legacy
+Stop closes the native serving connection and Linear session. Static-auth roots also attempt bounded
+deregistration; user-auth roots retain the original approved registration. Original process exit
+still does not establish that deregistration, revocation or other cleanup completed. The legacy
 `linear serve` foreground entry remains available for installed callers; the independent
 service route does not call that parser or its printed launch output.
 

@@ -12,6 +12,8 @@ like any other; no subject, envelope, or grant in this surface knows it speciall
 manager is a service on the mesh, not an authority over it: it holds only the capability
 rows its callers grant it, and serves over a scoped credential.
 
+For a starting point across the integration interfaces, see the [API reference](api-reference.md).
+
 ## The `ep` rails
 
 One kind, `ep`, carries every request under a mode token that says where the request

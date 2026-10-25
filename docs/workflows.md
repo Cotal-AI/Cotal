@@ -105,9 +105,12 @@ belongs to another run, a pin that differs from the recorded ones, and a differe
 A failed journal entry replays its error, while a pending entry lets the handler recover the
 external work it bound before the interruption.
 
-A relative `sleep` completes if its duration elapses during authorized arming before a pause
-is minted. It creates no past-due checkpoint. An existing pause keeps its recorded deadline and
-settlement, and cancellation still rejects the sleep. Checkpoint and ask expiry rules are unchanged.
+A deadline that passes during authorized arming, before its pause is minted, ends the step as its
+expiry would. A relative `sleep` completes, and a `checkpoint` expires for its `onExpiry` to act on.
+A `wait` on a channel resolves `null` at its timeout and returns the event at the end of an `idle`
+window, after it opens the channel under the run's read admission. A `waitUntil` observes again
+while its `deadline` allows. None of them creates a past-due checkpoint. An existing pause keeps its
+recorded deadline and settlement, and cancellation still rejects the step.
 
 A step that writes to a far side that honors no idempotency key (posting a comment, sending a mail)
 belongs in `once`. A resume that finds a step inside `once` begun and never settled does not

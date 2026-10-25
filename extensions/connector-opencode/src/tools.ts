@@ -65,7 +65,7 @@ export function buildCotalTools(agent: MeshAgent, config: AgentConfig): Record<s
 
 /** Build the cotal_* tool list for OpenCode 2.x's `ctx.tool.transform(ed => ed.add(...))`, from
  *  the SAME shared specs {@link buildCotalTools} renders for 1.x. 2.x's `Tool.Info.input` accepts
- *  a zod 4 object directly (a StandardSchema — measured, `fx105/measurements.md`), so the closed
+ *  a zod 4 object directly (a StandardSchema), so the closed
  *  schema goes across unmodified; there is no 1.x-style raw-shape flattening needed here. The
  *  closed-object refusal at dispatch is the same guard as {@link buildCotalTools} keeps: this host
  *  also hands `execute` the caller's object UNVALIDATED, so a stray `owner`/`actor` is refused by

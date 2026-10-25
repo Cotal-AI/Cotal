@@ -1,3 +1,4 @@
+import { readAuthResponseJson } from "./response-json.js";
 /**
  * The core `auth-provider` extension — how a composition root gets user-mode auth WITHOUT importing
  * this package from the CLI (`bin/cotal.ts` imports `@cotal-ai/auth`; `@cotal-ai/cli` resolves the
@@ -265,7 +266,7 @@ export const cotalAuthProvider: AuthProvider = {
       );
     }
     if (!res.ok) {
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      const body = (await readAuthResponseJson(res, `the auth service's exchange at ${info.url}/exchange`)) as { error?: string };
       // A refused exchange is an authenticated denial with the reason (an ungranted actor names
       // the grant command); surface it verbatim — the service's copy is already operator-exact.
       throw credentialFailure(
@@ -273,7 +274,7 @@ export const cotalAuthProvider: AuthProvider = {
         `signed in, but the exchange for actor "${actor}"${view ? ` (view "${view}")` : ""} was refused: ${body.error ?? `HTTP ${res.status}`}`,
       );
     }
-    const out = (await res.json().catch(() => ({}))) as { token?: string };
+    const out = (await readAuthResponseJson(res, `the auth service's exchange at ${info.url}/exchange`)) as { token?: string };
     if (typeof out.token !== "string" || !out.token)
       throw new Error(`the auth service's exchange returned no token - its build may be stale; restart it with \`cotal up\``);
     return { bearer: out.token, sentinelCreds: callout.sentinelCreds };
@@ -440,7 +441,7 @@ export const cotalAuthProvider: AuthProvider = {
       throw new Error(
         `the mesh's agent-provisioning endpoint answered ${res.status} with redirect Location ${JSON.stringify(res.headers.get("location") ?? "")} - redirects are refused so the login proof cannot be walked onto another host`,
       );
-    const body: unknown = await res.json().catch(() => ({}));
+    const body: unknown = await readAuthResponseJson(res, `the mesh's agent-provisioning endpoint at ${url}`);
     if (!res.ok) {
       const reason = (body as { error?: string }).error ?? `HTTP ${res.status}`;
       // 401 is the one refusal with a local remedy; everything else is the mesh's own word. The
@@ -883,7 +884,7 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{
     );
   }
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    const body = (await readAuthResponseJson(res, `the exchange at ${exchangeUrl}`)) as { error?: string };
     // A refused exchange is an authenticated denial with the reason; surface it verbatim - the
     // service's copy is already operator-exact (god-view, history-purge, deployer, and
     // manager-service stay loopback-only, and that refusal names the face). But the PUBLIC face
@@ -902,7 +903,7 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{
         : `signed in, but the exchange for ${actorLabel} was refused, and the exchange face withheld the reason (HTTP ${res.status})`,
     );
   }
-  const out = (await res.json().catch(() => ({}))) as { token?: string };
+  const out = (await readAuthResponseJson(res, `the exchange at ${exchangeUrl}`)) as { token?: string };
   if (typeof out.token !== "string" || !out.token)
     throw new Error(`the exchange at ${exchangeUrl} returned no token - the mesh's auth service build may be stale`);
   return { bearer: out.token, sentinelCreds };

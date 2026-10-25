@@ -266,6 +266,9 @@ Restart=on-failure
 RestartSec=5s
 ```
 
+`cotal up --foreground` refuses when this folder's stack is already running, for example after a
+manual background `cotal up`. Stop that stack before the unit starts.
+
 An active unit then proves the foreground launcher and broker are still running, but it still does
 not prove that every child component serves. Pair it with the component check below. Also remember
 that `cotal up` starts a local manager as well as the broker and delivery daemon; run
@@ -350,6 +353,8 @@ status at the registered revision and current process epoch, so manager-caller s
 Every manager-authority request carries the participant's fresh login proof and refuses a redirect,
 so a 3xx answer from the pinned endpoint fails the request rather than sending the proof on.
 An answer whose body is not JSON also fails the request, naming the endpoint and the HTTP status.
+Credential exchange, agent provisioning and interactive actor retirement report unreadable JSON
+the same way. An unreadable retirement answer leaves its outcome unknown and the actor row unchanged.
 
 Stock participant supervision asks its host to enroll a detached agent and to prepare its terminal
 retirement, over the same manager-authority transport. The stock auth service answers both when it
@@ -451,9 +456,10 @@ on its own once the runtime proves the exit. Its `seat reaped:` line says the ex
 unavailable from that runtime. While a launch waits for readiness the manager asks every second and
 once more when the readiness window closes, so a seat whose process ends before it joins the mesh is
 reported as exited on launch, with no last output, rather than as uncertain. A runtime that has not
-proved that last exit a second after the window closes leaves the launch uncertain. Runtime names are
-open-ended and resolved from the registry; a missing provider or app throws, never silently falls back
-([architecture](architecture.md)).
+proved that last exit a second after the window closes leaves the launch uncertain. The uncertain
+diagnostic reports the configured readiness window in milliseconds and keeps the seat available for
+inspection. Runtime names are open-ended and resolved from the registry; a missing provider or app
+throws, never silently falls back ([architecture](architecture.md)).
 
 ## Mesh registry
 
