@@ -116,6 +116,23 @@ function storeFolderDenied(error: unknown, path: string): unknown {
   return new CommandFailure("refused", "PERMISSION_DENIED", `${folder} cannot be read by this account (${code}), so the saved local records under it were not read`, { target: { path: folder }, remedy: `make it readable by you, for example with chmod u+rwx ${shellPath(folder)}` });
 }
 
+/** The writer lock at `path` in a record store folder. When this account may not write there, as after
+ *  a read refusal's `chmod u+rx` leaves the folder readable only, the refusal names the folder and the
+ *  owner bits the write lacks. Only EACCES and EPERM that a missing bit explains; any other error is
+ *  thrown as it is. */
+function storeLock(path: string, label: string) {
+  try { return acquireLock(path, { label, onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds the selected local record") }); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EACCES" && code !== "EPERM") throw error;
+    const folder = dirname(path);
+    const lacks = (mode: number) => { try { accessSync(folder, mode); return false; } catch { return true; } };
+    const bits = `${lacks(constants.W_OK) ? "w" : ""}${lacks(constants.X_OK) ? "x" : ""}`;
+    if (!bits) throw error;
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `${folder} cannot be written by this account (${code}), so no saved local record in it was locked or written`, { target: { path: folder }, remedy: `make it writable by you, for example with chmod u+${bits} ${shellPath(folder)}` });
+  }
+}
+
 /** Establish a regular descriptor, then read only bounded bytes. POSIX opens nonblocking and
  *  without following a link, and checks a private file's owner and mode; Windows does neither. */
 export function readLocalRecordSource(path: string, limit = LOCAL_INPUT_LIMIT, privateFile = false): Buffer | undefined {
@@ -554,7 +571,7 @@ export class ProtectedRecordStore<T> {
   pin(expected: LocalRecordSnapshot<T>): { check(): void; release(): void } {
     const dir = this.directory();
     if (!dir) throw new CommandFailure("refused", "CONFLICT", "the selected local-record store disappeared");
-    const lock = acquireLock(join(dir, `.${spaceKey(expected.name)}.lock`), { label: "pinned local record", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds the selected local record") });
+    const lock = storeLock(join(dir, `.${spaceKey(expected.name)}.lock`), "pinned local record");
     const check = () => {
       const current = this.read(expected.name);
       if (!current || current.record.revision !== expected.record.revision || current.hash !== expected.hash) throw new CommandFailure("refused", "CONFLICT", "the selected local record changed; no new native request was submitted");
@@ -570,7 +587,7 @@ export class ProtectedRecordStore<T> {
     const dir = this.directory(value !== undefined);
     if (!dir) throw new CommandFailure("refused", "CONFLICT", "the local-record store disappeared before commit");
     const path = join(dir, `${spaceKey(name)}.json`);
-    const lock = acquireLock(join(dir, `.${spaceKey(name)}.lock`), { label: "local record write", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds the selected local record") });
+    const lock = storeLock(join(dir, `.${spaceKey(name)}.lock`), "local record write");
     try {
       const current = this.read(name);
       if (expected ? !current || expected.record.revision !== current.record.revision || expected.hash !== current.hash : current !== undefined) throw new CommandFailure("refused", "CONFLICT", "the local record changed; nothing was replaced or removed");

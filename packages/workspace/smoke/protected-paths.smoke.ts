@@ -6,15 +6,15 @@
  * ancestor is accepted, and a credential file keeps its owner-only rule. A declared adapter path in
  * Cotal's own install, as the launcher runs it, names `cotal update` as the fix. The account database and
  * the ACL read are injected, so no case reads this machine's accounts or ACLs. A record this account
- * may not open names the folder that withholds it, as does a store folder it may not enter, and a link
- * keeps the no-follow refusal. Only `win32` selects the Windows record model; the platform is passed
- * in, so that runs here. Broker-free.
+ * may not open names the folder that withholds it, as does a store folder it may not enter or write,
+ * and a link keeps the no-follow refusal. Only `win32` selects the Windows record model; the platform
+ * is passed in, so that runs here. Broker-free.
  *
  * Run: pnpm smoke:protected-paths
  */
 import { strict as nodeAssert } from "node:assert";
 import { countedAssert, emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommandFailure } from "../src/output.js";
@@ -371,6 +371,45 @@ if (process.getuid?.() !== 0) {
     assert.deepEqual(instances.list(), [], "once readable again the store reads as it is");
   } finally {
     try { chmodSync(space, 0o700); chmodSync(shutDir, 0o700); } catch { /* already restored */ }
+    if (prior === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = prior;
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
+// 6c. A store folder this account can read but not write, as a read refusal's `chmod u+rx` leaves it,
+//     still reads. A write or a pin there refuses with that folder and only the owner bits the write
+//     lacks, and leaves nothing in it.
+if (process.getuid?.() !== 0) {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "cotal-protected-write-")));
+  const prior = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = join(base, ".cotal");
+  const store = new ProtectedRecordStore("services", "s1", (value) => value, "definitions");
+  const dir = store.directory(true)!;
+  store.commit("tick", undefined, { n: 1 });
+  const refusal = (write: () => unknown): CommandFailure => {
+    try { write(); } catch (error) { if (error instanceof CommandFailure) return error; throw error; }
+    throw new Error("the write did not refuse");
+  };
+  try {
+    chmodSync(dir, 0o500);
+    const tick = store.read("tick")!;
+    const writes = [refusal(() => store.commit("tick2", undefined, { n: 2 })), refusal(() => store.pin(tick))];
+    const left = readdirSync(dir);
+    chmodSync(dir, 0o600);
+    const unsearchable = refusal(() => store.commit("tick2", undefined, { n: 2 }));
+    chmodSync(dir, 0o700);
+    assert.deepEqual(tick.record.value, { n: 1 }, "a folder left readable only still reads");
+    for (const failure of writes) {
+      assert.equal(failure.code, "PERMISSION_DENIED", "a write or a pin in a folder this account cannot write refuses PERMISSION_DENIED");
+      assert.equal(failure.message, `${dir} cannot be written by this account (EACCES), so no saved local record in it was locked or written`, "the refusal names that folder");
+      assert.equal(failure.remedy, `make it writable by you, for example with chmod u+w ${dir}`, "its remedy adds only the write bit");
+    }
+    assert.deepEqual(left, [`${Buffer.from("tick").toString("hex")}.json`], "nothing was written, not even a lock");
+    assert.equal(unsearchable.remedy, `make it writable by you, for example with chmod u+x ${dir}`, "a folder that has the write bit but not search names only search");
+    store.commit("tick2", undefined, { n: 2 });
+    assert.deepEqual(store.list().map((row) => row.name), ["tick", "tick2"], "once writable again the write lands");
+  } finally {
+    try { chmodSync(dir, 0o700); } catch { /* already restored */ }
     if (prior === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = prior;
     rmSync(base, { recursive: true, force: true });
   }
