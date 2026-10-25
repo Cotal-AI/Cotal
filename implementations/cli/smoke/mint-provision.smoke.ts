@@ -653,6 +653,19 @@ try {
     await runMint(["blick2", "--profile", "observer", "--no-expiry"]);
     const sameProfile = await runMint(["blick2", "--replace", "--profile", "observer"]);
     check("  and warns no change when it names --profile observer again", sameProfile.code === 0 && !sameProfile.out.includes("minted with --profile"), sameProfile.out);
+    // A replacement holds only the grants its persona file or grant flags name, so the receipt names
+    // grants that differ from the replaced credential's, with the flags that name those.
+    const grantFlags = ["--allow-subscribe", "general", "--allow-publish", "general", "--role", "board"];
+    await runMint(["acl", ...grantFlags, "--no-expiry"]);
+    const dropped = await runMint(["acl", "--replace", "--json"]);
+    const droppedEnvelope = JSON.parse(dropped.out.split("\n").find((text) => text.startsWith('{"schemaVersion"')) ?? "{}") as { warnings?: { code: string; message: string; target: { replacedGrants?: unknown } }[] };
+    const grantsWarning = droppedEnvelope.warnings?.find((warning) => warning.code === "REPLACED_GRANTS_CHANGED");
+    check("--replace with no grant flag warns that the replaced credential's grants were not carried, naming them and the flags that name them",
+      dropped.code === 0 && grantsWarning?.message === "the credential this replaced held read general, post general and role board, and this one holds read no channel, post no channel and no role: a replacement holds only the grants its persona file or its grant flags name, and `--allow-subscribe general --allow-publish general --role board` names the replaced ones"
+        && JSON.stringify(grantsWarning.target.replacedGrants) === JSON.stringify({ read: ["general"], post: ["general"], role: "board" }), dropped.out);
+    await runMint(["acl2", ...grantFlags, "--no-expiry"]);
+    const sameGrants = await runMint(["acl2", "--replace", ...grantFlags]);
+    check("  and warns no change when its flags name the same grants", sameGrants.code === 0 && !sameGrants.out.includes("the credential this replaced held"), sameGrants.out);
     const unreplaced = await runMint(["neu", "--replace"]);
     check("--replace on a label with no standing credential mints one and warns that it replaced nothing",
       unreplaced.code === 0 && unreplaced.out.includes('! --replace found no standing credential named "neu", so this is a new standing credential and it replaced nothing') && existsSync(standing("neu")), unreplaced.out);

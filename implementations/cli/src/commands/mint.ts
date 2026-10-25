@@ -12,7 +12,7 @@ import {
   protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource,
   validateCredentialMintArguments,
   writeResult, type MeshTarget, type OutputWarning, type Report,
-  recordOperationSpace, agentGrants, type AgentGrants,
+  recordOperationSpace, agentGrants, grantMintFlags, type AgentGrants,
 } from "@cotal-ai/workspace";
 
 import { staticMintAuthority } from "../lib/credential-authority.js";
@@ -56,6 +56,23 @@ function replaceNotes(replaced: Replaced | undefined, standing: boolean, profile
     return [{ code: "REPLACED_PROFILE_CHANGED", target: { space, name, profile, replacedProfile: replaced.profile }, message: `the credential this replaced was minted with --profile ${replaced.profile}, and this one with --profile ${profile}, so it holds that profile's grants instead` }];
   if (standing) return [];
   return [{ code: "NOTHING_REPLACED", target: { space, name }, message: `--replace found no standing credential named "${name}", so this is a new standing credential and it replaced nothing; exported files are unchanged; inspect them with \`cotal doctor auth --space ${space}\`` }];
+}
+
+/** The grants a replaced agent credential that this space's account issued held, read from its own
+ *  claims. Another profile's or issuer's rows say nothing about this space's agent grants. */
+function heldGrants(standing: string, space: string, account: string): AgentGrants | undefined {
+  const claims = credsClaims(standing);
+  return claims.name === "agent" && (claims.nats?.issuer_account ?? claims.iss) === account ? agentGrants(claims.nats ?? {}, space) : undefined;
+}
+
+const grantText = (grants: AgentGrants) => `read ${channelList(grants.read)}, post ${channelList(grants.post)} and ${grants.role ? `role ${grants.role}` : "no role"}`;
+const sameChannels = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((channel) => b.includes(channel));
+
+/** A replacement holds only the grants its persona file or grant flags name, not the replaced
+ *  credential's, so grants that differ from those are named, with the flags that name the replaced ones. */
+function replacedGrantsChanged(held: AgentGrants | undefined, grants: AgentGrants | null, space: string, name: string): OutputWarning[] {
+  if (!held || !grants || sameChannels(held.read, grants.read) && sameChannels(held.post, grants.post) && held.role === grants.role) return [];
+  return [{ code: "REPLACED_GRANTS_CHANGED", target: { space, name, grants: { read: grants.read, post: grants.post, role: grants.role }, replacedGrants: held }, message: `the credential this replaced held ${grantText(held)}, and this one holds ${grantText(grants)}: a replacement holds only the grants its persona file or its grant flags name, and \`${grantMintFlags(held).trim()}\` names the replaced ones` }];
 }
 
 /** A replaced credential with no expiry claim is not revoked by its replacement, so any copy of it
@@ -139,7 +156,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
     catch (error) { throw outFolderRefusal(target, out, error) ?? error; }
     protectedLocalDirectory(parent);
     held = acquireLock(`${out}.mint.lock`, { label: "credential output", waitMs: 0, onTimeout: () => new CommandFailure("refused", "CONFLICT", "another credential writer holds this output") });
-    let previous: Buffer | undefined, standing: string | undefined, replaced: Replaced | undefined;
+    let previous: Buffer | undefined, standing: string | undefined, replaced: Replaced | undefined, replacedGrants: AgentGrants | undefined;
     if (values.out !== undefined) {
       const found = lstatSync(out, { throwIfNoEntry: false });
       if (found) {
@@ -152,7 +169,10 @@ export async function mint(args: ParsedArgs): Promise<void> {
     } else {
       standing = await store.get(key);
       if (standing !== undefined && !values.replace) throw new CommandFailure("refused", "CONFLICT", "the named standing credential already exists; it was not replaced", { target, remedy: "choose a new label or an explicit separate private --out path, or replace it with --replace once it has expired, if it has no expiry or if its key was revoked" });
-      if (standing !== undefined) replaced = replaceable(standing, name, target, accountRevocations(auth.account.jwt));
+      if (standing !== undefined) {
+        replaced = replaceable(standing, name, target, accountRevocations(auth.account.jwt));
+        replacedGrants = heldGrants(standing, space, auth.account.pub);
+      }
     }
     let allowSubscribe: string[] | undefined, allowPublish: string[] | undefined, role: string | undefined;
     if (profile === "agent") {
@@ -243,6 +263,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       ...(result.identityReused && profile === "agent" ? [{ code: "NEW_OUT_OF_BAND_LIFECYCLE", target: { space, name }, message: "The native out-of-band mint reuses the nkey, not the old lifecycle UID. Old inbox/DM footprints were not claimed as reused." }] : []),
       ...replacedStillValid(replaced, identity.id, space, name),
       ...(values.replace ? replaceNotes(replaced, standing !== undefined, profile, space, name) : []),
+      ...replacedGrantsChanged(replacedGrants, grants, space, name),
     ];
     writeResult(presentationOf(values), { command: "auth mint", target: { space, name }, result, warnings }, (data): Report => ({ sections: [
       { title: "Private credential written", blocks: [{ kind: "fields", rows: [["Label", data.name], ["Space", data.space], ["Profile", data.profile], ["Principal", data.principal], ["Lifecycle", data.lifecycleUid ?? "not an agent lifecycle"], ...(data.grants ? grantRows(data.grants) : []), ["Private file", data.output], ...(data.replaced ? [["Replaced", `${data.replaced.state === "expired" ? `a credential that expired at ${expiry(data.replaced.expiresAt ?? undefined)}` : data.replaced.state === "revoked" ? `a credential whose key was revoked at ${expiry(data.replaced.revokedAt ?? undefined)}` : "a credential with no expiry claim"}, key ${data.replaced.publicKey}`]] as [string, string][] : []), ["Expiry", data.noExpiryRecord ? `no expiry claim, as --no-expiry asked; recorded in ${data.noExpiryRecord}` : `${expiry(data.expiresAt ?? undefined)}${data.defaultLifetime ? " (the 24-hour default)" : ""}`], ["Broker footprint", data.provisioned ? "native provisioning acknowledged" : "not provisioned by this command"]] }, { kind: "lines", lines: [{ text: "Credential contents were written privately, not printed. Provisioning is not presence, a joined agent or task completion. Fixed observer/admin profiles do not accept agent ACL overrides.", tone: "hint" }] }] },

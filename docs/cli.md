@@ -5912,7 +5912,10 @@ receipt then warns `REPLACED_CREDENTIAL_VALID`, naming that key and the
 valid refuses `CONFLICT`, naming its expiry, and so does one that is not a native credential.
 `--profile` still defaults to `agent`, so a replacement of an observer or admin credential needs
 `--profile observer` or `--profile admin`; a replacement with another profile than the one it
-replaced warns `REPLACED_PROFILE_CHANGED`. With no standing credential under the label, `--replace`
+replaced warns `REPLACED_PROFILE_CHANGED`. A replacement holds only the grants its persona file,
+`--identity` or grant flags name, not those of the agent credential it replaced. When they differ, it
+warns `REPLACED_GRANTS_CHANGED`, naming both and the `--allow-subscribe`, `--allow-publish` and
+`--role` flags that name the replaced ones. With no standing credential under the label, `--replace`
 mints a new one and warns `NOTHING_REPLACED`. Exported files stay unchanged; the warning names
 `doctor auth --space <space>` to inspect their state and the guidance for each file.
 `--replace` takes no `--out`. An exported file stays outside
