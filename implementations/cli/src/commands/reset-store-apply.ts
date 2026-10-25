@@ -205,7 +205,7 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
   // A legacy root's `down` drops its registration, so no reset can select it afterwards. The step
   // after that stop is the clean the reset runs, from the root, naming only a custom store.
   const storeFlag = target.storeDir !== undefined && resolve(target.storeDir) !== join(root, ".cotal", "nats") ? ` --store-dir ${target.storeDir}` : "";
-  const afterStop = !legacy ? `run ${review}`
+  const afterStop = !legacy ? `run \`${review}\``
     : command === "reset store" ? `remove its stored streams with cotal clean store${storeFlag} --force there`
     : `remove its store and identity with cotal clean all${storeFlag} --force there`;
   if (maintenance)
@@ -217,7 +217,7 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
       ? stoppedByDown
         ? `a member exited without a recorded stop: start the stack with cotal up and stop it with cotal down --yes from ${root}, then run ${review}`
         : `a member exited without a recorded stop: record it with cotal down --yes from ${root}, then run ${review}`
-      : `stop it with cotal down from ${root}, then ${afterStop}` });
+      : `stop it with \`cotal down\` from ${root}, then ${afterStop}` });
   try {
     assertNoRecordedServiceOwner(space);
     assertNoAdditiveLedger(root, space);

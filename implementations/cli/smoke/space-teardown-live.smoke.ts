@@ -185,9 +185,9 @@ try {
     // 3. Reset previews and refusals carry a verdict, one reason and a Next (B4-04).
     const storeLive = cli(root, "reset", "store", space, "--dry-run", "--json");
     check("reset store --dry-run on a live stack exits 0 with a refused verdict", storeLive.status === 0 && storeLive.env?.result?.applyVerdict?.offered === false && storeLive.env.result.applyVerdict.code === "LIFECYCLE_BLOCKED", shown(storeLive));
-    check("that verdict's remedy names cotal down", Boolean(storeLive.env?.result?.applyVerdict?.remedy?.includes("cotal down")), storeLive.env?.result?.applyVerdict);
+    check("that verdict's remedy names cotal down and the review, each in backticks", Boolean(storeLive.env?.result?.applyVerdict?.remedy?.startsWith("stop it with `cotal down` from ")) && Boolean(storeLive.env?.result?.applyVerdict?.remedy?.endsWith(`, then run \`cotal reset store ${space} --dry-run\``)), storeLive.env?.result?.applyVerdict);
     const spaceLive = cli(root, "reset", "space", space, "--dry-run", "--json");
-    check("reset space --dry-run on a live stack refuses with a remedy naming cotal down", spaceLive.status === 2 && spaceLive.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(spaceLive.env.error.remedy?.includes("cotal down")), shown(spaceLive));
+    check("reset space --dry-run on a live stack refuses with a remedy naming cotal down and the review, each in backticks", spaceLive.status === 2 && spaceLive.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(spaceLive.env.error.remedy?.startsWith("stop it with `cotal down` from ")) && Boolean(spaceLive.env.error.remedy?.endsWith(`, then run \`cotal reset space ${space} --dry-run\``)), shown(spaceLive));
     // The delivery daemon's own pidfile names the process its stack member runs, so it is listed once.
     const processes = spaceLive.env?.target?.processes ?? [];
     const pids = processes.flatMap((row) => /\bpid (\d+)/.exec(row)?.[1] ?? []);
