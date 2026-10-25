@@ -12,7 +12,7 @@ const inputs = [["x64", process.env.WORKSPACE_NATIVE_X64], ["arm64", process.env
 const receipts = new Map();
 for (const [arch, dir] of inputs) {
   assert(dir, `WORKSPACE_NATIVE_${arch.toUpperCase()} must name the native builder artifact directory`);
-  const receipt = verifyNative(arch, dir, source);
+  const receipt = verifyNative("win32", arch, dir, source);
   for (const path of sourceFiles) {
     const committed = execFileSync("git", ["show", `${source}:packages/workspace/${path}`], { cwd: repo });
     assert.equal(receipt.sourceHashes[path], sha256(committed), "Windows identity native input differs from the committed source");
@@ -22,7 +22,7 @@ for (const [arch, dir] of inputs) {
 for (const [arch, dir] of inputs) {
   const dest = join(root, "build/Release", `win32-${arch}`);
   if (existsSync(dest)) {
-    const current = verifyNative(arch, dest, source);
+    const current = verifyNative("win32", arch, dest, source);
     assert.deepEqual(current, receipts.get(arch), "refusing to overwrite an existing Windows identity build");
     continue;
   }
@@ -32,6 +32,6 @@ for (const [arch, dir] of inputs) {
     copyFileSync(join(dir, file), join(dest, file));
   }
   assert.equal(sha256(readFileSync(join(dest, "creation.node"))), receipts.get(arch).sha256);
-  verifyNative(arch, dest, source);
+  verifyNative("win32", arch, dest, source);
 }
 console.log("Windows creation identity: both source-matched native builds assembled");
