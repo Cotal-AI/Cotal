@@ -266,6 +266,9 @@ Restart=on-failure
 RestartSec=5s
 ```
 
+`cotal up --foreground` refuses when this folder's stack is already running, for example after a
+manual background `cotal up`. Stop that stack before the unit starts.
+
 An active unit then proves the foreground launcher and broker are still running, but it still does
 not prove that every child component serves. Pair it with the component check below. Also remember
 that `cotal up` starts a local manager as well as the broker and delivery daemon; run

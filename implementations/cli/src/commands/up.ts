@@ -1589,6 +1589,18 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         );
         process.exit(1);
       }
+      // `--foreground` asks this terminal to hold the stack's lifetime, but this branch starts
+      // nothing here: it used to print `✓ already running`, restart a missing manager detached and
+      // exit 0. A service unit relying on `--foreground` read that exit as the stack ending, stopped
+      // it, and restarted into the same branch. Refuse and name the remedy.
+      if (values.foreground) {
+        console.error(
+          c.red(
+            `✗ mesh "${held.space}" is already running at ${server} - \`cotal up --foreground\` starts nothing here, so it can't keep it in this terminal; \`cotal down\` it first, then \`cotal up --foreground\``,
+          ),
+        );
+        process.exit(1);
+      }
       // A running broker cannot change its transport either, and for exactly the reason it cannot
       // change its auth mode: the listener's TLS config was fixed when nats-server read its config
       // file. This branch starts nothing, so `--tls-cert`/`--tls-key` here can only be a request to
