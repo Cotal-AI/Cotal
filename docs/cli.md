@@ -1800,6 +1800,12 @@ root state.
   needs `cotal up --user-auth --idp <auth base URL>` and each actor granted again with
   `cotal actor grant`.
 
+`store` and `all` move the store aside to a `.cotal-clean-<id>` folder beside it, then remove its
+entries there, as `reset store` and `reset space` do. A removal that stops partway, such as at a
+folder in the store this account cannot write, ends `OPERATION_PARTIAL` (exit 4). It names that
+folder and what is left in it, and its Next makes the folder removable and removes it. Nothing else
+records the folder, so a later `clean` or `reset` finds no store and reports nothing to remove.
+
 An existing store path that is a symbolic link refuses `CONFLICT` (exit 2), naming the link and
 its target. Replace the link with the directory it points to, then run the command again. The
 link and its target are left unchanged, including for `--dry-run`.
