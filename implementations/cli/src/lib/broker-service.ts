@@ -10,7 +10,7 @@ import { isReachable, registry, writeSecretFileCreateOnly } from "@cotal-ai/core
 import {
   CommandFailure, assertRecordIdentity, assertSingleSpaceBroker, authDir, canonicalRoot, decodeLocalJson,
   findMesh, findPreparedSpace, listSpaceAccounts, loadMeshes, localMeshesForRoot, localProcessPath, oneLine,
-  parsePid, readBrokerPolicy, readLocalRecordSource, readMaintenanceJournal, readPidfile,
+  localRecordAccess, parsePid, readBrokerPolicy, readLocalRecordSource, readMaintenanceJournal, readPidfile,
   controllerAttemptBroker, cutController, maintenanceAdmitsStackWork, serviceAdapterAttempt,
   serviceMetadataDigest, verifyIdentityPin, type LocalProcess, type ProcessIdentityRecord, type ServiceAdapterContext,
   type ServiceAdapterKernelStopPlan, type ServicePreset,
@@ -272,6 +272,8 @@ function readinessFile(context: ServiceAdapterContext & { process: ProcessIdenti
  * symlink and only to a regular file this user owns, as other private files are tightened.
  */
 export function narrowPortsReport(path: string): void {
+  // Windows has no mode to narrow: the report inherits the access list of the private directory it is in.
+  if (localRecordAccess() === "windows-acl") return;
   const refused = () => new CommandFailure("unknown", "OPERATION_UNKNOWN", "the broker ports report could not be made owner-private; no listener was attributed", { target: { path } });
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
@@ -293,13 +295,15 @@ export function narrowPortsReport(path: string): void {
 function reportedListener(context: ServiceAdapterContext & { process: ProcessIdentityRecord }, target: BrokerTarget): string[] | undefined {
   const dir = portsDirectory(context);
   const stat = lstatSync(dir, { throwIfNoEntry: false });
-  if (!stat?.isDirectory() || stat.isSymbolicLink() || process.getuid === undefined || stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the launch-bound broker readiness directory is missing or not owner-private; no listener was attributed");
+  // Windows protects these with the access list Cotal sets and has no POSIX owner or mode to check.
+  const posix = localRecordAccess() !== "windows-acl";
+  if (!stat?.isDirectory() || stat.isSymbolicLink() || posix && (process.getuid === undefined || stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the launch-bound broker readiness directory is missing or not owner-private; no listener was attributed");
   const expected = basename(readinessFile(context));
   const entries = readdirSync(dir);
   if (entries.some((name) => name !== expected)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the launch-bound broker readiness directory holds another process's report; no listener was attributed");
   if (!entries.length) return undefined;
   const file = lstatSync(join(dir, expected), { throwIfNoEntry: false });
-  if (!file?.isFile() || file.isSymbolicLink() || file.uid !== process.getuid()) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the broker ports report is not a regular file owned by this user; no listener was attributed");
+  if (!file?.isFile() || file.isSymbolicLink() || posix && file.uid !== process.getuid!()) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the broker ports report is not a regular file owned by this user; no listener was attributed");
   narrowPortsReport(join(dir, expected));
   const bytes = readLocalRecordSource(join(dir, expected), 64 * 1024);
   if (!bytes) return undefined;

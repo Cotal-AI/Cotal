@@ -2,12 +2,24 @@ import { createHash } from "node:crypto";
 import { accessSync, constants, existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { hostname } from "node:os";
-import { assertRecordIdentity, CommandFailure, darwinProcessBinding, homeCotalDir, identityRecord, localRecordAccess, oneLine, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord, spaceKey } from "@cotal-ai/workspace";
+import { assertRecordIdentity, CommandFailure, darwinProcessBinding, isCustodyPipe, win32ProcessBinding, homeCotalDir, identityRecord, localRecordAccess, oneLine, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord, spaceKey } from "@cotal-ai/workspace";
 import { serviceSupervisorProjection } from "./service-supervision.js";
 import type { ServiceAdapterPin } from "./service-adapters.js";
 import { localRecordObject, localRecordText, ProtectedRecordStore, type LocalRecordSnapshot } from "./protected-records.js";
 
-export interface ServiceHost { machine: string; boot: string; name: string; uid: number }
+/** The machine and account an instance runs on. Linux and macOS add the boot ID and numeric UID.
+ *  Windows has no boot ID, so it records the account's SID, and its instances name a custodian whose
+ *  life stands for the current boot. Its machine comes from Windows' system ID, and `machineSource`
+ *  records where Windows derived that ID: an ID from the registry changes on a clean install. */
+export type ServiceHost = { machine: string; name: string } & (
+  | { boot: string; uid: number; platform?: never; sid?: never; machineSource?: never }
+  | { platform: "win32"; machineSource: Win32SystemIdSource; sid: string; boot?: never; uid?: never });
+/** The modules Windows derives a system ID from (SystemIdentificationSource 1, 2 and 3). */
+export type Win32SystemIdSource = "tpm" | "uefi" | "registry";
+const SYSTEM_ID_SOURCES: readonly Win32SystemIdSource[] = ["tpm", "uefi", "registry"];
+/** Windows only: the custodian that holds this incarnation's job, the pipe it answers on, and the
+ *  name of the protected file beside this record that holds its capability. Never the capability. */
+export interface ServiceCustody { custodian: ProcessIdentityRecord; pipe: string; capability: string }
 export interface ServiceInstance {
   schemaVersion: 1;
   instanceId: string;
@@ -20,6 +32,7 @@ export interface ServiceInstance {
   state: "starting" | "running" | "stopping" | "stopped" | "failed" | "unknown";
   launcher: ProcessIdentityRecord;
   process?: ProcessIdentityRecord;
+  custody?: ServiceCustody;
   readiness: "not-checked" | "process-running" | "http-reachable" | "adapter-process-running" | "endpoint-serving" | "broker-listener-reported";
   adapter?: ServiceAdapterPin;
   adapterReadiness?: Extract<ServiceAdapterReadiness, { state: "ready" }>;
@@ -42,12 +55,13 @@ export interface ServiceInstance {
   exit?: { code: number | null; signal: string | null };
 }
 export type ServiceInstanceSnapshot = LocalRecordSnapshot<ServiceInstance>;
-export interface ServiceProcessStopReceipt { kind: "process-exit"; requestId: string; process: ProcessIdentityRecord; signal: "SIGTERM" | "SIGKILL"; observedAt: string }
+/** `job-terminate` is a Windows stop: the custodian terminated the instance's whole job. */
+export interface ServiceProcessStopReceipt { kind: "process-exit"; requestId: string; process: ProcessIdentityRecord; signal: "SIGTERM" | "SIGKILL" | "job-terminate"; observedAt: string }
 
 /** Closed reader for the generic stop receipt. */
 export function serviceProcessStopReceipt(input: unknown): ServiceProcessStopReceipt {
   const value = localRecordObject(input, ["kind", "requestId", "process", "signal", "observedAt"]);
-  if (Object.keys(value).length !== 5 || value.kind !== "process-exit" || !["SIGTERM", "SIGKILL"].includes(String(value.signal))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the process stop receipt has an unsupported shape");
+  if (Object.keys(value).length !== 5 || value.kind !== "process-exit" || !["SIGTERM", "SIGKILL", "job-terminate"].includes(String(value.signal))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the process stop receipt has an unsupported shape");
   let requestId: string;
   try { requestId = serviceInstanceId(localRecordText(value.requestId, 64)); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the process stop receipt request ID is invalid"); }
@@ -64,13 +78,30 @@ export function serviceInstanceId(value: string): string {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SID = /^S-1-\d+(-\d+){1,15}$/;
+/** The capability file a custody record names: a random name in the instance store's directory. */
+const CAPABILITY = /^custody-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.key$/;
 
-/** This driver refuses without an OS machine/boot identity; no PID-only ownership substitute. Linux
+/** This driver refuses without an OS machine identity; no PID-only ownership substitute. Linux
  *  reads its machine and boot IDs; macOS reads its hardware UUID and boot session UUID through the
- *  bundled binding, whose absence is an installation error. */
+ *  bundled binding, whose absence is an installation error. Windows reads its system ID for this
+ *  publisher (GetSystemIdForPublisher) and the account's SID through its binding, and refuses when
+ *  Windows has no module to derive that ID from; it has no boot ID to read. */
 export function processServiceHost(): ServiceHost {
   if (host) return host;
-  if ((process.platform !== "linux" && process.platform !== "darwin") || process.getuid === undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this process-service driver currently requires Linux or macOS machine/boot identity; another platform is not silently treated as either");
+  if (process.platform === "win32") {
+    const native = win32ProcessBinding();
+    let system: { id: string; source: number }, sid: string;
+    try {
+      system = native.systemId();
+      sid = native.userSid();
+      if (!/^(?:[0-9a-f]{2}){1,256}$/.test(system.id) || !Number.isInteger(system.source) || !SID.test(sid)) throw new Error();
+    } catch { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the host's stable machine identity or account SID could not be established; no process-service effect was attempted"); }
+    const machineSource = SYSTEM_ID_SOURCES[system.source - 1];
+    if (!machineSource) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "Windows has no TPM, UEFI or registry module to derive this machine's system ID from; no process-service effect was attempted");
+    return host = { platform: "win32", machine: createHash("sha256").update(Buffer.from(system.id, "hex")).digest("hex"), machineSource, sid, name: hostname() };
+  }
+  if ((process.platform !== "linux" && process.platform !== "darwin") || process.getuid === undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this process-service driver currently requires Linux, macOS or Windows machine identity; another platform is not silently treated as one of them");
   const native = process.platform === "darwin" ? darwinProcessBinding() : undefined;
   let machine: string, boot: string;
   try {
@@ -100,15 +131,23 @@ function identity(input: unknown): ProcessIdentityRecord {
 }
 
 function validateInstance(input: unknown, space: string): ServiceInstance {
-  const value = localRecordObject(input, ["schemaVersion", "instanceId", "definition", "definitionRevision", "space", "host", "requestId", "launchRequestId", "state", "launcher", "process", "readiness", "adapter", "adapterReadiness", "nativeStopRequired", "nativeStop", "kernelStopRequired", "kernelStop", "processStop", "attempt", "supervisorInvocationId", "supervisor", "foreground", "createdAt", "updatedAt", "exit"]);
+  const value = localRecordObject(input, ["schemaVersion", "instanceId", "definition", "definitionRevision", "space", "host", "requestId", "launchRequestId", "state", "launcher", "process", "custody", "readiness", "adapter", "adapterReadiness", "nativeStopRequired", "nativeStop", "kernelStopRequired", "kernelStop", "processStop", "attempt", "supervisorInvocationId", "supervisor", "foreground", "createdAt", "updatedAt", "exit"]);
   if (value.schemaVersion !== 1 || value.space !== space || typeof value.state !== "string" || !states.includes(value.state) || value.supervisor !== "none" || typeof value.foreground !== "boolean" || !["not-checked", "process-running", "http-reachable", "adapter-process-running", "endpoint-serving", "broker-listener-reported"].includes(String(value.readiness))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the saved service instance has an unsupported shape; no empty or stopped state was inferred");
   let id: string;
   try { id = serviceInstanceId(localRecordText(value.instanceId, 64)); serviceInstanceId(localRecordText(value.requestId, 64)); serviceInstanceId(localRecordText(value.launchRequestId, 64)); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "a stored service instance or request ID is invalid; it was not interpreted as a caller selector"); }
   const definition = localRecordText(value.definition, 64);
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(definition)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the instance's definition name is invalid");
-  const machine = localRecordObject(value.host, ["machine", "boot", "name", "uid"]);
-  if (typeof machine.machine !== "string" || !/^[0-9a-f]{64}$/.test(machine.machine) || typeof machine.boot !== "string" || !/^[0-9a-f-]{36}$/i.test(machine.boot) || typeof machine.name !== "string" || !Number.isInteger(machine.uid) || Number(machine.uid) < 0) throw new CommandFailure("refused", "SCHEMA_INVALID", "the instance's execution-host identity is invalid");
+  const windows = (value.host as { platform?: unknown } | undefined)?.platform === "win32";
+  const machine = localRecordObject(value.host, windows ? ["platform", "machine", "machineSource", "sid", "name"] : ["machine", "boot", "name", "uid"]);
+  if (typeof machine.machine !== "string" || !/^[0-9a-f]{64}$/.test(machine.machine) || typeof machine.name !== "string" ||
+      (windows ? typeof machine.sid !== "string" || !SID.test(machine.sid) || !SYSTEM_ID_SOURCES.includes(machine.machineSource as Win32SystemIdSource) : typeof machine.boot !== "string" || !/^[0-9a-f-]{36}$/i.test(machine.boot) || !Number.isInteger(machine.uid) || Number(machine.uid) < 0)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the instance's execution-host identity is invalid");
+  let custody: ServiceCustody | undefined;
+  if (value.custody !== undefined) {
+    const row = localRecordObject(value.custody, ["custodian", "pipe", "capability"]);
+    if (!windows || Object.keys(row).length !== 3 || !isCustodyPipe(row.pipe) || typeof row.capability !== "string" || !CAPABILITY.test(row.capability)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the instance's process custody record is invalid");
+    custody = { custodian: identity(row.custodian), pipe: row.pipe, capability: row.capability };
+  }
   let adapter: ServiceAdapterPin | undefined;
   if (value.adapter !== undefined) {
     const pin = localRecordObject(value.adapter, ["name", "package", "version", "declarationSha256"]);
@@ -143,7 +182,7 @@ function validateInstance(input: unknown, space: string): ServiceInstance {
     const exit = localRecordObject(value.exit, ["code", "signal"]);
     if (!(exit.code === null || Number.isInteger(exit.code)) || !(exit.signal === null || typeof exit.signal === "string")) throw new CommandFailure("refused", "SCHEMA_INVALID", "the instance exit observation is invalid");
   }
-  return { schemaVersion: 1, instanceId: id, definition, definitionRevision: localRecordText(value.definitionRevision, 200), space, host: machine as unknown as ServiceHost, requestId: serviceInstanceId(localRecordText(value.requestId, 64)), launchRequestId: serviceInstanceId(localRecordText(value.launchRequestId, 64)), state: value.state as ServiceInstance["state"], launcher: identity(value.launcher), ...(value.process === undefined ? {} : { process: identity(value.process) }), readiness: value.readiness as ServiceInstance["readiness"], ...(adapter === undefined ? {} : { adapter }), ...(adapterReadiness === undefined ? {} : { adapterReadiness }), ...(typeof value.supervisorInvocationId === "string" ? { supervisorInvocationId: value.supervisorInvocationId } : {}), ...(value.nativeStopRequired ? { nativeStopRequired: true } : {}), ...(nativeStop ? { nativeStop } : {}), ...(value.kernelStopRequired ? { kernelStopRequired: true } : {}), ...(kernelStop ? { kernelStop } : {}), ...(processStop ? { processStop } : {}), ...(attempt ? { attempt } : {}), supervisor: "none", foreground: value.foreground, createdAt, updatedAt, ...(value.exit === undefined ? {} : { exit: value.exit as ServiceInstance["exit"] }) };
+  return { schemaVersion: 1, instanceId: id, definition, definitionRevision: localRecordText(value.definitionRevision, 200), space, host: machine as unknown as ServiceHost, requestId: serviceInstanceId(localRecordText(value.requestId, 64)), launchRequestId: serviceInstanceId(localRecordText(value.launchRequestId, 64)), state: value.state as ServiceInstance["state"], launcher: identity(value.launcher), ...(value.process === undefined ? {} : { process: identity(value.process) }), ...(custody ? { custody } : {}), readiness: value.readiness as ServiceInstance["readiness"], ...(adapter === undefined ? {} : { adapter }), ...(adapterReadiness === undefined ? {} : { adapterReadiness }), ...(typeof value.supervisorInvocationId === "string" ? { supervisorInvocationId: value.supervisorInvocationId } : {}), ...(value.nativeStopRequired ? { nativeStopRequired: true } : {}), ...(nativeStop ? { nativeStop } : {}), ...(value.kernelStopRequired ? { kernelStopRequired: true } : {}), ...(kernelStop ? { kernelStop } : {}), ...(processStop ? { processStop } : {}), ...(attempt ? { attempt } : {}), supervisor: "none", foreground: value.foreground, createdAt, updatedAt, ...(value.exit === undefined ? {} : { exit: value.exit as ServiceInstance["exit"] }) };
 }
 
 export const serviceInstanceStore = (space: string) => new ProtectedRecordStore("services", space, (value) => validateInstance(value, space), "instances");
@@ -171,14 +210,31 @@ export function serviceInstances(space: string, definition?: string): ServiceIns
   return rows.filter((row) => definition === undefined || row.record.value.definition === definition);
 }
 
-export type ServiceProcessState = "running" | "gone" | "previous-boot" | "foreign-host" | "foreign-pid" | "unreadable" | "unresolved-launch";
+/** `members-running` is Windows only: the launched program exited while other processes of its job
+ *  still run under its live custodian. */
+export type ServiceProcessState = "running" | "members-running" | "gone" | "previous-boot" | "foreign-host" | "foreign-pid" | "unreadable" | "unresolved-launch";
+const sameHost = (current: ServiceHost, recorded: ServiceHost) => current.machine === recorded.machine && current.platform === recorded.platform && current.uid === recorded.uid && current.sid === recorded.sid;
 export function observeServiceProcess(value: ServiceInstance): ServiceProcessState {
   const current = processServiceHost();
-  if (current.machine !== value.host.machine || current.uid !== value.host.uid) return "foreign-host";
+  if (!sameHost(current, value.host)) return "foreign-host";
+  if (current.platform === "win32") return observeCustodiedProcess(value);
   if (current.boot !== value.host.boot) return "previous-boot";
   if (!value.process) return value.state === "failed" || value.state === "stopped" ? "gone" : "unresolved-launch";
   const observed = assertRecordIdentity(value.process);
   return observed.kind === "match" ? "running" : observed.kind === "gone" ? "gone" : observed.kind === "mismatch" ? "foreign-pid" : "unreadable";
+}
+
+/** A Windows instance from its two pins. The custodian holds the job's only handle and the program's
+ *  handle, so while it lives the program's PID is not reused and the job still has a member. Once it
+ *  is gone the job has closed and its members have ended; a program still alive then is unexplained,
+ *  so it reads unreadable rather than gone. */
+function observeCustodiedProcess(value: ServiceInstance): ServiceProcessState {
+  if (!value.process) return value.state === "failed" || value.state === "stopped" ? "gone" : "unresolved-launch";
+  const custodian = value.custody ? assertRecordIdentity(value.custody.custodian).kind : "gone";
+  const program = assertRecordIdentity(value.process).kind;
+  if (custodian === "unpinned" || program === "unpinned") return "unreadable";
+  if (custodian === "match") return program === "match" ? "running" : "members-running";
+  return program === "match" ? "unreadable" : program === "gone" ? "gone" : "foreign-pid";
 }
 
 /** Whether the command that started this instance ended before it settled the start, as a Ctrl-C
@@ -187,7 +243,7 @@ export function observeServiceProcess(value: ServiceInstance): ServiceProcessSta
 export function startInterrupted(value: ServiceInstance): boolean {
   if (value.state !== "starting" || value.launcher.pid === process.pid) return false;
   const current = processServiceHost();
-  if (current.machine !== value.host.machine || current.uid !== value.host.uid || current.boot !== value.host.boot) return false;
+  if (!sameHost(current, value.host) || current.boot !== value.host.boot) return false;
   const launcher = assertRecordIdentity(value.launcher);
   return launcher.kind === "gone" || launcher.kind === "mismatch";
 }

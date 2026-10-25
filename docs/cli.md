@@ -4018,7 +4018,7 @@ cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 | `--self` (`stop`) | off | Stop only the verified managed seat running this command (see [Stopping an agent](#stopping-an-agent)) |
 | `--force` (`stop`) | off | Request the native hard despawn (`graceful:false`); it does not bypass authority |
 | `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. On a user-auth mesh it also takes a manager's name, its host, or the `<host>/<runtime>` an unnamed manager shows as (its runtime alone when its presence names no host), when only one of your live managers matches it; otherwise it refuses as `TARGET_AMBIGUOUS` or `TARGET_NOT_FOUND`, lists your live managers and gives the command again on each. On a static or open mesh a manager's presence does not carry its instance id, so a name is refused as `USAGE_INVALID` and the Next asks for the instance id. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent. A roster principal id (`local.…`) is refused with a message naming the instance id `ps` prints |
-| `--wide` (`ps`) | off | Print each seat as a labeled record that adds the operational facts the manager records: the provider the connector reported serving the model, `cwd`, `pid`, spawner, lifecycle uid, the owning manager's instance id and host, and for a `--resume` seat the session it forked (`forked from <id>`, with the source title and transcript SHA-256 once a Hermes or Jcode seat has recorded its fork; a carried Claude session prints `forked from <host>:<id>` with its title, SHA-256 and `carried <time>`, the time its bytes reached the manager). Model and requested variant stay in the identity row rather than printing twice. A fact the manager did not record (for example a runtime with no real process, or a connector that reported no provider) prints nothing, never a placeholder |
+| `--wide` (`ps`) | off | Print each seat as a labeled record that adds the operational facts the manager records: the provider the connector reported serving the model, `cwd`, `pid`, spawner, lifecycle uid, the owning manager's instance id and host, and for a `--resume` seat the session it forked (`forked from <id>`, with the source title and transcript SHA-256 once a Hermes or Jcode seat has recorded its fork; a carried Claude session prints `forked from <host>:<id>` with its title, SHA-256 and `carried <time>`, the time its bytes reached the manager). Model and requested variant stay in the identity row rather than printing twice. A fact the manager did not record (for example a runtime with no real process, a Windows seat whose process ConPTY has not created yet, or a connector that reported no provider) prints nothing, never a placeholder |
 | `--json` / `-j` (`ps`) | off | One JSON document (see below). Mutually exclusive with `--wide` and `--plain` |
 | `--plain` (`ps`) | off | The same report without color or marks |
 | `--slots` (`ps`) | off | List the durable static slot rows this manager owns instead of live seats, through the `slots` command. Mutually exclusive with `--wide`. A row that is not in the live roster still prints, with `LIVE` false; a retired row never prints |
@@ -7621,7 +7621,6 @@ explicitly grant the invoking user with `cotal auth grant cli --sub <subject>`, 
 before `cotal team boot <file>`. Do not start the manager between preparation and that stop. A
 static-auth or open preparation uses `cotal up --no-manager` before `cotal down`. No implicit owner
 grant or borrowed caller is substituted. A previously attempted manager is never adopted.
-Windows cannot apply, because the stack's process services need Linux or macOS machine and boot identity.
 
 `--space` must agree with the manifest. Hand-registered and discovered spaces are not local boot
 targets. Public broker addresses and fresh-attempt views omit URL user info, queries and fragments;
@@ -7987,8 +7986,8 @@ by this operation. The presets are described below. A preset is not installed un
 supervisor.
 On Windows, local records use the access-list model described under `up`. There, `cotal ext add`
 and the setup seed record a service receipt for an extension that declares service adapters or
-presets, and starting one of its process services refuses Unsupported, because the process driver
-needs Linux or macOS machine and boot identity.
+presets, and its process services run under a custodian as
+[Owned process services](#owned-process-services) describes.
 
 ### Service presets
 
@@ -8364,8 +8363,12 @@ does not acquire that mechanism from its name or preset.
 The direct-process driver pins the machine, the boot, the OS user and each process's start. On
 Linux these are the machine ID, the kernel boot ID and the process start ticks. On macOS they are
 the hardware UUID, the boot session UUID and the process start in microseconds, read through the
-bundled binding described under the identity pins above. Windows still refuses: its generic process
-custody needs a stable machine, boot, owner and subsecond creation pin before any signal is safe.
+bundled binding described under the identity pins above. On Windows they are the system ID that
+Windows gives this publisher's apps on the machine (`GetSystemIdForPublisher`), the account's SID and
+each process's creation time, read through the same binding. The record also keeps where Windows
+derived that ID: a TPM, UEFI or the registry. An ID from the registry changes when Windows is
+installed again. When Windows has none of these, the driver refuses. Windows records no boot pin.
+The custodian described below holds each instance's job instead, and a restart ends it.
 
 Instance reports separate recorded supervisor policy from supervisor discovery, which remains not
 checked by this direct-process driver. A recorded `none` means no supervisor assigned by this
@@ -8465,10 +8468,25 @@ Install dry-run makes only the bounded native directory read above; uninstall
 dry-run reads the exact recorded unit and private-store directory. Neither
 allocates an instance, enables autostart nor removes a receipt or unit.
 
-Process definitions support `service start/stop/restart/status/logs <name>`. The driver currently
-requires Linux or macOS stable machine identity, boot identity and readable process-creation tokens. It
+Process definitions support `service start/stop/restart/status/logs <name>`. The driver requires a
+stable machine identity and readable process-creation tokens. Linux and macOS add the boot identity.
+Windows adds the account's SID and a custodian that holds the service's job, described below. It
 refuses another platform instead of using PID-only ownership. It launches executable and argv
 separately without a shell. No broker, manager or other dependency is started implicitly.
+
+On Windows each background instance runs under its own custodian. The custodian is a detached
+Cotal process that creates the program inside a new job object. The job ends every member when its
+last handle closes and allows no breakaway, and only the custodian holds that handle. So a
+custodian that exits for any reason, a restart of the computer included, ends the service and
+everything it started. Commands reach the custodian over a named pipe and prove that they hold the
+instance's 32-byte capability, and the custodian proves the same back before anything is done. The
+capability lives in a protected file beside the instance records, which name only that file. A stop
+terminates the whole job and waits until it is empty, and its receipt records the signal
+`job-terminate`. When the program has exited but processes it started still run, `service status`
+reports the process as `members-running` rather than gone, and a stop ends them. `cotal down`
+refuses a stack with such a member and names that stop. Windows has no foreground start. A
+manager's agents run in its job, so a manager stop without `--with-agents` is refused while the job
+still holds them.
 
 Instance IDs are assigned once and printed in full. With several records, scripts need
 `--instance <full-id>`; a terminal can choose from those IDs. `start --new-instance` explicitly

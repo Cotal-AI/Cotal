@@ -50,6 +50,8 @@ export * from "./telemetry.js";
 export * from "./win-cmd.js";
 export * from "./pid.js";
 export { darwinProcessBinding, type DarwinProcess, type DarwinProcessBinding } from "./darwin-process.js";
+export { win32ProcessBinding, type Win32ProcessBinding } from "./win32-process.js";
+export { custodyRequest, custodyStatus, isCustodyPipe, startWin32Custodian, type CustodyRequest, type CustodyStatus, type Win32Custody } from "./win32-custody.js";
 export * from "./progress.js";
 export * from "./service-definition.js";
 export * from "./service-adapter.js";

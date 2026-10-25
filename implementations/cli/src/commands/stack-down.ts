@@ -106,6 +106,9 @@ function readMembers(journal: StackJournal): Member[] {
     if (!instance || instance.record.value.definition !== row.definition) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "a recorded stack member's exact instance record is missing or belongs to another definition; no member was stopped", { target: { space: journal.space, definition: row.definition, instanceId: row.instanceId } });
     const state = observeServiceProcess(instance.record.value);
     const inspect = `inspect it with cotal service status ${row.definition} --instance ${row.instanceId} --space ${journal.space}`;
+    // Windows: the member's program exited on its own while its job still holds processes. Its own
+    // stop ends that job; a whole-stack down does not treat it as running or as gone.
+    if (state === "members-running") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a recorded stack member's program exited while its job still runs other processes; no member was stopped", { target: instanceProjection(instance), remedy: `end that job with cotal service stop ${row.definition} --instance ${row.instanceId} --space ${journal.space}${row.role === "manager" ? " --with-agents" : ""} --yes, then run cotal down again` });
     if (!processGone(state) && state !== "running") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a recorded stack member is foreign, unreadable or has an unresolved launch; no member was stopped", { target: instanceProjection(instance), remedy: state === "unresolved-launch" ? `${inspect}; ${abandonLaunchRemedy(row.instanceId)}` : inspect });
     const retained = retainedStopRequest(instance.record.value);
     if (instance.record.value.state === "stopping" || retained) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", retained?.publication === "unknown"

@@ -35,7 +35,7 @@ export function installSystemdService(definition: ServiceDefinitionSnapshot, sel
     absent(planned.privateHome);
     absent(planned.environmentFile);
     const host = processServiceHost(), value = selected.record.value;
-    if (host.machine !== value.host.machine || host.uid !== value.host.uid) throw new CommandFailure("refused", "CONFLICT", "the stopped service instance belongs to another execution host; it was not installed");
+    if (host.machine !== value.host.machine || host.uid === undefined || host.uid !== value.host.uid) throw new CommandFailure("refused", "CONFLICT", "the stopped service instance belongs to another execution host; it was not installed");
     const generation = seedGeneration();
     const now = new Date().toISOString();
     const target = { space, definition: definition.name, instanceId: selected.name, unit: planned.unit.unit };

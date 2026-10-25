@@ -506,7 +506,11 @@ export function assertRecordIdentity(record: ProcessIdentityRecord, tokenAt: Pro
     if (liveness === "dead") return { kind: "gone" };
     return { kind: "unpinned" };
   }
-  return live === record.token ? { kind: "match" } : { kind: "mismatch", liveToken: live };
+  if (live !== record.token) return { kind: "mismatch", liveToken: live };
+  // Windows keeps an exited process's creation time readable while any handle to it stays open, as a
+  // job custodian keeps its program's. Only its exit status says whether it still runs.
+  if (process.platform === "win32" && probeLiveness(record.pid) === "dead") return { kind: "gone" };
+  return { kind: "match" };
 }
 
 /** One shared refusal message, so every teardown names the same rule in the same words (#969

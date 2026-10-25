@@ -178,7 +178,7 @@ export function releaseExitedServiceStopReservation(marker: string): void {
  *  remove, naming the process it names. It does not reuse the legacy PID-only reclaim path or
  *  silently steal another attempt. */
 export function reserveNativeServiceStop(marker: string): { stopper: ProcessIdentityRecord; release(): void } {
-  if (process.platform !== "linux" && process.platform !== "darwin") throw new CommandFailure("refused", "UNSUPPORTED", "this native stop reservation requires a Linux or macOS process creation identity; no weaker platform path was selected");
+  if (process.platform !== "linux" && process.platform !== "darwin" && process.platform !== "win32") throw new CommandFailure("refused", "UNSUPPORTED", "this native stop reservation requires a Linux, macOS or Windows process creation identity; no weaker platform path was selected");
   if (!isAbsolute(marker) || /[\u0000-\u001f\u007f]/u.test(marker)) throw new CommandFailure("refused", "USAGE_INVALID", "a native stop reservation needs its exact protected absolute marker path");
   protectedLocalDirectory(dirname(marker));
   const stopper = identityRecord(process.pid);

@@ -17,7 +17,7 @@ if (existsSync(join(dest, nativeFile(platform))) || existsSync(join(dest, "build
   verifyNative(platform, arch, dest);
   process.exit(0);
 }
-if (platform === "win32") assert(process.env.VCToolsVersion && process.env.WindowsSDKVersion, "build Windows identity in the matching MSVC Developer Command Prompt");
+if (platform === "win32") assert(process.env.VCToolsVersion && process.env.WindowsSDKVersion && process.env.WindowsSdkDir, "build Windows identity in the matching MSVC Developer Command Prompt");
 const temp = mkdtempSync(join(tmpdir(), `cotal-${platform}-native-`));
 try {
   const download = async (path, expected, output) => {
@@ -42,9 +42,15 @@ try {
   const include = join(sdkDir, `node-v${sdk.version}`, "include/node");
   const output = join(buildDir, nativeFile(platform));
   if (platform === "win32") {
-    execFileSync("cl.exe", ["/nologo", "/LD", "/O2", "/MT", "/W4", "/WX", "/std:c11",
-      `/I${include}`, `/Fo${join(buildDir, "creation.obj")}`, join(root, "native/win32-process.c"),
-      "/link", "/Brepro", `/OUT:${output}`, library, "kernel32.lib"], { cwd: buildDir, stdio: "inherit" });
+    // The system ID reader is C++/WinRT, whose headers ship in the Windows SDK off the default include path.
+    const cppwinrt = join(process.env.WindowsSdkDir, "Include", process.env.WindowsSDKVersion, "cppwinrt");
+    assert(existsSync(join(cppwinrt, "winrt", "base.h")), `C++/WinRT headers not found at ${cppwinrt}`);
+    const compile = ["/nologo", "/c", "/O2", "/MT", "/W4", "/WX"];
+    execFileSync("cl.exe", [...compile, "/std:c11", `/I${include}`, `/Fo${join(buildDir, "creation.obj")}`, join(root, "native/win32-process.c")], { cwd: buildDir, stdio: "inherit" });
+    execFileSync("cl.exe", [...compile, "/std:c++20", "/EHsc", "/permissive-", "/external:anglebrackets", "/external:W0", `/I${cppwinrt}`,
+      `/Fo${join(buildDir, "system-id.obj")}`, join(root, "native/win32-system-id.cpp")], { cwd: buildDir, stdio: "inherit" });
+    execFileSync("link.exe", ["/nologo", "/DLL", "/Brepro", `/OUT:${output}`, join(buildDir, "creation.obj"), join(buildDir, "system-id.obj"),
+      library, "kernel32.lib", "advapi32.lib", "windowsapp.lib"], { cwd: buildDir, stdio: "inherit" });
     if (process.argv.includes("--test-controls")) {
       const testDir = join(root, "build/test", `win32-${arch}`);
       mkdirSync(testDir, { recursive: true });
