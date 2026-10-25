@@ -1,5 +1,31 @@
 # @cotal-ai/connector-core
 
+## 0.101.1
+
+### Patch Changes
+
+- 3252512: A manager command whose credential the broker refuses at connect, such as `cotal spawn --on` or `cotal ps --on` on a user-auth mesh whose auth service refuses the issued manager view, is now refused `PERMISSION_DENIED` (exit 2) and says nothing was sent to the manager. It used to end as `OPERATION_UNKNOWN` (exit 3) with only the broker's `Authorization Violation`, which read as a launch that might have happened. The message keeps the broker's reason, and on a user-auth mesh it says the space's auth service logs why. A failure after the request was sent is still reported as unknown.
+- 91909b5: On a terminal, a bare `cotal spawn` on a user-auth mesh where several of your managers are live
+  asks where the agent runs: this terminal, the default, or one of those managers, which launches it
+  and attaches here as `--on` does. A managed launch on a manager that is not known to run on this
+  host, picked or named with `--on`, then asks which folder the agent works in unless `-C` names one.
+  Enter keeps the manager's workspace and sends no folder. A typed folder is sent as typed and checked
+  by that manager with `resolve-cwd` before anything is launched; a folder it refuses is asked again.
+  No manager credential is held while a question waits. `--json`, `--no-input`, `COTAL_NO_PROMPT=1`
+  and a missing terminal never ask.
+- 0379e03: Process services, and with them a prepared stack's `cotal up` and `cotal down`, run on Windows. Each
+  background service runs under a detached custodian that creates the program inside a job object,
+  which allows no breakaway and ends every member when the custodian exits. The instance records the
+  machine, the account's SID and the custodian's pin in place of a UID and boot ID. The machine is the
+  system ID Windows documents for a publisher's apps (`GetSystemIdForPublisher`), with the TPM, UEFI
+  or registry source it came from; a service start refuses when Windows has none. Commands reach the
+  custodian over a named pipe with a per-instance capability that both sides prove on every request. A
+  stop terminates the whole job, and `service status` reports `members-running` when the program
+  exited while its job still holds processes. A manager is woken for its native stop through its
+  cooperative local stop request. A foreground start, and a manager stop that would keep agents in its
+  job, refuse on Windows. `cotal down` refuses a member whose program exited while its job still runs,
+  and names the stop that ends it.
+
 ## 0.101.0
 
 ### Minor Changes
