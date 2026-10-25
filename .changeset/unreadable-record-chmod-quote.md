@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/workspace": patch
+"@cotal-ai/connector-core": patch
 ---
 
 The `chmod u+r` and `chmod u+rx` steps named for a saved local record this account cannot read, or
