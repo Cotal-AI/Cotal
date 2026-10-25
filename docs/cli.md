@@ -6227,6 +6227,13 @@ credential for good, as after `reset space`, it ends with the refusal a one-shot
 credential gets, as `history --follow` does. A user-auth join keeps re-establishing in both cases,
 and an open or `--token` join when the broker rejects it.
 
+A broker that comes back on an empty store soon enough for the client to reconnect by itself does
+not end the connection, so the join keeps running without its DM inbox, and direct messages to it
+are not delivered. After a second check it prints one warning that its DM inbox is missing, on a
+line that starts with `!` like its other warnings, and keeps checking. If the inbox does not come
+back, interrupt the session and join again. A `--creds` join first needs the space's owner to mint
+the credential again with `--provision`.
+
 ## Manifest deploys
 
 A `cotal.yaml` manifest declares a whole mesh (channels, personas, roles, and ACLs) in one file.

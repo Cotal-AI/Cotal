@@ -6269,7 +6269,7 @@ export class CotalEndpoint extends EventEmitter {
         inactiveThresholdMs: this.inactiveThresholdMs,
       });
     }
-    await this.pump(dmStream(this.space), dmDurable(this.owner, this.actor, ownUid));
+    await this.pump(dmStream(this.space), dmDurable(this.owner, this.actor, ownUid), { inbox: true });
 
     // Plane-3 (SPEC §8): bind + pump our per-member DELIVER durable (`dlv_<id>`) — the re-authorized
     // durable-backstop channel copies the trusted reader transfers to us. No-op when it isn't present
@@ -6317,12 +6317,13 @@ export class CotalEndpoint extends EventEmitter {
   /** Drive one consumer: decode and hand each message to listeners with ack control. Our own sends are
    *  delivered too: on the DM inbox and the role queue they were addressed to us, so none is an echo,
    *  and acking one unseen on the work queue would delete the only copy of the request. */
-  private async pump(stream: string, durable: string): Promise<void> {
+  private async pump(stream: string, durable: string, opts: { inbox?: boolean } = {}): Promise<void> {
     if (!this.js) throw new Error("endpoint not started");
     const consumer = await this.js.consumers.get(stream, durable);
     const ackWaitMs = await ackWaitOf(consumer);
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);
+    if (opts.inbox) this.watchInbox(msgs, stream, durable);
     void (async () => {
       for await (const m of msgs) {
         const authed = this.authenticateStreamMsg(m);
@@ -6349,6 +6350,40 @@ export class CotalEndpoint extends EventEmitter {
           historical: false,
           kind: kindFromParsed(parsed.kind),
         } satisfies MessageMeta);
+      }
+    })().catch((e) => {
+      if (!this.stopped) this.emit("error", e as Error);
+    });
+  }
+
+  /** Warn once when the broker reports this endpoint's own DM inbox missing while the connection is
+   *  up, as after a store reset that the client's reconnect rode through. nats.js keeps checking and
+   *  resumes pulling if the inbox comes back, so this only reports. One report can be a passing state,
+   *  so the warning waits for a second one; the several 409s a delete answers pending pulls with count
+   *  once. A pull means the consumer was found again, which re-arms the warning. The loop ends when
+   *  the consumer is stopped, by `stop()` or by a rebuild replacing this connection. */
+  private watchInbox(msgs: ConsumerMessages, stream: string, durable: string): void {
+    const boundNc = this.nc;
+    void (async () => {
+      let absences = 0;
+      let deleted = false;
+      for await (const s of msgs.status()) {
+        if (this.stopped || this.nc !== boundNc) break;
+        if (s.type === "next") {
+          absences = 0;
+          deleted = false;
+          continue;
+        }
+        if (s.type === "consumer_deleted") {
+          if (deleted) continue;
+          deleted = true;
+        } else if (s.type !== "consumer_not_found" && s.type !== "stream_not_found") continue;
+        if (++absences === 2)
+          this.emitRecoverable(new Error(
+            `DM inbox missing: the broker reports consumer "${durable}" on stream "${stream}" missing, so direct ` +
+              "messages to this endpoint are not delivered. The endpoint keeps checking; if the inbox does not " +
+              "come back, end this session and start a new one",
+          ));
       }
     })().catch((e) => {
       if (!this.stopped) this.emit("error", e as Error);
