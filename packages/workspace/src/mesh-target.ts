@@ -545,8 +545,8 @@ export function rootHoldsAccount(root: string): boolean {
 
 /** The broker this root's last start rendered: `.cotal/auth/server.conf` in static auth when the root
  *  holds an account, else `.cotal/server-open.conf` in open mode. Undefined when neither names one.
- *  A legacy `down` drops the registration that kept the root's broker address, and this file
- *  outlives it. */
+ *  A legacy `down` drops the registration that kept the root's broker address, or keeps one that
+ *  only holds the name of a space named after its folder, and this file outlives it. */
 export function retainedLegacyBroker(root: string): { server: string; open: boolean } | undefined {
   if (rootHoldsAccount(root)) {
     const server = renderedServer(join(authDir(root), "server.conf"));

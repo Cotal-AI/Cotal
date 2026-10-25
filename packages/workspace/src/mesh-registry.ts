@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { findCotalRoot, movedRootRemedy, spaceSegment, stackJournalRoot } from "./auth-paths.js";
 import { homeCotalDir } from "./cotal-home.js";
@@ -384,7 +384,9 @@ function removeMeshesReleasingCurrent(spaces: readonly string[], keep?: string):
  * or wiped (`cotal down` / `cotal clean all`), releasing the `current` pointer if it names one.
  * `keep` names a space the caller records again as prepared, as a controller stack's `down` does:
  * a selection naming it stays, so the next bare command refuses that stopped space rather than
- * falling through to another one. Returns the removed space names.
+ * falling through to another one. `retain` names a space whose registration stays, with a selection
+ * naming it, as a legacy `down` keeps one that {@link keepsRegistration}. Returns the removed space
+ * names.
  *
  * OPERATOR-REGISTERED entries are skipped. The root is shared, not owned: `cotal meshes add`
  * defaults `--root` to the project you run it in, so registering a mesh that runs elsewhere from
@@ -393,10 +395,17 @@ function removeMeshesReleasingCurrent(spaces: readonly string[], keep?: string):
  * rewrite what `up` wrote; nothing rewrites a hand-registered record). `cotal meshes rm` is how one
  * of those leaves.
  */
-export function removeMeshesByRoot(root: string, keep?: string): string[] {
-  const removed = localMeshesForRoot(root).map((m) => m.space);
+export function removeMeshesByRoot(root: string, keep?: string, retain?: string): string[] {
+  const removed = localMeshesForRoot(root).map((m) => m.space).filter((space) => space !== retain);
   removeMeshesReleasingCurrent(removed, keep);
   return removed;
+}
+
+/** Whether a stack's `down` keeps this registration: a space named after its own folder stays
+ *  registered while stopped, so the name stays that folder's and another folder's bare `up` cannot
+ *  take it. `space forget` frees it. */
+export function keepsRegistration(entry: Pick<MeshEntry, "space" | "root">): boolean {
+  return entry.space === basename(canonicalRoot(entry.root));
 }
 
 /** The entries this root actually RUNS — what a local teardown or wipe may act on. The complement

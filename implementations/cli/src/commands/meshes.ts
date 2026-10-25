@@ -7,6 +7,7 @@ import {
   discoveryDocumentUrl,
   findMesh,
   getCurrent,
+  keepsRegistration,
   loadMeshes,
   pinnedFetch,
   removeMesh,
@@ -457,7 +458,7 @@ async function removeMeshes(names: string[], v: Values): Promise<void> {
     }
     if (running) {
       // A stack's down keeps the space prepared at its root, which `space forget` removes and `rm` cannot.
-      const after = stack ? `keeps it as a prepared space there, which \`cotal space forget ${space}\` then removes` : "drops the record";
+      const after = stack ? `keeps it as a prepared space there, which \`cotal space forget ${space}\` then removes` : keepsRegistration(m) ? `keeps its record, which \`cotal space forget ${space}\` then removes` : "drops the record";
       stderrLine("✗ ", `"${space}" is running from ${m.root} (${running}) - \`cotal down\` there stops it and ${after}${v.force ? "; --force does not drop it while the mesh runs, because `cotal down` finds the mesh by it" : ""}`, c.red);
       failed = true;
       continue;

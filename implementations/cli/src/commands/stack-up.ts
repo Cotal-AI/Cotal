@@ -22,6 +22,7 @@ import {
   deliveryCredsKey,
   findMesh,
   findPreparedSpace,
+  keepsRegistration,
   getCurrent,
   getSpaceAuth,
   hasUserAuthState,
@@ -280,7 +281,11 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   // Only a space prepared at this very root qualifies. An absent prepared record is not a root: an
   // empty path would canonicalize to the working directory and admit an unprepared legacy folder.
   const prepared = findPreparedSpace(space);
-  if (!registered && (!prepared || canonicalRoot(prepared.root) !== canonical)) return false;
+  const preparedHere = prepared !== undefined && canonicalRoot(prepared.root) === canonical;
+  if (!registered && !preparedHere) return false;
+  // A legacy `down` keeps the registration of a space named after its folder, and the retained
+  // launcher that wrote it starts it again.
+  if (registered && !preparedHere && keepsRegistration(registered)) return false;
   if (readMaintenanceJournal(canonical)) return false;
   if (existsSync(join(canonical, ".cotal", "nats.pid")) || liveMeshProcesses(canonical, space).length) return false;
   // A prepared root never falls through to the legacy launcher, so an option the controller stack

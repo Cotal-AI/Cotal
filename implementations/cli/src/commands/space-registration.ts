@@ -20,6 +20,7 @@ import {
   homeCotalDir,
   isCommandFailure,
   isMeshRegistryError,
+  keepsRegistration,
   loadMeshes,
   pinnedFetch,
   preparedRecordSpace,
@@ -599,7 +600,7 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     // A stack's down keeps the space prepared at its root, so it is forgotten by a second forget.
     if (running) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${m.root} (${running})`, target, stack
       ? `stop it with \`cotal down\` in ${m.root}, which keeps it as a prepared space there, then run \`cotal space forget ${name}\` again`
-      : `stop it with \`cotal down\` in ${m.root}, which also drops its record`);
+      : keepsRegistration(m) ? `stop it with \`cotal down\` in ${m.root}, which keeps its record, then run \`cotal space forget ${name}\` again` : `stop it with \`cotal down\` in ${m.root}, which also drops its record`);
   }
   const release = releaseStackDefinitions(m.root, name), keptServices = savedServicesLeft(name, release.kept);
   removeMesh(name);

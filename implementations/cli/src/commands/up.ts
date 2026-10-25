@@ -109,6 +109,7 @@ import {
   preparedSpaceAt,
   removePreparedSpace,
   localMeshesForRoot,
+  keepsRegistration,
   oneLine,
   presentationOf,
   writeResult,
@@ -1510,11 +1511,14 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // on a free port, which this root's record keeps; a re-run must start from that URL, or every
     // lookup below misses its own mesh and the space claim refuses it (#3889).
     const recordedSpace = values.space ?? folderSpace();
-    const registeredServer = localMeshesForRoot(cotalRoot()).find((m) => m.space === recordedSpace)?.server;
-    // A stopped legacy root's `down` dropped the registration that kept its address, so its own files
-    // decide. With no address flag, it starts again at the address its last start rendered, and in
-    // open mode when that start was open and no mode is asked for. After `clean all` only a fresh
-    // team summary remains, and a start that would differ from it refuses, naming its manifest.
+    const registration = localMeshesForRoot(cotalRoot()).find((m) => m.space === recordedSpace);
+    // A stopped legacy root's own files decide its start: its `down` dropped the registration that
+    // kept its address, or kept one for a space named after its folder, which only holds the name.
+    // With no address flag, it starts again at the address its last start rendered, and in open
+    // mode when that start was open and no mode is asked for. After `clean all` only a fresh team
+    // summary remains, and a start that would differ from it refuses, naming its manifest.
+    const keptStopped = registration !== undefined && !resumeAttempt && values.server === undefined && keepsRegistration(registration) && !(await isReachable(registration.server));
+    const registeredServer = keptStopped ? undefined : registration?.server;
     const implicit = !resumeAttempt && registeredServer === undefined && values.server === undefined && values.host === undefined && !values["user-auth"];
     const retained = implicit ? retainedLegacyBroker(cotalRoot()) : undefined;
     // An address up chooses for a TLS broker names TLS, as an explicit one must.
