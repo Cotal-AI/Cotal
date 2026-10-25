@@ -44,7 +44,7 @@ try {
   if (platform === "win32") {
     execFileSync("cl.exe", ["/nologo", "/LD", "/O2", "/MT", "/W4", "/WX", "/std:c11",
       `/I${include}`, `/Fo${join(buildDir, "creation.obj")}`, join(root, "native/win32-process.c"),
-      "/link", "/Brepro", `/OUT:${output}`, library, "kernel32.lib"], { cwd: buildDir, stdio: "inherit" });
+      "/link", "/Brepro", `/OUT:${output}`, library, "kernel32.lib", "advapi32.lib"], { cwd: buildDir, stdio: "inherit" });
     if (process.argv.includes("--test-controls")) {
       const testDir = join(root, "build/test", `win32-${arch}`);
       mkdirSync(testDir, { recursive: true });
