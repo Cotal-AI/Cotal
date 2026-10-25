@@ -135,6 +135,22 @@ async function backupStageFaultScenario(): Promise<void> {
     assert.equal(created.error?.code, "TARGET_NOT_FOUND", "a create into a missing folder is TARGET_NOT_FOUND");
     assert.equal(created.target?.missing, "folder", "it says the folder is missing");
     assert.match(created.error?.message ?? "", /there is no folder \S*no-such-folder to create the backup in/, "it names that folder");
+    if (process.platform !== "win32") {
+      const notFolder = join(root, "parent-file"), loop = join(root, "loop-a");
+      writeFileSync(notFolder, "owned fixture");
+      symlinkSync("loop-b", loop);
+      symlinkSync("loop-a", join(root, "loop-b"));
+      const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+      const prior = createHash("sha256").update(readFileSync(journal)).digest("hex");
+      for (const [destination, code] of [[join(notFolder, "backup"), "ENOTDIR"], [join(loop, "backup"), "ELOOP"]] as const) {
+        const refused = run("backup", "create", destination, "--json");
+        const reply = JSON.parse(refused.stdout) as { error?: { code?: string; message?: string; cause?: { code?: string } }; target?: { directory?: string; folder?: string } };
+        assert.ok(refused.status === 1 && reply.error?.code === "USAGE_INVALID" && reply.error.cause?.code === code && reply.target?.directory === destination, `an invalid destination traversal names ${code}, not the preserved cut\n${refused.stdout}${refused.stderr}`);
+        assert.equal(createHash("sha256").update(readFileSync(journal)).digest("hex"), prior, "an invalid destination leaves the preservation journal unchanged");
+      }
+      const plain = run("backup", "create", join(notFolder, "backup"));
+      assert.ok(plain.status === 1 && plain.stderr.includes("ENOTDIR") && !plain.stderr.includes("Usage"), `the path refusal prints no command help\n${plain.stderr}`);
+    }
     for (const [path, missing] of [[nowhere, "folder"], [join(root, "no-such-artifact"), "artifact"]] as const) {
       const restore = run("backup", "restore", path, "--json");
       assert.equal(restore.status, 2, `a restore of a missing ${missing} refuses, exit 2\n${restore.stdout}${restore.stderr}`);

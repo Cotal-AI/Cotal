@@ -2043,7 +2043,10 @@ to wait for it. A create that finds the root's maintenance lock held, such as by
 Neither refusal journaled anything, so it names no attempt of its own. A destination that already exists is a `CONFLICT`
 refusal, because create writes only a new directory. A destination whose folder does not exist
 refuses `TARGET_NOT_FOUND` (exit 2) and names that folder; create makes only the artifact's own
-folder. A destination inside the preserved store refuses `USAGE_INVALID` (exit 1). So does one
+folder. A destination check that finds a non-directory parent (`ENOTDIR`) or a symbolic-link loop
+(`ELOOP`) refuses `USAGE_INVALID` (exit 1), naming the destination and its parent. Choose a destination
+with a directory parent; no attempt was started and the preservation journal is unchanged.
+A destination inside the preserved store refuses `USAGE_INVALID` (exit 1). So does one
 inside a path `clean all` removes, such as `.cotal/auth` or the space's `.cotal/space.<hex>`
 folder, because that cleanup would remove the backup with them. One in a
 folder this account cannot write refuses `PERMISSION_DENIED` (exit 2) and names that folder. A `--store-dir` that is not the cut's preserved store, such as an empty folder,
