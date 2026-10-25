@@ -51,11 +51,11 @@ function replaceable(standing: string, name: string, target: object, revocations
 /** What `--replace` did that its receipt does not show: a replacement minted with another profile
  *  than the credential it replaced, as `--profile` defaults to agent, or a label with no standing
  *  credential, where it replaced nothing. Doctor auth owns exported files' state-specific guidance. */
-function replaceNotes(replaced: Replaced | undefined, standing: boolean, profile: string, space: string, name: string): OutputWarning[] {
+function replaceNotes(replaced: Replaced | undefined, standing: boolean, profile: string, space: string, name: string, root: string): OutputWarning[] {
   if (replaced?.profile && replaced.profile !== profile)
     return [{ code: "REPLACED_PROFILE_CHANGED", target: { space, name, profile, replacedProfile: replaced.profile }, message: `the credential this replaced was minted with --profile ${replaced.profile}, and this one with --profile ${profile}, so it holds that profile's grants instead` }];
   if (standing) return [];
-  return [{ code: "NOTHING_REPLACED", target: { space, name }, message: `--replace found no standing credential named "${name}", so this is a new standing credential and it replaced nothing; exported files are unchanged; inspect them with \`cotal doctor auth --space ${space}\`` }];
+  return [{ code: "NOTHING_REPLACED", target: { space, name }, message: `--replace found no standing credential named "${name}", so this is a new standing credential and it replaced nothing; exported files are unchanged; doctor auth reads the root it runs in, so inspect them with \`cotal doctor auth --space ${space}\` run in the space's root: ${root}` }];
 }
 
 /** Declared grants of a replaced agent credential whose issuer matches this space's account.
@@ -262,7 +262,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
     const warnings = [
       ...(result.identityReused && profile === "agent" ? [{ code: "NEW_OUT_OF_BAND_LIFECYCLE", target: { space, name }, message: "The native out-of-band mint reuses the nkey, not the old lifecycle UID. Old inbox/DM footprints were not claimed as reused." }] : []),
       ...replacedStillValid(replaced, identity.id, space, name),
-      ...(values.replace ? replaceNotes(replaced, standing !== undefined, profile, space, name) : []),
+      ...(values.replace ? replaceNotes(replaced, standing !== undefined, profile, space, name, root) : []),
       ...replacedGrantsChanged(replacedGrants, grants, space, name),
     ];
     writeResult(presentationOf(values), { command: "auth mint", target: { space, name }, result, warnings }, (data): Report => ({ sections: [

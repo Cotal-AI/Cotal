@@ -710,7 +710,7 @@ try {
     const exportedOnly = await runMint(["grants", "--replace", "--json"]);
     const nothing = envelope(exportedOnly.out).warnings?.find((warning) => warning.code === "NOTHING_REPLACED")?.message ?? "";
     check("--replace on a label with only --out files names doctor auth without prescribing a key re-sign",
-      exportedOnly.code === 0 && nothing.includes(`exported files are unchanged; inspect them with \`cotal doctor auth --space ${SPACE}\``) && !nothing.includes("--identity") && !nothing.includes("signs its key again"), exportedOnly.out);
+      exportedOnly.code === 0 && nothing.endsWith(`exported files are unchanged; doctor auth reads the root it runs in, so inspect them with \`cotal doctor auth --space ${SPACE}\` run in the space's root: ${root}`) && !nothing.includes("--identity") && !nothing.includes("signs its key again"), exportedOnly.out);
   }
 
   // ── 12. a persona file the label cannot use is named, and its values stay unprinted ──────────

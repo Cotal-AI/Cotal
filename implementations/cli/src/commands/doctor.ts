@@ -116,6 +116,19 @@ function recordedOpenSpace(root: string, space: string | undefined): string | un
   } catch { return undefined; }
 }
 
+/** Where to run doctor auth when this folder's root holds no signing trust for the scope it names:
+ *  the root `space` is registered at, when that is another folder, or else a space's root. The
+ *  report stays root-local, so the step names the folder instead of reading another root's trust. */
+function trustRootStep(root: string, space: string | undefined, fix: boolean): string {
+  const command = `cotal doctor auth${space === undefined ? "" : ` --space ${space}`}${fix ? " --fix" : ""}`;
+  let registered: string | undefined;
+  if (space !== undefined) {
+    try { const target = resolveMeshTarget(root, { space, readOnly: true }); if (canonicalRoot(target.root) !== canonicalRoot(root)) registered = target.root; }
+    catch { /* not registered here: the general step */ }
+  }
+  return registered ? `run \`${command}\` in the folder space ${space} is registered at: ${registered}` : `run \`${command}\` in ${space === undefined ? "a" : "that"} space's root folder; \`cotal space\` lists each space's root`;
+}
+
 /** Local credential observations only; native repair remains an explicit, separately labeled phase. */
 export async function doctor(args: ParsedArgs): Promise<void> {
   validateDoctorArguments(args);
@@ -138,7 +151,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
       writeResult(presentationOf(values), { command: "doctor auth", target: { root, space: open }, result: { kind: "credential-health", root, space: open, localFindings: null, credentialScope: "open-space", brokerAuthorization: "not-checked", repair }, noOp: true }, () => ({ sections: [{ title: "No credentials to check", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", open], ["Mode", "open, as registered"]] }, { kind: "lines", lines: [{ text: "This space is open: it authenticates no one and issues no credentials, so there are none to check.", tone: "hint" }] }] }] }));
       return;
     }
-    if (values.fix || values.space) throw new CommandFailure("refused", "AUTH_REQUIRED", "no validated signing trust for the named local diagnostic scope is present; no open mode or broader authority was inferred", { target: { root, space: values.space ?? null } });
+    if (values.fix || values.space) throw new CommandFailure("refused", "AUTH_REQUIRED", "no validated signing trust for the named local diagnostic scope is present; no open mode or broader authority was inferred", { target: { root, space: values.space ?? null }, remedy: trustRootStep(root, values.space, values.fix === true) });
     writeResult(presentationOf(values), { command: "doctor auth", target: { root }, result: { kind: "credential-health", root, space: null, localFindings: null, credentialScope: "not-established", brokerAuthorization: "not-checked", repair }, completeness: "not-checked", partial: { message: "No local static authority was established. This is not proof of an open or healthy mesh.", remedy: "run `cotal doctor auth` in a space's root folder; `cotal space` lists each space's root" } }, () => ({ sections: [{ title: "Local credential scope not established", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", "not established"], ["Live authorization", "not checked"], ["Repair", "not requested"]] }] }] }));
     return;
   }
