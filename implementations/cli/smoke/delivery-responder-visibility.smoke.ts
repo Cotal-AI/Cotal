@@ -144,7 +144,7 @@ try {
   check("CELL 1: bare `status` names the UNBOUND responder on the delivery row",
     /RESPONDER NOT BOUND/.test(unboundRow ?? ""), unboundRow);
   check("CELL 1: it names the CONSEQUENCE rather than only the state",
-    /no spawn, no retirement, no join until it binds/.test(unboundRow ?? ""), unboundRow);
+    /no spawn, no retirement and no durable backstop until it binds; joins, DMs and live posts can still work/.test(unboundRow ?? ""), unboundRow);
   // The mesh section is a detailed diagnostic, so it renders under --verbose.
   const unboundVerbose = cli("status", "--verbose", "--space", SPACE, "--server", server);
   check("CELL 1: the verbose mesh section states it too, with the command that starts it",
@@ -154,7 +154,7 @@ try {
   // into a monitor. `--components` owns the exit disposition.
   check("CELL 1: bare status still exits 0 (it reports, it does not gate)", unboundBare.status === 0, unboundBare.status);
   check("CELL 1: bare status names the unbound responder on the selected space's row",
-    /^Delivery responder:\s+● NOT BOUND - no spawn, no retirement, no join until it binds/.test(responderRow(unboundBare.text) ?? ""), unboundBare.text);
+    /^Delivery responder:\s+● NOT BOUND - no spawn, no retirement and no durable backstop until it binds; joins, DMs and live posts can still work/.test(responderRow(unboundBare.text) ?? ""), unboundBare.text);
   // From a folder that holds none of the mesh's process records, the selected space's row is the
   // only place bare status can say it (#1576's split broker and manager hosts).
   const unboundElsewhere = cliIn(elsewhere, env, "status", "--space", SPACE, "--server", server);
@@ -162,16 +162,16 @@ try {
     deliveryRow(unboundElsewhere.text) === undefined, unboundElsewhere.text);
   const unboundUnregistered = unregisteredStatus();
   check("CELL 1: with no registration, bare status --server names the default space's unbound responder",
-    /^Delivery responder:\s+● NOT BOUND - no spawn, no retirement, no join until it binds/.test(responderRow(unboundUnregistered.text) ?? ""), unboundUnregistered.text);
+    /^Delivery responder:\s+● NOT BOUND - no spawn, no retirement and no durable backstop until it binds; joins, DMs and live posts can still work/.test(responderRow(unboundUnregistered.text) ?? ""), unboundUnregistered.text);
   check("CELL 1: bare status from another folder still names the unbound responder",
-    /^Delivery responder:\s+● NOT BOUND - no spawn, no retirement, no join until it binds/.test(responderRow(unboundElsewhere.text) ?? ""), unboundElsewhere.text);
+    /^Delivery responder:\s+● NOT BOUND - no spawn, no retirement and no durable backstop until it binds; joins, DMs and live posts can still work/.test(responderRow(unboundElsewhere.text) ?? ""), unboundElsewhere.text);
 
   const unboundComponents = cli("status", "--components", "--space", SPACE, "--server", server);
   const unboundComponentRow = componentRow(unboundComponents.text);
   check("CELL 3: --components says not-serving and names the consequence in its facts",
     /^delivery\s+not-serving/.test(unboundComponentRow ?? "") &&
       (unboundComponentRow ?? "").includes("starting (lease not ready)") &&
-      (unboundComponentRow ?? "").includes("no spawn, no retirement, no join until it binds"),
+      (unboundComponentRow ?? "").includes("no spawn, no retirement and no durable backstop until it binds; joins, DMs and live posts can still work"),
     unboundComponentRow);
   check("CELL 3: --components keeps its present-but-not-serving exit (2)", unboundComponents.status === 2, unboundComponents.text);
 
@@ -284,7 +284,7 @@ try {
   check("CELL 6: the stale row names NOT BOUND and says in plain words that the daemon died",
     /RESPONDER NOT BOUND/.test(staleSuffix) && staleSuffix.includes("the delivery daemon died and its 30 s lease has not expired yet"), staleSuffix);
   check("CELL 6: the stale row still names the consequence",
-    staleSuffix.includes("spawn, retirement and join wait until a new daemon binds"), staleSuffix);
+    staleSuffix.includes("spawn, retirement and the durable backstop wait until a new daemon binds; joins, DMs and live posts can still work"), staleSuffix);
 
   console.log(`\nDELIVERY RESPONDER VISIBILITY SMOKE OK ✅ (${pass} checks)`);
   // Canonical sentinel, not just the banner: the shard runner refuses a suite that exits 0 having
