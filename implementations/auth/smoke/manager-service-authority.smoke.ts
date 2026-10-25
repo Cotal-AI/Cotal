@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createSpaceAuth, managedRetirementOpId, mintLifecycleUid, mintPublicUserJwt, newIdentity, permissionsFor, remoteManagerActors } from "@cotal-ai/core";
 import { remoteManagerIssuerGrants } from "@cotal-ai/auth";
 import { authorizeRemoteManagerMaintenance, issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, USER_TOKEN_VIEWS } from "@cotal-ai/auth";
-import { authorizeRemoteManagerRenewal } from "../src/manager-authority.js";
+import { authorizeRemoteManagerRenewal, holdsRunFence } from "../src/manager-authority.js";
 import { remoteManagerCurrentRegistrationProof } from "../src/retained-manager-validation.js";
 import { authorizeRemoteManagerRetirement } from "../src/service.js";
 import { authorizeRetirementOperation } from "../src/auth-admin.js";
@@ -65,6 +65,20 @@ const runRenewal = {
 await cell("run driver renewal binds both nkeys and the takeover fence", () => {
   assert.deepEqual(parseRemoteManagerAuthorityRequest(runRenewal), runRenewal);
 });
+await cell("parsed run renewal owns all seven checked fields", () => {
+  const raw = { ...runRenewal, run: { ...runRenewal.run } };
+  const parsed = parseRemoteManagerAuthorityRequest(raw);
+  assert.notStrictEqual(parsed.run, raw.run);
+  Object.assign(raw.run, {
+    runId: `run-${"b".repeat(32)}`, holder: `successor.${"d".repeat(16)}`, takeoverId: "d".repeat(16),
+    epoch: 99, fencingToken: 100, driverId: newIdentity().id, mediatorId: newIdentity().id,
+  });
+  assert.deepEqual(parsed.run, runRenewal.run);
+});
+await rejects("run renewal rejects a zero epoch", () =>
+  parseRemoteManagerAuthorityRequest({ ...runRenewal, run: { ...runRenewal.run, epoch: 0 } }), /valid runId/);
+await rejects("run renewal rejects an extra run field", () =>
+  parseRemoteManagerAuthorityRequest({ ...runRenewal, run: { ...runRenewal.run, profile: "run-driver" } }), /requires exactly/);
 await rejects("run driver renewal rejects a missing write fence", () =>
   parseRemoteManagerAuthorityRequest({ ...runRenewal, run: { ...runRenewal.run, fencingToken: undefined } }), /fencingToken/);
 const renewalOwner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -127,6 +141,26 @@ await cell("run renewal echoes its exact activated coordinates", async () => {
   });
   assert.deepEqual(result.run, runRenewal.run);
   assert.deepEqual(Object.keys(result.credentials), ["runDriver", "runMediator"]);
+});
+await cell("caller mutation during renewal authorization cannot change issuance or its fence", async () => {
+  const raw = { ...runWithProof, run: { ...runWithProof.run } };
+  const result = await issueRemoteManagerAuthority({
+    request: raw, owner: renewalOwner, scope: ["supervise"],
+    authorizeRenewal: async ({ request: seen }) => {
+      await verifyRenewal(seen as typeof runWithProof);
+      Object.assign(raw.run, {
+        runId: `run-${"b".repeat(32)}`, holder: `successor.${"d".repeat(16)}`, takeoverId: "d".repeat(16),
+        epoch: 99, fencingToken: 100, driverId: newIdentity().id, mediatorId: newIdentity().id,
+      });
+    },
+    issue: async ({ request: seen }) => {
+      assert.deepEqual(seen.run, runWithProof.run);
+      assert.equal(holdsRunFence(observedRun, seen), true);
+      assert.equal(holdsRunFence({ ...observedRun, epoch: 99, fencingToken: 100 }, seen), false);
+      return { credentials: { runDriver: credentials.supervisor, runMediator: credentials.executor } };
+    },
+  });
+  assert.deepEqual(result.run, runWithProof.run);
 });
 await rejects("run renewal never accepts the same nkey as a standing connection", () => issueRemoteManagerAuthority({
   request: { ...runWithProof, run: { ...runWithProof.run, driverId: identities.supervisor.id } },

@@ -173,6 +173,20 @@ try {
     check("runMediator is signed for the requested mediator nkey under data account",
       mediatorClaims.sub === mediator.id && mediatorClaims.nats?.issuer_account === dataAccount.pub);
 
+    const mutableRequest = makeRunRequest();
+    const checkedRun = { ...mutableRequest.run! };
+    const pendingRenewal = plane.issueManagerServiceAuthority({ owner, scope: ["supervise"], request: mutableRequest });
+    Object.assign(mutableRequest.run!, {
+      runId: `run-${"e".repeat(32)}`, holder: `${holderId}.${"e".repeat(16)}`, takeoverId: "e".repeat(16),
+      epoch: 99, fencingToken: 100, driverId: newIdentity().id, mediatorId: newIdentity().id,
+    });
+    const stableMaterial = await pendingRenewal;
+    check("caller mutation during native renewal preserves every checked run field",
+      Object.entries(checkedRun).every(([key, value]) => stableMaterial.run?.[key as keyof typeof checkedRun] === value));
+    check("native renewal signs the checked driver and mediator nkeys after caller mutation",
+      decodeJwt(stableMaterial.credentials.runDriver!.jwt).sub === driver.id &&
+      decodeJwt(stableMaterial.credentials.runMediator!.jwt).sub === mediator.id);
+
     // 2. Stale/foreign holder refusal
     check("a foreign supervisor holder prefix refuses",
       /conflict/.test(await refusal(plane.issueManagerServiceAuthority({

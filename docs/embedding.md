@@ -244,7 +244,9 @@ absent. The reported path is kept byte for byte, whitespace included; an empty s
 The remote manager authority parser accepts `renewStandingBundle` and `renewRunDriver` only with
 an assigned account nkey, the current manager process epoch, and a host-authenticated registration
 proof. A run renewal also names its active holder, takeover, epoch, fencing token, and the two
-existing nkeys. The host must fresh-check those coordinates against its registration gate and run
+existing nkeys. The parser copies the checked run fields so later caller mutations cannot change
+the run coordinates or nkeys used for renewal authorization and issuance.
+The host must fresh-check those coordinates against its registration gate and run
 journal before issuing server-selected profiles. A host without that renewal authorization refuses
 the request. Until the host issuer wires the operations and validates them on real connections,
 the presence of these types is not an operational pooled renewal guarantee.

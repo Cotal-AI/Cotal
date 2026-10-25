@@ -157,7 +157,10 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
         !isUserNkey(r.driverId) || !isUserNkey(r.mediatorId) || r.driverId === r.mediatorId ||
         !r.holder.endsWith(`.${r.takeoverId}`))
       requestError("renewRunDriver requires valid runId, holder, takeoverId, epoch, fencingToken, and distinct driverId/mediatorId");
-    run = r as unknown as NonNullable<RemoteManagerAuthorityRequest["run"]>;
+    run = {
+      runId: r.runId, holder: r.holder, takeoverId: r.takeoverId,
+      epoch: r.epoch, fencingToken: r.fencingToken, driverId: r.driverId, mediatorId: r.mediatorId,
+    };
   } else if (o.run !== undefined) requestError(`${o.operation} must not carry run`);
   let session: RemoteManagerAuthorityRequest["session"];
   if (o.operation === "session") {
