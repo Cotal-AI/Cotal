@@ -4873,7 +4873,11 @@ those instances' logs and lists each file it deleted.
 With `--instance <id>` it forgets only that stopped instance record, and keeps the definition,
 its other instances and its logs. A command that names no instance while several records exist refuses
 `TARGET_AMBIGUOUS`; its Next lists each instance with its state and the `remove --instance` command
-for each stopped one, so a finished record stops blocking the bare form. A controller stack's
+for each stopped one, so a finished record stops blocking the bare form. A `start` that selects a
+record of an earlier revision of its definition, as a definition moved aside and added again leaves,
+refuses `CONFLICT` (exit 2) and launches nothing. Its Next names
+`cotal service remove <name> --instance <id> --space <space> --yes` and then `start` again, after a
+`cotal service stop` of that instance when it still runs. A controller stack's
 member definitions and records are not removed this way, since its `up` and `down` read them:
 `remove` refuses `UNSUPPORTED`, exit 2, and names `cotal down --yes`, then `cotal space forget <space>`,
 which removes them with the space.
