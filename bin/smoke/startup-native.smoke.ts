@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
@@ -8,14 +8,16 @@ import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/
 
 // Run the built CLI with its bundled broker, without the operator's home, credentials or PATH tools.
 // Retain command output and roots for inspection. Teardown uses only the sandbox's own CLI route.
+process.umask(0o077);
 const source = resolve(import.meta.dirname, "../..");
+const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: source, encoding: "utf8" }).trim();
 const root = mkdtempSync(join(tmpdir(), "cotal-startup-native-"));
 const receipt = process.env.COTAL_STARTUP_RESULTS ?? join(root, "result.json");
 const logs = `${receipt}.logs`;
 mkdirSync(logs, { mode: 0o700 });
 writeFileSync(receipt, "", { flag: "wx", mode: 0o600 });
 const results: { scenario: string; root: string; commands: { args: string[]; status: number | null; signal: string | null }[]; error?: string; stopped?: boolean }[] = [];
-const save = () => writeFileSync(receipt, JSON.stringify({ platform: process.platform, arch: process.arch, node: process.version, source, results }, null, 2) + "\n");
+const save = () => writeFileSync(receipt, JSON.stringify({ platform: process.platform, arch: process.arch, node: process.version, source, commit, results }, null, 2) + "\n");
 const reachable = (port: number) => new Promise<boolean>((done) => {
   const socket = createConnection({ host: "127.0.0.1", port });
   socket.once("connect", () => { socket.destroy(); done(true); });
