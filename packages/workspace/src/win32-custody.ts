@@ -18,7 +18,8 @@ import { nativeWin32CreationToken, windowsCommandLine, windowsEnvironmentBlock, 
 export const CUSTODY_PROTOCOL = 1;
 const FRAME_LIMIT = 64 * 1024;
 const AUTH_DEADLINE_MS = 5_000;
-const NONCE = /^[A-Za-z0-9+/]{43}=$/;
+/** A nonce or a proof: the base64 of 32 bytes, ASCII only. */
+const BASE64_32 = /^[A-Za-z0-9+/]{43}=$/;
 const PIPE = /^\\\\\.\\pipe\\cotal-custody-[0-9a-f]{32}$/;
 
 export type CustodyRequest = { op: "status" } | { op: "terminate"; code: number };
@@ -37,10 +38,12 @@ export interface Win32Custody { custodian: ProcessIdentityRecord; pipe: string }
 
 const proof = (key: Buffer, instanceId: string, label: string, ...parts: string[]) =>
   createHmac("sha256", key).update(["cotal-win32-custody", String(CUSTODY_PROTOCOL), instanceId, label, ...parts].join("\n")).digest("base64");
+// Only a well-formed proof is compared, so both sides are 32 bytes and the comparison cannot throw.
 const sameProof = (value: unknown, expected: string) =>
-  typeof value === "string" && value.length === expected.length && timingSafeEqual(Buffer.from(value), Buffer.from(expected));
+  typeof value === "string" && BASE64_32.test(value) && timingSafeEqual(Buffer.from(value, "base64"), Buffer.from(expected, "base64"));
 
-/** Deliver each newline-ended JSON object `socket` sends; anything longer or malformed calls `bad`. */
+/** Deliver each newline-ended JSON object `socket` sends; anything longer or malformed calls `bad`,
+ *  as does a frame its handler throws on, so a peer's input ends only its own connection. */
 function frames(socket: Socket, frame: (value: Record<string, unknown>) => void, bad: () => void): void {
   let buffer = "";
   socket.setEncoding("utf8");
@@ -52,7 +55,7 @@ function frames(socket: Socket, frame: (value: Record<string, unknown>) => void,
       let value: unknown;
       try { value = JSON.parse(line); } catch { return bad(); }
       if (value === null || typeof value !== "object" || Array.isArray(value)) return bad();
-      frame(value as Record<string, unknown>);
+      try { frame(value as Record<string, unknown>); } catch { return bad(); }
     }
     if (buffer.length > FRAME_LIMIT) bad();
   });
@@ -76,7 +79,7 @@ export function serveCustody(server: Server, key: Buffer, instanceId: string, ha
     socket.on("close", () => clearTimeout(deadline));
     frames(socket, (frame) => {
       if (step === 0) {
-        if (frame.protocol !== CUSTODY_PROTOCOL || typeof frame.nonce !== "string" || !NONCE.test(frame.nonce)) return drop();
+        if (frame.protocol !== CUSTODY_PROTOCOL || typeof frame.nonce !== "string" || !BASE64_32.test(frame.nonce)) return drop();
         client = frame.nonce;
         nonce = randomBytes(32).toString("base64");
         step = 1;
@@ -115,7 +118,7 @@ export function custodyRequest(pipe: string, key: Buffer, instanceId: string, re
     socket.on("connect", () => socket.write(JSON.stringify({ protocol: CUSTODY_PROTOCOL, nonce }) + "\n"));
     frames(socket, (frame) => {
       if (step === 0) {
-        if (typeof frame.nonce !== "string" || !NONCE.test(frame.nonce) || !sameProof(frame.proof, proof(key, instanceId, "server", nonce, frame.nonce)))
+        if (typeof frame.nonce !== "string" || !BASE64_32.test(frame.nonce) || !sameProof(frame.proof, proof(key, instanceId, "server", nonce, frame.nonce)))
           return finish(new Error("the process custodian did not prove the instance capability"));
         server = frame.nonce;
         step = 1;
