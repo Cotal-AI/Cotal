@@ -9,10 +9,14 @@ import { localRecordObject, localRecordText, ProtectedRecordStore, type LocalRec
 
 /** The machine and account an instance runs on. Linux and macOS add the boot ID and numeric UID.
  *  Windows has no boot ID, so it records the account's SID, and its instances name a custodian whose
- *  life stands for the current boot. */
+ *  life stands for the current boot. Its machine comes from Windows' system ID, and `machineSource`
+ *  records where Windows derived that ID: an ID from the registry changes on a clean install. */
 export type ServiceHost = { machine: string; name: string } & (
-  | { boot: string; uid: number; platform?: never; sid?: never }
-  | { platform: "win32"; sid: string; boot?: never; uid?: never });
+  | { boot: string; uid: number; platform?: never; sid?: never; machineSource?: never }
+  | { platform: "win32"; machineSource: Win32SystemIdSource; sid: string; boot?: never; uid?: never });
+/** The modules Windows derives a system ID from (SystemIdentificationSource 1, 2 and 3). */
+export type Win32SystemIdSource = "tpm" | "uefi" | "registry";
+const SYSTEM_ID_SOURCES: readonly Win32SystemIdSource[] = ["tpm", "uefi", "registry"];
 /** Windows only: the custodian that holds this incarnation's job, the pipe it answers on, and the
  *  name of the protected file beside this record that holds its capability. Never the capability. */
 export interface ServiceCustody { custodian: ProcessIdentityRecord; pipe: string; capability: string }
@@ -80,19 +84,22 @@ const CAPABILITY = /^custody-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]
 
 /** This driver refuses without an OS machine identity; no PID-only ownership substitute. Linux
  *  reads its machine and boot IDs; macOS reads its hardware UUID and boot session UUID through the
- *  bundled binding, whose absence is an installation error. Windows reads the SMBIOS system UUID and
- *  the account's SID through its binding; it has no boot ID to read. */
+ *  bundled binding, whose absence is an installation error. Windows reads its system ID for this
+ *  publisher (GetSystemIdForPublisher) and the account's SID through its binding, and refuses when
+ *  Windows has no module to derive that ID from; it has no boot ID to read. */
 export function processServiceHost(): ServiceHost {
   if (host) return host;
   if (process.platform === "win32") {
     const native = win32ProcessBinding();
-    let machine: string, sid: string;
+    let system: { id: string; source: number }, sid: string;
     try {
-      machine = native.machineUuid();
+      system = native.systemId();
       sid = native.userSid();
-      if (!UUID.test(machine) || !SID.test(sid)) throw new Error();
+      if (!/^(?:[0-9a-f]{2}){1,256}$/.test(system.id) || !Number.isInteger(system.source) || !SID.test(sid)) throw new Error();
     } catch { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the host's stable machine identity or account SID could not be established; no process-service effect was attempted"); }
-    return host = { platform: "win32", machine: createHash("sha256").update(machine.toLowerCase()).digest("hex"), sid, name: hostname() };
+    const machineSource = SYSTEM_ID_SOURCES[system.source - 1];
+    if (!machineSource) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "Windows has no TPM, UEFI or registry module to derive this machine's system ID from; no process-service effect was attempted");
+    return host = { platform: "win32", machine: createHash("sha256").update(Buffer.from(system.id, "hex")).digest("hex"), machineSource, sid, name: hostname() };
   }
   if ((process.platform !== "linux" && process.platform !== "darwin") || process.getuid === undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this process-service driver currently requires Linux, macOS or Windows machine identity; another platform is not silently treated as one of them");
   const native = process.platform === "darwin" ? darwinProcessBinding() : undefined;
@@ -132,9 +139,9 @@ function validateInstance(input: unknown, space: string): ServiceInstance {
   const definition = localRecordText(value.definition, 64);
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(definition)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the instance's definition name is invalid");
   const windows = (value.host as { platform?: unknown } | undefined)?.platform === "win32";
-  const machine = localRecordObject(value.host, windows ? ["platform", "machine", "sid", "name"] : ["machine", "boot", "name", "uid"]);
+  const machine = localRecordObject(value.host, windows ? ["platform", "machine", "machineSource", "sid", "name"] : ["machine", "boot", "name", "uid"]);
   if (typeof machine.machine !== "string" || !/^[0-9a-f]{64}$/.test(machine.machine) || typeof machine.name !== "string" ||
-      (windows ? typeof machine.sid !== "string" || !SID.test(machine.sid) : typeof machine.boot !== "string" || !/^[0-9a-f-]{36}$/i.test(machine.boot) || !Number.isInteger(machine.uid) || Number(machine.uid) < 0)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the instance's execution-host identity is invalid");
+      (windows ? typeof machine.sid !== "string" || !SID.test(machine.sid) || !SYSTEM_ID_SOURCES.includes(machine.machineSource as Win32SystemIdSource) : typeof machine.boot !== "string" || !/^[0-9a-f-]{36}$/i.test(machine.boot) || !Number.isInteger(machine.uid) || Number(machine.uid) < 0)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the instance's execution-host identity is invalid");
   let custody: ServiceCustody | undefined;
   if (value.custody !== undefined) {
     const row = localRecordObject(value.custody, ["custodian", "pipe", "capability"]);

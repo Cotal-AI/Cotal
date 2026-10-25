@@ -12,7 +12,9 @@ export interface Win32JobLaunch { application: string; commandLine: string; cwd:
 export interface Win32ProcessBinding {
   creationToken(pid: number): string | undefined;
   userSid(): string;
-  machineUuid(): string;
+  /** Windows' system ID for this app's publisher, as hex, and its SystemIdentificationSource:
+   *  0 none, 1 TPM, 2 UEFI, 3 registry. */
+  systemId(): { id: string; source: number };
   launch(options: Win32JobLaunch): { pid: number; token: string };
   rootExit(): number | undefined;
   jobProcesses(): number[];
@@ -32,7 +34,7 @@ export function win32ProcessBinding(): Win32ProcessBinding {
     let loaded: unknown;
     try { loaded = require(fileURLToPath(path)); }
     catch (cause) { throw new Error("could not load the shipped Windows creation identity binding; reinstall this version", { cause }); }
-    if (loaded === null || typeof loaded !== "object" || !["creationToken", "userSid", "machineUuid", "launch", "rootExit", "jobProcesses", "inJob", "terminate"].every((name) => typeof (loaded as Record<string, unknown>)[name] === "function"))
+    if (loaded === null || typeof loaded !== "object" || !["creationToken", "userSid", "systemId", "launch", "rootExit", "jobProcesses", "inJob", "terminate"].every((name) => typeof (loaded as Record<string, unknown>)[name] === "function"))
       throw new Error("the shipped Windows creation identity binding is missing a reader");
     binding = loaded as Win32ProcessBinding;
   }

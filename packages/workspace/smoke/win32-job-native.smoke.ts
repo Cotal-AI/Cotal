@@ -77,13 +77,14 @@ try {
   const sid = win32ProcessBinding().userSid();
   const whoami = execFileSync(join(process.env.SystemRoot!, "System32", "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8" }).trim();
   check("J1 the user SID is this account's token SID", /^S-1-5-21(-\d+)+$/.test(sid) && whoami.endsWith(`"${sid}"`), { sid, whoami });
-  // A test-only oracle: the CIM product UUID is the same SMBIOS field.
-  const machine = win32ProcessBinding().machineUuid();
-  const cim = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "(Get-CimInstance Win32_ComputerSystemProduct).UUID"], { encoding: "utf8", timeout: 30_000 }).trim();
-  check("J17 the machine identity is the SMBIOS system UUID, stable across reads",
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(machine) && machine === cim.toLowerCase() && win32ProcessBinding().machineUuid() === machine, { machine, cim });
-
   const one = helper();
+  const system = win32ProcessBinding().systemId();
+  const other = (await one.call("systemId")).value as { id: string; source: number } | null;
+  // The source and length are enough to read a run; the ID itself is not printed.
+  console.log(JSON.stringify({ systemIdSource: system.source, systemIdBytes: system.id.length / 2 }));
+  check("J17 the system ID comes from a TPM, UEFI or the registry, and another process reads the same one",
+    [1, 2, 3].includes(system.source) && /^(?:[0-9a-f]{2})+$/.test(system.id) && JSON.stringify(win32ProcessBinding().systemId()) === JSON.stringify(system) &&
+    JSON.stringify(other) === JSON.stringify(system), { source: system.source, otherSource: other?.source });
   check("J2 a job reader before any launch refuses", (await one.call("jobProcesses")).error === "this process holds no launched job");
   const missing = await one.call("launch", { ...launchOptions(join(root, "absent", "one.log")) });
   check("J3 a launch whose log cannot be opened fails and holds no job", missing.error?.startsWith("CreateFileW(log) failed") === true && (await one.call("rootExit")).error === "this process holds no launched job", missing);

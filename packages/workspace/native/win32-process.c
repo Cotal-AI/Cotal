@@ -90,56 +90,36 @@ static napi_value user_sid(napi_env env, napi_callback_info info) {
   return status == napi_ok ? value : NULL;
 }
 
-// The firmware table provider for raw SMBIOS data, 'RSMB'.
-#define RSMB_PROVIDER 0x52534D42u
+// Defined in win32-system-id.cpp: Windows' documented system ID for this app's publisher, through
+// SystemIdentification.GetSystemIdForPublisher. Returns 0 or the failing HRESULT.
+int32_t cotal_system_id(uint8_t *id, uint32_t capacity, uint32_t *length, int32_t *source);
 
-// This machine's SMBIOS system UUID (structure type 1), as GetSystemFirmwareTable documents it.
-// SMBIOS 2.6 and later store its first three fields little-endian. A UUID the firmware left unset,
-// all zeros or all ones, identifies no machine and is refused.
-static napi_value machine_uuid(napi_env env, napi_callback_info info) {
+// This device's system ID for an unpackaged app, as lowercase hex, and the module that produced it
+// (SystemIdentificationSource: 0 none, 1 TPM, 2 UEFI, 3 registry). The caller judges the source.
+static napi_value system_id(napi_env env, napi_callback_info info) {
   (void)info;
-  UINT size = GetSystemFirmwareTable(RSMB_PROVIDER, 0, NULL, 0);
-  if (size < 8) return fail(env, "GetSystemFirmwareTable");
-  BYTE *data = HeapAlloc(GetProcessHeap(), 0, size);
-  if (data == NULL) return refuse(env, "firmware table allocation failed");
-  UINT read = GetSystemFirmwareTable(RSMB_PROVIDER, 0, data, size);
-  BYTE uuid[16];
-  int found = 0;
-  DWORD length = 0;
-  if (read >= 8 && read <= size) memcpy(&length, data + 4, sizeof(length));
-  if (read >= 8 && read <= size && length <= read - 8) {
-    const BYTE *p = data + 8, *end = data + 8 + length;
-    while (!found && end - p >= 4) {
-      BYTE type = p[0], formatted = p[1];
-      if (formatted < 4 || end - p < formatted) break;
-      if (type == 1 && formatted >= 0x19) { memcpy(uuid, p + 8, sizeof(uuid)); found = 1; break; }
-      if (type == 127) break;
-      const BYTE *q = p + formatted;
-      while (end - q >= 2 && (q[0] != 0 || q[1] != 0)) q++;
-      if (end - q < 2) break;
-      p = q + 2;
-    }
+  uint8_t id[256];
+  uint32_t length = 0;
+  int32_t source = -1;
+  int32_t result = cotal_system_id(id, (uint32_t)sizeof(id), &length, &source);
+  if (result != 0) {
+    char message[96];
+    snprintf(message, sizeof(message), "GetSystemIdForPublisher failed (HRESULT 0x%08lX)", (unsigned long)(uint32_t)result);
+    return refuse(env, message);
   }
-  BYTE major = 0, minor = 0;
-  if (read >= 8) { major = data[1]; minor = data[2]; }
-  HeapFree(GetProcessHeap(), 0, data);
-  if (!found) return refuse(env, "the firmware reports no SMBIOS system UUID");
-  int zeros = 1, ones = 1;
-  for (int i = 0; i < 16; i++) { zeros &= uuid[i] == 0x00; ones &= uuid[i] == 0xFF; }
-  if (zeros || ones) return refuse(env, "the firmware's SMBIOS system UUID is unset");
-  if (major > 2 || (major == 2 && minor >= 6)) {
-    BYTE swapped[16];
-    memcpy(swapped, uuid, sizeof(swapped));
-    for (int i = 0; i < 4; i++) uuid[i] = swapped[3 - i];
-    uuid[4] = swapped[5]; uuid[5] = swapped[4];
-    uuid[6] = swapped[7]; uuid[7] = swapped[6];
+  if (length == 0 || length > sizeof(id)) return refuse(env, "the system ID is empty or longer than 256 bytes");
+  static const char digits[] = "0123456789abcdef";
+  char text[2 * sizeof(id)];
+  for (uint32_t i = 0; i < length; i++) {
+    text[2 * i] = digits[id[i] >> 4];
+    text[2 * i + 1] = digits[id[i] & 0x0F];
   }
-  char text[37];
-  int written = snprintf(text, sizeof(text), "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-    uuid[0], uuid[1], uuid[2], uuid[3], uuid[4], uuid[5], uuid[6], uuid[7], uuid[8], uuid[9], uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]);
-  if (written != 36) return refuse(env, "the SMBIOS system UUID could not be formatted");
-  napi_value value;
-  if (napi_create_string_utf8(env, text, 36, &value) != napi_ok) return NULL;
+  napi_value value, hex, kind;
+  if (napi_create_object(env, &value) != napi_ok ||
+      napi_create_string_utf8(env, text, 2 * (size_t)length, &hex) != napi_ok ||
+      napi_create_int32(env, source, &kind) != napi_ok ||
+      napi_set_named_property(env, value, "id", hex) != napi_ok ||
+      napi_set_named_property(env, value, "source", kind) != napi_ok) return NULL;
   return value;
 }
 
@@ -356,7 +336,7 @@ NAPI_MODULE_INIT() {
   napi_property_descriptor properties[] = {
     { "creationToken", NULL, creation_token, NULL, NULL, NULL, napi_enumerable, NULL },
     { "userSid", NULL, user_sid, NULL, NULL, NULL, napi_enumerable, NULL },
-    { "machineUuid", NULL, machine_uuid, NULL, NULL, NULL, napi_enumerable, NULL },
+    { "systemId", NULL, system_id, NULL, NULL, NULL, napi_enumerable, NULL },
     { "launch", NULL, launch, NULL, NULL, NULL, napi_enumerable, NULL },
     { "rootExit", NULL, root_exit, NULL, NULL, NULL, napi_enumerable, NULL },
     { "jobProcesses", NULL, job_processes, NULL, NULL, NULL, napi_enumerable, NULL },
