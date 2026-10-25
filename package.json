@@ -514,6 +514,7 @@
     "smoke:part-renderer": "tsx packages/core/smoke/part-renderer.smoke.ts",
     "smoke:run-journal-auth": "tsx packages/core/smoke/run-journal-auth.smoke.ts",
     "smoke:run-journal": "tsx packages/core/smoke/run-journal.smoke.ts",
+    "smoke:consumer-already-exists": "tsx packages/core/smoke/consumer-already-exists.smoke.ts",
     "smoke:agui-kind": "tsx packages/core/smoke/agui-kind.smoke.ts",
     "smoke:agui-conformance": "tsx extensions/connector-core/smoke/agui-conformance.smoke.ts",
     "smoke:event-channel-classify": "tsx packages/core/smoke/event-channel-classify.smoke.ts",
