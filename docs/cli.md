@@ -968,9 +968,10 @@ registered for the controller, such as a folder an earlier release started and a
 unregistered, or a new project a bare `up` started. Plain `cotal up` there starts it again on its
 retained launcher, with its identity, store and history. Its `down` drops the registration that kept
 the broker address, unless the space is named after its folder: that registration stays, and it does
-not move the folder to the controller stack. Without a registration, and with no `--server` or
-`--host`, it starts at the address in the broker configuration its last start rendered
-there, and in open mode when that start was open and no mode is asked for, and says so in one line.
+not move the folder to the controller stack. Without a registration, or with only that kept one, and
+with no `--server` or `--host`, it starts at the address in the broker configuration its last start
+rendered there, and in open mode when that start was open and no mode is asked for, and says so in
+one line.
 An open root holds no account to name its space, so the broker configuration its last start rendered
 names it, and plain `cotal up` starts that space again. A configuration an earlier release rendered
 names none, and a root it deployed with `up -f` starts again as the space its newest open fresh team
