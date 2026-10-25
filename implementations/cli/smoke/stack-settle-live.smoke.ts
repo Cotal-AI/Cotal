@@ -46,7 +46,9 @@
  *     starts the daemon. A store that refused a
  *     write for permission makes the broker disable JetStream: `down`, `service stop stack-manager`
  *     and `up` refuse `DEPENDENCY_UNAVAILABLE` naming the logged failure and the manager's SIGTERM on
- *     its host, `status` leads with that SIGTERM, and once it ends the manager `down` and `up` work. A project folder renamed while its stack runs: the broker names
+ *     its host, `status` leads with that SIGTERM, and once it ends the manager `down` and `up` work. Damage the broker
+ *     logged in a stored file since it started makes `history` and `up` warn `STORE_DAMAGE_LOGGED` in its
+ *     words, and the history read stays complete. A project folder renamed while its stack runs: the broker names
  *     its store relative to the root, so it does not create the old path again; `send`, `up` and
  *     `status --space` from the renamed folder name the move and the way back, `status` there offers
  *     no `clean store`, and after the move back `down` stops it.
@@ -154,7 +156,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -670,6 +672,29 @@ try {
     const again = cli(root, "up", "--json");
     track(space);
     check("up then starts the delivery daemon", again.status === 0 && !gone(space, "stack-delivery"), shown(again));
+    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+  }
+
+  // 3j. Damage the broker logged in a stored file since it started. The line is nats-server's own
+  // warning, tagged with the running broker's pid and added to its log, so no store is damaged.
+  {
+    const space = "damagelog";
+    const root = prepare(space);
+    const up = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    track(space);
+    check("up starts the stack", up.status === 0, shown(up));
+    check("send stores one message", cli(root, "send", "-c", "general", "before the damage", "--json").status === 0);
+    const log = (cli(root, "status", "--json").env?.result?.store as { log?: string } | undefined)?.log;
+    const broker = pidOf(space, "stack-broker");
+    const line = `Filestore [CHAT_${space}] indexCacheBuf corrupt record state in .cotal/nats/jetstream/A/streams/CHAT_${space}/msgs/1.blk: dlen 2147483193 slen 65451 index 2592 rl 2147483215 lbuf 5184`;
+    if (log && broker !== null) appendFileSync(log, `[${broker}] 2026/10/25 01:28:58.973104 [WRN] ${line}\n`);
+    const read = cli(root, "history", "general", "--json");
+    const window = read.env?.result?.window as { read?: number } | undefined;
+    check("history warns STORE_DAMAGE_LOGGED in the broker's words, and stays ok and complete with the message it holds",
+      log !== undefined && broker !== null && read.status === 0 && read.env?.outcome === "ok" && (read.env as { completeness?: string }).completeness === "complete" && window?.read === 1
+        && Boolean(read.env?.warnings?.find((warning) => warning.code === "STORE_DAMAGE_LOGGED")?.message?.includes(line)), shown(read));
+    const again = cli(root, "up", "--json");
+    check("up on the running stack warns the same", again.status === 0 && Boolean(again.env?.warnings?.find((warning) => warning.code === "STORE_DAMAGE_LOGGED")?.message?.includes(line)), shown(again));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
   }
 

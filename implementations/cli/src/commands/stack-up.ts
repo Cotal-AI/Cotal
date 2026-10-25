@@ -56,7 +56,7 @@ import {
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
 import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
-import { jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, storeFull } from "../lib/broker-store-health.js";
+import { brokerStoreWrite, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, storeDamageNotice, storeFull } from "../lib/broker-store-health.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { definitionListeners, exposedPlaintext, listenerRow, type StackListener } from "../lib/stack-listeners.js";
@@ -439,6 +439,9 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   const warnings: OutputWarning[] = settled ? [{ code: "OPERATION_SETTLED", target: { root, space, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : [];
   if (storeMissing) warnings.push({ code: "STORE_MISSING", target: { root, space, storeDir: storeMissing }, message: missingStoreWarning(storeMissing) });
   if (storeShared) warnings.push({ code: "STORE_SHARED", target: { root, space, storeDir: storeShared.path, otherSpaces: storeShared.tenants }, message: sharedStoreWarning(storeShared.path, storeShared.tenants) });
+  // Damage the broker found while it restored its stored files is logged by now.
+  const damage = brokerStoreWrite(root, space);
+  if (damage.state === "damaged") warnings.push({ code: "STORE_DAMAGE_LOGGED", target: { root, space, brokerLog: damage.log }, message: storeDamageNotice(damage) });
   try {
     const persona = seedDefaultPersona(root);
     if (persona) written.push(persona);

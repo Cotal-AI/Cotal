@@ -1650,6 +1650,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
     ...(responder ? [["Delivery responder", stateCell(responder.text, responder.tone)] as [string, Cell]] : []),
     ...(r.store?.state === "write-failed" ? [["Store", stateCell(`write failed at ${r.store.at}: ${r.store.cause}${r.store.path ? ` · ${r.store.path}` : ""}`, "failed")] as [string, Cell]] : []),
     ...(r.store?.state === "full" ? [["Store", stateCell(`full · ${r.store.used} bytes stored, over its --max-file-store cap of ${r.store.cap} · ${r.store.path}`, "failed")] as [string, Cell]] : []),
+    ...(r.store?.state === "damaged" ? [["Store", stateCell(`damage logged at ${r.store.at}: ${r.store.warning}`, "failed")] as [string, Cell]] : []),
     ...(r.stackManager ? [["Manager", r.stackManager.endpoint === "answered" ? stateCell("answering", "ok") : r.stackManager.endpoint === "not-answering" ? stateCell(`not answering · stack-manager pid ${r.stackManager.pid}`, "failed") : stateCell("endpoint not checked", "hint")] as [string, Cell]] : []),
     ["Access", s.mode === "user" ? "user sign-in" : s.mode === "auth" ? "static auth" : "open"],
     ["Project", s.rootGone ? stateCell(`${s.root} · folder is gone`, "failed") : s.root],
@@ -1814,6 +1815,9 @@ function nextActions(r: StatusResult): Section {
       { command: own ? `${cmd} up --max-file-store <bytes>` : `${cmd} up --root ${shellWord(root)} --max-file-store <bytes>`, description: "Then start it again with a larger cap; the store keeps the history" },
     );
   }
+  // The broker keeps serving a store it found damage in, from what it can still read there.
+  if (r.store?.state === "damaged" && r.selected.resolved && r.services?.instances?.some((row) => row.definition === STACK_DEFINITION.broker))
+    items.unshift({ command: `${cmd} service logs stack-broker${own ? "" : ` --space ${r.selected.space}`}`, description: "Read what the broker logged about the damage it found in its store; history holds only what it could still read" });
   return { title: "Next", blocks: [{ kind: "commands", items }, ...[...extra, ...r.hints].map((hint) => ({ kind: "lines" as const, lines: [cell(hint, "hint")] }))] };
 }
 
