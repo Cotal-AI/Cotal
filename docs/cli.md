@@ -5887,8 +5887,8 @@ the characters allowed, and its Next names the value with each such character re
 `<name>.md` persona file, when present. It does not fall back to `default.md` for a different name.
 Explicit `--allow-subscribe`, `--allow-publish` and `--role` override the file's grants. A persona
 file of that name that cannot be read as a persona refuses the mint `SCHEMA_INVALID`, exit 1, even
-when the flags name every grant. The refusal names the file and `cotal persona show <name>`, which
-says what is wrong with it, and prints none of its values. A role from the file that is not one word
+when the flags name every grant. The mint refusal does not print file values or parser text.
+It names the file and `cotal persona show <name>` to inspect it. A role from the file that is not one word
 of letters, digits, `_` and `-` refuses the same way, naming `cotal persona edit <name>`. With
 `--identity` naming an agent credential this space issued, the new credential keeps that
 credential's read channels, post channels and role in place of the persona's, and each flag still
