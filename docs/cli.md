@@ -5931,7 +5931,8 @@ differ, the receipt warns `REPLACED_GRANTS_CHANGED`, naming both and the
 `--allow-subscribe`, `--allow-publish` and
 `--role` flags that name the replaced ones. With no standing credential under the label, `--replace`
 mints a new one and warns `NOTHING_REPLACED`. Exported files stay unchanged; the warning names
-`doctor auth --space <space>` to inspect their state and the guidance for each file.
+`doctor auth --space <space>` to inspect their state and the guidance for each file, and the
+space's root to run it in, since `doctor auth` reads the root it runs in.
 `--replace` takes no `--out`. An exported file stays outside
 managed `.cotal` and workstation state. Its path, label, profile and public key, without the
 credential, are recorded under `credentials/` in the Cotal home so `doctor auth` lists the file. A pre-existing explicit output must be an owned private
@@ -6186,7 +6187,10 @@ spaces, `--space` names one; it defaults to the sole space. Without `--space`, a
 spaces refuses with `TARGET_AMBIGUOUS` (exit 2) and names them. In a folder whose root holds no space,
 the report is partial (exit 4) and its next step is to run it in a space's root, which `cotal space`
 lists. In the root of a space registered as open, the report says that the space issues no
-credentials, so there are none to check, and the result is a no-op (exit 0).
+credentials, so there are none to check, and the result is a no-op (exit 0). With `--space` naming
+a space whose signing trust this root does not hold, it refuses `AUTH_REQUIRED` (exit 2) and reads
+no other root. Its next step names the folder that space is registered at, where the same command
+runs, or else a space's root, which `cotal space` lists.
 
 Plain diagnosis starts no repair or connection. A required legacy credential or user-auth directory
 migration refuses instead of silently moving files or reading canonical absence as an empty scope.

@@ -12,7 +12,8 @@
  *     agent cred, so that finding stays and the run is partial. With the agent file gone the root has
  *     no findings. A daemon file the NATS client cannot parse holds no key to re-sign, so an offline
  *     `--fix` mints it again under a new identity and says so. `doctor` without `auth`, and an unknown
- *     `--space`, refuse.
+ *     `--space`, refuse. A `--space` registered at another root refuses too, reading no other root,
+ *     and its next step names that root.
  *
  * Run: pnpm smoke:doctor-auth
  */
@@ -31,7 +32,7 @@ import {
   newIdentity,
 } from "@cotal-ai/core";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import { agentCredsDir, authDir, isCommandFailure, readRenewalRecord, saveSpaceAuth, spaceMaterialDir, type CommandFailure } from "@cotal-ai/workspace";
+import { agentCredsDir, authDir, isCommandFailure, readRenewalRecord, recordMesh, saveSpaceAuth, spaceMaterialDir, type CommandFailure } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
 
 const counted = countedAssert(nodeAssert);
@@ -259,6 +260,15 @@ try {
     assert.match(usage.message, /doctor auth/, "it names doctor auth");
     const unknown = await refusal({ space: "nope" }, ["auth"]);
     assert.equal(unknown.code, "AUTH_REQUIRED", "an unknown --space refuses");
+    assert.equal(unknown.remedy, "run `cotal doctor auth --space nope` in that space's root folder; `cotal space` lists each space's root", "and names a space's root, which cotal space lists");
+    // A space registered at another root keeps its trust there: this root reads none of it, and the
+    // step names the folder where the same command runs.
+    const elsewhere = join(root, "elsewhere");
+    mkdirSync(elsewhere, { recursive: true, mode: 0o700 });
+    recordMesh({ space: "remote", server: "nats://127.0.0.1:9", root: elsewhere, mode: "auth", ts: new Date().toISOString(), origin: "manual" });
+    const remote = await refusal({ space: "remote" }, ["auth"]);
+    assert.equal(remote.code, "AUTH_REQUIRED", "a --space registered at another root refuses here");
+    assert.equal(remote.remedy, `run \`cotal doctor auth --space remote\` in the folder space remote is registered at: ${elsewhere}`, "its step names that root");
   }
 } finally {
   process.chdir(startCwd);
