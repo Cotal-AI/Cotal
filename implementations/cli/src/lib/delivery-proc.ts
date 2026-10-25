@@ -225,7 +225,7 @@ function loggedFailure(path: string, from: number): string | undefined {
  *  treat it as non-fatal (a missing daemon degrades durable delivery, never live).
  *
  *  RETURNS TWO FACTS, NOT ONE (#1576). `running` is about the PROCESS; `responderBound` is about the
- *  `ctl.delivery` responder, which is what spawn, retirement and join actually require. They are not
+ *  `ctl.delivery` responder, which is what spawn, retirement and the durable backstop actually require. They are not
  *  the same question, and collapsing them into one boolean is how a mesh came to report healthy for
  *  22 hours while none of those three operations could complete. `responderBound` is false when the
  *  readiness wait elapsed without the lease flipping ready, and absent when no daemon applies. */
