@@ -884,6 +884,12 @@ refused `SCHEMA_INVALID` with no step: an attempt or receipt can be what holds a
 so nothing says to move it. Other commands that read the definition of a service you added keep
 that plain refusal, and `status` shows the saved definitions as unavailable.
 
+A service record folder that this account cannot read, such as its `instances` folder under
+`services/` in the Cotal home, is left unchanged. When `service` or `service logs` cannot read it,
+they refuse `PERMISSION_DENIED`, exit 2, naming the folder and a quoted `chmod u+rwx <folder>`
+step. No permissions change automatically. `status` keeps its partial result and warns that the
+saved definitions or instance observations could not be read, with that code.
+
 A controller stack opens three listeners. The broker serves clients at its `--server` port, and a
 websocket for the browser console's mesh session on a port `up` picks, which is always plaintext.
 The manager serves its console over plain HTTP on a port it picks when it starts. All three bind the
