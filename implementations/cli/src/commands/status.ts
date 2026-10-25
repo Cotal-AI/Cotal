@@ -840,7 +840,8 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   }
   // A stopped mesh with a persisted store: name the reset verb. Stale state (e.g. durables from
   // an older Cotal generation) is otherwise invisible until a spawn fails on it. The restart is
-  // deliberately "your usual flags", never a bare `up` (mode/name/store-dir aren't recorded).
+  // "your usual flags": a stopped stack's flags are not all recorded. A static-auth broker that
+  // exited here is named the repair `up` first, under Next (see `nextActions`).
   // A controller stack's broker has no legacy pidfile, so that heuristic says nothing about it.
   let controllerStack = false, journal: StackJournal | undefined, elsewhere = false, unusable = false;
   try { journal = readStackJournal(root)?.journal; controllerStack = journal?.space === space; }
@@ -1772,6 +1773,12 @@ function nextActions(r: StatusResult): Section {
     && r.meshes.items.find((m) => m.space === dialed.space)?.server !== dialed.server;
   const stack = servedStack(r.folder, r.selected), own = stack !== undefined;
   const block = own ? r.folder.stackBlock : undefined;
+  // A legacy static-auth stack started here whose broker or manager exited leaves its pidfile, and a
+  // bare `up` in this folder starts it again on the address and store this machine recorded. An open
+  // refresh restarts no manager, and an open or user-auth broker needs its mode flag again.
+  const local = r.selected.resolved && r.selected.mode === "auth" && !r.folder.controllerStack && r.folder.root === r.selected.root && r.folder.processSpace === r.selected.space
+    && !["manual", "catalog"].includes(r.meshes.items.find((m) => m.space === r.selected.space)?.origin ?? "up");
+  const exited = local ? (r.folder.processes ?? []).filter((row) => (row.name === "nats" || row.name === "manager") && row.state === "stopped" && row.pid !== null).map((row) => row.name) : [];
   if (r.selected.resolved && r.selected.connection === "broker-stopped") items.unshift({ command: `kill -CONT ${r.selected.brokerPid}`, description: "Resume the stopped broker process so it answers again" });
   else if (block && stack) {
     const inspect = { command: `${cmd} service status ${block.definition} --instance ${block.instanceId} --space ${stack.space}`, description: block.route.kind === "inspect" ? "Inspect the member that keeps up and down from settling" : "Inspect that member" };
@@ -1804,6 +1811,10 @@ function nextActions(r: StatusResult): Section {
     const held = r.folder.heldServices ?? [], space = r.selected.space;
     items.unshift(...held.map((row) => ({ command: `${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${space} --yes`, description: `Stop the ${row.definition} service, which runs this root's ${row.record} (pid ${row.pid}) outside the stack` })),
       { command: `${cmd} up --root ${shellWord(r.selected.root)}${r.folder.noManager ? " --no-manager" : ""}`, description: held.length ? "Then restart this stack's stopped members from its recorded inputs" : "Restart this stack's stopped members from its recorded inputs" });
+  } else if (exited.length) {
+    const broker = exited.includes("nats"), manager = exited.includes("manager");
+    const notes = [...(broker ? ["up reopens the recorded store"] : []), ...(manager ? ["pass --runtime again if the manager ran on one"] : [])];
+    items.unshift({ command: `${cmd} up`, description: `Restart this folder's ${broker && manager ? "broker and manager" : broker ? "broker" : "manager"}, which exited; ${notes.join("; ")}` });
   }
   // A stack whose folder was deleted stops only from this machine's records.
   if (r.selected.resolved && r.selected.rootGone) items.unshift({ command: `${cmd} down --space ${r.selected.space} --yes`, description: "Stop the stack whose folder is gone and free its name" });
