@@ -337,6 +337,7 @@
     "smoke:env-isolate": "tsx implementations/manager/smoke/env-isolate.smoke.ts",
     "smoke:tmux": "tsx extensions/tmux/smoke.ts",
     "smoke:cmux": "tsx extensions/cmux/smoke.ts",
+    "smoke:startup-expiry": "tsx implementations/manager/smoke/startup-expiry.smoke.ts",
     "smoke:orca": "tsx extensions/orca/smoke.ts",
     "smoke:orca:live": "tsx extensions/orca/smoke.ts -- --live",
     "smoke:orca-e2e:live": "pnpm --filter cotal-ai... build && pnpm --filter @cotal-ai/orca build && tsx bin/smoke/orca-extension-live.smoke.ts",
