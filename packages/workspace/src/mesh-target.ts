@@ -642,6 +642,24 @@ export function credsSpace(cwd: string): { space: string; selected: boolean } | 
   return space === undefined ? undefined : { space, selected: false };
 }
 
+/** Whether {@link resolveMeshTarget} reads liveness (`flags.offline`) for `flags` at `cwd`. A named
+ *  `--space`, the selection where it is the target, and a registration of this project's root each
+ *  pick the target without it, so a caller that sweeps the recorded brokers first has nothing to
+ *  probe then. It follows the same precedence and records nothing. */
+export function resolveReadsLiveness(cwd: string, flags: ResolveFlags = {}): boolean {
+  if (flags.space) return false;
+  if (flags.server) return true;
+  const meshes = loadMeshes();
+  const current = getCurrent();
+  if (current) {
+    // The selection is the target unless this project's root has one space other than it.
+    const folder = folderSpaces(cwd, meshes);
+    if (!folder || folder.spaces.length !== 1 || folder.spaces.includes(current)) return false;
+  }
+  const root = findCotalRoot(cwd);
+  return !isGenuineSpace(root) || registrationAt(root, meshes) === undefined;
+}
+
 /**
  * Resolve the mesh target by precedence (first match wins):
  *  1. `--space` — registry lookup (errors if that space isn't running).

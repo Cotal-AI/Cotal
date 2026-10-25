@@ -12,8 +12,9 @@
  *    record, while a real refusal behind the same greeting still drops an `up` record.
  *  • pruneStaleMeshes — a registered entry whose broker is gone is kept as offline; an explicit call only.
  *    Given a `--server`, it probes only the records at that address.
- *  • resolveControlTarget — a space-less control resolve sweeps once, and the sweep it reads is the
- *    one the caller handed in when there is one (#3872).
+ *  • resolveControlTarget — a space-less control resolve of the selected space dials no other recorded
+ *    broker; one that picks among the running meshes sweeps once, and the sweep it reads is the one
+ *    the caller handed in when there is one (#3872).
  *
  * Run: pnpm smoke:preflight
  */
@@ -49,6 +50,7 @@ const {
   reachableOrThrow,
   ConnectRefusal,
   resolveControlTarget,
+  resolveTargetOrThrow,
   setCurrent,
   clearCurrent,
 } = await import("@cotal-ai/workspace");
@@ -634,9 +636,9 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
 
 // ── One sweep per control resolve (#3872) ────────────────────────────────────────────────────────
 // `beta` is a bystander that only a registry sweep dials, so its dial count is the sweep count. The
-// mode peek and the connect read one sweep, a named `--space` reads none, and a sweep the caller
-// already took is the verdict the whole chain reads. The cwd is `/` so the walk-up can never select
-// a real project once `current` is skipped.
+// selected space and a named `--space` read none, a sweep the caller already took is the verdict the
+// whole chain reads, and with nothing selected the mode peek and the connect read one sweep. The cwd
+// is `/` so the walk-up can never select a real project once `current` is skipped.
 {
   const { createServer } = await import("node:net");
   const greeter = () => new Promise<{ server: string; dials: () => number; close: () => void }>((resolve) => {
@@ -668,9 +670,16 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
   let before = beta.dials();
   const spaceless = await control({});
   check(
-    "a space-less control resolve sweeps the registry once: its mode peek and its connect read one sweep (#3872)",
-    spaceless.space === "alpha" && beta.dials() - before === 1,
+    "a space-less control resolve of the selected space dials no other recorded broker",
+    spaceless.space === "alpha" && beta.dials() - before === 0,
     { space: spaceless.space, sweeps: beta.dials() - before },
+  );
+  before = beta.dials();
+  const command = await resolveTargetOrThrow({});
+  check(
+    "...and so does a command's space-less resolve of it",
+    command.space === "alpha" && beta.dials() - before === 0,
+    { space: command.space, sweeps: beta.dials() - before },
   );
   before = beta.dials();
   const named = await control({ space: "alpha" });
@@ -689,9 +698,29 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
     handed.space === "beta" && alpha.dials() - before === 0,
     { space: handed.space, alphaDials: alpha.dials() - before },
   );
+  // With nothing selected the resolve picks among the running meshes, so it sweeps. `gamma` takes
+  // every connection and drops it, so it is offline and alpha is the one running mesh; its dials for
+  // one explicit sweep are counted first.
+  let gammaDials = 0;
+  const dropper = createServer((sock) => { gammaDials++; sock.on("error", () => { /* the probe sees the drop */ }); sock.destroy(); });
+  const gamma = await new Promise<string>((resolve) => dropper.listen(0, "127.0.0.1", () => resolve(`nats://127.0.0.1:${(dropper.address() as { port: number }).port}`)));
+  removeMesh("beta");
+  recordMesh({ space: "gamma", server: gamma, root: "/tmp/s3872-gamma", mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  before = gammaDials;
+  await pruneStaleMeshes();
+  const perSweep = gammaDials - before;
+  before = gammaDials;
+  const picked = await control({});
+  check(
+    "with nothing selected, a space-less control resolve sweeps the registry once: its mode peek and its connect read one sweep (#3872)",
+    picked.space === "alpha" && perSweep > 0 && gammaDials - before === perSweep,
+    { space: picked.space, perSweep, dials: gammaDials - before },
+  );
+  removeMesh("gamma");
   process.chdir(cwd);
   alpha.close();
   beta.close();
+  dropper.close();
 }
 
 rmSync(home, { recursive: true, force: true });

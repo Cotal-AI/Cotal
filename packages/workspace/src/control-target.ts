@@ -30,7 +30,7 @@ import {
 import { agentLifecycleSecretFilePaths } from "./agent-secrets.js";
 import { authDir, findCotalRoot, soleSpaceOf } from "./auth-paths.js";
 import { connectOrExit, connectOrThrow, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, preflightOrThrow, userViewAuthOrThrow, type ConnectFlags } from "./connect.js";
-import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type MeshTargetErrorCode } from "./mesh-target.js";
+import { isWorkspaceTargetError, resolveMeshTarget, resolveReadsLiveness, type MeshTarget, type MeshTargetErrorCode } from "./mesh-target.js";
 import { findMesh } from "./mesh-registry.js";
 import { pruneStaleMeshes } from "./preflight.js";
 
@@ -83,14 +83,14 @@ export async function resolveControlTarget(
   opts: { onRefusal?: "exit" | "throw"; endpoint?: string } = {},
 ): Promise<ControlTarget> {
   const connect_ = opts.onRefusal === "throw" ? connectOrThrow : connectOrExit;
-  // A credential-less resolve sweeps once when no space is named, unless the caller already swept
-  // for these flags, and the peek and the connect helper both resolve against that `offline` set,
+  // A credential-less resolve that reads liveness sweeps once, unless the caller already swept for
+  // these flags, and the peek and the connect helper both resolve against that `offline` set,
   // so they see one world and a kept dead record is a live candidate for neither.
   // A raw `--creds` with `--server` and no `--space` takes this folder's space; with neither, the
   // connect helper takes the selected space or this folder's.
   const withSpace = flags.creds
     ? flags.space === undefined && flags.server !== undefined ? { ...flags, space: soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE } : flags
-    : { ...flags, offline: flags.offline ?? (flags.space ? [] : (await pruneStaleMeshes(flags.server)).offline) };
+    : { ...flags, offline: flags.offline ?? (resolveReadsLiveness(process.cwd(), { server: flags.server, space: flags.space }) ? (await pruneStaleMeshes(flags.server)).offline : []) };
   // USER MODE: manager calls exchange the current ledger authority for a concrete instance view.
   // `connectOrExit` refuses control-caller-* on a user mesh (those profiles carry freeze rows the
   // bearer does not hold), so the mode is peeked here and the user path taken explicitly.

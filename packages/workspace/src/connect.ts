@@ -38,7 +38,7 @@ import { findCotalRoot, getSpaceAuth, hasUserAuthState, userAuthStateDir } from 
 import { agentGrants, grantMintFlags } from "./agent-grants.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { findMesh, movedProject, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
-import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
+import { isWorkspaceTargetError, resolveMeshTarget, resolveReadsLiveness, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
 import { renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
 import { CommandFailure, type RefusalCode } from "./output.js";
@@ -939,14 +939,15 @@ export async function reachableOrExit(server: string, auth: RawAuth = {}): Promi
 }
 
 /** Resolve the mesh a command targets, exiting with one human sentence on an unresolved/ambiguous
- *  registry rather than a stack trace. Sweeps first when resolving without an explicit `--space`,
- *  only the records at `--server` when one is given, and hands the sweep's `offline` set to the
- *  resolver so a crashed mesh's kept record does not count as running. A caller that already swept
+ *  registry rather than a stack trace. Sweeps first only when the resolve reads liveness
+ *  ({@link resolveReadsLiveness}), only the records at `--server` when one is given, and hands the
+ *  sweep's `offline` set to the resolver so a crashed mesh's kept record does not count as running.
+ *  The selection and this project's registration pick the target without it. A caller that already swept
  *  for these flags passes its `offline` set instead, so one resolve chain reads one liveness
  *  verdict. A named `--space` is resolved + preflighted directly, so the sweep cannot hide a
  *  dead-recorded mesh the operator is recovering with a live `--server` override. */
 export async function resolveTargetOrThrow(flags: ResolveFlags): Promise<MeshTarget> {
-  const offline = flags.offline ?? (flags.space ? [] : (await pruneStaleMeshes(flags.server)).offline);
+  const offline = flags.offline ?? (resolveReadsLiveness(process.cwd(), flags) ? (await pruneStaleMeshes(flags.server)).offline : []);
   let target: MeshTarget;
   try {
     target = resolveMeshTarget(process.cwd(), { ...flags, offline });
