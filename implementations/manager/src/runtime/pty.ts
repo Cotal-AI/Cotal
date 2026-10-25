@@ -100,7 +100,11 @@ export class LegacyPtyRuntime implements Runtime {
     const handle: AgentHandle = {
       name,
       kind: "pty",
-      pid: proc.pid,
+      // Read when asked: node-pty's ConPTY backend creates the child after `spawn` returns and
+      // reports pid 0 until then, so a copy taken here named no process. Absent until it exists.
+      get pid() {
+        return proc.pid > 0 ? proc.pid : undefined;
+      },
       status: () => (alive ? "running" : "exited"),
       exitInfo: () => exit,
       stop: (opts) => {
