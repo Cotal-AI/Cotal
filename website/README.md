@@ -17,7 +17,7 @@ fails the sync. Edit the source files, not the generated copies.
 ## Develop
 
 ```sh
-npm install --legacy-peer-deps   # plugin's Astro peer range lags; it works on 7
+npm ci                           # install the locked website dependencies
 npm run dev                      # syncs docs, then starts Astro
 npm run build                    # syncs docs, then builds to dist/
 ```
@@ -25,6 +25,25 @@ npm run build                    # syncs docs, then builds to dist/
 `astro.config.mjs` loads the sidebar the sync generates and stops with an error when it
 cannot read or parse that file, so run `npm run sync` before calling `npm run astro`
 directly.
+
+## HTTP references
+
+`starlight-openapi` renders the dashboard and public auth HTTP descriptions from
+`implementations/web/openapi.json` and `implementations/auth/openapi.json`.
+Edit a description and run `npm run gen:api` to update its generated Markdown
+source under `docs/`. The build refuses stale generated Markdown.
+Wire message and presence schemas, where used, come from `spec/cotal.schema.json`.
+
+The sync publishes `/dashboard.openapi.json` and `/auth.openapi.json`. Each plugin
+page under `/api/dashboard/` and `/api/auth/` has a Markdown twin. The complete
+references are served at `/api/dashboard.md` and `/api/auth.md`. Generated sources
+also feed the existing llms indexes and connector docs bundle, without a second
+public HTML reference. Route metadata lives in `src/http-references.js`.
+
+`npm test` checks reference generation; the build checks the published artifacts.
+After building packages, run `pnpm smoke:web-openapi` and `pnpm smoke:auth-openapi`
+from the repository root for HTTP conformance against private fixtures. The web
+suite also checks SSE payloads.
 
 ## Agent-native surface
 
@@ -58,7 +77,7 @@ curl http://127.0.0.1:8788/llms.txt                           # -> index
 - **Root directory:** `website`
 - **Build command:** `npm run build`
 - **Output directory:** `dist`
-- **Install command:** `npm install --legacy-peer-deps`
+- **Install command:** `npm ci`
 
 `functions/` (the `Accept` negotiation) and `public/_routes.json` (which limits the
 function to page routes, keeping it off static assets) are picked up automatically.

@@ -12,6 +12,8 @@ current export surface stops short of a fully hosted composition.
 This is the "guarded substrate" boundary in practice. Nothing here reveals or assumes a specific
 host; it documents the public seams any embedder composes.
 
+For CLI automation, agent tools and wire clients, see the [API reference](api-reference.md).
+
 ## What you embed
 
 The supported reference shape here is **one broker operator serving one space** (one tenant: a

@@ -8,6 +8,8 @@ wire contract: the normative subjects and schemas live in the [SPEC](../SPEC.md)
 lookup material for the commands, not a walkthrough; if you are new, start with
 [Getting started](getting-started.md).
 
+For the other integration interfaces, see the [API reference](api-reference.md).
+
 ## Running it
 
 ```bash

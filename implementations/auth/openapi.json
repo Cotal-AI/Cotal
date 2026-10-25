@@ -1,0 +1,2227 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Auth HTTP API",
+    "version": "1.0.0",
+    "description": "HTTP interface of the stock auth public listener: 11 paths and 12 operations. Public means reachable through the configured listener, not unauthenticated. This implementation surface uses Cotal native contracts and does not establish a stable cloud API. Description version 1.0.0 identifies this document, not the wire or npm package version.\n\nCredentials are JSON body proofs, with no loopback capability required. No CORS headers are sent. All POST routes and service authority GET reject any Origin header. Health, JWKS and mesh discovery GET permit Origin headers.\n\nThe listener binds 127.0.0.1; an operator HTTPS proxy supplies the external origin. Service endpoint routes require service endpoints enabled. Route lookup uses the exact request target: query strings and trailing slashes do not match and return JSON 404. Unknown paths and loopback-only lifecycle, enrollment verification, human-proof and consent routes return JSON 404. Configuration and route-specific native parser checks remain authoritative.\n\nPOST JSON bodies default to 65536 bytes; service authority accepts 2097152 bytes. Public work has 64 concurrent admissions and a 10000 ms deadline. Its separate rolling 30-refusal/minute peer budget is bounded to 1024 peer entries. Failure accounting is route-specific. Manager dispatch failures and chat native or store failures can consume the budget after valid proof verification. Otherwise successful requests are still evaluated when the refusal budget is full. Peer is socket address unless trusted proxy mode selects the last X-Forwarded-For hop."
+  },
+  "servers": [
+    {
+      "url": "https://auth.example.invalid",
+      "description": "Replace with the configured HTTPS public authority URL; TLS terminates at the operator proxy."
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "auth-health",
+        "summary": "Read auth service health",
+        "description": "GET only. This route permits Origin headers and returns readiness of the HTTP service, not an end-to-end broker health proof.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/jwks": {
+      "get": {
+        "operationId": "auth-jwks",
+        "summary": "Read issuer verification keys",
+        "description": "GET only. Permits Origin headers. No CORS headers are emitted. Retired signing keys remain published for their cache window.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Jwks"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "max-age=300"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/exchange": {
+      "post": {
+        "operationId": "auth-exchange",
+        "summary": "Exchange an identity proof",
+        "description": "No loopback capability on this listener. Fresh pinned-issuer/audience IdP proof or managed ledger actor secret authorizes the selected actor. Public views are channel-writer, channel-purger, manager-caller, session-caller and transfer-writer; other views return 403. ttlSec is constrained by issuer policy and proof expiry; agent bearer cap is 300 seconds. Invalid proof or manager selection returns 401. Refused proof/view attempts share the public peer budget; successful credentials still mint when the budget is full. Origin is refused.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Bearer"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "400": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "401": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "403": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "413": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "415": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RequestError"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExchangeRequest"
+              }
+            }
+          },
+          "description": "UTF-8 JSON; maximum 65536 bytes. An Authorization header does not replace the JSON proof."
+        }
+      }
+    },
+    "/manager-service-authority": {
+      "post": {
+        "operationId": "auth-manager-service-authority",
+        "summary": "Dispatch a native manager authority request",
+        "description": "Fresh JSON idpToken derives the owner; request.actor is checked against its current interactive ledger grant. Native request kinds and phase-specific results are not a stable cloud API. Manager lifecycle prepare/activate/renew/retire, enrollment, retirement preparation, retained validation, goal-index scan, admin authorization and run operations dispatch to their native contracts. Stock runtime-create/runtime-status and delegated intent kinds require host interception; the HTTP wrapper currently reports those refusals as 403 (not 501). Missing IdP proof is 400; failed proof, native parser/authority/unsupported failures are 403, or 429 when throttled. Origin is refused. Credential verification and native dispatch failures share the public peer refusal budget.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagerResult"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "400": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "403": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "413": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "415": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RequestError"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagerRequest"
+              }
+            }
+          },
+          "description": "UTF-8 JSON; maximum 65536 bytes. An Authorization header does not replace the JSON proof."
+        }
+      }
+    },
+    "/manager-instances": {
+      "post": {
+        "operationId": "auth-manager-instances",
+        "summary": "List the authenticated owner\u2019s manager instances",
+        "description": "Fresh JSON idpToken derives the owner. POST is read-only. A complete scan returns complete=true, including an empty instances array. Scan failure is 503. Missing proof is 400; invalid proof is 401 or throttled 429. Origin is refused.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagerCatalog"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "400": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "401": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "403": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "413": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "415": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RequestError"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdpRequest"
+              }
+            }
+          },
+          "description": "UTF-8 JSON; maximum 65536 bytes. An Authorization header does not replace the JSON proof."
+        }
+      }
+    },
+    "/service-endpoint-authority": {
+      "get": {
+        "operationId": "auth-service-endpoint-authority-info",
+        "summary": "Read enabled service authority metadata",
+        "description": "Requires service endpoints enabled; disabled route returns 404 before other guards. Origin is refused even for GET. This metadata grants no authority.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceInfo"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "400": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "403": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "404": {
+            "$ref": "#/components/responses/RequestError"
+          }
+        }
+      },
+      "post": {
+        "operationId": "auth-service-endpoint-authority",
+        "summary": "Submit a native service authority envelope",
+        "description": "Only enabled with service endpoints; otherwise 404 before all guards. Fresh JSON proof is verified by kind, never by a loopback capability. Account/space mismatch yields a native denied result. Protocol denials echo coordinates and state=denied: 401 unauthenticated/proof-mismatch; 409 conflict or registration/proposal state; 422 bad-request, closure-invalid, unsupported-runtime or unsupported; 429 resource-exhausted/rate-limited; other authority denials 403. Native envelope/parser errors are plain 400 errors. revoke and describe-view are currently unsupported (422). Transport, 5xx or unknown effects never justify changing the mutation identity. Origin is refused.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceResult"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "400": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "401": {
+            "description": "Native denied result with echoed coordinates, state=denied and reason.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Native denied result for account or authority refusal, or a plain error when Origin is present before envelope parsing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ServiceResult"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "409": {
+            "description": "Native denied result with echoed coordinates, state=denied and reason.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceResult"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "415": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "422": {
+            "description": "Native denied result with echoed coordinates, state=denied and reason.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceResult"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Native denied result with echoed coordinates, state=denied and reason.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceResult"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceEnvelope"
+              }
+            }
+          },
+          "description": "UTF-8 JSON; maximum 2097152 bytes. An Authorization header does not replace the JSON proof."
+        }
+      }
+    },
+    "/service-endpoint-host": {
+      "post": {
+        "operationId": "auth-service-endpoint-host",
+        "summary": "Submit an owner-scoped native host operation",
+        "description": "Only enabled with service endpoints; otherwise 404 before method/media/Origin guards. JSON idpToken derives owner and native granter. Caller-supplied granter is rejected. Operator-only operations are refused publicly (403). Native host outcomes, including denied/held/pending/refused, are returned with HTTP 200; inspect state. denied is a point-in-time no-binding observation, while held alone does not prove execution or authority. Native parser failures are 400, unexpected engine failures 500 or 503. Successful engine replies use Cache-Control: no-store. Origin is refused. The stock engine currently parses proposal-list, instance-read and instance-list but returns HTTP 200 with state=denied and reason=unsupported for them.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostResult"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "400": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "403": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "404": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "413": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "415": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "500": {
+            "$ref": "#/components/responses/RequestError"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HostRequest"
+              }
+            }
+          },
+          "description": "UTF-8 JSON; maximum 65536 bytes. An Authorization header does not replace the JSON proof."
+        }
+      }
+    },
+    "/chat-session/open": {
+      "post": {
+        "operationId": "auth-chat-session-open",
+        "summary": "Admit a narrowed chat session",
+        "description": "Fresh JSON IdP proof derives owner. Body is closed; unknown or missing fields are 400 before proof verification. Uses holderHash and the current cli parent grant; does not accept a caller-selected actor. Origin is refused. Effect failures preserve native code and outcome; missing native outcome means unknown. Retain the same holder on an uncertain retry. Credential verification and native dispatch failures share the public peer refusal budget.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatAdmitted"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "400": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "401": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "403": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "404": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "409": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "412": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "413": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "415": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "429": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "500": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "501": {
+            "$ref": "#/components/responses/ChatRefusal"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatOpen"
+              }
+            }
+          },
+          "description": "UTF-8 JSON; maximum 65536 bytes. An Authorization header does not replace the JSON proof."
+        }
+      }
+    },
+    "/chat-session/bearer": {
+      "post": {
+        "operationId": "auth-chat-session-bearer",
+        "summary": "Mint a short chat bearer",
+        "description": "Fresh JSON IdP proof derives owner. Body is closed; unknown or missing fields are 400 before proof verification. Requires holderProof; bearer expires at the least of 900 seconds, IdP proof expiry and session expiry. Origin is refused. Effect failures preserve native code and outcome; missing native outcome means unknown. Retain the same holder on an uncertain retry. Credential verification and native dispatch failures share the public peer refusal budget.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Bearer"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "400": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "401": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "403": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "404": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "409": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "412": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "413": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "415": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "429": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "500": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "501": {
+            "$ref": "#/components/responses/ChatRefusal"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatBearer"
+              }
+            }
+          },
+          "description": "UTF-8 JSON; maximum 65536 bytes. An Authorization header does not replace the JSON proof."
+        }
+      }
+    },
+    "/chat-session/retire": {
+      "post": {
+        "operationId": "auth-chat-session-retire",
+        "summary": "Retire a chat session",
+        "description": "Fresh JSON IdP proof derives owner. Body is closed; unknown or missing fields are 400 before proof verification. Requires holderProof and exact lifecycleUid. HTTP 200 may have outcome=failed with pending work; inspect outcome. Origin is refused. Effect failures preserve native code and outcome; missing native outcome means unknown. Retain the same holder on an uncertain retry. Credential verification and native dispatch failures share the public peer refusal budget.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRetired"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "400": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "401": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "403": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "404": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "409": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "412": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "413": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "415": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "429": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "500": {
+            "$ref": "#/components/responses/ChatRefusal"
+          },
+          "501": {
+            "$ref": "#/components/responses/ChatRefusal"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRetire"
+              }
+            }
+          },
+          "description": "UTF-8 JSON; maximum 65536 bytes. An Authorization header does not replace the JSON proof."
+        }
+      }
+    },
+    "/.well-known/cotal-mesh": {
+      "get": {
+        "operationId": "auth-mesh-discovery",
+        "summary": "Read the generated mesh registration bundle",
+        "description": "GET only. Permits Origin headers, with no CORS headers. Fetch only from the pinned HTTPS authority origin: this generated bundle contains trust pins and a deny-all sentinel credential. endpoints.url is the advertised post-bind public URL; optional agentProvisioningUrl advertises a separate host endpoint, not a route in this listener.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeshBundle"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/RequestError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "not-executed",
+              "executed",
+              "unknown"
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "ChatError": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "error"
+            ],
+            "properties": {
+              "error": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "error",
+              "code",
+              "outcome"
+            ],
+            "properties": {
+              "error": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "not-executed",
+                  "executed",
+                  "unknown"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      },
+      "Bearer": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1
+          },
+          "exp": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "token",
+          "owner",
+          "exp"
+        ]
+      },
+      "Health": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "issuer": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "ok",
+          "issuer"
+        ]
+      },
+      "PublicKey": {
+        "type": "object",
+        "properties": {
+          "kty": {
+            "const": "OKP"
+          },
+          "crv": {
+            "const": "Ed25519"
+          },
+          "kid": {
+            "type": "string",
+            "minLength": 1
+          },
+          "x": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "kty",
+          "crv",
+          "kid",
+          "x"
+        ]
+      },
+      "Jwks": {
+        "type": "object",
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicKey"
+            }
+          }
+        },
+        "required": [
+          "keys"
+        ]
+      },
+      "ManagerCatalog": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "const": 1
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1
+          },
+          "complete": {
+            "const": true
+          },
+          "instances": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "instanceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "placement": {
+                  "type": "string",
+                  "enum": [
+                    "remote",
+                    "local"
+                  ]
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "candidate",
+                    "unknown",
+                    "not open",
+                    "not this owner's",
+                    "not registered"
+                  ]
+                }
+              },
+              "required": [
+                "instanceId",
+                "placement",
+                "state"
+              ]
+            }
+          }
+        },
+        "required": [
+          "v",
+          "owner",
+          "complete",
+          "instances"
+        ]
+      },
+      "IdpRequest": {
+        "type": "object",
+        "properties": {
+          "idpToken": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "idpToken"
+        ]
+      },
+      "ExchangeRequest": {
+        "type": "object",
+        "properties": {
+          "idpToken": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1
+          },
+          "actor": {
+            "type": "string",
+            "minLength": 1
+          },
+          "actorToken": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ttlSec": {
+            "type": "number"
+          },
+          "view": {
+            "type": "string",
+            "enum": [
+              "channel-writer",
+              "channel-purger",
+              "manager-caller",
+              "session-caller",
+              "transfer-writer"
+            ]
+          },
+          "managerInstanceId": {
+            "type": "string"
+          },
+          "sessionGrant": {
+            "type": "object",
+            "properties": {
+              "sessionId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "endpoint": {
+                "type": "string",
+                "minLength": 1
+              },
+              "serving": {
+                "type": "object",
+                "properties": {
+                  "instanceId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "epoch": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "instanceId",
+                  "epoch"
+                ]
+              },
+              "sig": {
+                "type": "string",
+                "minLength": 1
+              },
+              "v": {
+                "const": 1
+              },
+              "space": {
+                "type": "string",
+                "minLength": 1
+              },
+              "subjects": {
+                "type": "object",
+                "required": [
+                  "in",
+                  "out"
+                ],
+                "properties": {
+                  "in": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "out": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "holder": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "lifecycleUid",
+                  "processEpoch"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "lifecycleUid": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "processEpoch": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "window": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "iat": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "nbf": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "exp": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "nonce": {
+                "type": "string",
+                "minLength": 1
+              },
+              "issuer": {
+                "type": "object",
+                "required": [
+                  "keyId"
+                ],
+                "properties": {
+                  "keyId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "required": [],
+            "description": "Transport envelope only. Nested native fields and operation-specific constraints are defined by SessionGrant in the linked source; this schema is not a complete native command contract.",
+            "x-native-contract": {
+              "name": "SessionGrant",
+              "url": "https://github.com/Cotal-AI/Cotal/blob/main/packages/core/src/endpoint-session.ts"
+            }
+          },
+          "transferWriter": {
+            "type": "object",
+            "properties": {
+              "instanceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "hex": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "instanceId",
+              "hex"
+            ]
+          }
+        },
+        "required": [
+          "actor"
+        ],
+        "description": "Provide idpToken for a human OR owner plus actorToken for a managed agent, never both. Agent view may only be manager-caller. managerInstanceId requires manager-caller; sessionGrant accompanies session-caller; transferWriter accompanies transfer-writer. Native SessionGrant is verified against the redeemed session ledger; the nested schema documents its transport shape only.",
+        "oneOf": [
+          {
+            "required": [
+              "idpToken"
+            ],
+            "not": {
+              "required": [
+                "actorToken"
+              ]
+            }
+          },
+          {
+            "required": [
+              "owner",
+              "actorToken"
+            ],
+            "not": {
+              "required": [
+                "idpToken"
+              ]
+            }
+          }
+        ]
+      },
+      "ManagerRequest": {
+        "type": "object",
+        "properties": {
+          "idpToken": {
+            "type": "string",
+            "minLength": 1
+          },
+          "request": {
+            "type": "object",
+            "properties": {
+              "v": {
+                "const": 1
+              },
+              "kind": {
+                "type": "string",
+                "minLength": 1
+              },
+              "actor": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "actor"
+            ],
+            "description": "Transport envelope only. Nested native fields and operation-specific constraints are defined by RemoteManagerAuthorityRequest and dispatchManagerAuthorityRequest request union in the linked source; this schema is not a complete native command contract.",
+            "x-native-contract": {
+              "name": "RemoteManagerAuthorityRequest and dispatchManagerAuthorityRequest request union",
+              "url": "https://github.com/Cotal-AI/Cotal/blob/main/implementations/auth/src/service.ts"
+            }
+          }
+        },
+        "required": [
+          "idpToken",
+          "request"
+        ]
+      },
+      "ManagerResult": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "const": 1
+          },
+          "kind": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "space": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1
+          },
+          "actor": {
+            "type": "string",
+            "minLength": 1
+          },
+          "instanceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "lifecycleUid": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "issuedAt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "expiresAt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "credentials": {
+            "type": "object",
+            "properties": {
+              "supervisor": {
+                "type": "object",
+                "required": [
+                  "jwt",
+                  "exp"
+                ],
+                "properties": {
+                  "jwt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "exp": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "executor": {
+                "type": "object",
+                "required": [
+                  "jwt",
+                  "exp"
+                ],
+                "properties": {
+                  "jwt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "exp": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "serve": {
+                "type": "object",
+                "required": [
+                  "jwt",
+                  "exp"
+                ],
+                "properties": {
+                  "jwt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "exp": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "goalWriter": {
+                "type": "object",
+                "required": [
+                  "jwt",
+                  "exp"
+                ],
+                "properties": {
+                  "jwt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "exp": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "sessionLedger": {
+                "type": "object",
+                "required": [
+                  "jwt",
+                  "exp"
+                ],
+                "properties": {
+                  "jwt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "exp": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "runDriver": {
+                "type": "object",
+                "required": [
+                  "jwt",
+                  "exp"
+                ],
+                "properties": {
+                  "jwt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "exp": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "runMediator": {
+                "type": "object",
+                "required": [
+                  "jwt",
+                  "exp"
+                ],
+                "properties": {
+                  "jwt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "exp": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "sessionServing": {
+                "type": "object",
+                "required": [
+                  "jwt",
+                  "exp"
+                ],
+                "properties": {
+                  "jwt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "exp": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "retirementRequester": {
+                "type": "object",
+                "required": [
+                  "jwt",
+                  "exp"
+                ],
+                "properties": {
+                  "jwt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "exp": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "transferReader": {
+                "type": "object",
+                "required": [
+                  "jwt",
+                  "exp"
+                ],
+                "properties": {
+                  "jwt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "exp": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "v",
+          "kind",
+          "requestId"
+        ],
+        "description": "Native dispatch result union. The optional documented fields describe RemoteManagerAuthorityMaterial, including prepare credentials; other dispatched result arms use their own native contracts. This schema validates the object transport envelope, not every phase-specific result.",
+        "x-native-contract": {
+          "name": "dispatchManagerAuthorityRequest return union; RemoteManagerAuthorityMaterial and native result types",
+          "url": "https://github.com/Cotal-AI/Cotal/blob/main/implementations/auth/src/service.ts"
+        }
+      },
+      "ServiceWitness": {
+        "type": "object",
+        "properties": {
+          "accountPublicKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "space": {
+            "type": "string",
+            "minLength": 1
+          },
+          "endpoint": {
+            "type": "string",
+            "minLength": 1
+          },
+          "instanceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "principal": {
+            "type": "object",
+            "properties": {
+              "owner": {
+                "type": "string",
+                "minLength": 1
+              },
+              "actor": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lifecycleUid": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "owner",
+              "actor",
+              "lifecycleUid"
+            ]
+          },
+          "rootCredentialId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "approvalDigest": {
+            "type": "string",
+            "minLength": 1
+          },
+          "processEpoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "registrationRevision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "nameAuthorityRevision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "registrationRequestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "registrationProof": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "accountPublicKey",
+          "space",
+          "endpoint",
+          "instanceId",
+          "principal",
+          "rootCredentialId",
+          "approvalDigest",
+          "processEpoch",
+          "registrationRevision",
+          "nameAuthorityRevision",
+          "registrationRequestId",
+          "registrationProof"
+        ],
+        "description": "Transport envelope only. Nested native fields and operation-specific constraints are defined by ServiceRegistrationWitness in the linked source; this schema is not a complete native command contract.",
+        "x-native-contract": {
+          "name": "ServiceRegistrationWitness",
+          "url": "https://github.com/Cotal-AI/Cotal/blob/main/packages/core/src/remote-service-authority.ts"
+        }
+      },
+      "ServiceRequest": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "const": 1
+          },
+          "kind": {
+            "const": "service-endpoint-authority"
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$"
+          },
+          "space": {
+            "type": "string",
+            "minLength": 1
+          },
+          "accountPublicKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "endpoint": {
+            "type": "string",
+            "minLength": 1
+          },
+          "instanceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "register",
+              "activate",
+              "renew",
+              "ready",
+              "revoke",
+              "status",
+              "describe-view"
+            ]
+          },
+          "witness": {
+            "$ref": "#/components/schemas/ServiceWitness"
+          },
+          "registration": {
+            "type": "object",
+            "properties": {
+              "clusterDigests": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1
+              },
+              "contractArtifacts": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                },
+                "minItems": 1
+              }
+            },
+            "required": [
+              "clusterDigests",
+              "contractArtifacts"
+            ]
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "unregistered",
+                  "registered"
+                ]
+              },
+              "witness": {
+                "$ref": "#/components/schemas/ServiceWitness"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "instance",
+                  "operation"
+                ]
+              },
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "register",
+                  "activate",
+                  "renew",
+                  "ready",
+                  "revoke"
+                ]
+              },
+              "requestId": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "observation": {
+            "type": "object",
+            "properties": {
+              "subject": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fingerprint": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "subject",
+              "fingerprint"
+            ]
+          }
+        },
+        "required": [
+          "v",
+          "kind",
+          "requestId",
+          "space",
+          "accountPublicKey",
+          "endpoint",
+          "instanceId",
+          "operation"
+        ],
+        "description": "Transport envelope only. Nested native fields and operation-specific constraints are defined by ServiceAuthorityRequest in the linked source; this schema is not a complete native command contract.",
+        "x-native-contract": {
+          "name": "ServiceAuthorityRequest",
+          "url": "https://github.com/Cotal-AI/Cotal/blob/main/packages/core/src/remote-service-authority.ts"
+        }
+      },
+      "ServiceEnvelope": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "$ref": "#/components/schemas/ServiceRequest"
+          },
+          "proof": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "idp",
+                  "service-renewal",
+                  "service-access"
+                ]
+              },
+              "token": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "kind",
+              "token"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "request",
+          "proof"
+        ],
+        "description": "Proof matrix: register=idp; activate=idp or service-renewal; renew=service-renewal; ready=service-access; status=any proof kind; revoke=idp or service-renewal; describe-view=service-access. revoke and describe-view parse but are currently denied as unsupported (422). The native parser also closes every request arm and enforces nested contracts.",
+        "additionalProperties": false
+      },
+      "ServiceInfo": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "const": 1
+          },
+          "kind": {
+            "const": "service-endpoint-authority-info"
+          },
+          "space": {
+            "type": "string",
+            "minLength": 1
+          },
+          "accountPublicKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "issuer": {
+            "type": "string",
+            "minLength": 1
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicKey"
+            },
+            "maxItems": 16
+          }
+        },
+        "required": [
+          "v",
+          "kind",
+          "space",
+          "accountPublicKey",
+          "issuer",
+          "keys"
+        ]
+      },
+      "ServiceResult": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "const": 1
+          },
+          "kind": {
+            "const": "service-endpoint-authority"
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$"
+          },
+          "space": {
+            "type": "string",
+            "minLength": 1
+          },
+          "accountPublicKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "endpoint": {
+            "type": "string",
+            "minLength": 1
+          },
+          "instanceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "register",
+              "activate",
+              "renew",
+              "ready",
+              "revoke",
+              "status",
+              "describe-view"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "approval-required",
+              "pending",
+              "registered",
+              "credential",
+              "ready",
+              "status",
+              "retired",
+              "view",
+              "denied"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "witness": {
+            "$ref": "#/components/schemas/ServiceWitness"
+          },
+          "status": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "proposed",
+                  "approved-unregistered",
+                  "registering",
+                  "revoking",
+                  "registered",
+                  "ready",
+                  "retired",
+                  "refused",
+                  "superseded"
+                ]
+              }
+            },
+            "required": [
+              "state"
+            ]
+          }
+        },
+        "required": [
+          "v",
+          "kind",
+          "requestId",
+          "space",
+          "accountPublicKey",
+          "endpoint",
+          "instanceId",
+          "operation",
+          "state"
+        ],
+        "description": "Transport envelope only. Nested native fields and operation-specific constraints are defined by ServiceAuthorityResult in the linked source; this schema is not a complete native command contract.",
+        "x-native-contract": {
+          "name": "ServiceAuthorityResult",
+          "url": "https://github.com/Cotal-AI/Cotal/blob/main/packages/core/src/remote-service-authority.ts"
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "state": {
+                  "const": "denied"
+                }
+              },
+              "required": [
+                "state"
+              ]
+            },
+            "then": {
+              "required": [
+                "reason"
+              ]
+            }
+          }
+        ]
+      },
+      "HostRequest": {
+        "type": "object",
+        "properties": {
+          "idpToken": {
+            "type": "string",
+            "minLength": 1
+          },
+          "request": {
+            "type": "object",
+            "properties": {
+              "v": {
+                "const": 1
+              },
+              "kind": {
+                "const": "service-endpoint-host"
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$"
+              },
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "proposal-read",
+                  "proposal-list",
+                  "instance-read",
+                  "instance-list",
+                  "operation-read",
+                  "name-read",
+                  "decide",
+                  "revoke",
+                  "caller-policy-read",
+                  "caller-policy-list",
+                  "caller-grant",
+                  "caller-revoke"
+                ]
+              },
+              "input": {
+                "type": "object",
+                "properties": {
+                  "proposalId": {
+                    "type": "string"
+                  },
+                  "endpoint": {
+                    "type": "string"
+                  },
+                  "instanceId": {
+                    "type": "string"
+                  },
+                  "operationId": {
+                    "type": "string"
+                  },
+                  "owner": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "cursor": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": [],
+                "description": "Transport envelope only. Nested native fields and operation-specific constraints are defined by ServiceHostInputs[operation] in the linked source; this schema is not a complete native command contract.",
+                "x-native-contract": {
+                  "name": "ServiceHostInputs[operation]",
+                  "url": "https://github.com/Cotal-AI/Cotal/blob/main/implementations/auth/src/service-host-contract.ts"
+                }
+              }
+            },
+            "required": [
+              "v",
+              "kind",
+              "requestId",
+              "operation",
+              "input"
+            ],
+            "description": "Transport envelope only. Nested native fields and operation-specific constraints are defined by ServiceHostRequest (HTTP omits granter) in the linked source; this schema is not a complete native command contract.",
+            "x-native-contract": {
+              "name": "ServiceHostRequest (HTTP omits granter)",
+              "url": "https://github.com/Cotal-AI/Cotal/blob/main/implementations/auth/src/service-host-contract.ts"
+            }
+          }
+        },
+        "required": [
+          "idpToken",
+          "request"
+        ],
+        "description": "Never provide request.granter. The route derives it from idpToken. name-bind, quarantine-restored, admission-open, and revoke causes other than owner-request are loopback operator actions and return 403 publicly; they are excluded from the accepted operation enum."
+      },
+      "HostResult": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "const": 1
+          },
+          "kind": {
+            "const": "service-endpoint-host"
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "proposal-read",
+              "proposal-list",
+              "instance-read",
+              "instance-list",
+              "operation-read",
+              "name-read",
+              "decide",
+              "revoke",
+              "caller-policy-read",
+              "caller-policy-list",
+              "caller-grant",
+              "caller-revoke"
+            ]
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "space": {
+            "type": "string",
+            "minLength": 1
+          },
+          "accountPublicKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "present",
+              "absent",
+              "page",
+              "approved",
+              "refused",
+              "retired",
+              "granted",
+              "revoked",
+              "pending",
+              "held",
+              "denied"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "v",
+          "kind",
+          "operation",
+          "requestId",
+          "space",
+          "accountPublicKey",
+          "state"
+        ],
+        "description": "Transport envelope only. Nested native fields and operation-specific constraints are defined by ServiceHostResult in the linked source; this schema is not a complete native command contract.",
+        "x-native-contract": {
+          "name": "ServiceHostResult",
+          "url": "https://github.com/Cotal-AI/Cotal/blob/main/implementations/auth/src/service-host-contract.ts"
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "state": {
+                  "const": "denied"
+                }
+              },
+              "required": [
+                "state"
+              ]
+            },
+            "then": {
+              "required": [
+                "reason"
+              ]
+            }
+          }
+        ]
+      },
+      "ChatOpen": {
+        "type": "object",
+        "properties": {
+          "idpToken": {
+            "type": "string",
+            "minLength": 1
+          },
+          "holderHash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "read": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64
+          },
+          "post": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64
+          },
+          "ttlSec": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 28800
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "idpToken",
+          "holderHash",
+          "read",
+          "post",
+          "ttlSec"
+        ],
+        "description": "Lists contain at most 64 distinct concrete channel names and are narrowed to the current cli parent grant. holderHash is SHA-256 of a client-held proof. Reuse the holder identity on uncertain retries; opening never extends its fixed expiry.",
+        "additionalProperties": false
+      },
+      "ChatBearer": {
+        "type": "object",
+        "properties": {
+          "idpToken": {
+            "type": "string",
+            "minLength": 1
+          },
+          "actor": {
+            "type": "string"
+          },
+          "holderProof": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "idpToken",
+          "actor",
+          "holderProof"
+        ],
+        "additionalProperties": false
+      },
+      "ChatRetire": {
+        "type": "object",
+        "properties": {
+          "idpToken": {
+            "type": "string",
+            "minLength": 1
+          },
+          "actor": {
+            "type": "string"
+          },
+          "lifecycleUid": {
+            "type": "string"
+          },
+          "holderProof": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "idpToken",
+          "actor",
+          "lifecycleUid",
+          "holderProof"
+        ],
+        "additionalProperties": false
+      },
+      "ChatAdmitted": {
+        "type": "object",
+        "properties": {
+          "actor": {
+            "type": "string",
+            "pattern": "^chat_[a-z2-7]{26}$"
+          },
+          "lifecycleUid": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expiresAt": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "actor",
+          "lifecycleUid",
+          "expiresAt"
+        ]
+      },
+      "ChatRetired": {
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "retired",
+              "alreadyRetired",
+              "notStarted",
+              "failed"
+            ]
+          },
+          "pending": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "MeshBundle": {
+        "type": "object",
+        "properties": {
+          "space": {
+            "type": "string",
+            "minLength": 1
+          },
+          "server": {
+            "type": "string",
+            "minLength": 1
+          },
+          "tlsRequired": {
+            "const": true
+          },
+          "userAuth": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "const": "cotal"
+              },
+              "idp": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "issuer": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "audience": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "url",
+                  "issuer",
+                  "audience"
+                ]
+              },
+              "endpoints": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "managerAuthorityUrl": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "agentProvisioningUrl": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "url",
+                  "managerAuthorityUrl"
+                ]
+              }
+            },
+            "required": [
+              "provider",
+              "idp",
+              "endpoints"
+            ]
+          },
+          "sentinelCreds": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "space",
+          "server",
+          "tlsRequired",
+          "userAuth",
+          "sentinelCreds"
+        ]
+      }
+    },
+    "responses": {
+      "RequestError": {
+        "description": "JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Unavailable": {
+        "description": "Public admission cap (64 in flight), 10 second request deadline, or a route-specific unavailable read/effect. A service authority 503 may follow a binding; retain the request identity.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "ChatRefusal": {
+        "description": "Native refusal where code and outcome are supplied by the chat handler. Pre-dispatch method, Origin, media type and shape refusals are not-executed. Native outcome may be not-executed, executed or unknown. JSON parse/size errors and public admission/deadline errors have only error, without code or outcome.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ChatError"
+            }
+          }
+        }
+      }
+    }
+  }
+}
