@@ -70,7 +70,7 @@ import {
   type RunHostPlanes,
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
-import { CheckpointNotAmendable, CheckpointNotOpen, DurationError, isDuration, LangErrors, parseDuration, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
+import { CATALOG, CheckpointNotAmendable, CheckpointNotOpen, DurationError, isDuration, LangErrors, parseDuration, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
 import {
   boundedValue,
   CommandFailure,
@@ -454,7 +454,21 @@ async function drive(
       onLog: (line: { readonly scope: string; readonly values: readonly unknown[] }) => console.log(`run ${runId}: log ${logLineText(line)}`),
     };
     if (a.mode === "new") console.log(`starting run ${runId} on endpoint ${endpoint} in space ${planes.space}`);
-    const out = a.mode === "new" ? await startRun(planes.js, planes.jsm, req) : await driveRun(planes.js, planes.jsm, req);
+    let out: DriveOutcome;
+    try {
+      out = a.mode === "new" ? await startRun(planes.js, planes.jsm, req) : await driveRun(planes.js, planes.jsm, req);
+    } catch (e) {
+      // The driver records a program that failed on the run's status under this drive's lease, then
+      // rethrows its error. Only that record makes the outcome failed; any other throw stays unknown.
+      const status = (await readRunRecord(req.kv, endpoint, runId).catch(() => undefined))?.status?.value;
+      if (status?.state !== "failed" || status.holder !== who.id || status.epoch !== epoch || status.fencingToken !== fencingToken) throw e;
+      // A language code is named by its catalog title. Other recorded text is untrusted, so only its
+      // first line is shown, and the report escapes its control characters.
+      const code = status.failure?.code;
+      const why = code !== undefined && Object.hasOwn(CATALOG, code) ? `: ${code} ${CATALOG[code as keyof typeof CATALOG]}` : `${code !== undefined ? ` (${code})` : ""}: ${(status.failure?.message ?? (e as Error).message).split("\n")[0]}`;
+      const show = `cotal run show ${runId} --local${endpoint === "manager" ? "" : ` --endpoint ${endpoint}`}`;
+      throw new CommandFailure("failed", "OPERATION_FAILED", `run ${runId} failed${why}`, { target: { space: planes.space, endpoint, run: runId }, remedy: `read its recorded failure with ${show}` });
+    }
     reportOutcome(runId, out);
   } finally {
     await mediator.nc.drain().catch(() => mediator.nc.close());
