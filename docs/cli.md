@@ -749,7 +749,11 @@ on PATH must report version 2.12 or newer. An older one, or one that reports no 
 `DEPENDENCY_UNAVAILABLE` (exit 2) before the broker starts, naming its path and version; upgrade it
 or take it off PATH. When `up` starts the broker, its receipt names the file, where it was found and
 its version on the `Broker executable` line, and `--json` carries them as `result.brokerExecutable`.
-`status` shows the same under This machine, and `setup` refuses the old one the same way.
+`status` shows the same under This machine, and `setup` refuses the old one the same way. When the
+`nats-server` a detached start on the retained launcher ran exits before it answers, `up` fails
+`OPERATION_FAILED`, exit 5, naming that file, its exit code or signal, and its log `.cotal/nats.log`.
+The next step is to read that log, then fix the file or take it off PATH, and run `cotal up` again. A
+broker still running when the wait ends leaves the outcome unconfirmed, `OPERATION_UNKNOWN`, exit 3.
 
 The generated broker configuration is owner-private (`0600`) in open and authenticated modes,
 even with a group-writable umask. `up` creates `.cotal`, the broker store and the persona catalog
