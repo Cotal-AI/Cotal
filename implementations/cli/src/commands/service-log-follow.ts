@@ -67,7 +67,7 @@ export async function followServiceLog(selected: ServiceInstanceSnapshot, presen
       reason = "read-failed";
       const failure = isCommandFailure(error) ? error : new CommandFailure("failed", "OPERATION_FAILED", "the bounded private log read failed; service state was not changed");
       process.exitCode = failure.outcome === "refused" ? 2 : 5;
-      await record("error", { code: failure.code, message: failure.message });
+      await record("error", { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) });
     }
   } finally {
     if (!brokenOutput) {

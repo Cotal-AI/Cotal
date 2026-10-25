@@ -921,6 +921,11 @@ export function readServiceLog(space: string, id: string, tail: number) {
   return readOwnedLogTail(path, tail);
 }
 
+/** The refusal for a log this account cannot open, with the step that gives its owner read and write back. */
+function unreadableLog(path: string, code: string) {
+  return new CommandFailure("refused", "PERMISSION_DENIED", `the log ${path} cannot be read by this account (${code}); nothing was read or changed`, { target: { path }, remedy: `make it readable by you, for example with chmod u+rw ${shellPath(path)}` });
+}
+
 /** The last `tail` lines of an owned private log file, from at most its last 1 MiB. A log this
  *  account cannot read is refused with the step that gives its owner read and write back. */
 export function readOwnedLogTail(path: string, tail: number) {
@@ -929,8 +934,7 @@ export function readOwnedLogTail(path: string, tail: number) {
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return { lines: [] as string[], omittedBytes: 0, path };
-    if (code === "EACCES" || code === "EPERM")
-      throw new CommandFailure("refused", "PERMISSION_DENIED", `the log ${path} cannot be read by this account (${code}); nothing was read or changed`, { target: { path }, remedy: `make it readable by you, for example with chmod u+rw ${shellPath(path)}` });
+    if (code === "EACCES" || code === "EPERM") throw unreadableLog(path, code);
     throw error;
   }
   try {
@@ -973,13 +977,19 @@ function lastLoggedLine(path: string, from: number): string | undefined {
   } catch { return undefined; } finally { closeSync(fd); }
 }
 
-/** One bounded raw log slice. File identity and byte offsets are local file facts, not global sequences. */
+/** One bounded raw log slice. File identity and byte offsets are local file facts, not global sequences.
+ *  A log this account cannot read is refused as `readOwnedLogTail` refuses it. */
 export function serviceLogSlice(space: string, id: string, position: { offset: number; dev: number; ino: number } | undefined, tail: number) {
   const path = serviceLogPath(space, id);
   if (!path) return undefined;
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
+    if (code === "EACCES" || code === "EPERM") throw unreadableLog(path, code);
+    throw error;
+  }
   try {
     const info = fstatSync(fd);
     if (![info.size, info.dev, info.ino].every((number) => Number.isSafeInteger(number) && number >= 0)) throw new CommandFailure("refused", "UNSUPPORTED", "this log's native file coordinates cannot be represented safely; no approximate byte offsets were reported");
