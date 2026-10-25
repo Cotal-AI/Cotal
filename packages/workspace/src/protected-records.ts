@@ -106,6 +106,16 @@ export function unsearchableFolder(path: string): string | undefined {
   return undefined;
 }
 
+/** A permission error reading the record store at `path`, as the refusal that names the folder
+ *  withholding it, the first one above `path` this account may not search or else `path` itself, with
+ *  the chmod that gives it back. Only EACCES and EPERM; any other error is returned as it is. */
+function storeFolderDenied(error: unknown, path: string): unknown {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code !== "EACCES" && code !== "EPERM") return error;
+  const folder = unsearchableFolder(path) ?? path;
+  return new CommandFailure("refused", "PERMISSION_DENIED", `${folder} cannot be read by this account (${code}), so the saved local records under it were not read`, { target: { path: folder }, remedy: `make it readable by you, for example with chmod u+rwx ${shellPath(folder)}` });
+}
+
 /** Establish a regular descriptor, then read only bounded bytes. POSIX opens nonblocking and
  *  without following a link, and checks a private file's owner and mode; Windows does neither. */
 export function readLocalRecordSource(path: string, limit = LOCAL_INPUT_LIMIT, privateFile = false): Buffer | undefined {
@@ -496,7 +506,10 @@ export class ProtectedRecordStore<T> {
     const paths = segments.map((_, index) => join(home, ...segments.slice(0, index + 1)));
     // Windows has no create mode, so each store directory made here gets the private access list.
     const created = create && access === "windows-acl" ? paths.filter((path) => !existsSync(path)) : [];
-    const found = create ? ensureDirNoSymlink(home, ...segments) : realDirNoSymlink(home, ...segments);
+    let found: string | null;
+    // A read names a folder it may not enter, where it would otherwise fail with the raw error.
+    try { found = create ? ensureDirNoSymlink(home, ...segments) : realDirNoSymlink(home, ...segments); }
+    catch (error) { throw create ? error : storeFolderDenied(error, paths.at(-1)!); }
     if (!found) return undefined;
     for (const path of created) hardenPrivate(path, "dir");
     for (const path of paths) privateDirectory(path, access);
@@ -523,7 +536,9 @@ export class ProtectedRecordStore<T> {
     const dir = this.directory();
     if (!dir) return [];
     const result: LocalRecordSnapshot<T>[] = [];
-    for (const file of readdirSync(dir).sort()) {
+    let files: string[];
+    try { files = readdirSync(dir); } catch (error) { throw storeFolderDenied(error, dir); }
+    for (const file of files.sort()) {
       if (file.startsWith(".") || !file.endsWith(".json")) continue;
       const key = file.slice(0, -5);
       const name = Buffer.from(key, "hex").toString("utf8");

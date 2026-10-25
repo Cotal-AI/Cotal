@@ -6,8 +6,9 @@
  * ancestor is accepted, and a credential file keeps its owner-only rule. A declared adapter path in
  * Cotal's own install, as the launcher runs it, names `cotal update` as the fix. The account database and
  * the ACL read are injected, so no case reads this machine's accounts or ACLs. A record this account
- * may not open names the folder that withholds it, and a link keeps the no-follow refusal. Only `win32`
- * selects the Windows record model; the platform is passed in, so that runs here. Broker-free.
+ * may not open names the folder that withholds it, as does a store folder it may not enter, and a link
+ * keeps the no-follow refusal. Only `win32` selects the Windows record model; the platform is passed
+ * in, so that runs here. Broker-free.
  *
  * Run: pnpm smoke:protected-paths
  */
@@ -19,7 +20,7 @@ import { join } from "node:path";
 import { CommandFailure } from "../src/output.js";
 import {
   assertProtectedEntry, localRecordAccess, privateGroupGap, protectedCredentialReference, protectedFileAccessAvailable,
-  protectedLocalDirectory, protectedLocalEntries, protectedLocalEntry, protectedPathPolicy, readLocalRecordSource, type AccountDatabase, type ProtectedPathPolicy,
+  protectedLocalDirectory, protectedLocalEntries, protectedLocalEntry, protectedPathPolicy, ProtectedRecordStore, readLocalRecordSource, type AccountDatabase, type ProtectedPathPolicy,
 } from "../src/protected-records.js";
 import { validateServiceAdapterPaths } from "../src/service-adapter.js";
 
@@ -334,6 +335,43 @@ if (process.getuid?.() !== 0) {
     assert.equal(readLocalRecordSource(join(base, "absent.json")), undefined, "an absent file is no record");
   } finally {
     try { chmodSync(join(base, "shut"), 0o700); } catch { /* already restored */ }
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
+// 6b. A store folder this account may not enter is refused with that folder and the chmod that gives
+//     it back, whether it is the family folder itself or the space folder above it.
+if (process.getuid?.() !== 0) {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "cotal-protected-store-")));
+  const prior = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = join(base, ".cotal");
+  const instances = new ProtectedRecordStore("services", "s1", (value) => value, "instances");
+  const definitions = new ProtectedRecordStore("services", "s1", (value) => value, "definitions");
+  const shutDir = instances.directory(true)!;
+  const space = join(shutDir, "..");
+  definitions.directory(true);
+  const refusal = (read: () => unknown): CommandFailure => {
+    try { read(); } catch (error) { if (error instanceof CommandFailure) return error; throw error; }
+    throw new Error("the read did not refuse");
+  };
+  try {
+    chmodSync(shutDir, 0o000);
+    const shut = refusal(() => instances.list());
+    chmodSync(shutDir, 0o700);
+    assert.equal(shut.code, "PERMISSION_DENIED", "a family folder this account cannot read refuses PERMISSION_DENIED");
+    assert.equal(shut.message, `${shutDir} cannot be read by this account (EACCES), so the saved local records under it were not read`, "the refusal names that folder");
+    assert.equal(shut.remedy, `make it readable by you, for example with chmod u+rwx ${shutDir}`, "its remedy is the chmod on that folder");
+    chmodSync(space, 0o000);
+    const reads = [refusal(() => instances.list()), refusal(() => definitions.list()), refusal(() => definitions.read("echo"))];
+    chmodSync(space, 0o700);
+    for (const failure of reads) {
+      assert.equal(failure.message, `${space} cannot be read by this account (EACCES), so the saved local records under it were not read`, "a shut space folder is named for every family under it");
+      assert.equal(failure.remedy, `make it readable by you, for example with chmod u+rwx ${space}`, "with the chmod on the space folder");
+    }
+    assert.deepEqual(instances.list(), [], "once readable again the store reads as it is");
+  } finally {
+    try { chmodSync(shutDir, 0o700); chmodSync(space, 0o700); } catch { /* already restored */ }
+    if (prior === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = prior;
     rmSync(base, { recursive: true, force: true });
   }
 }
