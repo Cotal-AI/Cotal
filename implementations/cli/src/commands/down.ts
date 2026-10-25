@@ -276,8 +276,9 @@ function bareStop(values: ParsedArgs["values"]): boolean {
 const pidRecordsUnder = (root: string): boolean => readdirSync(join(root, ".cotal")).some((name) => name.endsWith(".pid"));
 
 /** A legacy root whose stack is not running, told apart from a folder that never had one. No
- *  registration names the root, because its own down removed the last one, and no `*.pid` record
- *  remains at the top of its `.cotal`. The root still holds the broker configuration a start rendered
+ *  registration names the root, because its own down removed the last one, or only the one a space
+ *  named after its folder keeps ({@link keepsRegistration}), and no `*.pid` record remains at the top
+ *  of its `.cotal`. The root still holds the broker configuration a start rendered
  *  there (`server-open.conf`, or `auth/server.conf` in auth mode) or a space prepared there. When the
  *  root names its space, none of that space's saved services runs either. Undefined when any of that
  *  is missing, so bare down refuses rather than guess. `started` says whether a start rendered that
@@ -285,9 +286,12 @@ const pidRecordsUnder = (root: string): boolean => readdirSync(join(root, ".cota
  *  under the root, for any space, before it answers. */
 function stoppedLegacyStack(): { root: string; space?: string; started: boolean } | undefined {
   const root = canonicalRoot(cotalRoot());
-  if (root === canonicalRoot(homedir()) || !realDirNoSymlink(root, ".cotal") || meshesForRoot(root).length || pidRecordsUnder(root)) return undefined;
+  if (root === canonicalRoot(homedir()) || !realDirNoSymlink(root, ".cotal") || pidRecordsUnder(root)) return undefined;
+  const registered = meshesForRoot(root);
+  const kept = registered.length === 1 && registered[0]!.origin !== "manual" && registered[0]!.origin !== "catalog" && keepsRegistration(registered[0]!) ? registered[0] : undefined;
+  if (registered.length && !kept) return undefined;
   let space: string | undefined;
-  try { space = soleSpaceOf(authDir(root)); } catch { return undefined; }
+  try { space = soleSpaceOf(authDir(root)) ?? kept?.space; } catch { return undefined; }
   const prepared = preparedSpaceAt(root);
   const started = existsSync(join(root, ".cotal", "server-open.conf")) || existsSync(join(authDir(root), "server.conf"));
   if (!prepared && !started) return undefined;

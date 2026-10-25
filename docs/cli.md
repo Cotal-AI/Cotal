@@ -656,7 +656,9 @@ with `CONFLICT` and asks for `--space`. With no
 reserved by another registered space, including one whose broker is stopped. It saves the chosen
 address. A later `cotal up` of
 the same space from the same folder starts from the URL that mesh recorded; an explicit `--server`
-stays fail-loud on collision. When the named space runs from another folder on this machine,
+stays fail-loud on collision. An address that a space registered for another folder keeps while it
+is stopped refuses `CONFLICT`, exit 2, naming that space and folder, and nothing starts, unless this
+`up` takes that space's name over. When the named space runs from another folder on this machine,
 `up --space` refuses `CONFLICT`, exit 2, naming that folder, with or without `--server`, `--json` or
 `--plain`, and writes nothing in the folder it ran from. A bare `up` whose folder names a space that
 runs from another folder refuses `CONFLICT` as well. Its Next names
@@ -1504,8 +1506,8 @@ counts as stopped when its last whole-stack operation was a completed `down` and
 other service instance of its space runs. That check reads no process record under the root; those
 are read only as described below. A stack that stopped any other way takes the full stop, which
 also finishes its cleanup. A legacy root counts as
-stopped when no registration names it and no `*.pid` record remains at the top of its `.cotal`,
-and the root still holds the broker configuration a start rendered there or a space prepared there.
+stopped when no registration names it, or only the one a space named after its folder keeps, and no
+`*.pid` record remains at the top of its `.cotal`, and the root still holds the broker configuration a start rendered there or a space prepared there.
 Without that evidence a legacy root still refuses, with one next step: `TARGET_NOT_FOUND` when
 nothing shows a stack there, and `CONFLICT` when several registrations name the root or a process
 record remains that no registration explains. Before either kind of root reports the no-op, `down`
@@ -2867,10 +2869,12 @@ refused with `TARGET_UNAVAILABLE`, exit 2, naming the broker the journal recorde
 `cotal up` starts it. That is the state after an `up` that failed to start or a `space forget`, and the
 command never dials the default address instead. `status` there reads the machine, selects no space
 and probes no broker. A legacy root after its `down`, which drops its registration, is refused the
-same way, naming the address in the broker configuration its last start rendered and the bare
-`cotal up` there that starts it at that address again. A space named after its folder keeps its
-registration, so a command there is refused `TARGET_UNAVAILABLE` naming that root and `cotal up`, and
-`status` names the same step.
+same way, naming the space its account names, the address in the broker configuration its last start
+rendered and the bare `cotal up` there that starts it at that address again. A space named after its
+folder keeps its registration, so a command there is refused `TARGET_UNAVAILABLE` naming that root
+and `cotal up`, and `status` names the same step. A selection does not change these refusals: a root
+that holds such a journal or configuration and no registration, as a moved project does, is refused
+the same way and never reaches the selected space.
 
 A copied or moved project folder keeps a stack journal that names the folder it was recorded in.
 `space create <name>` there refuses `CONFLICT`, exit 2, and names `cotal space create <name> --adopt
