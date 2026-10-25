@@ -12,8 +12,8 @@
  *
  * The endpoint name comes from operator configuration and must be a reverse-DNS name in a namespace
  * the operator owns. The name authority authorizes exactly that name for the local owner, nothing
- * else. A per-user-auth mesh is refused: its serve credentials come from the remote issuer, which
- * this package has no client for.
+ * else. User-auth serving uses the remote authority and shared renewal source in user-auth-serve.ts;
+ * it never enters this static signer path.
  */
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm, type KV } from "@nats-io/kv";

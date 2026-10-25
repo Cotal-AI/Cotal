@@ -1,7 +1,7 @@
 import { isAbsolute } from "node:path";
 import { registry, type Command, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, colorEnabled, hasUserAuthState, homeCotalDirFallbacks, observeServiceStartup,
+  CommandFailure, colorEnabled, homeCotalDirFallbacks, observeServiceStartup,
   publishServiceStartup, resolveNativeServiceTarget, serviceOperationId,
   serviceStartupPath, validateServiceStartupPath, type LocalProcess, type ServicePreset,
 } from "@cotal-ai/workspace";
@@ -11,7 +11,7 @@ import { assertLinearEndpointName } from "./serve.js";
 
 function nativeTarget(root: string, space: string, server?: string) {
   const target = resolveNativeServiceTarget(root, space, server);
-  if (target.mode !== "auth" || hasUserAuthState(target.root, target.space, { readOnly: true })) throw new CommandFailure("refused", "UNSUPPORTED", "the native Linear service requires its selected static-auth root; no user-auth issuer or open-space authority was substituted");
+  if (target.mode !== "auth" && target.mode !== "user") throw new CommandFailure("refused", "UNSUPPORTED", "the native Linear service requires a registered static-auth or user-auth root; no open-space authority was substituted");
   return target;
 }
 
@@ -25,7 +25,7 @@ function inputs(account: unknown, endpoint: unknown): { account: string; endpoin
 
 export const linearServicePreset: ServicePreset = {
   kind: "service-preset", name: "linear", adapter: "linear-service", timeoutMs: 120000,
-  summary: "native registered Linear MCP service using an existing account and static-auth root",
+  summary: "native registered Linear MCP service using an existing account and authenticated root",
 };
 
 export const linearService: LocalProcess = {
@@ -35,7 +35,7 @@ export const linearService: LocalProcess = {
     abiVersion: 1, requiresCli: true, readiness: "process",
     capabilities: { multiInstance: true, foreground: true, logs: true }, paths: { root: "directory" },
     optionsSchema: { type: "object", additionalProperties: false, required: ["root", "account", "endpoint"], properties: {
-      root: { type: "string", minLength: 1, maxLength: 4096, description: "registered static-auth root; its native authority stays in the service process" },
+      root: { type: "string", minLength: 1, maxLength: 4096, description: "registered authenticated root; its native authority stays in the service process" },
       account: { type: "string", minLength: 1, maxLength: 32, description: "existing native Linear account name; no OAuth flow runs at startup" },
       endpoint: { type: "string", minLength: 1, maxLength: 253, description: "full reverse-DNS endpoint class in a namespace you own" },
       server: { type: "string", minLength: 1, maxLength: 4096, description: "optional repeat of the registered broker; its TLS requirement is retained" },
@@ -43,7 +43,7 @@ export const linearService: LocalProcess = {
   },
   buildServiceLaunch(context) {
     if (!context.cliInvocation?.length) throw new CommandFailure("refused", "UNSUPPORTED", "the Linear service requires the verified cotal entry; no PATH binary was selected");
-    if (context.credentialRef) throw new CommandFailure("refused", "UNSUPPORTED", "Linear service authority comes from its selected native static root and recorded upstream account, not a generic caller reference");
+    if (context.credentialRef) throw new CommandFailure("refused", "UNSUPPORTED", "Linear service authority comes from its selected authenticated root and recorded upstream account, not a generic caller reference");
     // The child inherits COTAL_HOME, which envRefs cannot set. Without it, a reference to a variable the
     // Cotal home falls back to can give the child another home than the one this process reads.
     const moved = process.env.COTAL_HOME ? [] : Object.keys(context.envRefs ?? {}).filter((name) => homeCotalDirFallbacks().includes(name));

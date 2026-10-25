@@ -5787,9 +5787,9 @@ account, inventory or reply.
 
 `serve` registers the account as an endpoint named by `--endpoint` and serves it until Ctrl-C. The
 name must be a reverse-DNS name in a namespace you own, such as `com.example.linear`; it is
-authorized for this mesh's local owner only because you configured it. `serve` reads the inventory
-first, so an account that cannot be reached is never registered. It then walks the same path every
-registered endpoint does: it publishes the contract to the contract store, opens the issuance gate,
+authorized for a static-auth mesh's local owner because you configured it. `serve` reads the inventory
+first, so an account that cannot be reached is never registered. On a static-auth mesh, it publishes
+the contract to the contract store, opens the issuance gate,
 registers a fresh instance, writes its ready status, and mints a scoped serve credential through
 the gate. Every step runs on short-lived executor credentials scoped to this one endpoint instance.
 The space signer stays in the `serve` process for renewal at 75% of the credential's life and is
@@ -5827,9 +5827,20 @@ refuse endpoint capabilities. `auth mint --endpoint` now covers supported untarg
 surfaces through live native resolution. Targeted/journaled/action issuance and caller/launch
 adapters are not supported.
 
-A per-user-auth mesh is refused by both `serve` and `caller`: there, endpoint and caller credentials
-come from the remote auth service, which this package does not support yet. Nothing falls back to a
-local signer. An open mesh is refused too, because it has no credentials to scope.
+On a user-auth mesh, `serve` uses the registered auth provider's service authority. The owner must
+approve the original service proposal and the operator must bind its endpoint name. Repeat the
+same command after approval. Its instance, registration body and request identities are retained;
+a changed account, target or embedded contract refuses instead of replacing them. The shared
+renewal source activates and renews the access bearer. The service verifies the signed bearer and
+embedded cluster before serving, and reports ready only after the broker flush and host acknowledgement.
+No local signer or ordinary enrolled agent is substituted.
+
+Stopping a user-auth service closes its serving connection, renewal source and Linear session.
+It retains the approved registration for a later start; stopping does not claim remote revocation.
+Use the space's service approval and exact caller-grant controls to revoke access. Callers need
+explicit instance-scoped grants through that remote authority. An account or visible registration
+does not grant invocation rights. The standalone `caller` credential exporter remains static-auth
+only. Open meshes refuse because they have no credential system to scope.
 
 Not represented yet, and listed under `unsupported` when the server advertises them: resource
 subscriptions, logging, progress notifications and experimental capabilities. The server cannot
@@ -7996,7 +8007,7 @@ authority.
 ### Native Linear service
 
 The `linear` service preset uses an existing native `account`, a reverse-DNS `endpoint` in a
-namespace you own, and the selected registered static-auth `root`. An optional `server` only
+namespace you own, and the selected registered static-auth or user-auth `root`. An optional `server` only
 repeats its broker. Account login/token setup remains a separate explicit operation. A start whose
 account has no record refuses with `TARGET_NOT_FOUND` and the `linear account add` route before a
 child is launched. That check reads the Cotal home of the process that runs `service start`. While
@@ -8008,9 +8019,10 @@ and the reverse-DNS endpoint name are checked when the service starts, and an in
 name refuses that start before a child is launched, leaving a failed instance record. The native
 static issuer, inventory, registration, credential renewal, request handling and deregistration
 stay in the Linear implementation. No generic caller authority, new account or broker dependency
-is supplied by the preset. User-auth and open spaces refuse instead of using another issuer.
+is supplied by the preset. User-auth spaces use their remote service authority and retain the
+original approved registration on restart. Open spaces refuse instead of using another issuer.
 
-An explicit start can allocate another instance through the native registration path. The preset
+On static-auth roots, an explicit start can allocate another instance through the native registration path. The preset
 declares foreground control through the shared terminal-bound lifetime; OS-supervised service
 control is not supported. The child keeps the selected
 root and registered TLS requirement and does not print upstream bodies or credentials into its
@@ -8019,8 +8031,9 @@ handlers. It does not claim a broker-flushed subscription, a fresh authenticated
 or upstream business-work completion. Reports label it process/adapter initialization, not
 endpoint-serving proof.
 
-Stop retains the native serve close and bounded deregistration policy. Original process exit
-still does not establish that deregistration or other cleanup completed. The legacy
+Stop closes the native serving connection and Linear session. Static-auth roots also attempt bounded
+deregistration; user-auth roots retain the original approved registration. Original process exit
+still does not establish that deregistration, revocation or other cleanup completed. The legacy
 `linear serve` foreground entry remains available for installed callers; the independent
 service route does not call that parser or its printed launch output.
 
