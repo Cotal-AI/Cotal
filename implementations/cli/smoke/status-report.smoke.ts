@@ -155,6 +155,18 @@ if (!brokerDisplayOnly) {
     check(`interrupted up keeps its ${reportRoot === home ? "ordinary" : "quoted"} root${noManager ? " and --no-manager" : ""} in Next`,
       report.includes(`cotal up --root ${rootWord}${noManager ? " --no-manager" : ""}`), report);
   }
+  // The other restart routes keep their recorded root as one literal shell argument too.
+  for (const reportRoot of [home, join(home, "recovery O'Neil $HOME")]) for (const kind of ["down", "streams"] as const) {
+    const base = selected.envelope!.result!;
+    const recovery = { ...base, folder: { ...base.folder, root: reportRoot, controllerStack: true, processSpace: "alpha", stackBlock: null,
+      stackUnfinished: kind === "down" ? { kind: "down", id: "interrupted-down", running: ["broker"], stopped: ["manager", "delivery"] } : null },
+      selected: { ...base.selected, resolved: true, space: "alpha", root: reportRoot, connection: "reachable",
+        spaceStreams: kind === "streams" ? { state: "absent", root: reportRoot, stack: "stopped" } : base.selected.spaceStreams } };
+    const report = renderReport(statusView(recovery as unknown as Parameters<typeof statusView>[0]), "plain");
+    const rootWord = reportRoot === home ? home : `'${home}/recovery O'\\''Neil $HOME'`;
+    check(`${kind} recovery keeps its ${reportRoot === home ? "ordinary" : "quoted"} root in Next`,
+      report.includes(`cotal up --root ${rootWord}`) && report.includes(kind === "down" ? "Or restart this stack" : "Create the space's streams again, empty, and restart"), report);
+  }
   // A service outside the stack must be stopped before the restart that refuses beside it.
   for (const heldServices of [[], [{ definition: "dl", instanceId: "held-delivery", record: "delivery", pid: 12345 }], null]) {
     const base = selected.envelope!.result!;
