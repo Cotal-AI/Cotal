@@ -545,14 +545,16 @@ function strandedBroker(space: string): ServiceInstance | undefined {
 }
 
 /** What a detached up interrupted by a signal left: the members that run, and the command that
- *  finishes the start or stops them. */
-export function stackUpInterruptNotice(root: string, space: string): string {
+ *  finishes the start or stops them. An up given `--no-manager` names `cotal up --no-manager`, since
+ *  bare `up` adds the manager. */
+export function stackUpInterruptNotice(root: string, space: string, noManager = false): string {
+  const up = `cotal up${noManager ? " --no-manager" : ""}`;
   const stranded = strandedBroker(space);
-  if (stranded) return `Interrupted before the space was registered; its broker keeps running as pid ${stranded.process?.pid}. Run cotal down --yes, then cotal up.`;
+  if (stranded) return `Interrupted before the space was registered; its broker keeps running as pid ${stranded.process?.pid}. Run cotal down --yes, then ${up}.`;
   const running = runningStackRoles(space);
   return running.length
-    ? `Interrupted while starting the stack in ${root}; ${running.join(", ")} ${running.length === 1 ? "keeps" : "keep"} running. Run cotal up to finish the start, or cotal down --yes to stop ${running.length === 1 ? "it" : "them"}.`
-    : `Interrupted before any member of the stack in ${root} started. Run cotal up to start it.`;
+    ? `Interrupted while starting the stack in ${root}; ${running.join(", ")} ${running.length === 1 ? "keeps" : "keep"} running. Run ${up} to finish the start, or cotal down --yes to stop ${running.length === 1 ? "it" : "them"}.`
+    : `Interrupted before any member of the stack in ${root} started. Run ${up} to start it.`;
 }
 
 /** Whether a broker bound to `host` is reached at `server`'s address: a wildcard bind is reached at

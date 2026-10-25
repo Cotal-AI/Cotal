@@ -596,6 +596,12 @@ export function stackStartedWithoutManager(journal: StackJournal): boolean {
   return journal.operation.kind === "up" && journal.operation.phase === "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
 }
 
+/** Whether the stack's last `up` ended with no recorded outcome and planned no manager, as
+ *  `up --no-manager` does. */
+export function interruptedUpLeftManagerOut(journal: StackJournal): boolean {
+  return journal.operation.kind === "up" && stackOperationUnsettled(journal) && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
+}
+
 /** Whether an `up` on this root is starting the stack's manager for `space` now: the journal records
  *  an unsettled `up` that planned the manager, and a live process holds the root's maintenance lock,
  *  as every whole-stack operation does for its whole run. An `up` that died there is not starting. */
