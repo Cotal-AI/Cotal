@@ -104,7 +104,8 @@ import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positio
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
 import { askManager, describeUnanswered, failIfNotOk, liveManagerIds, managerRailGone, onInstance, refuseUnregisteredManager, refuseWithoutLiveManager, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
-import { managerPin, managersWithPersona, rerunOn } from "../lib/manager-choice.js";
+import { askManagerFolder, askSpawnPlace, managerPin, managerSelection, managersWithPersona, rerunOn, type FolderCheck } from "../lib/manager-choice.js";
+import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { callerHarness, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
@@ -590,6 +591,19 @@ export async function launchManagedPersona(
   const flags = { space: values.space, server: values.server, creds: values.creds };
   const seatIntent = Boolean(process.env.COTAL_NAME || process.env.COTAL_ID || process.env.COTAL_LIFECYCLE_UID || process.env.COTAL_ACCEPTED_TOKEN);
   if (seatIntent && values.creds !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a managed seat's child launch uses that seat's own caller, not a --creds override");
+  // On a terminal, a pinned manager that is not known to run on this host is asked which of its
+  // folders the agent works in, unless -C names one. The question holds no manager credential: a
+  // typed folder is checked under a view of that manager acquired after it is answered, and the
+  // launch acquires its own below.
+  let cwd = values.cwd;
+  if (cwd === undefined && on !== undefined && !seatIntent && canPrompt()) {
+    const selection = await managerSelection(values, on);
+    if (selection.manager.host !== hostname()) {
+      const folder = await askManagerFolder(selection, process.argv.slice(2), (path) => checkFolder(flags, on, path));
+      if (folder === null) process.exit(0);
+      cwd = folder;
+    }
+  }
   let seat: Awaited<ReturnType<typeof resolveSeatControlTarget>>;
   if (seatIntent) {
     try { seat = await resolveSeatControlTarget({ ...flags, space: flags.space ?? process.env.COTAL_SPACE }, on); }
@@ -646,7 +660,7 @@ export async function launchManagedPersona(
     variant: values.variant,
     ...(values.restarts !== undefined ? { supervise: { restarts: Number(values.restarts), windowMs: Number(values["restart-window"]) } } : {}),
     launchOptions,
-    cwd: values.cwd,
+    cwd,
     resume: values.resume, // host-local session id; the manager preflights connector resume support
     ...(resumeClaim !== undefined ? { resumeClaim, resumeAgent } : {}),
     prompt: values.prompt,
@@ -718,6 +732,21 @@ export async function launchManagedPersona(
   if (verdict.kind === "failed") throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but attachment did not complete; no replacement was launched", { target, changed: [result], native: { detail: { message: verdict.message } }, remedy: "inspect the original agent and reattach; do not relaunch" });
   if (verdict.kind === "gone" && observer) throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but its exact native terminal was unavailable before setup could open the view; no replacement was launched", { target, changed: [result], remedy: "inspect the original lifecycle and manager before another startup" });
   console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target unavailable" : verdict.reason === "detached" ? "Detached" : "Attach session ended", blocks: [{ kind: "fields", rows: [["Agent", d.name], ["Identity", d.id], ["Manager", reply.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Leaving the view sent no stop request. The original lifecycle was not replaced.", tone: "hint" }] }] }] }, "rich", terminalWidth(process.stderr)));
+}
+
+/** Whether the manager `on` pins can launch an agent in `path`, answered by its `resolve-cwd` over
+ *  a view of that manager acquired for this check alone. A path it cannot use is its refusal; a
+ *  check it does not answer refuses the launch. */
+async function checkFolder(flags: ConnectFlags, on: string, path: string): Promise<FolderCheck> {
+  const t = await resolveControlTarget(flags, "control-caller-privileged", on, { onRefusal: "throw" });
+  const reply = await askManager(t.space, t.server, "resolveCwd", { cwd: path }, t.auth, "owner", undefined, { instanceId: on });
+  const cwd = reply.ok ? (reply.data as { cwd?: unknown } | undefined)?.cwd : undefined;
+  if (typeof cwd === "string") return { cwd };
+  if (!reply.ok && reply.code === "failed-precondition" && reply.error) return { refusal: oneLine(reply.error) };
+  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `manager instance ${on} did not check the folder ${JSON.stringify(path)}${reply.error ? ` (${oneLine(reply.error)})` : ""}, so nothing was launched`, {
+    target: { space: t.space, managerInstanceId: on },
+    remedy: "cotal ps shows which managers answer; run the spawn again",
+  });
 }
 
 /** Why no manager received an unpinned launch. A manager whose boot inventory found no agent
@@ -962,6 +991,15 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   if (enrollmentUrl && !values.space) {
     stderrLine("✗ ", `${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} require --space <s>`, c.red);
     process.exit(1);
+  }
+  // On a terminal, a spawn that names no launch mode, persona file or terminal-only option asks
+  // where it runs when several of your managers are live. This terminal is the default; a manager
+  // launches it and attaches here, as --on does.
+  if (handoffText === undefined && enrollmentUrl === undefined && values.foreground !== true && !spawnUsesManager(values) && values.file === undefined
+    && values.config === undefined && !values["live-only"] && !values.json && !values.plain && canPrompt()) {
+    const place = await askSpawnPlace(values, process.argv.slice(2));
+    if (place === null) process.exit(0);
+    if (place) values.on = place.instanceId;
   }
   const direct = values.foreground === true || handoffText !== undefined || enrollmentUrl !== undefined || !spawnUsesManager(values);
   const enrollmentBootstrap = Boolean(enrollmentUrl && values.space && !findMesh(values.space));

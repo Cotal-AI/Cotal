@@ -9,6 +9,7 @@ packages/lang/conformance/corpus.json text eol=lf
 
 # Native build receipts bind compiler input bytes to Git blobs on every platform.
 packages/workspace/native/win32-process.c text eol=lf
+packages/workspace/native/win32-system-id.cpp text eol=lf
 packages/workspace/native/darwin-process.c text eol=lf
 packages/workspace/native/node-sdk.json text eol=lf
 packages/workspace/scripts/build-native.mjs text eol=lf
