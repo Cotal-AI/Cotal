@@ -370,7 +370,7 @@ if (process.getuid?.() !== 0) {
     }
     assert.deepEqual(instances.list(), [], "once readable again the store reads as it is");
   } finally {
-    try { chmodSync(shutDir, 0o700); chmodSync(space, 0o700); } catch { /* already restored */ }
+    try { chmodSync(space, 0o700); chmodSync(shutDir, 0o700); } catch { /* already restored */ }
     if (prior === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = prior;
     rmSync(base, { recursive: true, force: true });
   }

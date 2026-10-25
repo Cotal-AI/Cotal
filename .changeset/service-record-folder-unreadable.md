@@ -3,8 +3,8 @@
 "@cotal-ai/connector-core": patch
 ---
 
-A service record folder of the space that this account cannot read, such as its `instances` folder,
-is now named by `service` and its verbs, such as `service logs`. They refuse it `PERMISSION_DENIED`,
-exit 2, with the folder and `chmod u+rwx <folder>`, which gives it back. Before, they ended with
-an unconfirmed outcome and the raw permission error, and named no folder or step. `status` warns
-with the same code.
+When `service` or `service logs` cannot read a service record folder, they now refuse
+`PERMISSION_DENIED`, exit 2, naming the folder and a safely quoted `chmod u+rwx <folder>` step.
+Previously they ended with an unconfirmed outcome and a raw permission error, without repair
+guidance. `status` keeps its partial result and warns with the same code. No permissions change
+automatically; write paths and other error classifications are unchanged.
