@@ -1768,7 +1768,8 @@ cotal clean restore-fallback --attempt <id> --force [--discard-history]
 
 One configurable cleanup verb; every target requires `--force`, except a `--dry-run` of `store` or `all`.
 Only `history` takes `--space`, `--server` or `--creds`. Every other target acts on the root of the
-folder it runs in, so it refuses them `USAGE_INVALID` (exit 1) before it reads or removes anything.
+folder it runs in, so it refuses them `USAGE_INVALID` (exit 1) before local cleanup inspects or removes
+root state.
 
 - `history` purges the retained message backlog on the **running** broker (channels, plus DMs
   with `--dms`). The same operation as [`history clear`](#history), which stays as an alias.

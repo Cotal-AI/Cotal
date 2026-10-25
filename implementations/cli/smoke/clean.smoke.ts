@@ -392,7 +392,7 @@ try {
     }
   } finally { process.chdir(namedCwd); }
   check("store, all and restore-attempt with --space, --server or --creds each refuse USAGE_INVALID before any read",
-    refusals.length === 6 && refusals.every((r) => r.code === "USAGE_INVALID" && /the mesh for clean history only; clean [a-z-]+ acts on the root of the folder it runs in, so nothing was read or removed$/.test(r.message ?? "")), refusals);
+    refusals.length === 6 && refusals.every((r) => r.code === "USAGE_INVALID" && /the mesh for clean history only; clean [a-z-]+ acts on the root of the folder it runs in, so nothing was removed$/.test(r.message ?? "")), refusals);
   check("the refusal names its flag and the folder to run it in", refusals[0]?.message?.startsWith("--space picks ") === true && refusals[0].remedy === "run cotal clean store in the project folder of the root to clean, without --space", refusals[0]);
   check("...and the store and the space identity stay", existsSync(join(namedRoot, ".cotal", "nats", "jetstream", "stream.dat")) && existsSync(join(namedRoot, ".cotal", "auth", "auth.json")));
   rmSync(namedRoot, { recursive: true, force: true });
