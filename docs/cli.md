@@ -2035,7 +2035,9 @@ to wait for it. A create that finds the root's maintenance lock held, such as by
 Neither refusal journaled anything, so it names no attempt of its own. A destination that already exists is a `CONFLICT`
 refusal, because create writes only a new directory. A destination whose folder does not exist
 refuses `TARGET_NOT_FOUND` (exit 2) and names that folder; create makes only the artifact's own
-folder. A destination inside the preserved store refuses `USAGE_INVALID` (exit 1), and one in a
+folder. A destination inside the preserved store refuses `USAGE_INVALID` (exit 1). So does one
+inside a path `clean all` removes, such as `.cotal/auth` or the space's `.cotal/space.<hex>`
+folder, because that cleanup would remove the backup with them. One in a
 folder this account cannot write refuses `PERMISSION_DENIED` (exit 2) and names that folder. A `--store-dir` that is not the cut's preserved store, such as an empty folder,
 refuses `CONFLICT` (exit 2) and names both stores. A process that listens at the cut's recorded
 address refuses `CONFLICT` (exit 2), as `backup restore` and a resuming `up` refuse it, and its Next
