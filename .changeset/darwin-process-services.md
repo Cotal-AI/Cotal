@@ -2,6 +2,7 @@
 "@cotal-ai/workspace": patch
 "@cotal-ai/cli": patch
 "@cotal-ai/manager": patch
+"@cotal-ai/connector-core": patch
 ---
 
 Process services, and with them a prepared stack's `cotal up` and `cotal down`, run on macOS. The
