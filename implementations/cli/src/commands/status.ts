@@ -257,6 +257,10 @@ export interface StatusResult {
     /** The service of this space, outside that stack, whose process runs this root's manager, as a
      *  `manager` preset started here does. Null when none does; older inputs may omit it. */
     managerService?: { definition: string; instanceId: string } | null;
+    /** The services of this space, outside that stack, whose processes run this root's records, as
+     *  `up` names them before it refuses to start the stack beside them. Null when the records could
+     *  not be read; older inputs may omit it. */
+    heldServices?: { definition: string; instanceId: string; record: string; pid: number }[] | null;
     /** The member that keeps `up` and `down` from settling that stack's last operation, which ended
      *  with no recorded outcome, with why and the way out their refusal names. Null when none does;
      *  older inputs may omit it. */
@@ -876,7 +880,11 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     const held = serviceHeldRecords(root, journal.space).find((row) => row.record.name === "manager");
     managerService = held ? { definition: held.definition, instanceId: held.instanceId } : null;
   } catch { managerService = null; }
-  return { ...folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, noManager, stackBlock, stackUnfinished), managerService };
+  let heldServices: StatusResult["folder"]["heldServices"] = [];
+  if (controllerStack && journal) try {
+    heldServices = serviceHeldRecords(root, journal.space).map((row) => ({ definition: row.definition, instanceId: row.instanceId, record: row.record.name, pid: row.record.pid! }));
+  } catch { heldServices = null; }
+  return { ...folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, noManager, stackBlock, stackUnfinished), managerService, heldServices };
 }
 
 /** The folder's persona catalog, which must never let a catalog imply a `spawn` the operator does
@@ -1787,8 +1795,13 @@ function nextActions(r: StatusResult): Section {
       const absent = spaceStreamsAbsent(r.selected.space, r.selected.spaceStreams.root ?? undefined, stack ?? undefined);
       extra.push(`${absent.message}; ${absent.remedy}`);
     }
-  } else if (own && r.selected.resolved && r.store?.state !== "full" && (memberGone || !elsewhere && r.selected.connection !== "ok" && r.selected.connection !== "reachable"))
-    items.unshift({ command: `${cmd} up --root ${shellWord(r.selected.root)}`, description: "Restart this stack's stopped members from its recorded inputs" });
+  } else if (own && r.selected.resolved && r.store?.state !== "full" && (memberGone || !elsewhere && r.selected.connection !== "ok" && r.selected.connection !== "reachable")) {
+    // `up` neither adopts nor replaces a service outside the stack that runs one of this root's
+    // records, so each is stopped first, with the stop `up` names.
+    const held = r.folder.heldServices ?? [], space = r.selected.space;
+    items.unshift(...held.map((row) => ({ command: `${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${space} --yes`, description: `Stop the ${row.definition} service, which runs this root's ${row.record} (pid ${row.pid}) outside the stack` })),
+      { command: `${cmd} up --root ${shellWord(r.selected.root)}`, description: held.length ? "Then restart this stack's stopped members from its recorded inputs" : "Restart this stack's stopped members from its recorded inputs" });
+  }
   // A stack whose folder was deleted stops only from this machine's records.
   if (r.selected.resolved && r.selected.rootGone) items.unshift({ command: `${cmd} down --space ${r.selected.space} --yes`, description: "Stop the stack whose folder is gone and free its name" });
   if (r.selected.resolved && r.selected.mode === "user" && r.selected.login && !r.selected.login.subject) items.unshift({ command: `${cmd} login --idp ${r.selected.login.idp}`, description: "Sign in to the selected space" });
