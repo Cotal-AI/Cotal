@@ -18,7 +18,15 @@
  * local broker can serve, a host name included, is refused the same way in an unprepared and a
  * prepared folder, as the short classified report with an example on the port passed. In the home
  * folder, whose `.cotal` holds the machine's own records, `up` refuses CONFLICT and writes nothing
- * there, and `down` and `down --dry-run` there find no stack. In a prepared folder whose broker store
+ * there, and `down` and `down --dry-run` there find no stack. A fresh folder under the home makes its
+ * own `.cotal` on a bare `up`, and removes it when a later check refuses, under a home that holds a
+ * stack as well, leaving that home's records as they were, while `up -f` there refuses CONFLICT and
+ * writes nothing. A bare `up` in a new project
+ * names its space after the folder: two sibling folders get their own names, `--space` and a project
+ * above the folder keep theirs, and a folder name that is no valid space name, a name another folder
+ * holds, or a selection whose folder was moved refuses before anything is written. A bare `up` whose
+ * folder names a space that runs from another folder refuses CONFLICT naming `cotal up --space <name>`
+ * and the `cotal down` in that folder. In a prepared folder whose broker store
  * this account cannot write, `up` refuses PERMISSION_DENIED naming the store and the `chmod` that
  * fixes it, where the broker used to exit naming the cause only in its log, and status names the same
  * step in place of `cotal up`. A `server.conf` that is a symlink, and a trust record this account
@@ -29,14 +37,14 @@
  *
  * Run: pnpm smoke:up-usage-refusal
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { connect, createServer, type AddressInfo } from "node:net";
 import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createSuite } from "@cotal-ai/smoke-kit";
+import { createSuite, freePort } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -44,7 +52,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; error?: { code?: string; message?: string; remedy?: string } }
+interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string } }
 const { readStackJournal, writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
@@ -203,6 +211,94 @@ check("down --yes in a home with no stack is TARGET_NOT_FOUND, nothing to stop, 
 const homePreview = run(["down", "--dry-run", "--json"], home);
 check("down --dry-run in a home with no stack is TARGET_NOT_FOUND, nothing to preview, and names `cotal up` in a project", homePreview.status === 2 && homePreview.envelope?.error?.code === "TARGET_NOT_FOUND" && /no stack started or registered, so there is nothing to preview/.test(homePreview.envelope.error.message ?? "") && homePreview.envelope.error.remedy === "run `cotal up` in a project", shown(homePreview));
 
+// A fresh folder under the home, whose only .cotal above it is the home's, becomes its own project
+// root on a bare up, also under a home that holds a stack. A run refused before it writes there leaves
+// the folder as it was. A manifest start there still needs a prepared folder.
+if (process.platform !== "win32") {
+  mkdirSync(join(home, ".cotal"), { recursive: true, mode: 0o700 });
+  const nested = join(home, "Desktop", "fresh");
+  mkdirSync(nested, { recursive: true, mode: 0o755 });
+  const nestedRecords = join(realpathSync(nested), ".cotal");
+  const homeWrites = () => ["agents", "nats", "auth"].filter((name) => existsSync(join(home, ".cotal", name)));
+  const runtimeUp = run(["up", "--runtime", "nosuch", "--server", "nats://127.0.0.1:1"], nested);
+  check("a bare up in a fresh folder under the home makes the folder's own .cotal and reaches its own checks", runtimeUp.status === 2 && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(runtimeUp.stderr) && runtimeUp.stderr.includes(`made ${nestedRecords} for this folder's records; the machine's home .cotal was not used`), shown(runtimeUp));
+  check("that refused up removed the .cotal it made and wrote nothing in the home's", !existsSync(nestedRecords) && homeWrites().length === 0, homeWrites());
+  const inherited = "this folder inherits the machine's home .cotal; up did not start a stack in that home root";
+  const prepare = "prepare this folder with cotal space create <space> --root ., then run cotal up again from this folder";
+  const manifestUp = run(["up", "-f", "cotal.yaml", "--json"], nested);
+  check("up -f there still refuses CONFLICT, exit 2, naming space create and up from the folder, and writes nothing", manifestUp.status === 2 && manifestUp.envelope?.error?.code === "CONFLICT" && manifestUp.envelope.error.message === inherited && manifestUp.envelope.error.remedy === prepare && !existsSync(nestedRecords), shown(manifestUp));
+  const { findMesh, recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+  process.env.COTAL_HOME = join(home, ".cotal");
+  recordMesh({ space: "homestack", server: "nats://127.0.0.1:1", root: home, mode: "auth", ts: new Date().toISOString() });
+  const homeEntry = JSON.stringify(findMesh("homestack"));
+  const holdsUp = run(["up", "--runtime", "nosuch", "--server", "nats://127.0.0.1:1", "--json"], nested);
+  const holdsManifest = run(["up", "-f", "cotal.yaml", "--json"], nested);
+  const homeAfter = JSON.stringify(findMesh("homestack"));
+  removeMesh("homestack");
+  delete process.env.COTAL_HOME;
+  check("under a home that holds a stack, a bare up there starts the folder's own space and reaches its own checks",
+    holdsUp.status === 2 && holdsUp.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && holdsUp.envelope.target?.space === "fresh" && holdsUp.envelope.target.root === realpathSync(nested), shown(holdsUp));
+  check("it removed the .cotal it made and left the home's registration and records as they were", !existsSync(nestedRecords) && homeAfter === homeEntry && homeWrites().length === 0, { homeEntry, homeAfter, writes: homeWrites() });
+  check("up -f there still refuses CONFLICT the same way", holdsManifest.status === 2 && holdsManifest.envelope?.error?.code === "CONFLICT" && holdsManifest.envelope.error.message === inherited && holdsManifest.envelope.error.remedy === prepare && !existsSync(nestedRecords), shown(holdsManifest));
+}
+
+// A bare up in a new project names its space after the folder. `--runtime nosuch` stops each start
+// at its runtime check, after the space is resolved and before anything is started.
+if (process.platform !== "win32") {
+  const desktop = realpathSync(join(home, "Desktop"));
+  const project = (...names: string[]) => { const dir = join(desktop, ...names); mkdirSync(dir, { recursive: true, mode: 0o755 }); return dir; };
+  const records = (dir: string) => existsSync(join(dir, ".cotal"));
+  const probe = ["--runtime", "nosuch", "--server", "nats://127.0.0.1:1", "--json"];
+  const resolved = (r: ReturnType<typeof run>, space: string) => r.status === 2 && r.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && r.envelope.target?.space === space;
+  const named = "up names a new project's space after its folder, and";
+  for (const name of ["alpha", "beta"]) {
+    const dir = project(name);
+    const sibling = run(["up", ...probe], dir);
+    check(`a bare up in the sibling folder ${name} starts the space ${name} and leaves the folder as it was when refused`, resolved(sibling, name) && !records(dir), shown(sibling));
+  }
+  const spaced = project("My Project");
+  const invalid = run(["up", "--server", "nats://127.0.0.1:1", "--json"], spaced);
+  check("a folder name that is no valid space name refuses USAGE_INVALID, exit 1, naming --space, and writes nothing",
+    invalid.status === 1 && invalid.envelope?.error?.code === "USAGE_INVALID" && invalid.envelope.target?.space === undefined && invalid.envelope.error.remedy === "name the space with cotal up --space <name>"
+      && invalid.envelope.error.message === `${named} the folder name "My Project" cannot be one: a space name is 1 to 64 letters, digits, underscores or hyphens, which \`cotal up\` needs to start it; nothing was started or written` && !records(spaced), shown(invalid));
+  const invalidText = run(["up", "--server", "nats://127.0.0.1:1"], spaced);
+  check("its text form is the refusal and the --space step, without the help", invalidText.status === 1 && invalidText.stdout === ""
+    && invalidText.stderr === `✗ ${invalid.envelope?.error?.message}\n  name the space with cotal up --space <name>\n` && !records(spaced), shown(invalidText));
+  const override = run(["up", "--space", "custom", ...probe], spaced);
+  check("--space names the space there", resolved(override, "custom") && !records(spaced), shown(override));
+  const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+  process.env.COTAL_HOME = join(home, ".cotal");
+  const gammaRoot = realpathSync(folder);
+  recordMesh({ space: "gamma", server: "nats://127.0.0.1:1", root: gammaRoot, mode: "auth", ts: new Date().toISOString() });
+  const registered = run(["up", "--server", "nats://127.0.0.1:1", "--json"], project("gamma"));
+  removeMesh("gamma");
+  delete process.env.COTAL_HOME;
+  check("a folder name another folder registered refuses CONFLICT, exit 2, naming --space, and writes nothing",
+    registered.status === 2 && registered.envelope?.error?.code === "CONFLICT" && registered.envelope.target?.heldBy === gammaRoot
+      && registered.envelope.error.message === `${named} "gamma" is already registered at nats://127.0.0.1:1 for ${gammaRoot}; nothing was started or written`
+      && registered.envelope.error.remedy === "name this folder's space with cotal up --space <name>, naming one this machine does not use; cotal space lists the names in use" && !records(join(desktop, "gamma")), shown(registered));
+  const deltaHome = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-delta-")));
+  process.on("exit", () => rmSync(deltaHome, { recursive: true, force: true }));
+  const preparedDelta = run(["space", "create", "delta", "--root", "."], deltaHome);
+  const prepared = run(["up", "--server", "nats://127.0.0.1:1", "--json"], project("delta"));
+  check("a folder name another folder prepared refuses CONFLICT the same way and writes nothing",
+    preparedDelta.status === 0 && prepared.status === 2 && prepared.envelope?.error?.code === "CONFLICT" && prepared.envelope.error.message === `${named} "delta" is already prepared for ${deltaHome}; nothing was started or written` && !records(join(desktop, "delta")), shown(prepared));
+  const ancestor = project("proj");
+  const preparedProj = run(["space", "create", "projspace", "--root", "."], ancestor);
+  const below = run(["up", ...probe], project("proj", "sub"));
+  check("in a folder of a prepared project, a bare up runs that project's space and writes nothing in the folder",
+    preparedProj.status === 0 && resolved(below, "projspace") && below.envelope?.target?.root === ancestor && !records(join(ancestor, "sub")), shown(below));
+  const source = project("moved");
+  const preparedMoved = run(["space", "create", "moved", "--root", "."], source);
+  const selected = run(["use", "moved"], source);
+  rmSync(source, { recursive: true });
+  const afterMove = run(["up", "--server", "nats://127.0.0.1:1", "--json"], project("epsilon"));
+  check("while the selected space's folder no longer exists, a bare up refuses TARGET_UNAVAILABLE and does not start the folder's name",
+    preparedMoved.status === 0 && selected.status === 0 && afterMove.status === 2 && afterMove.envelope?.error?.code === "TARGET_UNAVAILABLE"
+      && afterMove.envelope.error.message === `the selected space "moved" is prepared in ${source}, which no longer exists, and this folder names no space, so up did not start "epsilon" here` && !records(join(desktop, "epsilon")), shown(afterMove));
+  for (const space of ["delta", "projspace", "moved"]) run(["space", "forget", space]);
+}
+
 // A loopback listener that accepts and never answers NATS holds every broker address below.
 const holder = createServer((socket) => socket.on("error", () => {}));
 const held = await new Promise<number>((resolve) => holder.listen(0, "127.0.0.1", () => resolve((holder.address() as AddressInfo).port)));
@@ -305,6 +401,33 @@ try {
       beside.status === 2 && /CONFLICT/.test(beside.stderr) && /holds the controller stack of space upusagejournal/.test(beside.stderr)
         && /cotal team deploy cotal\.yaml/.test(beside.stderr) && /cotal team boot cotal\.yaml/.test(beside.stderr) && !started(journalRoot), shown(beside));
   }
+
+  // A bare up whose folder names a space that runs from another folder names a separate space for
+  // this folder, and the stop for the other one in its own folder. The folder's account names main,
+  // as one does after an earlier `up --space main` there. A child process that sends the broker's
+  // greeting stands in for the other folder's broker, since `run` blocks this process while up probes it.
+  const other = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-other-")));
+  const legacy = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-legacy-")));
+  process.on("exit", () => { for (const dir of [other, legacy]) rmSync(dir, { recursive: true, force: true }); });
+  const { createBrokerAuth, createSpaceAccountAuth } = await import("@cotal-ai/core");
+  const { authDir, saveBrokerAuth, saveSpaceAccountAuth } = await import("@cotal-ai/workspace");
+  const broker = await createBrokerAuth("upusagelegacy");
+  saveBrokerAuth(authDir(legacy), broker);
+  saveSpaceAccountAuth(authDir(legacy), await createSpaceAccountAuth(broker, "main"));
+  const greeter = spawn(process.execPath, ["-e", `require("node:net").createServer((s) => { s.on("error", () => {}); s.write('INFO {"server_id":"other","proto":1}\\r\\n'); }).listen(0, "127.0.0.1", function () { console.log(this.address().port); });`], { stdio: ["ignore", "pipe", "inherit"] });
+  const greeting = Number((await once(greeter.stdout!, "data"))[0].toString().trim());
+  const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+  process.env.COTAL_HOME = join(home, ".cotal");
+  recordMesh({ space: "main", server: `nats://127.0.0.1:${greeting}`, root: other, mode: "auth", origin: "up", ts: now });
+  const inUse = run(["up", "--server", `nats://127.0.0.1:${await freePort()}`], legacy);
+  // A regression that took the name over started a stack, which is stopped before the cell fails.
+  if (started(legacy)) run(["down", "--yes"], legacy);
+  removeMesh("main");
+  delete process.env.COTAL_HOME;
+  greeter.kill();
+  check("a bare up whose folder names a space that runs from another folder refuses CONFLICT, exit 2, naming cotal up --space <name> and the down in that folder",
+    inUse.status === 2 && /Code:\s+CONFLICT/.test(inUse.stderr) && inUse.stderr.includes(`space "main" is already in use by a mesh at nats://127.0.0.1:${greeting} (${other})`)
+      && inUse.stderr.includes(`start a separate space in this folder with cotal up --space <name>, naming one no other folder uses, or stop "main" first with cotal down in ${other}`), shown(inUse));
 } finally {
   holder.close();
 }

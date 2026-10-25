@@ -31,10 +31,9 @@ import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_pro
 import { createConnection } from "node:net";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { DEFAULT_SPACE } from "@cotal-ai/core";
 import { canonicalLocalProcessPath, deliveryCredsKey, DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, workspaceSecretStore } from "@cotal-ai/workspace";
 
 // Ephemeral OS-assigned port: no fixed-port collision across back-to-back / concurrent runs.
@@ -89,8 +88,9 @@ const alive = (pid: number) => {
 };
 const pidOf = (file: string) => Number(readFileSync(join(root, ".cotal", file), "utf8").trim());
 // The runtime records are per-space now, so their names come from the SHIPPED expansion rather than
-// a literal. This suite ups without `--space`, which is the default space.
-const record = (template: string) => canonicalLocalProcessPath(template, { root, space: DEFAULT_SPACE });
+// a literal. This suite ups without `--space`, so a new project's space takes its folder's name.
+const SPACE = basename(root);
+const record = (template: string) => canonicalLocalProcessPath(template, { root, space: SPACE });
 const recordName = (template: string) => record(template).slice(join(root, ".cotal").length + 1);
 const portOpenAt = (port: number) =>
   new Promise<boolean>((res) => {
@@ -182,9 +182,9 @@ try {
   );
   ok("old generic background wording is absent", !/mesh running in the background/.test(up.stdout), up.stdout);
   const upText = plain(up.stdout);
-  ok("the receipt begins with the mesh it started", upText.startsWith("Mesh: main\n\n"), up.stdout);
-  ok("it says up started the default space because this folder names none", upText.includes('This folder names no space, so up started the default space "main"'), up.stdout);
-  ok("it ends with a Next that launches an agent and stops the stack", /\nNext\n\s+cotal spawn --space main\s+Launch your default agent\n\s+cotal down\s+Stop the stack\s*$/.test(upText), up.stdout);
+  ok("the receipt begins with the mesh it started", upText.startsWith(`Mesh: ${SPACE}\n\n`), up.stdout);
+  ok("it says the new project's space is named after its folder", upText.includes(`This new project's space is named after its folder, "${SPACE}"`), up.stdout);
+  ok("it ends with a Next that launches an agent and stops the stack", new RegExp(`\nNext\n\\s+cotal spawn --space ${SPACE}\\s+Launch your default agent\n\\s+cotal down\\s+Stop the stack\\s*$`).test(upText), up.stdout);
   for (const [file, label] of [["nats.pid", "nats-server"], [recordName(DELIVERY_PIDFILE), "delivery daemon"], [recordName(MANAGER_PIDFILE), "manager"]] as const) {
     const pid = pidOf(file);
     pids.push(pid);
@@ -250,7 +250,7 @@ try {
   const deliveryIdentityFile = `${deliveryPidFile}.identity`;
   const liveDeliveryIdentity = readFileSync(deliveryIdentityFile, "utf8");
   const secrets = workspaceSecretStore(root);
-  const credsKey = deliveryCredsKey(DEFAULT_SPACE, { injected: false, root });
+  const credsKey = deliveryCredsKey(SPACE, { injected: false, root });
   const liveDeliveryCreds = (await secrets.get(credsKey))!;
   rmSync(deliveryPidFile);
   rmSync(deliveryIdentityFile);
@@ -313,7 +313,7 @@ try {
   ok("a no-op refresh does not print the restore line", !/✓ restored in the background: manager/.test(noopOut), noopOut);
   ok(
     "a no-op refresh prints the already-running line",
-    new RegExp(`✓ mesh "${DEFAULT_SPACE}" already running at`).test(noopOut),
+    new RegExp(`✓ mesh "${SPACE}" already running at`).test(noopOut),
     noopOut,
   );
   ok("the manager pidfile is unchanged by the no-op refresh", pidOf(recordName(MANAGER_PIDFILE)) === restoredPid, managerPidFile);
@@ -323,7 +323,7 @@ try {
   //    down gracefully, which can take a few seconds on slow CI.
   const down = cli("down");
   ok("down exits 0", down.status === 0, down.stdout + down.stderr);
-  ok("its stop lines follow the mesh heading and end with the step that starts it again", plain(down.stdout).startsWith("Mesh: main\n\n✓ stopped") && /\nNext\n\s+cotal up\s+Start it again\s*$/.test(plain(down.stdout)), down.stdout);
+  ok("its stop lines follow the mesh heading and end with the step that starts it again", plain(down.stdout).startsWith(`Mesh: ${SPACE}\n\n✓ stopped`) && /\nNext\n\s+cotal up\s+Start it again\s*$/.test(plain(down.stdout)), down.stdout);
   let dead = false;
 
   for (let i = 0; i < 24 && !dead; i++) {
@@ -448,7 +448,7 @@ try {
     let fgOutText = "";
     fgUp.stdout?.on("data", (b: Buffer) => void (fgOutText += b.toString()));
     fgUp.stderr?.on("data", (b: Buffer) => void (fgOutText += b.toString()));
-    const fgRecord = (template: string) => canonicalLocalProcessPath(template, { root: fgRoot, space: DEFAULT_SPACE });
+    const fgRecord = (template: string) => canonicalLocalProcessPath(template, { root: fgRoot, space: basename(fgRoot) });
     let managerUpSeen = false;
     for (let i = 0; i < 60 && !managerUpSeen; i++) {
       await sleep(1000);
@@ -514,7 +514,7 @@ try {
     let rgOutText = "";
     rgUp.stdout?.on("data", (b: Buffer) => void (rgOutText += b.toString()));
     rgUp.stderr?.on("data", (b: Buffer) => void (rgOutText += b.toString()));
-    const rgRecord = (template: string) => canonicalLocalProcessPath(template, { root: rgRoot, space: DEFAULT_SPACE });
+    const rgRecord = (template: string) => canonicalLocalProcessPath(template, { root: rgRoot, space: basename(rgRoot) });
     let rgManagerUp = false;
     for (let i = 0; i < 60 && !rgManagerUp; i++) {
       await sleep(1000);

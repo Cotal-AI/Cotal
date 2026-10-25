@@ -1,12 +1,18 @@
 import { existsSync, lstatSync, readlinkSync, realpathSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { canonicalRoot, CommandFailure, findCotalRoot, homeCotalDir, moveRecordsBack, recordsMovedTo } from "@cotal-ai/workspace";
+import { authDir, canonicalRoot, CommandFailure, findCotalRoot, homeCotalDir, localMeshesForRoot, moveRecordsBack, readMaintenanceJournal, recordsMovedTo, soleSpaceOf } from "@cotal-ai/workspace";
 
 /** The project's `.cotal/` root, found by walking up from cwd (like git finds `.git`), so every
  *  command resolves the same `.cotal/` whether you're at the project root or a subdirectory. */
 export function cotalRoot(): string {
   return findCotalRoot();
+}
+
+/** Whether the machine home already holds a stack an earlier release started there: a registration,
+ *  a maintenance attempt, or a space account. Such a stack still starts, resumes and stops in place. */
+export function homeHoldsStack(root: string): boolean {
+  return localMeshesForRoot(root).length > 0 || readMaintenanceJournal(root) !== undefined || soleSpaceOf(authDir(root)) !== undefined;
 }
 
 /** A path inside the project's `.cotal/` directory. Use instead of `resolve(".cotal/…")` so paths

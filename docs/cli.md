@@ -587,7 +587,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--server <url>` | auto (free local port) | Listen URL: one `nats://` or `tls://` URL with an IP address and a port, without credentials, path, query or fragment. `up` records and compares it with the scheme in lower case and without a bare trailing `/`, so `NATS://127.0.0.1:<port>/` names the same address as `nats://127.0.0.1:<port>`. A URL with no port is not given the default 4222. Any other value, a host name such as `localhost`, and an IPv6 address, which the stack's own clients cannot reach, refuse `USAGE_INVALID` before anything is written. That refusal gives an example on `127.0.0.1` with the port you passed, and prints no help. With no `--host` the broker binds `127.0.0.1`, so a `--server` naming another IPv4 address refuses `USAGE_INVALID` the same way and names the `--host` to add. A `tls://` address records TLS as required, so without `--tls-cert` and `--tls-key`, or a recorded TLS policy, `up` refuses it `USAGE_INVALID` before anything starts. On a prepared root it refuses `UNSUPPORTED`, exit 2, instead, as the `--tls-cert` row says. A controller stack's first `up` records it, and a later `--server` naming another address refuses `CONFLICT`, naming the recorded address and the bare `cotal up` that starts the stack there. No command moves a stack that ran to another address. When another program holds the recorded address, bare `up` refuses too, so this refusal names that address and any process of this account that listens there, and says to stop it before bare `cotal up`. A different `--store-dir`, `--max-file-store` or `--host` refuses the same way, naming each recorded value. A controller stack's broker also needs an address that is not a wildcard, which `up` checks before it writes the stack journal. With `-f`, it overrides the manifest's `broker.servers` and follows that field's rules instead: a valid URL with no embedded credentials |
 | `--host <host>` | none | Bind host override for a **fresh** broker boot: an IP or hostname only, never a URL (that is `--server`) and never `host:port` (the port comes from `--server` or its default); a URL or port-bearing value is refused pointing at the right flag. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL. The broker's plaintext websocket and the manager's plain HTTP console bind the same host, so a wildcard bind opens all three listeners on every interface. Each of these refusals, and a concrete IPv6 address, refuses `USAGE_INVALID` (exit 1) before anything is written. Recorded on the mesh and reused by every later manager launch, so a repair or resume keeps remote [`attach`](#managed-seats) working. A live refresh (`✓ mesh already running`) does not rewrite `.cotal/auth/server.conf` or rebind nats; stop the broker, then re-run `up --host` |
 | `--space <s>` | the folder's space | Space name, at most 64 characters; a longer one refuses `USAGE_INVALID` before anything is written |
-| `--root <prepared-dir>` | current folder's workspace | Use an existing local project's own `.cotal` root rather than inheriting one from the invoking folder. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Prepare a new folder with `space create <space> --root <dir>` first. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
+| `--root <prepared-dir>` | current folder's workspace | Start the project in `<dir>` instead of the folder you run `up` from. `<dir>` must already have its own `.cotal`, which `space create <space> --root <dir>` or an earlier `up` there made. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
 | `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it). Also accepted with `-f`. A path that is a link refuses `USAGE_INVALID`, naming the directory it points to. A store folder belongs to one space: a folder another space uses refuses `CONFLICT`, naming that space |
 | `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). At least 67108865: the space's membership bucket reserves 67108864 (64 MiB), and nats-server creates each of the other streams only while one more byte is free. A smaller value refuses `USAGE_INVALID`, naming 67108865, before anything starts. Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), and a stopped stack's next `up --max-file-store` replaces the recorded cap. A controller stack keeps it across `cotal down`, because it refuses `down --preserve-state` in this release. On a legacy root, `down --preserve-state` keeps it for the resume, and a resume with a different value refuses `CONFLICT`, exit 2. When a broker `up` started cannot create the space's streams for want of storage, the failure names the cap and `cotal up --max-file-store <bytes>`. Once the space holds more than the cap, the broker refuses every write: `send` refuses naming the cap, and `status` shows the store full. Not accepted with `-f` |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON), in the [channel seed file](#channel-seed-file) format. An explicit path that is missing, unreadable or not JSON refuses `USAGE_INVALID`, naming the file, before anything is written. Content the registry would not take refuses `SCHEMA_INVALID` before anything starts, naming the file and the entry. `up` reads the file once, so a pipe or a FIFO such as `--channels <(…)` works. A default `.cotal/channels.json` that is not a regular file, such as a FIFO, refuses `USAGE_INVALID` the same way |
@@ -619,9 +619,15 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
 per-agent ACLs. It runs in the background by default and records the mesh so `cotal spawn` from
 any directory can find it; `--detach` explicitly names the same mode. `--foreground` keeps the
-native stack in this terminal. A contradictory mode pair refuses before setup or seed work. An
-unqualified `up` from a folder that inherits the machine's home `.cotal` refuses before seeding:
-prepare that folder with `space create <space> --root .`, then run `up --root .`. In the home folder
+native stack in this terminal. A contradictory mode pair refuses before setup or seed work. In a
+folder whose only `.cotal` above it is the machine's home one, such as a new folder in your home
+folder, a bare `up` makes the folder's own `.cotal` and starts the stack there, as it does in a folder
+with no `.cotal` above it, and a run refused before it writes there removes that `.cotal` again.
+When the home holds a stack an earlier release started there, the folder starts its own stack beside
+it. The home's stack keeps running and keeps its records, and commands in the folder reach the
+folder's own stack from then on. In such a folder,
+`up -f` and `up --restore` refuse `CONFLICT` before anything is written: prepare the folder with
+`space create <space> --root .`, then run `up` again from it. In the home folder
 itself, whose `.cotal` holds this machine's own records, `up` refuses `CONFLICT` and names a project
 folder, as `space create` does there. In a folder that is, or is in, a control directory, `up`
 refuses `CONFLICT` before anything is started or written and names the project folder to run it from. A home that already holds a stack an earlier release started
@@ -630,7 +636,12 @@ When `--root` names another prepared project, run bare
 `cotal down` from that project folder: bare down
 stops the folder's stack, and `down --space` is not a remote replacement for that scope. With no
 `--space`, `up` runs the folder's space: the one its auth account names, else the one its stack or
-running mesh records, else the one prepared there, else `main`. A second `up` in the same folder
+running mesh records, else the one prepared there. A folder whose records name no space is a new
+project, and `up` names its space after the folder, the name `cotal up --space <folder name>` would
+give it. A folder name that is not a valid space name, such as one with a space in it, refuses
+`USAGE_INVALID`, exit 1. A name another folder on this machine registered or prepared, running or
+stopped, refuses `CONFLICT`, exit 2, and is not taken over. Both refusals write nothing and name
+`cotal up --space <name>`. A second `up` in the same folder
 runs the same space again. A folder whose stack and registrations name more than one space refuses
 with `CONFLICT` and asks for `--space`. With no
 `--server`, a fresh local stack selects a free port if the default address is occupied or
@@ -639,7 +650,10 @@ address. A later `cotal up` of
 the same space from the same folder starts from the URL that mesh recorded; an explicit `--server`
 stays fail-loud on collision. When the named space runs from another folder on this machine,
 `up --space` refuses `CONFLICT`, exit 2, naming that folder, with or without `--server`, `--json` or
-`--plain`, and writes nothing in the folder it ran from. A background boot also brings up the control plane (delivery daemon in auth
+`--plain`, and writes nothing in the folder it ran from. A bare `up` whose folder names a space that
+runs from another folder refuses `CONFLICT` as well. Its Next names
+`cotal up --space <name>` to start a separate space in this folder, and the `cotal down` that stops
+the other one in its own folder. A background boot also brings up the control plane (delivery daemon in auth
 mode, then the manager). `--no-manager` is the broker-only mode: it boots
 the broker (and the delivery daemon in auth mode) and starts no manager, so there is no manager
 pidfile to leave stale. A refresh under the flag of a mesh whose manager is live refuses rather
@@ -651,8 +665,8 @@ host and run [`supervise`](#supervise) against the remote broker; see
 [Run a mesh](run-a-mesh.md). `cotal up --detach` prints `✓ running in the background:` with
 `manager` listed (pidfile liveness, not a teardown boundary); with `--no-manager` the line lists
 only what actually started. Its receipt begins with `Mesh: <space>` and ends with a Next that names
-`cotal spawn` when a manager runs, and the stop. With no `--space`, in a folder that names no space,
-it also says that `up` started the default space `main`. For a stack an earlier release started in
+`cotal spawn` when a manager runs, and the stop. With no `--space`, in a new project, it also says
+that the space is named after the folder. For a stack an earlier release started in
 the machine home, the line names `cotal down --preserve-state`,
 because bare `down` refuses the home stack. With `--no-manager` it names `cotal up` first, because
 `--preserve-state` needs a manager. On POSIX, a foreground broker has its own session and process group.
@@ -2631,8 +2645,8 @@ finishes or settles it. `cotal up --space <name>` in a folder
 that is already another space's root refuses with `CONFLICT`, exit 2. `space add` refuses a prepared
 name. A prepared space records its folder by path, and moving the folder leaves nothing in it that
 names the space. A bare `cotal up` in a folder that names no space, while the selected space is
-prepared in a folder that no longer exists, refuses `TARGET_UNAVAILABLE`, exit 2, rather than start the
-default space there. Forget the space with `cotal space forget <name>`, prepare it again in its new
+prepared in a folder that no longer exists, refuses `TARGET_UNAVAILABLE`, exit 2, rather than start a
+space named after the folder there. Forget the space with `cotal space forget <name>`, prepare it again in its new
 folder with `cotal space create <name>`, then run `cotal up`. Until then, `space create` of that name
 says its recorded folder no longer exists.
 
@@ -2666,7 +2680,7 @@ folder does not start one, as [Running a service](#running-a-service) describes.
 finds no space for it, so remove a service before you forget its space to drop it at once.
 `status` in a forgotten space's root then selects no space and probes no broker. When nothing left
 in that root's `.cotal/` names a space, its next step is `cotal space create <name> --root <root>`,
-because a bare `cotal up` there would start the default space `main` in that folder. A command run
+because a bare `cotal up` there would start a space named after that folder. A command run
 there that finds no broker at the default address says that no space is registered or prepared for
 the folder and names the same step. That refusal has no `Mesh:` line, and its `target` names only
 the folder, because no space was resolved there.
@@ -2919,9 +2933,9 @@ does not prove the original broker never started; an additive intent does not
 prove which resources changed. This read grants neither retry nor stop
 authority. A fresh summary that names another folder, as one does after its folder was moved or
 copied, is listed with its recorded path and is not counted as unreadable. If the folder inherits
-the machine's home `.cotal`, status warns that unqualified `up` refuses instead of starting
-there. Prepare the intended folder first with
-`space create <space> --root .`; `up --root .` then names it.
+the machine's home `.cotal`, `status --verbose` says that `up` there makes the folder its own project
+root. When the home holds a stack an earlier release started there, it also says that commands in the
+folder reach that stack until then.
 
 A prepared space whose controller stack ran and was stopped reads as stopped, with its last
 operation and how it ended, such as `cotal down, completed`, and Next names `cotal up` in its root.

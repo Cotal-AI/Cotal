@@ -14,10 +14,11 @@ import {
   lstatSync,
   realpathSync,
   readdirSync,
+  rmdirSync,
   unlinkSync,
   type Stats,
 } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   isReachable,
   dialerFor,
@@ -144,6 +145,7 @@ import {
   replaceDeadOrdinaryResumeListener,
   localProcessOwnerStatus,
   readMaintenanceJournal,
+  rootNamesNoSpace,
   readMaintenanceResumeDocument,
   seatCheckpointDir,
   readStoreIdentity,
@@ -188,7 +190,7 @@ import { resolveSpace } from "../lib/status.js";
 import { c, stderrLine } from "../ui.js";
 import { admitAndRestoreSeatCheckpoints, type StaleCheckpointConsent } from "../lib/seat-resume.js";
 import { natsServerLabel, resolveNatsServer } from "../lib/nats-bin.js";
-import { cotalPath, cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
+import { cotalPath, cotalRoot, homeHoldsStack, linkedCotalRefusal } from "../lib/paths.js";
 import { detachedNext, renderDetachedSummary } from "../lib/up-report.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { upSystemdSupervisionWarning } from "../lib/systemd-supervision.js";
@@ -207,7 +209,8 @@ import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/r
 import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
-import { checkSpaceFlagValue } from "./meshes-add.js";
+import { checkSpaceFlagValue, checkSpaceName } from "./meshes-add.js";
+import { checkLocalSpace } from "./space-registration.js";
 import { cleanedManifestStart, namedOpenConfig, retainedOpenSpace } from "../lib/legacy-start.js";
 import {
   bindReaches,
@@ -334,7 +337,7 @@ export const upFlags: FlagSpec[] = [
   { name: "server", type: "string", value: "<url>", description: "listen URL; a stack's first up records it and later ups keep it" },
   { name: "host", type: "string", value: "<host>", description: "bind host override (an IP/hostname, not a URL; the URL is --server)" },
   { name: "space", type: "string", value: "<s>", description: "space name (default: the folder's)" },
-  { name: "root", type: "string", value: "<dir>", description: "use this existing prepared local root instead of the current folder" },
+  { name: "root", type: "string", value: "<dir>", description: "start the project in this folder instead of the current one; it must already have its own .cotal" },
   { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
   { name: "max-file-store", type: "string", value: "<bytes>", description: "JetStream file storage cap in bytes (default: nats-server's dynamic cap). Fixed at broker start and recorded for the next `up`; a legacy root also keeps it across `down --preserve-state`" },
   { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json)" },
@@ -415,7 +418,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (spaceTooLong) throw new CommandFailure("refused", "USAGE_INVALID", `${spaceTooLong}; nothing was started or written`, { remedy: `choose a space name of at most ${SPACE_NAME_MAX} characters` });
   // A prepared or controller-owned root has no route that serves TLS, so any TLS input refuses here,
   // once and naming the route that does, before the checks below send it from one TLS form to another.
-  const tlsRoot = typeof args.values.root === "string" ? resolve(args.values.root) : cotalRoot();
+  const tlsRoot = typeof args.values.root === "string" ? resolve(args.values.root) : freshFolderRoot(args.values) ?? cotalRoot();
   if (!args.values.file && requestsTls(args.values) && !readMaintenanceJournal(tlsRoot)) controllerStackApplies(tlsRoot, (args.values.space as string | undefined) ?? folderSpace(), args.values);
   // A --tls-cert broker serves TLS only, and its address says so, so every client dials tls:// and
   // checks the certificate against the address it names.
@@ -427,7 +430,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   // its own checks for maintenance re-entries, which do not pass through this validation.
   parsePositiveIntegerFlag("--max-sessions", args.values["max-sessions"] as string | undefined);
   parseMaxFileStore(args.values["max-file-store"] as string | undefined);
-  if (typeof args.values["store-dir"] === "string") assertStoreDirArgument(args.values["store-dir"], typeof args.values.root === "string" ? resolve(args.values.root) : cotalRoot());
+  if (typeof args.values["store-dir"] === "string") assertStoreDirArgument(args.values["store-dir"], typeof args.values.root === "string" ? resolve(args.values.root) : freshFolderRoot(args.values) ?? cotalRoot());
   const restoreOnly = args.values["restore-only"];
   if (restoreOnly !== undefined && restoreOnly !== "registry") throw new CommandFailure("refused", "USAGE_INVALID", `--restore-only takes registry (got ${JSON.stringify(restoreOnly)})`);
   if (!args.values.restore && (restoreOnly !== undefined || args.values["accept-missing-source"] === true)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore-only and --accept-missing-source require --restore <dir>");
@@ -436,15 +439,18 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (args.values.root !== undefined) preparedUpRoot(String(args.values.root));
   else if (!(args.values.file && args.values["dry-run"] === true)) {
     const inheritedRoot = inheritedMachineHomeRoot();
-    if (inheritedRoot)
-      throw new CommandFailure("refused", "CONFLICT", "this folder inherits the machine's home .cotal; up did not start a stack in that home root", { target: { root: process.cwd(), inheritedRoot }, remedy: "prepare this folder with cotal space create <space> --root ., then use cotal up --root ." });
-    const home = machineHomeRoot();
-    if (home && !homeHoldsStack(home))
-      throw new CommandFailure("refused", "CONFLICT", `${home} is your home folder, whose .cotal holds this machine's own records, so up started no stack there`, { target: { root: home }, remedy: "prepare a project folder with cotal space create <space> --root <dir>, then run cotal up there, or pass --root <dir> from here" });
+    if (inheritedRoot) {
+      if (!freshFolderRoot(args.values))
+        throw new CommandFailure("refused", "CONFLICT", "this folder inherits the machine's home .cotal; up did not start a stack in that home root", { target: { root: process.cwd(), inheritedRoot }, remedy: "prepare this folder with cotal space create <space> --root ., then run cotal up again from this folder" });
+    } else {
+      const home = machineHomeRoot();
+      if (home && !homeHoldsStack(home))
+        throw new CommandFailure("refused", "CONFLICT", `${home} is your home folder, whose .cotal holds this machine's own records, so up started no stack there`, { target: { root: home }, remedy: "prepare a project folder with cotal space create <space> --root <dir>, then run cotal up there, or pass --root <dir> from here" });
+    }
   }
   if (args.values.restore !== undefined) refuseControllerCut(args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot(), "up --restore");
   if (!(args.values.file && args.values["dry-run"] === true)) {
-    const root = args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot();
+    const root = args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : freshFolderRoot(args.values) ?? cotalRoot();
     // A path with a control character or a bidirectional formatting mark is refused before any write.
     const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
     if (pathProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${pathProblem}; nothing was started or written`, { target: { root }, remedy: "rename the folder without those characters, then run cotal up there" });
@@ -456,6 +462,7 @@ export function validateUpArguments(args: ParsedArgs): void {
     // A restore and a manifest name their own store.
     if (args.values.restore === undefined && args.values.file === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : undefined);
   }
+  folderNamedSpace(args.values);
 }
 
 /** Every launch route writes under the root's .cotal first, or makes it when it is missing. A folder
@@ -538,6 +545,49 @@ function upHostProblem(host: string | undefined, server: string | undefined): { 
   return undefined;
 }
 
+/** The invoking folder, when a bare `up` makes it its own project root: the only `.cotal` above it is
+ *  the machine home's. The folder has no records of its own, so `up` starts it as it starts a folder
+ *  with no `.cotal` above it. A stack an earlier release started in the home is left as it is and
+ *  still starts from the home. A manifest or a restore still needs a prepared folder. */
+function freshFolderRoot(values: ParsedArgs["values"]): string | undefined {
+  if (values.root !== undefined || values.file !== undefined || values.restore !== undefined) return undefined;
+  return inheritedMachineHomeRoot() !== undefined ? resolve(process.cwd()) : undefined;
+}
+
+/** The space a bare `up` starts in a new project: the name of the project folder, when no `--space`
+ *  names one and the folder's records name no space. The name passes the rules `space create`
+ *  applies, and a name another folder on this machine holds, running, stopped or prepared, refuses
+ *  rather than being taken over. Each refusal names `--space`, before anything is written. */
+function folderNamedSpace(values: ParsedArgs["values"]): string | undefined {
+  if (values.space !== undefined || values.root !== undefined || values.file !== undefined || values.restore !== undefined) return undefined;
+  const root = freshFolderRoot(values) ?? (machineHomeRoot() ? undefined : cotalRoot());
+  if (root === undefined || !recordsNameNoSpace(root)) return undefined;
+  const space = basename(resolve(root));
+  const named = `up names a new project's space after its folder, and`;
+  const checked = checkSpaceName(space);
+  const invalid = spaceNameTooLong(space) ?? (checked.ok ? undefined : checked.message.replace(/^✗ /, ""));
+  if (invalid)
+    throw new CommandFailure("refused", "USAGE_INVALID", `${named} the folder name ${JSON.stringify(space)} cannot be one: ${invalid}; nothing was started or written`, { target: { root }, remedy: "name the space with cotal up --space <name>", selfContained: true });
+  assertSelectionNotMoved(root, space);
+  const held = findMesh(space) ?? findPreparedSpace(space);
+  if (held)
+    throw new CommandFailure("refused", "CONFLICT", `${named} "${space}" is already ${"server" in held ? `registered at ${held.server}` : "prepared"} for ${held.root}; nothing was started or written`, { target: { root, space, heldBy: held.root }, remedy: "name this folder's space with cotal up --space <name>, naming one this machine does not use; cotal space lists the names in use" });
+  checkLocalSpace(space, root, "--root", false);
+  return space;
+}
+
+/** Whether `root` holds no records that name a space: no `.cotal`, an empty one, or one with no
+ *  account, prepared space, registration, stack journal, runtime record, broker configuration or
+ *  maintenance attempt. */
+function recordsNameNoSpace(root: string): boolean {
+  const control = join(root, ".cotal");
+  let entries: string[];
+  try { entries = readdirSync(control); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+  try { if (readMaintenanceJournal(root)) return false; } catch { return false; }
+  return entries.length === 0 || rootNamesNoSpace(root);
+}
+
 function inheritedMachineHomeRoot(): string | undefined {
   const root = machineHomeRoot();
   return root !== undefined && canonicalRoot(process.cwd()) !== canonicalRoot(root) ? root : undefined;
@@ -547,12 +597,6 @@ function inheritedMachineHomeRoot(): string | undefined {
 function machineHomeRoot(): string | undefined {
   const root = cotalRoot();
   return canonicalRoot(root) === canonicalRoot(homedir()) || canonicalRoot(join(root, ".cotal")) === canonicalRoot(homeCotalDir()) ? root : undefined;
-}
-
-/** Whether the machine home already holds a stack an earlier release started there: a registration,
- *  a maintenance attempt, or a space account. Such a stack still starts, resumes and stops in place. */
-function homeHoldsStack(root: string): boolean {
-  return localMeshesForRoot(root).length > 0 || readMaintenanceJournal(root) !== undefined || soleSpaceOf(authDir(root)) !== undefined;
 }
 
 /** An explicit root is an existing local workspace, not a hint to find another ancestor or
@@ -747,6 +791,15 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
     // The broker reads an explicit channels file only once it is being prepared, so a file it would
     // refuse is named here, before the stack journal or anything else is written.
     if (typeof args.values.channels === "string") readChannelsFile(resolve(args.values.channels));
+    const folderNamed = folderNamedSpace(args.values);
+    if (folderNamed) args = { ...args, values: { ...args.values, space: folderNamed, __folderNamed: true } };
+    // A fresh folder under the machine home gets its own `.cotal` before anything resolves the root, so
+    // every later step uses this folder. A run that stops before writing there removes it again.
+    const fresh = args.values.root === undefined ? freshFolderRoot(args.values) : undefined;
+    if (fresh) {
+      mkdirSync(join(fresh, ".cotal"), { mode: 0o700 });
+      console.error(c.dim(`made ${join(fresh, ".cotal")} for this folder's records; the machine's home .cotal was not used`));
+    }
     const root = args.values.root === undefined ? undefined : preparedUpRoot(String(args.values.root));
     const previousCwd = process.cwd();
     // Path flags still mean paths relative to the invoking directory, not the selected root.
@@ -769,9 +822,23 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
       }
     }
     try { return await runUp(invocation, inheritedLock, () => { adopted = true; }, freshTeamBoot, restoreSink); }
+    catch (error) {
+      if (fresh) removeEmptyRecords(join(fresh, ".cotal"));
+      throw error;
+    }
     finally { if (root) process.chdir(previousCwd); }
   } finally {
     if (inheritedLock && !adopted) releaseMaintenanceLock(inheritedLock);
+  }
+}
+
+/** Remove the `.cotal` a failed `up` made for a fresh folder when the run wrote nothing in it. One
+ *  that holds anything stays, as the run's records. */
+function removeEmptyRecords(path: string): void {
+  try { rmdirSync(path); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOTEMPTY" && code !== "EEXIST") console.error(c.yellow(`! ${path} was left in place (${code ?? "an error"})`));
   }
 }
 
@@ -792,6 +859,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     __restoreAttempt?: string;
     __ordinaryResumeAttempt?: string;
     __invokedRoot?: string;
+    __folderNamed?: boolean;
   };
   if (freshTeamBoot && (!values.file || values.restore || values.__restoreAttempt || values.__ordinaryResumeAttempt || values["rotate-sys"] || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "fresh team boot accepts one manifest and its selected lifetime, not a restore, rotation or manager-free override");
   if (values["manager-name"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--manager-name names the manager a plain cotal up starts; it cannot be combined with --restore, --file or --no-manager");
@@ -897,7 +965,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // Refuse first-enable IdP failures and explicit pin conflicts before even recovery's lock
     // creates its layout. Existing recovery keeps its own recorded startup and trust checks.
     const stackSpace = values.space ?? folderSpace();
-    if (values.space === undefined) assertSelectionNotMoved(root, stackSpace);
+    if (values.space === undefined && unnamedDefault(root, stackSpace)) assertSelectionNotMoved(root, stackSpace);
     recordOperationSpace(stackSpace);
     if (!readMaintenanceJournal(root) && controllerStackApplies(root, stackSpace, values)) {
       const recordedStack = readStackJournal(root);
@@ -1900,6 +1968,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       console.log(c.dim(`Started ${executable}.`));
       console.log(c.green(renderDetachedSummary(detached)));
       if (unnamed) console.log(c.dim(`  This folder names no space, so up started the default space "${receiptSpace}"; pass --space <name> to start another`));
+      if (values.__folderNamed) console.log(c.dim(`  This new project's space is named after its folder, "${receiptSpace}"; pass --space <name> to start another`));
     }
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
@@ -3980,11 +4049,10 @@ function unnamedDefault(root: string, space: string): boolean {
   return space === DEFAULT_SPACE && soleSpaceOf(authDir(root)) === undefined && !preparedSpaceAt(root) && !localMeshesForRoot(root).length && !readStackJournal(root);
 }
 
-/** A bare `up` in a folder that names no space starts the default space. When the selected space
- *  is prepared in a folder that no longer exists, as after that folder was moved, the default is not
- *  what was meant, so `up` refuses with the step that prepares the selection here. */
+/** A bare `up` in a folder that names no space starts a space it names itself. When the selected
+ *  space is prepared in a folder that no longer exists, as after that folder was moved, that space is
+ *  not what was meant, so `up` refuses with the step that prepares the selection here. */
 function assertSelectionNotMoved(root: string, space: string): void {
-  if (!unnamedDefault(root, space)) return;
   const current = getCurrent();
   const prepared = current === undefined || current === space ? undefined : findPreparedSpace(current);
   if (!prepared || existsSync(prepared.root)) return;
@@ -4075,8 +4143,12 @@ export async function claimSpace(space: string, server: string, root: string): P
     throw new CommandFailure("refused", "CONFLICT", `space "${space}" is registered to a mesh at ${existing.server} (${existing.root}) - it is ${existing.origin === "catalog" ? "owned by a signed-in space catalog" : "registered by hand"}, so \`cotal up\` neither takes it over nor reclaims the name`, { target, remedy: existing.origin === "catalog" ? "use a different `--space`, or remove access at the IdP and run `cotal sync`" : manualClaimRemedy(space, existing.server) });
   if (relative)
     throw new CommandFailure("refused", "CONFLICT", `space "${space}" is registered to ${existing.root}, which is not an absolute path - \`cotal up\` did not take the name`, { target, remedy: `drop that record with \`cotal meshes rm ${space}\`, or start this stack under a different \`--space\`` });
-  if (await isReachable(existing.server))
-    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is already in use by a mesh at ${existing.server} (${existing.root})`, { target, remedy: "pick a different `--space`, or `cotal down` it first" });
+  if (await isReachable(existing.server)) {
+    // A space name is this machine's, so a separate space here needs a name of its own.
+    let controller = false;
+    try { controller = readStackJournal(existing.root)?.journal.space === space; } catch { /* named with the legacy stop */ }
+    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is already in use by a mesh at ${existing.server} (${existing.root})`, { target, remedy: `start a separate space in this folder with cotal up --space <name>, naming one no other folder uses, or stop "${space}" first with cotal down${controller ? " --yes" : ""} in ${shellWord(existing.root)}` });
+  }
   // The recorded root is this root only where it physically resolves, so it is resolved before any
   // comparison, and one that cannot be resolved refuses. A dead holder at another root keeps its name
   // while that root holds a preserved cut or a restore: taking it would cut that root's recovery off
