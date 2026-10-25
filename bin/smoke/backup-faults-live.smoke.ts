@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -172,6 +172,18 @@ async function backupStageFaultScenario(): Promise<void> {
     assert.ok(inside.status === 1 && insideEnvelope.error?.code === "USAGE_INVALID" && (insideEnvelope.error.message ?? "").includes(`is inside the preserved store ${sourcePath}`), `a destination inside the store is a usage refusal\n${inside.stdout}${inside.stderr}`);
     const insidePlain = run("backup", "create", join(sourcePath, "bk1"));
     assert.ok(insidePlain.status === 1 && !insidePlain.stderr.includes("Usage"), `that refusal prints no command help\n${insidePlain.stderr}`);
+    // So is one inside the space's material folder, which `clean all` removes with whatever it
+    // holds, named directly or through a link outside `.cotal`.
+    const material = readdirSync(join(root, ".cotal")).find((entry) => entry.startsWith("space."));
+    assert.ok(material, "the open space keeps its material folder under .cotal");
+    symlinkSync(join(root, ".cotal", material), join(root, "material-link"));
+    for (const destination of [join(root, ".cotal", material, "bk"), join(root, "material-link", "bk2")]) {
+      const cleaned = run("backup", "create", destination, "--json");
+      const cleanedEnvelope = JSON.parse(cleaned.stdout) as { error?: { code?: string; message?: string } };
+      assert.ok(cleaned.status === 1 && cleanedEnvelope.error?.code === "USAGE_INVALID" && (cleanedEnvelope.error.message ?? "").includes(`is inside ${join(root, ".cotal", material)}, which cotal clean all removes`), `a destination ${destination} that clean all removes is a usage refusal\n${cleaned.stdout}${cleaned.stderr}`);
+      assert.ok(!existsSync(join(root, ".cotal", material, "bk")) && !existsSync(join(root, ".cotal", material, "bk2")), `that refusal writes nothing in ${material}`);
+    }
+    rmSync(join(root, "material-link"));
     if (process.getuid?.() !== 0) {
       const locked = join(root, "locked");
       mkdirSync(locked, { mode: 0o500 });

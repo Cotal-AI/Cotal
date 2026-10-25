@@ -26,6 +26,7 @@ import {
   assessRestoreClaim,
   assertStoreIdentity,
   authDir,
+  canonicalRoot,
   claimMaintenanceReady,
   cutController,
   getSpaceAuth,
@@ -53,7 +54,7 @@ import { attemptProcessesGone, connectIsolatedBroker, createAttemptClone, ensure
 import { cotalRoot } from "../lib/paths.js";
 import { heldClaim, movedFolderRefusal, preservedSourceState, restoreNextStep } from "../lib/restore.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
-import { liveMeshProcesses } from "./clean.js";
+import { liveMeshProcesses, localIdentityCleanupTargets } from "./clean.js";
 import { backupMaintenance } from "./backup-maintenance.js";
 import { backupRead } from "./backup-read.js";
 import { backupRestore } from "./backup-restore.js";
@@ -556,6 +557,12 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   const preserved = journal.state === "ready" || journal.state === "claimed" ? journal.source.path : undefined;
   if (preserved && overlaps(canonicalFuturePath(destinationPath), preserved))
     throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside the preserved store ${preserved} it would copy; nothing was written`, { target: { directory: destinationPath, store: preserved }, remedy: `name a destination outside ${preserved}`, selfContained: true });
+  // `clean all` removes the space's identity, material and launch files with whatever they hold, so
+  // an artifact among them would be removed with them.
+  const cleaned = Object.values(localIdentityCleanupTargets(canonicalRoot(root), journal.space)).flat().map(canonicalRoot)
+    .find((path) => overlaps(canonicalFuturePath(destinationPath), path));
+  if (cleaned)
+    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside ${cleaned}, which cotal clean all removes; nothing was written`, { target: { directory: destinationPath, removedBy: cleaned }, remedy: `name a destination outside ${cleaned}`, selfContained: true });
   try { accessSync(dirname(destinationPath), constants.W_OK | constants.X_OK); }
   catch {
     throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${dirname(destinationPath)}, so the backup cannot be created in it; nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath) }, remedy: `make that folder writable with chmod u+w ${dirname(destinationPath)}, or name a destination in a folder this account can write` });
