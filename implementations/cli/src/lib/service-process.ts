@@ -11,7 +11,7 @@ import { selfArgv } from "./self-exec.js";
 import { loadServiceAdapter, resolveServiceAdapter, sameServiceAdapterPin, type LoadedServiceAdapter, type ResolvedServiceAdapter } from "./service-adapters.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { instanceProjection, observeServiceProcess, processServiceHost, requireProcessIdentity, serviceInstances, serviceInstanceStore, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
-import { maintenanceStackView } from "./stack-journal.js";
+import { maintenanceStackView, STACK_DEFINITION } from "./stack-journal.js";
 
 export const PROCESS_SERVICE_CAPABILITIES = Object.freeze({ multiInstance: true, foreground: true, logs: true, install: false });
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
@@ -482,6 +482,18 @@ export function assertRestartAdmitted(definition: ServiceDefinitionSnapshot): vo
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt, under which the replacement start would be refused; nothing was stopped", { target: { space: value.space, definition: definition.name } });
 }
 
+/** The refusal for a start that selects an instance of an earlier revision, as one a definition moved
+ *  aside and added again leaves. Nothing adopts or removes it: an added service's Next stops it if it
+ *  still runs, then forgets its record, so the next start launches the current revision. A stack
+ *  member's records stay with its stack, so its refusal names no command. */
+function staleRevisionInstance(definition: ServiceDefinitionSnapshot, selected: ServiceInstanceSnapshot): CommandFailure {
+  const { name } = definition, { space } = definition.record.value, id = selected.name;
+  const forget = `forget its record with cotal service remove ${name} --instance ${id} --space ${space} --yes, then run cotal service start ${name} --space ${space} again`;
+  const remedy = (Object.values(STACK_DEFINITION) as string[]).includes(name) ? undefined
+    : gone(observeServiceProcess(selected.record.value)) ? forget : `stop it with cotal service stop ${name} --instance ${id} --space ${space} --yes, ${forget}`;
+  return new CommandFailure("refused", "CONFLICT", "this instance belongs to another definition revision; it was not adopted", { target: instanceProjection(selected), remedy });
+}
+
 type DefinitionHold = ReturnType<ReturnType<typeof serviceDefinitionStore>["pin"]>;
 export async function startProcessService(definition: ServiceDefinitionSnapshot, options: { instance?: string; newInstance?: boolean; foreground?: boolean; attempt?: ServiceAdapterAttempt; brokerInstance?: { instanceId: string; launchRequestId: string }; replacement?: { instanceId: string; launchRequestId: string } }, held?: DefinitionHold) {
   const value = definition.record.value;
@@ -514,7 +526,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
     if (chosen && retained) throw retainedNativeStop(definition, chosen, retained);
     // A crash or failed start is settled from its own evidence before the relaunch checks below.
     const selected = chosen && settleExitedInstance(chosen);
-    if (selected && selected.record.value.definitionRevision !== definition.record.revision) throw new CommandFailure("refused", "CONFLICT", "this instance belongs to another definition revision; it was not adopted");
+    if (selected && selected.record.value.definitionRevision !== definition.record.revision) throw staleRevisionInstance(definition, selected);
     if (selected && !sameServiceAdapterPin(selected.record.value.adapter, declaredAdapter?.pin)) throw new CommandFailure("refused", "CONFLICT", "the recorded instance pins a different adapter declaration or package version; stop and explicitly remove its retained records before choosing a different provider", { target: instanceProjection(selected) });
     if (selected) {
       refuseRecordedSupervisor(selected.record.value, "start");

@@ -6,6 +6,9 @@
  * succeed or refuse on that same cause, never on the retained instance. A second record makes the
  * bare forms ambiguous until `remove --instance` clears one.
  *
+ * After a definition is moved aside and added again, a start that selects the record of its earlier
+ * revision refuses CONFLICT naming that record, and its Next forgets it and starts again.
+ *
  * Driven through the built binary in a sandboxed COTAL_HOME. No broker is started, and the only
  * service process launched is the HTTP readiness one below, which its own Next stops. The named
  * `down <service>` form runs the same stop path as `service stop` and is not driven here.
@@ -153,6 +156,25 @@ const single = run(["service", "status", "worker", "--space", "b1"]);
 check("the bare status reads the one record left", single.envelope?.error?.code !== "TARGET_AMBIGUOUS" && single.envelope?.target?.instanceId === one, shown(single));
 const workerRemoved = run(["service", "remove", "worker", "--space", "b1", "--yes"]);
 check("rig: the worker definition and its record are removed", workerRemoved.status === 0, shown(workerRemoved));
+
+// A definition moved aside and added again, as a record that does not parse is told to be, has a new
+// revision. The start used to refuse CONFLICT naming no record and no command.
+const redoAdded = run(["service", "add", "redo", "--file", workerFile, "--space", "b1"]);
+const oldId = run(["service", "start", "redo", "--space", "b1"]).envelope?.target?.instanceId;
+const redoRecord = join(home, ".cotal", "services", spaceKey("b1"), "definitions", `${spaceKey("redo")}.json`);
+check("rig: a start of redo leaves one record, and its definition is in the store", redoAdded.status === 0 && typeof oldId === "string" && existsSync(redoRecord), shown(redoAdded));
+renameSync(redoRecord, `${redoRecord}.old`);
+const redoAgain = run(["service", "add", "redo", "--file", workerFile, "--space", "b1"]);
+const stale = run(["service", "start", "redo", "--space", "b1"]);
+check("a start that selects the earlier revision's record refuses CONFLICT, exit 2, naming that stopped record",
+  redoAgain.status === 0 && stale.status === 2 && stale.envelope?.error?.code === "CONFLICT" && stale.envelope.target?.instanceId === oldId && stale.envelope.target.observedProcess === "gone", shown(stale));
+check("its Next forgets that record, then starts again", stale.envelope?.error?.remedy === `forget its record with cotal service remove redo --instance ${oldId} --space b1 --yes, then run cotal service start redo --space b1 again`, stale.envelope?.error);
+const forgotten = run(["service", "remove", "redo", "--instance", String(oldId), "--space", "b1", "--yes"]);
+const current = run(["service", "start", "redo", "--space", "b1"]);
+const revision = run(["service", "show", "redo", "--space", "b1"]).envelope?.result?.revision;
+check("following it records a new instance at the current revision", forgotten.status === 0 && typeof current.envelope?.target?.instanceId === "string" && current.envelope.target.instanceId !== oldId && current.envelope.target.definitionRevision === revision, { forgotten: shown(forgotten), current: shown(current) });
+const redoRemoved = run(["service", "remove", "redo", "--space", "b1", "--yes"]);
+check("rig: redo and its record are removed", redoRemoved.status === 0, shown(redoRemoved));
 
 const removed = run(["service", "remove", "mymgr", "--space", "b1", "--yes"]);
 check("remove forgets the definition and its failed instance, exit 0", removed.status === 0 && removed.envelope?.outcome === "ok", shown(removed));
