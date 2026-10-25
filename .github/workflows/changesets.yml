@@ -190,9 +190,12 @@ jobs:
           previous=$(gh release list --limit 200 --json tagName --jq 'map(select(.tagName | startswith("v")))[0].tagName // empty')
           notes=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
             -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" ${previous:+-f previous_tag_name="$previous"} --jq .body)
+          # GitHub refuses a release body over 125000 characters (0.101.0 hit it with 266 merged
+          # PRs); the changeset detail gets what the generated PR list leaves, minus a margin.
+          budget=$((120000 - $(printf '%s' "$notes" | wc -c)))
           {
             printf 'Install or update: `npm i -g cotal-ai@%s`\n\n' "$version"
-            node scripts/release-notes-detail.mjs "$version"
+            node scripts/release-notes-detail.mjs "$version" "--max-bytes=$budget"
             printf '\n%s\n' "$notes"
           } > "$RUNNER_TEMP/release-notes.md"
           gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --latest --notes-file "$RUNNER_TEMP/release-notes.md"
