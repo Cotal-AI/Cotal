@@ -210,6 +210,11 @@ export async function clean(args: ParsedArgs): Promise<void> {
     // store the last broker served is this root's store, and a bare `up` refuses and names it.
     const defaultStore = join(root, ".cotal", "nats");
     const storeDir = values["store-dir"] ?? (existsSync(join(defaultStore, "jetstream")) ? undefined : lastServedStore(root, defaultStore));
+    const requested = resolve(storeDir ?? defaultStore);
+    if (existsSync(requested) && lstatSync(requested).isSymbolicLink()) {
+      const linked = realpathSync.native(requested);
+      throw new CommandFailure("refused", "CONFLICT", `the store cleanup path ${requested} is a link to ${linked}, and cleanup removes only a real directory; nothing was removed`, { target: { root, storeDir: requested, linkTarget: linked }, remedy: "replace the link with the directory it points to, then run this command again" });
+    }
     removed = await removeLocalState(root, { includeAuth: target === "all", storeDir, dryRun, onRemoved: (label) => progress.push(label) });
     // Keep registry/current-pointer cleanup in the same lock transaction as local identity removal.
     if (target === "all" && dryRun) removed.push(...localMeshesForRoot(root).map((mesh) => `the registration of space ${mesh.space}`));

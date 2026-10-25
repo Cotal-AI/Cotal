@@ -1785,6 +1785,10 @@ One configurable cleanup verb; every target requires `--force`, except a `--dry-
   needs `cotal up --user-auth --idp <auth base URL>` and each actor granted again with
   `cotal actor grant`.
 
+An existing store path that is a symbolic link refuses `CONFLICT` (exit 2), naming the link and
+its target. Replace the link with the directory it points to, then run the command again. The
+link and its target are left unchanged, including for `--dry-run`.
+
 `history` needs the mesh up; `store` and `all` refuse while any recorded mesh process may still be
 running or any same-root recorded broker endpoint remains reachable (run `cotal down` first). On a
 controller root, a member whose process is gone counts as stopped once a completed `down` recorded it
