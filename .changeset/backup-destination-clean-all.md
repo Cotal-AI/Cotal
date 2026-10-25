@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/cli": patch
+"@cotal-ai/connector-core": patch
 ---
 
 `backup create` now refuses `USAGE_INVALID` (exit 1) a destination inside a path `cotal clean all`
