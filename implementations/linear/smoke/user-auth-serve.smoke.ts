@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { createServer } from "node:http";
+import { EventEmitter, once } from "node:events";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
@@ -64,14 +65,29 @@ const upstream = () => ({
   close: async () => { closedUpstreams++; },
 }) as unknown as LinearUpstream;
 const seen: ServiceAuthorityRequest[] = [];
+const renewalEvents = new EventEmitter();
+const expiries: number[] = [];
 let proposalId = "";
 const provider: AuthProvider = { ...cotalAuthProvider,
+  serviceEndpointRenewal(opts) {
+    const source = cotalAuthProvider.serviceEndpointRenewal!(opts);
+    return { ...source,
+      get sentinelCreds() { return source.sentinelCreds; },
+      async credential() {
+        const credential = await source.credential();
+        expiries.push(credential.accessExpiresAt);
+        renewalEvents.emit("credential");
+        return credential;
+      },
+    };
+  },
   async serviceEndpointAuthority(opts) {
     // Runtime-parse every request, including ready, to catch extra registration fields.
     parseServiceAuthorityRequest(opts.request);
     seen.push(opts.request);
     const result = await cotalAuthProvider.serviceEndpointAuthority!(opts);
     if (result.result.state === "approval-required") proposalId = result.result.proposalId;
+    if (opts.request.operation === "ready" && result.result.state === "ready") renewalEvents.emit("ready");
     return result;
   },
 };
@@ -144,8 +160,38 @@ try {
   const resumedReply = await invokeCommand(nc, a.space, resumed, "call-tool", { name: "echo", arguments: {}, inventoryDigest: "fixture-inventory" }, { deadlineMs: 3000 });
   assert.equal(resumedReply.reply.ok, true, "the same instance-scoped caller grant serves after restart");
   assert.equal(toolCalls, 2);
-  ctl.abort(); await running; running = undefined;
-  assert.equal(closedUpstreams, 3, "restart stop closes its upstream");
+  if (process.argv.includes("--renewal")) {
+    const firstExpiry = expiries.at(-1)!;
+    const reconnected = once(renewalEvents, "ready", { signal: AbortSignal.timeout(90_000) });
+    await Promise.race([
+      once(renewalEvents, "credential", { signal: AbortSignal.timeout(20_000) }),
+      running.then(() => { throw new Error("service stopped before its automatic renewal"); }),
+    ]);
+    assert.ok(expiries.at(-1)! > firstExpiry, "the endpoint timer obtains a fresh native bearer without a manual pull");
+    await Promise.race([reconnected, running.then(() => { throw new Error("service stopped before expiry reconnect"); })]);
+    assert.ok(Date.now() >= firstExpiry * 1000, "native ready follows the original broker credential's real expiry");
+    const refreshed = await resolveService(nc, a.space, endpoint, { owner, actor: "caller", uid: caller.lifecycleUid! }, { instanceId: request.instanceId, deadlineMs: 3000 });
+    const refreshedReply = await invokeCommand(nc, a.space, refreshed, "call-tool", { name: "echo", arguments: {}, inventoryDigest: "fixture-inventory" }, { deadlineMs: 3000 });
+    assert.equal(refreshedReply.reply.ok, true, "the same native instance serves after expiry reconnect");
+    assert.equal(toolCalls, 3);
+    if (approved.state !== "approved") throw new Error("approval missing");
+    const revoked = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "revoke", granter: { kind: "owner", owner }, input: {
+      endpoint, instanceId: request.instanceId, expectedAssignmentDigest: approved.approval.assignment.assignmentDigest, cause: "owner-request" } });
+    assert.equal(revoked.state, "pending", "the host confirms deny-new, not completed eviction");
+    const shutdownDeadline = setTimeout(() => ctl.abort(), 20_000);
+    try { await assert.rejects(running, /stopped after its remote authority/); }
+    finally { clearTimeout(shutdownDeadline); }
+    running = undefined;
+    assert.equal(closedUpstreams, 3, "a terminal renewal denial closes the serving upstream");
+    await assert.rejects(start(), /did not authorize|renewal ended/);
+    assert.equal(closedUpstreams, 4, "a revoked restart closes its upstream without a replacement registration");
+    assert.equal(contractDigest(seen.filter(r => r.operation === "register").at(-1)!), contractDigest(request));
+    assert.equal(toolCalls, 3);
+    console.log("LINEAR HOSTED RENEWAL: native timer, real bearer-expiry reconnect, same-instance invocation, deny-new shutdown and revoked restart refusal passed; remote eviction is not claimed");
+  } else {
+    ctl.abort(); await running; running = undefined;
+    assert.equal(closedUpstreams, 3, "restart stop closes its upstream");
+  }
   console.log("LINEAR HOSTED SERVE: approval replay, native ready, exact caller discovery/invocation, ungranted refusal, account pin, stop and same-instance restart passed");
 } finally {
   ctl.abort(); await running?.catch(() => {});
