@@ -16,7 +16,7 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -254,6 +254,31 @@ try {
     /unsafe store cleanup target/,
   );
   rmSync(customRoot, { recursive: true, force: true });
+
+  // A linked store keeps the no-follow refusal, but clean names both paths and the repair.
+  if (process.platform !== "win32") {
+    const linkedRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-clean-link-")));
+    const actual = join(linkedRoot, "actual store"), link = join(linkedRoot, ".cotal", "nats");
+    mkdirSync(join(linkedRoot, ".cotal"));
+    mkdirSync(join(actual, "jetstream"), { recursive: true });
+    writeFileSync(join(actual, "jetstream", "stream.dat"), "x");
+    symlinkSync(actual, link);
+    const priorCwd = process.cwd();
+    process.chdir(linkedRoot);
+    try {
+      for (const [target, values] of [["store", { "dry-run": true }], ["store", { force: true }], ["all", { "dry-run": true }]] as const) {
+        await assert.rejects(() => clean({ positionals: [target], values, raw: [] }),
+          (error: Error & { code?: string; target?: { storeDir?: string; linkTarget?: string }; remedy?: string }) => error.code === "CONFLICT"
+            && error.target?.storeDir === link && error.target?.linkTarget === actual
+            && error.remedy === "replace the link with the directory it points to, then run this command again");
+        check(`clean ${target} ${"force" in values ? "force" : "dry run"} names a linked store without removing it`,
+          lstatSync(link).isSymbolicLink() && existsSync(join(actual, "jetstream", "stream.dat")));
+      }
+    } finally {
+      process.chdir(priorCwd);
+      rmSync(linkedRoot, { recursive: true, force: true });
+    }
+  }
 
   // --- a store directory that holds anything else is refused, and nothing in it is removed -----
   // `up --store-dir` starts on a folder that already holds files, so a store cleanup must not take
