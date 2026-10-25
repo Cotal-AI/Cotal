@@ -1,0 +1,38 @@
+name: CLI startup
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS fresh and prepared startup
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      DO_NOT_TRACK: "1"
+      COTAL_TELEMETRY: "off"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "cotal-ai..." build
+      - name: Start, query, refresh and stop both project routes
+        env:
+          COTAL_STARTUP_RESULTS: ${{ runner.temp }}/cli-startup-result.json
+        run: pnpm exec tsx bin/smoke/startup-native.smoke.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cli-startup-macos
+          path: |
+            ${{ runner.temp }}/cli-startup-result.json
+            ${{ runner.temp }}/cli-startup-result.json.logs
+          if-no-files-found: warn
