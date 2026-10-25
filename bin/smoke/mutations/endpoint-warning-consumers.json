@@ -40,8 +40,8 @@
     {
       "name": "transient CLI endpoints stop subscribing to recoverable warnings",
       "file": "implementations/cli/src/lib/transient.ts",
-      "find": "  ep.on(\"warning\", (e: Error) => report(\"warning\", e));",
-      "replace": "  void ep;",
+      "find": "      attempt.on(\"warning\", (e: Error) => { if (opened) report(\"warning\", e); else held.push([\"warning\", e]); });",
+      "replace": "      void attempt;",
       "cell": "transient CLI commands surface endpoint warnings",
       "expectRed": "transient CLI commands surface endpoint warnings",
       "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",

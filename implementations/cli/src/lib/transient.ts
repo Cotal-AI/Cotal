@@ -4,6 +4,7 @@ import { c } from "../ui.js";
 import { connectOrExit, connectOrThrow } from "./connect.js";
 import { brokerStoreWrite, storeWriteRepair } from "./broker-store-health.js";
 import { chatStreamGone, streamsAbsent } from "./space-streams.js";
+import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, notAdmittedRefusal } from "./dial-retry.js";
 
 /**
  * A one-shot, write-capable connection for the headless commands that touch the live mesh
@@ -98,28 +99,46 @@ export async function openTransient(
 ): Promise<{ ep: CotalEndpoint; space: string; connection: Connection }> {
   const conn = opts.throwOnRefusal ? await connectOrThrow(values, "operator") : await resolveConnect(values);
   const readOnce = batchedRead(conn, presenceBucket(conn.space)) && batchedRead(conn, channelBucket(conn.space));
-  const ep = new CotalEndpoint({
-    space: conn.space,
-    servers: conn.server,
-    ...endpointAuth(conn),
-    channels: [],
-    consume: false,
-    registerPresence: false,
-    watchPresence: true,
-    readOnce: readOnce && !opts.watch,
-    // Display name only. The wire principal comes from the resolved static credential or user
-    // bearer; on an open mesh the endpoint self-mints it. Process environment never supplies
-    // authority for an operator command.
-    card: { name, kind: "endpoint" },
-  });
   const report = opts.report ?? ((level, e) => console.error(level === "error" ? c.red("! " + e.message) : c.yellow("! " + e.message)));
-  ep.on("error", (e: Error) => report("error", e));
-  ep.on("warning", (e: Error) => report("warning", e));
+  // A connect the broker refuses or does not complete in time sends nothing, so it is tried again
+  // with a new endpoint. What a failed attempt reported is dropped with it; a failure after the
+  // connection opened is not retried and reaches the handling below as it was.
+  let ep!: CotalEndpoint;
   try {
-    await ep.start();
-    if (!readOnce && !opts.watch) await ep.waitForPresenceSnapshot();
-  } catch (e) {
-    await ep.stop().catch(() => {});
+    ep = await dialWithRetry(async () => {
+      let opened = false;
+      const held: ["error" | "warning", Error][] = [];
+      const attempt = new CotalEndpoint({
+        space: conn.space,
+        servers: conn.server,
+        ...endpointAuth(conn),
+        channels: [],
+        consume: false,
+        registerPresence: false,
+        watchPresence: true,
+        readOnce: readOnce && !opts.watch,
+        transportConnectTimeoutMs: DIAL_TIMEOUT_MS,
+        onConnection: () => { opened = true; },
+        // Display name only. The wire principal comes from the resolved static credential or user
+        // bearer; on an open mesh the endpoint self-mints it. Process environment never supplies
+        // authority for an operator command.
+        card: { name, kind: "endpoint" },
+      });
+      attempt.on("error", (e: Error) => { if (opened) report("error", e); else held.push(["error", e]); });
+      attempt.on("warning", (e: Error) => { if (opened) report("warning", e); else held.push(["warning", e]); });
+      try {
+        await attempt.start();
+        if (!readOnce && !opts.watch) await attempt.waitForPresenceSnapshot();
+      } catch (e) {
+        await attempt.stop().catch(() => {});
+        throw opened ? new AfterOpen(e) : e;
+      }
+      for (const [level, e] of held) report(level, e);
+      return attempt;
+    });
+  } catch (raw) {
+    if (raw instanceof DialNotAdmitted) throw notAdmittedRefusal(raw, `space "${conn.space}"`, "nothing was sent", { space: conn.space }, conn.mode === "user");
+    const e = raw instanceof AfterOpen ? raw.cause : raw;
     if (conn.bearer === undefined && !opts.watch && isPublishPermissionDenied(e))
       throw new CommandFailure("refused", "PERMISSION_DENIED", `this identity may not read the presence or channel registry of ${conn.space}: ${(e as Error).message}`, {
         target: { space: conn.space },
@@ -132,4 +151,12 @@ export async function openTransient(
     throw e;
   }
   return { ep, space: conn.space, connection: conn };
+}
+
+/** A failure after the transient endpoint's connection opened, which is not a refused or timed-out
+ *  connect and is not retried. */
+class AfterOpen extends Error {
+  constructor(override readonly cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+  }
 }

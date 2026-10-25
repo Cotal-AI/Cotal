@@ -52,8 +52,8 @@
     {
       "name": "a leftover process record does not stop the no-op",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": " || meshesForRoot(root).length || pidRecordsUnder(root)) return undefined;\n",
-      "replace": " || meshesForRoot(root).length) return undefined;\n",
+      "find": " || !realDirNoSymlink(root, \".cotal\") || pidRecordsUnder(root)) return undefined;\n",
+      "replace": " || !realDirNoSymlink(root, \".cotal\")) return undefined;\n",
       "expectRed": "a process record with no registration refuses CONFLICT, points at cotal status, and keeps the record",
       "cell": "a process record with no registration refuses CONFLICT, points at cotal status, and keeps the record",
       "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"

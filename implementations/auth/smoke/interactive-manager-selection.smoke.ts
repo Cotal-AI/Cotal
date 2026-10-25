@@ -194,13 +194,36 @@ try {
       await gates.put(key, original.value);
     }
     // A view issued while the gate was open, then refused by the callout as the command connects:
-    // nothing was published, so the call is a refusal that keeps the broker's words.
+    // nothing was published, so the command connects again. A gate that reopens within its attempts
+    // answers the call; one that stays closed is refused at the connect stage.
+    const frozen = JSON.stringify({ ...row, state: "frozen", op: { opId: mintLifecycleUid(), kind: "takeover" } });
+    const reopened = await exchange(local.instanceId);
+    await gates.put(key, frozen);
+    const reopen = pause(1_500).then(() => gates.put(key, original.value));
+    let answered: unknown;
+    try { answered = await nativePs(reopened.body.token!); } catch (error) { answered = error; } finally { await reopen; }
+    check("a view refused at connect is answered once its gate reopens", reopened.status === 200 && (answered as { ok?: unknown }).ok === true);
     const issued = await exchange(local.instanceId);
-    await gates.put(key, JSON.stringify({ ...row, state: "frozen", op: { opId: mintLifecycleUid(), kind: "takeover" } }));
+    await gates.put(key, frozen);
     let refused: unknown;
     try { await nativePs(issued.body.token!); } catch (error) { refused = error; } finally { await gates.put(key, original.value); }
-    check("a view refused at connect is refused as not sent, with the broker's words", issued.status === 200 && isConnectRefusal(refused)
-      && refused.code === "PERMISSION_DENIED" && refused.kind === "transient" && refused.message.includes("(Authorization Violation), so nothing was sent to the manager"));
+    check("a view refused on every attempt is refused at the connect stage as not sent", issued.status === 200 && isConnectRefusal(refused)
+      && refused.code === "PERMISSION_DENIED" && refused.kind === "transient" && refused.message.includes("the broker refused all 4 attempts, so nothing was sent to the manager")
+      && !refused.message.includes("Authorization Violation") && JSON.stringify(refused.native) === JSON.stringify({ code: "connect-refused", detail: { stage: "connect", attempts: 4, reason: "Authorization Violation" } }));
+    // An auth service that does not answer leaves the broker's callout unanswered, and the connect
+    // never opens. One that answers again within the attempts answers the call.
+    const stalled = await exchange(local.instanceId);
+    process.kill(child!.pid!, "SIGSTOP");
+    const resume = pause(3_000).then(() => { process.kill(child!.pid!, "SIGCONT"); });
+    try { answered = await nativePs(stalled.body.token!); } catch (error) { answered = error; } finally { await resume; }
+    check("a connect held by an unanswered callout is answered once the auth service answers", stalled.status === 200 && (answered as { ok?: unknown }).ok === true);
+    const stuck = await exchange(local.instanceId);
+    process.kill(child!.pid!, "SIGSTOP");
+    let timedOut: unknown;
+    try { await nativePs(stuck.body.token!); } catch (error) { timedOut = error; } finally { process.kill(child!.pid!, "SIGCONT"); }
+    check("a connect that never opens is refused at the connect stage as not sent", stuck.status === 200 && isConnectRefusal(timedOut)
+      && timedOut.code === "TARGET_UNAVAILABLE" && timedOut.kind === "transient" && timedOut.message.includes("none of 4 attempts opened within 5 seconds, so nothing was sent to the manager")
+      && !/\btimeout\b/.test(timedOut.message) && (timedOut.native?.detail as { attempts?: unknown } | undefined)?.attempts === 4);
     const spec = await records.get(recordSpecKey(RECORD_KINDS.svc, ["manager", local.instanceId]));
     check("selected local gate is attributed to persisted serve principal", row.principal === `local.${local.serveIdentity.id}`);
     check("selected local gate/status epoch and spec revision agree", !!spec && JSON.parse(new TextDecoder().decode((await records.get(recordStatusKey(RECORD_KINDS.svc, ["manager", local.instanceId])))!.value)).epoch === row.processEpoch && spec.revision === row.registrationRevision);
@@ -214,7 +237,7 @@ try {
   await new Promise<void>(r => idp.close(() => r()));
   check("owned child PID/start/cwd generations exited", children.every(x => { try { const now = identity(x.pid); return now.start !== x.start || now.cwd !== x.cwd; } catch (error) { return ["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? ""); } }));
   check("owned broker and listener ports closed", (await Promise.all([port, issuerPort, exchangePort].filter(Boolean).map(gone))).every(Boolean));
-  if (checks.every(x => x.ok)) assert.equal(checks.length, 29, "all named selection, scope and cleanup cells ran");
+  if (checks.every(x => x.ok)) assert.equal(checks.length, 32, "all named selection, scope and cleanup cells ran");
   if (managerClosed && checks.slice(-2).every(x => x.ok) && existsSync(root)) rmSync(root, { recursive: true });
   const failed = checks.filter(x => !x.ok).length;
   process.stdout.write(JSON.stringify({ checks: checks.length, passed: checks.length - failed, failed }) + "\n");

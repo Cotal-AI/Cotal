@@ -346,12 +346,24 @@ try {
   ok("a bare up in another folder of the same name refuses CONFLICT, exit 2, naming this one, and writes nothing",
     twinUp.status === 2 && /Code:\s+CONFLICT/.test(plain(twinUp.stderr)) && plain(twinUp.stderr).includes(`"${SPACE}" is already registered at ${SERVER} for ${realpathSync(root)}`) && !existsSync(join(twin, ".cotal")), twinUp.stdout + twinUp.stderr);
   rmSync(resolve(twin, ".."), { recursive: true, force: true });
+  // Its address is kept with the name: another folder's up given that address is refused as an
+  // occupied one is, and starts nothing there.
+  const other = mkdtempSync(join(tmpdir(), "cotal-upstack-other-"));
+  const otherUp = cliIn(other, "up", "--detach", "--server", SERVER);
+  if (otherUp.status === 0) cliIn(other, "down");
+  ok("another folder's up at this stopped space's address refuses CONFLICT, exit 2, naming this one, and writes nothing",
+    otherUp.status === 2 && /Code:\s+CONFLICT/.test(plain(otherUp.stderr)) && plain(otherUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)} and stopped`) && !existsSync(join(other, ".cotal")), otherUp.stdout + otherUp.stderr);
+  rmSync(other, { recursive: true, force: true });
   const restart = cli("up", "--detach", "--server", SERVER);
   if (existsSync(join(root, ".cotal", "nats.pid"))) pids.push(pidOf("nats.pid"));
   ok("a bare up starts it again on the retained launcher, with no stack journal",
     restart.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: cotal down$/m.test(plain(restart.stdout)) && !existsSync(join(root, ".cotal", "stack-controller.json")),
     restart.stdout + restart.stderr);
   ok("its down exits 0", cli("down").status === 0);
+  // The kept registration does not make the stopped stack look like one to stop.
+  const again = cli("down");
+  ok("a second down reports the stack not running, names cotal up, and exits 0",
+    again.status === 0 && plain(again.stdout).includes(`The stack in ${realpathSync(root)} is not running`) && /cotal up\s+Start it/.test(plain(again.stdout)), again.stdout + again.stderr);
 
   // Open mode in the SAME root retains static-auth files from the prior boot. Reporting follows the
   // effective live mode, not stale on-disk auth material: broker + manager, never delivery/auth-service.

@@ -339,6 +339,23 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
   check(`${command} names the address its last start configured and the bare up`, (r.envelope?.error?.message ?? "").includes("last ran at nats://127.0.0.1:24712") && r.envelope?.error?.remedy === `start it again with \`cotal up\` in ${legacy}`, r.envelope?.error);
   check(`${command} in a stopped legacy root names no default broker address`, noDefault(r), shown(r));
 }
+// Another space selected does not change that: the root's own stopped stack is the target, so a
+// command there never reaches the selection.
+{
+  const elsewhere = realpathSync(mkdtempSync(join(home, "selected-")));
+  const record = join(home, ".cotal", "meshes", `space.${Buffer.from("sel").toString("hex")}.json`);
+  mkdirSync(join(home, ".cotal", "meshes"), { recursive: true, mode: 0o700 });
+  writeFileSync(record, JSON.stringify({ space: "sel", server: "nats://127.0.0.1:24713", root: elsewhere, mode: "open", origin: "up", ts: new Date().toISOString() }) + "\n", { mode: 0o600 });
+  writeFileSync(join(home, ".cotal", "current-mesh"), "sel\n", { mode: 0o600 });
+  for (const command of ["ps", "who", "send"]) {
+    const r = run(command === "send" ? ["send", "-c", "general", "probe", "--json"] : [command, "--json"], legacy);
+    check(`${command} in a stopped legacy root with another space selected refuses as not started, naming its last address`,
+      r.status === 2 && r.envelope?.error?.code === "TARGET_UNAVAILABLE" && (r.envelope.error.message ?? "").includes("last ran at nats://127.0.0.1:24712") && !JSON.stringify(r.envelope).includes("24713"), shown(r));
+  }
+  rmSync(record);
+  rmSync(join(home, ".cotal", "current-mesh"));
+  rmSync(elsewhere, { recursive: true, force: true });
+}
 
 // A service instance record of a prepared space cut short, as an interrupted write leaves it, is named
 // with its path and the move that sets it aside, and left as it is. Status warns about it and gives

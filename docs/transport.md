@@ -64,6 +64,8 @@ still need to be idempotent because durable delivery may redeliver a message.
 supplied together. When omitted, NATS keeps its defaults. PING/PONG uses the existing socket and
 opens no authenticated probe connection. A stale connection emits a transport disconnect before
 NATS retries, so a service can bound silent link-loss detection without periodic login dials.
+`transportConnectTimeoutMs`, a positive integer, bounds how long the first connect may take before it
+fails with the transport's timeout. When omitted, NATS keeps its default of 20 seconds.
 
 The reference client's finite KV scan binds an ordered consumer to read its pending count.
 It deletes that consumer before returning a complete result, including an empty result.
