@@ -155,6 +155,17 @@ if (!brokerDisplayOnly) {
     check(`interrupted up keeps its ${reportRoot === home ? "ordinary" : "quoted"} root${noManager ? " and --no-manager" : ""} in Next`,
       report.includes(`cotal up --root ${rootWord}${noManager ? " --no-manager" : ""}`), report);
   }
+  // A service outside the stack must be stopped before the restart that refuses beside it.
+  for (const heldServices of [[], [{ definition: "dl", instanceId: "held-delivery", record: "delivery", pid: 12345 }], null]) {
+    const base = selected.envelope!.result!;
+    const stopped = { ...base, folder: { ...base.folder, root: home, controllerStack: true, processSpace: "alpha", stackBlock: null, stackUnfinished: null, heldServices },
+      selected: { ...base.selected, resolved: true, space: "alpha", root: home, connection: "unreachable" } };
+    const report = renderReport(statusView(stopped as unknown as Parameters<typeof statusView>[0]), "plain");
+    const next = report.split("\nNext\n")[1] ?? "";
+    const stop = "cotal svc stop dl --instance held-delivery --space alpha --yes", start = `cotal up --root ${home}`;
+    check(`restart guidance ${heldServices?.length ? "stops the held service first" : heldServices === null ? "does not invent an unreadable holder" : "keeps the no-holder route"}`,
+      heldServices?.length ? next.includes(stop) && next.indexOf(stop) < next.indexOf(start) : next.includes(start) && !next.includes("svc stop"), next);
+  }
   const plain = run(["status", "--space", "alpha", "--plain"]);
   check("the report says not checked for the other registration", /beta\s+not checked/.test(plain.stdout), plain.stdout);
   const all = run(["status", "--space", "alpha", "--all", "--json"]);
