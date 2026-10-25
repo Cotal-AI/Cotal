@@ -50,6 +50,8 @@ function frames(socket: Socket, frame: (value: Record<string, unknown>) => void,
   socket.on("data", (chunk: string) => {
     buffer += chunk;
     for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
+      // A frame over the limit is refused whether or not its newline arrived in the same read.
+      if (end > FRAME_LIMIT) return bad();
       const line = buffer.slice(0, end);
       buffer = buffer.slice(end + 1);
       let value: unknown;
