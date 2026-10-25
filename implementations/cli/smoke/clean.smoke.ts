@@ -11,7 +11,8 @@
  * space's streams or registration name, the dry run, the already-clean no-op,
  * that `clean all` drops only registry entries rooted at THIS project (a named open mesh must never
  * delete the default space's entry), and that a `clean all` removing the space trust says earlier
- * full backups no longer restore into the root.
+ * full backups no longer restore into the root, and that every target but history refuses --space,
+ * --server and --creds before it reads anything.
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
@@ -377,6 +378,24 @@ try {
   check("dry run: lists what the real run then removes", JSON.stringify(listed) === JSON.stringify(removedAfterDry), { listed, removedAfterDry });
   await assert.rejects(() => clean({ positionals: ["history"], values: { "dry-run": true }, raw: [] }), /--dry-run previews clean store and clean all only/);
   rmSync(dryRoot, { recursive: true, force: true });
+
+  // --- only clean history takes --space, --server or --creds ----------------------------------
+  // store, all and the restore targets act on the root of the folder they run in. They used to ignore
+  // these flags, so clean store --space <other> --force removed this folder's store.
+  const namedRoot = meshRoot(), namedCwd = process.cwd();
+  const refusals: { code?: string; message?: string; remedy?: string }[] = [];
+  process.chdir(namedRoot);
+  try {
+    for (const [target, values] of [["store", { space: "other", "dry-run": true }], ["store", { space: "other", force: true }], ["all", { space: "other", force: true }], ["store", { server: "nats://127.0.0.1:4999", force: true }], ["all", { creds: "absent.creds", "dry-run": true }], ["restore-attempt", { space: "other", attempt: "restore-00000000-0000-4000-8000-000000000000", force: true }]] as const) {
+      try { await clean({ positionals: [target], values: { ...values }, raw: [] }); refusals.push({}); }
+      catch (error) { refusals.push(error as { code?: string; message?: string; remedy?: string }); }
+    }
+  } finally { process.chdir(namedCwd); }
+  check("store, all and restore-attempt with --space, --server or --creds each refuse USAGE_INVALID before any read",
+    refusals.length === 6 && refusals.every((r) => r.code === "USAGE_INVALID" && /the mesh for clean history only; clean [a-z-]+ acts on the root of the folder it runs in, so nothing was removed$/.test(r.message ?? "")), refusals);
+  check("the refusal names its flag and the folder to run it in", refusals[0]?.message?.startsWith("--space picks ") === true && refusals[0].remedy === "run cotal clean store in the project folder of the root to clean, without --space", refusals[0]);
+  check("...and the store and the space identity stay", existsSync(join(namedRoot, ".cotal", "nats", "jetstream", "stream.dat")) && existsSync(join(namedRoot, ".cotal", "auth", "auth.json")));
+  rmSync(namedRoot, { recursive: true, force: true });
 
   const empty = mkdtempSync(join(tmpdir(), "cotal-empty-"));
   check("already clean: removes nothing, throws nothing", (await removeLocalState(empty, { includeAuth: true })).length === 0);
