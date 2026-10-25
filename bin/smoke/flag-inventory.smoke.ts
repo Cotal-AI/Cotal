@@ -67,7 +67,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   docs: { flags: ["json:boolean:j", "plain:boolean", "refresh:boolean", "search:string"], positionals: true },
   up: {
     flags: [
-      "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
+      "channels:string", "detach:boolean:d", "dry-run:boolean", "file:string:f", "host:string",
       "idp:string", "manager-name:string", "max-sessions:string", "open:boolean", "runtime:string", "server:string", "space:string",
       // `up` starts in the background by default; `--foreground` keeps the stack in this terminal
       // and `--root` names the prepared project.
