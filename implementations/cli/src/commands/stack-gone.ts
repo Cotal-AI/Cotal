@@ -96,7 +96,7 @@ function planView(space: string, root: string, members: readonly Member[]): Repo
       rows: members.map((member) => ({ role: member.role, definition: member.definition.name, instance: member.instance.name, pid: member.pid === null ? "none" : String(member.pid), process: { text: member.live ? "running" : "gone", tone: member.live ? "waiting" : "hint" } })) }
       : { kind: "lines", lines: ["No member has a recorded instance, so there is nothing to stop."] },
     { kind: "lines", lines: [
-      "The folder's stack journal and broker configuration are gone, so no member's own stop can run. down --yes sends SIGTERM to each running member's recorded process, manager first and broker last, after it checks that the process is still the one its record pinned, and records each exit.",
+      "The folder's stack journal and broker configuration are not at that path, as when the folder was removed, moved or renamed, so no member's own stop can run. down --yes sends SIGTERM to each running member's recorded process, manager first and broker last, after it checks that the process is still the one its record pinned, and records each exit.",
       "Then it removes the stack's saved definitions and the registration naming the folder, so the space can start in another folder. The manager stops its agents by its default policy.",
     ] },
   ] }] };
@@ -190,6 +190,11 @@ export async function goneRootStackDown(space: string, root: string, values: Par
       { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "instance", label: "Full instance" }, { key: "pid", label: "Pid" }, { key: "state", label: "Result" }], rows: stopped.map((row) => ({ role: row.role, instance: row.instanceId, pid: row.pid === null ? "none" : String(row.pid), state: { text: row.result === "stopped" ? "stopped by SIGTERM" : "already stopped", tone: "ok" } })) },
       { kind: "lines", lines: [`Removed the saved definitions ${released.join(", ") || "(none were saved)"} and the registration naming the folder.${existsSync(root) ? ` The broker wrote ${root} back while it ran; that folder was left as it is.` : ""}`] },
     ] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal space create ${space}`, description: "Prepare the space in another folder, then run cotal up there" }] }] },
+    // A folder moved or renamed with its records keeps the journal, store and trust, and adopting them
+    // where it is now keeps its history, as `up` run there names.
+    { title: "Next", blocks: [{ kind: "commands", items: [
+      { command: `cotal space create ${space} --adopt --root <folder>`, description: "If the folder was moved or renamed, adopt its records where it is now, which keeps its history, then run cotal up there" },
+      { command: `cotal space create ${space}`, description: "Otherwise prepare the space in another folder, then run cotal up there" },
+    ] }] },
   ] }));
 }

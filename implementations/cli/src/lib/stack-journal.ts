@@ -711,6 +711,22 @@ export function foreignLocalProcesses(root: string, space: string): string[] {
   return localRecords(root, space).filter((row) => row.state !== "gone").map((row) => `${row.name}${row.pid === undefined ? " (unattributable record)" : ` (pid ${row.pid})`}`);
 }
 
+/** The live records under the root whose process is a running service instance of the space outside
+ *  its stack, as the manager record of a `manager` preset service started at the root is. Read only:
+ *  nothing is adopted. */
+export function serviceHeldRecords(root: string, space: string): { record: LocalRecord; definition: string; instanceId: string }[] {
+  const stack = new Set<string>(Object.values(STACK_DEFINITION));
+  const byPid = new Map<number, { definition: string; instanceId: string }>();
+  for (const row of serviceInstances(space)) {
+    const value = row.record.value;
+    if (!stack.has(value.definition) && value.process && observeServiceProcess(value) === "running") byPid.set(value.process.pid, { definition: value.definition, instanceId: row.name });
+  }
+  return localRecords(root, space).flatMap((record) => {
+    const held = record.state === "live" && record.pid !== undefined ? byPid.get(record.pid) : undefined;
+    return held ? [{ record, ...held }] : [];
+  });
+}
+
 /** Remove the records under the root that front no process, `gone` and `reused` ones, and return
  *  them. Each is removed with its pin, only while its pidfile still reads as it did. */
 export function removeStaleLocalRecords(root: string, space: string): LocalRecord[] {
