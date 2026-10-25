@@ -2614,9 +2614,10 @@ In open or static-auth mode, an unanswered `--server` address that differs from 
 retained by target resolution gives `TARGET_UNAVAILABLE`, naming the address that did not answer.
 Its Next names the recorded broker and says to drop `--server` to reach it. If resolution retained
 no registration, the Next says to check the address instead. The request is not sent to the
-recorded broker in its place, but target resolution without `--space` can separately probe recorded
-brokers before it probes the explicit address. This refusal wording does not describe the
-infrastructure report from `status`.
+recorded broker in its place. Target resolution given `--server` probes only records at that address,
+including when `--space` is omitted. `status --all` still checks every recorded address because
+`--all` asks for that scope. This refusal wording does not describe the infrastructure report from
+`status`.
 
 `space delete <name> --dry-run` reads the registered broker in open or static-auth mode.
 It requires the broker's mode to match the registration, and a static connection must
@@ -3090,8 +3091,10 @@ cannot be displayed safely is `null` in JSON, `unavailable` in text, and names a
 `BROKER_ADDRESS_INVALID` warning with a partial result. Its broker component is refused.
 
 Only the selected mesh is checked. Its row in the recorded meshes dials its address with its
-recorded TLS requirement, and every other row reads `not checked`. `--all` checks every recorded
-mesh, including discovered ones, each with its own recorded TLS requirement.
+recorded TLS requirement, and every other row reads `not checked`. When `--server` names another
+address, that address is the only broker dialed, and the selected mesh's row also reads
+`not checked`. `--all` checks every recorded mesh, including discovered ones, each with its own
+recorded TLS requirement.
 
 `status --json` writes one envelope whose `target` is `{space, scope}`, where `space` is the selected
 space or `null` and `scope` is `selected` or `all`. Its `result` is the report the text draws:

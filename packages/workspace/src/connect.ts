@@ -940,13 +940,13 @@ export async function reachableOrExit(server: string, auth: RawAuth = {}): Promi
 
 /** Resolve the mesh a command targets, exiting with one human sentence on an unresolved/ambiguous
  *  registry rather than a stack trace. Sweeps first when resolving without an explicit `--space`,
- *  and hands the sweep's `offline` set to the resolver so a crashed mesh's kept record does not
- *  count as running. A caller that already swept for these flags passes its `offline` set instead,
- *  so one resolve chain reads one liveness verdict. A named `--space` is resolved + preflighted
- *  directly, so the sweep cannot hide a dead-recorded mesh the operator is recovering with a live
- *  `--server` override. */
+ *  only the records at `--server` when one is given, and hands the sweep's `offline` set to the
+ *  resolver so a crashed mesh's kept record does not count as running. A caller that already swept
+ *  for these flags passes its `offline` set instead, so one resolve chain reads one liveness
+ *  verdict. A named `--space` is resolved + preflighted directly, so the sweep cannot hide a
+ *  dead-recorded mesh the operator is recovering with a live `--server` override. */
 export async function resolveTargetOrThrow(flags: ResolveFlags): Promise<MeshTarget> {
-  const offline = flags.offline ?? (flags.space ? [] : (await pruneStaleMeshes()).offline);
+  const offline = flags.offline ?? (flags.space ? [] : (await pruneStaleMeshes(flags.server)).offline);
   let target: MeshTarget;
   try {
     target = resolveMeshTarget(process.cwd(), { ...flags, offline });

@@ -11,6 +11,7 @@
  *  • an inferred auth-required (an auth greeting, then a reset handshake) refuses but never deletes a
  *    record, while a real refusal behind the same greeting still drops an `up` record.
  *  • pruneStaleMeshes — a registered entry whose broker is gone is kept as offline; an explicit call only.
+ *    Given a `--server`, it probes only the records at that address.
  *  • resolveControlTarget — a space-less control resolve sweeps once, and the sweep it reads is the
  *    one the caller handed in when there is one (#3872).
  *
@@ -280,6 +281,25 @@ for (const m of loadMeshes()) removeMesh(m.space);
 recordMesh({ space: "ghost-2", server: "nats://127.0.0.1:14992", root: "/tmp/p2", mode: "open", ts: new Date(0).toISOString() });
 await pruneStaleMeshes();
 check("pruneStaleMeshes keeps every dead entry as offline", loadMeshes().length === 1 && loadMeshes()[0]!.space === "ghost-2", loadMeshes());
+// Given the `--server` a command resolves with, the sweep probes only the records at that address,
+// so a record's broker at another address is not dialed. The control sweep, with no address, dials it.
+{
+  const { createServer } = await import("node:net");
+  let dials = 0;
+  const srv = createServer((sock) => {
+    dials++;
+    sock.on("error", () => { /* the probe tears its own sockets down */ });
+    sock.end('INFO {"server_id":"recorded","version":"2.12.12","proto":1,"max_payload":1048576}\r\n');
+  });
+  const recorded = await new Promise<string>((resolve) => srv.listen(0, "127.0.0.1", () => resolve(`nats://127.0.0.1:${(srv.address() as { port: number }).port}`)));
+  recordMesh({ space: "recorded-elsewhere", server: recorded, root: "/tmp/p-rec", mode: "open", ts: new Date(0).toISOString() });
+  const named = await pruneStaleMeshes("nats://127.0.0.1:14992");
+  check("a sweep given --server dials no record at another address", dials === 0 && named.offline.join(",") === "ghost-2", { dials, named });
+  const control = await pruneStaleMeshes();
+  check("CONTROL: a sweep with no --server dials that record", dials > 0 && control.offline.join(",") === "ghost-2", { dials, control });
+  removeMesh("recorded-elsewhere");
+  await new Promise<void>((r) => srv.close(() => r()));
+}
 
 // ── ORIGIN: a liveness prune never deletes; a mismatch prune still drops `up` ────────────────────
 // REVERSAL of the previous design (test-locked at preflight.smoke.ts:206-212): an `up` record whose

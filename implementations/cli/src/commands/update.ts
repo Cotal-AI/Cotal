@@ -401,7 +401,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
     const server = typeof flags.server === "string" ? flags.server : undefined;
     let peek: MeshTarget | undefined;
     try {
-      offline = space ? [] : (await pruneStaleMeshes()).offline;
+      offline = space ? [] : (await pruneStaleMeshes(server)).offline;
       peek = resolveMeshTarget(process.cwd(), { server, space, offline });
     } catch (e) {
       if (!isWorkspaceTargetError(e) || (e.code !== "unknown-space" && e.code !== "no-meshes")) throw e;

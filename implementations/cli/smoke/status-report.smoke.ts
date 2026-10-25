@@ -148,6 +148,14 @@ if (!brokerDisplayOnly) {
   const all = run(["status", "--space", "alpha", "--all", "--json"]);
   check("--all checks every registration", byName(all.envelope).alpha === "unreachable" && byName(all.envelope).beta === "unreachable", byName(all.envelope));
   check("--all is named in the target", all.envelope?.target.scope === "all" && all.envelope.target.space === "alpha", all.envelope?.target);
+  // A `--server` that names another address is the only broker dialed: the selected registration's
+  // recorded address is not checked. One that names the recorded address checks it.
+  const other = run(["status", "--space", "alpha", "--server", `nats://127.0.0.1:${await freePort()}`, "--json"]);
+  check("a --server that names another address leaves the selected registration not checked", byName(other.envelope).alpha === "not-checked" && other.envelope?.result?.selected.connection === "unreachable", { items: byName(other.envelope), connection: other.envelope?.result?.selected.connection });
+  const otherPlain = run(["status", "--space", "alpha", "--server", `nats://127.0.0.1:${await freePort()}`, "--plain"]);
+  check("…and the report says not checked for it", /alpha\s+not checked/.test(otherPlain.stdout), otherPlain.stdout);
+  const same = run(["status", "--space", "alpha", "--server", `nats://127.0.0.1:${a}`, "--json"]);
+  check("control: a --server that names the recorded address checks it", byName(same.envelope).alpha === "unreachable", byName(same.envelope));
 }
 
 // ── a folder's maintenance journal is shown with its full attempt and next step ──────────────────
