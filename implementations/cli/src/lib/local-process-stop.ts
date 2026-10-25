@@ -140,6 +140,10 @@ export async function stopLocalProcess(
     // and user-auth stop takes, and the one `cotal down` uses for the BROKER, the web dashboard and
     // every extension component, so all of them share one identity rule.
     const identity = verifyIdentityPin(pidPath);
+    if (identity.kind === "no-pid") throw new Error(
+      `refusing to stop ${component.label} at ${pidPath}: the pidfile no longer records a pid. No signal was sent.\n` +
+      `NEXT: inspect the pidfile and rerun this command; the previously read pid ${pid} was not used.`,
+    );
     if (identity.kind === "mismatch") throw identityRefusal(component.label, pidPath, identity.record, identity.liveToken);
     if (identity.kind === "legacy" && options.owns) {
       // A readable command that is not this component's means the record outlived its process and

@@ -1656,6 +1656,10 @@ that names a different start means the pid was reused, so teardown refuses and p
 controller stack's bare `down` signals no such record, so it removes it, as described above. A torn
 or unreadable pin also refuses. macOS start tokens keep their spaces, including the padded day,
 in both the identity pin and the one-shot shutdown intent. A single record cannot span lines.
+The uncertainty refusal helper accepts only torn pins, torn pairings and unreadable creation
+identities. Each has a specific explanation and next step. If the pidfile stops recording a pid
+between the stop's initial read and its identity check, the stop refuses without signalling the
+previously read pid and asks you to inspect the pidfile and retry.
 On Windows, the reader calls `GetProcessTimes` through a bundled Node-API binding for x64 or
 arm64. It requests limited process-query access and preserves the creation FILETIME as a decimal
 string. It launches no subprocess. Access denial leaves identity unverified; an unreadable pin
