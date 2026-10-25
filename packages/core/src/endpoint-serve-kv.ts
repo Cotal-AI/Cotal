@@ -388,7 +388,7 @@ export async function provisionEndpointGateOpen(
  *  For a FRESH first registration the enumerated `epcred` family is EMPTY, so revoke/evict are not
  *  exercised — but they are REAL code (a later takeover/re-registration of a LIVE instance MUST
  *  revoke the prior serve family and verify-evict its holders; a stub would silently skip that).
- *  `evict` is INJECTED: cluster-verified eviction is the $SYS CONNZ+KICK machinery (D5 slice 4),
+ *  `evict` is INJECTED: cluster-verified eviction is the $SYS CONNZ+KICK machinery,
  *  not this module's job. The DEFAULT is FAIL-CLOSED, `false` for every holder — "no evictor ⇒
  *  eviction cannot be VERIFIED ⇒ report not-verified" — so the saga's own guard leaves the
  *  gate FROZEN for reconciliation on a takeover with no real evictor, never silently reopening into

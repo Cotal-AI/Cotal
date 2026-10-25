@@ -2,16 +2,15 @@
  * The Cotal OpenCode plugin, OpenCode 2.x adapter. Loaded from the same bundle directory as the
  * 1.x factory (`plugin.ts`) — `plugin.entry.ts`'s default export carries both `server` (1.x) and
  * `setup` (this module's `setupCotal`, 2.x); the 2.x loader calls `setup(context)` only, never
- * `server`. See `fx105/measurements.md` for the measured 2.x plugin context, routes and events this
- * adapter is built against.
+ * `server`. The context subset this adapter reads is declared in `opencode2-types.ts`.
  *
  * The smallest port that joins, checks the model, creates ONE session, drives turns into it over
  * the authenticated HTTP API (`/api/session/:id/prompt` — 2.x has no `prompt_async`), registers the
- * cotal_* tools and maps the event stream to presence (M3c). Reuses `plugin.ts`'s exported seams
+ * cotal_* tools and maps the event stream to presence. Reuses `plugin.ts`'s exported seams
  * (env config, `MeshAgent` construction, `modelRefusalSentence`, `computeInjection`,
  * `settleWithin`) rather than duplicating them; the model check and session/turn routes are 2.x's
- * own (`/api/model`, `/api/session`, `/api/session/:id/prompt`), measured separately because the
- * 2.x response shapes differ from 1.x's (`{data:...}` wrapping, no `prompt_async`).
+ * own (`/api/model`, `/api/session`, `/api/session/:id/prompt`) because the 2.x response shapes
+ * differ from 1.x's (`{data:...}` wrapping, no `prompt_async`).
  */
 import { loadAgentFile, type PresenceStatus } from "@cotal-ai/core";
 import {
@@ -39,16 +38,13 @@ function log(msg: string): void {
 const guard = globalThis as { __cotalOpencodeSetup?: boolean };
 
 /** The 2.x `/api/session/:id/message` shape is `{data:[{type, text|content, model, agent}]}` and
- *  the `content` element shape was not measured, so `agui-source.ts` cannot read it truthfully —
- *  maintainer's call (fx105/brief.md M3). Refusing loud beats shipping an AG-UI plane that lies. */
+ *  the `content` element shape was not measured, so `agui-source.ts` cannot read it truthfully. */
 const EVENTS_REFUSAL =
   "opencode connector: the AG-UI event plane is not carried on OpenCode 2.x yet; spawn with --no-events";
 
 /** 2.x model check: `GET /api/model` lists the configured model directly (no `/provider.all`
  *  nesting to walk, unlike 1.x's `verifyServerModel`). Same refusal sentence shape, different
- *  route and body — measured in fx105/measurements.md (routes). The server answers `/api/model`
- *  with an empty listing for up to about a second after the location boot its first `/api/config`
- *  triggers (fx105/brief-g.md measurement), so an empty listing is polled every 200 ms until the
+ *  route and body. An empty listing during location boot is polled every 200 ms until the
  *  provider appears rather than refused on the first read. The wait is bounded: a server that
  *  never lists anything within the deadline is a real refusal, not a hang. */
 export const MODEL_LIST_SETTLE_MS = 10_000;
@@ -323,7 +319,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   }
 
   // Inbound mesh → drive (never interrupt a running turn). Mirrors plugin.ts's `agent.on`
-  // wiring, trimmed to this adapter's simpler single-session, no-swap scope (M3c's event stream
+  // wiring, trimmed to this adapter's simpler single-session, no-swap scope (the event stream
   // is what actually clears `execution`; these wakes only ask "is there anything to submit now").
   agent.on("incoming", (item: { kind: string; mentionsMe?: boolean; recvKey: string }) => {
     if (execution) return;
@@ -368,9 +364,10 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     for (const t of buildCotalTools2(agent, config)) ed.add(t);
   });
 
-  // The event stream — a detached loop, never awaited here (setup must return). Maps the measured
-  // event names (fx105/measurements.md) to presence and turn-end/ack the same way plugin.ts's own
-  // event switch does, trimmed to this adapter's single-session scope (no swap, no `/new` reset).
+  // The event stream — a detached loop, never awaited here (setup must return). Maps
+  // `session.execution.*`, `permission.asked` and session lifecycle events to presence and
+  // turn-end/ack the same way plugin.ts's own event switch does, trimmed to this adapter's
+  // single-session scope (no swap, no `/new` reset).
   const eventLoop = (async () => {
     try {
       for await (const ev of ctx.event.subscribe({ signal: controller.signal })) {

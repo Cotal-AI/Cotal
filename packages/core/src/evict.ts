@@ -1,5 +1,5 @@
 /**
- * D5 slice 4 — BROKER-BACKED LIVE CONNECTION EVICTION.
+ * BROKER-BACKED LIVE CONNECTION EVICTION.
  *
  * Revocation has two halves. DENY-NEW (ledger revoke, cred expiry, stripped signer, ACL removal)
  * stops the next exchange/connect — but a client that is ALREADY connected with a still-valid JWT

@@ -600,7 +600,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--advertised-server <url>` | `--server` | With `--exchange-public-port`: the broker address the public discovery bundle tells participants to dial, such as a `wss://` address behind your proxy. Must be a `nats://`, `tls://`, `ws://` or `wss://` URL |
 | `--agent-provisioning-url <https://…>` | none | With `--exchange-public-port`: the deployment's agent-provisioning endpoint the public bundle advertises. A participant's `cotal spawn` on a remote user-auth mesh sends its login bearer there to provision the agent; without one, that spawn needs a one-time enrollment ([Run a mesh](run-a-mesh.md#remote-supervised-seats-by-enrollment)). HTTPS only |
 | `--service-endpoints` | off | With `--user-auth`: the auth service also hosts service endpoints: the public registration door and the authenticated host route that `cotal service-endpoint` drives |
-| `--detach` | on | Run in the background, which is also the no-flag default |
+| `--detach`, `-d` | on | Run in the background, which is also the no-flag default |
 | `--foreground` | off | Keep native stack lifetime in this terminal. Required when a systemd/launchd unit supervises `up` itself. Cannot combine with `--detach` |
 | `--tls-cert <path>` | none | PEM certificate to serve TLS with. Must be given together with `--tls-key`. Before starting the broker, Cotal checks readability, private-key mode, key/certificate match, the validity window, and host coverage. `nats-server` accepts an expired certificate and leaves the failure to clients, so Cotal performs these checks first. The decision is recorded; a later bare `cotal up` keeps serving TLS. Cotal's own clients, `up` included, check the certificate against Node's trusted CAs and the address they dial. For a self-signed certificate or a local CA, set `NODE_EXTRA_CA_CERTS` to that certificate or CA file (PEM) for `cotal up` and every other `cotal` command of the space; the stack's delivery daemon and manager inherit it from `up`. The stack's address is `tls://`, so every dial checks the certificate against the address it names: an address `up` chooses, the default or the one a stopped folder last ran at, becomes `tls://`, and the `TLS: serving` line of the receipt names it. A root prepared with `cotal space create`, or one whose stack the service controller owns, has no route that serves TLS: there `--tls-cert`, `--tls-key` or a `tls://` `--server` refuses `UNSUPPORTED`, exit 2, before anything starts. On a prepared root that refusal names `cotal up -f <cotal.yaml> --tls-cert <cert.pem> --tls-key <key.pem>` with a `tls://` address in the manifest's `broker.servers`, which serves TLS there. Elsewhere a `--server nats://` with `--tls-cert` refuses `USAGE_INVALID` before anything starts and names the `tls://` form, and so does `up -f` whose manifest `broker.servers` names a `nats://` address. When this client refuses the certificate in the handshake, `up`, with or without `-f`, stops the broker, records nothing and fails `OPERATION_FAILED`, naming the native error and the step to take |
 | `--tls-key <path>` | none | PEM private key for `--tls-cert`. Refused if group- or other-readable (tighten to `600`) |
@@ -6957,7 +6957,12 @@ material, and is the path on a bare broker with no manager or for a run with no 
 `--by <who>` and print the same receipt as the hosted path, and `start --local` requires
 `--admit-read` and `--admit-publish` (comma-separated
 patterns or `none`), the run's channel ceiling. An entry that is not a channel or a pattern, such as
-`a b`, is refused `USAGE_INVALID` naming it. On a
+`a b`, is refused `USAGE_INVALID` naming it. When the run's status records that its program failed
+under this drive, `start --local` and `resume --local` fail `OPERATION_FAILED`, exit 5, naming the
+run and its language code with that code's title. A failure whose code has no title shows the first
+line of its recorded message instead, with control characters escaped. Their Next is
+`cotal run show <runId> --local`, which prints the whole message. Any other error the drive ends on
+stays `unknown`, exit 3. On a
 user-auth mesh the host's own manager refuses the family by name, and `--local` has no credential
 there. A participant's manager started with `cotal supervise` hosts a logged-in user's runs through
 its issuing host: the auth callout issues the user's manager connection, and every `run` verb rides

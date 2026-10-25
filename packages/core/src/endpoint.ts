@@ -291,7 +291,7 @@ export interface EndpointOptions {
   /** NATS user creds file *content* (JWT + nkey seed), or a SOURCE that mints/reads a fresh copy.
    *  When set, the endpoint authenticates as that user and adopts the creds' identity as its card.id.
    *
-   *  A STRING is the ordinary static cred. A FUNCTION is the STANDING-RENEWAL seam (D5 slice 5) for
+   *  A STRING is the ordinary static cred. A FUNCTION is the STANDING-RENEWAL seam for
    *  bounded-lifetime standing creds: the endpoint fetches before the first connect, re-fetches at
    *  75% of each JWT's lifetime (then swaps the connection onto the fresh cred with a controlled
    *  reconnect) and on rebuilds, and every (re)connect attempt presents the freshest copy — the
@@ -639,7 +639,7 @@ export class CotalEndpoint extends EventEmitter {
     reloadMembershipCreds?: (expected?: string) => Promise<unknown>;
     /** Composition-root hook: notified when delivery credentials have been successfully proved and adopted. */
     onDeliveryCredsAdopted?: () => void;
-    /** Composition-root hook: the live-eviction executor (D5 slice 6) — scan→KICK→verify a denied
+    /** Composition-root hook: the live-eviction executor — scan→KICK→verify a denied
      *  principal's connections via the daemon's $SYS observer/evictor creds (opened per call). */
     evictPrincipal?: (principal: string) => Promise<unknown>;
     /** Composition-root hook: {@link evictPrincipal} for a SET of denied principals in one shared
@@ -2630,7 +2630,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** This endpoint's v0.4 caller triple (§13.2) — the identity its minted ep-rail rows pin. The
    *  owner/actor principal is mode-correct by construction (static: DEV_OWNER + the connection
-   *  identity; user mode: the bearer's callout-derived pair — 1c.2c), and the lifecycle UID is the
+   *  identity; user mode: the bearer's callout-derived pair), and the lifecycle UID is the
    *  launcher-supplied incarnation the rows are keyed on (ledger-consistent: the §13.1 presence
    *  lifecycle-proof refuses a divergent uid before any publish). */
   private serviceCaller(): EpCaller {
@@ -3658,22 +3658,13 @@ export class CotalEndpoint extends EventEmitter {
    * The newest `limit` chat messages across MANY channels at once, oldest-first within the page,
    * each tagged with the channel the BROKER delivered it on.
    *
-   * **One read, not one per channel.** The CHAT stream already interleaves every channel into one
-   * sequence space, so "the newest N across these channels" is the tail of ONE stream, and a
-   * consumer takes a SET of filter subjects. The dashboard's activity feed used to answer this by
-   * calling {@link channelHistory} once per channel and merging: each of those is a widening probe
-   * loop, so the cost carried two multipliers (a probe loop per channel, and a fan-out across every
-   * channel). Counted on the wire over a seeded corpus of 69 chat channels and 24 event channels at
-   * limit 200: 2524 broker requests and about 8.0 MB transferred to return a 143,401-byte page,
-   * against 143 requests and about 0.91 MB here. With no link cost the counts and the page size
-   * repeat exactly across runs; the byte totals move by tens of bytes. `pnpm smoke:web-activity-read-cost` reproduces the
-   * second column and a frozen copy of the fan-out shape; the first is that same suite run against
-   * `544a974b7` (Cotal #1210).
+   * The CHAT stream interleaves every channel into one sequence space. Consumers take sets of
+   * filter subjects for the requested channels. Large filter sets are read in batches, and the
+   * pages are merged by stream sequence to select the newest `limit` messages overall.
    *
    * **The broker does the filtering, so the wire carries only what is asked for.** A channel left
    * out of `channels` costs nothing: its messages are never delivered, so a space whose volume is
-   * dominated by channels the caller does not want stays cheap. That is the same "filter before the
-   * fetch" property the per-channel fan-out had, kept rather than traded away.
+   * dominated by channels the caller does not want stays cheap.
    *
    * **The channel comes from the SUBJECT, never from the payload.** A message claims a `channel`
    * field, and this method ignores it: the tag is derived from the subject the broker routed the
@@ -4457,7 +4448,7 @@ export class CotalEndpoint extends EventEmitter {
   /**
    * Privileged: pre-create a role's shared TASK work-queue durable (auth mode), so agents
    * of that role can BIND it without holding CONSUMER.CREATE on TASK_<space>. The creator
-   * sets the filter to svc.<role>.* — agents never choose it, which stops cross-role drain.
+   * sets the filter to svc.<role>.> — agents never choose it, which stops cross-role drain.
    * Idempotent per role. The caller must be permissive on TASK_<space>.
    */
   async provisionTaskQueue(role: string): Promise<void> {
@@ -5733,7 +5724,7 @@ export class CotalEndpoint extends EventEmitter {
         : { ok: true, data: { delivery, membership } };
     }
     if (req.op === "evictPrincipal") {
-      // The LIVE-EVICTION executor (D5 slice 6): force-drop a denied principal's connections.
+      // The LIVE-EVICTION executor: force-drop a denied principal's connections.
       // Composition-root hook because the $SYS observer/evictor creds live outside this endpoint's
       // trust boundary; absent hook = a daemon build without the executor, refused loudly.
       if (!this.plane3?.evictPrincipal)
@@ -7242,7 +7233,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   private applyPresence(id: string, raw: Presence): void {
-    // Defense-in-depth (per-user-auth closure (i), residual 3): the KV key IS the publisher's identity —
+    // Defense-in-depth: the KV key IS the publisher's identity —
     // publishPresence() writes its record under card.id — so a record whose embedded card.id disagrees
     // with its bucket key is forged or corrupt. Drop it rather than surface a spoofed roster identity.
     // The write-side scoping ($KV.<presenceBucket>.<own-id>) is the primary guard; this rejects a

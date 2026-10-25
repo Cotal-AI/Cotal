@@ -326,12 +326,14 @@ a compatibility fallback.
 
 ## Ingress origin measurement
 
-`implementations/auth/smoke/issued-ingress-origin.smoke.ts` measures the SPEC 678-695
-consumer-delivery confused deputy against the candidate rail, using the stock agent
-profile as production mints it and the serve subscription shape an endpoint really
-opens for the `one` class (wildcard filter, queue-qualified). It is one of three per command:
-`endpoint-serve.ts:551-553` also opens non-queued `all` and `inst`, and push delivery is measured
-against all three. Measured on NATS 2.14.5, and independently reproduced by a reviewer on 2.14.0:
+`implementations/auth/smoke/issued-ingress-origin.smoke.ts` measures the SPEC §9
+"Consumer-delivery confused deputy on the read grants" against the candidate rail,
+using the stock agent profile as production mints it and the serve subscription shape
+an endpoint really opens for the `one` class (wildcard filter, queue-qualified). It is
+one of three per command:
+`serveEndpoint`'s per-command rail loop in `endpoint-serve.ts` also opens non-queued `all` and
+`inst`, and push delivery is measured against all three. Measured on NATS 2.14.5, and
+independently reproduced by a reviewer on 2.14.0:
 
 - A direct publish onto the rail is denied.
 - A push consumer whose `deliver_subject` is the rail is created, but its delivery is
@@ -339,7 +341,8 @@ against all three. Measured on NATS 2.14.5, and independently reproduced by a re
   saw delivery only because it listened on the exact subject, which no endpoint does.
 - A pull `MSG.NEXT` whose reply is the rail does reach that subscription, and the
   frame RETAINS its original captured subject with a `$JS.ACK.` reply. This answers
-  the determination SPEC 690-693 leaves to the reference implementation by test.
+  the determination SPEC §9, "Consumer-delivery confused deputy on the read grants", leaves to
+  the reference implementation by test.
 - A KV `STREAM.MSG.GET` whose reply is the rail reaches that subscription UNDER the
   rail subject, with no headers and an empty reply.
 
