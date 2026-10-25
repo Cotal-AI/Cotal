@@ -17,7 +17,15 @@ import { join } from "node:path";
 
 const version = process.argv[2];
 if (!version) {
-  process.stderr.write("usage: release-notes-detail.mjs <version>\n");
+  process.stderr.write("usage: release-notes-detail.mjs <version> [--max-bytes=<n>]\n");
+  process.exit(1);
+}
+// A GitHub release body is capped at 125000 characters. The caller passes what is left after the
+// generated PR list; the block ends at the last summary that fits, with a line saying where the rest is.
+const maxArg = process.argv.slice(3).find((a) => a.startsWith("--max-bytes="));
+const maxBytes = maxArg ? Number(maxArg.slice("--max-bytes=".length)) : Infinity;
+if (!(maxBytes > 0)) {
+  process.stderr.write(`release-notes-detail.mjs: --max-bytes must be a positive number, got ${JSON.stringify(maxArg)}\n`);
   process.exit(1);
 }
 
@@ -60,8 +68,18 @@ for (const file of changelogs) {
 }
 
 if (summaries.size) {
-  process.stdout.write("## Changes in this release\n\n");
+  const note = (left) => `\n_${left} more changes did not fit in this release body; each package's CHANGELOG.md at v${version} lists them all._\n`;
+  const reserve = Buffer.byteLength(note(summaries.size)); // the longest note the cut could need
+  let out = "## Changes in this release\n\n";
+  let shown = 0;
   // Each summary is `<first line>\n<already 2-space-indented continuation>`, so it re-emits as a
   // valid multi-paragraph markdown list item under the bullet.
-  for (const s of summaries) process.stdout.write(`- ${s}\n`);
+  for (const s of summaries) {
+    const item = `- ${s}\n`;
+    if (Buffer.byteLength(out + item) + reserve > maxBytes) break;
+    out += item;
+    shown++;
+  }
+  if (shown < summaries.size) out += note(summaries.size - shown);
+  process.stdout.write(out);
 }
