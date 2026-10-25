@@ -31,21 +31,31 @@ const expiry = (seconds: number | undefined): string => {
 };
 
 /** What `--replace` found at the label: a standing credential that has expired, one with no expiry
- *  claim, or one whose key the space's account revoked. Any other standing credential stays,
- *  because something may still use it. */
-interface Replaced { state: "expired" | "unbounded" | "revoked"; expiresAt: number | null; publicKey: string; revokedAt: number | null }
+ *  claim, or one whose key the space's account revoked, with the profile it was minted with. Any
+ *  other standing credential stays, because something may still use it. */
+interface Replaced { state: "expired" | "unbounded" | "revoked"; expiresAt: number | null; publicKey: string; revokedAt: number | null; profile: string | null }
 
 function replaceable(standing: string, name: string, target: object, revocations: Readonly<Record<string, number>>): Replaced {
   let claims: ReturnType<typeof credsClaims> | undefined;
   try { claims = credsClaims(standing); } catch { claims = undefined; }
   if (!claims?.sub) throw new CommandFailure("refused", "CONFLICT", `the standing credential "${name}" is not a native credential this command can read; it was not replaced`, { target });
-  const exp = claims.exp, publicKey = claims.sub;
+  const exp = claims.exp, publicKey = claims.sub, profile = claims.name ?? null;
   // The broker refuses a revoked key whatever the expiry, and the replacement takes a new key.
   const revokedAt = revocations[publicKey];
-  if (revokedAt !== undefined && (claims.iat === undefined || claims.iat <= revokedAt)) return { state: "revoked", expiresAt: exp ?? null, publicKey, revokedAt };
-  if (exp === undefined) return { state: "unbounded", expiresAt: null, publicKey, revokedAt: null };
+  if (revokedAt !== undefined && (claims.iat === undefined || claims.iat <= revokedAt)) return { state: "revoked", expiresAt: exp ?? null, publicKey, revokedAt, profile };
+  if (exp === undefined) return { state: "unbounded", expiresAt: null, publicKey, revokedAt: null, profile };
   if (exp * 1000 > Date.now()) throw new CommandFailure("refused", "CONFLICT", `the standing credential "${name}" is valid until ${expiry(exp)}, so --replace left it in place`, { target, remedy: "choose a new label, or run it again with --replace once that credential has expired" });
-  return { state: "expired", expiresAt: exp, publicKey, revokedAt: null };
+  return { state: "expired", expiresAt: exp, publicKey, revokedAt: null, profile };
+}
+
+/** What `--replace` did that its receipt does not show: a replacement minted with another profile
+ *  than the credential it replaced, as `--profile` defaults to agent, or a label with no standing
+ *  credential, where it replaced nothing. Doctor auth owns exported files' state-specific guidance. */
+function replaceNotes(replaced: Replaced | undefined, standing: boolean, profile: string, space: string, name: string): OutputWarning[] {
+  if (replaced?.profile && replaced.profile !== profile)
+    return [{ code: "REPLACED_PROFILE_CHANGED", target: { space, name, profile, replacedProfile: replaced.profile }, message: `the credential this replaced was minted with --profile ${replaced.profile}, and this one with --profile ${profile}, so it holds that profile's grants instead` }];
+  if (standing) return [];
+  return [{ code: "NOTHING_REPLACED", target: { space, name }, message: `--replace found no standing credential named "${name}", so this is a new standing credential and it replaced nothing; exported files are unchanged; inspect them with \`cotal doctor auth --space ${space}\`` }];
 }
 
 /** A replaced credential with no expiry claim is not revoked by its replacement, so any copy of it
@@ -224,6 +234,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
     const warnings = [
       ...(result.identityReused && profile === "agent" ? [{ code: "NEW_OUT_OF_BAND_LIFECYCLE", target: { space, name }, message: "The native out-of-band mint reuses the nkey, not the old lifecycle UID. Old inbox/DM footprints were not claimed as reused." }] : []),
       ...replacedStillValid(replaced, identity.id, space, name),
+      ...(values.replace ? replaceNotes(replaced, standing !== undefined, profile, space, name) : []),
     ];
     writeResult(presentationOf(values), { command: "auth mint", target: { space, name }, result, warnings }, (data): Report => ({ sections: [
       { title: "Private credential written", blocks: [{ kind: "fields", rows: [["Label", data.name], ["Space", data.space], ["Profile", data.profile], ["Principal", data.principal], ["Lifecycle", data.lifecycleUid ?? "not an agent lifecycle"], ...(data.grants ? grantRows(data.grants) : []), ["Private file", data.output], ...(data.replaced ? [["Replaced", `${data.replaced.state === "expired" ? `a credential that expired at ${expiry(data.replaced.expiresAt ?? undefined)}` : data.replaced.state === "revoked" ? `a credential whose key was revoked at ${expiry(data.replaced.revokedAt ?? undefined)}` : "a credential with no expiry claim"}, key ${data.replaced.publicKey}`]] as [string, string][] : []), ["Expiry", data.noExpiryRecord ? `no expiry claim, as --no-expiry asked; recorded in ${data.noExpiryRecord}` : `${expiry(data.expiresAt ?? undefined)}${data.defaultLifetime ? " (the 24-hour default)" : ""}`], ["Broker footprint", data.provisioned ? "native provisioning acknowledged" : "not provisioned by this command"]] }, { kind: "lines", lines: [{ text: "Credential contents were written privately, not printed. Provisioning is not presence, a joined agent or task completion. Fixed observer/admin profiles do not accept agent ACL overrides.", tone: "hint" }] }] },

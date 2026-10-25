@@ -5861,6 +5861,11 @@ does not revoke the credential it replaced, so a copy of one with no expiry clai
 receipt then warns `REPLACED_CREDENTIAL_VALID`, naming that key and the
 [`auth revoke-credential`](#auth-revoke-credential) route that stops it. A standing credential that is still
 valid refuses `CONFLICT`, naming its expiry, and so does one that is not a native credential.
+`--profile` still defaults to `agent`, so a replacement of an observer or admin credential needs
+`--profile observer` or `--profile admin`; a replacement with another profile than the one it
+replaced warns `REPLACED_PROFILE_CHANGED`. With no standing credential under the label, `--replace`
+mints a new one and warns `NOTHING_REPLACED`. Exported files stay unchanged; the warning names
+`doctor auth --space <space>` to inspect their state and the guidance for each file.
 `--replace` takes no `--out`. An exported file stays outside
 managed `.cotal` and workstation state. Its path, label, profile and public key, without the
 credential, are recorded under `credentials/` in the Cotal home so `doctor auth` lists the file. A pre-existing explicit output must be an owned private
@@ -6145,9 +6150,10 @@ manager runs. An agent file whose key was revoked is a finding in state `revoked
 `result.items[].revokedAt`, however far off its expiry is. A revoked key is not signed again, so
 for a label's file the guidance names `--replace`, and for any other agent file it names stopping
 the agent that uses it. Each `--replace` this guidance names, for an unbounded, expired or revoked
-file, carries the file's read and post channels and its role as `--allow-subscribe`,
-`--allow-publish` and `--role`, since the replacement is a new key, which holds only the grants its
-mint names.
+file, carries the file's profile as `--profile observer` or `--profile admin`, and an agent file's
+read and post channels and its role as `--allow-subscribe`, `--allow-publish` and `--role`, since
+the replacement is a new key, which holds only the profile and grants its mint names. For an
+observer or admin file it names no managed renewal, as no manager runs one.
 
 Each file `auth mint --out` wrote for the space from this root and that is still there is listed
 under Exported credential files, and in `result.exported`, with its state and expiry. These rows

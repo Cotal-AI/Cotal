@@ -642,6 +642,17 @@ try {
     const withOut = await runMint(["kurz", "--replace", "--out", out]);
     check("--replace with --out exits 1 with the reason and writes nothing",
       withOut.code === 1 && /--replace replaces the label's standing credential, so it takes no --out/.test(withOut.out) && !existsSync(out), withOut.out);
+    // --profile defaults to agent, so the receipt says when a replacement has another profile.
+    await runMint(["blick", "--profile", "observer", "--no-expiry"]);
+    const changedProfile = await runMint(["blick", "--replace"]);
+    check("--replace of an observer credential without --profile observer warns that the profile changed",
+      changedProfile.code === 0 && changedProfile.out.includes("! the credential this replaced was minted with --profile observer, and this one with --profile agent, so it holds that profile's grants instead"), changedProfile.out);
+    await runMint(["blick2", "--profile", "observer", "--no-expiry"]);
+    const sameProfile = await runMint(["blick2", "--replace", "--profile", "observer"]);
+    check("  and warns no change when it names --profile observer again", sameProfile.code === 0 && !sameProfile.out.includes("minted with --profile"), sameProfile.out);
+    const unreplaced = await runMint(["neu", "--replace"]);
+    check("--replace on a label with no standing credential mints one and warns that it replaced nothing",
+      unreplaced.code === 0 && unreplaced.out.includes('! --replace found no standing credential named "neu", so this is a new standing credential and it replaced nothing') && existsSync(standing("neu")), unreplaced.out);
   }
 
   // ── 11. --identity keeps an agent credential's grants; doctor auth lists each --out file ─────
@@ -679,6 +690,11 @@ try {
     const after = envelope((await runCotal(["doctor", "auth", "--space", SPACE, "--json"])).out).result?.exported ?? [];
     check("  following it renews the file with its grants, and doctor then reads it healthy",
       renewed.code === 0 && JSON.stringify(grantRows(first)) === JSON.stringify(grantRows(again)) && after.find((entry) => entry.path === first)?.state === "healthy", { renewed: renewed.out, after });
+    // The label has only --out files, so --replace has no standing credential to replace.
+    const exportedOnly = await runMint(["grants", "--replace", "--json"]);
+    const nothing = envelope(exportedOnly.out).warnings?.find((warning) => warning.code === "NOTHING_REPLACED")?.message ?? "";
+    check("--replace on a label with only --out files names doctor auth without prescribing a key re-sign",
+      exportedOnly.code === 0 && nothing.includes(`exported files are unchanged; inspect them with \`cotal doctor auth --space ${SPACE}\``) && !nothing.includes("--identity") && !nothing.includes("signs its key again"), exportedOnly.out);
   }
 
   console.log(`\nMINT-PROVISION SMOKE OK ✅  (${pass} passed)`);
