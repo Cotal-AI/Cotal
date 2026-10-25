@@ -558,6 +558,12 @@ claims the already-running process changed. From a source checkout, the `update 
 local reconcile without reinstalling it. Each npm install it runs starts with 022 added to your
 umask, so a umask of 0002 does not leave the installed tree group-writable.
 
+Once global replacement starts, Ctrl-C waits for installation, verification and reconciliation to
+finish before returning exit code 130. SIGTERM waits the same way and returns 143. The command
+explains the wait, keeps its update lock and does not send terminal interrupts into the child
+processes that are replacing packages. An install or reconcile failure still reports its own
+nonzero result. Force-killing the process or closing its terminal is not a supported cancellation.
+
 Run through the installer's `cotal` launcher, `update` first removes group and other write from the
 folders and files you own in Cotal's install root, without following links. An installer from before
 it set its own umask, run under a umask of 0002, left that tree group-writable. Running the installer

@@ -1075,6 +1075,34 @@ async function completionOut(positionals: string[]): Promise<string> {
   }
 }
 
+// --- interrupts retain update custody until verification and reconciliation finish --------------
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  for (const phase of ["install", "reconcile"] as const) {
+    const beforeInt = process.listenerCount("SIGINT");
+    const beforeTerm = process.listenerCount("SIGTERM");
+    const { rt, events } = updateRuntime({
+      npm: (args) => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }),
+    });
+    const spawnGlobal = rt.spawnGlobal;
+    rt.spawnGlobal = async (...args) => {
+      if (args[1] === phase) {
+        process.emit(signal, signal);
+        process.emit(signal, signal);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.ok(!events.includes("release-global:/global/node_modules"), "interrupt keeps the global mutation lock until the child settles");
+      }
+      return spawnGlobal(...args);
+    };
+    assert.equal(await executeUpdate(true, rt), signal === "SIGINT" ? 130 : 143);
+    assert.ok(events.includes("verify:/global/node_modules:0.13.2"), "interruption still verifies the installed package");
+    assert.ok(events.some((event) => event.startsWith("global:reconcile:")), "interruption still reconciles matching extensions");
+    assert.equal(events.filter((event) => event.includes("Interrupt received;")).length, 1, "repeated interrupts produce one explanation");
+    assert.equal(events.at(-1), "release-global:/global/node_modules");
+    assert.equal(process.listenerCount("SIGINT"), beforeInt, "SIGINT handling is restored after the update");
+    assert.equal(process.listenerCount("SIGTERM"), beforeTerm, "SIGTERM handling is restored after the update");
+  }
+}
+
 // --- the registry version read leaves nothing in npm's own cache, logs or notifier stamp ---------
 {
   let cache: string | undefined;
