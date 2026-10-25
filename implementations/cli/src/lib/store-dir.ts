@@ -195,7 +195,12 @@ export function storeWriteProblem(storeDir: string): { path: string; message: st
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "EACCES" && code !== "EPERM" && code !== "EROFS") throw error;
     let readable = true;
-    try { accessSync(path, constants.R_OK | constants.X_OK); } catch { readable = false; }
+    try { accessSync(path, constants.R_OK | constants.X_OK); }
+    catch (error) {
+      const readCode = (error as NodeJS.ErrnoException).code;
+      if (readCode !== "EACCES" && readCode !== "EPERM") throw error;
+      readable = false;
+    }
     return readable
       ? { path, message: `the broker store ${path} is not writable by this account (${code}), so the broker cannot start JetStream there`, remedy: `make it writable by you, for example with chmod -R u+w ${path}` }
       : { path, message: `the broker store ${path} is not readable or writable by this account (${code}), so the broker cannot start JetStream there`, remedy: `make it readable and writable by you, for example with chmod -R u+rwX ${path}` };

@@ -727,8 +727,8 @@ keeps its mode. A `.cotal`, or a root without one, that this account cannot writ
 `PERMISSION_DENIED` (exit 2), naming it and `chmod u+w`, before anything is started or written. A
 broker store this account cannot write refuses the same way, naming the store's `jetstream` folder,
 or the store itself before a broker has made one or when this account cannot open it, and
-`chmod -R u+w`. A folder this account cannot read or open either names `chmod -R u+rwX` instead,
-since `u+w` alone leaves it closed. Without that check the broker
+`chmod -R u+w`. If that unwritable folder also lacks read or search access, the step names
+`chmod -R u+rwX` instead, since `u+w` alone leaves it closed. Without that check the broker
 exited and named the cause only in its log. `status` names the same step for a stopped space whose
 store `up` would refuse. A service record folder of the space, under `services/` in the Cotal home,
 that this account cannot write refuses `up` the same way, naming the folder and `chmod u+w`, before
