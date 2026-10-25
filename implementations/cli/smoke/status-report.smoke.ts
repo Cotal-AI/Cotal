@@ -161,7 +161,7 @@ if (!brokerDisplayOnly) {
     const recovery = { ...base, folder: { ...base.folder, root: reportRoot, controllerStack: true, processSpace: "alpha", stackBlock: null,
       stackUnfinished: kind === "down" ? { kind: "down", id: "interrupted-down", running: ["broker"], stopped: ["manager", "delivery"] } : null },
       selected: { ...base.selected, resolved: true, space: "alpha", root: reportRoot, connection: "reachable",
-        spaceStreams: kind === "streams" ? { state: "absent", root: reportRoot, stack: "stopped" } : base.selected.spaceStreams } };
+        ...(kind === "streams" ? { spaceStreams: { state: "absent", root: reportRoot, stack: "stopped" } } : {}) } };
     const report = renderReport(statusView(recovery as unknown as Parameters<typeof statusView>[0]), "plain");
     const rootWord = reportRoot === home ? home : `'${home}/recovery O'\\''Neil $HOME'`;
     check(`${kind} recovery keeps its ${reportRoot === home ? "ordinary" : "quoted"} root in Next`,
