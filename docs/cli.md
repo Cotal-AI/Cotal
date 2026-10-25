@@ -8363,9 +8363,12 @@ does not acquire that mechanism from its name or preset.
 The direct-process driver pins the machine, the boot, the OS user and each process's start. On
 Linux these are the machine ID, the kernel boot ID and the process start ticks. On macOS they are
 the hardware UUID, the boot session UUID and the process start in microseconds, read through the
-bundled binding described under the identity pins above. On Windows they are a machine identity,
-the account's SID and each process's creation time, read through the same binding. Windows records
-no boot pin. The custodian described below holds each instance's job instead, and a restart ends it.
+bundled binding described under the identity pins above. On Windows they are the system ID that
+Windows gives this publisher's apps on the machine (`GetSystemIdForPublisher`), the account's SID and
+each process's creation time, read through the same binding. The record also keeps where Windows
+derived that ID: a TPM, UEFI or the registry. An ID from the registry changes when Windows is
+installed again. When Windows has none of these, the driver refuses. Windows records no boot pin.
+The custodian described below holds each instance's job instead, and a restart ends it.
 
 Instance reports separate recorded supervisor policy from supervisor discovery, which remains not
 checked by this direct-process driver. A recorded `none` means no supervisor assigned by this
