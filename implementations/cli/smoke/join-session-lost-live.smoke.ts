@@ -5,8 +5,13 @@
  * auth broker it owns. It stops that broker until the join's client has given up reconnecting on its
  * own, so the join re-establishes the connection itself, and then starts the broker again:
  *
- *   1. under another trust, which rejects the join's credential: the join ends PERMISSION_DENIED with
+ *   1. on an empty store, where the join's inbox is gone: the join ends TARGET_NOT_FOUND, saying its
+ *      inbox is gone, and its Next mints the credential again with `--provision`;
+ *   2. under another trust, which rejects the join's credential: the join ends PERMISSION_DENIED with
  *      the refusal a one-shot command with that credential gets.
+ *
+ * A restart short enough for the client to reconnect on its own is not covered. The join stays then,
+ * and it does not see that a store reset removed its inbox.
  *
  * Needs `nats-server` on PATH. Ports are OS-assigned.
  * Run: pnpm smoke:join-session-lost:live
@@ -95,7 +100,21 @@ try {
   const trust = await createSpaceAuth(space);
   await startBroker("first", trust);
 
-  console.log("1. a join whose credential the broker now rejects ends with that credential's refusal");
+  console.log("1. a join whose inbox is gone when it reconnects ends, saying so");
+  {
+    const { proc, text } = await startJoin(trust, "inbox");
+    joins.push(proc);
+    await stopBroker();
+    await wait(CLIENT_GIVES_UP_MS);
+    await startBroker("empty", trust);
+    await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(trust, newIdentity(), "provisioner") });
+    const ended = await waitFor(() => exited(proc), 120_000);
+    check("the join ends once it reconnects to a store without its inbox", ended && proc.exitCode === 2, { code: proc.exitCode, out: text() });
+    check("...TARGET_NOT_FOUND, saying its inbox is gone from the broker", text().includes("REFUSED TARGET_NOT_FOUND this join can no longer reconnect: its inbox is gone from the broker"), text());
+    check("...and its Next mints the credential again with --provision", /NEXT .*cotal auth mint <name> --provision/.test(text()), text());
+  }
+
+  console.log("2. a join whose credential the broker now rejects ends with that credential's refusal");
   {
     const { proc, text } = await startJoin(trust, "rejected");
     joins.push(proc);

@@ -13,6 +13,7 @@ import {
   partsToText,
   peerLabel,
   presenceText,
+  isConsumerNotFound,
   type Delivery,
   type EndpointKind,
   type PresenceStatus,
@@ -343,12 +344,13 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   });
 
   // A session that cannot come back ends with the reason and what to run, rather than retrying for
-  // good. A credential the broker now refuses for good ends it with the refusal a one-shot command
-  // with that credential gets, as `history --follow` ends. A user-auth join's bearer renewal reports
-  // a changed trust, so it keeps re-establishing.
+  // good. A reconnect that finds its inbox gone from the broker cannot bind it again. A credential
+  // the broker now refuses for good ends it with the refusal a one-shot command with that credential
+  // gets, as `history --follow` ends. A user-auth join's inbox is the operator's to provision and its
+  // bearer renewal reports a changed trust, so it keeps re-establishing.
   const credential: Connection | undefined = auth.creds === undefined ? undefined
     : { server, space, tls: auth.tls, creds: auth.creds, ...(mintedFrom ? { auth: mintedFrom } : {}) };
-  let started = false, checking = false;
+  let started = false, connected = false, checking = false;
   let lose!: (failure: Error) => void;
   const lost = new Promise<Error>((resolve) => { lose = resolve; });
   const checkCredential = () => {
@@ -359,14 +361,24 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       if (refusal) lose(refusal);
     });
   };
-  ep.on("connection", ({ connected }: { connected: boolean }) => {
-    if (!connected) checkCredential();
+  ep.on("connection", ({ connected: up }: { connected: boolean }) => {
+    connected = up;
+    if (!up) checkCredential();
   });
   ep.on("error", (e: Error) => {
     print(c.red(`! ${e.message}`));
     checkCredential();
   });
-  ep.on("warning", (e: Error) => print(c.yellow(`! ${e.message}`)));
+  ep.on("warning", (e: Error) => {
+    if (started && !connected && !userConnection && isConsumerNotFound(e))
+      return lose(new CommandFailure("refused", "TARGET_NOT_FOUND", "this join can no longer reconnect: its inbox is gone from the broker", {
+        target: { space },
+        remedy: values.creds
+          ? "ask the space's owner to mint the credential again with `cotal auth mint <name> --provision`, then join with the lifecycle UID that mint reports"
+          : "run the same cotal join again to start a new session",
+      }));
+    print(c.yellow(`! ${e.message}`));
+  });
   /** Leave once the session is lost: stop the endpoint and end with its refusal. */
   const whenLost = async (): Promise<never> => {
     const failure = await lost;
