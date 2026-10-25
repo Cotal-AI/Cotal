@@ -5888,7 +5888,11 @@ the characters allowed, and its Next names the value with each such character re
 
 `agent` is the default profile. Its channel ACLs and role come from the selected root's
 `<name>.md` persona file, when present. It does not fall back to `default.md` for a different name.
-Explicit `--allow-subscribe`, `--allow-publish` and `--role` override the file's grants. With
+Explicit `--allow-subscribe`, `--allow-publish` and `--role` override the file's grants. A persona
+file of that name that cannot be read as a persona refuses the mint `SCHEMA_INVALID`, exit 1, even
+when the flags name every grant. The mint refusal does not print file values or parser text.
+It names the file and `cotal persona show <name>` to inspect it. A role from the file that is not one word
+of letters, digits, `_` and `-` refuses the same way, naming `cotal persona edit <name>`. With
 `--identity` naming an agent credential this space issued, the new credential keeps that
 credential's read channels, post channels and role in place of the persona's, and each flag still
 replaces its own grant. The receipt lists the grants as May read, May post and Role, marking those
@@ -5911,7 +5915,12 @@ receipt then warns `REPLACED_CREDENTIAL_VALID`, naming that key and the
 valid refuses `CONFLICT`, naming its expiry, and so does one that is not a native credential.
 `--profile` still defaults to `agent`, so a replacement of an observer or admin credential needs
 `--profile observer` or `--profile admin`; a replacement with another profile than the one it
-replaced warns `REPLACED_PROFILE_CHANGED`. With no standing credential under the label, `--replace`
+replaced warns `REPLACED_PROFILE_CHANGED`. A replacement holds only the grants its persona file,
+`--identity` or grant flags name, not those of the agent credential it replaced. When both are
+agent-profile credentials, the old one names this space's account as issuer, and their grants
+differ, the receipt warns `REPLACED_GRANTS_CHANGED`, naming both and the
+`--allow-subscribe`, `--allow-publish` and
+`--role` flags that name the replaced ones. With no standing credential under the label, `--replace`
 mints a new one and warns `NOTHING_REPLACED`. Exported files stay unchanged; the warning names
 `doctor auth --space <space>` to inspect their state and the guidance for each file.
 `--replace` takes no `--out`. An exported file stays outside
