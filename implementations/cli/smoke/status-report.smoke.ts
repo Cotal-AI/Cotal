@@ -144,6 +144,17 @@ if (!brokerDisplayOnly) {
   const fed = { ...selected.envelope!.result!, selected: { ...selected.envelope!.result!.selected, membershipFeed: { entries: 2, asOf: new Date(Date.now() - 90_000).toISOString() } } };
   const fedReport = renderReport(statusView(fed as unknown as Parameters<typeof statusView>[0], true), "plain");
   check("the membership feed row says how long ago it was updated", /^ {2}membership feed: +2 entries - updated 1m ago$/m.test(fedReport), fedReport.split("\n").filter((l) => /membership/.test(l)));
+  // An interrupted up names its recorded root as one shell argument, including --no-manager.
+  for (const reportRoot of [home, join(home, "interrupted O'Neil $HOME")]) for (const noManager of [false, true]) {
+    const base = selected.envelope!.result!;
+    const interrupted = { ...base, folder: { ...base.folder, root: reportRoot, controllerStack: true, processSpace: "alpha", stackBlock: null,
+      stackUnfinished: { kind: "up", id: "interrupted-up", running: noManager ? ["broker"] : ["broker", "delivery"], stopped: noManager ? ["delivery"] : ["manager"], noManager } },
+      selected: { ...base.selected, resolved: true, space: "alpha", root: reportRoot, connection: "reachable" } };
+    const report = renderReport(statusView(interrupted as unknown as Parameters<typeof statusView>[0]), "plain");
+    const rootWord = reportRoot === home ? home : `'${home}/interrupted O'\\''Neil $HOME'`;
+    check(`interrupted up keeps its ${reportRoot === home ? "ordinary" : "quoted"} root${noManager ? " and --no-manager" : ""} in Next`,
+      report.includes(`cotal up --root ${rootWord}${noManager ? " --no-manager" : ""}`), report);
+  }
   const plain = run(["status", "--space", "alpha", "--plain"]);
   check("the report says not checked for the other registration", /beta\s+not checked/.test(plain.stdout), plain.stdout);
   const all = run(["status", "--space", "alpha", "--all", "--json"]);
