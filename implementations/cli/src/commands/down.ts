@@ -441,7 +441,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     // A root that never started a stack never ran a manager, so it has no agents to stop.
     if (stopped) {
       const { started, ...target } = stopped;
-      return nothingRunning(presentationOf(args.values), target, values["with-agents"] === true && values["dry-run"] !== true && started);
+      return nothingRunning(presentationOf(args.values), target, values["with-agents"] === true && started, [], values["dry-run"] === true);
     }
   }
   if (values["dry-run"] && !values.file && !values.run && !values["preserve-state"] && !values["store-dir"] && !values["session-store"]?.length) {

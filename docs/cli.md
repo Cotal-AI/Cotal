@@ -1250,8 +1250,11 @@ same selection, confirmation, reservation, native manager-impact and stop contro
 name `down` while retaining the service-stop result and actual identity. Unknown definitions do not
 fall back to legacy component pidfiles. A controller stack names its members `stack-broker`,
 `stack-auth`, `stack-delivery` and `stack-manager`; a legacy name such as `manager` refuses
-`TARGET_NOT_FOUND` there and names the `stack-` member to use. Completion offers saved definitions without imports or a
-network request. No hidden connector repair or shared catalog preparation precedes this route.
+`TARGET_NOT_FOUND` there and names the `stack-` member to use. A stop of `stack-broker` refuses
+`LIFECYCLE_BLOCKED` while a legacy daemon record under the root may front a process, or another
+service instance of the space is live or unresolved. For those instances it names bare `cotal down`,
+or `cotal service stop <name> --instance <id> --space <space> --yes` for each one. Its dry run warns
+with that refusal. Completion offers saved definitions without imports or a network request. No hidden connector repair or shared catalog preparation precedes this route.
 
 Multiple names resolve as one selected-space set. All owned targets and process roles are checked
 before effects. After confirmation, the controller reserves every definition in stable order and
@@ -1437,9 +1440,9 @@ normalizes away names one path for every space and is read as that path. The ref
 record by name, path under the root and pid, and its next step names the pids and paths to check.
 It stops, adopts and removes nothing. `--with-agents` on a stopped stack refuses
 `LIFECYCLE_BLOCKED`, because no running manager can stop the agents; start the stack first. Its
-preview, `cotal down --dry-run --with-agents`, shows the no-op. When the stack's last completed
-`down` took `--with-agents`, or the root never started a stack, no agent of it can remain, and
-`--with-agents` reports the same no-op.
+preview, `cotal down --dry-run --with-agents`, shows the no-op and warns with that refusal. When the
+stack's last completed `down` took `--with-agents`, or the root never started a stack, no agent of
+it can remain, and `--with-agents` reports the same no-op.
 
 The legacy bare-stack and manifest apply paths described below are retained. They do not
 accept the new named-service JSON/plain/yes apply receipt flags, except that `--json` and

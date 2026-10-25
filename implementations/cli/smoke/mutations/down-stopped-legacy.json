@@ -16,7 +16,7 @@
     {
       "name": "a stopped legacy root is refused instead of answered",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": "      return nothingRunning(presentationOf(args.values), target, values[\"with-agents\"] === true && values[\"dry-run\"] !== true && started);\n",
+      "find": "      return nothingRunning(presentationOf(args.values), target, values[\"with-agents\"] === true && started, [], values[\"dry-run\"] === true);\n",
       "replace": "",
       "expectRed": "a second bare down of a stopped legacy root says its stack is not running, names cotal up, and exits 0",
       "cell": "a second bare down of a stopped legacy root says its stack is not running, names cotal up, and exits 0",
@@ -34,8 +34,8 @@
     {
       "name": "--with-agents on a stopped stack answers with the no-op",
       "file": "implementations/cli/src/commands/stack-down.ts",
-      "find": "  if (withAgents) throw new CommandFailure(\"refused\", \"LIFECYCLE_BLOCKED\", \"--with-agents needs the stack's running manager",
-      "replace": "  if (withAgents && false) throw new CommandFailure(\"refused\", \"LIFECYCLE_BLOCKED\", \"--with-agents needs the stack's running manager",
+      "find": "  if (agents && !preview) throw agents;",
+      "replace": "  if (agents && !preview && false) throw agents;",
       "expectRed": "--with-agents on the stopped root refuses LIFECYCLE_BLOCKED, because no manager runs to stop its agents",
       "cell": "--with-agents on the stopped root refuses LIFECYCLE_BLOCKED, because no manager runs to stop its agents",
       "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"

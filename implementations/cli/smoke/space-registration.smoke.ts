@@ -38,6 +38,8 @@
  * legacy route, each with its reason, its remedy and exit 2, and the registration is kept. An `up` in
  * a folder other local accounts can write refuses before it writes anything, naming the folder and its
  * parent with one remedy.
+ * Once a started stack is stopped, `down --with-agents` still refuses, and its dry run shows the no-op
+ * and warns with that refusal.
  *
  * Needs `nats-server` on PATH.
  *
@@ -1204,6 +1206,16 @@ if (process.platform === "linux") {
   const stoppedPreview = await json(["down", "--dry-run"], fresh);
   check("--dry-run of the stopped stack shows the same no-op",
     stoppedPreview.status === 0 && stoppedPreview.env?.outcome === "no-op" && stoppedPreview.env.result?.kind === "stack-not-running", shown(stoppedPreview));
+  // The down that stopped it did not take --with-agents, so a real --with-agents still refuses, and
+  // its preview shows the no-op and warns with that refusal.
+  assertSmokeSandboxDown(sandbox, ["down", "--with-agents", "--dry-run", "--json"], { cwd: fresh, env: runEnv });
+  const reapPreview = await json(["down", "--with-agents", "--dry-run"], fresh);
+  assertSmokeSandboxDown(sandbox, ["down", "--with-agents", "--yes", "--json"], { cwd: fresh, env: runEnv });
+  const reap = await json(["down", "--with-agents", "--yes"], fresh);
+  check("down --with-agents --yes of the stopped stack refuses LIFECYCLE_BLOCKED, exit 2", refused(reap, 2, "LIFECYCLE_BLOCKED"), shown(reap));
+  check("its dry run shows the same no-op and warns with that refusal",
+    reapPreview.status === 0 && reapPreview.env?.outcome === "no-op" && reapPreview.env.result?.kind === "stack-not-running" && reapPreview.env.warnings?.length === 1
+      && reapPreview.env.warnings[0].code === "LIFECYCLE_BLOCKED" && reapPreview.env.warnings[0].message === `the real stop would refuse: ${reap.env?.error?.message}; ${reap.env?.error?.remedy}`, shown(reapPreview));
   assertSmokeSandboxDown(sandbox, ["down", "--plain"], { cwd: fresh, env: runEnv });
   const plainAgain = await run(["down", "--plain"], {}, fresh);
   check("--plain of the stopped stack shows the same no-op", plainAgain.status === 0 && /is not running/.test(plainAgain.stdout), shown(plainAgain));
