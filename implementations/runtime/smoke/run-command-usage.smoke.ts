@@ -394,6 +394,19 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     caused.includes("the program gave up outside any step") && !caused.includes("No journal row records why") && caused.includes("cotal service logs stack-manager --space usage"), caused);
   c("one whose status recorded no cause says no journal row records why, and names the manager's log",
     uncaused.includes("No journal row records why this run failed") && uncaused.includes("cotal service logs stack-manager --space usage"), uncaused);
+  // A released status records no reason, as a refused journal append leaves it. The view used to show
+  // only the state; it now says so and names the manager's log, which records each release's reason.
+  const inState = (state: "released" | "running"): string => {
+    const out: string[] = [];
+    const origLog = console.log;
+    console.log = (...a: unknown[]) => { out.push(a.map(String).join(" ")); };
+    try { printRunDetail("usage", { ...view, journal: [], status: { state } as RunStatusView["status"] }, { plain: true }); } finally { console.log = origLog; process.exitCode = 0; }
+    return out.join("\n");
+  };
+  const released = inState("released"), running = inState("running");
+  c("a released run says its status does not record why and names the manager's log",
+    /Recorded state:\s+released/.test(released) && released.includes("its status does not record why") && released.includes("cotal service logs stack-manager --space usage"), released);
+  c("a running run names neither", !running.includes("does not record why") && !running.includes("cotal service logs stack-manager"), running);
 }
 
 // A source file that cannot be read is refused with the path to check.
