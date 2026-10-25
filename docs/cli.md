@@ -6219,6 +6219,11 @@ provisioned for a console session, `PERMISSION_DENIED` for credentials the broke
 `TARGET_UNAVAILABLE` for a broker that does not answer, and `UNSUPPORTED` for a broker without the
 TLS the join requires.
 
+A running join that cannot come back ends the same way, with its reason and its Next. When the
+broker rejects its credential for good, as after `reset space`, it ends with the refusal a one-shot
+command with that credential gets, as `history --follow` does. An open, `--token` or user-auth join
+keeps re-establishing.
+
 ## Manifest deploys
 
 A `cotal.yaml` manifest declares a whole mesh (channels, personas, roles, and ACLs) in one file.
