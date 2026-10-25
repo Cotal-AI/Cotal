@@ -294,7 +294,7 @@ rmSync(linked, { recursive: true, force: true });
   const command = `cotal space create la07 --adopt --root ${brought}`;
   const plain = run(["space", "create", "la07", "--json"], brought);
   check("space create there without --adopt refuses CONFLICT, exit 2, naming the --adopt command",
-    plain.status === 2 && plain.envelope?.error?.code === "CONFLICT" && plain.envelope.error.remedy === `adopt it with ${command}`, shown(plain));
+    plain.status === 2 && plain.envelope?.error?.code === "CONFLICT" && plain.envelope.error.remedy === `adopt it with \`${command}\``, shown(plain));
   const status = run(["status", "--json"], brought), up = run(["up", "--json"], brought);
   check("status there names the same step as up, which adopts it",
     up.status === 2 && (up.envelope?.error?.remedy ?? "").startsWith(`adopt it with \`${command}\`;`) && (status.envelope?.result?.hints ?? []).includes(up.envelope?.error?.remedy ?? "-"), { status: shown(status), up: shown(up) });
