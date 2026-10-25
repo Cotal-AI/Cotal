@@ -240,10 +240,10 @@ function discardOnExit(name: string, handle: AgentHandle, artifacts: readonly st
   watchProvedExit(handle, finish, () => !done);
 }
 
-/** Call `onExit` once the runtime proves `handle`'s child gone, until `watching` turns false. A
- *  handle with no exit stream is polled through `status()` and its `waitForExit` confirms the exit,
- *  so a seat that ends on its own is seen as well as one that is stopped. Returns false when the
- *  handle can do neither, so no exit of its child will ever be seen. */
+/** Call `onExit` once the runtime proves `handle`'s child gone, unless `watching` has turned false
+ *  by then. A handle with no exit stream is polled through `status()` and its `waitForExit` confirms
+ *  the exit, so a seat that ends on its own is seen as well as one that is stopped. Returns false
+ *  when the handle can do neither, so no exit of its child will ever be seen. */
 export function watchProvedExit(handle: AgentHandle, onExit: () => void, watching: () => boolean): boolean {
   let session: AttachSession;
   try {
@@ -251,15 +251,24 @@ export function watchProvedExit(handle: AgentHandle, onExit: () => void, watchin
   } catch {
     return pollProvedExit(handle, onExit, watching, EXIT_POLL_MS);
   }
-  session.onExit(onExit);
+  // The stream and the check below can both report the one exit, so the first ends the watch.
+  let seen = false;
+  let unsubscribe = (): void => {};
+  const exited = (): void => {
+    if (seen) return;
+    seen = true;
+    unsubscribe();
+    if (watching()) onExit();
+  };
+  unsubscribe = session.onExit(exited);
   // A child that exited before the subscription fires no event for it.
-  if (handle.status() === "exited") onExit();
+  if (handle.status() === "exited") exited();
   return true;
 }
 
 /** Call `onExit` once `handle`'s `status()`, read every `pollMs`, says its child exited and its
- *  `waitForExit` confirms it, until `watching` turns false. Returns false when the handle has no
- *  `waitForExit`, so no exit of its child can be proved. */
+ *  `waitForExit` confirms it, unless `watching` has turned false by then. Returns false when the
+ *  handle has no `waitForExit`, so no exit of its child can be proved. */
 export function pollProvedExit(handle: AgentHandle, onExit: () => void, watching: () => boolean, pollMs: number): boolean {
   if (!handle.waitForExit) return false;
   let waiting = false;
@@ -275,7 +284,7 @@ export function pollProvedExit(handle: AgentHandle, onExit: () => void, watching
     proof.then(
       () => {
         clearInterval(poll);
-        onExit();
+        if (watching()) onExit();
       },
       () => {
         waiting = false;
