@@ -29,7 +29,7 @@
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { createConnection } from "node:net";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
@@ -332,6 +332,26 @@ try {
   }
   ok("all pid files removed by down", [join(root, ".cotal", "nats.pid"), record(DELIVERY_PIDFILE), record(MANAGER_PIDFILE)].every((f) => !existsSync(f)));
   ok("all three processes are dead + broker port closed", dead, pids.filter(alive));
+
+  // A space named after its folder keeps its registration after down, so another folder of the same
+  // name is refused and does not take the name over, and a bare up starts it again on the retained
+  // launcher, where the registration would otherwise have sent it to the controller stack.
+  const keptFile = join(home, "meshes", `space.${Buffer.from(SPACE).toString("hex")}.json`);
+  const kept = existsSync(keptFile) ? JSON.parse(readFileSync(keptFile, "utf8")) as { root: string; server: string } : undefined;
+  ok("down keeps the registration of a space named after its folder", kept?.root === realpathSync(root) && kept.server === SERVER, kept);
+  const twin = join(mkdtempSync(join(tmpdir(), "cotal-upstack-twin-")), SPACE);
+  mkdirSync(twin);
+  const twinUp = cliIn(twin, "up", "--detach", "--server", `nats://127.0.0.1:${await freePort()}`);
+  if (twinUp.status === 0) cliIn(twin, "down");
+  ok("a bare up in another folder of the same name refuses CONFLICT, exit 2, naming this one, and writes nothing",
+    twinUp.status === 2 && /Code:\s+CONFLICT/.test(plain(twinUp.stderr)) && plain(twinUp.stderr).includes(`"${SPACE}" is already registered at ${SERVER} for ${realpathSync(root)}`) && !existsSync(join(twin, ".cotal")), twinUp.stdout + twinUp.stderr);
+  rmSync(resolve(twin, ".."), { recursive: true, force: true });
+  const restart = cli("up", "--detach", "--server", SERVER);
+  if (existsSync(join(root, ".cotal", "nats.pid"))) pids.push(pidOf("nats.pid"));
+  ok("a bare up starts it again on the retained launcher, with no stack journal",
+    restart.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: cotal down$/m.test(plain(restart.stdout)) && !existsSync(join(root, ".cotal", "stack-controller.json")),
+    restart.stdout + restart.stderr);
+  ok("its down exits 0", cli("down").status === 0);
 
   // Open mode in the SAME root retains static-auth files from the prior boot. Reporting follows the
   // effective live mode, not stale on-disk auth material: broker + manager, never delivery/auth-service.

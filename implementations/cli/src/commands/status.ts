@@ -1242,12 +1242,16 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
   const preflight = await preflightTarget(target);
   if (!preflight.ok) {
     // A `--server` address that is not the one recorded for the space says nothing about whether its
-    // stack runs, so Next names that address as the refusal of other commands does.
-    if (preflight.kind === "unreachable" && (target.source === "flag-server" || target.source === "flag-space-override") && target.recordedServer !== target.server) {
-      const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target, pruned: preflight.prune });
+    // stack runs, so Next names that address as the refusal of other commands does. A stopped stack
+    // this machine started keeps its registration, as a connect keeps it, so Next names the `up` that
+    // starts it again rather than a registration to repair.
+    const flagged = (target.source === "flag-server" || target.source === "flag-space-override") && target.recordedServer !== target.server;
+    const offline = preflight.kind === "unreachable" && !flagged && target.origin === "up";
+    if (preflight.kind === "unreachable" && (flagged || offline)) {
+      const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target, pruned: !offline && preflight.prune });
       hints.push(remedy === undefined ? message : `${message}; ${remedy}`);
     }
-    return { ...base, connection: preflight.kind, ...(preflight.pid === undefined ? {} : { brokerPid: preflight.pid }), staleRecord: preflight.prune, snapshot: { state: "skipped", reason: "broker not connected" } };
+    return { ...base, connection: preflight.kind, ...(preflight.pid === undefined ? {} : { brokerPid: preflight.pid }), staleRecord: preflight.prune && !offline, snapshot: { state: "skipped", reason: "broker not connected" } };
   }
   // The mesh-level statement of the same axis (#1576). The folder section says what this machine's
   // delivery PROCESS is doing; this says whether the SPACE currently has a bound responder, which is

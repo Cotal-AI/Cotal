@@ -38,6 +38,7 @@ import {
   readPreservationPrepareIntent,
   readStoreIdentity,
   recordPreservationManagerCommit,
+  keepsRegistration,
   releaseMaintenanceLock,
   removeMeshesByRoot,
   sameStoreIdentity,
@@ -541,10 +542,13 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   }
 
   // The broker owns the mesh registry entry and transient whole-mesh launch material, so they go
-  // with it.
+  // with it. A space named after its own folder keeps its registration, as a controller stack keeps
+  // its prepared record, so the name stays this folder's while it is stopped and another folder's
+  // bare `up` cannot take it. `space forget` frees it.
   if (selected.some((component) => component.clearsMesh)) {
-    rmSync(join(folderCtx().root, ".cotal", "run"), { recursive: true, force: true });
-    removeMeshesByRoot(folderCtx().root);
+    const root = folderCtx().root;
+    rmSync(join(root, ".cotal", "run"), { recursive: true, force: true });
+    removeMeshesByRoot(root, undefined, localMeshesForRoot(root).find(keepsRegistration)?.space);
   }
   if (!any) {
     console.error(c.red("Nothing running for the local stack (no recorded pidfiles)."));

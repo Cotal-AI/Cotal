@@ -641,7 +641,9 @@ project, and `up` names its space after the folder, the name `cotal up --space <
 give it. A folder name that is not a valid space name, such as one with a space in it, refuses
 `USAGE_INVALID`, exit 1. A name another folder on this machine registered or prepared, running or
 stopped, refuses `CONFLICT`, exit 2, and is not taken over. Both refusals write nothing and name
-`cotal up --space <name>`. A second `up` in the same folder
+`cotal up --space <name>`. A space named after its folder keeps its registration after `cotal down`,
+so the name stays the folder's while it is stopped. `cotal up` there starts it again on the same
+launcher, and `cotal space forget <name>` frees the name. A second `up` in the same folder
 runs the same space again. A folder whose stack and registrations name more than one space refuses
 with `CONFLICT` and asks for `--space`. With no
 `--server`, a fresh local stack selects a free port if the default address is occupied or
@@ -963,9 +965,11 @@ validate is refused `SCHEMA_INVALID`, exit 1, naming each problem, and a file it
 refused `USAGE_INVALID`, exit 1. A valid manifest is refused `UNSUPPORTED`, exit 2, and the remedy
 names only the flag to omit. A legacy root is one with no stack journal that is neither prepared nor
 registered for the controller, such as a folder an earlier release started and a normal `down` then
-unregistered. Plain `cotal up` there starts it again on its retained launcher, with its identity,
-store and history. Its `down` drops the registration that kept the broker address, so with no
-`--server` or `--host` it starts at the address in the broker configuration its last start rendered
+unregistered, or a new project a bare `up` started. Plain `cotal up` there starts it again on its
+retained launcher, with its identity, store and history. Its `down` drops the registration that kept
+the broker address, unless the space is named after its folder: that registration stays, and it does
+not move the folder to the controller stack. Without a registration, and with no `--server` or
+`--host`, it starts at the address in the broker configuration its last start rendered
 there, and in open mode when that start was open and no mode is asked for, and says so in one line.
 An open root holds no account to name its space, so the broker configuration its last start rendered
 names it, and plain `cotal up` starts that space again. A configuration an earlier release rendered
@@ -1133,7 +1137,8 @@ Its next write records all four roles. It neither adopts legacy processes nor co
 A repair `up` on a mesh whose broker died reopens the store its record names, and refuses a
 different `--store-dir` rather than silently opening a second store. `down` drops that record, so a
 later start without `--store-dir` reads the store its last broker served from the broker config `up`
-wrote. When that store is not the default `.cotal/nats` and still holds JetStream data while the
+wrote. A space named after its folder keeps the record, so its next start reopens the store the record
+names. When that store is not the default `.cotal/nats` and still holds JetStream data while the
 default store holds none, such as after `backup restore --store-dir`, the start refuses `CONFLICT`
 (exit 2) and names it. Pass `--store-dir <dir>` to reopen it, or remove it with
 `cotal clean store --force`. While that store holds data, a
@@ -1930,7 +1935,8 @@ with the record's pid. A member that exited without a recorded stop, as after a 
 settled by `cotal down --yes`: it finds the member gone and records it as already stopped, and the
 reset then accepts it. Only a member that no completed `down` recorded that way needs `cotal up` and
 then `cotal down --yes`. A legacy root has no stack journal, and its `down` drops the registration
-a reset selects, so no reset reaches it once stopped. There the step after `cotal down` is
+a reset selects, so no reset reaches it once stopped. A space named after its folder keeps that
+registration, so a reset reaches it stopped. For any other legacy root, the step after `cotal down` is
 `cotal clean store --force` from its root for `reset store`, or `cotal clean all --force` for
 `reset space`, with `--store-dir <dir>` when the registration records a custom store. Once stopped,
 such a space has no record here, like a mistyped name, so a reset of either refuses
@@ -2664,7 +2670,8 @@ the broker, and keeps the files under its root. It refuses a space this machine 
 `LIFECYCLE_BLOCKED`, because `cotal down` stops it, and a discovered space with `CONFLICT`, because
 its catalog keeps it. A stack `cotal up` started stays a prepared space at its root after that
 `down`, so the refusal names `cotal down` and then `space forget` again. A legacy root's `down` drops
-the record, and the refusal says so. A space whose root holds its stack journal counts as
+the record, and the refusal says so, unless the space is named after its folder: that `down` keeps the
+record, and the refusal names `space forget` again. A space whose root holds its stack journal counts as
 running while any stack member's process may still run. The refusal names one such member and
 writes nothing: the registration, the selection and the root's files stay. A member whose process
 is gone without its stop receipt does not block, and the result warns with `STACK_MEMBER_UNSETTLED`
@@ -2846,7 +2853,9 @@ refused with `TARGET_UNAVAILABLE`, exit 2, naming the broker the journal recorde
 command never dials the default address instead. `status` there reads the machine, selects no space
 and probes no broker. A legacy root after its `down`, which drops its registration, is refused the
 same way, naming the address in the broker configuration its last start rendered and the bare
-`cotal up` there that starts it at that address again.
+`cotal up` there that starts it at that address again. A space named after its folder keeps its
+registration, so a command there is refused `TARGET_UNAVAILABLE` naming that root and `cotal up`, and
+`status` names the same step.
 
 A copied or moved project folder keeps a stack journal that names the folder it was recorded in.
 `space create <name>` there refuses `CONFLICT`, exit 2, and names `cotal space create <name> --adopt
