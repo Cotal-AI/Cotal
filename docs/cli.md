@@ -2605,8 +2605,9 @@ there that finds no broker at the default address says that no space is register
 the folder and names the same step. That refusal has no `Mesh:` line, and its `target` names only
 the folder, because no space was resolved there.
 
-A command given `--server` dials only that address. When nothing answers there and it is not the
-address this machine records for the space, the `TARGET_UNAVAILABLE` refusal says that nothing
+A command given `--server` dials only that address. In open or static-auth mode, when nothing
+answers there and it is not the address this machine records for the space, the
+`TARGET_UNAVAILABLE` refusal says that nothing
 answered at the address `--server` named, and does not call the space's mesh stopped. From the
 space's root, or with `--space`, its Next names the broker recorded for the space and says to drop
 `--server` to reach it; elsewhere it says to check the address. The recorded broker is never dialed
