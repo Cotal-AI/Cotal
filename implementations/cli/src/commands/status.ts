@@ -1426,7 +1426,7 @@ function folderSection(f: StatusResult["folder"], selected: SelectedResult): Sec
   const cwd = canonicalRoot(process.cwd());
   if (cwd !== canonicalRoot(f.root) && (canonicalRoot(f.root) === canonicalRoot(homedir()) || canonicalRoot(join(f.root, ".cotal")) === canonicalRoot(homeCotalDir())))
     rows.push(["root selection", homeHoldsStack(f.root)
-      ? cell("inherited the machine's home .cotal, which holds a stack; unqualified up refuses before starting there. Prepare this folder with space create <space> --root . before starting it", "waiting")
+      ? cell("inherited the machine's home .cotal, which holds a stack; commands here reach that stack until up here makes this folder its own project root", "hint")
       : cell("inherited the machine's home .cotal; up here makes this folder its own project root", "hint")]);
   const auth = f.auth;
   if (auth.state === "unreadable") rows.push(["auth", cell(auth.error ?? "unreadable", "failed")]);

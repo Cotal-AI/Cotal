@@ -19,8 +19,9 @@
  * prepared folder, as the short classified report with an example on the port passed. In the home
  * folder, whose `.cotal` holds the machine's own records, `up` refuses CONFLICT and writes nothing
  * there, and `down` and `down --dry-run` there find no stack. A fresh folder under the home makes its
- * own `.cotal` on a bare `up`, and removes it when a later check refuses, while `up -f` there, or `up`
- * under a home that holds a stack, refuses CONFLICT and writes nothing. A bare `up` in a new project
+ * own `.cotal` on a bare `up`, and removes it when a later check refuses, under a home that holds a
+ * stack as well, leaving that home's records as they were, while `up -f` there refuses CONFLICT and
+ * writes nothing. A bare `up` in a new project
  * names its space after the folder: two sibling folders get their own names, `--space` and a project
  * above the folder keep theirs, and a folder name that is no valid space name, a name another folder
  * holds, or a selection whose folder was moved refuses before anything is written. A bare `up` whose
@@ -211,8 +212,8 @@ const homePreview = run(["down", "--dry-run", "--json"], home);
 check("down --dry-run in a home with no stack is TARGET_NOT_FOUND, nothing to preview, and names `cotal up` in a project", homePreview.status === 2 && homePreview.envelope?.error?.code === "TARGET_NOT_FOUND" && /no stack started or registered, so there is nothing to preview/.test(homePreview.envelope.error.message ?? "") && homePreview.envelope.error.remedy === "run `cotal up` in a project", shown(homePreview));
 
 // A fresh folder under the home, whose only .cotal above it is the home's, becomes its own project
-// root on a bare up. A run refused before it writes there leaves the folder as it was. A manifest
-// start there, or any start under a home that holds a stack, still needs a prepared folder.
+// root on a bare up, also under a home that holds a stack. A run refused before it writes there leaves
+// the folder as it was. A manifest start there still needs a prepared folder.
 if (process.platform !== "win32") {
   mkdirSync(join(home, ".cotal"), { recursive: true, mode: 0o700 });
   const nested = join(home, "Desktop", "fresh");
@@ -226,13 +227,19 @@ if (process.platform !== "win32") {
   const prepare = "prepare this folder with cotal space create <space> --root ., then run cotal up again from this folder";
   const manifestUp = run(["up", "-f", "cotal.yaml", "--json"], nested);
   check("up -f there still refuses CONFLICT, exit 2, naming space create and up from the folder, and writes nothing", manifestUp.status === 2 && manifestUp.envelope?.error?.code === "CONFLICT" && manifestUp.envelope.error.message === inherited && manifestUp.envelope.error.remedy === prepare && !existsSync(nestedRecords), shown(manifestUp));
-  const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+  const { findMesh, recordMesh, removeMesh } = await import("@cotal-ai/workspace");
   process.env.COTAL_HOME = join(home, ".cotal");
   recordMesh({ space: "homestack", server: "nats://127.0.0.1:1", root: home, mode: "auth", ts: new Date().toISOString() });
-  const holdsUp = run(["up", "--server", "nats://127.0.0.1:1", "--json"], nested);
+  const homeEntry = JSON.stringify(findMesh("homestack"));
+  const holdsUp = run(["up", "--runtime", "nosuch", "--server", "nats://127.0.0.1:1", "--json"], nested);
+  const holdsManifest = run(["up", "-f", "cotal.yaml", "--json"], nested);
+  const homeAfter = JSON.stringify(findMesh("homestack"));
   removeMesh("homestack");
   delete process.env.COTAL_HOME;
-  check("under a home that holds a stack, a bare up there refuses the same way and writes nothing", holdsUp.status === 2 && holdsUp.envelope?.error?.code === "CONFLICT" && holdsUp.envelope.error.message === inherited && holdsUp.envelope.error.remedy === prepare && !existsSync(nestedRecords), shown(holdsUp));
+  check("under a home that holds a stack, a bare up there starts the folder's own space and reaches its own checks",
+    holdsUp.status === 2 && holdsUp.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && holdsUp.envelope.target?.space === "fresh" && holdsUp.envelope.target.root === realpathSync(nested), shown(holdsUp));
+  check("it removed the .cotal it made and left the home's registration and records as they were", !existsSync(nestedRecords) && homeAfter === homeEntry && homeWrites().length === 0, { homeEntry, homeAfter, writes: homeWrites() });
+  check("up -f there still refuses CONFLICT the same way", holdsManifest.status === 2 && holdsManifest.envelope?.error?.code === "CONFLICT" && holdsManifest.envelope.error.message === inherited && holdsManifest.envelope.error.remedy === prepare && !existsSync(nestedRecords), shown(holdsManifest));
 }
 
 // A bare up in a new project names its space after the folder. `--runtime nosuch` stops each start

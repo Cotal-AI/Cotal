@@ -549,13 +549,12 @@ function upHostProblem(host: string | undefined, server: string | undefined): { 
 }
 
 /** The invoking folder, when a bare `up` makes it its own project root: the only `.cotal` above it is
- *  the machine home's, and that home holds no stack. The folder has no records of its own, so `up`
- *  starts it as it starts a folder with no `.cotal` above it. A manifest or a restore still needs a
- *  prepared folder. */
+ *  the machine home's. The folder has no records of its own, so `up` starts it as it starts a folder
+ *  with no `.cotal` above it. A stack an earlier release started in the home is left as it is and
+ *  still starts from the home. A manifest or a restore still needs a prepared folder. */
 function freshFolderRoot(values: ParsedArgs["values"]): string | undefined {
   if (values.root !== undefined || values.file !== undefined || values.restore !== undefined) return undefined;
-  const home = inheritedMachineHomeRoot();
-  return home !== undefined && !homeHoldsStack(home) ? resolve(process.cwd()) : undefined;
+  return inheritedMachineHomeRoot() !== undefined ? resolve(process.cwd()) : undefined;
 }
 
 /** The space a bare `up` starts in a new project: the name of the project folder, when no `--space`

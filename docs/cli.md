@@ -618,10 +618,12 @@ any directory can find it; `--detach` explicitly names the same mode. `--foregro
 native stack in this terminal. A contradictory mode pair refuses before setup or seed work. In a
 folder whose only `.cotal` above it is the machine's home one, such as a new folder in your home
 folder, a bare `up` makes the folder's own `.cotal` and starts the stack there, as it does in a folder
-with no `.cotal` above it. A run refused before it writes there removes that `.cotal` again. There,
-`up -f` and `up --restore`, and any `up` while the home holds a stack an earlier release started,
-refuse `CONFLICT` before anything is written: prepare the folder with `space create <space> --root .`,
-then run `up` again from it. In the home folder
+with no `.cotal` above it, and a run refused before it writes there removes that `.cotal` again.
+When the home holds a stack an earlier release started there, the folder starts its own stack beside
+it. The home's stack keeps running and keeps its records, and commands in the folder reach the
+folder's own stack from then on. In such a folder,
+`up -f` and `up --restore` refuse `CONFLICT` before anything is written: prepare the folder with
+`space create <space> --root .`, then run `up` again from it. In the home folder
 itself, whose `.cotal` holds this machine's own records, `up` refuses `CONFLICT` and names a project
 folder, as `space create` does there. In a folder that is, or is in, a control directory, `up`
 refuses `CONFLICT` before anything is started or written and names the project folder to run it from. A home that already holds a stack an earlier release started
@@ -2912,8 +2914,8 @@ prove which resources changed. This read grants neither retry nor stop
 authority. A fresh summary that names another folder, as one does after its folder was moved or
 copied, is listed with its recorded path and is not counted as unreadable. If the folder inherits
 the machine's home `.cotal`, `status --verbose` says that `up` there makes the folder its own project
-root. When the home holds a stack an earlier release started there, it says that unqualified `up`
-refuses instead, and names `space create <space> --root .` to prepare the folder first.
+root. When the home holds a stack an earlier release started there, it also says that commands in the
+folder reach that stack until then.
 
 A prepared space whose controller stack ran and was stopped reads as stopped, with its last
 operation and how it ended, such as `cotal down, completed`, and Next names `cotal up` in its root.
