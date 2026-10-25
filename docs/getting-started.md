@@ -60,7 +60,8 @@ Requirements:
   schedules and per-message TTLs, and fails loud at connect against an older broker). The
   one that ships with the package is new enough. If you already have `nats-server` on your
   PATH, Cotal uses that instead, and `cotal up` refuses one older than 2.12, naming its path
-  and version. `cotal status` shows which one Cotal will run.
+  and version. One in a folder other accounts can write, such as a Homebrew install on macOS,
+  gives way to the one that ships with the package. `cotal status` shows which one Cotal will run.
   A presence bucket created file-backed by an older Cotal needs 2.14.5 or newer, and `cotal up`
   names the broker when it is older. Cotal now creates that bucket in memory, which needs no
   newer broker.
