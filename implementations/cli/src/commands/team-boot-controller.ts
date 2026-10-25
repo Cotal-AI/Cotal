@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolveAuthProvider, type BrokerTransport } from "@cotal-ai/core";
 import {
-  CommandFailure, acquireMaintenanceLock, getCurrent, isCommandFailure, readMaintenanceJournal, releaseMaintenanceLock,
+  CommandFailure, acquireMaintenanceLock, codeSpan, getCurrent, isCommandFailure, readMaintenanceJournal, releaseMaintenanceLock,
   workspaceSecretStore, writeResult, type Report,
 } from "@cotal-ai/workspace";
 import { buildLaunchSpec, genRunId, manifestToChannels, writeLaunchSpec } from "../lib/manifest/apply.js";
@@ -96,7 +96,7 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
     // A stack whose last operation started it is up. Say so before the resume checks name the stop
     // it lacks, and offer the route that adds a manifest to a running stack.
     if (recorded.space === request.space && recorded.operation.kind === "up" && recorded.operation.phase === "completed")
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `"${request.space}" is already up at this root and no cotal down has stopped it; a team boot starts only a stopped stack, so nothing was booted`, { target: { root: recorded.root, space: request.space, operation: recorded.operation.id }, remedy: `add this manifest's channels and agents to the running stack with \`cotal team deploy ${shellWord(request.file)}\`, or stop it with \`cotal down\` before a team boot` });
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `"${request.space}" is already up at this root and no cotal down has stopped it; a team boot starts only a stopped stack, so nothing was booted`, { target: { root: recorded.root, space: request.space, operation: recorded.operation.id }, remedy: `add this manifest's channels and agents to the running stack with ${codeSpan(`cotal team deploy ${shellWord(request.file)}`)}, or stop it with \`cotal down\` before a team boot` });
     binding = stackResumeEligibility(recorded.root, request.space, { server: recorded.server, mode: recorded.mode });
     plan = await prepareResumeTeamBoot(request.file, { space: request.space, transport: request.transport, recorded: { server: binding.server, mode: binding.mode, ...(binding.broker.host ? { host: binding.broker.host } : {}) } });
   }

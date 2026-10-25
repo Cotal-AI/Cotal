@@ -2,6 +2,7 @@ import { boundedValue } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "./broker-display.js";
 import { userCotalDir } from "./mesh-registry.js";
 import { shellPath } from "./protected-records.js";
+import { codeSpan } from "./text-wrap.js";
 import { MIN_FILE_STORE, type MeshTarget, type MeshTargetError } from "./mesh-target.js";
 import { SHOWN_VALUE_MAX } from "./output.js";
 import type { PreflightFailure } from "./preflight.js";
@@ -102,7 +103,7 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         return parts(`the stack journal in ${d.root} was recorded at ${d.recordedRoot}, so this folder is a copy or was moved from there`, d.stackRemedy);
       if (d.lastRun) return parts(`the mesh in ${d.root} last ran at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid address"}, and no space is registered for it here`, `start it again with \`cotal up\` in ${d.root}`);
       return d.home === undefined
-        ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with \`cotal space create ${d.stackSpace ?? "<space>"} --root ${shellPath(d.root!)}\`, then start it with \`cotal up\` there`)
+        ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with ${codeSpan(`cotal space create ${d.stackSpace ?? "<space>"} --root ${shellPath(d.root!)}`)}, then start it with \`cotal up\` there`)
         : parts(`the stack in ${d.root} recorded ${broker} and runs under another Cotal home; ${d.home} holds no record of its members`, stackHomeRemedy());
     }
     case "user-auth-unrecorded":
