@@ -1042,7 +1042,10 @@ missing manager waits for that process to come up, then says so with its pid (`â
 background: manager (pid N)`). A manager that `up` starts and that exits at boot instead is reported
 as `! control plane degraded:` with the path of its log, and `up` then exits nonzero, whether it was a
 refresh, a first `--detach` boot or `up -f`. The same happens when another
-`cotal supervise` takes over the manager pidfile before the started process comes up. A legacy
+`cotal supervise` takes over the manager pidfile before the started process comes up. Manager
+record-loss errors name the pidfile that was read. Auth-service readiness errors keep the provider's
+reason and name the pidfile used for the wait, even if a pre-upgrade spelling appears or the record
+moves during the wait. A legacy
 refresh that finds everything already running prints only the `âœ“ mesh "<space>" already running`
 line. A controller refresh prints its members under `Controller stack already running`, and its JSON
 result is a no-op unless it wrote the default persona. Neither lists a role the stack's mode does not use, such as auth on a

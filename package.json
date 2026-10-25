@@ -678,6 +678,7 @@
     "smoke:managed-agent-runtime:auth": "tsx implementations/auth/smoke/managed-agent-runtime.smoke.ts",
     "smoke:managed-retire-door:auth": "tsx implementations/auth/smoke/managed-retire-door.smoke.ts",
     "smoke:auth-pidfile": "tsx implementations/cli/smoke/auth-pidfile.smoke.ts",
+    "smoke:post-start-pidpath": "node --experimental-test-module-mocks --experimental-strip-types implementations/cli/smoke/post-start-pidpath.smoke.ts",
     "smoke:retirement-cleaner:auth": "tsx implementations/auth/smoke/retirement-cleaner-confinement.smoke.ts",
     "smoke:retirement-wedge:auth": "tsx implementations/auth/smoke/retirement-wedge.smoke.ts",
     "smoke:d32-matrix:auth": "tsx implementations/auth/smoke/d32-matrix.smoke.ts",

@@ -191,9 +191,9 @@ function startAuthServiceDetached(space: string, server: string, command: string
  *  claimed slot yielded to), else the live pid authServiceUp found in the pidfile. 0 means a
  *  spawn was attempted but nothing was claimed — the wait stays clock-only rather than binding
  *  to a pid nobody can attribute. */
-function authServiceWaitPid(space: string, launched: number | undefined): number | undefined {
+function authServiceWaitPid(pidPath: string, launched: number | undefined): number | undefined {
   if (launched !== undefined && launched > 0) return launched;
-  const raw = readPidfile(readPidPath(space));
+  const raw = readPidfile(pidPath);
   if (raw === undefined) return undefined;
   const pid = parsePid(raw);
   return pid !== undefined && probeLiveness(pid) === "alive" ? pid : undefined;
@@ -219,11 +219,14 @@ export async function ensureAuthService(opts: {
 }): Promise<Record<string, unknown>> {
   let launched: number | undefined;
   if (!authServiceUp(opts.space)) launched = startAuthServiceDetached(opts.space, opts.server, opts.prepared.service.command, opts.extraArgs);
-  const pid = authServiceWaitPid(opts.space, launched);
+  // A launch writes the canonical slot; otherwise keep the spelling the readiness pid is read from.
+  const pidPath = launched !== undefined && launched > 0 ? PID_PATH(opts.space) : readPidPath(opts.space);
+  const pid = authServiceWaitPid(pidPath, launched);
+  const logPath = LOG_PATH(opts.space);
   try {
     return await opts.prepared.service.ready({ dir: opts.stateDir, pid });
   } catch (e) {
-    throw new Error(`${e instanceof Error ? e.message : String(e)} - the daemon's pid is recorded at ${readPidPath(opts.space)}, its log is at ${LOG_PATH(opts.space)}`);
+    throw new Error(`${e instanceof Error ? e.message : String(e)} - the daemon's pid is recorded at ${pidPath}, its log is at ${logPath}`);
   }
 }
 
