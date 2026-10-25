@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/cli": patch
+"@cotal-ai/connector-core": patch
 ---
 
 `cotal status` in the folder of a static-auth stack whose broker or manager exited now puts
