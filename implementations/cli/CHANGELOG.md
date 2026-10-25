@@ -1,5 +1,29 @@
 # @cotal-ai/cli
 
+## 0.101.2
+
+### Patch Changes
+
+- 9acfc57: A manager command such as `cotal ps`, `cotal stop` or `cotal spawn --on`, and `cotal send` with the other commands that open a one-shot connection, now connects again when the broker refuses the connection or it does not open within 5 seconds: nothing was sent, so up to 4 attempts are made 1 second apart. A view the auth service refused for a moment, or an auth service that answered after the broker's callout timeout, now just works. These commands used to stop at the first refusal, or wait 20 seconds and end as `OPERATION_UNKNOWN` (exit 3) with a bare `timeout`. When every attempt fails, the command says nothing was sent and is refused, exit 2: `PERMISSION_DENIED` when the broker refused each attempt and `TARGET_UNAVAILABLE` when none opened in time. An endpoint takes a `transportConnectTimeoutMs` option for its first connect.
+- 427f28b: `cotal up` now refuses `CONFLICT`, exit 2, when its address is one that a space registered for
+  another folder keeps while stopped, naming that space and folder, and starts nothing. It used to start
+  there, after which that stack's `down` refused and a read in the other folder deleted that space's
+  registration. A takeover of that space's name is unchanged.
+- e4c73d5: Keep self-update installation and reconciliation running safely after Ctrl-C, then exit with the interruption status once the package tree is usable.
+- 427f28b: A second bare `cotal down` in a stopped project whose space is named after its folder now reports
+  that the stack there is not running, names `cotal up`, and exits 0. Since that space keeps its
+  registration after `down`, it exited 1 with only "Nothing running for the local stack (no recorded
+  pidfiles)." and no next step.
+- 427f28b: A command in a project folder whose stack is stopped with no registration, as after the `down` of a
+  space not named after its folder or in a moved project, now refuses `TARGET_UNAVAILABLE` with another
+  space selected too, naming the space its account names and `cotal up` there. It used to reach the
+  selected space, so `send` stored the message there and `ps` listed that space's manager.
+- Updated dependencies [9acfc57]
+- Updated dependencies [d57e596]
+- Updated dependencies [427f28b]
+  - @cotal-ai/core@0.101.2
+  - @cotal-ai/workspace@0.101.2
+
 ## 0.101.1
 
 ### Patch Changes
