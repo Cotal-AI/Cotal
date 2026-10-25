@@ -477,8 +477,9 @@ const SEAMS: Seam[] = [
   // Manager-selection refusals (19ba7099f) add three smoke-side connections in
   // manager/smoke/manager-selection-refusals, a persona owner for a static caller (8d81c1209) adds
   // one seat connection in manager/smoke/manager-service-ops, and refusing an unadmitted run revoke
-  // (5961162f9) adds one run-admitter read in runtime/smoke/run-command. Those five dial a loopback
-  // broker the suite starts without TLS, and each states `tls: false`.
+  // (5961162f9) adds one run-admitter read in runtime/smoke/run-command. All six smoke-side calls,
+  // the space-teardown-live one included, dial a loopback broker their suite starts without TLS,
+  // and each states `tls: false`.
   { fn: "standaloneConnectOpts", key: "tls", sites: 320, untypecheckedSites: 243 },
 ];
 
