@@ -4739,8 +4739,8 @@ lists the definitions, their instances and the installed presets. Nothing starts
 you: starting the manager does not start its broker. `--json` writes one envelope for every form,
 and `logs --follow --json` writes one record per line. `logs` refuses a log file this account
 cannot read with `PERMISSION_DENIED` (exit 2), naming the file and `chmod u+rw`, quoted when a
-shell would split the path, and reads and changes nothing. With `--follow` the refusal is the
-stream's `error` record, which carries that step as `remedy`, and the stream ends.
+shell would split the path. The failed read changes no permissions or service state. With `--follow`
+the refusal is the stream's `error` record, which carries that step as `remedy`, and the stream ends.
 
 ### Adding a service
 

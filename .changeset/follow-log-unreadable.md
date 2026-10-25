@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/cli": patch
+"@cotal-ai/connector-core": patch
 ---
 
 `service logs --follow` on a log this account cannot read now ends with a `PERMISSION_DENIED` error
