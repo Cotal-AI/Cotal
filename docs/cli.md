@@ -1654,12 +1654,16 @@ process start reported by the OS. Every stop path, including `down` for the brok
 extension components, and the manager, delivery and auth-service stops, applies the same rule. A pin
 that names a different start means the pid was reused, so teardown refuses and preserves it. A
 controller stack's bare `down` signals no such record, so it removes it, as described above. A torn
-or unreadable pin also refuses. macOS start tokens keep their spaces, including the padded day,
-in both the identity pin and the one-shot shutdown intent. A single record cannot span lines.
+or unreadable pin also refuses. On macOS, the reader calls `sysctl` through a bundled Node-API
+binding for x64 or arm64 and records the process start in microseconds. A macOS pin that an earlier
+release wrote holds the `ps -o lstart` start date instead and is verified with that same reader. That
+date keeps its spaces, including the padded day, in both the identity pin and the one-shot shutdown
+intent. A single record cannot span lines.
 On Windows, the reader calls `GetProcessTimes` through a bundled Node-API binding for x64 or
 arm64. It requests limited process-query access and preserves the creation FILETIME as a decimal
 string. It launches no subprocess. Access denial leaves identity unverified; an unreadable pin
-still refuses teardown. A missing or damaged binding is an installation error and has no fallback.
+still refuses teardown. On either platform, a missing or damaged binding is an installation error
+and has no fallback.
 
 The pidfile and its pin are published by renames, and the pidfile rename is the commit point. Just
 before it, the pin holds two lines: the old process's and the new one's. A launcher that dies

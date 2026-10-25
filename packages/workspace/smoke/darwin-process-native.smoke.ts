@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { darwinProcessBinding } from "../src/darwin-process.js";
+import { processStartToken as lstartReader } from "../src/advisory-lock.js";
+import { assertRecordIdentity, defaultStartToken, identityPinPath, processGroupMembers, processGroupOf, processStopped, verifyIdentityPin, writePidPair } from "../src/pid.js";
 
 assert.equal(process.platform, "darwin", "this suite requires a native macOS runner");
 const native = darwinProcessBinding();
@@ -68,6 +70,31 @@ try {
     /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(host.boot) && host.boot === boot && native.hostIdentity().boot === boot, { host, boot });
   check("D12 arguments that are not process IDs read as absent",
     [0, -1, 1.5, NaN, Infinity, 0x80000000].every((pid) => native.processInfo(pid) === undefined && native.groupMembers(pid) === undefined));
+
+  // The identity contract every stop path uses reads the native microsecond token on macOS.
+  check("D16 the default start token is the native microsecond token", defaultStartToken(process.pid) === self!.token);
+  const pidPath = join(root, "self.pid");
+  writePidPair(pidPath, process.pid);
+  const pin = verifyIdentityPin(pidPath);
+  check("D17 a pin written now matches its process, and a changed token is a mismatch",
+    pin.kind === "match" && pin.record.token === self!.token && assertRecordIdentity({ pid: process.pid, token: String(BigInt(self!.token) + 1n) }).kind === "mismatch", pin);
+  const lstartToken = lstartReader(process.pid);
+  const legacyPath = join(root, "legacy.pid");
+  writeFileSync(legacyPath, String(process.pid));
+  writeFileSync(identityPinPath(legacyPath), `${process.pid} ${lstartToken}\n`);
+  const legacy = verifyIdentityPin(legacyPath);
+  check("D18 a pin an earlier release wrote with the lstart date still matches its process", lstartToken !== undefined && !/^\d+$/.test(lstartToken) && legacy.kind === "match", { lstartToken, legacy });
+  const group = spawn("/bin/sh", ["-c", "/bin/sleep 300 & exec /bin/sleep 300"], { detached: true, stdio: "ignore" });
+  children.push(group);
+  let listed: number[] = [];
+  for (let i = 0; i < 50 && listed.length < 2; i++) { await sleep(100); listed = processGroupMembers(group.pid!); }
+  process.kill(group.pid!, "SIGSTOP");
+  let paused = false;
+  for (let i = 0; i < 50 && !paused; i++) { await sleep(50); paused = processStopped(group.pid!); }
+  process.kill(group.pid!, "SIGCONT");
+  check("D19 the shared group and stopped readers answer on macOS",
+    processGroupOf(group.pid!) === group.pid && listed.length === 2 && listed.includes(group.pid!) && paused && processGroupOf(done.pid!) === undefined, { listed, paused });
+  process.kill(-group.pid!, "SIGKILL");
 
   const workspace = fileURLToPath(new URL("..", import.meta.url));
   const relocated = join(root, "installation with spaces");

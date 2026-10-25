@@ -35,9 +35,10 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  defaultStartToken, formatRecord, identityPinPath, identityStartToken, parsePid, parseRecord,
-  parseWin32CreationToken, verifyIdentityPin, win32ProcessCreationToken, writeIdentityPin, writePidPair, type RecordReplaceIo,
+  assertRecordIdentity, darwinProcessStartToken, defaultStartToken, formatRecord, identityPinPath, identityStartToken, parsePid, parseRecord,
+  parseWin32CreationToken, startTokenReaderFor, verifyIdentityPin, win32ProcessCreationToken, writeIdentityPin, writePidPair, type RecordReplaceIo,
 } from "../src/pid.js";
+import { processStartToken as lstartReader } from "../src/advisory-lock.js";
 import { requestLocalStop } from "../src/local-stop.js";
 
 const prevCwd = process.cwd();
@@ -340,6 +341,37 @@ try {
     calls = 0;
     const oversized = win32ProcessCreationToken(0x80000000, counted);
     check("F12 an oversized Windows pid never reaches the native reader", oversized === undefined && calls === 0);
+  }
+
+  // ── M. MACOS pins the microsecond start time through its native binding. These controls exercise
+  // the reader boundary on this host; the darwin-only native suite reaches sysctl.
+  {
+    const micro = "1729876543123456";
+    check("M1 macOS identity uses the native start-time reader, not ps",
+      identityStartToken(4242, "darwin", () => "win32", () => "Sat Oct 25 16:47:55 2026", () => micro) === micro);
+    let calls = 0;
+    const binding = (token: unknown) => () => ({ processInfo: (pid: number) => { calls++; return pid === 4242 ? { token: token as string, pgid: 4242, stopped: false } : undefined; } });
+    check("M2 the native reader keeps every microsecond digit", darwinProcessStartToken(4242, binding(micro)) === micro && calls === 1);
+    calls = 0;
+    check("M3 invalid macOS pids never reach the native reader",
+      [0, -1, 1.5, NaN, Infinity, 0x80000000].every((pid) => darwinProcessStartToken(pid, binding(micro)) === undefined) && calls === 0);
+    check("M4 an absent process and malformed native output are not tokens",
+      darwinProcessStartToken(4343, binding(micro)) === undefined && darwinProcessStartToken(4242, binding("Sat Oct 25 16:47:55 2026")) === undefined && darwinProcessStartToken(4242, binding(42)) === undefined);
+    const failing = () => ({ processInfo: (): undefined => { throw new Error("sysctl failed"); } });
+    check("M5 a failed macOS read is unverified, never a token", darwinProcessStartToken(4242, failing) === undefined);
+    const missing = new Error("synthetic missing native binding");
+    let failure: unknown;
+    try { darwinProcessStartToken(4242, () => { throw missing; }); } catch (error) { failure = error; }
+    check("M6 a broken macOS binding throws", failure === missing);
+    // A pin written before the native reader holds `ps -o lstart=` text. The default reader verifies it
+    // with that same reader on macOS; numeric pins, other platforms and passed readers are unchanged.
+    const lstart = "Sat Oct 25 16:47:55 2026", given = () => micro;
+    check("M7 a legacy macOS lstart pin is verified with the lstart reader", startTokenReaderFor(lstart, defaultStartToken, "darwin") === lstartReader);
+    check("M8 a microsecond macOS pin is verified with the native reader", startTokenReaderFor(micro, defaultStartToken, "darwin") === defaultStartToken);
+    check("M9 only macOS reads a non-numeric pin with the lstart reader", startTokenReaderFor(lstart, defaultStartToken, "linux") === defaultStartToken && startTokenReaderFor(lstart, defaultStartToken, "win32") === defaultStartToken);
+    check("M10 a reader the caller passes is used as given", startTokenReaderFor(lstart, given, "darwin") === given);
+    check("M11 an lstart pin compared with a microsecond reader is a mismatch, never a match",
+      assertRecordIdentity({ pid: process.pid, token: lstart }, given).kind === "mismatch");
   }
 
   // ── G. writePidPair (#1238): the WRITE side has no cell today; a crash mid-publish is planted

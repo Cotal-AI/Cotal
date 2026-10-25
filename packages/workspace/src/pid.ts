@@ -20,6 +20,7 @@
 
 import { spawnSync } from "node:child_process";
 import { nativeWin32CreationToken } from "./win32-process.js";
+import { darwinProcessBinding, type DarwinProcessBinding } from "./darwin-process.js";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync } from "node:fs";
 import { createPrivateRecord, writePrivateRecord } from "@cotal-ai/core";
@@ -85,9 +86,13 @@ export function probeLiveness(pid: number): "alive" | "dead" | "unknown" {
   }
 }
 
-/** Whether `pid` is stopped by a signal such as SIGSTOP, read from its `/proc` state. Only Linux
- *  can answer here; elsewhere this is `false`, and callers keep their unanswered-broker path. */
+/** Whether `pid` is stopped by a signal such as SIGSTOP, read from its `/proc` state, or on macOS from
+ *  its kernel entry. Elsewhere this is `false`, and callers keep their unanswered-broker path. */
 export function processStopped(pid: number): boolean {
+  if (process.platform === "darwin") {
+    const native = darwinProcessBinding();
+    try { return native.processInfo(pid)?.stopped === true; } catch { return false; }
+  }
   if (process.platform !== "linux") return false;
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -165,15 +170,22 @@ function statFields(pid: number): string[] | undefined {
   } catch { return undefined; }
 }
 
-/** The process group `pid` belongs to, or `undefined` when it is gone or this is not Linux. */
+/** The process group `pid` belongs to, or `undefined` when it is gone or this is neither Linux nor
+ *  macOS. A macOS read that fails throws, so a group stop never narrows to one process unnoticed. */
 export function processGroupOf(pid: number): number | undefined {
+  if (process.platform === "darwin") return darwinProcessBinding().processInfo(pid)?.pgid;
   if (process.platform !== "linux") return undefined;
   return parsePid(statFields(pid)?.[2] ?? "");
 }
 
 /** The live processes in process group `pgid`. A zombie has exited and holds nothing, so it is not
- *  one. Linux only; elsewhere none. */
+ *  one. Linux and macOS; elsewhere none. A macOS read that fails throws rather than read as empty. */
 export function processGroupMembers(pgid: number): number[] {
+  if (process.platform === "darwin") {
+    const members = darwinProcessBinding().groupMembers(pgid);
+    if (members === undefined) throw new Error(`process group ${pgid} is not a readable process group ID`);
+    return members;
+  }
   if (process.platform !== "linux") return [];
   return readdirSync("/proc").flatMap((entry) => {
     const pid = parsePid(entry);
@@ -381,7 +393,8 @@ export function formatRecord(record: ProcessIdentityRecord): string {
 
 /**
  * The creation-identity token of a live pid: on Linux `/proc/<pid>/stat` field 22 (starttime —
- * ticks since boot, fixed for the life of the pid); on macOS/BSD `ps -o lstart=`; on Windows
+ * ticks since boot, fixed for the life of the pid); on macOS its start time in microseconds, through
+ * the shipped Node-API binding; on other BSDs `ps -o lstart=`; on Windows
  * the process creation FILETIME (GetProcessTimes through the shipped Node-API binding). A pid whose token is
  * `undefined` can still be recorded — the record then carries no start pin, and teardown warns that
  * it is proceeding without the identity check. That pid-only shape is for a record that predates
@@ -410,17 +423,33 @@ export function win32ProcessCreationToken(pid: number, read: ProcessStartTokenRe
   return typeof out === "string" ? parseWin32CreationToken(out) : undefined;
 }
 
-/** Identity's start-token reader: POSIX uses the same `/proc`/`ps` implementation as the advisory
- *  lock so launch and teardown cannot drift; win32 uses {@link win32ProcessCreationToken} instead
- *  of the lock's `undefined`. `platform` is a parameter so the win32 branch is executable off
- *  Windows: a mutation that returns `undefined` on win32 must redden without a Windows kernel. */
+/**
+ * macOS start time in microseconds through the shipped Node-API binding. No subprocess is involved,
+ * and the second-precision `ps -o lstart=` text is not used. A process that cannot be read is
+ * unverified; a missing binding throws. The binding parameter exercises validation off macOS.
+ */
+export function darwinProcessStartToken(pid: number, binding: () => Pick<DarwinProcessBinding, "processInfo"> = darwinProcessBinding): string | undefined {
+  if (!Number.isInteger(pid) || pid <= 0 || pid > 0x7fffffff) return undefined;
+  const native = binding();
+  let token: unknown;
+  try { token = native.processInfo(pid)?.token; } catch { return undefined; }
+  return typeof token === "string" && /^\d{1,20}$/.test(token) ? token : undefined;
+}
+
+/** Identity's start-token reader: Linux uses the same `/proc` implementation as the advisory lock so
+ *  launch and teardown cannot drift; win32 uses {@link win32ProcessCreationToken} instead of the
+ *  lock's `undefined`, and macOS {@link darwinProcessStartToken} instead of the lock's second-precision
+ *  `ps` text. `platform` is a parameter so the win32 and macOS branches are executable elsewhere: a
+ *  mutation that returns `undefined` there must redden without that kernel. */
 export function identityStartToken(
   pid: number,
   platform: string = process.platform,
   win32: ProcessStartTokenReader = win32ProcessCreationToken,
   posix: ProcessStartTokenReader = posixStartToken,
+  darwin: ProcessStartTokenReader = darwinProcessStartToken,
 ): string | undefined {
   if (platform === "win32") return win32(pid);
+  if (platform === "darwin") return darwin(pid);
   return posix(pid);
 }
 
@@ -435,6 +464,13 @@ export function defaultStartToken(pid: number): string | undefined {
 export function identityRecord(pid: number, tokenAt: ProcessStartTokenReader = defaultStartToken): ProcessIdentityRecord | { pid: number } {
   const token = tokenAt(pid);
   return token === undefined ? { pid } : { pid, token };
+}
+
+/** The reader that verifies a recorded start token. A macOS pin written before the native reader holds
+ *  `ps -o lstart=` text, which no microsecond token equals, so the default reader verifies it with that
+ *  same `ps` reader and it keeps the guarantee it was written with. A reader the caller passes is used as given. */
+export function startTokenReaderFor(token: string, tokenAt: ProcessStartTokenReader = defaultStartToken, platform: string = process.platform): ProcessStartTokenReader {
+  return tokenAt === defaultStartToken && platform === "darwin" && !/^\d+$/.test(token) ? posixStartToken : tokenAt;
 }
 
 /** The verdict of {@link assertRecordIdentity}: does the live process behind `pid` still carry the
@@ -461,7 +497,7 @@ export type IdentityVerdict =
  * process itself gone.
  */
 export function assertRecordIdentity(record: ProcessIdentityRecord, tokenAt: ProcessStartTokenReader = defaultStartToken): IdentityVerdict {
-  const live = tokenAt(record.pid);
+  const live = startTokenReaderFor(record.token, tokenAt)(record.pid);
   if (live === undefined) {
     // Distinguish "cannot look" from "looked and it is gone": the token readers return undefined
     // BOTH when the platform cannot answer and when the process does not exist, and those must not
