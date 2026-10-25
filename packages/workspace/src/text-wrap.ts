@@ -6,16 +6,27 @@ export function displayWidth(text: string): number {
   return stringWidth(text);
 }
 
+/** `command` as a sentence names it: between backticks or, when it holds a backtick itself, as a
+ *  quoted path can, between a run of backticks one longer than any run it holds, as Markdown writes
+ *  such code. A command starts with its program and the CLI quotes any argument that holds a
+ *  backtick, so it neither starts nor ends with one. */
+export function codeSpan(command: string): string {
+  const fence = "`".repeat(Math.max(0, ...(command.match(/`+/g) ?? []).map((run) => run.length)) + 1);
+  return `${fence}${command}${fence}`;
+}
+
 /** `text` split at spaces into the words {@link wrapWords} breaks between. A command a sentence
- *  names in backticks after other words, from its `cotal` to its closing backtick, is one word, so
- *  no line holds part of it, whatever words its arguments are. A line that starts with a command, as
- *  a usage line or a code line does, wraps at its spaces. */
+ *  names in backticks after other words, from its `cotal` to the next run of as many backticks as
+ *  opened it, is one word, so no line holds part of it, whatever words its arguments are. A line
+ *  that starts with a command, as a usage line or a code line does, wraps at its spaces. */
 function wrapUnits(text: string): string[] {
   const parts = text.split(" "), words: string[] = [];
   for (let i = 0; i < parts.length; i++) {
     let end = i;
-    if (i > 0 && /^[("']*`(cotal|pnpm|npx)$/.test(parts[i]!)) {
-      const close = parts.findIndex((part, j) => j > i && part.includes("`"));
+    const open = i > 0 ? /^[("']*(`+)(cotal|pnpm|npx)$/.exec(parts[i]!) : null;
+    if (open) {
+      const fence = new RegExp(`(?<!\`)\`{${open[1]!.length}}(?!\`)`);
+      const close = parts.findIndex((part, j) => j > i && fence.test(part));
       if (close > 0) end = close;
     }
     words.push(parts.slice(i, end + 1).join(" "));

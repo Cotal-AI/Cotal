@@ -70,8 +70,8 @@
     {
       "name": "join session stops subscribing to recoverable warnings",
       "file": "implementations/cli/src/commands/join.ts",
-      "find": "  ep.on(\"warning\", (e: Error) => print(c.yellow(`! ${e.message}`)));",
-      "replace": "  void print;",
+      "find": "  ep.on(\"warning\", (e: Error) => {",
+      "replace": "  ep.on(\"unobserved-warning\", (e: Error) => {",
       "cell": "join session surfaces recoverable warnings through prompt-safe output",
       "expectRed": "join session surfaces recoverable warnings through prompt-safe output",
       "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",

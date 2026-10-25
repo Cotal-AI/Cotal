@@ -16,6 +16,7 @@ const {
   isCommandFailure,
   presentationOf,
   renderReport,
+  codeSpan,
   wrapWords,
   writeResult,
 } = await import("@cotal-ai/workspace");
@@ -152,6 +153,13 @@ check("a command whose argument is a word of prose stays whole",
 const spacedPath = wrapWords("add them to the running stack with `cotal team deploy '/srv/proj/data from s3/team.yaml'`, or stop it", 56);
 check("a quoted path inside a command is never split",
   JSON.stringify(spacedPath) === JSON.stringify(["add them to the running stack with", "`cotal team deploy '/srv/proj/data from s3/team.yaml'`,", "or stop it"]), spacedPath);
+// A path can hold a backtick. Such a command goes between double backticks, as Markdown writes it, and
+// wraps whole to the matching pair. The path's own backtick used to close it and split the path.
+check("a command names itself between backticks, or between a longer run when it holds one",
+  codeSpan("cotal up") === "`cotal up`" && codeSpan("cotal team deploy '/srv/tick`q/team.yaml'") === "``cotal team deploy '/srv/tick`q/team.yaml'``");
+const tickedPath = wrapWords(`add them to the running stack with ${codeSpan(`cotal team deploy '/srv/tick\`q "dq" $(x)/team.yaml'`)}, or stop it`, 56);
+check("a command between double backticks wraps whole past a backtick in its quoted path",
+  JSON.stringify(tickedPath) === JSON.stringify(["add them to the running stack with", "``cotal team deploy '/srv/tick`q \"dq\" $(x)/team.yaml'``,", "or stop it"]), tickedPath);
 const bare = wrapWords("run cotal down --yes then cotal up", 24);
 check("a command outside backticks wraps at its spaces", JSON.stringify(bare) === JSON.stringify(["run cotal down --yes", "then cotal up"]), bare);
 const ticked = wrapWords("the restore left it stopped; start it with `cotal up --space restored-space` in its folder", 30);

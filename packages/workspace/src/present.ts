@@ -1,10 +1,10 @@
 import { c } from "./colors.js";
 import { oneLine } from "@cotal-ai/core";
 import { CommandFailure, exitCode, operationSpaceNote, operationWarnings, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
-import { displayWidth, terminalWidth, wrapWords } from "./text-wrap.js";
+import { codeSpan, displayWidth, terminalWidth, wrapWords } from "./text-wrap.js";
 
 // Defined in a leaf module so that output.ts can wrap its warnings without importing this one.
-export { displayWidth, terminalWidth, wrapWords };
+export { codeSpan, displayWidth, terminalWidth, wrapWords };
 
 /**
  * The terminal presentation every command surface shares: one view model of a finished report,

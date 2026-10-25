@@ -216,8 +216,10 @@ starts under the text it continues. A labeled value with a word too wide to fit 
 such as an identity, starts on the line under the label. A word wider than the line, such as a path,
 keeps a line of its own and is never split. A command wraps as one word, so a copied line never holds
 part of one: a command under Next, and a command a sentence names in backticks after other words,
-from its `cotal` to its closing backtick, whatever words its arguments are. A line that starts with a
-command, such as a usage line, wraps at its spaces. Help wraps the same way, including the title of `cotal help --all`.
+from its `cotal` to its closing backtick, whatever words its arguments are. A command that holds a
+backtick itself, as a quoted path can, is named between double backticks, as Markdown writes such code,
+and wraps whole to the matching pair. A line that starts with a command, such as a usage line, wraps at
+its spaces. Help wraps the same way, including the title of `cotal help --all`.
 
 A question that defaults to No, such as the one before `history clear`, `down`, `channel remove` or
 `persona remove`, is answered by typing: `y` or `yes`, in any case, then Enter confirms it. Enter
