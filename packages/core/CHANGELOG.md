@@ -1,5 +1,104 @@
 # @cotal-ai/core
 
+## 0.101.0
+
+### Minor Changes
+
+- bd52202: `MeshAgent` now arms the `turn-pending` poll and the turn-boundary re-poll only when `config.managerInstanceId` (`COTAL_MANAGER_INSTANCE`) is set, and `Manager` (`spawnDelegated`) / `delegatedSeatCommand` / `cotal spawn` (`applyHandoffManagerInstance`) now carry `COTAL_MANAGER_INSTANCE` alongside local spawn, restart, and resume so every manager-launched seat polls its launching manager while a directly connected session never polls a manager. `cotal spawn` with `COTAL_MANAGED_HANDOFF_FILE` now requires `COTAL_MANAGER_INSTANCE` before any broker or exchange plane is touched (`COTAL_MANAGED_HANDOFF_FILE requires COTAL_MANAGER_INSTANCE`; a newer CLI child under an older manager or runtime refuses every delegated launch). Because only manager-launched seats poll, `notePullTrouble` now reports `no responder answered` once per outage while keeping only the startup `still reconciling` window silent.
+  
+  `DelegatedSeatLaunch.managerInstanceId` is now required, and a CLI with this change refuses a managed handoff without `COTAL_MANAGER_INSTANCE`, so managers and the CLI must be upgraded together.
+
+### Patch Changes
+
+- 0d1dfc3: `cotal auth revoke-credential <public-key | creds-file>` stops one credential that `auth mint` wrote and keeps the space's store and every other credential. Until now the only way to stop a leaked minted credential was to rotate the space identity with `reset space`, which also removes the store and its history. The command records the key in the space's account JWT `revocations`, so the broker refuses it from its next start. It works on a stopped space, and on a running one it refuses and names the route: `cotal down`, the revocation, then `cotal up`. `auth mint --identity` refuses a revoked key. `auth retire`'s next step and doctor's guidance for an unbounded credential now name the revocation first and the identity rotation as the wider step.
+- b0257f2: A full backup of a static-auth or open mesh now holds the workflow runs: the WFJ step journal, the
+  records store and the run admission store. A run that waited at a checkpoint or a timer is back after
+  a full restore, and the manager takes it over. Before, a full restore recreated those stores empty,
+  so every run was gone. The records store's endpoint authority rows roll back to the cut with the
+  runs. A user-mode full backup still holds no run store, because the records store's lifecycle heads
+  name credential rows in the auth store, which a backup does not carry. Artifacts use the manifest
+  format `cotal-space-backup/v2`; a `v1` artifact still restores and holds no workflow run. Each
+  restore now lists what it restored and what it recreated empty, and says why when it holds no run.
+  Backup also accepts the stopped goal-index watcher of an open mesh's manager.
+- 0c9e498: A refusal that repeats an over-long argument, such as an unknown command or subcommand, a space name given to `use` or `--space`, or a run id, now shows its first 128 characters and its length. A 100000-character value used to print a line as long as itself. The command still checks and uses the whole value.
+- b58bf37: A channel name refused for a segment outside the token rule now names `'*'` and `'>'` only when that segment holds one. `gen eral` or `kanäle` is told the segment must be a NATS-safe token (`[A-Za-z0-9_-]`), and a segment such as `team.gen*` that holds one is still told it must be a NATS-safe token, `'*'` or `'>'`. Before, every refused segment was offered the wildcards, so `cotal send -c 'gen eral'` read as if `*` were a valid channel to post to. The same sentence reaches every surface that checks a channel name: `cotal send`, `cotal chat`, `cotal channel`, `cotal persona create` and manifests.
+- 0af0377: `cotal channel set` and `channel defaults` write nothing when the entry already holds every value given, and report a `no-op` receipt, `Channel unchanged` or `Channel defaults unchanged`, instead of rewriting the entry and saying it was saved. `seedChannelRegistry`, `writeChannelConfig` and `writeChannelDefaults` resolve whether they wrote.
+- 9736397: Shell completion now lets the shell complete a file name for every `--creds`, including on `status`, `history`, `watch` and `who`, which offered none.
+- 0282994: `run start --file`, `run simulate --handler`, `auth mint --out` and `--identity`, and `--creds` on a
+  command with no completer of its own complete from the shell's file names. A flag declares that with
+  the new optional `FlagSpec.completion: "files"`. `spawn` completes the personas of a prepared space
+  that is not started, as `persona show` does.
+- dbbd7f5: Shell completion now offers the values the CLI knows without contacting the mesh. Every `--space` offers the spaces registered or prepared on this machine, as `cotal use` does. `config get`, `set` and `unset` offer the keys, and `config set color` and `config set harness` offer the values a write accepts. `docs` offers its pages, `watch --view` its views and `space add --mode` its modes. `history` and `channel show`, `members`, `set` and `remove` offer the channels the target space's personas declare, as `send -c` does.
+- 66d2f93: A connector session now refuses a `COTAL_SERVERS` with a user name or password when it starts. The NATS client kept only the URL's host and port, so the session dialed without them, failed authorization in a loop with nothing saying why, and printed the URL with the password in the `cotal_roster` and `cotal_channels` not-connected lines. The refusal names the variable without repeating its value, and says to pass the credential in `COTAL_CREDS`, `COTAL_TOKEN` or a `COTAL_LINK`. The URL check moves from workspace to core so the connector can use it.
+- c2503db: Require a structured JetStream API error for consumer-already-exists recovery. An unrelated error
+  carrying code 10148 no longer causes run-journal replay to delete and recreate a durable. Genuine
+  broker conflicts still recover and replay the complete journal.
+- 09d905f: A credential that expires more than about 24.8 days away no longer turns off reconnect as soon as an endpoint starts. The endpoint's pre-expiry fence passed the whole remaining time to `setTimeout`, which Node runs after 1 ms for any delay above 2^31-1 ms, printing a `TimeoutOverflowWarning`. A command run with such a credential printed that warning, for instance with one of the space's own 30-day store credentials or an `auth mint --expires-in` of a month or more passed to `--creds`. A longer expiry now waits in steps. `auth mint` also refuses an `--expires-in` or `--expires-at` that ends after the last date Cotal can represent, in the year 275760, before anything is written. Before, it minted the credential and the receipt showed the expiry only as raw seconds.
+- 30f0900: With the delivery daemon stopped or dead, `cotal status` said the mesh took no join until it bound, while `cotal join`, DMs and live posts went on working. The delivery responder line, the `--components` facts, the `up` warning and core's liveness line now say that spawn, retirement and the durable backstop wait for the daemon, and that joins, DMs and live posts can still work.
+- 89d5637: A connected endpoint now warns once when the broker no longer has its own DM inbox, as after a store reset that the client's reconnect rode through. Direct messages to it are not delivered while the inbox is missing, and before this nothing said so. The endpoint keeps checking and receives again if the inbox comes back. `cotal join` prints the warning.
+- 75476c5: `cotal send` on a broker whose JetStream store holds more than its `--max-file-store` cap now refuses `DEPENDENCY_UNAVAILABLE` (exit 2), naming the store and the cap, and says nothing was stored. It used to exit 3 saying the message may have been stored, although the broker had refused it. Its Next is `cotal history clear --yes`, which makes room. `cotal status` shows that store as `full` with the bytes stored and the cap, and leads its Next with the same clear. The endpoint gains `storedBytes()`, the bytes its account holds in JetStream file storage.
+- 71e91d8: The remote manager's goal-index scan checks each returned entry with core's goal-index entry parser instead of its own copy, so a refused entry names the field at fault and a field core accepts is never refused by the scan. Core's parser now also refuses an entry with an empty coordinate, which the scan copy already refused.
+- d4afe89: `cotal history` accepts `#general` as a channel name, refuses a wildcard with the sentence `cotal send -c` gives, and warns `CHANNEL_NOT_FOUND` with no replay policy for a channel that has no messages and no saved entry. A flag value that starts with a dash and a digit, such as `--limit -1`, is read as that flag's value, so the command's own check answers it rather than the parser calling it ambiguous. `--since` takes an ISO 8601 date and time, and no longer reads forms such as `-5` as dates. `channelReplayPolicy` also returns whether the channel has its own registry entry.
+- b6cfff1: `cotal history --since <n>` refuses a bare number past the chat stream's newest sequence, which names no message, with that sequence and how to write a date, so `--since 2026` no longer reads as an empty window. `chatRetention` also returns the stream's newest sequence.
+- b8304ce: `CotalEndpoint.releaseDeliveryLease` and `releaseManagerLease` now reject when their delete does not commit. A release at a revision the row has moved past rejects with the broker's refusal, and a broker failure rejects with its own error. Both used to resolve as if the lease were released, so a caller could not tell a release from a refused or failed one. `releaseDeliveryLease` with an `undefined` revision still releases nothing, and `releaseManagerLease` without a revision still deletes the key unconditionally. The delivery daemon and the manager still finish their shutdown when a release fails. A hosted delivery `close()` whose release is refused now rejects with the broker's reason.
+- 71eeb1c: A managed spawn on a user-auth mesh whose enrollment the host refuses, for example for a role or a
+  channel beyond the caller's grant, is now reported as refused with `PERMISSION_DENIED` once the
+  manager has removed the secrets it staged for the agent. It used to be reported as
+  `OPERATION_UNKNOWN`, although nothing was launched. A host that fails or does not answer still
+  leaves the outcome unknown.
+- 2343ae8: Describe multi-channel history reads using the current shared CHAT sequence, broker filter sets, and batched page selection contract.
+- 62c4874: The refusal for a service with no live instance, such as `ps` or `models` on a stack started with `--no-manager`, no longer carries the spec rule "an empty registry is never an empty scatter success (SPEC 13.5)" in its native detail. The detail now says only that the service has no live registered instances.
+- b3f0edd: Every no-responders answer on the reserved sentinel now reads refused instead of unknown: core marks it `not-executed`, as SPEC 13.3 requires. An unpinned `cotal spawn` that no manager receives is refused with `TARGET_UNAVAILABLE` and exit 2. It names bare `cotal up` when no manager runs, and the `cotal ext add` to run when no live manager has an agent application installed.
+- d38a3e0: Remove undefined planning labels from core API comments while preserving their mechanism descriptions and public specification references.
+- 66af07b: `run show` names the branch a settled `race` took, and marks `not acted on` an answer whose step was in a losing branch, or whose pause was cancelled after accepting it. Such an answer used to be listed as acted on, or not at all. The journal rows carry the race's `winner` and each losing step's `lostRace` in `--json`.
+- 4dcdc62: A full restore of a backup made before the state it replaced was preserved now names each workflow
+  run it rolled back, and each step that was answered after the backup and is open again, in its
+  receipt, in `cotal status` and in the `backup cleanup-fallback` preview. It says that answer is
+  only in the store the restore set aside. To read it, the restore copies that store and reads its
+  run journals on one more isolated broker, through a new read-only maintenance login on the step
+  journal stream.
+- e5ddaed: A revoked workflow run no longer takes an answer. `cotal run answer`, hosted or `--local`, refuses an open checkpoint or `ask` of a revoked run with `LIFECYCLE_BLOCKED`, naming who revoked it and why, and files nothing, so the run stays parked instead of completing. A revocation marker that cannot be read refuses the answer the same way. `cotal run show` still lists the open request, says that it takes no answer, and no longer offers the answer command. SPEC §14.8 states the rule.
+- b3426bb: A failed workflow run now records why it failed. The run driver writes the error's language code, when it has one, and its message (bounded to 4000 characters) on the failed run status as `failure`. `cotal run ps` and `cotal run show` print the state as `failed (<code>)`, the run view prints the message under `Failure`, and the JSON status and `ps` rows carry `failure`. Before, a thrown error, an L4010 null access, an L4013 step budget or an L4023 deadline showed only "failed", and the cause was only in the manager's log. SPEC §13.7 adds the optional field.
+- cc023f7: `cotal run show` and `cotal run journal` read a run whose journal is larger than the broker's
+  payload limit. They read the journal from the manager in pages, each one reply, through a new
+  `journal: { offset }` input on `run-status` that answers the rows from that offset that fit, with
+  `journalTotal`. A record or a single row too large for one reply now refuses `UNSUPPORTED` and
+  names `cotal run journal <run-id> --local`, instead of failing with the broker's payload error.
+- 7aa9d14: `space delete` now lists the workflow runs that have not finished, with their recorded state, in its
+  dry run, its typed confirmation and its receipt, says that a run waiting for an answer goes with the
+  space, and names `cotal up`, then `cotal run show <run>`, to read a run's open request first. It used
+  to delete them without a word. The `teardown` credential's grant now reads run states: one direct get
+  on the space's records bucket, confined to run status keys, on a stream it could already delete.
+- 531b374: When a space's streams are gone from a broker that still runs, `cotal status` says so and names the
+  way back, and `send`, `history` and `run ps` refuse with that cause. On an open space that another
+  machine deleted under a running stack, status showed the space as reachable, `send` exited 3 with
+  "may have been stored", `history` reported an empty conversation and `run ps` printed a raw
+  contract-store error. Status now shows `Space streams: not on the broker` and leads its Next with
+  `cotal down --yes`, then `cotal up`, or with `cotal up` when the stack's other members are stopped.
+  The three commands refuse `TARGET_UNAVAILABLE` with the same remedy.
+- 48431ca: After a live `cotal space delete` and before `cotal up`, `cotal history` and `cotal send` on a recorded auth or user space refuse `TARGET_UNAVAILABLE` (exit 2), saying the space's streams are not on its broker and naming `cotal up` in the space's root. History used to read zero messages, and send exited 3 with `no responders`. `chatRetention` also returns whether the chat stream exists.
+- a8c3461: A `chat --stdio` `status` request with an `activity` reached every peer as two presence `updated` records, the first pairing the new activity with the old status. It now sets both in one presence write. `CotalEndpoint.setStatus` takes an optional activity for that.
+- e16a6a5: Correct TASK role filter and owner/actor validation comments to match the current subject grammar.
+- d6f9f7a: The manager's static reconcile sweep now totals each terminal's broker teardown from the call that ran it. Before, it cleared a shared manager field, awaited the terminal and read the field back, so a despawn or retry teardown that finished during that wait was counted against the swept alias in place of the alias's own counts. The `lastDeprovisionResources` field is removed. A broker teardown whose membership inventory was incomplete now throws a `DeprovisionError` that carries its accounting, so a failed attempt still reports what it deleted. Core adds `addDeprovisionAccounting` to sum two `DeprovisionResourceAccounting` values.
+- d0d885a: A TLS stack whose certificate names its IP address now starts. Every TLS dial to an IP address checked the certificate against `localhost`, so `cotal up --server tls://127.0.0.1:<port>` with a valid certificate for that address waited out its readiness and failed `OPERATION_UNKNOWN` with no cause, even with the CA trusted. When this client refuses the certificate, `up` now stops at the first handshake, fails `OPERATION_FAILED` (exit 5) with the native error, and names `NODE_EXTRA_CA_CERTS` as the way to trust a self-signed certificate or a local CA. A `nats://` address with such a certificate names the `tls://` address to use instead.
+- 447b7eb: A turn's goal-index entry now records the seat's owner in its acceptance floor beside the seat's name, actor and uid, as a spawn's entry does, and the relay note no longer carries it. A restarted manager reads the whole seat from the floor. A turn an older manager accepted has no owner in its floor, so a restarted manager leaves it unadopted and logs it, and its run's turn ends at its deadline.
+- 09dd488: A command can declare `keepsStartupNotice`. The published CLI then keeps its notice for an interrupt
+  before the command begins until the command's own notice takes it over, instead of ending it as the
+  command starts. `up` declares it, so an `up` interrupted during its recovery check, before it reaches
+  the stack, now says so and exits 130, 143 or 129. It used to exit with no output.
+- 24769e9: A file saved as UTF-16, as Windows PowerShell 5.1 writes by default, is now refused by its encoding,
+  with the step to save it as UTF-8. That covers a persona file in the catalog, in `persona show` and in
+  `persona create --file`, a team manifest, a `.cotal/channels.json` or `--channels` file, and
+  `preferences.json`. Before, each reported a generic invalid definition, schema shape or JSON error,
+  with no word about the encoding.
+- 914b1f1: Replace stale source and SPEC line citations in web and auth smoke comments and
+  prototype notes with symbols and named sections. Correct the roster wiring and
+  browser extension rendering descriptions.
+- 78a2035: A workflow's `log(...)` lines are no longer discarded. A run the manager hosts writes each line to
+  the manager's log as `run <run-id>: log <text>`, a `--local` drive prints them, and `run simulate`
+  lists them under `Log`, with `result.log` in `--json`. The lines stay out of the journal, as the
+  language defines.
+
 ## 0.100.2
 
 ### Patch Changes

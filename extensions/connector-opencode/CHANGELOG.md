@@ -1,5 +1,12 @@
 # @cotal-ai/connector-opencode
 
+## 0.101.0
+
+### Patch Changes
+
+- f715048: The OpenCode 2.x connector no longer acts on a model check that settles after its teardown. A refusal that arrived late used to exit the host process, and a model listed late used to start a mesh agent that was already stopped, which surfaced as an unhandled `cannot start a stopped mesh session`. Both are now ignored once teardown has begun.
+- 74f07c3: Replace unavailable working-file citations in OpenCode 2.x adapter comments with self-contained contract notes.
+
 ## 0.100.2
 
 No changes in this release.

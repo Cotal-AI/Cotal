@@ -1,5 +1,11 @@
 # @cotal-ai/seat
 
+## 0.101.0
+
+### Patch Changes
+
+- 7b0e5f2: Stop accepting startup confirmation input before a timeout stops the child, so shutdown output cannot receive an automatic Enter.
+
 ## 0.100.2
 
 No changes in this release.
