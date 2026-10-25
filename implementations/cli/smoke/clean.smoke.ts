@@ -379,6 +379,28 @@ try {
   await assert.rejects(() => clean({ positionals: ["history"], values: { "dry-run": true }, raw: [] }), /--dry-run previews clean store and clean all only/);
   rmSync(dryRoot, { recursive: true, force: true });
 
+  // --- stray words cannot narrow a purge or be ignored before local deletion -----------------
+  const argsRoot = meshRoot(), argsCwd = process.cwd();
+  const extraRefusals: { code?: string; message?: string }[] = [];
+  process.chdir(argsRoot);
+  try {
+    for (const target of ["history", "store", "all", "restore-attempt", "restore-fallback"]) {
+      try { await clean({ positionals: [target, "extra"], values: { force: true }, raw: [] }); extraRefusals.push({}); }
+      catch (error) { extraRefusals.push(error as { code?: string; message?: string }); }
+    }
+    check("every cleanup target refuses extra words before acting", extraRefusals.length === 5 && extraRefusals.every((r) => r.code === "USAGE_INVALID"), extraRefusals);
+    check("history's refusal explains that a channel name does not narrow its purge", extraRefusals[0]?.message?.includes("clears all retained channel history") === true, extraRefusals[0]);
+    check("extra words leave the local store and identity intact", existsSync(join(argsRoot, ".cotal", "nats", "jetstream", "stream.dat")) && existsSync(join(argsRoot, ".cotal", "auth", "auth.json")));
+    const customStore = join(argsRoot, "store ü with spaces"), preview: string[] = [];
+    mkdirSync(join(customStore, "jetstream"), { recursive: true });
+    writeFileSync(join(customStore, "jetstream", "stream.dat"), "owned fixture");
+    const log = console.log;
+    console.log = (...args: unknown[]) => { preview.push(args.map(String).join(" ")); };
+    try { await clean({ positionals: ["store"], values: { "dry-run": true, "store-dir": customStore }, raw: [] }); }
+    finally { console.log = log; }
+    check("the dry-run force command quotes its explicit store directory", preview.some((line) => line.includes(`cotal clean store --store-dir '${customStore}' --force`)) && existsSync(customStore), preview);
+  } finally { process.chdir(argsCwd); rmSync(argsRoot, { recursive: true, force: true }); }
+
   // --- only clean history takes --space, --server or --creds ----------------------------------
   // store, all and the restore targets act on the root of the folder they run in. They used to ignore
   // these flags, so clean store --space <other> --force removed this folder's store.

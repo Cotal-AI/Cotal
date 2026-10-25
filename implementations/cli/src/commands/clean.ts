@@ -92,6 +92,8 @@ export async function clean(args: ParsedArgs): Promise<void> {
   };
   if (!target || !TARGETS.includes(target))
     throw new CommandFailure("refused", "USAGE_INVALID", target ? `clean has no target "${target}"; it takes ${TARGETS.join(", ")}` : `clean needs a target: ${TARGETS.join(", ")}`);
+  if (args.positionals.length > 1)
+    throw new CommandFailure("refused", "USAGE_INVALID", target === "history" ? "clean history takes no channel name; it clears all retained channel history, so nothing was purged" : `clean ${target} takes no extra positional arguments; nothing was removed`);
   const dryRun = values["dry-run"] === true;
   if (dryRun && target !== "store" && target !== "all")
     throw new CommandFailure("refused", "USAGE_INVALID", `--dry-run previews clean store and clean all only, not clean ${target}`);
@@ -236,7 +238,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
   const userAuthRemoved = removed.some((path) => path.endsWith(USER_AUTH_TRUST));
   if (dryRun) {
     for (const path of removed) console.log(`would remove ${path}`);
-    console.log(c.dim(`dry run - nothing was removed; cotal clean ${target}${values["store-dir"] ? ` --store-dir ${values["store-dir"]}` : ""} --force removes these`));
+    console.log(c.dim(`dry run - nothing was removed; cotal clean ${target}${values["store-dir"] ? ` --store-dir ${shellWord(values["store-dir"])}` : ""} --force removes these`));
     if (userAuthRemoved) console.error(c.yellow("! this clean would remove the IdP trust and the actor ledger of this user-auth space, so every actor grant would be lost. A later up would need cotal up --user-auth --idp <auth base URL>, and each actor cotal actor grant again"));
     if (trustRemoved) console.error(c.yellow("! full backups taken before this clean would no longer restore into this root: each is bound to the space trust it removes. Only their registry would restore, with backup restore <dir> --only registry, and chat and DM history would start empty"));
     return;

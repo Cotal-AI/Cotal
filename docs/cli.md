@@ -1769,6 +1769,9 @@ cotal clean restore-fallback --attempt <id> --force [--discard-history]
 | `--discard-history` | off | `restore-fallback`: also delete an old store that holds the only copy of the history or workflow runs the restore left out |
 
 One configurable cleanup verb; every target requires `--force`, except a `--dry-run` of `store` or `all`.
+It takes one target and no extra positional arguments. A channel name after `history` refuses
+`USAGE_INVALID` (exit 1); it does not narrow the purge. The dry run quotes an explicit `--store-dir`
+value in its printed force command so it stays one shell argument.
 Only `history` takes `--space`, `--server` or `--creds`. Every other target acts on the root of the
 folder it runs in, so it refuses them `USAGE_INVALID` (exit 1) before local cleanup inspects or removes
 root state.
