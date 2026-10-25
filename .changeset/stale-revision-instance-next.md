@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/cli": patch
+"@cotal-ai/connector-core": patch
 ---
 
 A `service start` that selects an instance record of an earlier definition revision, as a definition
