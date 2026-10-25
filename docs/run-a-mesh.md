@@ -350,6 +350,8 @@ status at the registered revision and current process epoch, so manager-caller s
 Every manager-authority request carries the participant's fresh login proof and refuses a redirect,
 so a 3xx answer from the pinned endpoint fails the request rather than sending the proof on.
 An answer whose body is not JSON also fails the request, naming the endpoint and the HTTP status.
+Credential exchange, agent provisioning and interactive actor retirement report unreadable JSON
+the same way. An unreadable retirement answer leaves its outcome unknown and the actor row unchanged.
 
 Stock participant supervision asks its host to enroll a detached agent and to prepare its terminal
 retirement, over the same manager-authority transport. The stock auth service answers both when it
