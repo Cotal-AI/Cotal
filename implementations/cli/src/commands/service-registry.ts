@@ -11,7 +11,7 @@ import { serviceAction } from "./service-actions.js";
 import { serviceInstanceId, serviceInstances, instanceProjection } from "../lib/service-instances.js";
 import { readLocalServiceAttempts } from "../lib/service-census.js";
 import { readinessAddressSurvivors, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecord, removeStoppedInstanceRecords } from "../lib/service-process.js";
-import { STACK_DEFINITION } from "../lib/stack-journal.js";
+import { addedDefinitionStep, STACK_DEFINITION } from "../lib/stack-journal.js";
 import { localRecordName } from "../lib/protected-records.js";
 import { brokerServerProblem, brokerService } from "../lib/broker-service.js";
 
@@ -73,7 +73,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   const catalog = personaCatalog({ space: args.values.space as string | undefined });
   const { space, root } = catalog;
   recordOperationSpace(space);
-  const store = serviceDefinitionStore(space);
+  const store = serviceDefinitionStore(space, addedDefinitionStep);
   const [mode = "list", suppliedName] = args.positionals;
   const target = { space, executionHost: "this-machine" };
   if (["start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode)) return serviceAction(args, space, root, commandName);

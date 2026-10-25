@@ -71,7 +71,9 @@ function protectedServiceExecutable(path: string): void {
   if (folder !== dirname(physical)) protectedLocalDirectory(folder, "the service executable's folder");
 }
 
-export const serviceDefinitionStore = (space: string) => new ProtectedRecordStore("services", space, (value, checkReferences) => validateServiceDefinition(value, space, checkReferences), "definitions");
+/** `unreadable` is the way out a command names for a definition record that does not parse. */
+export const serviceDefinitionStore = (space: string, unreadable?: (name: string, path: string) => string | undefined) =>
+  new ProtectedRecordStore("services", space, (value, checkReferences) => validateServiceDefinition(value, space, checkReferences), "definitions", unreadable);
 
 export function importServiceDefinition(path: string, space: string): ServiceDefinitionInput {
   const bytes = readLocalRecordSource(path);

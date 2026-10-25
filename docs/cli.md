@@ -873,11 +873,16 @@ same way, is left as it is. `up`, `down`, `service` and `reset store` refuse it 
 exit 1. `service` names its path and the `mv` that moves it aside, and so do the others for a stack
 that has run. Once it is moved, Cotal no longer tracks the process that record names, so stop that
 process yourself if it still runs. For a stopped space, `status` warns
-`SERVICE_INSTANCES_UNAVAILABLE` and gives the same step under Next, in place of `cotal up`. Any
-other saved record that is not valid JSON, such as a native install, uninstall or unit-action
-attempt, a supervisor receipt, a service definition or an endpoint reference, is refused
-`SCHEMA_INVALID` with no step: an attempt or receipt can be what holds a native step back, so
-nothing says to move it.
+`SERVICE_INSTANCES_UNAVAILABLE` and gives the same step under Next, in place of `cotal up`. The
+definition of a service you added that is not valid JSON is left as it is too. `service` and its
+verbs, such as `service show`, `service add` and `service stop`, refuse it `SCHEMA_INVALID`, exit 1,
+naming its path, the `mv` that moves it aside, and `cotal service add <name> --file <declaration>`,
+which adds the service again. An instance of it that still runs can then be stopped by its full
+instance ID. Any other saved record that is not valid JSON, such as a native install, uninstall or
+unit-action attempt, a supervisor receipt, a stack member's definition or an endpoint reference, is
+refused `SCHEMA_INVALID` with no step: an attempt or receipt can be what holds a native step back,
+so nothing says to move it. Other commands that read the definition of a service you added keep
+that plain refusal, and `status` shows the saved definitions as unavailable.
 
 A controller stack opens three listeners. The broker serves clients at its `--server` port, and a
 websocket for the browser console's mesh session on a port `up` picks, which is always plaintext.

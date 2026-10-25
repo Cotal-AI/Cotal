@@ -457,18 +457,17 @@ export function decodeLocalJson(bytes: Buffer): unknown {
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "local record input is not valid UTF-8 JSON; document contents are not echoed"); }
 }
 
-/** A saved record's bytes as JSON. A service instance record that does not parse, as an interrupted
- *  write or a full disk can leave it, is refused with its path and the move that sets it aside; it is
- *  never reset. Every other record keeps the plain refusal and no step: an intent, a unit action or a
- *  supervisor receipt can be what holds a native step back, so nothing here says to move it. */
-function decodeSavedRecord(bytes: Buffer, path: string, instance: boolean): unknown {
+/** A saved record's bytes as JSON. A record that does not parse, as an interrupted write or a full disk
+ *  can leave it, is never reset. When `step` names a way out, the refusal names the record's path and
+ *  that step: a service instance record's is the move that sets it aside, and a store can pass its own.
+ *  Every other record keeps the plain refusal and no step: an intent, a unit action or a supervisor
+ *  receipt can be what holds a native step back, so nothing here says to move it. */
+function decodeSavedRecord(bytes: Buffer, path: string, step: () => string | undefined): unknown {
   try { return decodeLocalJson(bytes); }
   catch (error) {
-    if (!instance) throw error;
-    throw new CommandFailure("refused", "SCHEMA_INVALID", `the saved local record ${path} is not valid JSON, as an interrupted write or a full disk can leave it; nothing was inferred from it and it was left as it is`, {
-      target: { path },
-      remedy: `move it aside, as mv ${shellPath(path)} ${shellPath(`${path}.old`)} does; Cotal then no longer tracks the process it recorded, so stop that process yourself if it still runs`,
-    });
+    const remedy = step();
+    if (remedy === undefined) throw error;
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `the saved local record ${path} is not valid JSON, as an interrupted write or a full disk can leave it; nothing was inferred from it and it was left as it is`, { target: { path }, remedy });
   }
 }
 
@@ -479,6 +478,8 @@ export class ProtectedRecordStore<T> {
     readonly space: string,
     readonly validate: (value: unknown, checkReferences: boolean) => T,
     readonly family?: "definitions" | "instances" | "supervisors" | "install-intents" | "uninstall-intents" | "unit-actions" | "exports",
+    /** The way out for a record of this store that does not parse, named with its path; undefined keeps the plain refusal. */
+    readonly unreadable?: (name: string, path: string) => string | undefined,
   ) {}
 
   directory(create = false): string | undefined {
@@ -509,7 +510,9 @@ export class ProtectedRecordStore<T> {
     const path = join(dir, `${spaceKey(name)}.json`);
     const bytes = readLocalRecordSource(path, RECORD_LIMIT, true);
     if (!bytes) return undefined;
-    const wrapper = localRecordObject(decodeSavedRecord(bytes, path, this.family === "instances"), ["recordVersion", "revision", "value"]);
+    const wrapper = localRecordObject(decodeSavedRecord(bytes, path, () => this.family === "instances"
+      ? `move it aside, as mv ${shellPath(path)} ${shellPath(`${path}.old`)} does; Cotal then no longer tracks the process it recorded, so stop that process yourself if it still runs`
+      : this.unreadable?.(name, path)), ["recordVersion", "revision", "value"]);
     if (wrapper.recordVersion !== 1) throw new CommandFailure("refused", "SCHEMA_INVALID", "saved local record version is unsupported; it was not reset");
     const revision = localRecordText(wrapper.revision, 200);
     const value = this.validate(wrapper.value, false);
