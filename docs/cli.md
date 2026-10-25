@@ -720,9 +720,11 @@ broker start refuses a `nats-server` file that another local account could repla
 a folder another account could write, as the folder of a Homebrew install on macOS is. So when the
 one on PATH is like that and the bundled one is not, `up` runs the bundled one and never runs the
 one on PATH. The `Broker executable` line of `status` names the one it passed over, and `--json`
-carries it as `machine.natsServer.skipped` with the reason. When the bundled one is missing or
-fails the same rule, the one on PATH stays the choice and the broker start refuses it, naming each
-folder and the `chmod` that would fix it. One
+carries it as `machine.natsServer.skipped` with the reason. A file that fails this rule is never
+run, not even for its version. When the bundled one is missing or fails the rule too, the one on PATH
+stays the choice: `status` shows why on that line, and `up` and `setup` refuse `PERMISSION_DENIED`
+(exit 2) before anything runs, naming each folder and the `chmod` that would fix it. A bundled one
+that fails the rule, with none on PATH, is refused the same way. One
 on PATH must report version 2.12 or newer. An older one, or one that reports no version, refuses
 `DEPENDENCY_UNAVAILABLE` (exit 2) before the broker starts, naming its path and version; upgrade it
 or take it off PATH. When `up` starts the broker, its receipt names the file, where it was found and
