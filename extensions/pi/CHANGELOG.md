@@ -1,5 +1,11 @@
 # @cotal-ai/pi
 
+## 0.101.0
+
+### Patch Changes
+
+- 6e4ad65: Call the inbox commit in `PiDriver.finalizeEnd` as a plain statement. The method bound the commit counts to a local it never read, which suggested a later use that did not exist. Behavior is unchanged.
+
 ## 0.100.2
 
 No changes in this release.

@@ -1,5 +1,11 @@
 # @cotal-ai/linear
 
+## 0.101.0
+
+### Minor Changes
+
+- e8f0aed: Serve registered Linear endpoints on user-auth meshes through the existing remote service authority and shared renewal source. Keep the original approval request and instance across retries and restarts, verify the signed serving grant against the embedded contract, and acknowledge readiness after subscribing. Caller access still requires an explicit instance-scoped grant. Stopping closes the local service and retains its approved registration without claiming remote revocation.
+
 ## 0.100.2
 
 No changes in this release.
