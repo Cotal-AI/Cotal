@@ -148,6 +148,21 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     spawnSync("chmod", ["-R", "u+rwX", closed]);
     check(`running that step verbatim opens ${closed === store ? "the store" : "the jetstream folder"} again`, (() => { try { accessSync(jetstream, constants.R_OK | constants.W_OK | constants.X_OK); return true; } catch { return false; } })());
   }
+  // A root whose name a shell would split or substitute, here a backtick and a space, is quoted in the
+  // step, so the step pasted into a shell changes that folder and nothing else.
+  const quoteParent = mkdtempSync(join(tmpdir(), "cotal-up-usage-quote-"));
+  process.on("exit", () => rmSync(quoteParent, { recursive: true, force: true }));
+  const odd = join(quoteParent, "W`q d"), oddJetstream = join(odd, ".cotal", "nats", "jetstream");
+  mkdirSync(odd);
+  run(["space", "create", "upquote", "--root", odd, "--json"]);
+  mkdirSync(oddJetstream, { recursive: true, mode: 0o700 });
+  chmodSync(oddJetstream, 0o500);
+  const quoted = run(["up", "--server", "nats://127.0.0.1:1", "--json"], odd);
+  const command = `chmod -R u+w '${oddJetstream}'`;
+  check("the step quotes a store path holding a backtick and a space",
+    quoted.status === 2 && quoted.envelope?.error?.code === "PERMISSION_DENIED" && quoted.envelope.error.remedy === `make it writable by you, for example with ${command}`, shown(quoted));
+  const ran = spawnSync("sh", ["-c", command], { cwd: odd, encoding: "utf8" });
+  check("that step run by a shell makes the store writable", ran.status === 0 && (() => { try { accessSync(oddJetstream, constants.W_OK | constants.X_OK); return true; } catch { return false; } })(), { status: ran.status, stderr: ran.stderr });
 }
 
 // A broker configuration up cannot write, such as a symlink in its place, and a trust record it
