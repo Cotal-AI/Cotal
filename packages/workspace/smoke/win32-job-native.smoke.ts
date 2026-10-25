@@ -110,10 +110,13 @@ try {
   const tokens = new Map([seen.detached, seen.attached].map((pid) => [pid, nativeWin32CreationToken(pid)!]));
   await one.call("terminate", 7);
   // The holder keeps the program's handle, so an exited program may stay listed under its own PID.
-  let left: number[] = [];
-  for (const deadline = Date.now() + 10_000; Date.now() < deadline; await sleep(100)) if ((left = (await one.call("jobProcesses")).value as number[]).every((pid) => pid === launched.pid)) break;
+  let left: number[] = [], rootExit: unknown = null;
+  for (const deadline = Date.now() + 10_000; Date.now() < deadline; await sleep(100)) {
+    left = (await one.call("jobProcesses")).value as number[];
+    rootExit = (await one.call("rootExit")).value;
+    if (rootExit !== null && left.every((pid) => pid === launched.pid)) break;
+  }
   console.log(JSON.stringify({ exitedProgramListed: left.includes(launched.pid) }));
-  const rootExit = (await one.call("rootExit")).value;
   const descendants = [...tokens].map(([pid, token]) => ({ pid, token, current: nativeWin32CreationToken(pid), liveness: probeLiveness(pid) }));
   console.log(JSON.stringify({ rootExit, descendants }));
   check("J13 terminate empties the job and the program exits with its code",
