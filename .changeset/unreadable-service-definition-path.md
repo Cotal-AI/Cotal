@@ -1,6 +1,7 @@
 ---
 "@cotal-ai/workspace": patch
 "@cotal-ai/cli": patch
+"@cotal-ai/connector-core": patch
 ---
 
 A saved definition of a service you added that is not valid JSON, as an interrupted write can leave
