@@ -232,7 +232,7 @@ export async function brokerAnswers(server: string): Promise<boolean> {
 
 /** Sweep liveness without deleting records. Catalog entries are not probed. Given the `--server` a
  *  command resolves with, only the records at that address are probed: that resolve reads no other
- *  record's liveness, and a command given `--server` dials no other broker. */
+ *  record's liveness. Other explicitly requested checks, such as status --all, have their own scope. */
 export async function pruneStaleMeshes(server?: string): Promise<MeshSweep> {
   const sweep: MeshSweep = { offline: [] };
   await Promise.all(

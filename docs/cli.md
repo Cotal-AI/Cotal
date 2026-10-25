@@ -2612,9 +2612,10 @@ In open or static-auth mode, an unanswered `--server` address that differs from 
 retained by target resolution gives `TARGET_UNAVAILABLE`, naming the address that did not answer.
 Its Next names the recorded broker and says to drop `--server` to reach it. If resolution retained
 no registration, the Next says to check the address instead. The request is not sent to the
-recorded broker in its place, but target resolution without `--space` can separately probe recorded
-brokers before it probes the explicit address. This refusal wording does not describe the
-infrastructure report from `status`.
+recorded broker in its place. Target resolution given `--server` probes only records at that address,
+including when `--space` is omitted. `status --all` still checks every recorded address because
+`--all` asks for that scope. This refusal wording does not describe the infrastructure report from
+`status`.
 
 `space delete <name> --dry-run` reads the registered broker in open or static-auth mode.
 It requires the broker's mode to match the registration, and a static connection must

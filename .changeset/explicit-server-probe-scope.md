@@ -3,4 +3,4 @@
 "@cotal-ai/connector-core": patch
 ---
 
-Correct the explicit `--server` refusal documentation: target resolution without `--space` can probe recorded brokers before the explicit address. The request is not retried at a recorded broker, but this is not a promise that no other broker is contacted. The paragraph also distinguishes refusal wording from the separate `status` infrastructure report and records the case where no registration was retained.
+Clarify the explicit `--server` refusal documentation: the request is not retried at a recorded broker, and target resolution probes only records at the explicit address. The paragraph distinguishes refusal wording from the separate `status` infrastructure report, records the case where no registration was retained, and names the broader checks explicitly requested by `status --all`.
