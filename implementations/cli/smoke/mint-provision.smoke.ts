@@ -693,8 +693,8 @@ try {
     // The label has only --out files, so --replace has no standing credential to replace.
     const exportedOnly = await runMint(["grants", "--replace", "--json"]);
     const nothing = envelope(exportedOnly.out).warnings?.find((warning) => warning.code === "NOTHING_REPLACED")?.message ?? "";
-    check("--replace on a label with only --out files warns that it replaced nothing, naming each file and the mint that signs its key again",
-      exportedOnly.code === 0 && [first, again, other].every((path) => nothing.includes(`the file auth mint --out wrote for this label at ${path} is unchanged, and cotal auth mint grants --identity ${path} --out ${path} signs its key again`)), exportedOnly.out);
+    check("--replace on a label with only --out files names doctor auth without prescribing a key re-sign",
+      exportedOnly.code === 0 && nothing.includes(`exported files are unchanged; inspect them with \`cotal doctor auth --space ${SPACE}\``) && !nothing.includes("--identity") && !nothing.includes("signs its key again"), exportedOnly.out);
   }
 
   console.log(`\nMINT-PROVISION SMOKE OK ✅  (${pass} passed)`);

@@ -5864,8 +5864,8 @@ valid refuses `CONFLICT`, naming its expiry, and so does one that is not a nativ
 `--profile` still defaults to `agent`, so a replacement of an observer or admin credential needs
 `--profile observer` or `--profile admin`; a replacement with another profile than the one it
 replaced warns `REPLACED_PROFILE_CHANGED`. With no standing credential under the label, `--replace`
-mints a new one and warns `NOTHING_REPLACED`, naming any file `--out` wrote for that label and the
-`--identity <file> --out <file>` mint that signs its key again.
+mints a new one and warns `NOTHING_REPLACED`. Exported files stay unchanged; the warning names
+`doctor auth --space <space>` to inspect their state and the guidance for each file.
 `--replace` takes no `--out`. An exported file stays outside
 managed `.cotal` and workstation state. Its path, label, profile and public key, without the
 credential, are recorded under `credentials/` in the Cotal home so `doctor auth` lists the file. A pre-existing explicit output must be an owned private

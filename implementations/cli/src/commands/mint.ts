@@ -7,7 +7,7 @@ import {
   type FlagValues, type Identity, type ParsedArgs, type Profile, type SpaceAuth,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, assertExternalCredentialExport, agentCredsKey, agentSecretFilePaths, canonicalRoot, credentialMintFlags,
+  CommandFailure, assertExternalCredentialExport, agentCredsKey, agentSecretFilePaths, credentialMintFlags,
   isCommandFailure, preflightTarget, presentationOf,
   protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource,
   validateCredentialMintArguments,
@@ -16,7 +16,7 @@ import {
 } from "@cotal-ai/workspace";
 
 import { staticMintAuthority } from "../lib/credential-authority.js";
-import { credentialExportStore, recordCredentialExport } from "../lib/credential-exports.js";
+import { recordCredentialExport } from "../lib/credential-exports.js";
 import { noExpiryRecordPath, noExpiryRecordText } from "../lib/no-expiry-record.js";
 import { mintEndpointCaller } from "./mint-endpoint-caller.js";
 export { resolveMintTarget } from "../lib/credential-authority.js";
@@ -50,17 +50,12 @@ function replaceable(standing: string, name: string, target: object, revocations
 
 /** What `--replace` did that its receipt does not show: a replacement minted with another profile
  *  than the credential it replaced, as `--profile` defaults to agent, or a label with no standing
- *  credential, where it replaced nothing. Such a label's `--out` file is not its standing credential,
- *  so the warning names the mint that signs that file's key again. */
-function replaceNotes(replaced: Replaced | undefined, standing: boolean, profile: string, space: string, name: string, root: string): OutputWarning[] {
+ *  credential, where it replaced nothing. Doctor auth owns exported files' state-specific guidance. */
+function replaceNotes(replaced: Replaced | undefined, standing: boolean, profile: string, space: string, name: string): OutputWarning[] {
   if (replaced?.profile && replaced.profile !== profile)
     return [{ code: "REPLACED_PROFILE_CHANGED", target: { space, name, profile, replacedProfile: replaced.profile }, message: `the credential this replaced was minted with --profile ${replaced.profile}, and this one with --profile ${profile}, so it holds that profile's grants instead` }];
   if (standing) return [];
-  let exports: { path: string; profile: string }[];
-  try { exports = credentialExportStore(space).list().map(({ record: { value } }) => value).filter((entry) => entry.label === name && canonicalRoot(entry.root) === canonicalRoot(root) && existsSync(entry.path)); }
-  catch { exports = []; }
-  const files = exports.map((entry) => `; the file auth mint --out wrote for this label at ${entry.path} is unchanged, and cotal auth mint ${name}${entry.profile === "agent" ? "" : ` --profile ${entry.profile}`} --identity ${entry.path} --out ${entry.path} signs its key again`).join("");
-  return [{ code: "NOTHING_REPLACED", target: { space, name }, message: `--replace found no standing credential named "${name}", so this is a new standing credential and it replaced nothing${files}` }];
+  return [{ code: "NOTHING_REPLACED", target: { space, name }, message: `--replace found no standing credential named "${name}", so this is a new standing credential and it replaced nothing; exported files are unchanged; inspect them with \`cotal doctor auth --space ${space}\`` }];
 }
 
 /** A replaced credential with no expiry claim is not revoked by its replacement, so any copy of it
@@ -239,7 +234,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
     const warnings = [
       ...(result.identityReused && profile === "agent" ? [{ code: "NEW_OUT_OF_BAND_LIFECYCLE", target: { space, name }, message: "The native out-of-band mint reuses the nkey, not the old lifecycle UID. Old inbox/DM footprints were not claimed as reused." }] : []),
       ...replacedStillValid(replaced, identity.id, space, name),
-      ...(values.replace ? replaceNotes(replaced, standing !== undefined, profile, space, name, root) : []),
+      ...(values.replace ? replaceNotes(replaced, standing !== undefined, profile, space, name) : []),
     ];
     writeResult(presentationOf(values), { command: "auth mint", target: { space, name }, result, warnings }, (data): Report => ({ sections: [
       { title: "Private credential written", blocks: [{ kind: "fields", rows: [["Label", data.name], ["Space", data.space], ["Profile", data.profile], ["Principal", data.principal], ["Lifecycle", data.lifecycleUid ?? "not an agent lifecycle"], ...(data.grants ? grantRows(data.grants) : []), ["Private file", data.output], ...(data.replaced ? [["Replaced", `${data.replaced.state === "expired" ? `a credential that expired at ${expiry(data.replaced.expiresAt ?? undefined)}` : data.replaced.state === "revoked" ? `a credential whose key was revoked at ${expiry(data.replaced.revokedAt ?? undefined)}` : "a credential with no expiry claim"}, key ${data.replaced.publicKey}`]] as [string, string][] : []), ["Expiry", data.noExpiryRecord ? `no expiry claim, as --no-expiry asked; recorded in ${data.noExpiryRecord}` : `${expiry(data.expiresAt ?? undefined)}${data.defaultLifetime ? " (the 24-hour default)" : ""}`], ["Broker footprint", data.provisioned ? "native provisioning acknowledged" : "not provisioned by this command"]] }, { kind: "lines", lines: [{ text: "Credential contents were written privately, not printed. Provisioning is not presence, a joined agent or task completion. Fixed observer/admin profiles do not accept agent ACL overrides.", tone: "hint" }] }] },
