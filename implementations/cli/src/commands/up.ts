@@ -3531,7 +3531,7 @@ async function startDeliveryWithBroker(
     // Non-fatal (live messaging is unaffected) — but never SILENT: without the manager,
     // `spawn --detach` / cotal_spawn have no responder, and the operator must hear it here,
     // not as an unexplained "no manager reachable" later.
-    console.error(c.dim(`! control plane degraded: ${(e as Error).message} - durable delivery/manager may be down; start one with: cotal supervise`));
+    console.error(c.dim(`! control plane degraded: ${(e as Error).message} - durable delivery/manager may be down; spawn and retirement require a functioning control plane`));
     return undefined;
   }
 }

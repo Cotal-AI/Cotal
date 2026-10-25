@@ -804,6 +804,7 @@
     "smoke:spawn-lifecycle-state": "tsx bin/smoke/spawn-lifecycle-state.smoke.ts",
     "smoke:readiness:live": "tsx bin/smoke/readiness-window-live.smoke.ts",
     "smoke:setup-pure:live": "pnpm --filter @cotal-ai/cli... build && tsx bin/smoke/setup-pure-live.smoke.ts",
+    "smoke:up-control-plane-guidance:live": "tsx implementations/cli/smoke/up-control-plane-guidance.smoke.ts",
     "smoke:up-stack:live": "tsx bin/smoke/up-stack-live.smoke.ts",
     "smoke:stack-member-crash:live": "tsx implementations/cli/smoke/stack-member-crash-live.smoke.ts",
     "smoke:ext:live": "tsx bin/smoke/ext-live.smoke.ts",
