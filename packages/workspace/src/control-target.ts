@@ -190,8 +190,8 @@ export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?:
   const acceptedToken = process.env.COTAL_ACCEPTED_TOKEN?.trim();
   if (!name || !actor || !uid || (!seatSpace && !acceptedToken)) return undefined;
   if (flags.server && flags.space && !findMesh(flags.space)) return undefined;
-  // Sweep first when no space is named, as the operator resolution does, so a kept dead record is
-  // not a live candidate here either and the seat picks the same mesh the operator path would.
+  // Managed-seat resolution retains its sweep when no space is named, so a kept dead record is
+  // not a live candidate here. Operator resolution skips a sweep its selection does not read.
   const offline = flags.space ? [] : (await pruneStaleMeshes(flags.server)).offline;
   const mesh = resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server, offline });
   if (seatSpace && mesh.space !== seatSpace) return undefined;
