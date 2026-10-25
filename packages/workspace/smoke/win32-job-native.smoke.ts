@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { nativeWin32CreationToken, win32ProcessBinding, windowsCommandLine, windowsEnvironmentBlock } from "../src/win32-process.js";
+import { probeLiveness } from "../src/pid.js";
 
 assert.equal(process.platform, "win32", "this suite requires a native Windows runner");
 const root = mkdtempSync(join(tmpdir(), "win32-job-"));
@@ -23,7 +24,8 @@ const until = async (condition: () => boolean, ms = 10_000) => {
   for (const deadline = Date.now() + ms; Date.now() < deadline; await sleep(100)) if (condition()) return true;
   return condition();
 };
-const alive = (pid: number, token: string) => nativeWin32CreationToken(pid) === token;
+// A retained Windows process handle can keep its creation time readable after exit.
+const alive = (pid: number, token: string) => nativeWin32CreationToken(pid) === token && probeLiveness(pid) !== "dead";
 
 // A helper process holds one job, as a custodian does, and answers one JSON request per line.
 const dist = pathToFileURL(join(fileURLToPath(new URL("..", import.meta.url)), "dist", "win32-process.js")).href;
@@ -111,8 +113,11 @@ try {
   let left: number[] = [];
   for (const deadline = Date.now() + 10_000; Date.now() < deadline; await sleep(100)) if ((left = (await one.call("jobProcesses")).value as number[]).every((pid) => pid === launched.pid)) break;
   console.log(JSON.stringify({ exitedProgramListed: left.includes(launched.pid) }));
+  const rootExit = (await one.call("rootExit")).value;
+  const descendants = [...tokens].map(([pid, token]) => ({ pid, token, current: nativeWin32CreationToken(pid), liveness: probeLiveness(pid) }));
+  console.log(JSON.stringify({ rootExit, descendants }));
   check("J13 terminate empties the job and the program exits with its code",
-    left.every((pid) => pid === launched.pid) && (await one.call("rootExit")).value === 7 && [...tokens].every(([pid, token]) => !alive(pid, token)), { left });
+    left.every((pid) => pid === launched.pid) && rootExit === 7 && [...tokens].every(([pid, token]) => !alive(pid, token)), { left, rootExit, descendants });
 
   const two = helper();
   const secondLog = join(root, "two.log");
