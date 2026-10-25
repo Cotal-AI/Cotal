@@ -494,7 +494,7 @@ export function stackElsewhereRemedy(root: string, recordedRoot: string, space: 
   if (existsSync(stackJournalPath(recordedRoot))) return `use the stack from ${recordedRoot}, which holds it; this copy does not`;
   let block: StackAdoptionBlock | undefined | null;
   try { block = stackAdoptionBlock(root, recordedRoot, space, members); } catch { block = null; }
-  const adopt = block === undefined ? `adopt it with cotal space create ${space} --adopt --root ${shellPath(root)}` : block?.kind === "recorded" ? block.remedy : undefined;
+  const adopt = block === undefined ? `adopt it with \`cotal space create ${space} --adopt --root ${shellPath(root)}\`` : block?.kind === "recorded" ? block.remedy : undefined;
   if (adopt === undefined) return movedRootRemedy(recordedRoot);
   if (rootPathProblem(recordedRoot) !== undefined) return `to run it from this folder, ${adopt}; cotal up refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`;
   return block === undefined

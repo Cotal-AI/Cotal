@@ -139,7 +139,7 @@ check("up in a copied folder refuses CONFLICT, exit 2, naming the folder its jou
   copied.status === 2 && copied.envelope?.error?.code === "CONFLICT" && (copied.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was copied from there`) && copied.envelope.error.remedy === `use the stack from ${root}, which holds it; this copy does not`, shown(copied));
 renameSync(root, moved);
 // Nothing on this machine records la07 or an instance of its stack, so moving back would not start it.
-const adoptOnly = `adopt it with cotal space create la07 --adopt --root ${moved}; this machine records neither "la07" nor an instance of its stack, so moving the folder back would not start it`;
+const adoptOnly = `adopt it with \`cotal space create la07 --adopt --root ${moved}\`; this machine records neither "la07" nor an instance of its stack, so moving the folder back would not start it`;
 const movedUp = run(["up", "--json"], moved);
 const movedStatus = run(["status", "--json"], moved), movedWho = run(["whoami", "--json"], moved);
 // A broker from an earlier release that kept running after the move created empty store folders there.
@@ -297,7 +297,7 @@ rmSync(linked, { recursive: true, force: true });
     plain.status === 2 && plain.envelope?.error?.code === "CONFLICT" && plain.envelope.error.remedy === `adopt it with ${command}`, shown(plain));
   const status = run(["status", "--json"], brought), up = run(["up", "--json"], brought);
   check("status there names the same step as up, which adopts it",
-    up.status === 2 && (up.envelope?.error?.remedy ?? "").startsWith(`adopt it with ${command};`) && (status.envelope?.result?.hints ?? []).includes(up.envelope?.error?.remedy ?? "-"), { status: shown(status), up: shown(up) });
+    up.status === 2 && (up.envelope?.error?.remedy ?? "").startsWith(`adopt it with \`${command}\`;`) && (status.envelope?.result?.hints ?? []).includes(up.envelope?.error?.remedy ?? "-"), { status: shown(status), up: shown(up) });
   const adopted = run(["space", "create", "la07", "--adopt", "--json"], brought);
   const journal = JSON.parse(readFileSync(path, "utf8")) as { root: string; space: string; server: string; broker?: { storeDir: string }; members: { instanceId: string | null; state: string }[] };
   renameSync(away, root);
@@ -315,7 +315,7 @@ rmSync(linked, { recursive: true, force: true });
   writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), root: `${root}\tx` }, null, 2) + "\n", { mode: 0o600 });
   const up = run(["up", "--json"], renamed);
   check("up there refuses CONFLICT and names only the adopt command, since up refuses the recorded path",
-    up.status === 2 && up.envelope?.error?.code === "CONFLICT" && (up.envelope.error.message ?? "").includes("so this folder was moved from there") && up.envelope.error.remedy === `to run it from this folder, adopt it with cotal space create la07 --adopt --root ${renamed}; cotal up refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`, shown(up));
+    up.status === 2 && up.envelope?.error?.code === "CONFLICT" && (up.envelope.error.message ?? "").includes("so this folder was moved from there") && up.envelope.error.remedy === `to run it from this folder, adopt it with \`cotal space create la07 --adopt --root ${renamed}\`; cotal up refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`, shown(up));
   const adopted = run(["space", "create", "la07", "--adopt", "--json"], renamed);
   check("--adopt there rewrites the journal to name this folder", adopted.status === 0 && (JSON.parse(readFileSync(path, "utf8")) as { root: string }).root === renamed, shown(adopted));
   check("rig: forget the adopted space", run(["space", "forget", "la07", "--json"], renamed).status === 0);

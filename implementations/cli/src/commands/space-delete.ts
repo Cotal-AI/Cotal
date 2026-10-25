@@ -78,13 +78,13 @@ function liveStackRefusal(entry: MeshEntry, space: string, preview = false): Com
     // `down` refuses while another service of the space runs, so each one is stopped first. With
     // only the broker left after that, the delete itself applies.
     const stack = users.filter((name) => !services.some((service) => service.definition === name));
-    const stops = services.map((service) => `cotal service stop ${service.definition} --instance ${service.instanceId} --space ${space} --yes`).join("; ");
+    const stops = services.map((service) => `\`cotal service stop ${service.definition} --instance ${service.instanceId} --space ${space} --yes\``).join("; ");
     return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `services of this space still run here (${users.join(", ")}) and use these streams${deleted}`, { target: { space, root: entry.root, running: users }, remedy: stack.length
-      ? `stop each service with ${stops}, then stop the stack with cotal down --yes from ${entry.root}, then remove its stored streams with cotal reset store ${space} --yes`
-      : `stop each service with ${stops}, then run cotal space delete ${space} again` });
+      ? `stop each service with ${stops}, then stop the stack with \`cotal down --yes\` from ${entry.root}, then remove its stored streams with \`cotal reset store ${space} --yes\``
+      : `stop each service with ${stops}, then run \`cotal space delete ${space}\` again` });
   }
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this space's stack still runs here (${users.join(", ")}) and uses these streams${deleted}`, { target: { space, root: entry.root, running: users }, remedy: controller
-    ? `stop it with cotal down --yes from ${entry.root}, then remove its stored streams with cotal reset store ${space} --yes`
+    ? `stop it with \`cotal down --yes\` from ${entry.root}, then remove its stored streams with \`cotal reset store ${space} --yes\``
     : `stop it with cotal down from ${entry.root}, then remove its stored streams with cotal clean store --force there` });
 }
 

@@ -803,7 +803,7 @@ export const processGone = (state: string) => state === "gone" || state === "pre
 export function stackScopeRefusals(journal: StackJournal, next: string): void {
   const memberIds = new Set(journal.members.flatMap((row) => row.instanceId === null ? [] : [row.instanceId]));
   const others = serviceInstances(journal.space).filter((row) => !memberIds.has(row.name) && (!processGone(observeServiceProcess(row.record.value)) || ["starting", "stopping", "unknown"].includes(row.record.value.state)));
-  if (others.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "other service instances in this space are live or unresolved and depend on its broker; the broker was not stopped under them", { target: { space: journal.space, dependants: others.map((row) => ({ definition: row.record.value.definition, instanceId: row.name })) }, remedy: `stop each with ${others.map((row) => `cotal svc stop ${row.record.value.definition} --instance ${row.name} --space ${journal.space} --yes`).join("; ")}, then run ${next}` });
+  if (others.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "other service instances in this space are live or unresolved and depend on its broker; the broker was not stopped under them", { target: { space: journal.space, dependants: others.map((row) => ({ definition: row.record.value.definition, instanceId: row.name })) }, remedy: `stop each with ${others.map((row) => `\`cotal svc stop ${row.record.value.definition} --instance ${row.name} --space ${journal.space} --yes\``).join("; ")}, then run ${next}` });
   // A record whose process is gone, or whose pid now runs another start, fronts nothing.
   const legacy = localRecords(journal.root, journal.space).filter((row) => row.state === "live");
   if (legacy.length) {
