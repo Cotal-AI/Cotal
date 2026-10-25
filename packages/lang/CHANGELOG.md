@@ -1,5 +1,9 @@
 # @cotal-ai/lang
 
+## 0.101.1
+
+No changes in this release.
+
 ## 0.101.0
 
 ### Patch Changes

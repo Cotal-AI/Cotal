@@ -1,5 +1,33 @@
 # @cotal-ai/manager
 
+## 0.101.1
+
+### Patch Changes
+
+- 119562e: A Windows pty seat now reports its real process id. ConPTY creates the child after the spawn
+  returns, and the manager kept the pid it read then, which was 0, so `ps --wide` and the reap line
+  named pid 0 for a Windows seat. The pid is now read when asked, and it is absent until ConPTY has
+  created the process.
+- 0379e03: Process services, and with them a prepared stack's `cotal up` and `cotal down`, run on Windows. Each
+  background service runs under a detached custodian that creates the program inside a job object,
+  which allows no breakaway and ends every member when the custodian exits. The instance records the
+  machine, the account's SID and the custodian's pin in place of a UID and boot ID. The machine is the
+  system ID Windows documents for a publisher's apps (`GetSystemIdForPublisher`), with the TPM, UEFI
+  or registry source it came from; a service start refuses when Windows has none. Commands reach the
+  custodian over a named pipe with a per-instance capability that both sides prove on every request. A
+  stop terminates the whole job, and `service status` reports `members-running` when the program
+  exited while its job still holds processes. A manager is woken for its native stop through its
+  cooperative local stop request. A foreground start, and a manager stop that would keep agents in its
+  job, refuse on Windows. `cotal down` refuses a member whose program exited while its job still runs,
+  and names the stop that ends it.
+- Updated dependencies [091498f]
+- Updated dependencies [446fd91]
+- Updated dependencies [bdafbf9]
+- Updated dependencies [0379e03]
+  - @cotal-ai/workspace@0.101.1
+  - @cotal-ai/core@0.101.1
+  - @cotal-ai/seat@0.101.1
+
 ## 0.101.0
 
 ### Minor Changes
