@@ -6219,6 +6219,14 @@ provisioned for a console session, `PERMISSION_DENIED` for credentials the broke
 `TARGET_UNAVAILABLE` for a broker that does not answer, and `UNSUPPORTED` for a broker without the
 TLS the join requires.
 
+A running join that cannot come back ends the same way, with its reason and its Next. When it
+re-establishes its connection and finds its inbox gone from the broker, as after `reset store` while
+it was disconnected, it ends `TARGET_NOT_FOUND` and says to run the same `cotal join` again, or, for
+a `--creds` join, to mint the credential again with `--provision`. When the broker rejects its
+credential for good, as after `reset space`, it ends with the refusal a one-shot command with that
+credential gets, as `history --follow` does. A user-auth join keeps re-establishing in both cases,
+and an open or `--token` join when the broker rejects it.
+
 ## Manifest deploys
 
 A `cotal.yaml` manifest declares a whole mesh (channels, personas, roles, and ACLs) in one file.

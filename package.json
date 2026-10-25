@@ -761,6 +761,7 @@
     "smoke:join-denial-guidance": "tsx implementations/cli/smoke/join-denial-guidance.smoke.ts",
     "smoke:join-external:live": "tsx implementations/cli/smoke/join-external-broker-live.smoke.ts",
     "smoke:join-durable-dedup:live": "tsx implementations/cli/smoke/join-durable-dedup-live.smoke.ts",
+    "smoke:join-session-lost:live": "tsx implementations/cli/smoke/join-session-lost-live.smoke.ts",
     "smoke:app-identity:live": "tsx implementations/cli/smoke/app-identity-live.smoke.ts",
     "smoke:conversation-selection-live": "tsx implementations/cli/smoke/conversation-selection-live.smoke.ts",
     "smoke:conversation-approval-live": "tsx implementations/cli/smoke/conversation-approval-live.smoke.ts",

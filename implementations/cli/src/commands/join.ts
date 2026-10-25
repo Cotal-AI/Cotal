@@ -13,13 +13,16 @@ import {
   partsToText,
   peerLabel,
   presenceText,
+  isConsumerNotFound,
   type Delivery,
   type EndpointKind,
   type PresenceStatus,
   type CotalMessage,
   type ParsedArgs,
+  type SpaceAuth,
 } from "@cotal-ai/core";
 import { CommandFailure, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry } from "@cotal-ai/workspace";
+import { credentialEnded } from "../lib/connect.js";
 import { resolveSpace } from "../lib/status.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
 import { activityAge, c, presenceDetail, statusBadge, stderrLine } from "../ui.js";
@@ -132,6 +135,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   let space: string;
   let server: string;
   let userConnection: Connection | undefined;
+  let mintedFrom: SpaceAuth | undefined;
   // An explicit connection (a join link, --token, or --creds) is taken at face value — that's the
   // escape hatch. Otherwise resolve the running mesh from any directory (server + trust material)
   // and self-mint, so a bare `cotal join` works outside the project instead of crashing credless.
@@ -215,6 +219,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
           durableMembership: false,
           lifecycleUid,
         });
+        mintedFrom = target.auth;
         await prov.stop();
       } catch (e) {
         // The self-mint step runs BEFORE ep.start(), so its auth/provisioning failure must render
@@ -338,8 +343,49 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       );
   });
 
-  ep.on("error", (e: Error) => print(c.red(`! ${e.message}`)));
-  ep.on("warning", (e: Error) => print(c.yellow(`! ${e.message}`)));
+  // A session that cannot come back ends with the reason and what to run, rather than retrying for
+  // good. A reconnect that finds its inbox gone from the broker cannot bind it again. A credential
+  // the broker now refuses for good ends it with the refusal a one-shot command with that credential
+  // gets, as `history --follow` ends. A user-auth join's inbox is the operator's to provision and its
+  // bearer renewal reports a changed trust, so it keeps re-establishing.
+  const credential: Connection | undefined = auth.creds === undefined ? undefined
+    : { server, space, tls: auth.tls, creds: auth.creds, ...(mintedFrom ? { auth: mintedFrom } : {}) };
+  let started = false, connected = false, checking = false;
+  let lose!: (failure: Error) => void;
+  const lost = new Promise<Error>((resolve) => { lose = resolve; });
+  const checkCredential = () => {
+    if (!started || checking || credential === undefined) return;
+    checking = true;
+    void credentialEnded(credential).catch(() => undefined).then((refusal) => {
+      checking = false;
+      if (refusal) lose(refusal);
+    });
+  };
+  ep.on("connection", ({ connected: up }: { connected: boolean }) => {
+    connected = up;
+    if (!up) checkCredential();
+  });
+  ep.on("error", (e: Error) => {
+    print(c.red(`! ${e.message}`));
+    checkCredential();
+  });
+  ep.on("warning", (e: Error) => {
+    if (started && !connected && !userConnection && isConsumerNotFound(e))
+      return lose(new CommandFailure("refused", "TARGET_NOT_FOUND", "this join can no longer reconnect: its inbox is gone from the broker", {
+        target: { space },
+        remedy: values.creds
+          ? "ask the space's owner to mint the credential again with `cotal auth mint <name> --provision`, then join with the lifecycle UID that mint reports"
+          : "run the same cotal join again to start a new session",
+      }));
+    print(c.yellow(`! ${e.message}`));
+  });
+  /** Leave once the session is lost: stop the endpoint and end with its refusal. */
+  const whenLost = async (): Promise<never> => {
+    const failure = await lost;
+    rl?.close();
+    try { await ep.stop(); } catch { /* it ends either way */ }
+    throw failure;
+  };
 
   try {
     await ep.start();
@@ -348,6 +394,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     // surface that (and an auth reject) as ONE classified refusal, not a raw NATS stack.
     throw joinAuthFailure(e, space, values.creds ? lifecycleUid : undefined) ?? e;
   }
+  started = true;
 
   // `/quit` leaves with 0; a signal leaves the same way and exits with its code.
   const shutdown = async (code = 0) => {
@@ -363,8 +410,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     console.log(
       c.dim(`${peerLabel({ name, role: values.role })} holding presence in ${space} - headless`),
     );
-    await new Promise<void>(() => {}); // park; event handlers do the work
-    return;
+    return whenLost(); // park; event handlers do the work
   }
 
   console.log(
@@ -459,4 +505,5 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     }
     rl.prompt();
   });
+  await whenLost();
 }
