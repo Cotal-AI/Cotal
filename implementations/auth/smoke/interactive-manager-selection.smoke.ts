@@ -12,7 +12,7 @@ import { Kvm } from "@nats-io/kv";
 import { createSpaceAuth, epAuthBucket, isReachable, mintCreds, mintLifecycleUid, newIdentity,
   permissionsFor, recordSpecKey, recordStatusKey, recordsBucket, RECORD_KINDS, remoteManagerActors,
   serverConfig, setupSpaceStreams, standaloneConnectOpts } from "@cotal-ai/core";
-import { authDir, assertUserAuthInfo, loadManagerInstanceIdentity, recordMesh, resolveControlTarget, saveSpaceAuth, spaceSegment,
+import { authDir, assertUserAuthInfo, isConnectRefusal, loadManagerInstanceIdentity, recordMesh, resolveControlTarget, saveSpaceAuth, spaceSegment,
   userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { cotalAuthProvider, deriveOwnerForIdpSubject, grantActor, grantManagedActor, loadAuthServiceInfo,
   loadOwnerSecret, newActorToken, runAuthService, saveIdpSession } from "@cotal-ai/auth";
@@ -193,6 +193,14 @@ try {
       check(`${name} local refuses despite live owned remote`, (await exchange()).status === 401);
       await gates.put(key, original.value);
     }
+    // A view issued while the gate was open, then refused by the callout as the command connects:
+    // nothing was published, so the call is a refusal that keeps the broker's words.
+    const issued = await exchange(local.instanceId);
+    await gates.put(key, JSON.stringify({ ...row, state: "frozen", op: { opId: mintLifecycleUid(), kind: "takeover" } }));
+    let refused: unknown;
+    try { await nativePs(issued.body.token!); } catch (error) { refused = error; } finally { await gates.put(key, original.value); }
+    check("a view refused at connect is refused as not sent, with the broker's words", issued.status === 200 && isConnectRefusal(refused)
+      && refused.code === "PERMISSION_DENIED" && refused.kind === "transient" && refused.message.includes("(Authorization Violation), so nothing was sent to the manager"));
     const spec = await records.get(recordSpecKey(RECORD_KINDS.svc, ["manager", local.instanceId]));
     check("selected local gate is attributed to persisted serve principal", row.principal === `local.${local.serveIdentity.id}`);
     check("selected local gate/status epoch and spec revision agree", !!spec && JSON.parse(new TextDecoder().decode((await records.get(recordStatusKey(RECORD_KINDS.svc, ["manager", local.instanceId])))!.value)).epoch === row.processEpoch && spec.revision === row.registrationRevision);
@@ -206,7 +214,7 @@ try {
   await new Promise<void>(r => idp.close(() => r()));
   check("owned child PID/start/cwd generations exited", children.every(x => { try { const now = identity(x.pid); return now.start !== x.start || now.cwd !== x.cwd; } catch (error) { return ["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? ""); } }));
   check("owned broker and listener ports closed", (await Promise.all([port, issuerPort, exchangePort].filter(Boolean).map(gone))).every(Boolean));
-  if (checks.every(x => x.ok)) assert.equal(checks.length, 28, "all named selection, scope and cleanup cells ran");
+  if (checks.every(x => x.ok)) assert.equal(checks.length, 29, "all named selection, scope and cleanup cells ran");
   if (managerClosed && checks.slice(-2).every(x => x.ok) && existsSync(root)) rmSync(root, { recursive: true });
   const failed = checks.filter(x => !x.ok).length;
   process.stdout.write(JSON.stringify({ checks: checks.length, passed: checks.length - failed, failed }) + "\n");
