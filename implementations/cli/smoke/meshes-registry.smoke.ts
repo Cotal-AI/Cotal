@@ -1005,7 +1005,7 @@ try {
   let busyError: Error | undefined;
   await claimSpace("claimed-busy", DEAD, localRoot).catch((e: Error) => void (busyError = e));
   check("a live holder at another root is refused as in use, naming `cotal down`",
-    claimRefused(busyError, "CONFLICT") && busyError?.message.includes(`already in use by a mesh at ${LIVE}`) === true && remedyOf(busyError).includes("`cotal down` it first") && JSON.stringify(findMesh("claimed-busy")) === busyBefore,
+    claimRefused(busyError, "CONFLICT") && busyError?.message.includes(`already in use by a mesh at ${LIVE}`) === true && remedyOf(busyError).includes("cotal up --space <name>") && remedyOf(busyError).includes(`cotal down in ${root}`) && JSON.stringify(findMesh("claimed-busy")) === busyBefore,
     claimText(busyError));
   removeMesh("claimed-busy");
   recordMesh({ space: "reclaimable", server: DEAD, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
