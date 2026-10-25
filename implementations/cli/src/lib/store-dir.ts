@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve, sep, isAbsolute } from "node:path";
 import { token } from "@cotal-ai/core";
-import { authDir, c, CommandFailure, controlDirectory, foreignStoreEntries, loadMeshes, loadPreparedSpaces, protectedLocalDirectory } from "@cotal-ai/workspace";
+import { authDir, c, CommandFailure, controlDirectory, foreignStoreEntries, loadMeshes, loadPreparedSpaces, protectedLocalDirectory, shellPath } from "@cotal-ai/workspace";
 import { readStackJournal } from "./stack-journal.js";
 
 /** The stores the broker configurations `root`'s starts rendered name. */
@@ -202,8 +202,8 @@ export function storeWriteProblem(storeDir: string): { path: string; message: st
       readable = false;
     }
     return readable
-      ? { path, message: `the broker store ${path} is not writable by this account (${code}), so the broker cannot start JetStream there`, remedy: `make it writable by you, for example with chmod -R u+w ${path}` }
-      : { path, message: `the broker store ${path} is not readable or writable by this account (${code}), so the broker cannot start JetStream there`, remedy: `make it readable and writable by you, for example with chmod -R u+rwX ${path}` };
+      ? { path, message: `the broker store ${path} is not writable by this account (${code}), so the broker cannot start JetStream there`, remedy: `make it writable by you, for example with chmod -R u+w ${shellPath(path)}` }
+      : { path, message: `the broker store ${path} is not readable or writable by this account (${code}), so the broker cannot start JetStream there`, remedy: `make it readable and writable by you, for example with chmod -R u+rwX ${shellPath(path)}` };
   }
 }
 
