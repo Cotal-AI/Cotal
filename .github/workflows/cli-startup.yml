@@ -26,7 +26,7 @@ jobs:
       - run: pnpm --filter "cotal-ai..." build
       - name: Read macOS process identity through the native binding
         run: pnpm exec tsx packages/workspace/smoke/darwin-process-native.smoke.ts
-      - name: Start, query, refresh and stop both project routes
+      - name: Start, query, refresh and stop both project routes, and spawn and stop a stand-in agent
         env:
           COTAL_STARTUP_RESULTS: ${{ runner.temp }}/cli-startup-result.json
         run: pnpm exec tsx bin/smoke/startup-native.smoke.ts
@@ -76,7 +76,7 @@ jobs:
       - name: Run the pty runtime inside a service job
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: pnpm exec tsx implementations/manager/smoke/windows-pty-job.smoke.ts
-      - name: Start, query, refresh and stop both project routes
+      - name: Start, query, refresh and stop both project routes, and spawn and stop a stand-in agent
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
           COTAL_STARTUP_RESULTS: ${{ runner.temp }}/cli-startup-result.json
