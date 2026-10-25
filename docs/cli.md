@@ -2886,7 +2886,10 @@ endpoint response or OS unit-state check. Legacy PID-file rows are labeled separ
 whose controller stack serves the selected space, its members are the `stack-` rows here, the
 legacy rows and the stored-state hint are omitted, and when the stack does not answer or a member's
 process is gone, Next offers `cotal up --root <root>` first, with `<root>` quoted when a shell would
-split it. When an earlier `down`, or a foreground
+split it. In open or static-auth mode, an unreachable `--server` address other than the recorded
+one says nothing about whether the stack answers. Next offers `up --root` only for a member whose
+process is gone, and names the failed address the way other commands' `TARGET_UNAVAILABLE` refusal does.
+When an earlier `down`, or a foreground
 `up` whose terminal closed, ended after it signalled the broker or the delivery daemon and before it
 saw that process exit, `up` and `down` refuse until that stop is abandoned. `status` then says so
 under the selected space, names the member, and offers `cotal down --abandon-stop <request-id> --yes`

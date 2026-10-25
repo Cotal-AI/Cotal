@@ -7,7 +7,9 @@
  *     project folder's name needs shell quoting. This hint, the `chmod u+w` a persona catalog that
  *     cannot be written names, the `space create --root` that `status` names after a forget, the
  *     home screen's `up --root` row for a space prepared there, and the `space create --adopt`
- *     remedy once the folder is moved all quote it, so each pastes as one word.
+ *     remedy once the folder is moved all quote it, so each pastes as one word. Before that, with the
+ *     stack running, `status --server` at an address nothing answers at offers no restart and names
+ *     that address and the recorded broker.
  *  2. `ps` refuses: no manager is running for this space, and its Next names bare `cotal up`.
  *     `chat` refuses TARGET_UNAVAILABLE once its describe goes unanswered, pointing to `status`.
  *  3. `up` starts the manager again, and `ps` is answered.
@@ -113,6 +115,15 @@ try {
     if (!answered) await sleep(2000);
   }
   check("the detached manager answers", answered);
+  // A `--server` address nothing answers at says nothing about whether this stack runs, so status
+  // offers no restart and names that address, as the refusal of other commands does.
+  const closed = `nats://127.0.0.1:${await freePort()}`;
+  const elsewhere = cli("status", "--server", closed, "--json");
+  const named = `nothing answered at ${closed}, the broker address --server named; check that address, or drop --server to reach "crash" at nats://127.0.0.1:${PORT}, where it is recorded`;
+  check("with the stack running, status --server at an address nothing answers at names it and the recorded broker",
+    elsewhere.status === 0 && (JSON.parse(elsewhere.stdout).result?.hints as string[] | undefined)?.includes(named) === true, elsewhere.out);
+  const elsewhereText = cli("status", "--server", closed);
+  check("...and its Next offers no restart of stopped members", elsewhereText.status === 0 && elsewhereText.out.includes("\nNext\n") && !elsewhereText.out.includes("stopped members"), elsewhereText.out);
 
   const pid = managerPid();
   check("status names the running manager's PID", pid !== undefined && alive(pid), pid);
