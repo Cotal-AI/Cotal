@@ -3516,7 +3516,7 @@ async function startDeliveryWithBroker(
   try {
     const plane = await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) });
     // #1576: `up` either BINDS the responder or SAYS SO HERE. The delivery daemon is a hard
-    // dependency of spawn, retirement and join, and this function used to return `true` for a boot
+    // dependency of spawn, retirement and the durable backstop, and this function used to return `true` for a boot
     // that started a daemon whose responder never bound — so `cotal up` printed its success banner
     // over a control plane that could not perform any of the three. The reporter's fleet ran 22
     // hours in that state. This is not a failure of `up` (live messaging is unaffected and the

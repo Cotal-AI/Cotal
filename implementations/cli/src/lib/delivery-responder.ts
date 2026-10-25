@@ -36,7 +36,7 @@
  * for the rules themselves are on the core definitions.
  */
 import type { DeliveryLeaseInfo } from "@cotal-ai/core";
-import { LEASE_TTL_MS, responderFromLease, responderStateFromReader, type ResponderState } from "@cotal-ai/core";
+import { LEASE_TTL_MS, livenessConsequence, responderFromLease, responderStateFromReader, type ResponderState } from "@cotal-ai/core";
 
 /** What is known about the responder, as opposed to the process. THE definition now lives in core
  *  ({@link ResponderState}) so the liveness probe and these status surfaces grade identically; this
@@ -61,14 +61,14 @@ export type DeliveryResponderState = ResponderState;
  *  ("boot durable joins will reconcile when it is") and nothing else: true, but it told an operator
  *  nothing about what was broken MEANWHILE, so a 22-hour outage read as a progress note. The
  *  reconcile is real and does run once a daemon binds; what nobody was told is that until it binds,
- *  these three operations cannot complete. */
-export const RESPONDER_UNBOUND_CONSEQUENCE =
-  "no spawn, no retirement, no join until it binds";
+ *  spawn, retirement and the durable backstop cannot complete. Joins, DMs and live posts do not wait
+ *  for it. Core's liveness probe prints the same sentence, so it is that one rather than a copy. */
+export const RESPONDER_UNBOUND_CONSEQUENCE = livenessConsequence("delivery");
 
 /** A stale lease in plain words: the daemon that held it died, and its record stays until the lease
- *  expires, so the three operations wait for a new daemon. */
+ *  expires, so spawn, retirement and the durable backstop wait for a new daemon. */
 export const RESPONDER_STALE_TEXT =
-  `the delivery daemon died and its ${LEASE_TTL_MS / 1000} s lease has not expired yet, so spawn, retirement and join wait until a new daemon binds`;
+  `the delivery daemon died and its ${LEASE_TTL_MS / 1000} s lease has not expired yet, so spawn, retirement and the durable backstop wait until a new daemon binds; joins, DMs and live posts still work`;
 
 /** Classify a shard-0 lease record. `undefined` means the lease key is absent, which on a mesh that
  *  HAS a delivery daemon recorded is an unbound responder, not a missing opinion: the daemon creates

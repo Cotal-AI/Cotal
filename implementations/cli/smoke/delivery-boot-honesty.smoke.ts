@@ -134,7 +134,7 @@ try {
   check("CELL: ensureDelivery reports responderBound FALSE over an unbound responder",
     result.responderBound === false, result);
   check("CELL: its message names the CONSEQUENCE, not just a pending reconcile",
-    /no spawn, no retirement, no join until it binds/.test(out), out);
+    /no spawn, no retirement and no durable backstop until it binds; joins, DMs and live posts still work/.test(out), out);
   check("CELL: its message no longer promises only that joins 'will reconcile when it is'",
     !/boot durable joins will reconcile when it is/.test(out), out);
   check("CELL: it says the wait is open-ended rather than implying it is handled",
