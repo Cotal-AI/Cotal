@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -11,7 +11,7 @@ import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/
 process.umask(0o077);
 const source = resolve(import.meta.dirname, "../..");
 const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: source, encoding: "utf8" }).trim();
-const root = mkdtempSync(join(tmpdir(), "cotal-startup-native-"));
+const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-startup-native-")));
 const receipt = process.env.COTAL_STARTUP_RESULTS ?? join(root, "result.json");
 const logs = `${receipt}.logs`;
 mkdirSync(logs, { mode: 0o700 });
