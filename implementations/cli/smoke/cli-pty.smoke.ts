@@ -219,9 +219,9 @@ try {
     usageOf(serviceAdd.all).join("\n") === ["  cotal service add [name]", "  [--file <definition.json>|", "  --preset <name> <declared-options>]"].join("\n"),
     usageOf(serviceAdd.all),
   );
-  const listing = await helpAt(["help", "--all"], 40);
-  check("cotal help --all on a 40-column terminal fits every line", listing.exitCode === 0 && fit(listing.shown, 40).length === 0 && listing.all.length > 10, fit(listing.shown, 40));
-  check("on 40 columns cotal help --all wraps its title", listing.all[0] === "cotal - lateral agent coordination over" && listing.all[1] === "NATS", listing.all.slice(0, 2));
+  const listing = await helpAt(["help"], 40);
+  check("cotal help on a 40-column terminal fits every line", listing.exitCode === 0 && fit(listing.shown, 40).length === 0 && listing.all.length > 10, fit(listing.shown, 40));
+  check("on 40 columns cotal help wraps its title", listing.all[0] === "cotal - lateral agent coordination over" && listing.all[1] === "NATS", listing.all.slice(0, 2));
 
   // A classified failure is a report: its message, a labeled record of outcome and code, and the
   // remedy under `Next`, which wraps at spaces with its continuation under its text.

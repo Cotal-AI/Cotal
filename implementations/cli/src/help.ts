@@ -4,7 +4,7 @@
  * connects, writes, seeds or imports an extension.
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, getCurrent, loadMeshes, loadPreparedSpaces, readMesh, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, getCurrent, loadMeshes, loadPreparedSpaces, localeIsUtf8, plainPunctuation, readMesh, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
@@ -114,15 +114,16 @@ function label(cmd: Command | Subcommand): string {
   return [cmd.name, ...(cmd.aliases ?? [])].join(", ");
 }
 
-/** Commands help lists: never `__` internals; `hidden` ones only with `all`. */
-function listed(commands: readonly Command[], all: boolean): Command[] {
-  return commands.filter((cmd) => !cmd.name.startsWith("__") && (all || !cmd.hidden));
+/** Commands help lists: never `__` internals or `hidden` ones. A hidden command stays callable. */
+function listed(commands: readonly Command[]): Command[] {
+  return commands.filter((cmd) => !cmd.name.startsWith("__") && !cmd.hidden);
 }
 
-/** The grouped command list. With `all`, hidden commands are included. */
-export function printCommandList(commands: readonly Command[], all: boolean): void {
-  if (!all) return printEntry(commands);
-  const visible = listed(commands, all);
+/** `cotal help`: the title, the entry screen, then every listed command by group. Under a locale
+ *  that is not UTF-8 the summaries are written with plain punctuation, as the entry screen is. */
+export function printCommandList(commands: readonly Command[]): void {
+  const visible = listed(commands);
+  const ascii = !localeIsUtf8();
   const groups = new Map<string, Command[]>();
   for (const cmd of visible) {
     const g = cmd.group ?? "Commands";
@@ -135,20 +136,22 @@ export function printCommandList(commands: readonly Command[], all: boolean): vo
   const ordered = [...groups.entries()].sort(([a], [b]) => rank(a) - rank(b));
   const pad = Math.max(...visible.map((cmd) => label(cmd).length));
   const width = terminalWidth(process.stdout);
-  let out = `${hang("", title(), width).join("\n")}\n`;
+  console.log(`${hang("", title(), width).join("\n")}\n`);
+  printEntry(commands, true);
+  let out = "";
   for (const [group, cmds] of ordered) {
     out += `\n${hang("", group, width, c.bold).join("\n")}\n`;
     // Padded to the widest name in every group, so the descriptions line up across groups.
-    out += `${describe(cmds.map((cmd) => label(cmd).padEnd(pad)), cmds.map((cmd) => cmd.summary), width).join("\n")}\n`;
+    out += `${describe(cmds.map((cmd) => label(cmd).padEnd(pad)), cmds.map((cmd) => (ascii ? plainPunctuation(cmd.summary) : cmd.summary)), width).join("\n")}\n`;
   }
   const notes = ["Every command also takes --no-color (no ANSI color) and --no-input (never prompt).", "Run `cotal help <command>` for a command's flags."];
-  if (!all && listed(commands, true).length > visible.length) notes.push("Run `cotal help --all` to include hidden commands.");
   for (const note of notes) out += `\n${hang("", note, width, c.dim).join("\n")}`;
   console.log(out);
 }
 
-/** The approved compact entry screen. Its context comes from local records only. */
-export function printEntry(commands: readonly Command[]): void {
+/** The approved compact entry screen. Its context comes from local records only. With `listing`, the
+ *  command groups follow it, so it leaves out the lines that point to them. */
+export function printEntry(commands: readonly Command[], listing = false): void {
   const width = terminalWidth(process.stdout);
   const has = (name: string): boolean => commands.some((command) => command.name === name && !command.hidden);
   const actions = (title: string, items: readonly [string, string, string][]): Section => ({
@@ -209,12 +212,14 @@ export function printEntry(commands: readonly Command[]): void {
     ["watch", "cotal watch", "Follow activity without controlling agents"],
     ["status", "cotal status", "See this machine and the selected space"],
   ]));
-  sections.push({ title: "More", blocks: [{ kind: "commands", items: [
-    { command: "cotal help --all", description: "Every command group" },
-    { command: "cotal <command> -h", description: "Options, shorthands and examples" },
-  ] }] });
-  const groups = ["space", "persona", "personas", "team", "run", "config"].filter(has);
-  if (groups.length) sections.push({ blocks: [{ kind: "lines", lines: [{ text: `Also: ${groups.join(" · ")}`, tone: "hint" }] }] });
+  if (!listing) {
+    sections.push({ title: "More", blocks: [{ kind: "commands", items: [
+      { command: "cotal help", description: "Every command" },
+      { command: "cotal <command> -h", description: "Options, shorthands and examples" },
+    ] }] });
+    const groups = ["space", "persona", "personas", "team", "run", "config"].filter(has);
+    if (groups.length) sections.push({ blocks: [{ kind: "lines", lines: [{ text: `Also: ${groups.join(" · ")}`, tone: "hint" }] }] });
+  }
   sections.push({ blocks: [{ kind: "lines", lines: [{ text: "Detaching leaves your agent working. Help does not check services.", tone: "hint" }] }] });
   console.log(renderReport({ sections }, "rich", width));
 }
