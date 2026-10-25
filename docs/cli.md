@@ -6815,14 +6815,16 @@ cause shows only `failed`. A failure raised by program code outside any step is 
 journal row. When the status recorded no cause either, the view says so under `Failure`. Either way
 it names `cotal service logs stack-manager --space <space>`, because a hosted run's cause is in its
 manager's log.
-A run recorded `released` is held by no driver, and its status does not record why. The run view
-says so under `Released` and names the same log, where a hosted run's manager writes each release
-with its reason. A step whose journal entry is larger than the broker's message limit
-(`max_payload`, 1 MiB unless the broker sets another), such as a checkpoint with a question near
-that size, is released this way: the log names `L5010 Journal append rejected`, and a `resume`
-releases the run again at the same step.
 The failure records no line or column in the program: a source position belongs to a problem
 `run validate` reports before the program runs.
+
+A run recorded `released` has no recorded reason. Its `Released` section points to the executing
+manager's log for a hosted run or the driving process's output for a locally driven run. A journal
+read does not establish that execution host or log location, so the view does not guess one.
+A journal entry larger than the broker's configured `max_payload`, such as a large checkpoint
+question, can release a run with `L5010 Journal append rejected`. Repeating `resume` while the
+cause remains can release it again; this view does not change that state or prevent the retry.
+
 A program's `log(...)` lines are not journalled, so `show` does not print them. A hosted
 run writes each line to its manager's log as `run <run-id>: log <text>`, which
 `cotal service logs stack-manager --space <space>` reads, and a resumed run writes the lines before

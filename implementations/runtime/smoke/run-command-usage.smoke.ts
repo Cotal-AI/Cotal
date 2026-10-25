@@ -394,18 +394,19 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     caused.includes("the program gave up outside any step") && !caused.includes("No journal row records why") && caused.includes("cotal service logs stack-manager --space usage"), caused);
   c("one whose status recorded no cause says no journal row records why, and names the manager's log",
     uncaused.includes("No journal row records why this run failed") && uncaused.includes("cotal service logs stack-manager --space usage"), uncaused);
-  // A released status records no reason, as a refused journal append leaves it. The view used to show
-  // only the state; it now says so and names the manager's log, which records each release's reason.
-  const inState = (state: "released" | "running"): string => {
+  // A released status records no reason or execution host. A local read may still inspect a hosted run.
+  const inState = (state: "released" | "running", local = false): string => {
     const out: string[] = [];
     const origLog = console.log;
     console.log = (...a: unknown[]) => { out.push(a.map(String).join(" ")); };
-    try { printRunDetail("usage", { ...view, journal: [], status: { state } as RunStatusView["status"] }, { plain: true }); } finally { console.log = origLog; process.exitCode = 0; }
+    try { printRunDetail("usage", { ...view, journal: [], status: { state } as RunStatusView["status"] }, { plain: true, local }); } finally { console.log = origLog; process.exitCode = 0; }
     return out.join("\n");
   };
   const released = inState("released"), running = inState("running");
-  c("a released run says its status does not record why and names the manager's log",
-    /Recorded state:\s+released/.test(released) && released.includes("its status does not record why") && released.includes("cotal service logs stack-manager --space usage"), released);
+  c("a released run names missing reason and conditional evidence without guessing a local manager",
+    /Recorded state:\s+released/.test(released) && released.includes("its status does not record why") && released.includes("executing manager's log") && released.includes("driving process's output") && !released.includes("cotal service logs stack-manager"), released);
+  const localRead = inState("released", true);
+  c("a local journal read does not establish where its run was driven", localRead.includes("For a hosted run") && localRead.includes("For a locally driven run") && !localRead.includes("cotal service logs stack-manager"), localRead);
   c("a running run names neither", !running.includes("does not record why") && !running.includes("cotal service logs stack-manager"), running);
 }
 
