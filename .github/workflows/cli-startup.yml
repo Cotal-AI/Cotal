@@ -24,6 +24,8 @@ jobs:
           node-version: 22
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter "cotal-ai..." build
+      - name: Read macOS process identity through the native binding
+        run: pnpm exec tsx packages/workspace/smoke/darwin-process-native.smoke.ts
       - name: Start, query, refresh and stop both project routes
         env:
           COTAL_STARTUP_RESULTS: ${{ runner.temp }}/cli-startup-result.json

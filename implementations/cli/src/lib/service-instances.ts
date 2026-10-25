@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { accessSync, constants, existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { hostname } from "node:os";
-import { assertRecordIdentity, CommandFailure, homeCotalDir, identityRecord, localRecordAccess, oneLine, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord, spaceKey } from "@cotal-ai/workspace";
+import { assertRecordIdentity, CommandFailure, darwinProcessBinding, homeCotalDir, identityRecord, localRecordAccess, oneLine, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord, spaceKey } from "@cotal-ai/workspace";
 import { serviceSupervisorProjection } from "./service-supervision.js";
 import type { ServiceAdapterPin } from "./service-adapters.js";
 import { localRecordObject, localRecordText, ProtectedRecordStore, type LocalRecordSnapshot } from "./protected-records.js";
@@ -63,15 +63,26 @@ export function serviceInstanceId(value: string): string {
   catch { throw new CommandFailure("refused", "USAGE_INVALID", "--instance needs the full assigned service UUID, not a prefix or ordinal"); }
 }
 
-/** This driver refuses without an OS machine/boot identity; no PID-only ownership substitute. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** This driver refuses without an OS machine/boot identity; no PID-only ownership substitute. Linux
+ *  reads its machine and boot IDs; macOS reads its hardware UUID and boot session UUID through the
+ *  bundled binding, whose absence is an installation error. */
 export function processServiceHost(): ServiceHost {
   if (host) return host;
-  if (process.platform !== "linux" || process.getuid === undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this process-service driver currently requires Linux machine/boot identity; another platform is not silently treated as Linux");
+  if ((process.platform !== "linux" && process.platform !== "darwin") || process.getuid === undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this process-service driver currently requires Linux or macOS machine/boot identity; another platform is not silently treated as either");
+  const native = process.platform === "darwin" ? darwinProcessBinding() : undefined;
   let machine: string, boot: string;
   try {
-    machine = readFileSync("/etc/machine-id", "utf8").trim();
-    boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-    if (!/^[0-9a-f]{32}$/i.test(machine) || !/^[0-9a-f-]{36}$/i.test(boot)) throw new Error();
+    if (native) {
+      ({ machine, boot } = native.hostIdentity());
+      if (!UUID.test(machine) || !UUID.test(boot)) throw new Error();
+      boot = boot.toLowerCase();
+    } else {
+      machine = readFileSync("/etc/machine-id", "utf8").trim();
+      boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      if (!/^[0-9a-f]{32}$/i.test(machine) || !/^[0-9a-f-]{36}$/i.test(boot)) throw new Error();
+    }
   } catch { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the host's stable machine/boot identity could not be established; no process-service effect was attempted"); }
   return host = { machine: createHash("sha256").update(machine.toLowerCase()).digest("hex"), boot, name: hostname(), uid: process.getuid() };
 }
@@ -84,7 +95,7 @@ export function requireProcessIdentity(pid: number): ProcessIdentityRecord {
 
 function identity(input: unknown): ProcessIdentityRecord {
   const value = localRecordObject(input, ["pid", "token"]);
-  if (!Number.isInteger(value.pid) || Number(value.pid) <= 0 || Number(value.pid) > 2_147_483_647 || typeof value.token !== "string" || !/^[0-9]+$/.test(value.token)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the service instance has an invalid pinned Linux process identity; it was not adopted");
+  if (!Number.isInteger(value.pid) || Number(value.pid) <= 0 || Number(value.pid) > 2_147_483_647 || typeof value.token !== "string" || !/^[0-9]+$/.test(value.token)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the service instance has an invalid pinned process identity; it was not adopted");
   return { pid: Number(value.pid), token: value.token };
 }
 

@@ -8,6 +8,9 @@ on:
       test_controls:
         type: boolean
         default: false
+      darwin:
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -51,4 +54,26 @@ jobs:
           path: |
             packages/workspace/build/test/win32-${{ matrix.arch }}/query-control.exe
             packages/workspace/build/test/win32-${{ matrix.arch }}/query-denied.node
+          if-no-files-found: error
+  # The macOS process identity binding, built natively per architecture. A caller that packs workspace
+  # asks for it, because its prepack requires both Windows and both macOS bindings.
+  darwin:
+    if: inputs.darwin
+    runs-on: ${{ fromJSON('{"x64":"macos-15-intel","arm64":"macos-15"}')[matrix.arch] }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(inputs.architectures) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Compile against pinned Node-API headers
+        run: node packages/workspace/scripts/build-native.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workspace-native-darwin-${{ matrix.arch }}
+          path: packages/workspace/build/Release/darwin-${{ matrix.arch }}
           if-no-files-found: error

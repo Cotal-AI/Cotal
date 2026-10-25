@@ -103,6 +103,8 @@ jobs:
     needs: select
     if: github.event_name == 'workflow_dispatch' && needs.select.outputs.mode == 'publish'
     uses: ./.github/workflows/workspace-native.yml
+    with:
+      darwin: true
 
   pack:
     needs: [select, native, workspace-native]
@@ -132,6 +134,8 @@ jobs:
           SEAT_NATIVE_ARM64: ${{ runner.temp }}/native/seat-native-arm64/peercred.node
           WORKSPACE_NATIVE_X64: ${{ runner.temp }}/native/workspace-native-x64
           WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/native/workspace-native-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/native/workspace-native-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/native/workspace-native-darwin-arm64
       - uses: changesets/action/pack@v2.1.2
         id: pack
         with:
