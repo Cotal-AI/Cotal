@@ -17,7 +17,7 @@ import {
 } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { observeServiceProcess, serviceInstances, serviceInstanceStore } from "./service-instances.js";
-import { maintenanceStackView, readStackJournal, type StackJournal } from "./stack-journal.js";
+import { maintenanceStackView, readStackJournal } from "./stack-journal.js";
 
 export const brokerPreset: ServicePreset = {
   kind: "service-preset", name: "broker", adapter: "nats-broker", timeoutMs: 30000,
@@ -256,10 +256,9 @@ export function brokerStopBlocked(root: string, space: string, instanceId: strin
 }
 
 /** The instance ids the stack journal at `root` records as the members of `space`'s stack. Undefined
- *  when it records no stack for that space or cannot be read; bare `down` names that itself. */
+ *  when it records no stack for that space. Unreadable or invalid journals still fail loud. */
 function stackMemberIds(root: string, space: string): Set<string> | undefined {
-  let journal: StackJournal | undefined;
-  try { journal = readStackJournal(root)?.journal; } catch { return undefined; }
+  const journal = readStackJournal(root)?.journal;
   return journal?.space === space ? new Set(journal.members.flatMap((row) => row.instanceId === null ? [] : [row.instanceId])) : undefined;
 }
 
