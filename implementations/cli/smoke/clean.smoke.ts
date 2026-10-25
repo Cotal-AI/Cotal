@@ -11,11 +11,12 @@
  * space's streams or registration name, the dry run, the already-clean no-op,
  * that `clean all` drops only registry entries rooted at THIS project (a named open mesh must never
  * delete the default space's entry), and that a `clean all` removing the space trust says earlier
- * full backups no longer restore into the root, and that every target but history refuses --space,
- * --server and --creds before it reads anything.
+ * full backups no longer restore into the root, that every target but history refuses --space,
+ * --server and --creds before it reads anything, and that a removal stopped inside the moved-aside
+ * store names the folder that holds what is left.
  */
 import { strict as assert } from "node:assert";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -418,6 +419,30 @@ try {
   check("the refusal names its flag and the folder to run it in", refusals[0]?.message?.startsWith("--space picks ") === true && refusals[0].remedy === "run cotal clean store in the project folder of the root to clean, without --space", refusals[0]);
   check("...and the store and the space identity stay", existsSync(join(namedRoot, ".cotal", "nats", "jetstream", "stream.dat")) && existsSync(join(namedRoot, ".cotal", "auth", "auth.json")));
   rmSync(namedRoot, { recursive: true, force: true });
+
+  // --- a removal that stops inside the moved-aside store names that folder ---------------------
+  // The store is moved to a .cotal-clean-<id> folder beside it before its entries are removed. A
+  // removal that stopped there used to end with the raw error, or "did not confirm" through reset,
+  // and the folder that holds what is left was named nowhere.
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const stuckRoot = meshRoot();
+    const shut = join(stuckRoot, ".cotal", "nats", "jetstream", "ACC", "streams", "CHAT");
+    mkdirSync(shut, { recursive: true });
+    writeFileSync(join(shut, "1.blk"), "x");
+    chmodSync(shut, 0o555);
+    let stuck: { outcome?: string; code?: string; message?: string; remedy?: string; target?: { movedTo?: string; remaining?: string[] }; changed?: readonly unknown[] } | undefined;
+    try { await removeLocalState(stuckRoot, { includeAuth: false }); } catch (error) { stuck = error as typeof stuck; }
+    const moved = stuck?.target?.movedTo ?? "";
+    const store = join(realpathSync(stuckRoot), ".cotal", "nats");
+    check("a removal stopped inside the moved store ends OPERATION_PARTIAL naming the folder that holds what is left",
+      stuck?.outcome === "partial" && stuck.code === "OPERATION_PARTIAL" && /^\.cotal-clean-[0-9a-f-]{36}$/.test(moved.split("/").pop() ?? "") && stuck.message === `the store ${store} was moved to ${moved} for removal, and removing it stopped (EACCES) with jetstream left there; ${store} no longer exists, so a later clean or reset finds no store` && JSON.stringify(stuck.target?.remaining) === '["jetstream"]', stuck);
+    check("...records the move, and its Next makes that folder removable and removes it", JSON.stringify(stuck?.changed) === JSON.stringify([`moved ${store} to ${moved}`]) && stuck?.remedy === `make it removable by you with chmod -R u+w ${moved} and then remove it with rm -r ${moved}`, stuck);
+    check("...the store path is gone and the moved folder still holds the entry", !existsSync(store) && existsSync(join(moved, "jetstream", "ACC", "streams", "CHAT", "1.blk")));
+    const step = spawnSync("sh", ["-c", `chmod -R u+w ${moved} && rm -r ${moved}`], { encoding: "utf8" });
+    check("running that step removes only the moved folder", step.status === 0 && !existsSync(moved) && existsSync(join(stuckRoot, ".cotal", "auth", "auth.json")), { status: step.status, stderr: step.stderr });
+    if (moved && existsSync(moved)) spawnSync("chmod", ["-R", "u+w", moved]);
+    rmSync(stuckRoot, { recursive: true, force: true });
+  }
 
   const empty = mkdtempSync(join(tmpdir(), "cotal-empty-"));
   check("already clean: removes nothing, throws nothing", (await removeLocalState(empty, { includeAuth: true })).length === 0);

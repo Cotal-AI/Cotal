@@ -625,9 +625,25 @@ function removePinnedStoreDirectory(path: string, identity: { dev: bigint; ino: 
     putBack();
     refuseForeignStoreEntries(path, foreign);
   }
-  for (const entry of STORE_ENTRY_NAMES) rmSync(join(tomb, entry), { recursive: true, force: true });
+  try { for (const entry of STORE_ENTRY_NAMES) rmSync(join(tomb, entry), { recursive: true, force: true }); }
+  catch (error) { throw movedStoreLeft(path, tomb, error); }
   try { rmdirSync(tomb); }
   catch (error) { putBack(); throw error; }
+}
+
+/** A removal that stopped inside the moved-aside store leaves what it did not remove there, partly
+ *  deleted, so it is not moved back. Nothing else records that folder, and a later clean or reset
+ *  finds no store at the old path, so the failure names the folder and the step that removes it. */
+function movedStoreLeft(path: string, tomb: string, error: unknown): CommandFailure {
+  const code = (error as NodeJS.ErrnoException).code ?? "an error";
+  let left: string[] | undefined;
+  try { left = readdirSync(tomb).sort(); } catch { left = undefined; }
+  const remove = `rm -r ${shellWord(tomb)}`;
+  return new CommandFailure("partial", "OPERATION_PARTIAL", `the store ${path} was moved to ${tomb} for removal, and removing it stopped (${code}) with ${left === undefined ? "contents that could not be listed" : left.length ? listEntries(left) : "nothing"} left there; ${path} no longer exists, so a later clean or reset finds no store`, {
+    target: { storeDir: path, movedTo: tomb, ...(left ? { remaining: left } : {}) },
+    changed: [`moved ${path} to ${tomb}`],
+    remedy: code === "EACCES" || code === "EPERM" ? `make it removable by you with chmod -R u+w ${shellWord(tomb)} and then remove it with ${remove}` : `once the cause is fixed, remove it with ${remove}`,
+  });
 }
 
 export function cleanComplete(argv: string[]): CompletionResult {
