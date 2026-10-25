@@ -4197,6 +4197,11 @@ affects all interactive Manager verbs, not only `ps`. Select your remote Manager
 spawn, run or terminal operations. Explicit pins and managed-seat launching bindings keep their rules.
 There is no user flag for the policy, and stock `up` and recovery defaults do not enable it.
 
+A manager command whose credential the broker refuses at connect, such as a view the auth service no
+longer admits, sends nothing. It is refused `PERMISSION_DENIED`, exit 2, and the message keeps the
+broker's reason, such as `Authorization Violation`. On a user-auth mesh the space's auth service logs
+why it refused.
+
 A seat is reported as **not found** only when every reachable instance answered for itself. An
 instance that stayed silent past the deadline, or that refused the read rather than answering, said
 nothing about which seats it hosts, so the seat may be running on it. That case reports that the
