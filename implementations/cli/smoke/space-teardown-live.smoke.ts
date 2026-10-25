@@ -127,7 +127,10 @@ const folder = (name: string) => {
 };
 const anchor = (root: string) => anchors.set(root, recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir }));
 
-process.on("exit", () => { for (const path of [home, ...roots]) rmSync(path, { recursive: true, force: true }); });
+process.on("exit", (code) => {
+  // A failed scenario can still own live processes or unsettled records. Keep its roots intact.
+  if (code === 0) for (const path of [home, ...roots]) rmSync(path, { recursive: true, force: true });
+});
 
 try {
   // 1. A bad broker address refuses before anything is written (B6-01).
@@ -648,7 +651,9 @@ try {
     renameSync(root, moved);
     roots.push(moved);
     const other = folder(`${space}-other`);
+    anchor(other);
     const stopped = cli(other, "down", "--space", space, "--yes");
+    anchors.delete(other);
     const text = stopped.stdout.replace(/\x1b\[[0-9;]*m/g, "");
     const next = text.slice(text.indexOf("\nNext\n")).split("\n").map((line) => line.trim().split(/\s{2,}/)[0]).filter((command) => command.startsWith("cotal "));
     check("down --space from another folder stops it, and its Next names the adopt route before another folder",
