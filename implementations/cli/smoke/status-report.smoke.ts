@@ -170,7 +170,11 @@ if (!brokerDisplayOnly) {
     const allOtherPlain = run(["status", "--space", "gamma", "--all", "--server", `nats://127.0.0.1:${await freePort()}`, "--plain"]);
     check("…and its row reports that check, not the --server connection", /-> gamma\s+reachable/.test(allOtherPlain.stdout) && /Connection:\s+unreachable/.test(allOtherPlain.stdout), allOtherPlain.stdout);
   } finally {
-    greeter.kill();
+    if (greeter.exitCode === null && greeter.signalCode === null) {
+      const exited = once(greeter, "exit");
+      greeter.kill();
+      await exited;
+    }
   }
 }
 

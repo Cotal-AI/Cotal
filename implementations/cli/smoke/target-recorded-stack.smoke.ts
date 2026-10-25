@@ -380,7 +380,7 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
     mkdirSync(definitions, { recursive: true, mode: 0o700 });
     const added = join(definitions, `${Buffer.from("echo").toString("hex")}.json`);
     writeFileSync(added, cut, { mode: 0o600 });
-    const step = `move it aside, as mv ${added} ${added}.old does, then add the service again from its declaration with \`cotal service add echo --file <declaration>\``;
+    const step = `move it aside, as mv ${added} ${added}.old does, then add the service again from its declaration with \`cotal service add echo --space sr --file <declaration>\``;
     const definitionMessage = `the saved local record ${added} is not valid JSON, as an interrupted write or a full disk can leave it; nothing was inferred from it and it was left as it is`;
     for (const args of [["service", "--space", "sr"], ["service", "show", "echo", "--space", "sr"], ["service", "stop", "echo", "--space", "sr", "--yes"]]) {
       const r = run([...args, "--json"], prepared);

@@ -25,9 +25,9 @@ export const STACK_ADAPTER: Readonly<Record<StackRole, string>> = { broker: "nat
 /** The way out a service command names for a saved definition at `path` that does not parse: one you
  *  added is moved aside and added again from its declaration. A stack member's definition is the
  *  stack's, so it keeps the plain refusal. */
-export function addedDefinitionStep(name: string, path: string): string | undefined {
+export function addedDefinitionStep(name: string, path: string, space: string): string | undefined {
   if ((Object.values(STACK_DEFINITION) as string[]).includes(name)) return undefined;
-  return `move it aside, as mv ${shellPath(path)} ${shellPath(`${path}.old`)} does, then add the service again from its declaration with \`cotal service add ${name} --file <declaration>\``;
+  return `move it aside, as mv ${shellPath(path)} ${shellPath(`${path}.old`)} does, then add the service again from its declaration with \`cotal service add ${name} --space ${space} --file <declaration>\``;
 }
 
 export const STACK_MODES = ["auth", "open", "user"] as const;

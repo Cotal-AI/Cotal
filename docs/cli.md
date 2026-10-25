@@ -876,7 +876,7 @@ process yourself if it still runs. For a stopped space, `status` warns
 `SERVICE_INSTANCES_UNAVAILABLE` and gives the same step under Next, in place of `cotal up`. The
 definition of a service you added that is not valid JSON is left as it is too. `service` and its
 verbs, such as `service show`, `service add` and `service stop`, refuse it `SCHEMA_INVALID`, exit 1,
-naming its path, the `mv` that moves it aside, and `cotal service add <name> --file <declaration>`,
+naming its path, the `mv` that moves it aside, and `cotal service add <name> --space <space> --file <declaration>`,
 which adds the service again. An instance of it that still runs can then be stopped by its full
 instance ID. Any other saved record that is not valid JSON, such as a native install, uninstall or
 unit-action attempt, a supervisor receipt, a stack member's definition or an endpoint reference, is
