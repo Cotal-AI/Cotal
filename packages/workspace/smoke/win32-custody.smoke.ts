@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { custodyRequest, custodyStatus, serveCustody, startWin32Custodian, type CustodyStatus } from "../src/win32-custody.js";
 import { nativeWin32CreationToken, windowsCommandLine, windowsEnvironmentBlock } from "../src/win32-process.js";
+import { probeLiveness } from "../src/pid.js";
 
 const root = mkdtempSync(join(tmpdir(), "win32-custody-"));
 let checks = 0;
@@ -92,7 +93,8 @@ try {
 
   if (process.platform !== "win32") console.log("SKIP W1-W8: the custodian needs a native Windows runner");
   else {
-    const alive = (pin: { pid: number; token: string }) => nativeWin32CreationToken(pin.pid) === pin.token;
+    // A retained Windows process handle can keep its creation time readable after exit.
+    const alive = (pin: { pid: number; token: string }) => nativeWin32CreationToken(pin.pid) === pin.token && probeLiveness(pin.pid) !== "dead";
     const until = async (condition: () => boolean | Promise<boolean>, ms = 10_000) => {
       for (const deadline = Date.now() + ms; Date.now() < deadline; await sleep(100)) if (await condition()) return true;
       return condition();
@@ -122,6 +124,7 @@ ${exitAfter === undefined ? "setInterval(() => {}, 1000);" : `setTimeout(() => p
     check("W3 nobody else can listen on a live custodian's pipe", taken === "EADDRINUSE", taken);
     const childToken = nativeWin32CreationToken(one.seen.child)!;
     const ended = await one.ask({ op: "terminate", code: 1 });
+    console.log(JSON.stringify({ terminatedRoot: { ...one.custody.process, current: nativeWin32CreationToken(one.custody.process.pid), liveness: probeLiveness(one.custody.process.pid) }, terminatedChild: { pid: one.seen.child, token: childToken, current: nativeWin32CreationToken(one.seen.child), liveness: probeLiveness(one.seen.child) } }));
     check("W4 terminate empties the job and reports the program's exit",
       ended.members.length === 0 && ended.root.exit === 1 && !alive(one.custody.process) && !alive({ pid: one.seen.child, token: childToken }), ended);
     check("W5 a custodian whose job emptied exits", await until(() => !alive(one.custody.custodian)));
