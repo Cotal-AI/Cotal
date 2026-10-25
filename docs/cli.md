@@ -1075,7 +1075,9 @@ way on a controller root (see [Backups](#backups)).
 User-auth controller startup requires a plain loopback IP and an auth provider with read-only
 server preflight. A first enable checks the required IdP and its JWKS before creating maintenance
 state, a stack journal, trust or credentials. Missing or invalid inputs are usage refusals; an
-unavailable JWKS is a dependency refusal. Malformed IdP inputs are not echoed. An explicit `--idp`
+unavailable JWKS is a dependency refusal. The check follows no redirect: a `3xx` answer at
+`<idp>/jwks` is refused as an unavailable JWKS, and the place it points to gets no request.
+Malformed IdP inputs are not echoed. An explicit `--idp`
 is also compared with the recorded pin before maintenance state changes, even while the broker is
 running. A different IdP refuses without refreshing members or rewriting their journal. The controller
 checks again under its lock, and the provider repeats its authoritative checks during preparation,

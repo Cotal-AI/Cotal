@@ -226,10 +226,14 @@ async function idpJson<T>(url: string, res: Response, cancel?: AbortSignal): Pro
  *  so a dead or typo'd `--idp` fails loud BEFORE a space is provisioned around it, instead of only
  *  surfacing far away at the first user connect (the pin is written but the JWKS is fetched lazily).
  *  Normalizes the URL exactly as the pin does (`<base>/jwks`). Throws a legible sentence on an
- *  unreachable host, a non-2xx, or a body that is not a JWKS key set. */
+ *  unreachable host, a redirect, a non-2xx, or a body that is not a JWKS key set. A redirect is
+ *  refused because it could move the check onto another host or onto plaintext, away from the URL
+ *  the space pins. */
 export async function probeIdpJwks(idpUrl: string): Promise<void> {
   const jwksUri = `${normalizeIdpUrl(idpUrl)}/jwks`; // a bad scheme throws its own message here
-  const res = await idpFetch(jwksUri);
+  const res = await idpFetch(jwksUri, { redirect: "manual" });
+  if (res.status >= 300 && res.status < 400)
+    throw new Error(`the IdP at ${idpUrl} answered ${jwksUri} with HTTP ${res.status}, a redirect; redirects are refused, so its target was not fetched. Check --idp <auth base URL>; it must serve <base>/jwks itself.`);
   if (!res.ok)
     throw new Error(`the IdP at ${idpUrl} did not serve a JWKS: ${jwksUri} returned HTTP ${res.status}. Check --idp <auth base URL>.`);
   const body = await idpJson<{ keys?: unknown }>(jwksUri, res);

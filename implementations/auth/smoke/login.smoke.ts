@@ -5,7 +5,8 @@
  * validated Cotal bearer. Plus the reject matrix a real operator hits: pinned client id, a deny
  * at the verification page, an expired device code, a revoked session (the 401 → "run `cotal
  * login` again" path — the revocation lever this client exists to preserve), and the session
- * cache's hygiene (0600, session token only — never a JWT, version-guarded).
+ * cache's hygiene (0600, session token only — never a JWT, version-guarded). The first-enable JWKS
+ * check refuses a redirect, and the place it points to gets no request.
  *
  * Deliberately NOT covered live: `slow_down` back-off (+5s per RFC 8628 §3.5) — Better Auth only
  * emits it on a faster-than-interval poll this client never sends; the handling is code-reviewed.
@@ -1009,6 +1010,34 @@ console.log("H) /token is posted once per (IdP, session) within the hold, never 
     tokenGate = undefined;
   }
   idp.close();
+}
+
+// The first-enable JWKS check, through the provider's read-only preflight that `up --user-auth`
+// and preparation call, refuses a redirect to another origin or the same one, and the place it
+// points to gets no request. A key set served at <base>/jwks itself still passes.
+{
+  const hits: string[] = [];
+  const elsewhere = createServer((req, res) => { hits.push(`elsewhere ${req.url}`); res.writeHead(200, { "content-type": "application/json" }).end('{"keys":[]}'); });
+  await new Promise<void>((r) => elsewhere.listen(0, "127.0.0.1", r));
+  const elsewhereBase = `http://127.0.0.1:${(elsewhere.address() as AddressInfo).port}`;
+  const pinned = createServer((req, res) => {
+    hits.push(`pinned ${req.url}`);
+    if (req.url === "/x/jwks") res.writeHead(302, { location: `${elsewhereBase}/jwks` }).end();
+    else if (req.url === "/s/jwks") res.writeHead(302, { location: "/real/jwks" }).end();
+    else res.writeHead(200, { "content-type": "application/json" }).end('{"keys":[]}');
+  });
+  await new Promise<void>((r) => pinned.listen(0, "127.0.0.1", r));
+  const pinnedBase = `http://127.0.0.1:${(pinned.address() as AddressInfo).port}`;
+  const preflight = (path: string) => cotalAuthProvider.preflightServer!({ space: "jwks", dir: mkdtempSync(join(tmpdir(), "cotal-login-smoke-jwks-")), idpUrl: `${pinnedBase}${path}` });
+  const cross = await preflight("/x");
+  check("a first enable refuses a JWKS redirect to another origin, and that origin gets no request",
+    !cross.ok && cross.reason === "unavailable" && cross.message.includes(`answered ${pinnedBase}/x/jwks with HTTP 302, a redirect; redirects are refused`) && !hits.some((hit) => hit.startsWith("elsewhere")), { cross, hits });
+  const same = await preflight("/s");
+  check("  and one to the same origin, whose target gets no request",
+    !same.ok && same.reason === "unavailable" && same.message.includes("HTTP 302, a redirect; redirects are refused") && !hits.includes("pinned /real/jwks"), { same, hits });
+  check("  a key set served at <base>/jwks still passes", (await preflight("/d")).ok, hits);
+  pinned.close();
+  elsewhere.close();
 }
 
 console.log(`\nlogin smoke: ${pass} passed, ${fail} failed`);
