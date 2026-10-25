@@ -4839,7 +4839,9 @@ and the child variable it feeds, never a value. `show` lists the references by n
 A `start`, `restart` or `install`, or an installed unit, whose executable or working directory was
 moved, removed or changed mode since `add` refuses `DEPENDENCY_UNAVAILABLE` (exit 2) before anything
 launches or stops. The refusal names the path and what is wrong with it, with its mode when the
-mode is the cause. The Next names the fix, such as `chmod u+x <path>`. For a path that is gone, it
+mode is the cause. The Next names the fix, such as `chmod u+x <path>`, quoting paths that need it
+for executable and working-directory permission repairs. No permissions change automatically.
+For a path that is gone, it
 also names `cotal service remove <name> --space <space> --yes`, after which you can add the service
 again with another path. `add` refuses a path that does not exist the same way and names the field
 to correct.
