@@ -33,9 +33,9 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { connect, createServer, type AddressInfo } from "node:net";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -134,6 +134,20 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const hints = (JSON.parse(status.stdout || "{}") as { result?: { hints?: string[] } }).result?.hints ?? [];
   check("status there names the store and the same step, not cotal up",
     hints.includes(`the broker store ${jetstream} is not writable by this account (EACCES), so the broker cannot start JetStream there; ${step}`) && !hints.some((hint) => hint.includes("start it with `cotal up`")), shown(status));
+  // A folder this account cannot open is refused the same way, where up used to crash on it with a raw
+  // EACCES stack. The store hides its jetstream then, so it is the folder named. u+w would leave it shut.
+  const store = dirname(jetstream);
+  for (const [closed, mode] of [[store, 0o000], [jetstream, 0o000]] as const) {
+    chmodSync(closed, mode);
+    const shut = run(["up", "--server", "nats://127.0.0.1:1", "--json"], prepared), shutStatus = run(["status", "--json"], prepared);
+    const shutStep = `make it readable and writable by you, for example with chmod -R u+rwX ${closed}`;
+    const shutHints = (JSON.parse(shutStatus.stdout || "{}") as { result?: { hints?: string[] } }).result?.hints ?? [];
+    check(`up over ${closed === store ? "a store" : "a jetstream folder"} it cannot open refuses PERMISSION_DENIED, exit 2, naming it and chmod -R u+rwX, and status names the same step`,
+      shut.status === 2 && shut.envelope?.error?.code === "PERMISSION_DENIED" && shut.envelope.error.message === `the broker store ${closed} is not readable or writable by this account (EACCES), so the broker cannot start JetStream there; nothing was started or written` && shut.stdout.includes(shutStep) && !shut.stderr.includes("node:fs") &&
+        shutHints.some((hint) => hint.includes(shutStep)), shown(shut));
+    spawnSync("chmod", ["-R", "u+rwX", closed]);
+    check(`running that step verbatim opens ${closed === store ? "the store" : "the jetstream folder"} again`, (() => { try { accessSync(jetstream, constants.R_OK | constants.W_OK | constants.X_OK); return true; } catch { return false; } })());
+  }
 }
 
 // A broker configuration up cannot write, such as a symlink in its place, and a trust record it
