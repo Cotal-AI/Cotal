@@ -885,10 +885,14 @@ so nothing says to move it. Other commands that read the definition of a service
 that plain refusal, and `status` shows the saved definitions as unavailable.
 
 A service record folder that this account cannot read, such as its `instances` folder under
-`services/` in the Cotal home, is left unchanged. When `service` or `service logs` cannot read it,
+`services/` in the Cotal home, is left unchanged. When `service` or `service logs` cannot list it,
 they refuse `PERMISSION_DENIED`, exit 2, naming the folder and a quoted `chmod u+rwx <folder>`
-step. No permissions change automatically. `status` keeps its partial result and warns that the
-saved definitions or instance observations could not be read, with that code.
+step. A command that reads one record in it, such as `service show`, names the folder and
+`chmod u+rx <folder>`, which makes it readable only. A command that then writes a record there or
+holds one while it acts, such as `service add` or `service start`, refuses `PERMISSION_DENIED`,
+exit 2, naming the folder and `chmod u+w <folder>`, and nothing is written. No permissions change
+automatically. `status` keeps its partial result and warns that the saved definitions or instance
+observations could not be read, with that code.
 
 A controller stack opens three listeners. The broker serves clients at its `--server` port, and a
 websocket for the browser console's mesh session on a port `up` picks, which is always plaintext.
