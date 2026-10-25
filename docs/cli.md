@@ -656,7 +656,9 @@ with `CONFLICT` and asks for `--space`. With no
 reserved by another registered space, including one whose broker is stopped. It saves the chosen
 address. A later `cotal up` of
 the same space from the same folder starts from the URL that mesh recorded; an explicit `--server`
-stays fail-loud on collision. When the named space runs from another folder on this machine,
+stays fail-loud on collision. An address that a space registered for another folder keeps while it
+is stopped refuses `CONFLICT`, exit 2, naming that space and folder, and nothing starts, unless this
+`up` takes that space's name over. When the named space runs from another folder on this machine,
 `up --space` refuses `CONFLICT`, exit 2, naming that folder, with or without `--server`, `--json` or
 `--plain`, and writes nothing in the folder it ran from. A bare `up` whose folder names a space that
 runs from another folder refuses `CONFLICT` as well. Its Next names

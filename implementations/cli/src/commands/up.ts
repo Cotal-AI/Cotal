@@ -1918,6 +1918,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     }
   }
 
+  if (!resumeAttempt) refuseRegisteredAddress(server, values.space ?? folderSpace(), host);
   await assertBrokerAddressFree(server, "cotal up");
   // A repair keeps its own store rules above, and a resume or restore names its store.
   if (!resumeAttempt && !repairing) {
@@ -4479,19 +4480,36 @@ async function assertFreshTeamBindAvailable(server: string, host: string, space:
   });
 }
 
+/** The host and port a registration's broker address reserves, whatever its scheme. */
+function reservedAddress(server: string): string {
+  const address = new URL(server);
+  return `${address.hostname}:${address.port || "4222"}`;
+}
+
+/** Refuse an address that a space registered for another folder keeps while its broker is stopped,
+ *  as an occupied one is refused. Starting there would leave two registrations naming one broker:
+ *  whichever stack runs answers for both, and the other one's `down` and reads reach it. A space
+ *  this start takes the name of is left to the name rules. */
+function refuseRegisteredAddress(server: string, space: string, host: string): void {
+  const root = canonicalRoot(cotalRoot());
+  const held = loadMeshes().find((m) => m.space !== space && canonicalRoot(m.root) !== root && reservedAddress(m.server) === reservedAddress(server));
+  if (!held) return;
+  throw new CommandFailure("refused", "CONFLICT", `${server} is the broker address of "${held.space}", registered for ${held.root} and stopped; nothing was started`, {
+    target: { root: cotalRoot(), server, space, heldSpace: held.space, heldBy: held.root },
+    remedy: `start this one at another address with \`cotal up --server nats://${host}:<port>\`, or free that one with \`cotal space forget ${held.space}\``,
+  });
+}
+
 /** Choose only a first implicit address. A saved or explicitly requested address is never moved.
  * The broker still validates and binds its own listener; this inspection cannot reserve the port. */
 async function freshStackServer(server: string, bindHost?: string): Promise<string> {
   const url = new URL(server);
   const host = (bindHost ?? url.hostname).replace(/^\[|\]$/g, "");
-  const reserved = new Set(loadMeshes().map((mesh) => {
-    const address = new URL(mesh.server);
-    return `${address.hostname}:${address.port || "4222"}`;
-  }));
+  const reserved = new Set(loadMeshes().map((mesh) => reservedAddress(mesh.server)));
   let candidate = server;
   for (let attempt = 0; attempt < 16; attempt++) {
     const address = new URL(candidate);
-    if (!reserved.has(`${address.hostname}:${address.port || "4222"}`)) {
+    if (!reserved.has(reservedAddress(candidate))) {
       try {
         await freePort(host, Number(address.port) || 4222);
         return candidate;

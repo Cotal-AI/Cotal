@@ -346,6 +346,14 @@ try {
   ok("a bare up in another folder of the same name refuses CONFLICT, exit 2, naming this one, and writes nothing",
     twinUp.status === 2 && /Code:\s+CONFLICT/.test(plain(twinUp.stderr)) && plain(twinUp.stderr).includes(`"${SPACE}" is already registered at ${SERVER} for ${realpathSync(root)}`) && !existsSync(join(twin, ".cotal")), twinUp.stdout + twinUp.stderr);
   rmSync(resolve(twin, ".."), { recursive: true, force: true });
+  // Its address is kept with the name: another folder's up given that address is refused as an
+  // occupied one is, and starts nothing there.
+  const other = mkdtempSync(join(tmpdir(), "cotal-upstack-other-"));
+  const otherUp = cliIn(other, "up", "--detach", "--server", SERVER);
+  if (otherUp.status === 0) cliIn(other, "down");
+  ok("another folder's up at this stopped space's address refuses CONFLICT, exit 2, naming this one, and writes nothing",
+    otherUp.status === 2 && /Code:\s+CONFLICT/.test(plain(otherUp.stderr)) && plain(otherUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)} and stopped`) && !existsSync(join(other, ".cotal")), otherUp.stdout + otherUp.stderr);
+  rmSync(other, { recursive: true, force: true });
   const restart = cli("up", "--detach", "--server", SERVER);
   if (existsSync(join(root, ".cotal", "nats.pid"))) pids.push(pidOf("nats.pid"));
   ok("a bare up starts it again on the retained launcher, with no stack journal",
