@@ -17,7 +17,7 @@ import {
 } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { observeServiceProcess, serviceInstances, serviceInstanceStore } from "./service-instances.js";
-import { maintenanceStackView } from "./stack-journal.js";
+import { maintenanceStackView, readStackJournal, type StackJournal } from "./stack-journal.js";
 
 export const brokerPreset: ServicePreset = {
   kind: "service-preset", name: "broker", adapter: "nats-broker", timeoutMs: 30000,
@@ -244,7 +244,23 @@ export function brokerStopBlocked(root: string, space: string, instanceId: strin
     .filter((row) => !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(row.record.value)) || ["starting", "stopping", "unknown"].includes(row.record.value.state));
   if (!others.length) return undefined;
   const names = [...new Set(others.map((row) => row.record.value.definition))];
-  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `other service instances in this space (${names.join(", ")}) are live or unresolved; the broker was not stopped under them`, { target: { space, dependants: others.map((row) => ({ definition: row.record.value.definition, instanceId: row.name })) }, remedy: `stop the whole stack with bare \`cotal down\`, or stop each first with ${others.map((row) => `\`cotal service stop ${row.record.value.definition} --instance ${row.name} --space ${space} --yes\``).join("; ")}` });
+  const stops = (rows: typeof others) => rows.map((row) => `\`cotal service stop ${row.record.value.definition} --instance ${row.name} --space ${space} --yes\``).join("; ");
+  // Bare `down` refuses beside an instance that is not one of the stack's recorded members, so those stop first.
+  const members = stackMemberIds(root, space);
+  const outside = members ? others.filter((row) => !members.has(row.name)) : [];
+  const inside = others.filter((row) => !outside.includes(row));
+  const remedy = outside.length
+    ? `stop the services outside the stack first with ${stops(outside)}, then stop the whole stack with bare \`cotal down\`${inside.length ? `, or also run ${stops(inside)} and then stop the broker again` : ", or stop the broker again"}`
+    : `stop the whole stack with bare \`cotal down\`, or stop each first with ${stops(others)}`;
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `other service instances in this space (${names.join(", ")}) are live or unresolved; the broker was not stopped under them`, { target: { space, dependants: others.map((row) => ({ definition: row.record.value.definition, instanceId: row.name })) }, remedy });
+}
+
+/** The instance ids the stack journal at `root` records as the members of `space`'s stack. Undefined
+ *  when it records no stack for that space or cannot be read; bare `down` names that itself. */
+function stackMemberIds(root: string, space: string): Set<string> | undefined {
+  let journal: StackJournal | undefined;
+  try { journal = readStackJournal(root)?.journal; } catch { return undefined; }
+  return journal?.space === space ? new Set(journal.members.flatMap((row) => row.instanceId === null ? [] : [row.instanceId])) : undefined;
 }
 
 function readinessFile(context: ServiceAdapterContext & { process: ProcessIdentityRecord }): string {

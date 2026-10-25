@@ -1258,8 +1258,10 @@ fall back to legacy component pidfiles. A controller stack names its members `st
 `TARGET_NOT_FOUND` there and names the `stack-` member to use. A stop of `stack-broker` refuses
 `LIFECYCLE_BLOCKED` while a legacy daemon record under the root may front a process, or another
 service instance of the space is live or unresolved. For those instances it names bare `cotal down`,
-or `cotal service stop <name> --instance <id> --space <space> --yes` for each one. Its dry run warns
-with that refusal. Completion offers saved definitions without imports or a network request. No hidden connector repair or shared catalog preparation precedes this route.
+or `cotal service stop <name> --instance <id> --space <space> --yes` for each one. When one of them
+is not a member of the stack, such as one added with `cotal service add`, bare `cotal down` refuses
+too, so the refusal names that service's stop first, then bare `cotal down`, or the stops of the
+stack's own members and the broker stop again. Its dry run warns with that refusal. Completion offers saved definitions without imports or a network request. No hidden connector repair or shared catalog preparation precedes this route.
 
 Multiple names resolve as one selected-space set. All owned targets and process roles are checked
 before effects. After confirmation, the controller reserves every definition in stable order and
