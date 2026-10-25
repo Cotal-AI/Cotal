@@ -198,11 +198,21 @@ jobs:
         with:
           name: workspace-native-arm64
           path: ${{ runner.temp }}/workspace-native-arm64
-      - name: Assemble source-matched Windows creation identity bindings
+      - uses: actions/download-artifact@v4
+        with:
+          name: workspace-native-darwin-x64
+          path: ${{ runner.temp }}/workspace-native-darwin-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: workspace-native-darwin-arm64
+          path: ${{ runner.temp }}/workspace-native-darwin-arm64
+      - name: Assemble source-matched Windows and macOS process identity bindings
         run: node scripts/workspace-assemble-natives.mjs
         env:
           WORKSPACE_NATIVE_X64: ${{ runner.temp }}/workspace-native-x64
           WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/workspace-native-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/workspace-native-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/workspace-native-darwin-arm64
       - uses: actions/download-artifact@v4
         with:
           name: seat-native-linux-x64
@@ -302,11 +312,13 @@ jobs:
 
   # The Windows identity binding needs an MSVC Developer Command Prompt, so it is built once here and
   # downloaded by the Windows platforms leg, as windows.yml does. The smoke shards take both
-  # architectures: their pack suites pack @cotal-ai/workspace and @cotal-ai/seat, whose prepacks
-  # require the pair.
+  # architectures of the Windows and the macOS bindings: their pack suites pack @cotal-ai/workspace
+  # and @cotal-ai/seat, whose prepacks require them all.
   workspace-native:
     if: ${{ github.event_name != 'workflow_dispatch' }}
     uses: ./.github/workflows/workspace-native.yml
+    with:
+      darwin: true
 
   platforms:
     if: ${{ github.event_name != 'workflow_dispatch' }}

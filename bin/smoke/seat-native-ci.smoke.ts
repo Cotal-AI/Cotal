@@ -143,12 +143,20 @@ check("cold candidate needs the Windows native builder", needsList(candidate).in
 check("cold Windows builder uses the shared dual-architecture recipe", /^\s+uses:\s*\.\/.github\/workflows\/workspace-native\.yml\s*$/m.test(windowsNative) && !/architectures:/.test(windowsNative) && /default:\s*'\["x64",\s*"arm64"\]'/.test(windowsRecipe));
 check("cold candidate downloads both Windows native artifacts", ["workspace-native-x64", "workspace-native-arm64"].every((name) => downloaded(candidate).includes(name)));
 check("cold candidate assembles Windows natives before packing", candidate.indexOf("workspace-assemble-natives.mjs") >= 0 && candidate.indexOf("workspace-assemble-natives.mjs") < candidate.indexOf("pack-cold-candidate.mjs"));
+// The workspace prepack also requires both macOS bindings, so every caller that packs asks the shared
+// recipe for them and hands both to the assembler.
+check("the shared recipe builds the macOS bindings natively on Intel and Apple silicon", /darwin:\s+if: inputs\.darwin/.test(windowsRecipe) && /"x64":"macos-15-intel","arm64":"macos-15"/.test(windowsRecipe) && /name: workspace-native-darwin-\$\{\{ matrix\.arch \}\}/.test(windowsRecipe));
+check("cold candidate requests, downloads and assembles both macOS native artifacts", /^\s+darwin: true\s*$/m.test(windowsNative)
+  && ["workspace-native-darwin-x64", "workspace-native-darwin-arm64"].every((name) => downloaded(candidate).includes(name))
+  && ["WORKSPACE_NATIVE_DARWIN_X64", "WORKSPACE_NATIVE_DARWIN_ARM64"].every((name) => candidate.includes(name)));
 
 console.log("\nC. Standard packed publication");
 check("release packing needs both native build jobs", ["native", "workspace-native"].every((name) => needsList(releasePack).includes(name)));
 check("release native matrix builds x64 and arm64 on native Linux", /arch: x64\s+runner: ubuntu-latest/.test(releaseNative) && /arch: arm64\s+runner: ubuntu-24.04-arm/.test(releaseNative));
 check("release packing assembles both native families before packing", ["seat-assemble-natives.mjs", "workspace-assemble-natives.mjs"].every((name) => releasePack.indexOf(name) >= 0 && releasePack.indexOf(name) < releasePack.indexOf("changesets/action/pack@")));
 check("release packing downloads the same run's native artifacts", /pattern: '\*-native-\*'/.test(releasePack) && !/run-id:/.test(releasePack));
+check("release packing builds and assembles both macOS bindings", /^\s+darwin: true\s*$/m.test(csJobs.get("workspace-native") ?? "")
+  && ["WORKSPACE_NATIVE_DARWIN_X64", "WORKSPACE_NATIVE_DARWIN_ARM64"].every((name) => releasePack.includes(name)));
 check("publication uses the maintained Changesets publisher", /uses: changesets\/action\/publish@/.test(publish) && ciPublish === "pnpm changeset publish");
 check("publication consumes the packed artifact", /pack-dir-artifact-id:.*needs\.pack\.outputs\.artifact/.test(publish));
 check("only publication receives npm identity", /^\s+environment:\s*npm-publish\s*$/m.test(publish) && /id-token: write/.test(publish) && !/id-token:/.test(releasePack));
