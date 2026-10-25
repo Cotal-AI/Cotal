@@ -871,8 +871,7 @@ export class MeshHandler {
       endpoint: this.binding.endpoint,
       token: observeToken(ctx.requestId, req.attempt),
     };
-    await this.arm(ref, wake);
-    await this.settle(ref, ctx.signal);
+    if (!(await this.armUnlessDue(ref, wake, ctx.signal))) await this.settle(ref, ctx.signal);
     // Re-read the clock rather than trusting the arithmetic: the pause may have been settled by a
     // heartbeat-advanced deadline or by this host being away, and what decides whether there is
     // still time is where the clock actually is now.
@@ -932,7 +931,7 @@ export class MeshHandler {
     // step with nothing armed behind it, instead of leaving a timer to fire into a failed step.
     if (ctx.attempt > 0 && req.to !== undefined) await this.relayEscalation(req, ctx, ref.token, deadline);
 
-    await this.arm(ref, deadline);
+    if (await this.armUnlessDue(ref, deadline, ctx.signal)) return { outcome: "expired", at: this.now() };
 
     const settled = await this.settle(ref, ctx.signal, true);
     if (settled.settle === "expired") return { outcome: "expired", at: settled.ts };
@@ -1020,10 +1019,11 @@ export class MeshHandler {
     const outer = idleFor !== undefined && timeoutAt !== undefined
       ? { endpoint: this.binding.endpoint, token: waitTimeoutToken(ctx.requestId) }
       : undefined;
-    if (primary !== undefined) {
-      await this.arm(primary, idleFor !== undefined ? this.now() + idleFor : timeoutAt!);
-    }
-    if (outer !== undefined) await this.arm(outer, timeoutAt!);
+    // A deadline that passed before its pause was minted has nothing to settle. It ends the wait
+    // below, once the channel is open under the run's read admission.
+    const primaryDue = primary !== undefined && await this.armUnlessDue(primary, idleFor !== undefined ? this.now() + idleFor : timeoutAt!, ctx.signal);
+    const outerDue = outer !== undefined && await this.armUnlessDue(outer, timeoutAt!, ctx.signal);
+    const timedOut = outer !== undefined ? outerDue : idleFor === undefined && primaryDue;
 
     const durable = waitConsumerName(ctx.requestId);
     const stream = chatStream(this.binding.space);
@@ -1034,6 +1034,12 @@ export class MeshHandler {
     // not one of them — see the note there.
     let over = false;
     try {
+      // The timeout ahead of the idle window, as in the loop.
+      if (timedOut || idleFor !== undefined && primaryDue) {
+        if (outer !== undefined) await this.cancelTimer(timedOut ? primary! : outer);
+        over = true;
+        return timedOut ? null : { channel: ev.channel, at: this.now() };
+      }
       for (;;) {
         // THE CANCELLATION IS OBSERVED ON THE SAME CADENCE AS THE DEADLINE: once per poll, so a
         // race decided against this branch ends its wait within one fetch rather than never
@@ -2397,6 +2403,22 @@ export class MeshHandler {
     // #1508: every read and write below rides a client-side deadline, and a deadline that elapsed
     // because THIS PROCESS was off the CPU is not evidence about the plane. See `host-starvation`.
     return await servedDespiteStarvation(() => this.armOnce(ref, deadline), this.lag, `arming the pause ${ref.token}`, this.onStarved);
+  }
+
+  /** `arm`, answering `true` when the deadline passed before anything was minted for it. Only a
+   *  first arm finds that (`PauseOverdue`), and there is then no pause to settle, so a caller whose
+   *  deadline is its own outcome takes `true` as that outcome. Cancellation still wins. */
+  private async armUnlessDue(ref: CheckpointRef, deadline: number, signal: CancelSignal): Promise<boolean> {
+    try {
+      await this.arm(ref, deadline);
+      return false;
+    } catch (error) {
+      if (error instanceof PauseOverdue) {
+        if (signal.cancelled) throw new Cancelled(signal.reason ?? "cancelled");
+        return true;
+      }
+      throw error;
+    }
   }
 
   private async armOnce(ref: CheckpointRef, deadline: number): Promise<void> {

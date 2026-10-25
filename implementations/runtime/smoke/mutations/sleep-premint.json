@@ -3,7 +3,7 @@
     "implementations/runtime/smoke/mesh-sleep.smoke.ts",
     "implementations/runtime/smoke/run-driver-auth.smoke.ts"
   ],
-  "guard": "An authorized relative sleep whose duration elapses before its first checkpoint mint completes without a pause. Checkpoint expiry, journal authorization, cancellation and existing-pause replay keep their original rules.",
+  "guard": "An authorized relative sleep whose duration elapses before its first checkpoint mint completes without a pause. Journal authorization, cancellation and existing-pause replay keep their original rules.",
   "command": "pnpm --filter @cotal-ai/runtime build && pnpm smoke:runtime-mesh-sleep",
   "completionMarker": "mesh-sleep.smoke:",
   "progressPattern": "• ",

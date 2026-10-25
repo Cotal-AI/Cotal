@@ -916,6 +916,44 @@ const A = await driver(RUN_A, TK_A);
   console.log("• S3775 — genuine narrow driver and journal authorization controls reached");
 }
 
+// A 1ms wait timeout passes the same way, and the wait still opens its channel under the run's
+// read admission before it ends: an admitted channel resolves null, another one is refused.
+{
+  const premint = async (runId: string, source: string) => {
+    const takeover = newTakeoverId();
+    const H = await driver(runId, takeover);
+    const slowKv = new Proxy(H.hostPlanes.kv, {
+      get(target, property) {
+        if (property === "get") return async (...args: Parameters<typeof target.get>) => {
+          const result = await target.get(...args);
+          if (args[0].startsWith(`cp.${EP}.`)) await wait(30);
+          return result;
+        };
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const planes = { ...H.hostPlanes, kv: slowKv };
+    const authority = createRunScopeAuthority(planes, runId, lease(takeover, 1));
+    const binding = { space: S, endpoint: EP, runId, caller: runDriverCaller(runId), instanceId: IID,
+      epoch: EPOCH, holder: { id: "manager", lifecycleUid: "u_rdauth" }, defaultCheckpointTimeout: "1h" };
+    const effectHost = createRunEffectHost(planes, binding, authority, admissionOf(planes, runId));
+    let why = "";
+    const handler = { ...effectHost, async wait(req: Parameters<typeof effectHost.wait>[0], ctx: Parameters<typeof effectHost.wait>[1]) {
+      try { return await effectHost.wait(req, ctx); } catch (error) { why = (error as Error).message; throw error; }
+    } };
+    const out = await withDeadline(startRun(H.js, H.jsm, { space: S, endpoint: EP, runId, source, kv: H.kv, lease: lease(takeover, 1), handler }),
+      10_000, `the pre-mint wait ${runId}`);
+    return { out, why };
+  };
+  const admitted = await premint("run-wait-premint", `const r = await wait(message(channel("${CHANNEL}")), { name: "due", timeout: "1ms" }); log("due", r);`);
+  c("a mediated 1ms wait on an admitted channel resolves null after its authorized pre-mint reads",
+    admitted.out?.status === "completed" && admitted.why === "", admitted.out?.status ?? admitted.why);
+  const elsewhere = await premint("run-wait-premint-elsewhere", 'try { await wait(message(channel("elsewhere")), { name: "due", timeout: "1ms" }); } catch (e) { log("refused", true); }');
+  c("and on a channel outside its read admission it is still refused, not resolved",
+    elsewhere.why.includes('not admitted to read channel "elsewhere"'), elsewhere.why);
+}
+
 // Exercise the executable's dispatcher and error renderer without running seed installation.
 {
   const credsFile = join(dir, "single-driver.creds");
