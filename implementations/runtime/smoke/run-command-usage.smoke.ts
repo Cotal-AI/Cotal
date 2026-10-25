@@ -70,6 +70,21 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
   }
 }
 
+// Local answers need their explicit answerer before any plane is opened, in every output mode.
+{
+  const modes: Record<string, string | boolean>[] = [{}, { json: true }, { plain: true }];
+  for (const verb of ["answer", "amend"]) for (const mode of modes) for (const by of [undefined, ""]) {
+    const got = gate([verb, "run-1", "/checkpoint:a#0"], { local: true, ...mode, ...(by === undefined ? {} : { by }) });
+    c(`${verb} --local with ${by === undefined ? "missing" : "empty"} --by refuses before contact in ${JSON.stringify(mode)}`,
+      usageRefusal(got, `run ${verb} --local requires --by <who>`)
+      && isCommandFailure(got) && got.remedy === "add --by <who> to name the local answerer" && got.selfContained === true, got);
+  }
+  for (const verb of ["answer", "amend"]) {
+    c(`${verb} --local with a named answerer still passes the grammar`, !(gate([verb, "run-1", "/checkpoint:a#0"], { local: true, by: "operator" }) instanceof Error));
+    c(`${verb} hosted still records the caller without --by`, !(gate([verb, "run-1", "/checkpoint:a#0"]) instanceof Error));
+  }
+}
+
 // A local start's ceiling entry is a channel or a pattern; one the wire layer would rewrite is refused by name.
 {
   const local = (read: string, publish: string) => gate(["start"], { local: true, file: "p.cotal.js", "admit-read": read, "admit-publish": publish });
