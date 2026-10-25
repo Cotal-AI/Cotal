@@ -75,7 +75,7 @@ export function webInstalled(): boolean {
 export interface MachineStatus {
   nats: "path" | "bundled" | "missing";
   /** The nats-server a broker start would run and the version it reports, or null when there is none. */
-  natsServer: { path: string; version: string | null } | null;
+  natsServer: { path: string; version: string | null; skipped?: { path: string; reason: string } } | null;
   /** Why a broker start refuses that nats-server, or null. */
   natsProblem: string | null;
 }
@@ -94,7 +94,7 @@ export interface HarnessStatus {
 export async function machineStatus(): Promise<MachineStatus> {
   try {
     const server = await findNatsServer();
-    return { nats: server.source, natsServer: { path: server.path, version: server.version }, natsProblem: natsServerProblem(server) };
+    return { nats: server.source, natsServer: { path: server.path, version: server.version, ...(server.skipped ? { skipped: server.skipped } : {}) }, natsProblem: natsServerProblem(server) };
   } catch {
     return { nats: "missing", natsServer: null, natsProblem: null };
   }
