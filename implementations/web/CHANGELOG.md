@@ -1,5 +1,14 @@
 # @cotal-ai/web
 
+## 0.101.0
+
+### Patch Changes
+
+- 9cb1a00: Document the dashboard and public auth HTTP interfaces with OpenAPI descriptions and live response conformance checks. Publish operation pages, Markdown and downloadable specifications in the docs site.
+- 914b1f1: Replace stale source and SPEC line citations in web and auth smoke comments and
+  prototype notes with symbols and named sections. Correct the roster wiring and
+  browser extension rendering descriptions.
+
 ## 0.100.2
 
 No changes in this release.

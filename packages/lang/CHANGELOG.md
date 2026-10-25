@@ -1,5 +1,50 @@
 # @cotal-ai/lang
 
+## 0.101.0
+
+### Patch Changes
+
+- 71e8b88: `cotal run amend` for a run ID that no run is recorded under now says no run is recorded under that
+  ID. With `--local`, an amend that finds no answer to amend is refused `TARGET_NOT_FOUND`, exit 2, as
+  the hosted amend is, where it reported an unknown outcome although nothing was written.
+- b3738e8: `cotal run amend` sent right after an accepted answer, before the run has recorded it, now says the answer was accepted and is not recorded yet, and to amend once the step lists it. Before, it said the step was "still open, so answer it instead", which sent the caller to a pause that had already taken their answer.
+- c22bcff: `cotal run answer` for a run ID that no run is recorded under now says no run is recorded under
+  that ID, where it said no step is recorded under that key. With `--local` it is refused
+  `TARGET_NOT_FOUND`, exit 2, as the hosted answer is, where it reported an unknown outcome although
+  nothing was written.
+- b926504: A checkpoint that expires under `onExpiry: "fail"` now says in its L4007 whether the deadline came
+  from its own `timeout` or from the run's default, and its last option matches: raise the
+  checkpoint's timeout, or give it one or start the run with a longer default. The two used to print
+  the same text.
+- 9e0b1c5: `run validate` and `run start` now refuse a literal that is not a duration where a program reads
+  one, such as `sleep("5")`, `sleep(5000)` or a checkpoint `timeout` of `"PT5M"`, with L2034 and the
+  same text the call gives. Such a program used to validate and start, then fail its run at the call.
+  `run start` and `run resume` refuse a `--timeout` that is not a duration longer than zero with
+  `USAGE_INVALID`, where it used to start a run whose checkpoints then failed.
+- e53c3a3: `run validate` no longer refuses a `fanOut` with L3025 when a property name in an items object
+  literal holds `/`, `#` or `:`. The static rule read those names as branch keys. A `fanOut` mints its
+  branch keys at run time from `key` or each item's `id`, and the run still refuses one that holds a
+  reserved character with L3025. The static rule keeps covering `parallel` and `race` record keys.
+- 2895911: L1008 is now titled "Invalid syntax or newline hazard", since a program that does not parse, such as
+  one holding a NUL byte, is refused under it as well as the two newline hazards. The code is unchanged.
+- 94207f0: `run validate` and a hosted `run start` now refuse an effect other than `ask` inside `once`, in its
+  body or in a function the body calls by name, with L2033. Such a program used to validate and then
+  fail every run with L4028.
+- b2fcd9c: A program that does not parse, such as one holding a NUL byte, is still refused with L1008, and its
+  fix now says only to fix the syntax at the marked position. It used to say the language has no
+  automatic semicolon insertion, which it does.
+- b432707: A step that a race cancelled in a losing branch now says so. `run show` labels its row
+  `cancelled, <branch> won <race>`, and `run answer` at that step is refused with `that step was
+  cancelled because branch <branch> won the race <race>` instead of `that step has already settled`.
+- 761c861: `cotal run simulate` now tells a program that fails under its script apart from a script that does not cover the program. A program failure, such as a checkpoint scripted `expired` under the default `onExpiry: "fail"` (L4007), is a completed simulation, exit 0, whose program outcome is failed: it shows the step and that step's outcome with the language's error, and the JSON result carries `outcome` and `failure` beside the effects that ran. A script with no result for an effect (L6001) still does not complete, exit 5, and now names the step and the entry to add. Before, both printed "the offline simulation did not complete; unscripted effects are not invented" with a null result. `dryRunOutcome` returns a failed program's report with its fault, and `dryRun` takes an optional `journal`, so a caller can read the step a dry run that did not complete stopped at.
+- ce05dbf: When a simulation script's list of results for a step is too short, the L6001 failure now says which
+  result the step needs, counted from 1, as in "step /turn:build#1 needs result 2". It used to say
+  "this is occurrence 1" for the second occurrence.
+- 78a2035: A workflow's `log(...)` lines are no longer discarded. A run the manager hosts writes each line to
+  the manager's log as `run <run-id>: log <text>`, a `--local` drive prints them, and `run simulate`
+  lists them under `Log`, with `result.log` in `--json`. The lines stay out of the journal, as the
+  language defines.
+
 ## 0.100.2
 
 No changes in this release.

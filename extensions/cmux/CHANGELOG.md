@@ -1,5 +1,11 @@
 # @cotal-ai/cmux
 
+## 0.101.0
+
+### Patch Changes
+
+- 309b2ce: Refuse unsafe environment-variable names before writing a cmux launch script. Environment values keep their shell quoting.
+
 ## 0.100.2
 
 No changes in this release.
