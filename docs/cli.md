@@ -1506,8 +1506,8 @@ counts as stopped when its last whole-stack operation was a completed `down` and
 other service instance of its space runs. That check reads no process record under the root; those
 are read only as described below. A stack that stopped any other way takes the full stop, which
 also finishes its cleanup. A legacy root counts as
-stopped when no registration names it and no `*.pid` record remains at the top of its `.cotal`,
-and the root still holds the broker configuration a start rendered there or a space prepared there.
+stopped when no registration names it, or only the one a space named after its folder keeps, and no
+`*.pid` record remains at the top of its `.cotal`, and the root still holds the broker configuration a start rendered there or a space prepared there.
 Without that evidence a legacy root still refuses, with one next step: `TARGET_NOT_FOUND` when
 nothing shows a stack there, and `CONFLICT` when several registrations name the root or a process
 record remains that no registration explains. Before either kind of root reports the no-op, `down`

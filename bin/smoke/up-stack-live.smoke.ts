@@ -360,6 +360,10 @@ try {
     restart.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: cotal down$/m.test(plain(restart.stdout)) && !existsSync(join(root, ".cotal", "stack-controller.json")),
     restart.stdout + restart.stderr);
   ok("its down exits 0", cli("down").status === 0);
+  // The kept registration does not make the stopped stack look like one to stop.
+  const again = cli("down");
+  ok("a second down reports the stack not running, names cotal up, and exits 0",
+    again.status === 0 && plain(again.stdout).includes(`The stack in ${realpathSync(root)} is not running`) && /cotal up\s+Start it/.test(plain(again.stdout)), again.stdout + again.stderr);
 
   // Open mode in the SAME root retains static-auth files from the prior boot. Reporting follows the
   // effective live mode, not stale on-disk auth material: broker + manager, never delivery/auth-service.
