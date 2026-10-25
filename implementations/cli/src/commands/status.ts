@@ -1767,7 +1767,7 @@ function nextActions(r: StatusResult): Section {
     items.unshift(...(block.route.kind === "abandon" ? [{ command: `${cmd} down --abandon-stop ${block.route.requestId} --yes`, description: `Abandon the unconfirmed stop of ${block.definition}; up and down refuse until then` }, inspect] : [inspect]));
   } else if (stack && r.folder.stackUnfinished) {
     const part = r.folder.stackUnfinished;
-    const restart = `${cmd} up --root ${stack.root}${part.noManager ? " --no-manager" : ""}`;
+    const restart = `${cmd} up --root ${shellWord(stack.root)}${part.noManager ? " --no-manager" : ""}`;
     // An up that ended before it registered the space cannot be finished: the next up reuses the
     // running broker, and delivery does not start for a space that is not registered.
     items.unshift(...(part.kind === "up"

@@ -2914,7 +2914,8 @@ with the request ID their refusal names, and the member's `service status`, in p
 receipts, which only `up` and `down` read, so `status` does not name it. An `up` or `down` that was
 interrupted before it recorded an outcome, and left some members running and others stopped, is
 named under the selected space as `Half started` or `Half stopped`, with the members on each side.
-Next then offers the command that finishes it first: `cotal up --root <root>` for an `up`, or
+Next then offers the command that finishes it first: `cotal up --root <root>` for an `up`, with
+the root shell-quoted when needed and `--no-manager` kept when it was chosen, or
 `cotal down --yes` for a `down`, followed by `cotal up --root <root>` to restart instead. `--json`
 carries it as `folder.stackUnfinished`, with `kind`, `id`, `running` and `stopped`. An `up` cut off
 before it registered the space leaves the selected space prepared and not started, and `status`
