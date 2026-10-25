@@ -3131,12 +3131,12 @@ a cap sizes its store from the free disk, and `status` does not compare that.
 gone. That includes this folder's own daemon once its recorded process has exited without releasing
 the row, as after a kill. The row expires on its own within 30 seconds. The delivery responder line
 then says the delivery daemon died and its lease has not expired yet, that spawn, retirement and the
-durable backstop wait until a new daemon binds while joins, DMs and live posts still work, and that
+durable backstop wait until a new daemon binds while joins, DMs and live posts can still work, and that
 `cotal up` restarts it, since `up` waits out the lease first.
 
 With no delivery daemon serving, as after `cotal down stack-delivery`, `deliveryResponder` is
 `unbound`. The delivery responder line says spawn, retirement and the durable backstop wait until a
-daemon binds, while joins, DMs and live posts still work, and that `cotal up` starts it.
+daemon binds, while joins, DMs and live posts can still work, and that `cotal up` starts it.
 
 When a controller stack's delivery member runs but holds no delivery lease, `deliveryResponder` is
 `unbound`, and the delivery responder line names the member's pid and says it is starting or not

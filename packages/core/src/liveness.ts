@@ -213,10 +213,10 @@ export function parseLivenessAnswer(body: unknown, expectPlane: LivenessPlane): 
 /** The consequence of an unbound responder, in the operator's terms rather than the daemon's — per
  *  plane, because they break different things and the reporter's cost was diagnosis time, not
  *  ignorance that something was wrong. Purely presentational: no state, no identity. Joins, DMs and
- *  live posts ride the broker alone, so the delivery line says they still work. */
+ *  live posts can continue over the broker without the durable backstop. */
 export function livenessConsequence(plane: LivenessPlane): string {
   return plane === "delivery"
-    ? "no spawn, no retirement and no durable backstop until it binds; joins, DMs and live posts still work"
+    ? "no spawn, no retirement and no durable backstop until it binds; joins, DMs and live posts can still work"
     : "no spawn, stop, attach or despawn until it binds";
 }
 

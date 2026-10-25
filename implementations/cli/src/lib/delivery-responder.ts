@@ -49,7 +49,7 @@ import { LEASE_TTL_MS, livenessConsequence, responderFromLease, responderStateFr
  *  can check it.
  *
  *  `stale` IS ALSO NOT `bound`. A ready record whose holder is not the daemon this workspace launched
- *  is a dead or foreign daemon's leftover, and the mesh it describes cannot spawn, retire or join. It
+ *  is a dead or foreign daemon's leftover, not a serving delivery responder. It
  *  is kept distinct from `unbound` because the OPERATOR'S NEXT MOVE DIFFERS: an unbound responder is
  *  usually still starting and wants waiting, while a stale record wants the TTL to expire (or a real
  *  replacement to take the slot) and is evidence the daemon DIED rather than never arrived. */
@@ -61,14 +61,14 @@ export type DeliveryResponderState = ResponderState;
  *  ("boot durable joins will reconcile when it is") and nothing else: true, but it told an operator
  *  nothing about what was broken MEANWHILE, so a 22-hour outage read as a progress note. The
  *  reconcile is real and does run once a daemon binds; what nobody was told is that until it binds,
- *  spawn, retirement and the durable backstop cannot complete. Joins, DMs and live posts do not wait
- *  for it. Core's liveness probe prints the same sentence, so it is that one rather than a copy. */
+ *  spawn, retirement and the durable backstop cannot complete. Joins, DMs and live posts can continue
+ *  without it. Core's liveness probe prints the same sentence, so it is that one rather than a copy. */
 export const RESPONDER_UNBOUND_CONSEQUENCE = livenessConsequence("delivery");
 
 /** A stale lease in plain words: the daemon that held it died, and its record stays until the lease
  *  expires, so spawn, retirement and the durable backstop wait for a new daemon. */
 export const RESPONDER_STALE_TEXT =
-  `the delivery daemon died and its ${LEASE_TTL_MS / 1000} s lease has not expired yet, so spawn, retirement and the durable backstop wait until a new daemon binds; joins, DMs and live posts still work`;
+  `the delivery daemon died and its ${LEASE_TTL_MS / 1000} s lease has not expired yet, so spawn, retirement and the durable backstop wait until a new daemon binds; joins, DMs and live posts can still work`;
 
 /** Classify a shard-0 lease record. `undefined` means the lease key is absent, which on a mesh that
  *  HAS a delivery daemon recorded is an unbound responder, not a missing opinion: the daemon creates
