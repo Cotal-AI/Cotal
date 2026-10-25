@@ -1,0 +1,19 @@
+{
+  "suite": [
+    "implementations/manager/smoke/spawn-action.smoke.ts"
+  ],
+  "guard": "uncertain spawn diagnostics preserve connector-declared millisecond readiness windows",
+  "command": "pnpm --filter @cotal-ai/manager build && pnpm smoke:manager-spawn-action",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/readiness-duration.json",
+  "mutations": [
+    {
+      "name": "round uncertain readiness windows to whole seconds",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "no mesh presence within ${readinessTimeoutMs}ms;",
+      "replace": "no mesh presence within ${Math.round(readinessTimeoutMs / 1000)}s;",
+      "expectRed": "M3 uncertain diagnostic reports the configured 400ms window",
+      "cell": "M3 uncertain diagnostic reports the configured 400ms window",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    }
+  ]
+}
