@@ -1140,6 +1140,11 @@ default store holds none, such as after `backup restore --store-dir`, the start 
 `--store-dir` that does not exist is taken for a mistyped path, and the start refuses `CONFLICT`
 (exit 2) and names both. Create the directory first to start a new empty store there.
 
+When the broker or manager of a static-auth stack that `up` started in a folder exits, its pidfile
+stays. `cotal status` in that folder shows the row as `stale pidfile` and puts `cotal up` first under
+Next, which starts it again on the recorded address and store. `up` does not record `--runtime`, so
+pass it again when the manager ran on one.
+
 The generated `.cotal/auth/server.conf` is written on a real broker boot and is not an
 operator-owned config. `--host` changes that file only when nats is actually started. A unit
 restart that leaves an answering listener in place is a refresh, not a rebind. When a symlink or a

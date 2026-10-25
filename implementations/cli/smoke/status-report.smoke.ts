@@ -178,6 +178,41 @@ if (!brokerDisplayOnly) {
     check(`restart guidance ${heldServices?.length ? "stops the held service first" : heldServices === null ? "does not invent an unreadable holder" : "keeps the no-holder route"}`,
       heldServices?.length ? next.includes(stop) && next.indexOf(stop) < next.indexOf(start) : next.includes(start) && !next.includes("svc stop"), next);
   }
+  // A legacy static-auth stack started here whose broker or manager exited is restarted by a bare
+  // `up` in this folder, so Next names it first, ahead of the conditional store reset.
+  const cleanHint = "if the stored JetStream state is stale: cotal clean store --force, then `up` with your usual flags (`clean all` also resets identity)";
+  const legacyNext = (exited: string[], opts: { mode?: string; pid?: number | null; origin?: string; root?: string; controllerStack?: boolean } = {}) => {
+    const base = selected.envelope!.result!;
+    const processes = ["manager", "delivery", "nats"].map((name) => exited.includes(name) ? { name, state: "stopped", pid: opts.pid === undefined ? 4242 : opts.pid, detail: opts.pid === null ? "no pidfile" : "stale pidfile" } : { name, state: "running", pid: 4343, detail: null });
+    const legacy = { ...base, folder: { ...base.folder, root: opts.root ?? home, controllerStack: opts.controllerStack ?? false, processSpace: "alpha", processes, storedState: exited.includes("nats"), stackBlock: null, stackUnfinished: null },
+      meshes: { ...base.meshes, items: base.meshes.items.map((m) => m.space === "alpha" ? { ...m, mode: opts.mode ?? "auth", origin: opts.origin ?? "up" } : m) },
+      selected: { ...base.selected, resolved: true, space: "alpha", root: home, mode: opts.mode ?? "auth", connection: exited.includes("nats") ? "unreachable" : "reachable" },
+      hints: exited.includes("nats") ? [cleanHint] : [] };
+    return renderReport(statusView(legacy as unknown as Parameters<typeof statusView>[0]), "plain").split("\nNext\n")[1] ?? "";
+  };
+  const firstCommand = (next: string) => next.split("\n")[0]?.trim().split(/\s{2,}/) ?? [];
+  {
+    const [command, description] = firstCommand(legacyNext(["manager"]));
+    check("an exited legacy manager puts a bare up first under Next", /(^|\s)cotal up$/.test(command ?? "") && description === "Restart this folder's manager, which exited; pass --runtime again if the manager ran on one", { command, description });
+  }
+  {
+    const next = legacyNext(["nats"]);
+    const [command, description] = firstCommand(next);
+    check("an exited legacy broker puts a bare up first under Next", /(^|\s)cotal up$/.test(command ?? "") && description === "Restart this folder's broker, which exited; up reopens the recorded store", { command, description });
+    check("…ahead of the conditional store reset, which stays", next.includes("clean store --force") && next.indexOf("cotal up") < next.indexOf("clean store --force"), next);
+  }
+  {
+    const [command, description] = firstCommand(legacyNext(["nats", "manager"]));
+    check("an exited legacy broker and manager are named together", /(^|\s)cotal up$/.test(command ?? "") && description === "Restart this folder's broker and manager, which exited; up reopens the recorded store; pass --runtime again if the manager ran on one", { command, description });
+  }
+  for (const [label, next] of [
+    ["an open stack", legacyNext(["manager"], { mode: "open" })],
+    ["a member with no pidfile", legacyNext(["manager"], { pid: null })],
+    ["a registration added by hand", legacyNext(["manager"], { origin: "manual" })],
+    ["a status run in another folder", legacyNext(["manager"], { root: join(home, "elsewhere") })],
+  ] as const)
+    check(`control: ${label} gets no bare up`, !/(^|\s)cotal up(\s{2}|$)/m.test(next), next);
+  check("control: a controller stack is not read from legacy pidfiles", !/(^|\s)cotal up(\s{2}|$)/m.test(legacyNext(["manager"], { controllerStack: true })), legacyNext(["manager"], { controllerStack: true }));
   const plain = run(["status", "--space", "alpha", "--plain"]);
   check("the report says not checked for the other registration", /beta\s+not checked/.test(plain.stdout), plain.stdout);
   const all = run(["status", "--space", "alpha", "--all", "--json"]);
