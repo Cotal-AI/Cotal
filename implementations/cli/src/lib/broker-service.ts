@@ -216,7 +216,7 @@ function refuseLegacyBroker(target: BrokerTarget): void {
  *  that controller child's own native record, not a legacy daemon; the service-instance check below
  *  names it by its definition. A record whose process is gone, or whose pid now runs another start
  *  than its identity pin records, fronts nothing. */
-function liveLegacyDependants(target: BrokerTarget): { line: string; check: string }[] {
+function liveLegacyDependants(target: Pick<BrokerTarget, "root" | "space">): { line: string; check: string }[] {
   const owned = new Set(serviceInstances(target.space).flatMap((row) => row.record.value.process && observeServiceProcess(row.record.value) === "running" ? [row.record.value.process.pid] : []));
   const live: { line: string; check: string }[] = [];
   for (const component of localProcessSurface()) {
@@ -231,6 +231,20 @@ function liveLegacyDependants(target: BrokerTarget): { line: string; check: stri
     live.push({ line: `${component.name} at ${at}, ${pid === undefined ? "unattributable record" : `pid ${pid}`}`, check: pid === undefined ? at : `pid ${pid} at ${at}` });
   }
   return live;
+}
+
+/** The refusal a stop of the space's broker instance `instanceId` at `root` gives for what it would
+ *  cut off: a legacy daemon record under the root that may front a process, or another live or
+ *  unresolved service instance of the space. Undefined when neither does. It reads records only, so
+ *  the stop's preview names the same refusal. */
+export function brokerStopBlocked(root: string, space: string, instanceId: string): CommandFailure | undefined {
+  const legacy = liveLegacyDependants({ root, space });
+  if (legacy.length) return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `legacy local daemons on this root (${legacy.map((row) => row.line).join("; ")}) may still depend on the broker; it was not stopped under them`, { target: { space, dependants: legacy.map((row) => row.line) }, remedy: `check ${legacy.map((row) => row.check).join(", ")}; stop each process where it was started, or remove a record whose process is gone, then stop the broker again` });
+  const others = serviceInstances(space).filter((row) => row.name !== instanceId)
+    .filter((row) => !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(row.record.value)) || ["starting", "stopping", "unknown"].includes(row.record.value.state));
+  if (!others.length) return undefined;
+  const names = [...new Set(others.map((row) => row.record.value.definition))];
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `other service instances in this space (${names.join(", ")}) are live or unresolved; the broker was not stopped under them`, { target: { space, dependants: others.map((row) => ({ definition: row.record.value.definition, instanceId: row.name })) }, remedy: `stop the whole stack with bare \`cotal down\`, or stop each first with ${others.map((row) => `\`cotal service stop ${row.record.value.definition} --instance ${row.name} --space ${space} --yes\``).join("; ")}` });
 }
 
 function readinessFile(context: ServiceAdapterContext & { process: ProcessIdentityRecord }): string {
@@ -360,12 +374,8 @@ export const brokerService: LocalProcess = {
     const target = brokerTarget(context, "kernel-stop");
     const binding = brokerScope(context, target);
     refuseLegacyBroker(target);
-    const legacy = liveLegacyDependants(target);
-    if (legacy.length) refuse("LIFECYCLE_BLOCKED", `legacy local daemons on this root (${legacy.map((row) => row.line).join("; ")}) may still depend on the broker; it was not stopped under them`, { space: context.space, dependants: legacy.map((row) => row.line) }, `check ${legacy.map((row) => row.check).join(", ")}; stop each process where it was started, or remove a record whose process is gone, then stop the broker again`);
-    const others = serviceInstances(context.space).filter((row) => row.name !== context.instanceId)
-      .filter((row) => !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(row.record.value)) || ["starting", "stopping", "unknown"].includes(row.record.value.state));
-    const names = [...new Set(others.map((row) => row.record.value.definition))];
-    if (others.length) refuse("LIFECYCLE_BLOCKED", `other service instances in this space (${names.join(", ")}) are live or unresolved; the broker was not stopped under them`, { space: context.space, dependants: others.map((row) => ({ definition: row.record.value.definition, instanceId: row.name })) }, `stop the whole stack with bare cotal down, or stop ${names.join(" and ")} first with cotal service stop <name> --space ${context.space} --yes`);
+    const blocked = brokerStopBlocked(target.root, context.space, context.instanceId);
+    if (blocked) throw blocked;
     return { kind: "kernel-exit", scopeSha256: serviceMetadataDigest({ binding, instanceId: context.instanceId, launchRequestId: context.launchRequestId, process: context.process, dependants: [] }), observedAt: new Date().toISOString(), binding };
   },
   observeKernelStop(context) {

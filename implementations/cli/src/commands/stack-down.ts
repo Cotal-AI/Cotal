@@ -188,9 +188,10 @@ function alreadyStopped(journal: StackJournal, members: readonly Member[]): bool
  *  record and its pid in the message and the remedy, because no command shows another space's
  *  records; nothing is stopped, adopted or removed. A real --with-agents refuses too, because no
  *  running manager can stop the agents, unless the caller knows none can remain: the last down took
- *  --with-agents, or the root never started a stack. Its preview shows the no-op. The legacy route
- *  answers the same way. `warnings` report what this command changed before it found nothing running. */
-export function nothingRunning(presentation: Presentation, target: { root: string; space?: string; server?: string }, withAgents: boolean, warnings: readonly OutputWarning[] = []): void {
+ *  --with-agents, or the root never started a stack. Its `preview` shows the no-op and warns with that
+ *  refusal. The legacy route answers the same way. `warnings` report what this command changed before
+ *  it found nothing running. */
+export function nothingRunning(presentation: Presentation, target: { root: string; space?: string; server?: string }, withAgents: boolean, warnings: readonly OutputWarning[] = [], preview = false): void {
   // A root that names no space resolves to the default one, as `resolveSpace` answers.
   const remaining = recordedProcessesUnder(target.root, [target.space ?? DEFAULT_SPACE]);
   if (remaining.length) {
@@ -201,8 +202,10 @@ export function nothingRunning(presentation: Presentation, target: { root: strin
       remedy: `check ${checks.join(", ")}; stop each process where it was started, or remove a record whose process is gone, then run \`cotal down\` again`,
     });
   }
-  if (withAgents) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's running manager, and this folder's stack is not running; nothing was stopped", { target, remedy: "start it with `cotal up`, then run `cotal down --with-agents`" });
-  writeResult(presentation, { command: "down", target, result: { kind: "stack-not-running", ...target }, noOp: true, ...(warnings.length ? { warnings } : {}) }, () => ({ sections: [
+  const agents = withAgents ? new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's running manager, and this folder's stack is not running; nothing was stopped", { target, remedy: "start it with `cotal up`, then run `cotal down --with-agents`" }) : undefined;
+  if (agents && !preview) throw agents;
+  const shown = agents ? [...warnings, { code: agents.code, target, message: `the real stop would refuse: ${agents.message}; ${agents.remedy}` }] : warnings;
+  writeResult(presentation, { command: "down", target, result: { kind: "stack-not-running", ...target }, noOp: true, ...(shown.length ? { warnings: shown } : {}) }, () => ({ sections: [
     { title: `The stack in ${target.root} is not running`, blocks: [{ kind: "lines", lines: ["Nothing was stopped."] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: "Start it" }] }] },
   ] }));
@@ -339,7 +342,9 @@ function stopTarget(root: string, values: ParsedArgs["values"]) {
 
 async function previewStackStop(root: string, values: ParsedArgs["values"], presentation: ReturnType<typeof presentationOf>, withAgents: boolean): Promise<void> {
   const { journal0, settlement, members, target } = stopTarget(root, values);
-  if (alreadyStopped(journal0, members) || stackNeverStarted(journal0)) return nothingRunning(presentation, target, false);
+  // As the real stop does, a stack its own down stopped refuses --with-agents unless that down took it.
+  const stopped = alreadyStopped(journal0, members);
+  if (stopped || stackNeverStarted(journal0)) return nothingRunning(presentation, target, stopped && withAgents && !journal0.operation.withAgents, [], true);
   // A preview reports what would refuse the real stop instead of refusing itself.
   let blocked: CommandFailure | undefined, restore: string | undefined, stranded: ReturnType<typeof strandedRegistration>;
   try { restore = scopeRefusals(journal0); stranded = strandedRegistration(journal0, members); assertJournalWritable(root, values); assertServiceRecordsWritable(root, journal0.space, values); }

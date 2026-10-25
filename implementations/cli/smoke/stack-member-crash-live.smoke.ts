@@ -24,8 +24,10 @@
  *     with the old start, as a reused pid does. The record fronts nothing: `down --dry-run` names it,
  *     `down stack-broker` and bare `down` are not refused by it, and bare `down` removes it with its
  *     pin and never signals that process. A record whose pin matches that live process refuses
- *     `down stack-broker` and bare `down`, naming its path and pid in the message and the Next;
- *     once the process ends, `down` removes it.
+ *     `down stack-broker` and bare `down`, naming its path and pid in the message and the Next, and
+ *     the `down stack-broker` dry run warns with that refusal. Once the process ends, `down
+ *     stack-broker` refuses on the running manager, naming its exact `cotal service stop`, its dry
+ *     run warns with that refusal, and `down` removes the record.
  *  7. Started again with its delivery member stopped with SIGSTOP, as a hang, `down --yes` sends
  *     SIGKILL once 15 seconds pass after SIGTERM, and a `STOP_ESCALATED` warning names the member
  *     and its pid. It keeps the delivery credential, since that daemon never released its lease, so
@@ -207,14 +209,30 @@ try {
   check("the delivery member is killed again", await crashDelivery());
   const live = identityRecord(held);
   pointAt(held, "token" in live ? live.token : "");
+  const brokerPreview = cli("down", "stack-broker", "--dry-run", "--json");
   const brokerBlocked = cli("down", "stack-broker", "--yes");
   check("down stack-broker refuses that record by path and pid, and its Next says what to check", brokerBlocked.status === 2 && brokerBlocked.out.includes(`legacy local daemons on this root (delivery at ${at}, pid ${held})`) && brokerBlocked.out.includes(`check pid ${held} at ${at}; stop each process where it was started`), brokerBlocked.out);
+  const previewWarning = doc(brokerPreview)?.warnings?.[0]?.message ?? "";
+  check("...and its dry run exits 0 and warns with that refusal", brokerPreview.status === 0 && doc(brokerPreview)?.warnings?.length === 1
+    && previewWarning.startsWith(`the real stop would refuse: legacy local daemons on this root (delivery at ${at}, pid ${held})`) && previewWarning.includes(`check pid ${held} at ${at}; stop each process where it was started`), brokerPreview.out);
   const blocked = cli("down", "--yes", "--json");
   check("a record whose pin matches a live process refuses LIFECYCLE_BLOCKED, naming its path and pid", blocked.status === 2 && doc(blocked)?.error?.code === "LIFECYCLE_BLOCKED" && doc(blocked)?.error?.message.includes(`(delivery at ${at}, pid ${held})`) === true, blocked.out);
   check("...its Next names the pid and path to check", doc(blocked)?.error?.remedy?.startsWith(`check pid ${held} at ${at}; stop each process where it was started`) === true, blocked.out);
   check("...and the record stays and the process was not signalled", existsSync(record) && alive(held));
   other.kill("SIGKILL");
   for (let i = 0; i < 50 && alive(held); i++) await sleep(100);
+  // With that process gone, the running manager is what the broker's stop would cut off. The stop
+  // refuses naming its exact stop, and its dry run warns with the same refusal.
+  const instances = JSON.parse(cli("service", "--json").stdout).result?.instances as { definition: string; instanceId: string; observedProcess: string }[] | undefined;
+  const managerId = instances?.find((row) => row.definition === "stack-manager" && row.observedProcess === "running")?.instanceId;
+  const managerPreview = cli("down", "stack-broker", "--dry-run", "--json");
+  const managerBlocked = cli("down", "stack-broker", "--yes", "--json");
+  const refusal = doc(managerBlocked)?.error;
+  check("with the manager running, down stack-broker refuses LIFECYCLE_BLOCKED naming it, and its Next names its exact stop",
+    managerBlocked.status === 2 && refusal?.code === "LIFECYCLE_BLOCKED" && managerId !== undefined && refusal.message.startsWith("other service instances in this space (") && refusal.message.includes("stack-manager")
+      && refusal.remedy?.includes(`cotal service stop stack-manager --instance ${managerId} --space crash --yes`) === true && !refusal.remedy.includes("<name>"), managerBlocked.out);
+  check("...and its dry run exits 0 and warns with that refusal",
+    managerPreview.status === 0 && doc(managerPreview)?.warnings?.length === 1 && doc(managerPreview)?.warnings?.[0]?.message === `the real stop would refuse: ${refusal?.message}; ${refusal?.remedy}`, managerPreview.out);
   const after = cli("down", "--yes", "--json");
   check("once that process ends, bare down completes and removes its record, saying its process is gone", after.status === 0 && doc(after)?.warnings?.some((w) => w.code === "STALE_PROCESS_RECORD" && w.message === stale("removed", held, "gone")) === true && !existsSync(record), after.out);
 

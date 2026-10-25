@@ -138,7 +138,7 @@ async function bareDownIn(root: string, values: Record<string, string | boolean>
 }
 
 /** The envelope a `--json` run printed, or undefined. */
-function envelope(out: string): { outcome?: string; result?: { kind?: string } } | undefined {
+function envelope(out: string): { outcome?: string; result?: { kind?: string }; warnings?: { code?: string; message?: string }[] } | undefined {
   try { return JSON.parse(out); } catch { return undefined; }
 }
 
@@ -613,7 +613,7 @@ try {
 
   // A legacy root whose own down already ran keeps no registration and no process record, and
   // still holds the broker configuration its start rendered. A second bare down stops nothing and
-  // says so in every presentation.
+  // says so in every presentation. --with-agents refuses there, and its preview warns with that refusal.
   const stoppedRoot = mkdtempSync(join(tmpdir(), "cotal-stopped-"));
   mkdirSync(join(stoppedRoot, ".cotal"), { recursive: true });
   writeFileSync(join(stoppedRoot, ".cotal", "server-open.conf"), "# rendered by an earlier up\n", { mode: 0o600 });
@@ -631,6 +631,11 @@ try {
   const reap = await bareDownIn(stoppedRoot, { "with-agents": true });
   check("--with-agents on the stopped root refuses LIFECYCLE_BLOCKED, because no manager runs to stop its agents",
     reap.error?.code === "LIFECYCLE_BLOCKED" && /cotal up/.test(reap.error.remedy ?? ""), reap);
+  const reapPreview = await bareDownIn(stoppedRoot, { "dry-run": true, "with-agents": true, json: true });
+  const reapWarnings = envelope(reapPreview.out)?.warnings ?? [];
+  check("--dry-run --with-agents shows the same no-op and warns with that refusal",
+    reapPreview.error === undefined && envelope(reapPreview.out)?.outcome === "no-op" && reapWarnings.length === 1 && reapWarnings[0].code === "LIFECYCLE_BLOCKED"
+      && reapWarnings[0].message === `the real stop would refuse: ${reap.error?.message}; ${reap.error?.remedy}`, reapPreview);
 
   // Without that evidence nothing tells a stopped stack apart, so bare down still refuses, naming one
   // next step.
