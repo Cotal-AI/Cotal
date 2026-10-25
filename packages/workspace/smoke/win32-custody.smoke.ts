@@ -8,6 +8,7 @@ import { connect, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertRecordIdentity } from "../src/pid.js";
 import { custodyRequest, custodyStatus, serveCustody, startWin32Custodian, type CustodyStatus } from "../src/win32-custody.js";
 import { nativeWin32CreationToken, windowsCommandLine, windowsEnvironmentBlock } from "../src/win32-process.js";
 import { probeLiveness } from "../src/pid.js";
@@ -140,6 +141,8 @@ ${exitAfter === undefined ? "setInterval(() => {}, 1000);" : `setTimeout(() => p
     await until(async () => (after = await two.ask({ op: "status" })).root.exit !== null);
     check("W6 a program that exits leaves its custodian holding the remaining members",
       after?.root.exit === 3 && JSON.stringify(after.members) === JSON.stringify([twoChild.pid]) && alive(two.custody.custodian) && alive(twoChild), after);
+    check("W9 the exited program reads as gone while its custodian still holds its handle",
+      assertRecordIdentity(two.custody.process).kind === "gone" && alive(two.custody.custodian), { identity: assertRecordIdentity(two.custody.process), current: nativeWin32CreationToken(two.custody.process.pid) });
     process.kill(two.custody.custodian.pid);
     check("W7 a custodian's death ends the members it held", await until(() => !alive(twoChild)));
 
