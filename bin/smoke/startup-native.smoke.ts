@@ -3,12 +3,16 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 // Run the built CLI with its bundled broker, without the operator's home, credentials or PATH tools.
 // Retain command output and roots for inspection. Teardown uses only the sandbox's own CLI route.
 process.umask(0o077);
+const windows = process.platform === "win32";
+const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+if (windows) assert.ok(systemRoot, "the Windows runner must provide its system directory");
+const systemDirectories = windows ? [join(systemRoot!, "System32"), systemRoot!] : ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 const source = resolve(import.meta.dirname, "../..");
 const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: source, encoding: "utf8" }).trim();
 const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-startup-native-")));
@@ -34,10 +38,15 @@ for (const scenario of ["fresh", "prepared"]) {
   const temp = join(base, "tmp");
   for (const path of [cotalHome, project, config, temp]) mkdirSync(path, { recursive: true, mode: 0o700 });
   const env: NodeJS.ProcessEnv = {
-    PATH: [dirname(process.execPath), "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":"),
+    PATH: [dirname(process.execPath), ...systemDirectories].join(delimiter),
     HOME: home, USERPROFILE: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: config,
     XDG_STATE_HOME: join(home, ".state"), XDG_CACHE_HOME: join(home, ".cache"),
-    TMPDIR: temp, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1",
+    TMPDIR: temp, TEMP: temp, TMP: temp, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1",
+    ...(windows ? {
+      SystemRoot: systemRoot, WINDIR: systemRoot, COMSPEC: join(systemRoot!, "System32", "cmd.exe"),
+      PATHEXT: process.env.PATHEXT, USERNAME: process.env.USERNAME, USERDOMAIN: process.env.USERDOMAIN,
+      APPDATA: join(home, "AppData", "Roaming"), LOCALAPPDATA: join(home, "AppData", "Local"),
+    } : {}),
   };
   const anchor = recordSmokeSandbox({ root: project, cotalHome, xdgConfigHome: config });
   const row: typeof results[number] = { scenario, root: base, commands: [] };
