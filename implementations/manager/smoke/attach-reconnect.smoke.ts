@@ -480,7 +480,7 @@ try {
     const r = await cotal(["attach", "--name", SEAT, "--on", String(instance), "--space", space, "--server", PROXY], root, 60_000);
     await heal();
     check("it exits non-zero", r.status !== 0, { status: r.status, out: r.out.slice(-400) });
-    check("...saying the mesh is not there, in the CLI's own words", /no mesh running at/.test(r.out), r.out.slice(-400));
+    check("...saying the mesh is not there, in the CLI's own words", /nothing answered at /.test(r.out), r.out.slice(-400));
     check("...with ONE failure mark, not the doubled one a rethrown refusal renders",
       !/✗\s*✗/.test(r.out), r.out.slice(-400));
     check("...and it never announced a reconnect it was not going to make",
