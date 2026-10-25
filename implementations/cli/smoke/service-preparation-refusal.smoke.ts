@@ -167,7 +167,7 @@ renameSync(redoRecord, `${redoRecord}.old`);
 const redoAgain = run(["service", "add", "redo", "--file", workerFile, "--space", "b1"]);
 const stale = run(["service", "start", "redo", "--space", "b1"]);
 check("a start that selects the earlier revision's record refuses CONFLICT, exit 2, naming that stopped record",
-  redoAgain.status === 0 && stale.status === 2 && stale.envelope?.error?.code === "CONFLICT" && stale.envelope.target?.instanceId === oldId && stale.envelope.target.observedProcess === "gone", shown(stale));
+  redoAgain.status === 0 && stale.status === 2 && stale.envelope?.error?.code === "CONFLICT" && stale.envelope.target?.instanceId === oldId && stale.envelope.target?.observedProcess === "gone", shown(stale));
 check("its Next forgets that record, then starts again", stale.envelope?.error?.remedy === `forget its record with cotal service remove redo --instance ${oldId} --space b1 --yes, then run cotal service start redo --space b1 again`, stale.envelope?.error);
 const forgotten = run(["service", "remove", "redo", "--instance", String(oldId), "--space", "b1", "--yes"]);
 const current = run(["service", "start", "redo", "--space", "b1"]);
