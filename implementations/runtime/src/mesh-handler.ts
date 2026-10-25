@@ -1019,8 +1019,8 @@ export class MeshHandler {
     const outer = idleFor !== undefined && timeoutAt !== undefined
       ? { endpoint: this.binding.endpoint, token: waitTimeoutToken(ctx.requestId) }
       : undefined;
-    // A deadline that passed before its pause was minted has nothing to settle. It ends the wait
-    // below, once the channel is open under the run's read admission.
+    // A deadline that passed before its pause was minted has nothing to settle. It ends the wait in
+    // the loop, once the channel is open under the run's read admission and after cancellation.
     const primaryDue = primary !== undefined && await this.armUnlessDue(primary, idleFor !== undefined ? this.now() + idleFor : timeoutAt!, ctx.signal);
     const outerDue = outer !== undefined && await this.armUnlessDue(outer, timeoutAt!, ctx.signal);
     const timedOut = outer !== undefined ? outerDue : idleFor === undefined && primaryDue;
@@ -1034,12 +1034,6 @@ export class MeshHandler {
     // not one of them — see the note there.
     let over = false;
     try {
-      // The timeout ahead of the idle window, as in the loop.
-      if (timedOut || idleFor !== undefined && primaryDue) {
-        if (outer !== undefined) await this.cancelTimer(timedOut ? primary! : outer);
-        over = true;
-        return timedOut ? null : { channel: ev.channel, at: this.now() };
-      }
       for (;;) {
         // THE CANCELLATION IS OBSERVED ON THE SAME CADENCE AS THE DEADLINE: once per poll, so a
         // race decided against this branch ends its wait within one fetch rather than never
@@ -1052,6 +1046,12 @@ export class MeshHandler {
           if (outer !== undefined) await this.cancelTimer(outer);
           over = true;
           throw new Cancelled(ctx.signal.reason ?? "cancelled");
+        }
+        // A deadline that passed before its pause was minted, the timeout ahead of the idle window.
+        if (timedOut || idleFor !== undefined && primaryDue) {
+          if (outer !== undefined) await this.cancelTimer(timedOut ? primary! : outer);
+          over = true;
+          return timedOut ? null : { channel: ev.channel, at: this.now() };
         }
         // The deadline is durable and authoritative — a checkpoint's settle fact — and this is only
         // the OBSERVATION of it, so the cost of polling is lateness bounded by one poll rather than
