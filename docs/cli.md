@@ -4721,7 +4721,9 @@ cotal service remove <name> [--instance <id>] [--yes]
 A service is a saved definition in one space plus the instances started from it. Bare `service`
 lists the definitions, their instances and the installed presets. Nothing starts a dependency for
 you: starting the manager does not start its broker. `--json` writes one envelope for every form,
-and `logs --follow --json` writes one record per line.
+and `logs --follow --json` writes one record per line. `logs` refuses a log file this account
+cannot read with `PERMISSION_DENIED` (exit 2), naming the file and `chmod u+rw`, quoted when a
+shell would split the path, and reads and changes nothing.
 
 ### Adding a service
 

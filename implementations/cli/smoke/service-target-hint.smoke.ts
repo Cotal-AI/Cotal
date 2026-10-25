@@ -19,10 +19,12 @@
  * Driven through the built binary in a sandboxed COTAL_HOME, from a folder that is not a project and
  * from two prepared projects. No broker is started.
  *
+ * `service logs` on a log this account cannot read is refused PERMISSION_DENIED with a chmod step.
+ *
  * Run: pnpm smoke:service-target-hint
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -114,6 +116,29 @@ check("help service remove lists --instance <full-id> in its usage and options",
   }
   const listed = run(["service", "--space", "sa", "--json"], a);
   check("...and sa lists both", listed.status === 0 && listed.stdout.includes('"name":"viafolder"') && listed.stdout.includes('"name":"viaspace"'), shown(listed));
+}
+
+// `service logs` on a log this account cannot read is a refusal with the step that opens it again. It
+// used to end OPERATION_UNKNOWN with the raw EACCES and no remedy, though it only reads.
+if (process.platform !== "win32" && process.getuid?.() !== 0) {
+  const l = join(home, "l"), path = join(home, "printer.json");
+  mkdirSync(l);
+  writeFileSync(path, JSON.stringify({ schemaVersion: 1, space: "sl", launch: { type: "process", executable: "/bin/sh", args: ["-c", "echo tick; exec sleep 300"], cwd: l }, readiness: { type: "process", timeoutMs: 5000 } }));
+  const started = run(["space", "create", "sl"], l).status === 0 && run(["service", "add", "printer", "--file", path], l).status === 0 ? run(["service", "start", "printer", "--json"], l) : undefined;
+  let instanceId: string | undefined;
+  try { instanceId = (JSON.parse(started?.stdout ?? "") as { result?: { instanceId?: string } }).result?.instanceId; } catch { instanceId = undefined; }
+  const log = join(home, ".cotal", "services", Buffer.from("sl").toString("hex"), "instances", `${Buffer.from(instanceId ?? "").toString("hex")}.log`);
+  check("rig: a started process service writes its log", started?.status === 0 && existsSync(log), started && shown(started));
+  chmodSync(log, 0o000);
+  const closed = run(["service", "logs", "printer", "--json"], l);
+  let closedEnvelope: { outcome?: string; error?: { code?: string; message?: string; remedy?: string } } | undefined;
+  try { closedEnvelope = JSON.parse(closed.stdout) as typeof closedEnvelope; } catch { closedEnvelope = undefined; }
+  const step = `chmod u+rw ${log}`;
+  check("service logs on a log it cannot read is PERMISSION_DENIED, exit 2, naming the log and chmod u+rw",
+    closed.status === 2 && closedEnvelope?.outcome === "refused" && closedEnvelope.error?.code === "PERMISSION_DENIED" && closedEnvelope.error.message === `the log ${log} cannot be read by this account (EACCES); nothing was read or changed` && closedEnvelope.error.remedy === `make it readable by you, for example with ${step}`, shown(closed));
+  const opened = spawnSync("sh", ["-c", step], { cwd: l, encoding: "utf8" }), reread = run(["service", "logs", "printer"], l);
+  check("running that step reads the log again", opened.status === 0 && reread.status === 0 && reread.stdout.includes("tick"), shown(reread));
+  run(["service", "stop", "printer", "--yes"], l);
 }
 
 finish();
