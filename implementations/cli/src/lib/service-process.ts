@@ -11,7 +11,7 @@ import { selfArgv } from "./self-exec.js";
 import { loadServiceAdapter, resolveServiceAdapter, sameServiceAdapterPin, type LoadedServiceAdapter, type ResolvedServiceAdapter } from "./service-adapters.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { instanceProjection, observeServiceProcess, processServiceHost, requireProcessIdentity, serviceInstances, serviceInstanceStore, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
-import { maintenanceStackView, STACK_DEFINITION } from "./stack-journal.js";
+import { maintenanceStackView, STACK_DEFINITION, stackMemberRecord } from "./stack-journal.js";
 
 export const PROCESS_SERVICE_CAPABILITIES = Object.freeze({ multiInstance: true, foreground: true, logs: true, install: false });
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
@@ -596,7 +596,16 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       // No child is spawned above this point, so this incarnation has no process: the record is
       // failed either way. Only the provider's own work stays unattributed on an unknown error.
       row = transition(row, { state: "failed", readiness: "not-checked" });
-      if (failure?.outcome === "refused") throw new CommandFailure("refused", failure.code, `service preparation was refused before a child launch: ${failure.message}`, { target: instanceProjection(row), native: { code: failure.code, outcome: failure.outcome, detail: failure.message }, remedy: failure.remedy });
+      if (failure?.outcome === "refused") {
+        // A record the adapter refused on, whose process a member of this space's stack runs, is
+        // named with that member, as `up` names a service it does not replace.
+        const path = (failure.target as { path?: unknown } | undefined)?.path;
+        const member = typeof path === "string" ? stackMemberRecord(value.space, path) : undefined;
+        throw new CommandFailure("refused", failure.code, member
+          ? `service preparation was refused before a child launch: the ${member.definition} member of this space's controller stack runs the process recorded at ${path} (pid ${member.pid}, instance ${member.instanceId}), so ${definition.name} does not start beside it`
+          : `service preparation was refused before a child launch: ${failure.message}`, { target: instanceProjection(row), native: { code: failure.code, outcome: failure.outcome, detail: failure.message },
+          remedy: member ? `stop it with \`cotal down ${member.definition} --instance ${member.instanceId} --space ${value.space} --yes\`, then run \`cotal service start ${definition.name} --space ${value.space}\` again` : failure.remedy });
+      }
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "service preparation did not establish an accepted direct-child launch plan; no child was launched, and no provider or launch was retried", { target: instanceProjection(row) });
     }
     const path = serviceLogPath(value.space, id, true)!;

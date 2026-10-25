@@ -735,6 +735,19 @@ export function serviceHeldRecords(root: string, space: string): { record: Local
   });
 }
 
+/** The member of `space`'s controller stack whose running process the pidfile at `path` names, by
+ *  the member's own recorded process, as {@link localRecords} leaves out a record the stack owns.
+ *  Read only: nothing is adopted. */
+export function stackMemberRecord(space: string, path: string): { definition: string; instanceId: string; pid: number } | undefined {
+  const raw = readPidfile(path);
+  const pid = raw ? parsePid(raw) : undefined;
+  if (pid === undefined) return undefined;
+  for (const definition of Object.values(STACK_DEFINITION))
+    for (const row of serviceInstances(space, definition))
+      if (row.record.value.process?.pid === pid && observeServiceProcess(row.record.value) === "running") return { definition, instanceId: row.name, pid };
+  return undefined;
+}
+
 /** Remove the records under the root that front no process, `gone` and `reused` ones, and return
  *  them. Each is removed with its pin, only while its pidfile still reads as it did. */
 export function removeStaleLocalRecords(root: string, space: string): LocalRecord[] {

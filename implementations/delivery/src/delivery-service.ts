@@ -29,7 +29,7 @@ export const deliveryService: LocalProcess = {
     const path = localProcessPath(DELIVERY_PROCESS.pidFile, { root, space: context.space });
     const raw = readPidfile(path);
     const state = readProcessRecord(path, DELIVERY_PROCESS.isOwnCommand!);
-    if (raw === "" || !["absent", "dead"].includes(state.state)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a legacy delivery record is live, foreign or unresolved; the service controller did not adopt or stop it", { target: { space: context.space, path, state: state.state }, remedy: "inspect the original delivery custody before creating an independent service; no manager or broker was changed" });
+    if (raw === "" || !["absent", "dead"].includes(state.state)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the delivery record at ${path} is live, foreign or unresolved; the service controller did not adopt or stop it`, { target: { space: context.space, path, state: state.state }, remedy: "inspect the original delivery custody before creating an independent service; no manager or broker was changed" });
     const [executable, ...self] = context.cliInvocation;
     return { executable: executable!, cwd: root, args: [...self, ...(colorEnabled() ? [] : ["--no-color"]), "__service-delivery", "--root", root, "--space", context.space, "--server", target.server, "--creds", creds, "--service-instance", context.instanceId, "--service-request", context.launchRequestId, "--ready-file", serviceStartupPath(context), ...(target.tlsRequired ? ["--tls"] : [])] };
   },

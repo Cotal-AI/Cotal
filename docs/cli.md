@@ -2905,7 +2905,10 @@ endpoint response or OS unit-state check. Legacy PID-file rows are labeled separ
 whose controller stack serves the selected space, its members are the `stack-` rows here, the
 legacy rows and the stored-state hint are omitted, and when the stack does not answer or a member's
 process is gone, Next offers `cotal up --root <root>` first, with `<root>` quoted when a shell would
-split it. In open or static-auth mode, an unreachable `--server` address other than the recorded
+split it. When a service of the space outside the stack runs one of this root's records, such as a
+`delivery` preset started after `cotal down stack-delivery`, `up` refuses until it stops, so Next
+first names that service's `svc stop` with its instance, as the refusal does, and then
+`up --root`. In open or static-auth mode, an unreachable `--server` address other than the recorded
 one says nothing about whether the stack answers. Next offers `up --root` only for a member whose
 process is gone, and names the failed address the way other commands' `TARGET_UNAVAILABLE` refusal does.
 When an earlier `down`, or a foreground
@@ -3136,7 +3139,7 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `kind` | `infrastructure` |
 | `machine` | `version`, `install` (`kind` and `root`), `nats` (`path`, `bundled` or `missing`), `integrations` (each `{name, state, text}` a connector's setup reports), `connectors` (each `{name, requires, missing}`), `skills` (`state`: `current`, `not-installed`, `behind` or `unreadable`), and `web` (`installed`, `url` and the error of each when it could not be read) |
 | `extensions` | `root` and `items`, each `{package, label, version}` |
-| `folder` | `root`, `auth` (`state`: `space`, `spaces`, `none` or `unreadable`), `personas` (`root`, `default`: `valid`, `invalid`, `missing` or `unreadable`, `demo` and `error`), `launches` (whether a bare spawn launches from this folder's catalog; `null` when no mesh resolves), `processes` (each `{name, state, pid, detail}`, `state` one of `running`, `stopped`, `not-serving`, `unknown` or `unreadable`), `storedState`, `noManager` (whether this root's controller stack was started with `--no-manager`) and `managerService` (the service of the space, outside that stack, whose process runs this root's manager, as a `manager` preset started there does: its `definition` and `instanceId`, or null) |
+| `folder` | `root`, `auth` (`state`: `space`, `spaces`, `none` or `unreadable`), `personas` (`root`, `default`: `valid`, `invalid`, `missing` or `unreadable`, `demo` and `error`), `launches` (whether a bare spawn launches from this folder's catalog; `null` when no mesh resolves), `processes` (each `{name, state, pid, detail}`, `state` one of `running`, `stopped`, `not-serving`, `unknown` or `unreadable`), `storedState`, `noManager` (whether this root's controller stack was started with `--no-manager`) and `managerService` (the service of the space, outside that stack, whose process runs this root's manager, as a `manager` preset started there does: its `definition` and `instanceId`, or null), `heldServices` (the services of the space, outside that stack, whose processes run this root's records, as `up` names them before it refuses: each `definition`, `instanceId`, `record` and `pid`; null when those records could not be read) |
 | `meshes` | `current`, `unreadable` (the registry directory, a record, the current-mesh pointer, or the prepared spaces folder or a record in it, that could not be read, or a pointer that is empty, each as `{file, error}`), `items` (each with `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`, `current` and `check`: `reachable`, `unreachable` or `not-checked`) and `catalogs` (each `{idp, state, error}`) |
 | `selected` | `{resolved: false, code, message}` when no mesh resolves, where `message` states why and `hints` carries the step (`code` is `registry-unreadable` when the registry directory or a record could not be read, and a `not-started` prepared space adds its `space` and `root`); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels`, `membershipFeed` and `spaceStreams`. `spaceStreams.state` is `present`, `absent` or `not-checked`; it is read for an auth or user space and an open space this machine started. When `absent`, `root` is this machine's stack of the space and `stack` is `running` or `stopped`, each `null` when unknown. `storedBytes` is what the space's account holds in the broker's JetStream file store, `null` when it was not read |
 | `services` | Selected-space local owned records: `space`, `state` (`read`, `partial` or `not-checked`), non-atomic `observedAt`, public definition/instance projections and explicit scope. An unreadable family is `null`; stored readiness is historical. Older serialized snapshots may omit this observation, which is not an empty inventory. |
@@ -7947,7 +7950,9 @@ warns on every run.
 from that root's native store. Supply `--root` and `--creds`; `--server` may repeat the recorded
 broker but cannot replace it. Open targets refuse. The native daemon still checks its store,
 account scan and singleton shard lease. No manager, broker or installer is started implicitly.
-A live, foreign or unresolved legacy delivery record refuses rather than being adopted. The
+A live, foreign or unresolved delivery record refuses rather than being adopted. When a member of
+the space's controller stack runs it, as `stack-delivery` does while the stack runs, the refusal
+names that member with its pid and instance, and its Next is that member's stop with `down`. The
 adapter publishes its request-specific startup receipt after the native runner reports Ready
 and its shutdown handlers exist. That is not a fresh liveness response or proof of endpoint
 serving. The existing `deliver` machine-facing entry stays for the stack callers that still use it.
