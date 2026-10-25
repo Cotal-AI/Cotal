@@ -6828,8 +6828,9 @@ program's checkpoint result has no `value`. `--value` is refused with `SCHEMA_IN
 anything is sent when the record would not hold what you typed: an object that names a key twice,
 a number outside the range JSON carries (such as `1e999`), or a value nested more than 1000 levels
 deep. An empty or blank `--artifact` is refused with `USAGE_INVALID`. The receipt of `answer` and
-`amend` names the step, the value it filed or that none was given, any artifact and the answer id. With `--json` they are in
-`result.answer`, where `valueGiven` says whether a value was sent. `amend` records a changed
+`amend` names the step, the value it filed or that none was given, any artifact and the answer id. A value longer than
+120 characters is cut there too, with a line that says so. With `--json` they are in
+`result.answer`, whole, where `valueGiven` says whether a value was sent. `amend` records a changed
 position on a settled checkpoint or `ask`: it files a new answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
 settled and the run keeps the answer it acted on. A step that is still open or settled without an
 answer refuses an amend. So does a run ID that no run is recorded under, and that refusal says no
