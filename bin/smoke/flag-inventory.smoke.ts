@@ -209,10 +209,11 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Held DMs of one agent, or one exact retired durable with `--durable`.
   pending: { flags: ["creds:string", "durable:string", "json:boolean:j", "limit:string", "plain:boolean", "server:string", "space:string"], positionals: true },
   // `service` (2026-10): one registry for built-in presets and user definitions; the action and the
-  // name are positional. A preset's own options are declared by its adapter, not here.
+  // name are positional. A preset's own options are declared by its adapter, not here. `--exec` and
+  // `--cwd` save a person's own program in one line (2026-10-26).
   service: {
     flags: [
-      "dry-run:boolean", "file:string:f", "follow:boolean", "foreground:boolean", "instance:string",
+      "cwd:string:C", "dry-run:boolean", "exec:string", "file:string:f", "follow:boolean", "foreground:boolean", "instance:string",
       "json:boolean:j", "new-instance:boolean", "plain:boolean", "preset:string", "space:string:s",
       "tail:string", "with-agents:boolean", "yes:boolean:y",
     ],
@@ -285,7 +286,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   // Anonymous usage telemetry: the bare form reports the level, a level word writes it.
   telemetry: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
-  // Guarded maintenance over the hidden `reconcile-gate` and `seats` command objects below.
+  // The manager's lifecycle verbs and guarded maintenance over the hidden `reconcile-gate` and `seats`
+  // command objects below. The CLI runs `manager <verb>` as `service <verb> manager`, with the service
+  // flags and the manager preset's options, so the group itself declares only maintenance flags.
   manager: { flags: ["drain:boolean", "dry-run:boolean", "endpoint:string", "instance:string", "json:boolean:j", "plain:boolean", "server:string", "space:string:s", "yes:boolean:y"], positionals: true },
 
   // ---- Hidden entries the design keeps --------------------------------------------------------

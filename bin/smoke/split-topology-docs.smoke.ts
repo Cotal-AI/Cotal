@@ -72,14 +72,15 @@ check(
 
 // ── 2. up starts a manager by default; --no-manager is the explicit broker-only mode ──
 check(
-  "claim 2: operator guide names the split (--no-manager boot, supervise --server) and each stack's manager stop",
+  "claim 2: operator guide names the split (--no-manager boot, manager start on the registered space) and each stack's manager stop",
   runAMesh.includes("A broker-only host is a first-class `up` mode") &&
     runAMesh.includes("cotal up --no-manager") &&
     runAMesh.includes("`cotal service stop stack-manager --space <s> --yes`") &&
     runAMesh.includes("A legacy stack has no command that stops only") &&
     ![runAMesh, control].some((page) => page.includes("cotal down manager")) &&
     !cli.includes("`cotal down manager` first") &&
-    runAMesh.includes("cotal supervise --space main --server") &&
+    runAMesh.includes("cotal manager start --space main\n") &&
+    !runAMesh.includes("cotal supervise --space main --server") &&
     cli.includes("`--no-manager` is the broker-only mode") &&
     control.includes("Only one manager per space") &&
     control.includes("cotal supervise"),

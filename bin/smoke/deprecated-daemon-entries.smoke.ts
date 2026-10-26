@@ -1,13 +1,13 @@
 /**
- * Deprecated daemon entries: `deliver`, `auth-service` and `feedback-intake` keep their pre-cut argv
- * for the units, scripts and containers written before the CLI redesign, hidden from help and
- * completion. The entry's own help marks it deprecated and names its preset; it used to list it
- * unmarked. Each run prints one stderr line naming its service preset and the removal release,
- * which is one value for all three and is recorded in docs/UPGRADING.md. Stdout and the run itself
- * stay the entry's own. `up` launches a hidden twin of `deliver` and `auth-service` that has the
- * same parser, validation and runner without the warning. `supervise` is no longer deprecated: it is
- * `__daemon-manager`, the manager `up` launches, under its own name, listed in help under "Run a
- * manager", and it prints no warning.
+ * Deprecated daemon entries: `deliver`, `auth-service`, `feedback-intake` and `supervise` keep their
+ * pre-cut argv for the units, scripts and containers written before the CLI redesign, hidden from
+ * help and completion. The entry's own help marks it deprecated and names its replacement: a service
+ * preset, or `cotal manager start` for `supervise`. Each run prints one stderr line naming that
+ * replacement and the removal release, which is one value for all four and is recorded in
+ * docs/UPGRADING.md. Stdout and the run itself stay the entry's own. `up` launches a hidden twin of
+ * `deliver` and `auth-service`, and `__daemon-manager` is `supervise`'s, each with the same parser,
+ * validation and runner without the warning. The "Run a manager" help group is gone: `manager`,
+ * listed under Services, starts one.
  *
  * The real binary runs each entry's pre-cut line from a sandboxed HOME, COTAL_HOME and project root
  * against a port nothing listens on. A run is stopped once its warning appears; no broker, manager
@@ -32,7 +32,7 @@ process.env.COTAL_HOME = join(home, ".cotal");
 process.env.XDG_CONFIG_HOME = xdg;
 const { parseCommandArgs, registry } = await import("@cotal-ai/core");
 type Command = import("@cotal-ai/core").Command;
-const { DAEMON_ENTRY_REMOVAL_RELEASE, DAEMON_ENTRY_TWINS, DEPRECATED_DAEMON_PRESETS, deprecatedDaemonEntryWarning, warnDeprecatedDaemonEntry } = await import("@cotal-ai/workspace");
+const { DAEMON_ENTRY_REMOVAL_RELEASE, DAEMON_ENTRY_TWINS, DEPRECATED_DAEMON_PRESETS, DEPRECATED_MANAGER_ENTRY, SUPERVISE_ONLY_FLAGS, deprecatedDaemonEntryWarning, warnDeprecatedDaemonEntry } = await import("@cotal-ai/workspace");
 type DeprecatedDaemonEntry = import("@cotal-ai/workspace").DeprecatedDaemonEntry;
 type ServicePreset = import("@cotal-ai/workspace").ServicePreset;
 await import("@cotal-ai/cli");
@@ -52,6 +52,7 @@ const lines: Record<DeprecatedDaemonEntry, string[]> = {
   "deliver pending": ["deliver", "pending", "scout", "--space", SPACE, "--server", SERVER],
   "auth-service": ["auth-service", "--space", SPACE, "--server", SERVER],
   "feedback-intake": ["feedback-intake", "--keys", keys, "--creds", join(root, "missing.creds"), "--server", SERVER, "--port", String(await freePort())],
+  supervise: ["supervise", "--space", SPACE, "--server", SERVER],
 };
 
 // ---- The warning names a real replacement and the one release ---------------------------------
@@ -63,8 +64,25 @@ for (const [entry, preset] of Object.entries(DEPRECATED_DAEMON_PRESETS) as [keyo
   check(`${entry} is hidden from help and completion`, command?.hidden === true);
   check(`${entry} is marked deprecated where its own help shows it, naming ${preset}`, command?.summary.startsWith(`(deprecated, removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}; use the ${preset} service preset) `) === true, command?.summary);
   check(`${entry} keeps its pre-cut argv`, (() => { try { parseCommandArgs(command!, lines[entry].slice(1)); return true; } catch { return false; } })());
-  check(`${entry} names the registered ${preset} preset`, presets.has(preset) && warning.includes(`--preset ${preset} `), warning);
+  check(`${entry} names the registered ${preset} preset`, presets.has(preset) && warning.includes(`Use cotal service start ${preset},`), warning);
   check(`${entry} names the shared removal release`, warning.includes(` removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}.`), warning);
+}
+{
+  const warning = deprecatedDaemonEntryWarning(DEPRECATED_MANAGER_ENTRY);
+  const command = registry.all<Command>("command").find((row) => row.name === DEPRECATED_MANAGER_ENTRY);
+  check("supervise is still a registered entry, hidden from help and completion", command?.hidden === true);
+  check("supervise is marked deprecated where its own help shows it, naming cotal manager start", command?.summary.startsWith(`(deprecated, removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}; use cotal manager start) `) === true, command?.summary);
+  check("supervise keeps its pre-cut argv", (() => { try { parseCommandArgs(command!, lines.supervise.slice(1)); return true; } catch { return false; } })());
+  check("supervise names cotal manager start, with --foreground for a terminal", warning.includes("Use cotal manager start, or cotal manager start --foreground"), warning);
+  check("supervise names the shared removal release", warning.includes(` removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}.`), warning);
+  const kept = deprecatedDaemonEntryWarning(DEPRECATED_MANAGER_ENTRY, ["execution", "spawn"]);
+  check("supervise with flags manager start lacks says to keep supervise for them, not to move",
+    kept.includes(" removed in 1.0.0. cotal manager start has no --execution, --spawn yet, so keep cotal supervise for this run until it does.") && !kept.includes("Use cotal manager start"), kept);
+  check("every supervise-only flag is a supervise flag and no manager start flag",
+    SUPERVISE_ONLY_FLAGS.every((flag) => command?.flags?.some((row) => row.name === flag)), SUPERVISE_ONLY_FLAGS);
+  const manager = registry.all<Command>("command").find((row) => row.name === "manager");
+  check("no command is listed under Run a manager; manager is listed under Services",
+    !registry.all<Command>("command").some((row) => row.group === "Run a manager" && row.hidden !== true) && manager?.group === "Services" && manager.hidden !== true, manager?.group);
 }
 const pendingWarning = deprecatedDaemonEntryWarning("deliver pending");
 check("deliver pending names the pending read", pendingWarning.includes("cotal pending <agent>") && registry.all<Command>("command").some((row) => row.name === "pending"), pendingWarning);
@@ -75,6 +93,7 @@ const section = start < 0 ? "" : upgrading.slice(start, upgrading.indexOf("\n#",
 check("docs/UPGRADING.md records the removal release", section.includes(`\`${DAEMON_ENTRY_REMOVAL_RELEASE}\``), section.slice(0, 200));
 check("docs/UPGRADING.md maps each entry to its preset",
   Object.entries(DEPRECATED_DAEMON_PRESETS).every(([entry, preset]) => section.includes(`\`${entry}\``) && section.includes(`--preset ${preset}`)));
+check("docs/UPGRADING.md maps supervise to cotal manager start", section.includes("`supervise`") && section.includes("`cotal manager start`"));
 
 /** Run `fn` with stdout and stderr captured. */
 async function captured(fn: () => unknown): Promise<{ out: string; err: string }> {
@@ -105,6 +124,7 @@ const refusals: Record<keyof typeof DAEMON_ENTRY_TWINS | "deliver pending", stri
   deliver: ["--space", SPACE, "--server", SERVER, "--shard", "1"],
   "deliver pending": ["pending", "scout", "--limit", "0", "--space", SPACE, "--server", SERVER],
   "auth-service": ["--space", SPACE, "--server", SERVER, "--port", "99999"],
+  supervise: ["--space", SPACE, "--server", SERVER],
 };
 for (const [entry, twinName] of Object.entries(DAEMON_ENTRY_TWINS) as [keyof typeof DAEMON_ENTRY_TWINS, string][]) {
   const command = registry.resolve<Command>("command", entry);
@@ -116,7 +136,8 @@ for (const [entry, twinName] of Object.entries(DAEMON_ENTRY_TWINS) as [keyof typ
   const fields = [...new Set([...Object.keys(command), ...Object.keys(twin)])].filter((key) => key !== "name" && key !== "run" && key !== "summary");
   const differ = fields.filter((key) => (command as unknown as Record<string, unknown>)[key] !== (twin as unknown as Record<string, unknown>)[key]);
   check(`${twinName} declares what ${entry} declares`, differ.length === 0, differ);
-  check(`${entry}'s summary is its twin's under the deprecation mark`, command.summary === `(deprecated, removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}; use the ${DEPRECATED_DAEMON_PRESETS[entry]} service preset) ${twin.summary}`, command.summary);
+  const use = entry === DEPRECATED_MANAGER_ENTRY ? "cotal manager start" : `the ${DEPRECATED_DAEMON_PRESETS[entry]} service preset`;
+  check(`${entry}'s summary is its twin's under the deprecation mark`, command.summary === `(deprecated, removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}; use ${use}) ${twin.summary}`, command.summary);
   const line = lines[entry].slice(1);
   check(`${twinName} parses ${entry}'s pre-cut line as ${entry} does`,
     JSON.stringify(parseCommandArgs(twin, line)) === JSON.stringify(parseCommandArgs(command, line)));
@@ -132,15 +153,17 @@ for (const [entry, twinName] of Object.entries(DAEMON_ENTRY_TWINS) as [keyof typ
   }
 }
 
-// ---- `supervise` is a listed command, the manager `up` launches -------------------------------
+// A supervise run naming a flag manager start has no form for keeps that flag's caller on supervise.
 {
-  const supervise = registry.all<Command>("command").find((row) => row.name === "supervise");
-  const twin = registry.all<Command>("command").find((row) => row.name === "__daemon-manager");
-  check("supervise is listed in help under Run a manager, with the summary of the manager up launches",
-    supervise !== undefined && supervise.hidden !== true && supervise.group === "Run a manager" && supervise.summary === twin?.summary, supervise?.summary);
-  const fields = supervise && twin ? [...new Set([...Object.keys(supervise), ...Object.keys(twin)])].filter((key) => !["name", "hidden", "group"].includes(key)) : [];
-  check("supervise declares and runs what __daemon-manager does", supervise !== undefined && twin !== undefined
-    && fields.every((key) => (supervise as unknown as Record<string, unknown>)[key] === (twin as unknown as Record<string, unknown>)[key]));
+  const command = registry.resolve<Command>("command", DEPRECATED_MANAGER_ENTRY);
+  const twin = registry.all<Command>("command").find((row) => row.name === DAEMON_ENTRY_TWINS[DEPRECATED_MANAGER_ENTRY])!;
+  const args = parseCommandArgs(command, [...lines.supervise.slice(1), "--execution", "none", "--spawn", "scout"]);
+  const run = twin.run;
+  let seen: unknown;
+  twin.run = async (received) => { seen = received; };
+  const printed = await captured(() => command.run(args)).finally(() => { twin.run = run; });
+  check("supervise --execution --spawn warns once that manager start has no form for them, then runs __daemon-manager",
+    seen === args && count(printed.err, deprecatedDaemonEntryWarning(DEPRECATED_MANAGER_ENTRY, ["execution", "spawn"])) === 1 && !printed.err.includes("Use cotal manager start"), printed.err);
 }
 
 // ---- Each registered entry prints it when its pre-cut line runs --------------------------------
@@ -192,15 +215,6 @@ try {
       count(publicRun.stderr, warning) === 1 && !twinRun.stderr.includes("is deprecated and will be removed"), { publicRun: publicRun.stderr.slice(-800), twinRun: twinRun.stderr.slice(-800) });
     check(`the ${mode} twin's stderr is the entry's without the warning`,
       comparable(publicRun.stderr, warning) === comparable(twinRun.stderr, warning), { publicRun: publicRun.stderr.slice(-800), twinRun: twinRun.stderr.slice(-800) });
-  }
-  // `supervise` and the manager `up` launches refuse the same line the same way, and neither warns.
-  {
-    const argv = ["--space", SPACE, "--server", SERVER];
-    const [publicRun, twinRun] = [await runLine(["supervise", ...argv]), await runLine(["__daemon-manager", ...argv])];
-    check("supervise refuses a space it neither hosts nor registers as __daemon-manager does, and neither warns",
-      !publicRun.stopped && publicRun.status !== 0 && publicRun.status === twinRun.status && publicRun.stdout === twinRun.stdout
-        && !`${publicRun.stderr}${twinRun.stderr}`.includes("is deprecated") && comparable(publicRun.stderr, "is deprecated") === comparable(twinRun.stderr, "is deprecated"),
-      { publicRun: publicRun.stderr.slice(-800), twinRun: twinRun.stderr.slice(-800) });
   }
   // Without --server the intake credential goes only to the broker its space is registered at, and
   // this sandbox registers none, so the intake refuses before it dials.
