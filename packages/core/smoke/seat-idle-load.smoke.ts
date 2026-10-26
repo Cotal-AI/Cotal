@@ -65,7 +65,7 @@ import {
 import { spaceMessageStreamConfigs, standaloneConnectOpts } from "../src/streams.js";
 import { dialerFor } from "../src/endpoint.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, brokerHeap, heapSnapshotTop, procMem, teardownOnSignal, type BrokerHeap, type BrokerPart } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, brokerHeap, heapSnapshotTop, killAndAwaitExit, procMem, teardownOnSignal, type BrokerHeap, type BrokerPart } from "@cotal-ai/smoke-kit";
 
 // ---------------------------------------------------------------------------------------------
 // shared shapes
@@ -633,7 +633,9 @@ try {
 } finally {
   stopping = true;
   for (const c of children) { try { c.kill("SIGKILL"); } catch { /* already gone */ } }
-  srv.kill("SIGKILL");
+  // A broker killed without waiting can still be writing its store after the dir is removed, and
+  // recreate it: wait for the exit first.
+  await killAndAwaitExit(srv, "SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
   await new Promise<void>((r) => { process.stdout.write("", () => r()); });
