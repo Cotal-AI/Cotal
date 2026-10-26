@@ -15,13 +15,16 @@
  *      `.armed` subject) — the end-to-end proof that a pause on this space expires;
  *   3. a poison `.schedule` carrying a client scheduling header is TERMINATED, not redelivered
  *      forever and never armed (the writer's ack/term split, ADR-51);
- *   4. the daemon still shuts down promptly on SIGTERM with the writer running.
+ *   4. the writer's connection follows the daemon's renewed delivery credential: the cred is
+ *      short-lived and re-signed for the same nkey every quarter of its life, as the manager does,
+ *      and across two of its expiries every `.schedule` is armed and the writer never goes down;
+ *   5. the daemon still shuts down promptly on SIGTERM with the writer running.
  *
  * Run: pnpm smoke:delivery-timer-writer   (needs `nats-server` with message schedules; local-only)
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, headers, type NatsConnection } from "@nats-io/transport-node";
@@ -42,6 +45,8 @@ import { pickFreePort } from "./_free-port.js";
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** The daemon's delivery cred lifetime, short so the suite crosses two of its expiries. */
+const DLV_TTL_S = 20;
 const repoRoot = join(import.meta.dirname, "..", "..", "..");
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -149,6 +154,7 @@ function makeGate(init: { generation: number; processEpoch: number; registration
 let daemon: ReturnType<typeof spawn> | undefined;
 let daemonExited = false;
 let daemonOut = "";
+let resigner: ReturnType<typeof setInterval> | undefined;
 const conns: NatsConnection[] = [];
 try {
   let up = false;
@@ -173,8 +179,17 @@ try {
     principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: mintGate.seam,
   });
   const gwCreds = await mintCreds(auth, newIdentity(), "goal-writer", { goalWriter: { endpoint: EP } });
+  // Re-signed for the SAME nkey every quarter of its life, as the manager does, so the daemon
+  // adopts a new generation several times while the suite runs (cell 4).
   const credsPath = join(dir, "delivery.creds");
-  writeFileSync(credsPath, await mintCreds(auth, newIdentity(), "delivery"), { mode: 0o600 });
+  const dlvId = newIdentity();
+  const resignDelivery = async () => {
+    writeFileSync(`${credsPath}.tmp`, await mintCreds(auth, dlvId, "delivery", { expiresInSeconds: DLV_TTL_S }), { mode: 0o600 });
+    renameSync(`${credsPath}.tmp`, credsPath);
+  };
+  await resignDelivery();
+  const firstCredExpMs = Date.now() + DLV_TTL_S * 1000;
+  resigner = setInterval(() => void resignDelivery(), DLV_TTL_S * 250);
 
   // ---- mint a REAL checkpoint with a live deadline, split across the two scoped connections:
   // records writes on the goal-writer, the `.schedule` publish on the serve cred — BEFORE the
@@ -287,7 +302,35 @@ try {
     check("the writer logged the permanent refusal", daemonOut.includes("refused a .schedule request permanently"));
   }
 
-  // 4. The daemon still exits promptly on SIGTERM with the writer running (shutdown wiring).
+  // 4. The writer's connection follows the daemon's renewed credential. By the end of this cell the
+  //    first delivery cred and its successor have expired. A writer still on the cred it dialed
+  //    with is closed by the broker at that expiry and logs that it is down. Requests published
+  //    while the daemon adopts each new generation are all armed and fired.
+  {
+    const until = Math.max(firstCredExpMs + DLV_TTL_S * 1000 + 2_000, Date.now() + 20_000);
+    const tokens: string[] = [];
+    while (Date.now() < until) {
+      const token = `cp_timerw_swap_${tokens.length + 1}`;
+      const now = Date.now();
+      await mintCheckpoint(kv, jetstream(serveNc), space, { ref: { endpoint: EP, token }, instanceId: IID, epoch: EPOCH, holder, deadline: now + 3_000, now });
+      tokens.push(token);
+      await wait(2_000);
+    }
+    await wait(8_000);
+    // The broker removes a one-shot schedule's `.armed` message once it fires, so the lasting record
+    // of an arm is the `.fire` the broker published from it.
+    let firedN = 0;
+    for (const token of tokens) {
+      const f = await jsm.streams.getMessage(eptStreamName(space), { last_by_subj: eptSubject(space, EP, IID, EPOCH, token, "fire") }).catch(() => null);
+      if (f?.header?.get("Nats-Scheduler") === eptSubject(space, EP, IID, EPOCH, token, "armed")) firedN++;
+    }
+    check(`every .schedule published across the daemon's credential renewals was armed and fired (${firedN}/${tokens.length})`,
+      tokens.length >= 5 && firedN === tokens.length, { firedN, tokens: tokens.length });
+    check("the writer never went down across two credential expiries: its connection follows each adopted credential",
+      !daemonOut.includes("timer writer: down"), daemonOut.split("\n").filter((l) => l.includes("timer writer: down")));
+  }
+
+  // 5. The daemon still exits promptly on SIGTERM with the writer running (shutdown wiring).
   daemon.kill("SIGTERM");
   let exited = false;
   for (let i = 0; i < 32; i++) { if (daemonExited) { exited = true; break; } await wait(250); }
@@ -304,6 +347,7 @@ try {
   console.error("---- daemon output ----\n" + daemonOut);
   process.exitCode = 1;
 } finally {
+  clearInterval(resigner);
   for (const nc of conns) { try { await nc.close(); } catch { /* gone */ } }
   try { if (daemon && !daemonExited) daemon.kill("SIGKILL"); } catch { /* gone */ }
   try { srv.kill("SIGKILL"); } catch { /* gone */ }

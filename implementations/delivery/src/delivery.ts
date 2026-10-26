@@ -444,7 +444,6 @@ async function runStartedDelivery(
   const creds = await loadDeliveryCreds(credsSrc, v, root, space); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
   if (hosted !== undefined && accountFromCreds(creds.initial) !== hosted.context.accountPublicKey)
     throw new Error("delivery: scoped credential account does not match the assigned hosted context");
-  let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it
 
   // WHICH BROKER, WORKSTATION COMPOSITION (#756, the deliver half). `cotal ps`/`spawn`/`attach`/
   // `status`/`supervise` all resolve the registered mesh for the space/root and dial its broker;
@@ -505,7 +504,7 @@ async function runStartedDelivery(
         ? `• delivery: space "${space}" is registered at ${server} (meshes entry) - dialing it${tls ? " with TLS required" : ""}`
         : `• delivery: no meshes entry for "${space}" - dialing ${server}${v.server !== undefined ? " (--server)" : " (the local default)"}${tls ? " with TLS required" : ""}`,
     );
-  if (!(await isReachable(server, { creds: latestCreds, ...(tls ? { tls: true } : {}) }))) {
+  if (!(await isReachable(server, { creds: creds.initial, ...(tls ? { tls: true } : {}) }))) {
     // The refusal names the URL actually dialed, and — when that URL came from a registry record —
     // the remedy that fits the record's origin, in the same wording render.ts uses for preflight
     // `unreachable`: an `up` record is THIS machine's mesh and `cotal up` restarts it; a `manual`
@@ -564,7 +563,7 @@ async function runStartedDelivery(
     // The RELOAD seam (D5 slice 5 class 2): the endpoint re-invokes the source at 75% of each JWT's
     // lifetime and swaps the connection onto the re-signed file — bounded delivery creds renew with
     // no daemon restart. The explicit card.id pins the daemon's nkey across renewals.
-    creds: async () => (latestCreds = await creds.source()),
+    creds: creds.source,
     channels: [],
     consume: false, // it pulls the Plane-3 consumers itself; no agent live-tail
     watchPresence: true, // read the roster for @mention resolution …
@@ -952,9 +951,14 @@ async function runStartedDelivery(
   // broker schedules. Hosted here because this daemon is the space's standing server-side process;
   // without a running writer no pause on the space ever expires. Its OWN connection under the same
   // daemon cred (the endpoint's connection is private to it, and membership set the precedent of
-  // module-per-connection isolation), re-dialed with the FRESHEST cred by a supervised restart
-  // loop: a fault never kills delivery, is never silent (each attempt logs why the space cannot
-  // expire pauses right now), and a cred that gains rows at renewal is picked up on the next dial.
+  // module-per-connection isolation), re-dialed by a supervised restart loop: a fault never kills
+  // delivery, and is never silent (each attempt logs why the space cannot expire pauses right now).
+  // Every attempt presents the endpoint's checked cred, and every adoption moves the live
+  // connection onto it, so the broker never closes this connection at an old cred's expiry and a
+  // re-dial never presents an expired one.
+  ep.on("creds-adopted", () => {
+    void timerWriter?.nc.reconnect().catch(() => {});
+  });
   timerWriterAttempt = (async () => {
     let backoffMs = 5_000;
     for (;;) {
@@ -963,7 +967,7 @@ async function runStartedDelivery(
       try {
         nc = await dialerFor(server)({
           servers: server,
-          ...standaloneConnectOpts({ creds: latestCreds, tls }),
+          ...standaloneConnectOpts({ creds: () => ep.wireCreds(), tls }),
           name: "cotal-delivery-timer-writer",
           maxReconnectAttempts: -1,
         });

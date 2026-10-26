@@ -1249,6 +1249,13 @@ export class CotalEndpoint extends EventEmitter {
     return CotalEndpoint.presentableCreds(this.currentCreds, { renewable: Boolean(this.credsSource) });
   }
 
+  /** The credential this endpoint presents on its next connect, checked as {@link credsForWire}
+   *  checks it. A second connection under the same identity reads it on every attempt, so it
+   *  presents each credential this endpoint adopts and never an expired one. */
+  wireCreds(): string {
+    return this.credsForWire();
+  }
+
   /** Refuses a fetched generation there is nothing to renew FROM, so the caller's failure posture
    *  ({@link CREDS_RETRY_MS}) applies instead of the renewal schedule (issue #1523).
    *
