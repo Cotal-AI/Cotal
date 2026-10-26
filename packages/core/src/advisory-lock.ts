@@ -63,6 +63,20 @@ export interface AcquireOptions {
   readonly onTimeout?: (owner: LockOwner) => Error;
 }
 
+/** Read one Linux process snapshot. The remainder starts at field 3 (state). */
+function processStatFields(pid: number): string[] | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // comm can contain spaces and parentheses, so only its final terminator is structural.
+    const after = stat.lastIndexOf(") ");
+    if (after < 0 || stat.slice(0, stat.indexOf(" ")) !== String(pid)) return undefined;
+    return stat.slice(after + 2).trim().split(/\s+/);
+  } catch {
+    // An absent or unreadable identity is not evidence of death.
+    return undefined;
+  }
+}
+
 /** A best-effort, OS-cheap process-start token used ONLY to detect PID reuse. Undefined ⇒ the check
  *  is skipped for that platform and the bounded wait is the sole backstop (never a hard dependency). */
 export function processStartToken(pid: number): string | undefined {
@@ -73,18 +87,8 @@ export function processStartToken(pid: number): string | undefined {
   // backstop) rather than a false reclaim. Teardown identity pinning does NOT use this function on
   // win32; see `win32ProcessCreationToken` in pid.ts (#1437).
   if (process.platform === "win32") return undefined;
-  try {
-    // Linux: /proc/<pid>/stat field 22 (starttime). comm (field 2) may hold spaces/parens, so parse
-    // after the final ')': the remainder begins at field 3 (state), so starttime is index 19.
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const after = stat.lastIndexOf(") ");
-    if (after >= 0) {
-      const token = stat.slice(after + 2).split(" ")[19];
-      if (token) return token;
-    }
-  } catch {
-    /* not Linux, or the process is gone — fall through */
-  }
+  // Linux: field 22 (starttime) is index 19 after comm.
+  if (process.platform === "linux") return processStatFields(pid)?.[19];
   try {
     // macOS/BSD: the process start date is stable for the life of the PID.
     const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
@@ -152,24 +156,14 @@ export function inspectLock(path: string): LockInspection {
     return { state: "stale" };
   }
   if (!pidAlive(owner.pid)) return { state: "stale" };
-  // Linux keeps an exited, unreaped process addressable by kill(pid, 0). Only a complete
-  // stat record for this pinned process proves that it can no longer consume anything.
-  if (process.platform === "linux" && owner.start !== undefined) {
-    try {
-      const stat = readFileSync(`/proc/${owner.pid}/stat`, "utf8");
-      const after = stat.lastIndexOf(") ");
-      const fields = stat.slice(after + 2).trim().split(/\s+/);
-      if (after >= 0 && stat.slice(0, stat.indexOf(" ")) === String(owner.pid) && fields[19] === owner.start && fields[0] === "Z")
-        return { state: "stale" };
-    } catch {
-      // Unreadable identity is not evidence of death.
-    }
-  }
   // PID alive — but is it still the SAME process? A recorded start token that no longer matches means
   // the PID was recycled: the original owner is gone (stale). A token we simply cannot obtain is NOT
   // grounds to reclaim — the live PID keeps the lock active/unknown.
   if (owner.start !== undefined) {
-    const now = processStartToken(owner.pid);
+    const fields = process.platform === "linux" ? processStatFields(owner.pid) : undefined;
+    const now = process.platform === "linux" ? fields?.[19] : processStartToken(owner.pid);
+    // Linux keeps zombies addressable by kill(pid, 0). Judge state and identity from one snapshot.
+    if (now === owner.start && fields?.[0] === "Z") return { state: "stale" };
     if (now !== undefined && now !== owner.start) return { state: "stale" };
   }
   return { state: "active", owner };

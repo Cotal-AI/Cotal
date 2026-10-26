@@ -825,6 +825,7 @@
     "smoke:backup-inventory": "tsx packages/core/smoke/backup-inventory.smoke.ts",
     "smoke:backup-cli": "tsx implementations/cli/smoke/backup.smoke.ts",
     "smoke:backup-kv-consumer": "tsx implementations/cli/smoke/backup-kv-consumer.smoke.ts",
+    "smoke:advisory-lock-stat": "pnpm --filter @cotal-ai/core build && tsx packages/core/smoke/advisory-lock-stat.smoke.ts",
     "smoke:backup-perms:live": "pnpm -F @cotal-ai/core smoke:backup:live",
     "smoke:backup-restore:live": "tsx bin/smoke/backup-restore-live.smoke.ts",
     "smoke:isolated-reload": "tsx implementations/cli/smoke/isolated-reload.smoke.ts",
