@@ -11,7 +11,9 @@ stands.
 
 ## Prerequisites
 
-- Node ≥ 22, pnpm, and `nats-server` 2.12 or newer. Install deps once, from the repo root: `pnpm install`.
+- Node ≥ 22, pnpm, and `nats-server` 2.12 or newer. Install deps once, from the repo root:
+  `pnpm install`, then `pnpm build` (the check loads the compiled engine from `@cotal-ai/lang`'s
+  built package).
 - A static-auth mesh with a manager, from `cotal up` (not `--open`, not `--user-auth`). Hosted runs
   need issued caller authority, and these steps get it from static auth.
 - `gh`, authenticated for this repository, on the manager's PATH.
@@ -27,9 +29,10 @@ No mesh needed:
 cd examples/07-issue-orchestrator && pnpm check
 ```
 
-`check` validates both programs, then runs four scripted outcomes through the dry run, the tree-walker
-and the compiled engine a manager runs programs on. It exits non-zero on any refusal, or when a lane
-record or step list differs from what the script expects.
+`check` confirms the two copies of the lane block match, validates both programs, then runs four
+scripted outcomes through the dry run, the tree-walker and the compiled engine a manager runs
+programs on. It exits non-zero on any refusal, or when a lane record or step list differs from what
+the script expects. The summary lines it prints, with the per-check lines left out:
 
 ```
 happy path: reproduce, PR, two approvals, merge (resolve-issues.cotal.js)
@@ -71,11 +74,11 @@ pnpm cotal run answer <runId> "/checkpoint:issue#0" --value '{"issue": 1877}'
 **3. Follow it.**
 
 ```
-pnpm cotal run ps
-pnpm cotal run journal <runId>
+pnpm cotal run
+pnpm cotal run show <runId>
 ```
 
-`journal` prints each step under its key (`/fanOut:lanes#0/b:1877/ask:opened#0`), with what an open
+`show` prints each step under its key (`/fanOut:lanes#0/b:1877/ask:opened#0`), with what an open
 pause asks beneath it. The run logs one record per lane when it ends:
 
 ```
@@ -85,11 +88,19 @@ pause asks beneath it. The run logs one record per lane when it ends:
 `outcome` is `merged`, `not-reproduced`, `blocked` (review cap reached), `merge-refused`, or `failed`
 (a step failed; the first blocker names the code).
 
-**4. Stop it.** From the project folder:
+**4. Stop it.** Revoking the run, from the project folder, writes its revocation marker:
 
 ```
 pnpm cotal run revoke <runId> --local --by <you> --reason "<why>"
 ```
+
+A revoke refuses every later answer and channel effect and keeps any manager from resuming or
+taking back the run, but it does not cancel it. These programs post nothing to a channel, so the
+run keeps dispatching turns, and each `ask` it can no longer have answered fails at its 30-minute
+deadline. To stop the drive itself, restart the manager (`cotal service restart stack-manager
+--yes`, which stops every run it drives) or call the manager's `run-cancel` command
+([workflows](../../docs/workflows.md#operating-a-run)). A run stopped that way keeps the seats it
+spawned until you `cotal stop` them.
 
 ## How a lane runs
 
@@ -146,13 +157,13 @@ What only the personas promise:
   every seat in the project folder and creates no git worktree. Each persona creates its own.
 - That the worker reproduced the issue before fixing it, that the reviewers graded the sha they name,
   and that the worker never merges and the merger never edits code.
-- **Every persona holds `capabilities: [run]`**, which is wider than an `ask` needs. A seat answers
-  an `ask` through the manager's run-answer command, and today only the `run` capability grants it
-  ([#1877](https://github.com/Cotal-AI/Cotal/issues/1877)). With `run` a seat can also start, resume
-  and answer any run on the mesh. The personas are told to answer only their own asks, and nothing
-  in the runtime holds them to it.
-- The relay shows a seat the shell line `cotal run answer ... --by <seat>`, which the hosted path
-  refuses. The personas answer with the `cotal_run` tool instead.
+- **Every persona holds `capabilities: [run]`**, which is wider than an `ask` needs. Since
+  [#1877](https://github.com/Cotal-AI/Cotal/issues/1877) was fixed, a spawned seat's baseline
+  credential can answer the `ask` relayed to it, and nothing else, by running the
+  `cotal run answer <run> <step> --value '<json record>'` line its turn shows. The personas still
+  declare `run` because they are told to answer with the `cotal_run` tool, which is injected only
+  for `run`. With `run` a seat can also start, resume and answer any run on the mesh. The personas
+  are told to answer only their own asks, and nothing in the runtime holds a `run` holder to it.
 
 On a user-auth mesh, a registered participant manager hosts authorized runs for a managed agent
 whose grant and whose direct parent's grant both carry `run`. Local user-auth runs are unavailable

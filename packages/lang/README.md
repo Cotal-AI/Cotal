@@ -14,10 +14,11 @@ one, and the one fresh driver runs execute on. Each engine stamps the pins it re
 version and compares a recorded version against its own, which is why `WALKER_LANGUAGE_VERSION` and
 `ENGINE_LANGUAGE_VERSION` are two constants and `LANGUAGE_VERSION` is an alias for the current
 language, the engine's. A record binds only under the engine that wrote it (L5008). The engine
-requires node 22 or newer and refuses below it with L1000, an implementation limit that is
-deliberately not in the error catalog. A host runs a program in the engine's worker thread with the
-handler either built inside it from cloneable config, or — when the handler is a live object, as a
-driver's is — kept in the host with the effect seam bridged over a message port (`engine/bridge.ts`).
+requires node 22 or newer and refuses below it with `EngineUnavailable`, an implementation limit
+that carries no `L` code, because the error catalog lists only conditions a program can cause. A
+host runs a program in the engine's worker thread. The handler is either built inside the thread
+from cloneable config or, when it is a live object as a driver's is, kept in the host with the
+effect seam bridged over a message port (`engine/bridge.ts`).
 
 The language is defined by [`spec/cotal-lang.md`](../../spec/cotal-lang.md) (normative; every
 `js` block in it is validated by this package's surface suite) and its wire footprint by
@@ -69,11 +70,13 @@ schema shorthand: an unreadable schema is refused (L4022), and non-conforming re
 `pnpm test` in this directory runs every smoke: grammar, keys, journal, fuzz-journal, pins,
 scopes, sim, interpret, fuel, dryrun, examples, options, notify-fact, migrate, semantics (the pure
 fragment against node), surface (the syntax table, the library tables, and that every example in
-the reference and the guide validates), conformance, transform, differential and engine.
+the reference and the guide validates), conformance, transform, differential, engine and
+root-cancellation.
 `smoke/mutations/*.json` are the `pnpm mutation-proof` targets.
 
-`pnpm test` builds, then `smoke/_run.ts` runs the 20 declared `smoke/*.smoke.ts` files, each in
-its own process, in parallel. Each file's full output is printed in declared order, and a file
+`pnpm test` emits the build without a type check (`build:emit`), then `smoke/_run.ts` runs the 21
+declared `smoke/*.smoke.ts` files, each in its own process, in parallel. Each file's full output is
+printed in declared order, and a file
 passes only if it exits 0 and its output carries a non-zero tally with no failures. Every file
 runs even after one fails, and the run then fails. A `smoke/*.smoke.ts` file that is neither
 declared nor excluded, or a declared file that is missing, is refused. `wait-until.smoke.ts` is
