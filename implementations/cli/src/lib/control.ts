@@ -847,6 +847,19 @@ export async function refuseWithoutLiveManager(space: string, server: string, au
   }
 }
 
+/** The host one manager instance reports in its own `status`, the name `cotal ps` prints as its
+ *  reported host, or undefined when it does not answer in {@link REPORTED_HOST_BUDGET_MS} or names
+ *  no well-formed host. Presence carries no instance id off a user-auth mesh, so this read is where
+ *  a pinned manager's host comes from there. The view is the caller's own and is not kept. */
+export async function reportedManagerHost(space: string, server: string, auth: ControlAuth, instanceId: string): Promise<string | undefined> {
+  let reply: ManagerReply;
+  try {
+    reply = await askManager(space, server, "managerStatus", undefined, auth, "owner", REPORTED_HOST_BUDGET_MS, { instanceId });
+  } catch { return undefined; }
+  const host = reply.ok ? (reply.data as { host?: unknown } | undefined)?.host : undefined;
+  return typeof host === "string" && HOST_NAME.test(host) ? host : undefined;
+}
+
 /** A pinned instance the space's registry does not list has nothing behind it to answer, so the
  *  command is refused before it waits out the reply deadline, naming the managers that are running.
  *  A registry this side cannot read leaves the request to settle it. */

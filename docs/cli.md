@@ -3445,15 +3445,19 @@ that cannot ask: no terminal on stdin and stdout, `--no-input`, or `COTAL_NO_PRO
 the question does nothing and exits 0.
 
 A managed launch on a terminal, picked at a question or named with `--on`, asks which folder the
-agent works in when you give no `-C` and the manager is not known to run on this host. Only a
-manager whose presence reports this machine's host name counts as being on this host, so a manager
-that reports no host is asked about too. Enter keeps `Manager's workspace (default)`: no folder is
-sent, and the manager uses its workspace root, as a launch without `-C` does. A folder you type is
-sent as typed to that manager, which resolves it on its own host with `resolve-cwd` before
+agent works in when you give no `-C` and the manager is not known to run on this host. The host is
+the one that manager reports, the name `cotal ps` prints as its reported host, so a manager that
+reports this machine's host name is never asked about and one that reports no host is. The mesh and
+the pin are read before anything is asked, so a stopped mesh or an `--on` that names no running
+manager is refused first and no question comes up. Enter keeps `Manager's workspace (default)`: no
+folder is sent, and the manager uses its workspace root, as a launch without `-C` does. A folder you
+type is sent as typed to that manager, which resolves it on its own host with `resolve-cwd` before
 anything is launched. This terminal does not read or rewrite the path, so a Windows manager takes a
 drive or UNC path from any client. A folder the manager cannot use is shown with its reason and
-asked again, with your text left to edit. The question holds no manager credential: the folder is
-checked under a view of that manager acquired after you answer, and the launch acquires its own. A
+asked again, with your text left to edit. A check that could not be made at all refuses the launch
+and names the command again with the `-C` that sends the folder with it and asks nothing. The
+question holds no manager credential: the folder is checked under a view of that manager acquired
+after you answer, and the launch acquires its own. A
 `Folder chosen` receipt names the folder and the host, and for a typed folder it gives the command
 with the `--on` and `-C` that skip the questions. Cancelling does nothing and exits 0. `spawn -d`
 with no `--on`, which the exchange gives to your only live manager, asks about that manager too:
