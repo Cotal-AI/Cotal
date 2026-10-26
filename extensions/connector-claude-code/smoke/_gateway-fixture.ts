@@ -7,7 +7,7 @@ export async function serveFixtureGateway(o: { cli: string[]; cwd: string; sessi
   const host = createAppHost({ cotal: () => o.cli, cwd: o.cwd, env: process.env });
   for (const { session, path } of o.sessions)
     await host.nativeEvent({ hook_event_name: "SessionStart", session_id: session, transcript_path: path, source: "startup", cwd: o.cwd });
-  const served = await serveGatewayStdio(host, { source: "claude-local", connectContext: true, space: true });
+  const served = await serveGatewayStdio(host, { source: "claude-local", connectContext: true, space: true, selection: true, approvalResume: true });
   let ending: Promise<void> | undefined;
   const end = () => (ending ??= host.closeAll().then(() => served.close()).finally(() => process.exit(0)));
   process.stdin.on("end", end);

@@ -193,5 +193,45 @@ await cell("a session that never bound its lifecycle gets no watcher", async () 
   } finally { await s.close(); }
 });
 
-assert.deepEqual(failures, [], `AGENT-305 approval resume cells red=${failures.length}/9:\n${failures.join("\n")}`);
-console.log("APP APPROVAL RESUME TESTS PASSED (9/9)");
+await cell("changing a pending name stops the old watcher instead of replaying the old request", async () => {
+  const s = scenario([pending()]);
+  try {
+    await s.bind();
+    await s.expectPending();
+    await assert.rejects(s.host.open("local", "replacement", SESSION), (error: unknown) => error instanceof ApprovalRequired);
+    const after = s.provisions().length;
+    await until("replacement replayed", () => s.provisions().length > after);
+    for (const call of s.provisions().slice(after)) assert.equal(call[call.indexOf("--name") + 1], "replacement");
+    assert.equal(s.notices.length, 0);
+  } finally { await s.close(); }
+});
+
+await cell("an approval handle cannot be used to change the saved request", async () => {
+  const s = scenario([pending()]);
+  try {
+    await s.bind();
+    await s.expectPending();
+    const before = s.provisions().length;
+    await assert.rejects(s.host.open("local", "replacement", SESSION, undefined, ID), /unchanged request/);
+    assert.equal(s.provisions().length, before);
+  } finally { await s.close(); }
+});
+
+await cell("an approved but unclaimed request is retired before asking for a different name", async () => {
+  const replacement = { ...pending(), approval: { ...approval(), id: "c".repeat(26), url: `https://authority.example/approve/${"c".repeat(26)}` } };
+  const s = scenario([pending(), issued, replacement]);
+  try {
+    await s.bind();
+    await s.expectPending();
+    await until("old approval observed", () => s.notices.length === 1);
+    await assert.rejects(s.host.open("local", "replacement", SESSION), (error: unknown) => error instanceof ApprovalRequired);
+    const calls = s.calls();
+    const retired = calls.findIndex((call) => call[1] === "retire");
+    const asked = calls.findIndex((call) => call.includes("replacement"));
+    assert.ok(retired >= 0 && retired < asked, "retirement must precede the new request");
+    assert.deepEqual(s.retirements(), [["app-identity", "retire", "--dir", "/identities/approval_probe"]]);
+  } finally { await s.close(); }
+});
+
+assert.deepEqual(failures, [], `AGENT-305 approval resume cells red=${failures.length}/12:\n${failures.join("\n")}`);
+console.log("APP APPROVAL RESUME TESTS PASSED (12/12)");
