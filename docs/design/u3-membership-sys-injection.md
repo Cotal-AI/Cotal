@@ -1,8 +1,21 @@
 # Membership / `$SYS` credential injection
 
-> **Design** (non-normative, not shipped) · Closes [embedding](../embedding.md) known gap 1
+> **Design** (non-normative) · Closes [embedding](../embedding.md) known gap 1
 > ("Delivery immediate live eviction and a fully-hosted membership feed"). Wire contract unchanged:
 > no new subject, no new stream, no new message type. This is a composition-root seam.
+>
+> **Status.** The reader side shipped in 0.36.0 (`ebefd2c5a`). The delivery daemon reads the `$SYS`
+> pair through the `SecretStore` seam in `implementations/delivery/src/sys-creds.ts` (`loadSysPair`),
+> with the shared tenancy, torn-rotation and store-aware repair checks of section 4. Injected scan
+> tenancy is validated at startup before admission (`959b59612`, 0.37.0), and a zero-match eviction
+> no longer needs the evictor (`ade42d529`, 0.51.0). The live smoke of section 6 is
+> `implementations/delivery/smoke/sys-injection-evict.smoke.ts`. One thing differs from section 2:
+> P7 segmented the pair in the same release, so the store keys landed as per-space builders,
+> `membershipObserverCredsKey(space, composition)` and `connectionEvictorCredsKey(space,
+> composition)` in `packages/workspace/src/space-segmentation.ts`. The workstation path keeps the
+> `membership.json` cross-check as section 4.3 proposed, read from the per-space location.
+> Section 8's residuals still hold. Line references below are to the tree the design was written
+> against.
 
 ## 1. What the gap actually is
 

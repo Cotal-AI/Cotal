@@ -10,7 +10,8 @@ Examples are private.
 
 Add a changeset for each package change. Breaking changes in these 0.x packages use a minor bump.
 The Changesets workflow opens or updates the version PR after a change reaches `main`.
-Merge the intended version update before publishing.
+Merge the intended version update before publishing. A dispatch while unreleased changesets remain
+on `main` fails with `Merge the Changesets version PR before publishing.` and publishes nothing.
 
 Keep builds and focused upgrade checks ready before the publish command. A successful fresh install
 does not prove an upgrade from an existing installation. CI, review rounds and the broad native test
@@ -28,8 +29,9 @@ The workflow uses the maintained Changesets actions to select the release, pack 
 and publish the packed artifacts. GitHub Actions pins the run to one commit. One publication runs at
 a time. There is no separate qualification or promotion workflow.
 
-Linux and Windows build jobs produce Cotal's native binaries. The pack job assembles those binaries
-and builds the packages without npm publishing authority. Only the publish job has the npm trusted
+Native build jobs produce Cotal's native binaries: the seat binding on Linux x64 and arm64, and the
+workspace binding on Windows and macOS, each for x64 and arm64. The pack job assembles those
+binaries and builds the packages without npm publishing authority. Only the publish job has the npm trusted
 publishing permission. It consumes the packed output rather than rebuilding it.
 
 The root `ci:publish` command is the standard `pnpm changeset publish`. Maintainers normally use the
@@ -48,7 +50,7 @@ existing-installation upgrade before reporting the fix delivered.
 An accepted upload and a successful install are separate observations. npm may temporarily return
 cached missing-package responses after an upload, and the large `cotal-ai` tarball has taken up to
 twenty minutes to become installable, so the install job waits up to twenty-five minutes for that
-install. Only the publish job itself is serialized across runs, so that wait never holds the next
+install. The install check runs outside the publish job's queue, so that wait never holds the next
 publication. If an observation fails, inspect the registry and
 the published-package output before retrying. Never blindly repeat an upload whose outcome is unknown.
 

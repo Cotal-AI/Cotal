@@ -1,5 +1,14 @@
 # Hosted managed-agent terminal retirement
 
+Status: implemented in 0.49.0. The `retire` operation of the remote manager-service authority
+protocol, the `retirement-requester` profile and `managedRetirementOpId` live in
+`packages/core/src/remote-manager-authority.ts` and `packages/core/src/provision.ts`. The manager's
+`remoteAuthority.prepareAgentRetirement` and `remoteAuthority.mintRetirementRequester` callbacks are in
+`implementations/manager/src/manager.ts`. `pnpm smoke:manager-service-authority` and
+`pnpm smoke:hosted-retirement-order` cover the policy and ordering regressions listed below. The
+hosted host's own release journal stays the host's to build. [Embedding](../embedding.md) describes
+the shipped contract. The rest of this page is the design as written.
+
 ## Current gap
 
 A remotely supervised manager can register and serve without holding the space signer. Its typed host authority protocol issues prepare, activate, renew, and session credentials. Terminal managed-agent retirement is different from those standing phases:

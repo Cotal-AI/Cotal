@@ -1,5 +1,12 @@
 # At-most-once external effects in cotal-lang
 
+Status: implemented in 0.65.0 (`8577576e0`). `once`, `HOLDABLE_KINDS`, `holdRequestId`, L4027 and
+L4028 are in `packages/lang`, and [spec/cotal-lang.md §7.8](../../spec/cotal-lang.md) and SPEC §13.8
+are the normative text. One later change: since 0.101.0 the validator also refuses an effect `once`
+does not admit, written in its body or in a function the body calls by name, with L2033, and L4028
+stays the run-time refusal for one the validator cannot see. The record below is the design as
+approved.
+
 A design record, not a description of shipped behavior. Every claim about current behavior names the
 file and the function it was read from. Everything else is proposed. Once this record is approved
 the surface below is frozen, and the implementation follows it as written.

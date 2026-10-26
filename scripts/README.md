@@ -33,8 +33,9 @@ external scheduler that creates workflow runs.
 
 ## Full local check
 
-`pnpm check` runs the typecheck, the docs gate, `pnpm test`, `pnpm smoke:ci` and the `:live` suites
-in order through `scripts/check.mjs`. A failing step does not stop the run: every step runs, and the
+`pnpm check` runs the typecheck, the docs gate, `pnpm test`, a set of local smokes, `pnpm smoke:ci`
+and the `:live` suites in order through `scripts/check.mjs`. The root `check` script lists every
+step. A failing step does not stop the run: every step runs, and the
 closing summary lists each step that failed with its exit status, so one red suite cannot hide the
 steps after it. The run exits 1 when any step failed. A step the root manifest does not define is
 refused before anything runs.
@@ -61,6 +62,16 @@ suggests:
   only by review.
 - `check-docs-bundle.mjs` proves the generator turns the pages into a bundle that is not hollow.
   It does not prove that the pages agree with the code.
+
+## Upgrade-section gate
+
+`pnpm upgrade-section-gate --base <ref>` checks `<ref>..HEAD`, and `--range <a>..<b>` checks any
+range. It exits 1 when the range carries a commit marked breaking and adds no new release section
+to `docs/UPGRADING.md`, and 2 on misuse such as an unknown ref. It reads commit markers only, so an
+unmarked break passes, and it does not check what a section says. No workflow runs it on pull
+requests since the Attribution workflow was removed, so it is a manual check. CI runs only its
+self-test, `pnpm smoke:upgrade-section`. The design note is
+[docs/design/upgrade-section-gate.md](../docs/design/upgrade-section-gate.md).
 
 ## Mutation coverage
 

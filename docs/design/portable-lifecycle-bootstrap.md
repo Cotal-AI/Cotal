@@ -1,7 +1,15 @@
 # Portable lifecycle bootstrap
 
-Status: contract for issue #2420, implemented with the symbols spelled as declared below. The source
-inventory was checked at `d00f18cd62f5933c7dceb93b56559498b66656bc`.
+Status: contract for issue #2420, implemented with the symbols spelled as declared below and shipped
+in 0.63.0 (`22e210acd`). SPEC §13.17 states the normative contract. The source inventory was checked
+at `d00f18cd62f5933c7dceb93b56559498b66656bc`.
+
+One later change narrows the custody section. Since 0.101.0 (`87c852dac`), `runCli` drops the
+`COTAL_MANAGED_HANDOFF_FILE` variable for every command, after reading its leading global flags,
+but only `spawn` takes and unlinks the file. Another command leaves the file in place, and the
+old-Node refusal in `bin/cotal.ts` unlinks it only for `spawn`. A spawn whose file cannot be taken
+is refused `USAGE_INVALID` before its other checks. The custody text and acceptance row A14 below
+describe the original every-command behavior.
 
 ## Problem
 
