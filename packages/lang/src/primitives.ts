@@ -98,18 +98,18 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = deepFreeze({
   spawn: {
     kind: "spawn",
     nameRequired: false,
-    options: ["name", "cwd", "placement", "worktree", "join", "role", "permits", "supervise", "onFork", "events"],
+    options: ["name", "cwd", "placement", "worktree", "join", "role", "permits", "supervise", "onFork", "events", "runtime"],
     optionsAt: 1,
     // `placement` is HASHED, beside `cwd`: the target is half the answer to "where does this seat
     // live". A replay that edits the target must diverge as a migration, not silently reuse the
-    // resolution taken against the old instance (#1616 item 3). `events` is launch policy, like
-    // `supervise`, so it is not hashed.
+    // resolution taken against the old instance (#1616 item 3). `events` and `runtime` are launch
+    // policy, like `supervise`, so they are not hashed.
     hashedOptions: ["cwd", "placement", "worktree", "join", "role"],
     hashesSubject: true,
     scope: null,
     signature:
-      "spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events? }) -> AgentHandle",
-    doc: "Bring an agent into the run. Permits are budgets whose violation is catchable; supervise is a declarative restart policy; events: false starts the agent without an event plane.",
+      "spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events?, runtime? }) -> AgentHandle",
+    doc: "Bring an agent into the run. Permits are budgets whose violation is catchable; supervise is a declarative restart policy; events: false starts the agent without an event plane; runtime names the terminal runtime for this one seat.",
     example: 'const builder = await spawn("builder", { worktree: "wt-1", join: [team] })',
   },
   turn: {

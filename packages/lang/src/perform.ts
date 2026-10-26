@@ -813,6 +813,7 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
           : {}),
         ...(option(bag, "onFork") !== undefined ? { onFork: option(bag, "onFork") as "respawn" | "adopt" } : {}),
         ...(option(bag, "events") !== undefined ? { events: option(bag, "events") as boolean } : {}),
+        ...(option(bag, "runtime") !== undefined ? { runtime: option(bag, "runtime") as string } : {}),
       };
       return await performEffect(host,
         "spawn",

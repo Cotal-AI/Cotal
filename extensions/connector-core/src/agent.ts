@@ -2182,12 +2182,12 @@ export class MeshAgent extends EventEmitter {
    *  runtime; from here it just joins the mesh as a lateral peer. `opts.agent` picks
    *  the harness (absent it, the persona's `agent:` pin, else the manager's default), `opts.model` /
    *  `opts.variant` override the persona file's model selectors, `opts.prompt` submits the new
-   *  peer's first turn, and `opts.cwd` roots it at a different folder/repo
+   *  peer's first turn, `opts.runtime` chooses the terminal runtime of this one seat, and `opts.cwd` roots it at a different folder/repo
    *  than the manager's workspace — the same knobs the operator's `cotal spawn --detach` carries, so
    *  the agent and operator spawn doors share one control-op contract. (Session `resume` is
    *  intentionally NOT forwarded here: forking a host-local `~/.claude` transcript is an
    *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
-  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; instance?: string }): Promise<ControlReply> {
+  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string; instance?: string }): Promise<ControlReply> {
     await this.requireConnected();
     const raw = opts?.model;
     if (raw !== undefined && !raw.trim())
@@ -2201,7 +2201,7 @@ export class MeshAgent extends EventEmitter {
     }
     if (this.config.userAuth && instance !== undefined && this.config.managerInstanceId !== undefined && instance !== this.config.managerInstanceId)
       return { ok: false, error: "the requested manager instance differs from this credential's instance authority" };
-    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events };
+    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events, runtime: opts?.runtime };
     // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
     // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
     const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true, ...(instance !== undefined ? { instanceId: instance } : {}) });

@@ -638,7 +638,10 @@ at the spawn rather than accepted and ignored. `events: false` is the workflow f
 `cotal spawn --no-events`: the seat starts without its AG-UI event plane. A connector that
 publishes none, such as Hermes, needs it, because an omitted `events` arms the plane and the
 manager refuses that connector at the spawn. A value that is not a boolean is refused at the
-spawn. `conclave` joins its
+spawn. `runtime` names the terminal runtime of this one seat (`pty`, or an installed extension such
+as `tmux`). Omitted, the seat uses the serving manager's own runtime. A name that manager cannot
+resolve refuses the spawn and starts nothing, and the other seats keep the runtime they already have.
+`conclave` joins its
 members to a real channel as durable membership rows: the channel derives from the step's own
 request id when the program names none (a program-named channel is borrowed, never torn down, and
 a membership that predates the conclave survives its close), each member handle resolves to its

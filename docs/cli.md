@@ -3626,6 +3626,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--detach`, `-d` | off | Launch through a manager, wait until the agent joins, and return without attaching (reattach with `cotal attach`) |
 | `--foreground` | on without `-d` or `--on` | Run the application in this terminal, as a spawn without `-d` or `--on` does; kept for scripts. Its exit, or the terminal's, may end the agent. Refuses `--detach`, `--creds`, `--on`, `--restarts`, and `--json` or `--plain` except with `--dry-run` |
 | `--on <instance>` | none | Launch through one manager instance and attach to the agent, or with `-d` return once it joins. Takes the instance id (the whole id, as `ps` prints it), or on a user-auth mesh a manager's name or host, as [`ps`](#managed-seats) takes them. Refused with `--foreground` and when empty. On a static or open mesh an id that names no running manager is refused `TARGET_NOT_FOUND` before anything is sent, naming the managers that run, or `TARGET_UNAVAILABLE` as an unpinned launch is when none runs. A pinned manager that does not answer is refused `TARGET_UNAVAILABLE`, exit 2, after the reply deadline, because the launch was never sent |
+| `--runtime <name>` | the serving manager's runtime | The terminal runtime for this one managed seat (`pty`, or an installed extension such as `tmux`). It needs `-d` or `--on`. A spawn in this terminal refuses it, because that spawn has no manager runtime to choose. An unknown or unreachable runtime refuses the launch and starts nothing. Other seats on that manager keep the runtime they already have |
 | `--restarts <n>`, `--restart-window <ms>` | none | Managed launches only, with `-d` or `--on`, and given together: the manager restarts the agent at most `<n>` times within `<ms>`. Each must be a positive integer |
 | `--live-only` | off | A spawn in this terminal only: skip the durable backstop |
 | `--enrollment-file <private-file>` | none | With `--space`, for a spawn in this terminal: a private file holding one seat's enrollment URL (see above) |
@@ -3633,8 +3634,10 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--expect-owner <u_…>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the owner the handoff must carry |
 | `--expect-lifecycle-uid <uid>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the lifecycle UID the handoff must carry |
 
-`spawn` refuses `--runtime` and `--allow-stale` with "manifest deployment options belong to cotal
-team deploy <file>, not spawn".
+`spawn` refuses `--allow-stale` with "manifest deployment options belong to cotal team deploy <file>, not spawn".
+`--runtime` is a per-seat choice on a managed launch. Omitted, the seat uses the runtime that manager
+was started with. A named runtime that is not installed or not reachable is refused, and the manager
+does not substitute `pty`. `auto` is refused too: it chooses the manager's runtime, not one seat.
 
 Each session uses its connector's **event plane** by default: a stream of structured events
 describing what the agent did, rather than the prose it wrote, on a channel of its own. The channel is named after
@@ -5338,8 +5341,9 @@ one document whose `result.items` are `{name, state, package, reachable, error}`
 `built-in`, `installed` or `not-installed` and `reachable` null when the provider was not asked. An installed provider
 whose package fails to load is shown with its error and makes the read `partial` (exit 4). The command
 reads this machine only, so its `target` is null. Selecting an unknown or uninstalled runtime
-via `up`/`spawn --runtime <name>` fails loud and, for a known one, points at the exact `cotal ext add`
-package. There is no silent fallback to `pty`.
+via `up --runtime <name>` or `spawn --runtime <name>` fails loud and, for a known one, points at the exact `cotal ext add`
+package. `up --runtime` chooses the runtime every seat uses unless that seat names its own. `spawn --runtime`
+chooses the runtime of that one managed seat, and the manager keeps every other seat where it is. There is no silent fallback to `pty`.
 
 ## seats
 

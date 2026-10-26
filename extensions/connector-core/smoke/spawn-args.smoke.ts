@@ -120,6 +120,7 @@ const spawnTool = cotalToolSpecs(cfg).find((s) => s.name === "cotal_spawn") as
   | undefined;
 check("cotal_spawn schema exposes the kickoff prompt", spawnTool !== undefined && "prompt" in spawnTool.schema.shape);
 check("cotal_spawn schema exposes the manager instance pin", spawnTool !== undefined && "instance" in spawnTool.schema.shape);
+check("cotal_spawn schema exposes the seat runtime", spawnTool !== undefined && "runtime" in spawnTool.schema.shape);
 const toolAgent = new MeshAgent(cfg);
 const callsTool = record(toolAgent);
 await spawnTool?.run(toolAgent, cfg, { name: "tool-rev", prompt: "Start the review now." });
@@ -129,6 +130,14 @@ const pinToolAgent = new MeshAgent(cfg);
 const callsPinTool = record(pinToolAgent);
 await spawnTool?.run(pinToolAgent, cfg, { name: "tool-pin", instance: INSTANCE });
 check("cotal_spawn tool forwards the manager instance pin", spawnCall(callsPinTool)?.opts?.instanceId === INSTANCE, spawnCall(callsPinTool)?.opts);
+
+const runtimeAgent = new MeshAgent(cfg);
+const callsRuntime = record(runtimeAgent);
+await spawnTool?.run(runtimeAgent, cfg, { name: "tool-runtime", runtime: "tmux" });
+check("cotal_spawn tool forwards the seat runtime", spawnCall(callsRuntime)?.args?.runtime === "tmux", spawnCall(callsRuntime)?.args);
+check("name-only runtime stays absent", !("runtime" in (recPlain?.args ?? {})));
+const blankRuntime = spawnTool?.schema.shape.runtime as { safeParse: (value: unknown) => { success: boolean } } | undefined;
+check("cotal_spawn schema refuses a blank runtime", blankRuntime?.safeParse("  ").success === false, blankRuntime?.safeParse("  "));
 
 const malformedAgent = new MeshAgent(cfg);
 const callsMalformed = record(malformedAgent);
@@ -203,7 +212,7 @@ check(
   toolReply,
 );
 
-const EXPECTED_CHECKS = 33;
+const EXPECTED_CHECKS = 37;
 if (checks !== EXPECTED_CHECKS) {
   failures++;
   console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);

@@ -486,6 +486,7 @@ const SPAWN_INPUT_SCHEMA = {
     allowSubscribe: { type: "array", items: { type: "string" } },
     allowPublish: { type: "array", items: { type: "string" } },
     shareTools: { type: "array", items: { type: "string" } },
+    runtime: nonBlank(),
     supervise: {
       type: "object",
       additionalProperties: false,
