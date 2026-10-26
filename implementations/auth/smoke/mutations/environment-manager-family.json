@@ -7,7 +7,7 @@
   "mutations": [
     {
       "name": "existing manager authority ignores the environment family",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/callout-authority.ts",
       "find": "    if (gate?.authorityFamily === \"environment-manager\")",
       "replace": "    if (false)",
       "expectRed": "human-family prepare refuses an environment gate in open before releasing direct-store credentials",
