@@ -355,6 +355,7 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Agents | [`input`](#input) | Type one line into a managed agent's terminal without attaching |
 | Agents | [`persona`](#persona) | List, show, edit, create, or remove local personas |
 | Agents | [`personas`](#persona) | The legacy persona parser, kept during the migration to `persona` |
+| Run a manager | [`supervise`](#supervise) | Run a manager in this terminal for the selected space; see [Start a manager for a hosted space](#start-a-manager-for-a-hosted-space) |
 | Observe | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
 | Observe | [`who`](#who) | The live roster of the selected space, and whether a manager runs each seat |
 | Observe | [`whoami`](#whoami) | The identity this CLI acts under, and what it may read, post and do |
@@ -366,7 +367,6 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Manager | [`reconcile-gate`](#reconcile-gate) | Unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
 | Manager | [`deregister-instance`](#endpoint-deregister) | Hidden from `cotal help`: the old spelling of `endpoint deregister`, which refuses and names it |
 | Manager | [`seats`](#seats) | List the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
-| Manager | [`supervise`](#supervise) | Deprecated and hidden from `cotal help`: run a manager daemon; use the `manager` service preset |
 | Manager | [`manager`](#manager-maintenance) | Inspect retained local seats or repair an owned manager gate |
 | Manager | [`feedback-intake`](#server-daemons) | Deprecated and hidden from `cotal help`: run a feedback intake server; use the `feedback-intake` service preset |
 | Manager | [`deliver`](#deliver) | Deprecated and hidden from `cotal help`: run the delivery daemon; use the `delivery` service preset |
@@ -4580,22 +4580,38 @@ name no persona can have with the codes `persona show` uses. Only its explicit `
 connects to the mesh.
 That overlay heads the list with the mesh it read and marks each persona `running` or `not running`.
 
+## Start a manager for a hosted space
+
+A hosted space runs its broker elsewhere, so nothing on your machine starts a manager for it. Start
+one in a terminal:
+
+```bash
+cotal supervise --space <space> --runtime <orca|tmux|pty>
+```
+
+It needs you signed in to the space (`cotal login`) and the space registered on this machine
+(`cotal meshes add`). With the space selected by `cotal use <space>`, a bare `cotal supervise` is
+enough: it uses the `pty` runtime, which every platform has built in. `orca` and `tmux` need their
+extension first, such as `cotal ext add @cotal-ai/orca`. The manager prints `✓ manager up` and runs
+until Ctrl-C. `cotal ps` then lists it with the agents it runs, and `cotal spawn -d <persona>`
+launches an agent through it.
+
 ## supervise
 
 ```bash
 cotal supervise [--execution runtime|none] [--runtime <name>] [--space <s>] [--server <url>] [--name <name>] [--spawn <names>]
 ```
 
-`supervise` is a deprecated entry kept for existing units, scripts and containers, and help and
-completion omit it. `help supervise` marks it deprecated and names the `manager`
-preset. It accepts the same flags and prints a warning on every run naming the
-`manager` service preset and the release that removes it; see
-[deprecated daemon entries](UPGRADING.md#deprecated-daemon-entries). The manager that `cotal up`
-starts runs the same code through a hidden entry and prints no warning.
+`supervise` runs a manager in this terminal until Ctrl-C. Help lists it under Run a manager. The
+manager that `cotal up` starts runs the same code through a hidden entry. Without `--space` it
+supervises the space other commands target here: `COTAL_SPACE`, else the space this folder hosts
+or is registered for, else the one `cotal use` selected. A space it did not get from `--space`,
+`COTAL_SPACE` or a folder that hosts it keeps its manager records in the folder that space is
+registered at, so a start from any folder is the same manager, with the same instance and name.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--space <s>` | this folder's auth space | Space to supervise. On a root that hosts several spaces, name one of them here |
+| `--space <s>` | `COTAL_SPACE`, this folder's space, or the `cotal use` selection | Space to supervise. On a root that hosts several spaces, name one of them here |
 | `--server <url>` | hosting mesh, or matching registered mesh | Broker URL. A registered mesh supplies it when omitted; a different explicit value is refused before anything is dialed. |
 | `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
 | `--execution runtime|none` | `runtime` | NONE is a genuine hosting user-auth control instance with no Runtime, connector inspection, workload or terminal execution |
@@ -7115,7 +7131,7 @@ Two long-lived infra roles ship with the CLI. They are not part of everyday oper
 daemon comes up automatically with `cotal up --detach` in auth mode.
 
 `deliver`, `auth-service` and `feedback-intake` are deprecated entries kept for existing units and
-scripts, as is `supervise`; help and completion omit them. Each entry's own help
+scripts; help and completion omit them. Each entry's own help
 marks it deprecated, with its removal release and the preset that replaces it. Each accepts its existing flags and
 prints a warning on every run naming its service preset and the release that removes it. The
 delivery daemon and auth service that `cotal up` starts run the same code through hidden entries

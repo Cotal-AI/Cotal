@@ -208,7 +208,7 @@ cotal service start manager --foreground
 ```
 
 `--root` and `--roster` take absolute paths. Without `--foreground` the manager runs in the
-background. The deprecated `cotal supervise --roster <file>` boots the same list. A roster declares
+background. `cotal supervise --roster <file>` boots the same list. A roster declares
 no channels: each agent's access comes from its persona file. Each entry starts one agent the way
 `cotal spawn --detach` does.
 

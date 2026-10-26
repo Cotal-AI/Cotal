@@ -1,13 +1,12 @@
 import type { Command, ParsedArgs } from "@cotal-ai/core";
 import { c } from "./colors.js";
 
-/** The release that removes the deprecated daemon entries. One value for all four, recorded under
+/** The release that removes the deprecated daemon entries. One value for all three, recorded under
  *  "Deprecated daemon entries" in docs/UPGRADING.md. */
 export const DAEMON_ENTRY_REMOVAL_RELEASE = "1.0.0";
 
 /** Each deprecated daemon entry and the service preset that replaces it. */
 export const DEPRECATED_DAEMON_PRESETS = {
-  supervise: "manager",
   deliver: "delivery",
   "auth-service": "auth-service",
   "feedback-intake": "feedback-intake",
@@ -16,7 +15,6 @@ export const DEPRECATED_DAEMON_PRESETS = {
 /** The hidden twin `up` launches for each deprecated entry it still starts. A twin is the entry's own
  *  declaration and runner without the warning, so only a persisted caller sees the warning. */
 export const DAEMON_ENTRY_TWINS = {
-  supervise: "__daemon-manager",
   deliver: "__daemon-deliver",
   "auth-service": "__daemon-auth-service",
 } as const;

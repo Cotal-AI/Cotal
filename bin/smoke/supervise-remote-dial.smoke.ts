@@ -577,6 +577,27 @@ try {
   ok("J: a launch pinned to a manager whose presence reports this host asks no folder",
     local.code === 2 && /Managed launch/.test(local.out) && !/Which folder/.test(local.out), local.out.slice(-900));
 
+  // L: with the space selected by `cotal use`, a bare `cotal supervise` from a folder that neither
+  // hosts nor registers it starts a manager for that space on the pty runtime, in the root the space
+  // is registered at, and prints no deprecation line. Its own ps answers.
+  const selected = await caller("use", space);
+  must("L: the caller selects the space", selected.code === 0, selected);
+  const elsewhere = scratch("bare-cwd");
+  const bare = spawnProc(tsxBin, [cliBin, "supervise"], { cwd: elsewhere, env: childHomeEnv(callerHome), stdio: ["ignore", "pipe", "pipe"] });
+  kids.push(bare);
+  twoManagers.push(bare);
+  let bareOut = "";
+  bare.stdout?.on("data", (chunk: Buffer) => { bareOut += chunk.toString(); });
+  bare.stderr?.on("data", (chunk: Buffer) => { bareOut += chunk.toString(); });
+  for (let i = 0; i < 1_200 && !/✓ manager up/.test(bareOut) && bare.exitCode === null; i++) await sleep(100);
+  ok("L: a bare supervise on the selected hosted space starts a manager there on the pty runtime, with no deprecation line",
+    new RegExp(`✓ manager up \\(space ${space} · [^)]*pty\\)`).test(bareOut) && !/deprecated/.test(bareOut), bareOut.slice(-900));
+  const bareId = /✓ manager up/.test(bareOut) ? loadOrCreateRemoteManagerIdentity(callerRoot, space).instanceId : undefined;
+  const bareFolder = readdirSync(elsewhere);
+  ok("L: it keeps its records in the space's registered root, not the folder it was started from", bareId !== undefined && bareFolder.length === 0, { bareId, bareFolder });
+  const barePs = bareId === undefined ? undefined : await caller("ps", "--space", space, "--on", bareId);
+  ok("L: ps --on that manager is answered", barePs?.code === 0 && /No managed agents/.test(barePs.out), barePs);
+
   // K: a managed spawn the host refuses at enrollment is refused, not unknown. The caller's grant no
   // longer carries admin, so the envelope walk applies, and the persona's role is not in its scope.
   // The narrowed grant keeps the row's lifecycle, which the live managers and the caller run under.
