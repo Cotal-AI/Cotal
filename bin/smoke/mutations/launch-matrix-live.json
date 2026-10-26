@@ -22,9 +22,9 @@
     },
     {
       "name": "agent-bearer stops accepting the connector's refresh flag",
-      "file": "implementations/auth/src/commands.ts",
-      "find": "      { name: \"manager-call\", type: \"boolean\", description: \"mint a token bound to one manager instance\" },",
-      "replace": "      { name: \"manager-bound\", type: \"boolean\", description: \"mint a token bound to one manager instance\" },",
+      "file": "implementations/auth/src/agent-bearer.ts",
+      "find": "    { name: \"manager-call\", type: \"boolean\", description: \"mint a token bound to one manager instance\" },",
+      "replace": "    { name: \"manager-bound\", type: \"boolean\", description: \"mint a token bound to one manager instance\" },",
       "expectRed": "the connector's refresh shape `--manager-call` is accepted and reaches the token read",
       "cell": "the connector's refresh shape `--manager-call` is accepted and reaches the token read",
       "afterRestore": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/auth build"

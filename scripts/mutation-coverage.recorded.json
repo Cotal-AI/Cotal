@@ -71,10 +71,6 @@
     "sha256": "b19e49589eef5483fb885df1e421de3aac0a2addc799c97bba538c919f1f4608",
     "refusal": "mutation \"P3 the bounded continuation retry never fires (#726 defect verbatim)\" targets extensions/pi/src/driver.ts, which none of [extensions/pi/smoke/tool-input-closed.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in extensions/pi that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
-  "bin/smoke/mutations/readiness-uncertain-reason.json": {
-    "sha256": "f826a32a61808d7fbf21cc4a92b95675413797ca606e9c2af7c74f1d6c04cd3b",
-    "refusal": "mutation \"the manager drops the readiness detail it just built, so the terminal carries nothing to say\" targets implementations/manager/src/manager.ts, which none of [bin/smoke/readiness-window-live.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/manager that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "bin/smoke/mutations/reconcile-poisoned-lease.json": {
     "sha256": "26ff6f2bab08f76915c5fbad403e6c5e11f2d1b245021d465c74fcdff675dc91",
     "refusal": "mutation \"restore lease admission before scan-tenancy validation\" targets implementations/delivery/src/delivery.ts, which none of [implementations/manager/smoke/gate-reconcile-cli-e2e.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/delivery that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
@@ -334,10 +330,6 @@
   "implementations/auth/smoke/mutations/corrupt-member-inventory.json": {
     "sha256": "a4a6c03b27e4a2951b04b5db71f9ac04d9174c2fd86d10bd0b40964941b481d4",
     "refusal": "mutation \"restore defective listMembers complete inventory omission\" targets packages/core/src/endpoint.ts, which none of [implementations/auth/smoke/freeslot-respawn-barrier.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "implementations/auth/smoke/mutations/expiry-renewal.json": {
-    "sha256": "6a3aaa94ebeef556748173caf03dc78071d58bc56ea5032b80482e91a45f8748",
-    "refusal": "mutation \"N1 the pre-dial expiry guard is gone, so the endpoint dials with the dead bearer again\" targets packages/core/src/endpoint.ts, which none of [implementations/auth/smoke/expiry-renewal.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
   "implementations/auth/smoke/mutations/managed-agent-runtime-transport.json": {
     "sha256": "75095ccade11d3c7263c25796be4605ee96c27e506c162667b5e524c8b1d914d",

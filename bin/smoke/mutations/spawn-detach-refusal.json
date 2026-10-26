@@ -19,8 +19,8 @@
     {
       "name": "the spawn goal's accept refusal drops its outcome, so a missing persona reads as an unknown launch",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        rejectAccept(new EpEnvelopeError(undone ?? \"failed-precondition\", reply.error ?? \"spawn refused at accept\", details, effectStarted && undone === undefined ? undefined : \"not-executed\"));",
-      "replace": "        rejectAccept(new EpEnvelopeError(undone ?? \"failed-precondition\", reply.error ?? \"spawn refused at accept\", details));",
+      "find": "        rejectAccept(new EpEnvelopeError(code, reply.error ?? \"spawn refused at accept\", details, effectStarted && undone === undefined ? undefined : \"not-executed\"));",
+      "replace": "        rejectAccept(new EpEnvelopeError(code, reply.error ?? \"spawn refused at accept\", details));",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
       "expectRed": "a missing persona is a refusal the manager stated before execution, exit 2",
       "cell": "a missing persona is a refusal the manager stated before execution, exit 2",
