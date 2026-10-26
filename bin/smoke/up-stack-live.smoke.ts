@@ -354,6 +354,18 @@ try {
   ok("another folder's up at this stopped space's address refuses CONFLICT, exit 2, naming this one, and writes nothing",
     otherUp.status === 2 && /Code:\s+CONFLICT/.test(plain(otherUp.stderr)) && plain(otherUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)} and stopped`) && !existsSync(join(other, ".cotal")), otherUp.stdout + otherUp.stderr);
   rmSync(other, { recursive: true, force: true });
+  // A manifest names its broker in `broker.servers`, and that address is held by the same rule, so
+  // `up -f` is refused there too and its next step names the field to change.
+  const manifestRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-manifest-"));
+  writeFileSync(join(manifestRoot, "cotal.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: upstackmanifest\nbroker:\n  servers: ${SERVER}\n  auth: false\nchannels:\n  general:\n    description: address reservation cell\n`, { mode: 0o600 });
+  const manifestUp = cliIn(manifestRoot, "up", "-f", "cotal.yaml");
+  if (manifestUp.status === 0) cliIn(manifestRoot, "down", "--yes");
+  ok("an up -f whose broker.servers is this stopped space's address refuses CONFLICT, exit 2, naming this one and broker.servers, and writes nothing",
+    manifestUp.status === 2 && /Code:\s+CONFLICT/.test(plain(manifestUp.stderr)) &&
+      plain(manifestUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)} and stopped`) &&
+      plain(manifestUp.stderr).includes("point broker.servers in cotal.yaml at another address") &&
+      plain(manifestUp.stderr).includes(`cotal space forget ${SPACE}`) && !existsSync(join(manifestRoot, ".cotal")), manifestUp.stdout + manifestUp.stderr);
+  rmSync(manifestRoot, { recursive: true, force: true });
   const restart = cli("up", "--detach", "--server", SERVER);
   if (existsSync(join(root, ".cotal", "nats.pid"))) pids.push(pidOf("nats.pid"));
   ok("a bare up starts it again on the retained launcher, with no stack journal",

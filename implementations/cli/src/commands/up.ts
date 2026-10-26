@@ -101,6 +101,7 @@ import {
   listSpaceAccounts,
   preloadSpaceAccounts,
   putSpaceAuth,
+  brokerAddressKey,
   canonicalRoot,
   rootPathProblem,
   rootControlProblem,
@@ -1992,7 +1993,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     }
   }
 
-  if (!resumeAttempt) refuseRegisteredAddress(server, values.space ?? folderSpace(), host);
+  if (!resumeAttempt) refuseRegisteredAddress(server, values.space ?? folderSpace(), `start this one at another address with \`cotal up --server nats://${host}:<port>\``);
   await assertBrokerAddressFree(server, "cotal up");
   // A repair keeps its own store rules above, and a resume or restore names its store.
   if (!resumeAttempt && !repairing) {
@@ -3376,6 +3377,13 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   const runtime = m.runtime ?? "pty";
   if (open && (m.defaults?.deliveryClass === "durable" || m.channels.some((channel) => channel.deliveryClass === "durable")))
     throw new CommandFailure("refused", "UNSUPPORTED", "this open manifest explicitly requests durable channel delivery, but the open broker has no delivery daemon; no channel metadata or broker was written", { target: { space: m.space, defaultDurable: m.defaults?.deliveryClass === "durable", channels: m.channels.filter((channel) => channel.deliveryClass === "durable").map((channel) => channel.name) }, remedy: "use static/user authentication for durable delivery, or declare live delivery for an open mesh" });
+  // The address this manifest names is held by the same rule as a `--server` on the flag path: a
+  // stopped space keeps its registered address, and a second stack started there answers for both
+  // registrations. A fresh team boot has its own refusal below, so this is the ordinary `up -f`.
+  if (!opts.freshTeamBoot)
+    refuseRegisteredAddress(server, m.space, opts.server !== undefined
+      ? `start this one at another address with \`cotal up -f ${file} --server nats://${host}:<port>\``
+      : `point broker.servers in ${file} at another address`);
   if (opts.freshTeamBoot) {
     const other = loadMeshes().filter((row) => row.space !== m.space && row.server === server);
     if (other.length) throw new CommandFailure("refused", "CONFLICT", "another local registration names this exact broker address; fresh team boot did not create a listener over its recorded target", { target: { space: m.space, server: brokerAddressForDisplay(server) ?? "not displayable", otherSpaces: other.map((row) => row.space) }, remedy: "inspect both registrations and their native brokers; exact-address conflicts block creation, while no conflict does not prove exclusivity" });
@@ -4564,23 +4572,21 @@ async function assertFreshTeamBindAvailable(server: string, host: string, space:
   });
 }
 
-/** The host and port a registration's broker address reserves, whatever its scheme. */
-function reservedAddress(server: string): string {
-  const address = new URL(server);
-  return `${address.hostname}:${address.port || "4222"}`;
-}
-
 /** Refuse an address that a space registered for another folder keeps while its broker is stopped,
  *  as an occupied one is refused. Starting there would leave two registrations naming one broker:
- *  whichever stack runs answers for both, and the other one's `down` and reads reach it. A space
- *  this start takes the name of is left to the name rules. */
-function refuseRegisteredAddress(server: string, space: string, host: string): void {
+ *  whichever stack runs answers for both, and the other one's `down` and reads reach it. Every
+ *  start that names its own address asks this, a manifest's `broker.servers` included, and
+ *  `elsewhere` names the way to move the one being started. A space this start takes the name of is
+ *  left to the name rules. */
+function refuseRegisteredAddress(server: string, space: string, elsewhere: string): void {
+  const key = brokerAddressKey(server);
+  if (key === undefined) return;
   const root = canonicalRoot(cotalRoot());
-  const held = loadMeshes().find((m) => m.space !== space && canonicalRoot(m.root) !== root && reservedAddress(m.server) === reservedAddress(server));
+  const held = loadMeshes().find((m) => m.space !== space && canonicalRoot(m.root) !== root && brokerAddressKey(m.server) === key);
   if (!held) return;
   throw new CommandFailure("refused", "CONFLICT", `${server} is the broker address of "${held.space}", registered for ${held.root} and stopped; nothing was started`, {
     target: { root: cotalRoot(), server, space, heldSpace: held.space, heldBy: held.root },
-    remedy: `start this one at another address with \`cotal up --server nats://${host}:<port>\`, or free that one with \`cotal space forget ${held.space}\``,
+    remedy: `${elsewhere}, or free that one with \`cotal space forget ${held.space}\``,
   });
 }
 
@@ -4589,11 +4595,17 @@ function refuseRegisteredAddress(server: string, space: string, host: string): v
 async function freshStackServer(server: string, bindHost?: string): Promise<string> {
   const url = new URL(server);
   const host = (bindHost ?? url.hostname).replace(/^\[|\]$/g, "");
-  const reserved = new Set(loadMeshes().map((mesh) => reservedAddress(mesh.server)));
+  const reserved = new Set<string>();
+  // A recorded address this cannot take apart reserves nothing: it names no host and port to avoid.
+  for (const mesh of loadMeshes()) {
+    const key = brokerAddressKey(mesh.server);
+    if (key !== undefined) reserved.add(key);
+  }
   let candidate = server;
   for (let attempt = 0; attempt < 16; attempt++) {
     const address = new URL(candidate);
-    if (!reserved.has(reservedAddress(candidate))) {
+    const key = brokerAddressKey(candidate);
+    if (key === undefined || !reserved.has(key)) {
       try {
         await freePort(host, Number(address.port) || 4222);
         return candidate;

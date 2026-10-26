@@ -679,7 +679,11 @@ address. A later `cotal up` of
 the same space from the same folder starts from the URL that mesh recorded; an explicit `--server`
 stays fail-loud on collision. An address that a space registered for another folder keeps while it
 is stopped refuses `CONFLICT`, exit 2, naming that space and folder, and nothing starts, unless this
-`up` takes that space's name over. When the named space runs from another folder on this machine,
+`up` takes that space's name over. `up -f` reads its address from the manifest's `broker.servers`
+and is refused there by the same rule, with the field to point at another address in place of the
+`--server` to pass. Each refusal also names `cotal space forget <space>`, which frees that address
+with the name. A second stack started on a held address answers for both registrations, which
+leaves the other space's `down` and its reads reaching this one. When the named space runs from another folder on this machine,
 `up --space` refuses `CONFLICT`, exit 2, naming that folder, with or without `--server`, `--json` or
 `--plain`, and writes nothing in the folder it ran from. A bare `up` whose folder names a space that
 runs from another folder refuses `CONFLICT` as well. Its Next names
