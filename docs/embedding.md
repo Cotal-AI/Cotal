@@ -35,6 +35,14 @@ the full `up` orchestration are **not** public runners: `up` also does broker br
 process and registry management, and lifecycle work, and `supervise`'s orchestration is private (see
 [Supervisor signing authority](#supervisor-signing-authority)).
 
+## Process record removal
+
+`@cotal-ai/workspace` no longer exports `removeIdentityPin`. After proving the recorded process
+has stopped, call `removePidPair(pidfilePath, recorded)` with the trimmed pidfile content you
+adjudicated. It takes the publish lock and removes both the pidfile and its pin only if the
+pidfile still names that record. A successor's record is preserved. With no pidfile, it removes
+a stray pin. Do not replace the removed helper with a direct unlink of the pin.
+
 ## Workspace registry liveness
 
 `@cotal-ai/workspace` exports `pruneStaleMeshes()` for a liveness sweep. It keeps every
