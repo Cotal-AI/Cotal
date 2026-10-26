@@ -190,6 +190,7 @@ import {
   lifecycleBlocked,
   lifecycleBlockedFrom,
   renderLifecycleBlocked,
+  controlReplyFromThrown,
   type EpCommandDef,
   type EpServeContext,
   type EpServeGrant,
@@ -3933,7 +3934,7 @@ export class Manager {
     // The data half of a failure reply (e.g. a degraded resume result) rides the error MESSAGE
     // only — the action model gives failures a typed channel.
     const unwrap = (r: ControlReply): unknown => {
-      if (!r.ok) throw new EpEnvelopeError("failed-precondition", r.error ?? "the operation failed");
+      if (!r.ok) throw new EpEnvelopeError((r.code ?? "failed-precondition") as EpErrorCode, r.error ?? "the operation failed", r.details);
       return r.data;
     };
     // The admin-family serve gate: every `manager.admin`-class
@@ -6803,15 +6804,15 @@ export class Manager {
     } catch (e) {
       // Failure after reserve (provision / launch threw): the slot was never live, so no cold-start
       // was paid — the reserved rollback (finally) is enough, no cooling stamp.
-      // A lifecycle-blocked envelope already named the barrier; keep its details on the ControlReply
-      // so follow/CLI/cotal_spawn do not collapse it to a generic string (#873). An extension can throw
+      // Keep the envelope's code and lifecycle details on the ControlReply so the serve boundary
+      // can carry the refusal's classification and barrier to the caller. An extension can throw
       // any value, and an envelope's `message` is only typed as a string, so the refusal text always
       // comes from rejectionText; telling an envelope apart is guarded because a thrown Proxy can
       // throw from `instanceof` or from its own fields.
       const error = rejectionText(e);
       try {
         if (e instanceof EpEnvelopeError)
-          return { ok: false, error: renderLifecycleBlocked(error, e), ...(e.details ? { details: e.details } : {}) };
+          return controlReplyFromThrown(e, error);
       } catch { /* not a readable envelope */ }
       return { ok: false, error };
     } finally {
@@ -9164,9 +9165,8 @@ export class Manager {
       // outcome unknown.
       if (acceptance === undefined) {
         const details = reply.details;
-        // A hard-pinned name a live incarnation holds is the one refusal here that names its own code.
-        const code = undone ?? (reply.code === "already-exists" ? "already-exists" : "failed-precondition");
-        rejectAccept(new EpEnvelopeError(code, reply.error ?? "spawn refused at accept", details, effectStarted && undone === undefined ? undefined : "not-executed"));
+        const code = undone ?? reply.code ?? "failed-precondition";
+        rejectAccept(new EpEnvelopeError(code as EpErrorCode, reply.error ?? "spawn refused at accept", details, effectStarted && undone === undefined ? undefined : "not-executed"));
         return;
       }
       // H1: `run` CATCHES its own body (a throw in buildLaunch/runtime.spawn) and RESOLVES `{ok:false}`

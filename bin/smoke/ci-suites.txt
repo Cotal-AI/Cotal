@@ -94,6 +94,7 @@ smoke:manager-service-authority
 smoke:manager-service-ops
 smoke:manager-service-invoke
 smoke:manager-spawn-action
+smoke:manager-refusal-code
 smoke:manager-spawn-action-auth
 smoke:mesh-attach
 smoke:attach-repaint

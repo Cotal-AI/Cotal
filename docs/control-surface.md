@@ -264,6 +264,10 @@ request deadline as a floor and waits through the accepted readiness budget plus
 so a connector-specific slow boot cannot be reported as a caller timeout while the manager is
 still legitimately waiting for its terminal.
 
+The manager keeps a spawn or launch exception's error code and details when turning it
+into a refusal. Failed `ControlReply` values keep their code and details at the serving
+boundary. A reply without a code remains `failed-precondition`.
+
 A spawn that is **refused** because a lifecycle barrier already holds the actor (a frozen
 issuance gate, a retiring alias, a retired uid) is not a wait-timeout. The manager already
 knows the blocked op (`registration` / `retirement` / `activation` / `takeover`), the `opId`
