@@ -121,11 +121,12 @@ export interface MeshTargetErrorDetails {
   root?: string;
   /** Running meshes, for the ambiguous case — each formatted `"<space> (<root>)"`. */
   available?: string[];
-  /** The same running meshes by SPACE NAME, in `available`'s order — set only where the ambiguity is
-   *  a set of meshes that are recorded AND running, so a caller that must act on each (rather than
-   *  print them) can select one by name. Absent for every other ambiguity: several tenants on one
-   *  root's disk, or an unreadable account record, name no running manager to act on, and there the
-   *  refusal stands. */
+  /** The same meshes by SPACE NAME, in `available`'s order — set where the ambiguity is a set of
+   *  RECORDED meshes a caller can select by name: the running meshes of the bare fallback, or the
+   *  registrations one folder's broker hosts, so a caller that must act on each (rather than print
+   *  them) reads each by name and decides for it. Absent for every other ambiguity: several tenants
+   *  on one root's disk, or an unreadable account record, name no registration to act on, and there
+   *  the refusal stands. */
   spaces?: string[];
   /** What the caller asked for that didn't match (e.g. an unknown `--space`). */
   requested?: string;
@@ -640,16 +641,18 @@ export function folderSpaceOverSelection(cwd: string, current: string | null): s
 }
 
 /** The one registration recorded for `root`, if any. A broker that runs several spaces records one
- *  entry per space, all under the same root. With no `--space` to pick one, `.find()` would silently
- *  resolve whichever sorted first; name the tenants and refuse instead (the same posture as
- *  `soleSpaceOf` for an unrecorded multi-space root). */
+ *  entry per space, all under the same root, and so do two remote spaces registered from the same
+ *  folder. With no `--space` to pick one, `.find()` would silently resolve whichever sorted first;
+ *  name the tenants and refuse instead (the same posture as `soleSpaceOf` for an unrecorded
+ *  multi-space root). The names ride along as `spaces`: `update` replaces the one binary they all
+ *  share, so it reads each of them in turn rather than refusing the machine-wide question. */
 function registrationAt(root: string, meshes: readonly MeshEntry[]): MeshEntry | undefined {
   const rootMatches = meshes.filter((m) => canonicalRoot(m.root) === canonicalRoot(root));
   if (rootMatches.length > 1)
     throw new MeshTargetError(
       "ambiguous-target",
       `this folder's broker hosts ${rootMatches.length} spaces (${rootMatches.map((m) => m.space).join(", ")}) - name one with --space`,
-      { available: rootMatches.map((m) => `${m.space} (${m.root})`) },
+      { available: rootMatches.map((m) => `${m.space} (${m.root})`), spaces: rootMatches.map((m) => m.space) },
     );
   return rootMatches[0];
 }
