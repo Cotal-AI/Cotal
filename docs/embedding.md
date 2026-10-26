@@ -416,7 +416,8 @@ human or operator credential to a worker, mints no control instrument per read, 
 liveness off the manager process. Without the input both members are `undefined`.
 `standingRenewableTtlSeconds` is forwarded unchanged to the authority plane, which bounds it to 5
 to 86400 seconds. It is a trusted-host input for the renewal rehearsal, and no request or CLI flag
-sets it. SPEC §13.1 and §13.6 define the view.
+sets it. `issuerSessionTtlSeconds` sets the credential lifetime of the plane's held issuer session
+the same way, bounded to 5 to 300 seconds, with the five-minute `issuer` lifetime as the default. SPEC §13.1 and §13.6 define the view.
 
 The auth plane can renew a registered manager's
 five standing credentials from the current service registration. Run-driver renewal still

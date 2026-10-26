@@ -871,6 +871,7 @@
     "smoke:actor-retire-partial": "tsx implementations/auth/smoke/actor-retire-partial.smoke.ts",
     "smoke:hosted-auth-lifetime": "tsx implementations/auth/smoke/hosted-auth-lifetime.smoke.ts",
     "smoke:hosted-auth-fence": "tsx implementations/auth/smoke/hosted-auth-fence.smoke.ts",
+    "smoke:held-issuer-session": "tsx implementations/auth/smoke/held-issuer-session.smoke.ts",
     "smoke:session-caller-grant": "tsx packages/core/smoke/session-caller-grant.smoke.ts",
     "smoke:session-serving-grant": "tsx packages/core/smoke/session-serving-grant.smoke.ts",
     "smoke:eps-grant-sweep": "tsx packages/core/smoke/eps-grant-sweep.smoke.ts",

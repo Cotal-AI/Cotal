@@ -91,7 +91,7 @@ normative shapes are [SPEC Appendix B](../SPEC.md#appendix-b-profile-acls); in b
 | **run-driver** | One workflow run and takeover attempt: its journal subject, replay durable and run-owned record writes. Store reads and effects go through the host. |
 | **run-mediator** | The trusted hosting process's separate connection for workflow effects and leader reads. It exposes journal-checked, run-bound operations and never hands its credential to the driver. |
 | **run-operator** | One served run read, or one half of an answer, minted per call: a read holds the records walk, one run's replay and the admission read; the answering half is minted for one checkpoint token and holds that pause's answer record and settle alone. |
-| **issuer** | One issuance window: the party holding the space signer mints it for a few minutes to stage and release a credential's evidence, retire the issuances a lifecycle terminal leaves behind, or resolve the evidence a request rides. |
+| **issuer** | One issuance window: the party holding the space signer mints it for a few minutes to stage and release a credential's evidence, retire the issuances a lifecycle terminal leaves behind, or resolve the evidence a request rides. The auth service, and each callout replica, holds one of its own for the issuance its callout makes on a user-auth connect. It replaces that session before its five-minute credential expires and closes it with the service. |
 | **run-admitter** | One run's admission record or revocation marker, minted per run for a minute: two exact keys in the admission store and nothing else. |
 
 **An agent's channel scope is three verbs**: `subscribe` (reads at boot),
@@ -309,7 +309,8 @@ A replica runs the same connect checks as the full service and holds nothing els
 listener, no `auth-service.json`, no plane claim, service registration, barrier, scanner or sweep,
 so it never competes with the full service for any of them. Its store connection reads
 the auth, records and sessions stores and creates each connect's issuance row; it creates no store,
-mints no credential and writes no gate. A replica reads the actor ledger in the space's state dir
+mints no credential and writes no gate. Like the full service, it holds its own issuer session for
+the connects that need issued authority. A replica reads the actor ledger in the space's state dir
 and the same secret entries the full service's callout reads, the bearer issuer key among them, so
 it runs only on a host trusted like the full service's. A replica that loses a store connection or
 the broker stops answering and exits non-zero, and the broker sends later connects to the other
