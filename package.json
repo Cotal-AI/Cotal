@@ -245,6 +245,7 @@
     "smoke:keyed-review-window": "tsx implementations/manager/smoke/keyed-review-window.smoke.ts",
     "smoke:keyed-submission-failures": "tsx implementations/manager/smoke/keyed-submission-failures.smoke.ts",
     "smoke:keyed-submission-native": "tsx implementations/manager/smoke/keyed-submission-native.smoke.ts",
+    "smoke:run-status-program-identity": "tsx bin/smoke/run-status-program-identity.smoke.ts",
     "smoke:keyed-submission-store": "tsx implementations/manager/smoke/keyed-submission-store.smoke.ts",
     "smoke:goal-submit-order": "tsx packages/core/smoke/goal-submit-order.smoke.ts",
     "smoke:goal-follow-cancellation": "tsx packages/core/smoke/goal-follow-cancellation.smoke.ts",

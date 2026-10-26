@@ -7103,7 +7103,8 @@ its resume point again. `--local` prints them in the terminal that drives the ru
 `--json` on the run list or `show` writes one envelope on stdout, as other commands do, and nothing on
 stderr, whether the manager answers or `--local` reads. The list puts its rows under `result.items`.
 `show` puts the run under `result.view`: its `runId`, `endpoint`, recorded `spec` and `status`,
-and its rows under `result.view.journal`. A list row carries `runId`, `endpoint`, `state`, `holder`, `epoch`,
+its `programHash` as the list row carries it, and its rows under `result.view.journal`. A program
+record that cannot be read gives `programUnreadable` with its reason, and no `programHash`. A list row carries `runId`, `endpoint`, `state`, `holder`, `epoch`,
 `journalHigh`, `forkedFrom`, `startedAt` and `programHash` (the values the program's `run()`
 reports; `programHash` is absent for a run with no recorded program), `failure` on a failed run
 with its `code` and `message`, and `revoked` or `revocationUnreadable` when the marker says so. A journal row is an `activation` or a `step`. A

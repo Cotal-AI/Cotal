@@ -1051,6 +1051,8 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
     endpoint: { type: "string" },
     revoked: RUN_ROW_SCHEMA.properties.revoked,
     revocationUnreadable: RUN_ROW_SCHEMA.properties.revocationUnreadable,
+    programHash: RUN_ROW_SCHEMA.properties.programHash,
+    programUnreadable: { type: "string" },
     // The record halves are core's own closed shapes; they ride here as the values the store holds.
     spec: { type: "object" },
     status: { type: "object" },
@@ -1352,7 +1354,10 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  35 = keyed workflow submission and submission-status.
  *  36 = authenticated workflow cancellation with observed local stop results.
  *
- *  38 = `run-status` accepts a journal page request and answers with `journalTotal`. */
+ *  38 = `run-status` accepts a journal page request and answers with `journalTotal`.
+ *
+ *  39 = `run-status` adds the recorded program's `programHash`, or `programUnreadable` when that
+ *  record cannot be read. The status output schema is closed, so a revision-38 contract rejects it. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -1370,7 +1375,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 38,
+    revision: 39,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
