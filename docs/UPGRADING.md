@@ -88,7 +88,7 @@ runs a launch only with `--detach` (`-d`), which returns once the agent joins, o
   agent-provisioning endpoint the mesh advertises. A mesh that advertises none refuses it and names
   `-d` among the remedies.
 
-## A folder's space captures commands only while it runs, after 0.105.0
+## Folder spaces capture commands only while running after 0.105.0
 
 A space prepared in a project folder and never started, or one whose stack there is stopped, no
 longer captures the commands run in that folder. They target the space `cotal use` selected, and
