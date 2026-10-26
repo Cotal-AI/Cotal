@@ -1,5 +1,22 @@
 # @cotal-ai/auth
 
+## 0.101.6
+
+### Patch Changes
+
+- 3556124: Add `cotal auth-service --callout-only`, a callout replica: one more member of the space's auth callout queue group that keeps connects answered while the full auth service restarts or crashes, and adds capacity. A replica runs the same connect checks as the full service, which now builds them from the same shared hooks, and holds nothing else: no HTTP listener, no `auth-service.json`, no plane claim, registration, barrier, scanner or sweep. Its store connection reads the auth, records and sessions stores and creates each connect's issuance row, and nothing more. It refuses the HTTP flags and `--service-endpoints`, refuses to start in a space that admits service endpoints, and exits non-zero when it loses a store connection or the broker. The replica runs from the `auth-service` daemon entry for now; a service preset for it is a follow-up. `pnpm smoke:callout-replica` runs the full service and replicas as separate processes under load and counts the callouts each one answers.
+- 6789330: The auth callout now answers every authenticated request before the broker's `authorization { timeout }`, instead of leaving a slow one unanswered until nats-server refuses it with no reason in either log. Each request's deadline is the broker timeout less 250 ms, counted from its arrival. A request still unanswered then gets a signed denial with the reason `timeout: the auth callout could not answer inside the broker's authorization timeout`, which nats-server logs, and its work stops at its next step. While the oldest request still waiting for a slot has waited more than half that budget, a new request gets the same denial at once instead of joining a queue that is not draining in time. Requests start oldest first, at most `maxInFlight` at a time.
+  
+  Each answered request writes one `auth callout: level=… outcome=…` line with the request's per-connect user key, broker client id, owner, actor, outcome and the milliseconds spent queued and in verify, ledger, policy and sign. The line logs at warn over 500 ms and for a timeout or a shed request. `startAuthCallout` takes `limits: { authTimeoutMs, maxInFlight, slowMs }` (defaults 2000, 32 and 500), and `startAuthService` takes the same as `calloutLimits`; set `authTimeoutMs` to the broker's timeout. The connect-load harness counts refusals that carried a callout reason in the broker log apart from those that did not.
+- 809ee8d: Strip ambient `COTAL_` variables from the environment the connect-load harness hands its child processes. Whatever runs the harness may itself be a managed agent session whose `COTAL_SERVERS` and credential variables name a live mesh, and a bare `process.env` spread handed those to every load and callout-service child instead of leaving them on the private broker the harness builds.
+- 1e22e06: Extend the auth-callout connect-load harness: run several callout service processes behind the existing queue group with `--callouts N`, so the service's horizontal scaling can be measured rather than assumed. Fix two harness faults found by the message-rate scenario: the load child wrote its result to a pipe and then exited, which truncated large results, and the scenario sampled a delivery latency for every delivery, which with fan-out is millions per run. The message-rate scenario now exchanges on the channel subjects an agent grant actually carries instead of a literal subject the broker refuses.
+- 49cf781: `cotal up --auth-timeout <seconds>` sets how long a user-auth space's broker waits for the auth callout, from 1 to 60 seconds. `up` renders it as `authorization { timeout: N }` in the broker config and starts the space's auth service with the same value as its callout deadline, so the two never differ. The value is recorded in `.cotal/broker-policy.json`, and a later `cotal up` on the root renders it again without the flag, after `cotal down` or a preserved resume included. A running broker refuses a different value. Before, the broker config had no `authorization` block and no flag set one, so a hand-applied timeout was lost the next time `up` wrote the config. `serverConfig` takes the timeout as `authTimeout`, and renders no block without it, so existing configs are unchanged. The auth-service daemon, a `--callout-only` replica included, takes `--auth-timeout <seconds>`.
+- Updated dependencies [52832dc]
+- Updated dependencies [49cf781]
+  - @cotal-ai/workspace@0.101.6
+  - @cotal-ai/core@0.101.6
+  - @cotal-ai/lang@0.101.6
+
 ## 0.101.5
 
 ### Patch Changes
