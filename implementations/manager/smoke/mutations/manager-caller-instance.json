@@ -85,8 +85,8 @@
     {
       "name": "the connector passes the bearer command's remedy through to a tool",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        ], signal).catch((e: unknown) => {\n          throw e instanceof Error ? new Error(e.message.replace(\"--manager-instance <instanceId>\", \"the instance argument\")) : e;\n        });",
-      "replace": "        ], signal);",
+      "find": "        const bearer = (signal?: AbortSignal) => this.managerCallBearer(bearerArgv, signal).catch((e: unknown) => {\n          throw e instanceof Error ? new Error(e.message.replace(\"--manager-instance <instanceId>\", \"the instance argument\")) : e;\n        });",
+      "replace": "        const bearer = (signal?: AbortSignal) => this.managerCallBearer(bearerArgv, signal);",
       "expectRed": "#3959 an unbound seat's cotal_run ps refuses, lists both and names the instance argument",
       "cell": "#3959 an unbound seat's cotal_run ps refuses, lists both and names the instance argument",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core build"

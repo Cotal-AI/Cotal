@@ -62,7 +62,7 @@
     {
       "name": "the seat discards every pull refusal in silence",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "      if (!r.ok) { this.notePullTrouble(r.error ?? \"refused with no message\"); return; }",
+      "find": "      if (!r.ok) { this.turnPullFailed(r.error ?? \"refused with no message\", r.code); return; }",
       "replace": "      if (!r.ok) return;",
       "expectRed": "a refusal that is neither is said, with the reason",
       "cell": "a refusal that is neither is said, with the reason",

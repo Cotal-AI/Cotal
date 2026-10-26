@@ -41,8 +41,8 @@
     {
       "name": "the seat's turn pull answers during the boot window",
       "file": "implementations/manager/src/manager.ts",
-      "find": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[] } {\n",
-      "replace": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[] } {\n    if (!this.goalReconcileDone) return { turns: [] };\n",
+      "find": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[]; notices: true } {\n",
+      "replace": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[]; notices: true } {\n    if (!this.goalReconcileDone) return { turns: [], notices: true };\n",
       "expectRed": "a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none",
       "cell": "a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none",
       "note": "Measured 2026-09-03: KILLED. MANAGER RECONCILE STARTUP SMOKE FAILED  (5 passed, 1 failed) Named cell red: a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none"
@@ -131,20 +131,20 @@
     {
       "name": "commitTurnDeadline never stamps leftoverSince",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (!this.pendingTurns.delete(key)) return;\n    this.markTurnLatchDropped(key);",
-      "replace": "    if (!this.pendingTurns.delete(key)) return;",
+      "find": "    if (!this.pendingTurns.delete(key)) return;\n    this.noticeSeatTurns(p.seat);\n    this.markTurnLatchDropped(key);",
+      "replace": "    if (!this.pendingTurns.delete(key)) return;\n    this.noticeSeatTurns(p.seat);",
       "expectRed": "commitTurnDeadline stamps leftoverSince when the pending latch drops",
       "cell": "commitTurnDeadline stamps leftoverSince when the pending latch drops, not the original deadline",
       "note": "Without this stamp a failed deadline commit leaves an acceptance with no settled and no leftoverSince, so the sweep never ages it off."
     },
     {
-      "name": "the sweep never re-checks its stop after pruning the last answer",
+      "name": "the idle check never stops the sweep, so it runs on after the prune leaves nothing",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    this.maybeStopTurnSweep();\n    for (const p of [...this.pendingTurns.values()]) {",
-      "replace": "    for (const p of [...this.pendingTurns.values()]) {",
+      "find": "    if (this.turnAcceptances.size > 0) return;\n    this.stopTurnSweep();\n  }",
+      "replace": "    if (this.turnAcceptances.size > 0) return;\n  }",
       "expectRed": "and stops itself once the prune leaves it nothing to do: no pending turn, no answer to serve",
       "cell": "and stops itself once the prune leaves it nothing to do: no pending turn, no answer to serve",
-      "note": "maybeStopTurnSweep's callers run at settle time, when an answer has just been remembered, so the map is never empty when they look. The prune inside the sweep is the one event after which nothing is owed; without this call the 5s interval ran for the process lifetime over two empty maps."
+      "note": "maybeStopTurnSweep's callers run at settle time, when an answer has just been remembered, so the map is never empty when they look. The prune inside the sweep is the one event after which nothing is owed; without that call the 5s interval ran for the process lifetime over two empty maps. The sweep's own call sits between two comments and the bare call occurs four times, so the mutation removes the stop inside maybeStopTurnSweep, which only the sweep's call ever reaches."
     },
     {
       "name": "a turn with no minted hold is adopted as pending anyway",
