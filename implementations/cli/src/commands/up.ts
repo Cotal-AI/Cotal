@@ -2042,7 +2042,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const useAuth = !values.open;
   const space = values.space ?? folderSpace();
   ensureRootForSpace(space); // may pin the cwd as this space's root — before any cotalPath use
-  refuseOpenOverUserState(Boolean(values.open), space);
+  refuseStartOverUserState(Boolean(values.open), wantUser, space);
   const storeDir = values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats");
   if (values.__ordinaryResumeAttempt) {
     // Final identity re-assertion immediately before JetStream opens: the journaled canonical path
@@ -3917,7 +3917,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
     throw new Error("startMeshDetached: --rotate-sys is for auth meshes; an open mesh has no system account or $SYS credentials to rotate");
   const space = opts.space ?? folderSpace();
   ensureRootForSpace(space); // may pin the cwd as this space's root — before any cotalPath use
-  refuseOpenOverUserState(Boolean(opts.open), space);
+  refuseStartOverUserState(Boolean(opts.open), opts.userAuth !== undefined, space);
   const root = cotalRoot();
   const storeDir = opts.storeDir ? resolve(opts.storeDir) : cotalPath("nats");
   if (opts.storeDir) warnForeignStoreEntries(storeDir);
@@ -4021,15 +4021,19 @@ async function assertBrokerAddressFree(server: string, command: string): Promise
   });
 }
 
-/** THE FLIP, open-boot edition: `--open` must never boot a credless broker over a root whose
- *  space has user-auth state on disk — that would serve the space's existing JetStream store to
- *  anyone and re-record the mesh "open" over its user entry. The same fail-closed rule authSetup
- *  enforces for static re-ups, applied to the one boot path that skips authSetup entirely. */
-function refuseOpenOverUserState(open: boolean, space: string): void {
-  if (!open) return;
-  if (!hasUserAuthState(cotalRoot(), space)) return;
+/** THE FLIP: a start without `--user-auth` must never boot a broker over a root whose space has
+ *  user-auth state on disk. `--open` would serve the space's existing JetStream store to anyone and
+ *  re-record the mesh "open" over its user entry; a static start would boot without the callout that
+ *  state belongs to. Refused before the store, the space claim or the trust is touched, so the
+ *  refusal is a refusal and not an unconfirmed outcome. authSetup keeps the same rule for the
+ *  routes that reach it without passing here. */
+function refuseStartOverUserState(open: boolean, userAuth: boolean, space: string): void {
+  if (userAuth || !hasUserAuthState(cotalRoot(), space)) return;
   const stateDir = userAuthStateDir(cotalRoot(), space);
-  throw new Error(`space "${space}" has user auth enabled (state under ${stateDir}) - \`--open\` would serve its streams without auth. Start it with \`cotal up --user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`);
+  throw new CommandFailure("refused", "CONFLICT", `space "${space}" has user auth enabled (state under ${stateDir})${open ? ", and --open would serve its streams without auth" : ""}; nothing was started`, {
+    target: { root: cotalRoot(), space },
+    remedy: `${open ? "replace --open with --user-auth" : "add --user-auth"} to start it with user auth, or remove ${shellWord(stateDir)} deliberately to disable user auth (existing logins and grants die with it)`,
+  });
 }
 
 /** Pin cwd as its own mesh root when the nearest ancestor root already belongs to a DIFFERENT

@@ -652,14 +652,18 @@ try {
   for (let i = 0; i < 30 && !brokerGone; i++) { brokerGone = !(await isReachable(SERVER)); if (!brokerGone) await wait(200); }
   check("broker is gone", brokerGone);
   const reup = await cotal(["up", "--detach", "--server", SERVER, "--space", SPACE]);
-  check("re-up WITHOUT --user-auth is refused fail-closed (names --user-auth)", reup.status !== 0 && reup.out.includes("--user-auth"), reup.out);
+  check(
+    "re-up WITHOUT --user-auth is refused fail-closed, as a refusal (CONFLICT, exit 2, names --user-auth)",
+    reup.status === 2 && reup.out.includes("Request refused") && reup.out.includes("CONFLICT") && reup.out.includes("nothing was started") && reup.out.includes("add --user-auth"),
+    reup.out,
+  );
   // THE FLIP, open-boot edition: `--open` skips authSetup, so it needs its own fail-closed guard —
   // otherwise it would boot a CREDLESS broker over the user space's existing JetStream store and
   // re-record the mesh "open" over its user entry.
   const openReup = await cotal(["up", "--open", "--detach", "--server", SERVER, "--space", SPACE]);
   check(
-    "the flip: `up --open` on a downed user-auth root is refused (no credless boot over the store)",
-    openReup.status !== 0 && openReup.out.includes("--user-auth"),
+    "the flip: `up --open` on a downed user-auth root is refused (no credless boot over the store), as a refusal (CONFLICT, exit 2)",
+    openReup.status === 2 && openReup.out.includes("Request refused") && openReup.out.includes("CONFLICT") && openReup.out.includes("--open would serve its streams without auth") && openReup.out.includes("replace --open with --user-auth"),
     openReup.out,
   );
 
