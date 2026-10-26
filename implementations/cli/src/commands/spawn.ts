@@ -87,6 +87,7 @@ import {
   connectUserControlOrExit,
   userViewAuth,
   oneLine,
+  codeSpan,
   type Check,
   type ConnectFlags,
   type ControlAuth,
@@ -869,7 +870,7 @@ async function checkFolder(flags: ConnectFlags, on: string, path: string): Promi
   throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the folder ${JSON.stringify(path)} could not be checked with manager instance ${on}, so nothing was launched`, {
     target: { space: t.space, managerInstanceId: on },
     ...(reply.error ? { native: { ...(reply.code ? { code: reply.code } : {}), detail: { reason: oneLine(reply.error) } } } : {}),
-    remedy: `send the folder with the launch instead of answering the question: ${rerunWithCwd(process.argv.slice(2), path, on)}`,
+    remedy: `send the folder with the launch instead of answering the question: ${codeSpan(rerunWithCwd(process.argv.slice(2), path, on))}`,
   });
 }
 

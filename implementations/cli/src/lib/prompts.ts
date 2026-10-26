@@ -7,7 +7,7 @@ import type { Readable, Writable } from "node:stream";
 import { styleText } from "node:util";
 import * as clack from "@clack/prompts";
 import type { ConfirmOptions, MultiSelectOptions, PasswordOptions, SelectOptions, TextOptions } from "@clack/prompts";
-import { untilInputEnds, wrapWords } from "@cotal-ai/workspace";
+import { terminalWidth, untilInputEnds, wrapWords } from "@cotal-ai/workspace";
 
 export * from "@clack/prompts";
 
@@ -40,6 +40,15 @@ function errorLines(message: string | Error | undefined, output: Writable | unde
   if (typeof message !== "string") return message;
   const columns = ((output ?? process.stdout) as { columns?: number }).columns ?? 80;
   return wrapWords(message, columns - 3).join("\n   ");
+}
+
+/** `message` as a `log` line on `output`, which clack does not wrap either: broken at spaces to fit
+ *  beside clack's three-column mark. Clack draws each line after the first under its bar, so the
+ *  wrapped text is one string with newlines. Output that is not a terminal is left on one line, as
+ *  a rendered report on it is. */
+export function logLines(message: string, output: Writable | undefined): string {
+  const columns = terminalWidth((output ?? process.stdout) as { isTTY?: boolean; columns?: number });
+  return message.split("\n").flatMap((line) => wrapWords(line, columns - 3)).join("\n");
 }
 
 /** A text question whose title and validation message wrap to the terminal under clack's bar. A
