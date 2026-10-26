@@ -16,6 +16,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./dispatch": {
+      "types": "./dist/dispatch.d.ts",
+      "import": "./dist/dispatch.js"
+    },
+    "./service-unit": {
+      "types": "./dist/service-unit.d.ts",
+      "import": "./dist/service-unit.js"
     }
   },
   "scripts": {
