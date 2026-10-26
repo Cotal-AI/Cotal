@@ -33,9 +33,11 @@ local space; use `cotal spawn` there.
 
 The person approves the connection on the authority's web page. Read the proposed access
 before approving: the native connection shares activity after activation, including user
-messages, assistant replies, tool inputs and results. Earlier history is not shared and
-reasoning is not shared by default. Channel access and teammate/workflow capabilities need
-their own approved selection. Endpoint invocation is not offered through this connection.
+messages, assistant replies and tool names with their start and end. Tool arguments and
+results are withheld from the public event channel. Presence can still show a pending
+tool's short detail, such as its command, to roster readers. Earlier history is not shared
+and reasoning is not shared by default. Channel access and teammate/workflow capabilities
+need their own approved selection. Endpoint invocation is not offered through this connection.
 
 Follow [Sessions Cotal did not launch](connect-claude.md#sessions-cotal-did-not-launch)
 for the approval flow and disconnect behavior. Other harnesses have different connection,

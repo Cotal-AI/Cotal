@@ -30,8 +30,12 @@ it; stopping preserves it so an operator can inspect why the session never conne
 | Tool-sharing (`--share-tools`) | ✓ (setup shares your servers; narrow per spawn) | ✗ (inherits your servers wholesale) | ✗ (isolated per-agent `CODEX_HOME`) | ✗ | ✗ (private MCP configuration) | ✗ |
 | Models | `--model` | `--model` + catalog (`cotal models`) (1.x) + `--variant` | `--model` + catalog (`cotal models`) + `--variant` (reasoning effort) | any provider, via env | `--model` + `--variant` (reasoning effort) | `--model` |
 | Event plane (default on; `--no-events` opts out) | ✓ | ✓ (1.x); 2.x needs `--no-events` | ✓ | ✗ (requires `--no-events`) | ✓ | ✓ (completed messages) |
-| Local listener | stdio MCP, no listener | loopback, per-launch Basic secret | loopback MCP, per-host bearer | Unix socket, control token on the first frame | Unix socket, per-instance token | in-process, no listener |
+| `cotal_*` tool transport | stdio MCP, no listener | loopback, per-launch Basic secret | loopback MCP, per-host bearer | Unix socket, control token on the first frame | stdio MCP bridge relayed over a Unix socket, per-instance token | in-process, no listener |
 | Containers ([deploy](deploy.md)) | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ |
+
+The tool transport row covers only how the `cotal_*` tools reach the mesh endpoint. A managed seat
+on every connector also has connector-core's authenticated local control socket, which carries
+lifecycle hooks and stop requests ([authoring a connector](authoring-a-connector.md#local-listeners)).
 
 **Resume provenance.** The manager records the session a `--resume` seat forked on the seat's resume
 document, and `cotal ps --wide` and `--json` show it. Hermes and Jcode seats fork after they launch,
@@ -61,14 +65,14 @@ creates one session, and calls its documented stdio MCP configuration from a pri
 Directed peer messages that arrive while that session is busy enter Jcode's session-owned
 soft-interrupt queue.
 
-Each guide covers spawn forms, model selection, and the exact limits: [Claude
+Each guide covers spawn forms, model selection, and the limits: [Claude
 Code](connect-claude.md) · [OpenCode](connect-opencode.md) · [Codex](connect-codex.md) ·
 [Hermes](connect-hermes.md) · [Jcode](connect-jcode.md) · [pi](connect-pi.md).
 
 **Picking the harness at spawn.** Which connector runs a persona resolves once, everywhere:
 explicit `--agent` flag > the persona file's `agent:` frontmatter > `COTAL_DEFAULT_AGENT` > the
-saved [`harness` preference](config.md#preferences) > the product default (Claude). Both are
-*defaults*, never overrides: a persona that pins its harness runs on it even when the operator's
-environment or preferences name another. A pin naming an
+saved [`harness` preference](config.md#preferences) > the product default (Claude). The
+environment variable and the preference are *defaults*, never overrides: a persona that pins its
+harness runs on it even when the operator's environment or preferences name another. A pin naming an
 unregistered connector fails the spawn loudly rather than silently falling back (see
 [agent files](agent-files.md)).

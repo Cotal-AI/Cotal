@@ -12,6 +12,13 @@ like any other; no subject, envelope, or grant in this surface knows it speciall
 manager is a service on the mesh, not an authority over it: it holds only the capability
 rows its callers grant it, and serves over a scoped credential.
 
+One part of the old rail is still served in the reference implementation. The delivery daemon
+answers agents' durable join, leave and membership-list requests on `ctl.delivery.<owner>.<actor>`
+and the manager's admin requests on `ctl.delivery-admin.<owner>.<actor>`
+([delivery daemon](delivery-daemon.md)). [SPEC §13.11](../SPEC.md#1311-the-hard-cut) retires every
+`ctl` subject and §7 places the durable join on the `delivery` endpoint, so these two rails are
+implementation residue the spec does not define.
+
 For a starting point across the integration interfaces, see the [API reference](api-reference.md).
 
 ## The `ep` rails

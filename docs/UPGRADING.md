@@ -9,7 +9,7 @@ naming what migrates on its own, what does not, and the order to move the pieces
 
 ## The pre-1.0 upgrade contract
 
-The packages are pre-1.0, so a minor bump may break an API or an on-disk expectation. Four
+The packages are pre-1.0, so a minor bump may break an API or an on-disk expectation. Five
 commitments make that survivable for someone with a fleet:
 
 - **Pin an exact version.** `0.N.P`, never `^0.N.P`. A range can pull a breaking minor in during an
@@ -468,7 +468,7 @@ section says what each one does after the upgrade and what to change before it.
 | `run journal`, `run migrate`, `run ps` | `run show`, `run check`, `run` |
 | `deliver pending <name>` | `pending <agent>` |
 | `web` | `service add <name> --preset web`, then `service start <name>` |
-| The four daemon entries | Their service presets, under [deprecated daemon entries](#deprecated-daemon-entries) |
+| `deliver`, `auth-service`, `feedback-intake`, and `supervise` until 0.101.3 | Their service presets, under [deprecated daemon entries](#deprecated-daemon-entries) |
 
 The sections on this page for each command family give the details of its change.
 
@@ -532,8 +532,8 @@ upgrade. `deliver pending` warns the same way and names `cotal pending <agent>`.
 itself do not warn, so the line in a log always comes from a unit, script or container you can
 change.
 
-`supervise` was deprecated with them in 0.91.0 and no longer is. It keeps its flags, prints no
-warning, is not removed in `1.0.0`, and help lists it under Run a manager.
+`supervise` was deprecated with them in 0.91.0. From 0.101.3 it is no longer deprecated: it keeps
+its flags, prints no warning, is not removed in `1.0.0`, and help lists it under Run a manager.
 
 ### Owned units
 
@@ -548,8 +548,8 @@ downgrade, install the unit again with the earlier binary's `service install`.
 ### Containers
 
 The `solo` service in `deploy/docker/compose.yaml` runs `spawn scout --foreground`. The team
-service and the image's default command run `supervise` with `--roster`. An image you already
-built carries its own CLI and is unaffected until you rebuild it.
+service runs `supervise` with `--roster`, and the image's default command runs bare `supervise`.
+An image you already built carries its own CLI and is unaffected until you rebuild it.
 
 ### Before the upgrade
 
@@ -788,7 +788,8 @@ composed packages and extension metadata together; an old cached declaration is 
 behind a retained instance. Native stops require a fresh full-scope read and unchanged request-bound
 policy, with native returned evidence plus original process exit. Missing terminal evidence retains
 its reservation and blocks replacement, without force kill. Cleanup remains not checked.
-The direct service route currently refuses foreground mode. On an open mesh there is no
+The manager preset accepts `service start --foreground`, as its declared capabilities have since
+0.91.0. On an open mesh there is no
 authenticated caller, so readiness and stop impact come from the pinned child's own request-bound
 local receipt. Its registration must equal the launch identity bound to that PID. Status shows it
 as a child-reported local receipt, not an attributed endpoint response. OS installation and
@@ -1227,7 +1228,9 @@ that many seconds. Both kinds of token are now refused.
 Remove `clockToleranceSec` from each call and each `IdpConfig`. A host whose clock is more than 5
 seconds off the issuer's needs its time synchronized.
 
-## Auth context closure in 0.71.0 (unreleased)
+<a id="auth-context-closure-in-0710-unreleased"></a>
+
+## Auth context closure in 0.72.0
 
 Existing deployments need no credential migration or restart for these additive APIs. Embedded
 hosts can now inspect `handle.connections()` and await `handle.closed` after `close()` or `drain()`
@@ -1248,7 +1251,9 @@ credentials or evicts connections. Zero rows prove absence only with a complete 
 single-server proof. An embedded endpoint's trusted composition can retain transport custody
 through `EndpointOptions.onConnection`.
 
-## Unreleased
+<a id="unreleased"></a>
+
+## Event plane of an owned spawn in 0.72.1
 
 On a per-user-auth mesh, a spawn-scoped caller can arm the event plane of a child under its own
 owner without `admin`. This fixes owned spawns in spaces whose registration policy requires the
@@ -1257,7 +1262,9 @@ needed. Cross-owner arming still requires `admin`, and the child's own-channel r
 envelope are unchanged. A silent non-owner caller in a space without the policy still has the
 plane disarmed, with a notice if provisioning succeeds.
 
-## Hosted auth plane identity in the store (unreleased)
+<a id="hosted-auth-plane-identity-in-the-store-unreleased"></a>
+
+## Hosted auth plane identity in the store in 0.76.0
 
 A hosted context started through `startAuthService` keeps its auth plane instance identity in the
 injected `SecretStore` under `authInstanceKey(space)`, with the other auth secret kinds. It used to

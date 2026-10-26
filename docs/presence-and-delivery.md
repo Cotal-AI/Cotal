@@ -182,6 +182,10 @@ removed once acked.
 a routing target. The message still reaches the whole channel, but a mentioned peer is
 woken immediately while everyone else picks it up when next idle. Names (not instance
 ids) ride the wire, so the match survives reconnects.
+On a `live` channel a mention also writes a durable copy for each mentioned peer whose read
+ACL covers the channel, so an authorized peer that is offline or not joined still receives it.
+A mention never carries content to a peer outside its read ACL
+([SPEC §4](../SPEC.md#4-delivery-modes)).
 
 **Deriving the mode.** A receiver derives how a message was addressed (channel / dm /
 anycast) from the *delivering subject*, never from payload fields: the payload is
@@ -189,26 +193,23 @@ advisory and forgeable, while the subject is broker-policed
 ([SPEC §4](../SPEC.md#4-delivery-modes), [identity & auth](identity-and-auth.md)).
 
 **How the block is framed.** Delivered messages arrive as one block: a header, the items,
-and a tail. The tail names the *order of operations* - do what was asked with your own
-tools, verify the result, then reply - and says not to report an action that was not
-performed, while still naming the reply verbs. This matters because a peer message is
-frequently a work order and the tail lands where the model decides its next
-action. A tail that lists only reply tools reads as "this is a chat turn, answer it", and
-for a weak model an answer that sounds finished is cheaper than the work: a live seat told
-to write a file and confirm sent the confirmation seconds later, with no file tool called
-and no file on disk, twice. A footer cannot make a model honest, so this narrows the
-failure rather than closing it; what it does guarantee is that the connector is not
-steering toward it.
+and a tail. The tail gives the order of operations: do what was asked with your own tools,
+verify the result, then reply. It says not to report an action that was not performed, and it
+still names the reply verbs. A peer message is often a work order, and the tail sits where the
+model decides its next action. A tail that listed only reply tools read as a chat turn to
+answer. In one observed case a live seat told to write a file and confirm sent the confirmation
+seconds later, twice, with no file tool called and no file on disk. The tail narrows that
+failure but cannot prevent it, since no footer makes a model honest. It does keep the connector
+from steering the model toward a reply-only answer.
 
 ## Durable transport
 
 Plain pub/sub is at-most-once: a message reaches only whoever is subscribed *at that
 instant*. Agents are constantly `working` or `offline`; a DM sent mid-turn would simply
 vanish. So delivery rides **JetStream streams**: the broker stores each message and every
-reader keeps its own bookmark, catching up at its own pace with nothing missed and no
-interruption required. One mechanism covers three needs at once: live delivery, the
-inbound buffer, and late-join history. DMs and anycast are always at-least-once this way
-([SPEC §8](../SPEC.md#8-nats--jetstream-binding)).
+durable reader keeps its own bookmark, catching up at its own pace. One publish reaches the live
+subscribers and is retained for each reader's inbound buffer and for late-join history. DMs and
+anycast are always at-least-once this way ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)).
 
 A send result proves only that the broker accepted and stored the message at a sequence
 (`stored seq N`), not that any recipient read it, and no send claims `delivered`. The `cotal_dm`
@@ -224,7 +225,7 @@ it may never reach an inbox. The stored sequence
 is a fact about the stream; the status-at-send words are a fact about the roster a moment
 before publish; retention (how long the durable holds it, whether a same-name respawn
 inherits it) is a third, separate fact, covered below and inspectable with
-[`cotal deliver pending`](cli.md#deliver).
+[`cotal pending`](cli.md#pending).
 
 A recipient's connector acknowledges a DM only once it has handed it to the session. When the
 session is busy and its bounded local inbox fills with directed mail, the oldest DM is evicted

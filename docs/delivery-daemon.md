@@ -25,8 +25,9 @@ read checks it must apply. A conformant deployment may realize the backstop diff
   without a duplicate-suppression key, so two distinct id-less posts are both delivered and a
   redelivery of one may surface twice.
 - **Trusted reader.** It pulls each pending entry, re-checks that the member is still allowed to
-  read it, and hands the authorized copy to the member over an at-least-once channel (its inbox),
-  keeping the entry pending until the member confirms it was surfaced. A crash between handing off
+  read it, and hands the authorized copy to the member's own `dlv_<owner>-<actor>-<uid>` DELIVER
+  consumer, which has the same ack semantics. The copy does not ride the member's reply inbox. The
+  entry stays pending until the member confirms it was surfaced. A crash between handing off
   and surfacing does not lose the message; the entry redelivers ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)).
   An entry addressed to a retired lifecycle is dropped and removed from the store the first time
   the reader meets it. Retirement leaves a tombstone on that lifecycle's read-ACL row, and a retired
@@ -69,7 +70,10 @@ same durables).
 
 The manager needs this daemon while it starts. Its SecretStore challenge, its boot repair of a frozen
 registration gate, and the verified eviction a restart performs all go over the daemon's
-`ctl.delivery-admin` rail. A manager that starts while the daemon is still binding, or while the
+`ctl.delivery-admin` rail. Agents' durable join, leave and membership-list requests go over its
+`ctl.delivery` rail. Both are `ctl` subjects that [SPEC §13.11](../SPEC.md#1311-the-hard-cut)
+retires; the reference implementation still serves them (see
+[the control surface](control-surface.md)). A manager that starts while the daemon is still binding, or while the
 daemon re-checks who owns its lease, waits up to 60 seconds for the rail to answer. Only a request
 that times out or finds no responder is retried. Retries come closer together as the wait runs out,
 so a daemon that binds in its last seconds is still asked. The wait ends on time even while a retry
@@ -137,17 +141,17 @@ after 5s. A reply sent while the connection is down would be lost, and its calle
 manager evicting its predecessor right after its boot renewal, would wait out its whole 15s request
 timeout.
 
-`cotal up` reports the daemon **only when it is actually serving**. If a daemon it started exits
+`cotal up` reports the daemon **only when it is actually serving**. A daemon it started can exit
 without taking the single-flight lease because another daemon holds it, or because a crashed
-holder's lease has not expired yet. A lease write the credential is not allowed to make is reported
+holder's lease has not expired yet. `up` then says so and exits non-zero instead of printing a
+healthy control plane over a daemon that is not there. A lease write the credential is not allowed to make is reported
 as a denial naming the refused subject and operation, never as another daemon holding the lease.
 A lease write the broker refuses for another reason, such as the insufficient-resources answer of a
 store over its `--max-file-store` cap, is quoted as the broker gave it. A running daemon whose lease
 key expired creates it again. Only a create refused because a live lease exists makes it say that
 another daemon has taken the shard. Any other refusal is quoted, with the line saying it could not
 re-acquire the lease, and the daemon exits all the same, because it serves only under its lease.
-`up` says so and exits non-zero instead of printing a healthy control plane over a
-daemon that is not there. The daemon writes its own reason to `.cotal/delivery.<key>.log`, the log
+The daemon writes its own reason to `.cotal/delivery.<key>.log`, the log
 for the space it serves ([Config](config.md#project-files)). That path is project-local. Detached
 `up` redirects the daemon's stdout and stderr onto the file, so wrapping the launcher in a
 systemd unit does not put those lines in that unit's journal. A daemon stopped by SIGTERM or
@@ -179,7 +183,9 @@ while that stop is running, `up` waits for the stop to finish before it exits.
 The daemon **records itself** in `.cotal/delivery.<key>.pid`, whichever way it was started, and
 removes that record when it exits cleanly. The launcher is not the only route to a running daemon: a
 container entrypoint, a systemd unit, or `cotal deliver --space <space>` typed by hand all reach one
-too, and a record written only by the launcher goes stale the moment any of those restarts it. Typed
+too, and a record written only by the launcher goes stale the moment any of those restarts it.
+`cotal deliver` is a deprecated entry kept for existing units and scripts; new setups use the
+`delivery` service preset ([deprecated daemon entries](UPGRADING.md#deprecated-daemon-entries)). Typed
 by hand on the workstation, the daemon dials the broker recorded for the space in the mesh registry
 (a mismatching `--server` is refused before any dial); with no record for the space it uses the
 local mesh default, and a daemon with an injected store never consults the registry at all. The

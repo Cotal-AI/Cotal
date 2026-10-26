@@ -1,8 +1,7 @@
 # Cotal docs site
 
 Astro [Starlight](https://starlight.astro.build/) site for Cotal's documentation,
-built to be **agent-native** — the docs a protocol for agents ships should be
-readable by agents.
+with HTML, per-page Markdown and machine-readable indexes.
 
 The canonical Markdown stays in [`/docs`](../docs) and [`/SPEC.md`](../SPEC.md);
 this site renders it. `scripts/sync-docs.mjs` derives a frontmatter title from the H1
@@ -93,7 +92,7 @@ investigating the page generator. Do not edit the generated Pages files separate
 
 ## Not yet built: docs MCP server
 
-The top tier of agent-native — letting an agent query these docs as a *tool* rather
-than fetching files — is a separate remote MCP server (a Cloudflare Worker). It would
-read `llms-full.txt` / the per-page `.md` and expose `search_docs` / `get_page`
-tools. Tracked as a follow-up.
+Installed connectors already expose the version-matched `cotal_docs` bundle for page
+reads and search. A separate remote MCP server for the published website remains a
+proposal. It would read `llms-full.txt` or per-page Markdown and expose `search_docs`
+and `get_page`; this site does not deploy those tools.

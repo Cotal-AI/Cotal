@@ -108,10 +108,11 @@ argument is not a replacement for ID-only `team remove`.
 | `cotal topology view -f <file>` | Validate the file and render its access graph. Read-only: needs no broker, mutates nothing. Run it before you launch. |
 | `cotal up -f <file>` | Bring up a **fresh** mesh: broker + seeded channels + booted agents. |
 | `cotal team check <file> [--graph]` | Resolve manifest and persona access intentions offline. |
-| `cotal team boot <file> [--dry-run]` | Preview local intent with `--dry-run`; otherwise enter guarded native fresh startup with rich, JSON or plain output on a prepared root. |
+| `cotal team boot <file> [--dry-run \| --foreground]` | Preview local intent with `--dry-run`; otherwise enter guarded native fresh startup with rich, JSON or plain output on a prepared root. `--foreground` holds the stack in this terminal. |
 | `cotal team deploy <file> [--dry-run]` | Preview native presence and registry with `--dry-run`. Apply all-new live channel cards or bounded static/open agent and mixed teams with synced native receipts. User-auth agents, reapply and existing-card mutation refuse. |
 | `cotal team remove <id> [--dry-run] [--yes]` | Preview native impact or retire a returned static agent-only team through its original manager, recording native terminal and cleanup facts. Legacy and channel-only previews remain read-only; mixed/channel and open/user-auth removal effects refuse. |
-| `cotal down [-f <file>]` | Tear down through the retained native route (see "Tearing down" below). |
+| `cotal team show <id>` | Read the boot summary or deployment receipt recorded under that ID. |
+| `cotal down [-f <file> --run <id>]` | Tear down through the retained native route (see "Tearing down" below). |
 
 Native `up -f` accepts `--dry-run` (preview the plan, change nothing) and takes
 `--server` / `--host` / `--runtime` / `--open` to override the file for one run.
@@ -188,7 +189,7 @@ The full rules, receipts and removal limits are in
 ## Operating a manifest mesh
 
 Every mesh-touching command resolves the broker from the mesh registry, so `--space <name>` is
-enough; `send`, `channels`, `console`, `web`, the manifest verbs, and the manager control commands
+enough; `send`, `channel`, `console`, the manifest verbs, and the manager control commands
 (`cotal ps` / `stop` / `attach`, plus `cotal spawn --detach`) all reach a manifest mesh on any port
 with no `--server`:
 

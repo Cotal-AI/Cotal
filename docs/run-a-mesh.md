@@ -178,12 +178,14 @@ enrollment for it. Mount the enrollment URL as a private file, place the seat pe
 machine, and launch the foreground seat:
 
 ```bash
-COTAL_ENROLLMENT_FILE=/run/secrets/cotal-enrollment \
-  cotal spawn --config ./worker.md --space main
+cotal spawn --foreground --file ./worker.md --space main \
+  --enrollment-file /run/secrets/cotal-enrollment
 ```
 
-The URL is redeemed once with an unauthenticated GET. Redirects, off-machine plain HTTP, retries,
-and login fallback are refused. If the seat has no mesh record yet, the enrollment response's stock
+A launcher that cannot pass the flag may name the same file in `COTAL_ENROLLMENT_FILE` instead
+([CLI reference](cli.md#spawn)). The URL is redeemed once with an unauthenticated GET. Redirects,
+off-machine plain HTTP, retries and login fallback are refused. If the seat has no mesh record yet,
+the enrollment response's stock
 user-bundle fields register it before the launch. The returned actor token then uses the same remote
 auth-service exchange as a login-provisioned agent. The enrollment URL and file path do not enter the
 preflight or harness environment. A failed or reused enrollment leaves no actor material on disk; ask the owner
@@ -404,27 +406,30 @@ cotal stop --name reviewer         # stop one
 How a spawn resolves:
 
 - **Persona.** A bare `cotal spawn` uses `.cotal/agents/default.md`; a positional name
-  picks `.cotal/agents/<name>.md`; `--config` takes an explicit ref or path. Set
-  `COTAL_DEFAULT_PERSONA=<name-or-path>` to change the fallback. Fields and format:
-  [agent files](agent-files.md).
+  picks `.cotal/agents/<name>.md`; `--file <persona-file>` takes a persona file by path. Set
+  `COTAL_DEFAULT_PERSONA=<name-or-path>` or the saved [`persona` preference](config.md#preferences)
+  to change the fallback. Fields and format: [agent files](agent-files.md).
 - **Harness.** Resolution order is an explicit `--agent` or `cotal_spawn` `agent` argument,
-  then the persona file's `agent:` pin, then the invoking caller's `COTAL_DEFAULT_AGENT`,
-  then the manager's `COTAL_DEFAULT_AGENT`, then the product default (Claude). Compared in
+  then the persona file's `agent:` pin, then the invoking caller's `COTAL_DEFAULT_AGENT`, then
+  the caller's saved [`harness` preference](config.md#preferences), then the manager's
+  `COTAL_DEFAULT_AGENT`, then the product default (Claude). Compared in
   [Connectors](connectors.md); per-connector guides:
-  [Claude](connect-claude.md) · [OpenCode](connect-opencode.md) ·
-  [Hermes](connect-hermes.md) · [pi](connect-pi.md).
+  [Claude](connect-claude.md) · [OpenCode](connect-opencode.md) · [Codex](connect-codex.md) ·
+  [Jcode](connect-jcode.md) · [Hermes](connect-hermes.md) · [pi](connect-pi.md).
 - **Model.** `--model` overrides the persona file's `model:` (Claude: `opus` / `sonnet` or
   a full id; OpenCode: `provider/model`). Connectors that expose a catalog report it via
   `cotal models --harness opencode`: model ids plus available variants; pick one with
   `--model provider/model --variant high`.
-- **Tools.** A spawned Claude Code agent gets the cotal tools plus the MCP servers the cotal
-  config shares, which first-run `cotal setup` fills with your own; narrow them per spawn with
-  `--share-tools` ([config](config.md)).
+- **Tools.** A spawned Claude Code agent gets the cotal tools, Claude's own native MCP sources,
+  and the MCP servers the cotal config shares, which first-run `cotal setup` fills with your
+  own. `--share-tools none` keeps only the cotal tools, and `--share-tools a,b` restricts one
+  spawn to the named declared servers ([config](config.md#the-config-file)).
 - **Launch options.** `--opt key=value` (repeatable) passes a native harness flag straight
   through; a persona or manifest `launchOptions:` mapping does the same declaratively (a
   `--opt` wins per key). It is a **raw passthrough**, with no allow/deny list: Claude renders
   each as `--key value` (a bare `--key` for an empty value), OpenCode merges them into its
-  agent config, and Hermes has no option surface so it fails loud. The trust boundary is the
+  agent config, and Codex passes each as a `-c key=value` config override. Hermes, Jcode and pi
+  have no option surface, so a launch that carries one fails loud. The trust boundary is the
   `spawn` capability itself, not the flag set, so granting `spawn` is host-launch authority
   ([security](security.md)). A key must be a plain flag name; malformed or prototype-polluting
   keys are refused.
@@ -437,9 +442,10 @@ every platform, so replacing the manager worker closes its seats and the pty run
 update. Any manager stop, bare `cotal down` included, stops and deprovisions those seats. A stopping
 manager refuses new spawns and first waits for the ones it already accepted, so their seats stop too. On Linux
 it can still adopt and reap seats that an earlier manager launched under a detached per-seat
-custodian, so those seats drain under the new manager; it starts no new custodian. A custodian whose agent has exited exits a few seconds later on its own. `cotal seats`
-lists the custodians left on the machine, and `cotal seats --drain` retires the ones whose agent
-has exited while keeping every seat whose agent still runs ([cli.md](cli.md#seats)). When a pty
+custodian, so those seats drain under the new manager; it starts no new custodian. A custodian whose agent has exited exits a few seconds later on its own. `cotal manager seats`
+lists the custodians left on the machine, and `cotal manager seats --drain` retires the ones whose agent
+has exited while keeping every seat whose agent still runs ([cli.md](cli.md#seats)). The hidden
+`cotal seats` spelling still works. When a pty
 agent exits on its own, in-process or under a custodian, the manager logs a `seat reaped:` line
 with the exit code and, for a signalled child, the signal number. The line ends with the last line
 the child printed that starts with a connector's `[cotal-<name>]` or `[cotal-<name>/<part>]`
@@ -483,7 +489,8 @@ running mesh with the right credentials instead of mistaking the cwd for a space
   Neither reaches another mesh.
 - With nothing selected, a project with its own `.cotal/` resolves to that project's mesh;
   otherwise one running mesh is used automatically and several are an error.
-- `cotal meshes` lists them (`(default)` marks the default); `cotal down` removes the entry. A
+- `cotal meshes` lists them (`(default)` marks the default); `cotal down` removes the entry,
+  except for a space named after its folder, which keeps its registration while stopped. A
   controller stack's space stays prepared at its root, and a selection that names it stays.
 - `cotal space create <name> [--root <dir>]` names a space before it runs. It records the name
   and root apart from the registry and makes `<root>/.cotal/`, and `cotal up` in that root starts

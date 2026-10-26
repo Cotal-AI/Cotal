@@ -1,7 +1,18 @@
 # Per-space lifecycle on a shared broker
 
-> **Design** (non-normative, not shipped) · Closes [roadmap](../roadmap.md) "Multi-space brokers"
+> **Design** (non-normative) · Closes [roadmap](../roadmap.md) "Multi-space brokers"
 > and [embedding](../embedding.md) known gap 3. Wire contract unchanged; this is operator tooling.
+>
+> **Status on 26 October 2026.** The `cotal space` tenant verbs of section 2 (`space add`, `space rm`,
+> `space backup`, `space restore` for a tenant on a shared broker) are not built. The shipped
+> `cotal space add` and `cotal space delete` are different commands: `add` registers a space that
+> runs elsewhere, and `delete` deletes one space's streams on its registered broker. Neither rewrites
+> `server.conf` or tenant trust. Prerequisites P0, P1, P2 and P7 landed in 0.36.0 (section 7). P3,
+> P4, P6, P8 and the `broker-config.json` compare-and-set of section 4 are not built. For P5, a
+> fresh space created by `cotal up` has retained its own system-account signing seed since 0.97.0,
+> under `auth/<space segment>/system-signing-seed.json`, for own-broker service caller issuance.
+> That is not the multi-space opt-in section 5 designs, and `up --rotate-sys` still refuses on a
+> multi-tenant root.
 
 ## 1. Where the gap is
 

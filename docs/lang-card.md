@@ -29,9 +29,13 @@ resume on another with the recorded steps returning instantly.
 observation is not `null`); an elapsed `deadline` throws L4023, which the program can catch.
 `await once(fn, { name })` runs `fn` so that the `ask` inside it is dispatched at most once: a
 resume that finds it begun and never settled opens a hold for a person to answer instead. Step names
-are kebab-case; where the reference says a name is required, it must be a string literal. Option
-bags are closed: an unknown key is refused (L3011) with the full signature in the answer.
-Durations are a whole number and one unit: `"30s"`, `"10m"`, `"4h"`, `"2d"`.
+are kebab-case; where the reference says a name is required, it must be a string literal. `ask` is
+the only effect `once` admits: `cotal run validate` refuses another one in its body, or in a
+function the body calls by name (L2033), and the run refuses one it reaches any other way (L4028).
+Option bags are closed: an unknown key is refused (L3011) with the full signature in the answer.
+Durations are a whole number and one unit (`ms`, `s`, `m`, `h` or `d`): `"500ms"`, `"30s"`,
+`"10m"`, `"4h"`, `"2d"`. There is no bare number and no default unit, and a literal that is not a
+duration is refused before the run starts (L2034).
 `permits` meter `turns` and `wallClock` on this host; `supervise` is `{ restarts, window? }`
 (default window `10m`) and restarts the process in place until that budget is spent.
 `events: false` starts a seat without an event plane, which a connector that publishes none
@@ -134,6 +138,7 @@ run past it, because the depth at which it happens depends on the host and not o
 | L4018 | a record, array or function where a primitive is needed; a non-number under `++`/`--` | convert explicitly |
 | L3013 | a computed step name where a literal is required | a string literal |
 | L3011 | an unknown option key | the signature in the refusal |
+| L2034 | a literal that is not a duration, such as `sleep(5000)` or `"1.5s"` | a whole number and a unit, `"5s"` |
 
 Every code has a row in the reference's Appendix A, and the message a refusal prints is that
 row's title, so search the reference for it verbatim.

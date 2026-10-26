@@ -4,8 +4,8 @@
 
 `cotal` is the operator command line for the reference implementation: bring a mesh up, mint
 identities, launch agents, watch what they do, and tear it all down. It is a thin client over the
-wire contract: the normative subjects and schemas live in the [SPEC](../SPEC.md); this page is
-lookup material for the commands, not a walkthrough; if you are new, start with
+wire contract, whose normative subjects and schemas live in the [SPEC](../SPEC.md). This page is
+lookup material for the commands. If you are new, start with
 [Getting started](getting-started.md).
 
 For the other integration interfaces, see the [API reference](api-reference.md). For a
@@ -154,11 +154,11 @@ from its own candidates or file hint, without inserting other option names.
 
 Commands come from the surfaces the binary composes: the base mesh CLI, the manager and the
 delivery daemon, plus any operator-installed extensions. Hidden entries such as the deprecated
-`supervise` and `deliver` are not completed.
+`deliver` and `auth-service` are not completed.
 `cotal ext add <npm-package>` installs any registry providers a package contributes: commands,
-runtimes, and local process lifecycle descriptors. The `web` dashboard and optional manager
-runtimes ship this way. A `@cotal-ai/*` package named without a version installs this cotal's
-version, as `setup` and `update` do; a version or tag you name is installed as given.
+runtimes, service presets and local process lifecycle descriptors. The `web` dashboard and
+optional manager runtimes ship this way. A `@cotal-ai/*` package named without a version installs
+this cotal's version, as `setup` and `update` do; a version or tag you name is installed as given.
 
 ## Structured output
 
@@ -364,9 +364,9 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Observe | [`watch`](#watch) | Follow authorized activity without starting, stopping or attaching agents |
 | Observe | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
 | Manager | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
-| Manager | [`reconcile-gate`](#reconcile-gate) | Unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
+| Manager | [`reconcile-gate`](#reconcile-gate) | Hidden from `cotal help`, which lists `manager reconcile`: unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
 | Manager | [`deregister-instance`](#endpoint-deregister) | Hidden from `cotal help`: the old spelling of `endpoint deregister`, which refuses and names it |
-| Manager | [`seats`](#seats) | List the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
+| Manager | [`seats`](#seats) | Hidden from `cotal help`, which lists `manager seats`: list the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
 | Manager | [`manager`](#manager-maintenance) | Inspect retained local seats or repair an owned manager gate |
 | Manager | [`feedback-intake`](#server-daemons) | Deprecated and hidden from `cotal help`: run a feedback intake server; use the `feedback-intake` service preset |
 | Manager | [`deliver`](#deliver) | Deprecated and hidden from `cotal help`: run the delivery daemon; use the `delivery` service preset |
@@ -532,8 +532,9 @@ did not change. A third-party adapter's instances stay pinned to the package ver
 them.
 
 Without `--self`, `update` keeps the installed first-party surfaces coherent with the running
-binary: it force-reconciles the four built-in connectors, brings what a connector installed in its
-harness to this release (the `cotal` plugin copy Claude Code sessions load, and its Claude Desktop entry), then reinstalls other `@cotal-ai/*`
+binary: it force-reconciles the six built-in connectors and the web dashboard, brings what a
+connector installed in its harness to this release (the `cotal` plugin copy Claude Code sessions
+load, and its Claude Desktop entry), then reinstalls other `@cotal-ai/*`
 operator extensions at the binary's exact version. Each extension runs in an isolated child, so one
 failure cannot poison later replays. It then checks npm; a newer binary is an informational notice
 with `cotal update --self` as the next command, not an automatic install.
@@ -4684,7 +4685,7 @@ registered at, so a start from any folder is the same manager, with the same ins
 | `--space <s>` | `COTAL_SPACE`, this folder's space, or the `cotal use` selection | Space to supervise. On a root that hosts several spaces, name one of them here |
 | `--server <url>` | hosting mesh, or matching registered mesh | Broker URL. A registered mesh supplies it when omitted; a different explicit value is refused before anything is dialed. |
 | `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
-| `--execution runtime|none` | `runtime` | NONE is a genuine hosting user-auth control instance with no Runtime, connector inspection, workload or terminal execution |
+| `--execution <runtime\|none>` | `runtime` | `none` starts a control instance for a hosting user-auth root, with no runtime, connector inspection, workload or terminal execution |
 | `--console-port <n>` | none | Protocol-console port |
 | `--console-host <host>` | loopback | Bind host for the console endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets the browser console reach this manager from another machine. `cotal attach` does not use this face: it redeems a mesh session grant over the broker |
 | `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair keeps it |
@@ -4694,9 +4695,10 @@ registered at, so a start from any folder is the same manager, with the same ins
 | `--launch <spec>` | none | Resolved manifest launch spec (from `up -f` / `team boot`) |
 | `--spawn <names>` | none | Comma-separated personas to pre-spawn at startup |
 
-`--ws-port`, `--resume-attempt` and `--resume-commit-token` are passed by `cotal up` when it starts
-the manager, for the console session client and for resuming preserved seats. They are not for
-direct use.
+`--ws-port`, `--resume-attempt`, `--resume-commit-file` and `--resume-commit-sha256` are passed by
+`cotal up` when it starts the manager, for the console session client and for resuming preserved
+seats. They are not for direct use. `--resume-commit-token` is the deprecated argv form of the
+resume commit, still accepted for older callers (see [Backups](#backups)).
 
 The manager is the agent supervisor and control plane: it answers `spawn --detach`, `stop`, `ps`,
 `attach`, and the `cotal_*` manager tools. `cotal up --detach` starts one for you; run `supervise`
@@ -5208,7 +5210,7 @@ repair, because the reopened gate is already past the slot's generation.
 | `not-frozen` / `no-gate` | The gate is open, or there is no gate at that coordinate | Nothing to repair: check `--endpoint` / `--instance` |
 | `wrong-op-kind` | Frozen under a takeover or retirement, not a registration | Out of scope for this command; it will not reinterpret another operation's intent |
 | `eviction-unverified` | The holder looked gone but eviction could not be verified | The gate is left frozen, unchanged. Investigate the broker before retrying |
-| `raced` | A newer manager moved the gate mid-repair | Re-run `cotal doctor` and look again |
+| `raced` | A newer manager moved the gate mid-repair, and nothing was reopened | Run the command again, which reads the gate afresh |
 
 When the daemon gives no verdict, the refusal also reads the delivery lease (`lease.0`) and names
 what is blocking the rail:
@@ -5316,12 +5318,16 @@ package. There is no silent fallback to `pty`.
 ## seats
 
 ```bash
-cotal seats [--drain]
+cotal manager seats [--drain [--yes|--dry-run]] [--json|--plain]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--drain` | off | Retire every seat whose agent has exited. A seat whose agent still runs is kept |
+
+`cotal seats` is the older spelling, hidden from `cotal help`, and runs the same command. A drain
+asks first on a terminal and needs `--yes` in a script, as [Manager maintenance](#manager-maintenance)
+describes.
 
 The pty runtime used to start a detached custodian process for every Linux seat. It now spawns
 in-process, but custodians that an earlier manager started keep running, and one whose agent has
@@ -5344,7 +5350,7 @@ refused the same way, because no record can be tied to this boot.
 That refusal and an unreadable record signal nothing. A refusal from the reap itself can come after the drain already
 sent `SIGKILL` to the custodian. Its detail names the pid or process group the reap could not prove
 gone, so check those processes before you retry. The command exits non-zero when any record is
-refused. It is Linux-only and throws on other platforms.
+refused. It is Linux-only, and on other platforms it refuses `UNSUPPORTED`.
 
 ## send
 
@@ -5735,7 +5741,7 @@ root's default `.cotal/channels.json` would undo at the next start warns that it
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Target mesh |
 | `--replay` / `--no-replay` | none | `set`/`defaults`: replay history to new joiners, or not. They take no value: `--replay off` is refused with the flag to use |
 | `--window <duration>` | none | `set`/`defaults`: replay window, for example `24h` |
-| `--delivery <live|durable>` | none | `set`/`defaults`: choose the live-only or durable-backstop delivery class; history retention is separate. Shell completion offers both values |
+| `--delivery <live\|durable>` | none | `set`/`defaults`: choose the live-only or durable-backstop delivery class; history retention is separate. Shell completion offers both values |
 | `--desc <text>` | none | `set`: channel description |
 | `--instructions <text>` | none | `set`: instructions shown to joiners |
 | `--purge` | off | `remove`: also delete the channel's retained history |
@@ -6630,7 +6636,7 @@ Operator-installed extensions: `add` installs an npm package into a cotal-owned 
 every registry provider it contributes. Commands appear in help, completion, and dispatch; runtime
 providers are lazy-loaded by commands such as `supervise`; local process providers participate in
 `status` and selective `down`. `remove` and `list` manage them. The `@cotal-ai/web` dashboard is the
-canonical command/process example. Installed packages and their location are described in
+canonical service preset and local-process example. Installed packages and their location are described in
 [config](config.md). When a package needs an export its linked `@cotal-ai/*` peer does not have,
 `add` rolls back and names which install is behind, as a later load of an installed one does.
 
@@ -7201,8 +7207,9 @@ records the path. The guide is [workflows](workflows.md).
 
 ## Server daemons
 
-Two long-lived infra roles ship with the CLI. They are not part of everyday operation; the delivery
-daemon comes up automatically with `cotal up --detach` in auth mode.
+Three long-lived infrastructure roles ship with the CLI: the delivery daemon, the auth service and
+the feedback intake. They are not part of everyday operation. The delivery daemon comes up
+automatically with `cotal up --detach` in auth mode.
 
 `deliver`, `auth-service` and `feedback-intake` are deprecated entries kept for existing units and
 scripts; help and completion omit them. Each entry's own help
@@ -7360,7 +7367,7 @@ the channel tap. Opening this view never launches, stops or attaches an agent. I
 of the stream closes it, as `| head` does, the observer stops at its next line, so on a quiet mesh it
 runs until a message arrives or Ctrl-C ends it with exit 130.
 
-### Named agent status
+## Named agent status
 
 `cotal status <agent>` reads the authorized manager census and separates Identity,
 Execution, Mesh and Last reported activity. JSON has `identity`, `execution`, `mesh`
@@ -7412,7 +7419,7 @@ The final receipt reports the native operation and before/after coordinates, not
 verdict. A reopened gate with retained cursor cleanup returns exit 4.
 
 
-### Workflow command forms
+## Workflow command forms
 
 `cotal run` (or `cotal r`) lists the authorized workflow records. `run show <run-id>` reads
 recorded state, open requests, each step's recorded error and the last 20 journal rows. `--limit <n>`
@@ -7518,7 +7525,7 @@ and refuse user-auth self impersonation. They skip operator catalog and installa
 Yielding one turn does not complete the entire workflow.
 
 
-### Update availability
+## Update availability
 
 `cotal update --check` queries the latest registry version and reads recorded extension versions.
 It performs no install, reconcile or process restart and takes no mesh selection. It supports
@@ -7533,7 +7540,7 @@ keep the existing guarded update, continuity checks, download verification and c
 reconciliation. Their installer progress is native output, not a structured check receipt.
 
 
-### Account screens
+## Account screens
 
 Bare `login` chooses a known provider from cached account metadata or registered spaces. When
 none is known, an interactive terminal asks for the provider auth URL. `--idp` selects it directly.
@@ -7560,7 +7567,7 @@ separate read. Each `--json` item carries the presence values: `reportedStatus`,
 record has none. The report works out the ages it prints from those times.
 
 
-### Managed launch view
+## Managed launch view
 
 `spawn [<persona>] --on <instance>` launches through that manager and attaches after its native
 readiness result. The attachment is pinned to the attributed accepting manager and the allocated identity/incarnation,
@@ -7611,7 +7618,7 @@ manager. No second launch occurs. A view exit sends no stop request. This route 
 no-manager startup choices or imperative planning.
 
 
-### Observer stream
+## Observer stream
 
 `watch --json` emits versioned watch NDJSON records from the same MeshView as the terminal.
 Activity, events and messages filters use the shared classifier. Metadata snapshots identify
@@ -7626,7 +7633,7 @@ content is secret-redacted. Leaving the observer stops its own connection and se
 control request. Connection or authorization failure is an error, not an empty conversation.
 
 
-### Recorded team views
+## Recorded team views
 
 `team` (`t`) reads fresh launch summaries, additive ownership ledgers and their
 root-local attempt records at the selected local root. A team read or `--dry-run` preview that
@@ -8012,7 +8019,7 @@ This file check does not prove live authorization, installed applications or lau
 These read views do not apply a boot, an additive deployment or a removal.
 
 
-### Terminal input receipts
+## Terminal input receipts
 
 `input <agent> <text>` writes through the selected manager's native input command.
 Use `--text` when the value begins with a dash; do not combine duplicate positional and flag
@@ -8046,7 +8053,7 @@ the name or wrote a launch file keeps its native outcome, and the CLI never recl
 its message.
 
 
-### Stopping an agent
+## Stopping an agent
 
 `stop <agent>` requests graceful native despawn. `--force` requests the existing
 `graceful:false` contract; it does not grant authority or bypass incarnation checks.
@@ -8070,7 +8077,7 @@ existing native `supervise` object. Both values must be positive safe integers. 
 launch and the legacy manifest form reject these flags instead of ignoring them.
 
 
-### Native endpoint reports
+## Native endpoint reports
 
 `describe <class>` shows the authorized command table, capabilities, target modes and answering
 instance/epoch. JSON includes the native compiled schemas and verified closure digests. This is
@@ -8088,7 +8095,7 @@ acceptance is not whole-task completion. This route does not use saved reference
 complete endpoint namespace.
 
 
-### Watch views
+## Watch views
 
 `watch --view` accepts `feed`, `events`, `messages`, `roster`, `channels`, `waiting`, `dms` and
 `topology`; `activity` remains the feed spelling. The terminal cycles available views with `f`.
@@ -8105,7 +8112,7 @@ terminal. Both use the same bounded observer lifecycle and shared view model. A 
 roster, channels, waiting or topology view prints its report again each time that report changes.
 
 
-### Authority
+## Authority
 
 Bare `auth` reports only safe cached provider metadata. It does not verify a session online,
 turn a sign-in into a grant, or print tokens. Its next steps name the `--space` you gave or the
@@ -8134,7 +8141,7 @@ retried. Neither grant management nor actor reads install connector packages. Gr
 does not issue credentials, export signers, retire lifecycles or act on capability handles.
 
 
-### Saved endpoint references
+## Saved endpoint references
 
 `endpoint` (`ep`) reads local references only and labels live state Not checked. `show <name>`
 shows the saved space, native class, full instance pin and storage revision. These commands do
@@ -8162,7 +8169,7 @@ file. A moved credential does not prevent inspecting or forgetting the local map
 is checked when importing/saving a credential reference and must be checked again before any
 future invocation uses it. Read receipts label credential validation Not checked.
 
-### Local service definitions
+## Local service definitions
 
 `service` (`svc`, `services`) reads the selected space's local definitions and existing component
 PID observations. Saved definitions, process presence, ownership and serving readiness are separate
@@ -8203,7 +8210,7 @@ and the setup seed record a service receipt for an extension that declares servi
 presets, and its process services run under a custodian as
 [Owned process services](#owned-process-services) describes.
 
-### Service presets
+## Service presets
 
 Bare `service` lists declarative presets separately from definitions and process observations.
 Use `service add <name> --preset <preset> --help` for that preset's option flags. Parsing, scoped
@@ -8283,7 +8290,7 @@ A component needing the invoking caller must supply its supported native handoff
 operator identity. In particular, the web service does not receive the invoking caller's
 authority.
 
-### Native Linear service
+## Native Linear service
 
 The `linear` service preset uses an existing native `account`, a reverse-DNS `endpoint` in a
 namespace you own, and the selected registered static-auth or user-auth `root`. An optional `server` only
@@ -8316,7 +8323,7 @@ still does not establish that deregistration, revocation or other cleanup comple
 `linear serve` foreground entry remains available for installed callers; the independent
 service route does not call that parser or its printed launch output.
 
-### Native auth service
+## Native auth service
 
 The `auth-service` preset requires a registered hosting `root` with its existing prepared
 user-auth projection. It loads the native callout account, issuer, owner secret and service key
@@ -8343,7 +8350,7 @@ the startup phase. This is process/startup evidence, not a fresh authenticated e
 A confirmed native close releases only this child's matching PID custody. An unconfirmed close
 keeps that evidence. Service reports still do not claim lease, registration or family cleanup.
 
-### Manager stop impact
+## Manager stop impact
 
 The native manager status contract includes its selected `lifecycleUid` and a caller-scoped `stopImpact` observation. It lists
 visible managed principals and lifecycle IDs, their runtime modes and the seat actions a default
@@ -8426,7 +8433,7 @@ settles it only from the same evidence, and only then releases the reservation. 
 checked. Retained native-policy markers prevent a metadata change from selecting generic signals,
 and an unconfirmed native stop cannot be forgotten just because its process disappeared. Legacy shutdown refuses the native child rather than bypassing that boundary.
 
-### Resolving endpoint targets
+## Resolving endpoint targets
 
 `endpoint describe <target>` and `endpoint invoke <target> <command> [--args '<json>']` use the
 existing native caller and digest-verified contracts. `ref:<name>` requires a saved reference.
@@ -8451,7 +8458,7 @@ reference's instance pin cannot be dropped to fit a class-only file. Neither cas
 operator identity. References without a file use the normal registered-space caller and its
 existing capability checks. No local reference grants remote authority.
 
-### Declared capabilities that remain gated
+## Declared capabilities that remain gated
 
 The CLI grammar also names `endpoint watch <target> <record-key-or-topic> [--since <native-sequence>]`,
 `endpoint session <target> <command>`, `endpoint work lease <target> <pool>` and
@@ -8486,7 +8493,7 @@ registry access make the requested live portion partial and return exit 4, while
 local references. Status projection, reported state, process ownership and a serving response are
 separate. No active probe or process control is implied by a registration row.
 
-### Clearing retained history
+## Clearing retained history
 
 `history clear` purges all retained channel history in the space it targets: `--space`, else this
 folder's space, else the selected one. It takes no channel argument. `--dms` also requests DM
@@ -8510,7 +8517,7 @@ says which purges were acknowledged or submitted, or that none was submitted and
 cleared. Clearing history does not stop agents, remove stream definitions or reset identity;
 new messages may arrive after the acknowledged purge.
 
-### Following an endpoint action
+## Following an endpoint action
 
 `endpoint invoke <target> <command> --wait` requires the command's digest-verified action marker
 and the native goal-result read surface. The CLI submits once, retains the accepted goal ID and
@@ -8526,7 +8533,7 @@ Goal-stream terminal values are capped at 16384 UTF-8 bytes. A larger value is o
 explicit gap and retained goal identity, not split into invalid JSON. Read that original goal's
 canonical result if needed; do not resubmit an action to recover its output.
 
-### Unconfirmed requests
+## Unconfirmed requests
 
 Classified failures use the same report layout as successful commands. The report names the
 outcome and stable code, then shows available request, goal and native responder attribution.
@@ -8535,7 +8542,7 @@ keeps the same state words without ANSI. The JSON envelope stays on stdout; diag
 stderr. Raw argument objects and arbitrary native detail payloads are not copied into the human
 report. Confirmed history purge acknowledgements remain visible when a later stream fails.
 
-### Persona previews
+## Persona previews
 
 `spawn --file/-f <persona-file>` selects a persona, not a team manifest. It cannot be combined
 with a positional persona or the persisted internal `--config` spelling. A bare filename is
@@ -8564,7 +8571,7 @@ adapter. It does not supply a managed enrollment authority path. Dry-run does no
 the enrollment file. On Windows the file must be a regular file; its owner, mode and links are not
 checked.
 
-### Owned process services
+## Owned process services
 
 Preset inventory checks the selected installed declaration without importing provider code. It
 shows declared foreground/multi-instance capabilities, process versus endpoint readiness, and
@@ -8870,7 +8877,7 @@ command's shared flag definitions. Completion uses the same declared subgroups a
 without treating an option's value as another command word.
 
 
-### Endpoint class scatters
+## Endpoint class scatters
 
 `endpoint invoke <target> <command> --all` submits one native ephemeral class scatter.
 It freezes the expected live instance set, gathers attributed replies and reconciles registration
@@ -8887,7 +8894,7 @@ bounded member/observation rows and state their omissions. A missing reply is no
 Result values are endpoint-provided and are not guaranteed to be secret-redacted.
 
 
-### Personas on an exact manager
+## Personas on an exact manager
 
 `persona --on <full-manager-instance>` lists that manager's authorized catalog.
 `persona show <name> --on <id>` reads a card only when its native ownership policy allows it.

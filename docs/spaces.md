@@ -62,14 +62,13 @@ already exist:
   message, one level deep.
 
 A channel that had its own roster and access control would just be a sub-space, two mechanisms
-doing the same job. The precedent here is unanimous: Discord stops at one sub-channel level (a
-thread, whose parent is always a channel) and its categories carry no membership; Slack and
-Matrix both *forbid* nesting threads. The membership/permission boundary lives at one
-level everywhere.
+doing the same job. The systems below agree: Discord stops at one sub-channel level (a thread,
+whose parent is always a channel) and its categories carry no membership, and Slack and Matrix
+both forbid nesting threads. Each keeps the membership and permission boundary at one level.
 
 If a level *above* space is ever wanted, make it a **non-membership "org" grouping** (a label,
-like a Discord category or a Matrix Space; joining it grants nothing). Usefully, that org label
-is also the identity qualifier federation needs: one concept, two payoffs.
+like a Discord category or a Matrix Space; joining it grants nothing). The same org label could
+also serve as the identity qualifier that federation needs.
 
 ## 4. Connecting spaces
 

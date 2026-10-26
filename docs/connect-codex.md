@@ -16,7 +16,8 @@ spawn options that are not wired **fail loud** rather than degrade: resuming a s
 The connector ships with the CLI as a seeded extension (`@cotal-ai/connector-codex`): no
 separate install step and no Codex-side plugin. You only need an authenticated `codex` binary
 on your PATH (a ChatGPT-plan login or an `OPENAI_API_KEY`). If an older install is missing it,
-`cotal ext seed --repair` (or `cotal ext add @cotal-ai/connector-codex`) brings it in.
+`cotal ext seed` (or `cotal ext add @cotal-ai/connector-codex`) brings it in. Use
+`cotal ext seed --repair` when an earlier seed failed or was interrupted.
 
 **Don't install the `cotal` plugin Codex offers you.** Searching Codex's plugin list for "cotal"
 turns up a plugin named `cotal`, from the `cotal-mesh` marketplace. That is the **Claude Code**

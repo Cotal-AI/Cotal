@@ -4,7 +4,7 @@
 
 [Hermes](https://nousresearch.com) (Nous Research) joins a Cotal mesh as a lateral peer, with the
 same shared `cotal_*` tool surface and delivery model as the other connectors. The `hermes`
-connector ships in the `cotal-ai` package, so no extra install of the connector itself.
+connector is seeded with the `cotal-ai` CLI, so the connector itself needs no extra install.
 
 **Alpha** means it runs today (spawn it, it joins the mesh and takes turns) but with real
 constraints, all verified below: it is **Unix-only**, needs an external Python toolchain you
@@ -19,10 +19,10 @@ is **not** bundled in the container image (so no containerized Hermes, see [Depl
   `uv` provisions the Python environment that provides the `hermes` CLI.
 - **`hermes-agent` 0.18 or later and below 0.22 (`>=0.18,<0.22`).** The launcher asserts the
   installed version at startup and fails loudly outside it (no silent degrade), because a different
-  major.minor can move the plugin/platform/hook API this connector targets. A plain `pip` or `uv`
-  resolve installs 0.19.0, the newest release on PyPI, which is inside the range. Hermes's own
-  install script installs the latest stable release by default. That is 0.22.x since 2026-10-14,
-  which is outside the range and refused. Below 0.18 the gateway does not send the reconnect signal
+  major.minor can move the plugin/platform/hook API this connector targets. The connector's
+  Python project requests this supported range. Hermes's standalone installer follows its own
+  stable release selection, which may be outside the connector's range; check the installed
+  version before using it with Cotal. Below 0.18 the gateway does not send the reconnect signal
   the adapter needs, so those versions are refused too.
 
 ## Spawn it

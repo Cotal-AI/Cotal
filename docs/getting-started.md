@@ -160,7 +160,7 @@ The vocabulary behind those four commands, which every other page builds on:
 | Primitive | What it is |
 |---|---|
 | **Space** | One collaboration, isolated from other spaces. Your mesh is a space. |
-| **Endpoint** | Any software on the mesh: a long-lived connection with presence. |
+| **Endpoint** | A connected participant; agents publish presence, while invisible observers can opt out. |
 | **Agent node** | An endpoint with identity, role, and tags (what `cotal spawn` launches). |
 | **Channel** | A named topic participants broadcast on and subscribe to. |
 | **Direct message** | A message addressed to one peer. |

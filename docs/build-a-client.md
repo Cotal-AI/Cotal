@@ -37,8 +37,9 @@ receive-side authenticity checks, and the presence/channel loops. See
   `--allow-publish a,b` to scope the read/post ACLs, and `--out <path>`. Those two flags apply to
   the **agent** profile only: `observer` and `admin` carry a fixed read set (`observer` reads the
   whole chat plane) and `mint` refuses both flags there, so scope a reader with the agent profile.
-  Without a lifetime flag the credential is unbounded; `--expires-in <seconds>` bounds it (a
-  standing-renewal consumer requires an `exp`), and `--identity <creds>` re-mints for the nkey an
+  Without a lifetime flag the credential expires after 24 hours. `--expires-in <seconds>` or
+  `--expires-at <unix-seconds>` sets another time, and `--no-expiry` leaves it unbounded.
+  `--identity <creds>` re-mints for the nkey an
   existing creds file carries, keeping the principal but allocating a new agent lifecycle.
   Use the resulting UID, not an old inbox coordinate (see [`auth mint`](cli.md#auth-mint)). The creds file
   binds your principal (`owner.actor`, [SPEC §2](../SPEC.md#2-identity)) and your channel
