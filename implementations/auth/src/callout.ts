@@ -34,7 +34,8 @@ import {
 import { createAccount, createCurve, fromCurveSeed, fromPublic, fromSeed } from "@nats-io/nkeys";
 import { assertInboxConnId, calloutReaderId, decodeNatsJwt, nativeNkeySigner, newIdentity, principalKey, principalTags, token } from "@cotal-ai/core";
 import type { JWTVerifyGetKey, CryptoKey } from "jose";
-import { validateUserToken, type ValidatedUserToken } from "./token.js";
+import { expiredBearerPrincipal, validateUserToken, type ValidatedUserToken } from "./token.js";
+import { ConnectLimiter, ConnectRateLimited } from "./connect-limit.js";
 import { SESSION_EXP, ENDPOINT_CALLER_EXP, ENDPOINT_CALLER_RECHECK } from "./permissions.js";
 import type { NativeIssuanceRecorder } from "./native-issuance.js";
 import { assertNativeServiceCalloutAuthority, issueNativeServiceCallout, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
@@ -211,6 +212,9 @@ export interface StartAuthCalloutOpts {
   recordIssuance: NativeIssuanceRecorder;
   /** Optional sealed native service path. Absent means service-endpoint continues to refuse. */
   serviceAuthority?: NativeServiceCalloutAuthority;
+  /** The connect limits, shared with the exchange so an actor limited here is refused there too.
+   *  Absent: a limiter of this callout's own at the default limits. */
+  connectLimiter?: ConnectLimiter;
   /** Diagnostics sink (default: console.error). Never carries bearer contents. Each answered
    *  request writes one `auth callout: level=…` line, whose fields docs/identity-and-auth.md names. */
   log?: (line: string) => void;
@@ -270,6 +274,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
   const limits = calloutLimits(opts.limits);
   const budgetMs = limits.authTimeoutMs - DEADLINE_MARGIN_MS;
   const log = opts.log ?? ((l: string) => console.error(l));
+  const limiter = opts.connectLimiter ?? new ConnectLimiter();
   const enc = (s: string) => new TextEncoder().encode(s);
   const dec = (u: Uint8Array) => new TextDecoder().decode(u);
   if (!opts.expectedServerIds?.length)
@@ -406,14 +411,30 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
     const { req } = c;
     try {
       const bearer = req.connect_opts?.auth_token;
-      if (!bearer) throw new Error("no user token presented (auth_token empty)");
-      const validated = await step(c, "verify", () => validateUserToken(bearer, {
-        key: opts.token.key,
-        issuer: opts.token.issuer,
-        audience: opts.space,
-      }));
+      let validated: ValidatedUserToken;
+      try {
+        if (!bearer) throw new Error("no user token presented (auth_token empty)");
+        validated = await step(c, "verify", () => validateUserToken(bearer, {
+          key: opts.token.key,
+          issuer: opts.token.issuer,
+          audience: opts.space,
+        }));
+      } catch (e) {
+        if (e === ANSWERED) throw e;
+        // A refused bearer still spends a callout. Charge it to the principal its signature names
+        // when only its expiry failed, and otherwise to the client host the broker saw.
+        const principal = expiredBearerPrincipal(e, opts.token.issuer);
+        if (principal) {
+          c.owner = principal.owner;
+          c.actor = principal.actor;
+        }
+        limiter.take(principal ?? { host: req.client_info?.host ?? "(none)" });
+        throw e;
+      }
       c.owner = validated.owner;
       c.actor = validated.act.actor;
+      // Before any ledger read or issuance write: a reconnect loop stops here once it is limited.
+      limiter.take({ owner: validated.owner, actor: validated.act.actor });
       if (validated.act.view === "service-endpoint") {
         if (!serviceAuthority)
           throw new Error("callout: service-endpoint requires dedicated native service authority; ordinary actor hooks refuse it");
@@ -483,7 +504,9 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
       send(c, sealed, "minted", "", () => opts.onMint?.({ jwt: userJwt, principal: key, exp }));
     } catch (e) {
       if (e === ANSWERED || c.answered) return;
-      const reason = e instanceof Error ? e.message : String(e);
+      const reason = e instanceof ConnectRateLimited
+        ? `${e.code} retry-after ${e.retryAfterSeconds}s: ${e.message}`
+        : e instanceof Error ? e.message : String(e);
       try {
         // The deny response MUST always encode: a denied connect that can't be answered TIMES OUT
         // instead of getting a legible signed refusal, which breaks the fail-closed "refuse, never

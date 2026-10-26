@@ -25,8 +25,12 @@
  * auth service's own CPU and make the bottleneck unreadable. Credentials reach a child over stdin,
  * never argv.
  *
+ * The main arm runs at the production connect limits unless `--connect-limits <actor>,<owner>,<host>`
+ * (connects a minute) sets others. A capacity run sets them above its offered rate: the harness signs
+ * every bearer for one owner, so past 10 connects a second the default owner limit refuses by design.
+ *
  * Run (needs a nats-server on PATH, or NATS_SERVER_BIN):
- *   pnpm smoke:callout-load --scenario steady --arm main --rate 200 --seconds 20
+ *   pnpm smoke:callout-load --scenario steady --arm main --rate 200 --seconds 20 --connect-limits 100000,100000,100000
  */
 import { randomUUID, createHash } from "node:crypto";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
@@ -37,7 +41,7 @@ import { pathToFileURL } from "node:url";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { SignJWT, exportJWK, generateKeyPair, importJWK, type CryptoKey, type JWK } from "jose";
 import { createSpaceAuth, chatSubject, isReachable, serverConfig, mintLifecycleUid } from "@cotal-ai/core";
-import { createCalloutAuth, calloutPermissions, deriveOwnerToken, USER_TOKEN_VER, type StartAuthCalloutOpts } from "../src/index.js";
+import { ConnectLimiter, createCalloutAuth, calloutPermissions, deriveOwnerToken, USER_TOKEN_VER, type StartAuthCalloutOpts } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -271,6 +275,8 @@ interface CalloutJob {
   calloutCreds: string; xkeySeed: string;
   authAccount: { pub: string; signingSeed: string };
   dataAccount: { pub: string; signingSeed: string };
+  /** `--connect-limits`, when set: each process keeps its own buckets. */
+  connectLimits?: string;
 }
 async function runCalloutChild(): Promise<void> {
   const chunks: Buffer[] = [];
@@ -288,6 +294,7 @@ async function runCalloutChild(): Promise<void> {
     recordIssuance: async () => {},
     authorizeActor: () => {},
     permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"], lifecycleUid: job.uid, scope: [] })),
+    ...(job.connectLimits ? { connectLimiter: limiterOf(job.connectLimits) } : {}),
     log: () => {},
   });
   await nc.flush();
@@ -333,6 +340,12 @@ const LOAD_PROCS = Math.max(1, Math.min(4, num("load-procs", "4")));
 const CALLOUTS = Math.max(1, num("callouts", "1"));
 const CONNECT_TIMEOUT_MS = num("connect-timeout-ms", "10000");
 const AUTH_TIMEOUT = flag("auth-timeout", ""); // empty: emit no `authorization` block at all
+const LIMITS = flag("connect-limits", ""); // empty: the callout's production defaults
+const connectLimiter = LIMITS ? limiterOf(LIMITS) : undefined;
+function limiterOf(spec: string): ConnectLimiter {
+  const [actorPerMinute, ownerPerMinute, hostPerMinute] = spec.split(",").map(Number);
+  return new ConnectLimiter({ actorPerMinute, ownerPerMinute, hostPerMinute });
+}
 const NATS_BIN = process.env.NATS_SERVER_BIN ?? "nats-server";
 /** The one channel the msgrate scenario grants and exchanges on. */
 const CHANNEL = "general";
@@ -540,6 +553,7 @@ try {
     authorizeActor: () => {},
     // The production permission builder, not a stub: its work is part of the per-connect cost.
     permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"], lifecycleUid: UID, scope: [] })),
+    ...(connectLimiter ? { connectLimiter } : {}),
     log: (l) => {
       const m = ANSWER_LINE.exec(l);
       if (m) answers.push({ level: m[1], outcome: m[2], totalMs: Number(m[3]), arrivedAt: performance.now() - Number(m[3]) });
@@ -570,6 +584,7 @@ try {
       calloutCreds: callout.calloutCreds, xkeySeed: callout.xkey.seed,
       authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
       dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+      ...(LIMITS ? { connectLimits: LIMITS } : {}),
     } satisfies CalloutJob));
     await ready;
   }
@@ -653,6 +668,8 @@ try {
   row("scenario", `${SCENARIO} — ${note}`);
   row("arm", ARM === "main" ? "main (native Ed25519 signer, maxInFlight 32)" : `stock ${STOCK_REF} (pure-JS signer, serial)`);
   row("auth callout processes", CALLOUTS);
+  const limits = (connectLimiter ?? new ConnectLimiter()).limits;
+  row("connect limits (a minute)", ARM === "stock" ? "none (the stock arm has no limiter)" : `actor ${limits.actorPerMinute}, owner ${limits.ownerPerMinute}, host ${limits.hostPerMinute}${connectLimiter ? "" : " (production defaults)"}`);
   row("auth timeout block", AUTH_TIMEOUT ? `authorization { timeout: ${AUTH_TIMEOUT} }` : "(none emitted)");
   row("duration (s)", elapsedS);
   rows.push(["", ""]);
@@ -697,8 +714,9 @@ try {
   // server-side, so a denial is only diagnosable from here.
   const denyReasons = new Map<string, number>();
   for (const l of calloutLog) {
-    const m = /^auth callout: denied \S+: (.*)$/.exec(l);
-    if (m) denyReasons.set(m[1].slice(0, 90), (denyReasons.get(m[1].slice(0, 90)) ?? 0) + 1);
+    const m = /^auth callout: level=\w+ outcome=denied .* reason=("(?:[^"\\]|\\.)*")$/.exec(l);
+    const reason = m && (JSON.parse(m[1]) as string).replace(/retry-after \d+s/, "retry-after Ns").slice(0, 90);
+    if (reason) denyReasons.set(reason, (denyReasons.get(reason) ?? 0) + 1);
   }
   for (const [k, v] of [...denyReasons].sort((a, b) => b[1] - a[1]).slice(0, 4)) row(`  callout deny: ${k}`, `${v} (of ${calloutLog.length} log lines)`);
   row("callout log lines", calloutLog.length);

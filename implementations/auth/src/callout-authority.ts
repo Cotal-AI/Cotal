@@ -16,6 +16,7 @@ import type { ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { startAuthCallout, type AuthCalloutLimits, type CalloutAuth, type CalloutConnection } from "./callout.js";
 import { chatAwareAclResolver, type ChatSessionAuthority } from "./chat-session-authority.js";
 import { authorizeConnectCredential, type ConnectReader } from "./connect-reader.js";
+import type { ConnectLimiter } from "./connect-limit.js";
 import type { UserTokenIssuer } from "./issuer.js";
 import { ledgerAclResolver, ledgerAuthorizeConnect } from "./ledger.js";
 import type { LifecycleRegistry } from "./lifecycle-registry.js";
@@ -229,6 +230,9 @@ export function serveCallout(nc: CalloutConnection, args: {
   hooks: CalloutAuthority;
   serviceAuthority?: NativeServiceCalloutAuthority;
   limits?: AuthCalloutLimits;
+  /** The connect limits, shared with the exchange in the full service. Absent: the callout keeps
+   *  its own at the defaults, as a replica does. */
+  connectLimiter?: ConnectLimiter;
 }): { done: Promise<void> } {
   const { space, dir, callout, issuer, hooks } = args;
   return startAuthCallout(nc, {
@@ -245,5 +249,6 @@ export function serveCallout(nc: CalloutConnection, args: {
     permissionsFor: calloutPermissions(chatAwareAclResolver(dir, ledgerAclResolver(dir)), hooks.authorizeManagerCaller, hooks.verifySession, hooks.issueUserCaller, hooks.resolveEndpointCaller),
     log: (l) => console.error(l),
     ...(args.limits !== undefined ? { limits: args.limits } : {}),
+    ...(args.connectLimiter !== undefined ? { connectLimiter: args.connectLimiter } : {}),
   });
 }

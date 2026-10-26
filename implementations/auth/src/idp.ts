@@ -31,6 +31,7 @@ import { deriveOwnerForIdpSubject } from "./derive.js";
 import type { UserTokenIssuer } from "./issuer.js";
 import { CLOCK_TOLERANCE_SEC, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
 import { grantCommandLine } from "./grant-command.js";
+import type { ConnectLimiter } from "./connect-limit.js";
 
 /** The pinned identity of ONE external IdP. All fields are operator config — nothing in here is
  *  ever read from a presented token. */
@@ -96,6 +97,9 @@ export interface CreateIdpBridgeOpts {
    *  construction refuses it when it equals `idp.audience`, so every exact-audience verifier of
    *  ordinary proofs refuses a `dm-reader` proof. Absent: the bridge refuses the `dm-reader` view. */
   dmReaderAudience?: string;
+  /** The callout's connect limits. Present: an actor whose connects they refuse is refused here
+   *  too, before its root credential is ensured, rather than sent a bearer the callout will deny. */
+  connectLimiter?: ConnectLimiter;
 }
 
 /** A successful exchange: the minted bearer plus what a caller needs to cache/refresh it. */
@@ -310,6 +314,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
       const grant = await opts.authorizeActor(owner, req.actor);
       if (grant === null || typeof grant !== "object" || Array.isArray(grant))
         throw new Error("idp bridge: authorizeActor must return a grant object - anything else is a deny");
+      opts.connectLimiter?.check({ owner, actor: req.actor });
       if (req.view === "manager-service")
         throw new Error('view "manager-service" is not a bearer profile; use the typed manager-service authority exchange');
       if (req.view !== undefined) {

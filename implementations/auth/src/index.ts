@@ -15,6 +15,7 @@ export {
   type CalloutMsg,
   type StartAuthCalloutOpts,
 } from "./callout.js";
+export { ConnectLimiter, ConnectRateLimited, DEFAULT_CONNECT_LIMITS, type ConnectLimits, type ConnectSource } from "./connect-limit.js";
 export {
   validateUserToken,
   assertCredentialIdClaim,

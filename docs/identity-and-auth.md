@@ -442,6 +442,28 @@ renders it again and passes it to the auth service again. Without it the broker 
 does not start callout replicas, so start each one with the same `--auth-timeout <seconds>` as the
 broker config.
 
+### Connect limits
+
+The auth service limits how often each principal may connect, so one client stuck in a reconnect
+loop cannot spend the callout for everyone else in the space. It keeps a token bucket in memory for
+each actor (`owner.actor`), each owner and each client host. A bucket holds a minute's allowance and
+refills at that rate. The defaults are 60 connects a minute per actor and 600 per owner. A bearer
+whose signature verifies is charged to its actor and its owner, even after it expires. A bearer that
+does not verify is charged to the client host the broker reports, at 60 a minute. A connect passes
+only when every bucket it draws on has one left, and a refused connect spends nothing. Each auth
+service process keeps its own buckets, callout replicas included, so a space served by several
+processes allows up to that many times each limit. A replica limits at the defaults.
+
+The callout checks the limits before it reads the ledger or records an issuance. A limited connect
+gets a signed denial whose reason starts with `RATE_LIMITED retry-after <n>s`, followed by the actor
+and owner or the host. Its `outcome=denied` line carries that reason with the `owner` and `actor`
+fields. The broker tells the client only `Authorization Violation`, so the exchange carries the typed
+answer. While an actor or its owner is limited, `POST /exchange` for that actor answers 429 with
+`{"code": "RATE_LIMITED", "retryAfterSeconds": <n>, "error": "<sentence>"}` and a `Retry-After`
+header of the same seconds. Both faces and both arms answer it, and it does not count as a refused
+exchange. A hosted composition passes other limits to `startAuthService` as `connectLimits`. No flag
+sets them.
+
 ### Enrollment redeem
 
 A remote owner may pre-mint a one-time enrollment for a seat that has no browser, TTY, or cached
