@@ -29,9 +29,12 @@ export function currentSession(): string {
   if (!process.env.TMUX)
     throw new Error("tmux: not inside a tmux session ($TMUX is not set)");
   try {
-    return execFileSync("tmux", ["-u", "display-message", "-p", "#S"], { encoding: "utf8" }).trim();
+    return execFileSync("tmux", ["-u", "display-message", "-p", "#S"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
   } catch (err) {
-    throw new Error(`tmux: couldn't read current session name: ${err}`);
+    throw new Error(`tmux: couldn't read current session name: ${failureText(err)}`, { cause: err });
   }
 }
 
@@ -182,7 +185,7 @@ export function capturePane(paneId: string, server: string): string | undefined 
     });
   } catch (err) {
     if (paneState(paneId) === "exited") return undefined;
-    throw err;
+    throw new Error(`tmux: couldn't capture pane ${paneId}: ${failureText(err)}`, { cause: err });
   }
   // capture-pane also reads a pane kept after its process exited (`remain-on-exit`); a pane still
   // running on `server` after the capture was running during it. A later server reuses pane ids.

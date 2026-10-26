@@ -18,7 +18,7 @@
     }
   },
   "scripts": {
-    "test": "tsx package.smoke.ts",
+    "test": "pnpm run build && tsx package.smoke.ts && tsx driver-reads.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
     "prepublishOnly": "pnpm run build"
