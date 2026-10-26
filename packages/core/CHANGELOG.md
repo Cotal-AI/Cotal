@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.105.0
+
+### Patch Changes
+
+- 6e16f06: Read a Linux advisory lock owner's process state and start token from one stat snapshot per inspection. Keep unreadable identity active without invoking ps.
+
 ## 0.104.2
 
 No changes in this release.
