@@ -523,7 +523,10 @@ const B = "/tmp/session-b.jsonl";
   const r = rig({ fail: boom, failTimes: 3, retryMs: 10 });
   r.holder.adopt(A);
   await r.holder.settled();
-  await sleep(60);
+  // Three chained retry timers need separate event-loop turns. A 60ms sleep can finish before
+  // them on a busy host, so wait for the fourth start without weakening either assertion below.
+  const deadline = performance.now() + 5_000;
+  while (r.starts < 4 && performance.now() < deadline) await sleep(10);
   await r.holder.settled();
   c("revive:the-first-retry-is-at-once-and-the-rest-are-paced-by-the-fixed-wait", r.delays.slice(0, 3).join(",") === "0,10,10", r.delays);
   c("revive:the-plane-comes-back-after-repeated-failures", r.holder.running && r.starts === 4, { running: r.holder.running, starts: r.starts });
