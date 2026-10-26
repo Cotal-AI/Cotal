@@ -2,10 +2,10 @@
 
 > **Reference** · **For:** everyone who runs the `cotal` CLI
 
-The `cotal` CLI sends anonymous usage data so we can see which commands people use, which fail,
-and on which platforms. It is on by default, it works with no mesh, no Cloud and no sign-in, and
-you can turn it off in one command. This page is the contract: the intake accepts the bodies below
-and nothing else.
+The `cotal` CLI sends usage data about commands, failures and platforms. Telemetry is on by
+default and works without a mesh or sign-in. Events carry a random install id; at `regular`,
+a hashed account identifier can also link usage across machines. You can turn it off with
+`cotal telemetry off`. The field tables below describe the event bodies.
 
 ## Levels
 
@@ -36,26 +36,34 @@ event. `COTAL_HOME` does not move this file, so every workspace one person runs 
 account reports the same install id. A file that does not validate refuses every command with
 `SCHEMA_INVALID` and is never replaced.
 
-## Never sent
+<a id="never-sent"></a>
 
-Arguments, flag values, paths, mesh, space, agent, user and host names, environment values,
-prompts, messages and any other content. The error text of a failure is sent at `regular` only
-after masking (see `errorMessage` below). The install id identifies the settings file, not a person
-or machine. The `account` field at `regular` is a hash of the cached sign-in's IdP URL and subject
-id; the id itself, the email and the name behind it are never sent. The daemon, manager,
+## Data boundaries
+
+The event builders do not collect command argument values, mesh, space, agent, user or host
+names, prompts or messages. They do collect the environment-derived fields listed below,
+including `TERM_PROGRAM` at `regular`. Failure text is sent at `regular` after pattern-based
+masking (see `errorMessage`); masking is not a guarantee that arbitrary error text contains no
+identifying information. Use `minimal` to exclude error text or `off` to send nothing.
+
+The install id is a persistent identifier for the settings file. The `account` field at
+`regular` hashes the cached sign-in's IdP URL and subject id; it allows correlation across
+machines without sending those raw identifiers. The daemon, manager,
 connectors and workflow runtime send nothing; neither do internal
 entries, hidden daemon runners, `agent-bearer` and `cotal telemetry` itself.
 
-The intake sees the IP address every request comes from, as any web server does. It uses it for a
-country and region lookup and does not store it: the stored event carries the derived location only.
+The intake receives the request's IP address even though the CLI does not put it in the
+JSON body. The [website API description](https://cotal.ai/openapi.json) says accepted
+events are relayed to product analytics. This repository defines the CLI payload and
+opt-outs; it does not establish the receiving service's IP handling or retention policy.
 
 ## Delivery
 
 One `command` event is posted as the CLI process exits, whatever the exit path. At `regular`, the
 first command of each UTC day also posts an `install` event first. Each is one `POST` of JSON,
-`content-type: application/json`, to `https://cotal.ai/v1/telemetry`, with a 1.5 second timeout, no
-retry, and every failure ignored: telemetry never changes a command's output, exit code or timing
-beyond that timeout. `COTAL_TELEMETRY_URL` points a self-hosted intake. It must be an `http` or
+`content-type: application/json`, to `https://cotal.ai/v1/telemetry`. The command and install
+posts share one 1.5 second send deadline, with no retry. Send failures are ignored and do not
+change the command's exit code; the exit hook waits at most 1.5 seconds for delivery. `COTAL_TELEMETRY_URL` points a self-hosted intake. It must be an `http` or
 `https` URL, because a send to anything else fails and that failure is ignored too. Any other value
 refuses with `USAGE_INVALID` before the command runs whenever the level in force sends events, and
 `cotal telemetry` refuses it at every level, since it reports that URL.

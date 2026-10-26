@@ -77,9 +77,9 @@ and print why.
 
 A shard stops at its first failing suite. It names that suite, lists the planned suites that
 never started, and prints how many of its planned suites started. Under GitHub Actions it also
-emits an error annotation with the failing suite and that count. The Windows smoke lane continues
-on error, so its job reports success over a red shard, and the annotation on the run summary is
-where that job states its coverage.
+emits an error annotation with the failing suite and that count. The platform jobs run the
+separate `platform-suites.txt` inventory through the same runner. Those steps do not use
+`continue-on-error`: a failing shard fails its job.
 
 `pnpm smoke:ci:offline` keeps its existing live-suite exclusions and reports them. It is
 not the full gate or a replacement name for a smaller testing tier.
