@@ -1,5 +1,29 @@
 # @cotal-ai/cli
 
+## 0.103.4
+
+### Patch Changes
+
+- e6af269: A bare `cotal down` in a folder with no stack now names the space the selected one is, the folder
+  this machine started it in, and the same `down` to run from there, for every stack `cotal up`
+  registered rather than only a controller one. It used to say only that this folder's root holds no
+  stack and point at "the folder where `cotal up` started the stack" without naming it, so a script
+  and an operator both had to find it. `--json` and `--plain` carry that refusal as structured output
+  instead of refusing `UNSUPPORTED`, so a script reads the same code as the plain run.
+- e6af269: A project the legacy launcher started writes no stack journal, so a copy of one, the folder a later
+  `up` took its name over from, and one moved away from its recorded path all read as a folder whose
+  own stack was merely stopped: `status`, `ps` and the other reads named this folder's last broker
+  address and said to run `cotal up` here, which then refuses the name or takes it over. While this
+  machine registers that space for another folder, they now name that folder and the step that
+  reaches it, or the way back when it no longer exists, and a bare `cotal down` there says the folder
+  holds the space's records and no stack of its own. A registration added by hand never redirects the
+  folder. `cotal spawn --dry-run` carries the same sentence and next step in place of reporting only
+  that a target could not be resolved, for a controller project's copy as well.
+- c05e0e3: Let personal Claude Code conversations choose a registered mesh with `cotal_connect`'s optional `space` argument, without changing project configuration. Keep hosted grants space-bound, require disconnect before replacing a live connection, and retire a previous space's pending identity before requesting another.
+- Updated dependencies [e6af269]
+  - @cotal-ai/workspace@0.103.4
+  - @cotal-ai/core@0.103.4
+
 ## 0.103.3
 
 ### Patch Changes
