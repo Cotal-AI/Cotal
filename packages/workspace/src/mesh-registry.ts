@@ -336,6 +336,19 @@ export function pruneMesh(space: string): boolean {
   return true;
 }
 
+/** The host and port a broker address names, as one comparable key, whatever its scheme and
+ *  whether its port is written out. `NATS://127.0.0.1:4222/` and `nats://127.0.0.1:4222` reach the
+ *  same listener, so both answer `127.0.0.1:4222`, and so does an address with no port, which takes
+ *  the NATS default. `undefined` for an address this cannot take apart, such as a list or a record
+ *  written by hand that is not a URL: a caller comparing addresses skips it rather than reading a
+ *  throw as a conflict. */
+export function brokerAddressKey(server: string): string | undefined {
+  let address: URL;
+  try { address = new URL(server); } catch { return undefined; }
+  if (!address.hostname) return undefined;
+  return `${address.hostname}:${address.port || "4222"}`;
+}
+
 /** Canonicalize a project root for comparison. A recorded root is whatever spelling `cotal up` was
  *  run under, so the same directory reaches us by several names: a symlinked root (macOS `/var` →
  *  `/private/var`) or, on Windows, an 8.3 short name (`C:\Users\RUNNER~1\…`) — `process.cwd()` keeps

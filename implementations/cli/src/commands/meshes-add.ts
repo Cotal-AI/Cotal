@@ -420,6 +420,8 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
       return `✗ the broker at ${server} accepted the connection but is not answering: the connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s - nothing was registered; retry, and if it keeps happening, check that the broker process is not stopped or overloaded`;
     case "broker-stopped":
       return `✗ the broker at ${server} is served by process ${pid}, which is stopped, so it accepts the connection and never answers - nothing was registered; resume it with kill -CONT ${pid} and run this again`;
+    case "address-held":
+      return `✗ the broker at ${server} refused the connection for "${space}" under ${authDir(root)}, and another registered space names that address - nothing was registered; run \`cotal space\` to see which space holds it, then register "${space}" at the address its own broker serves`;
   }
 }
 

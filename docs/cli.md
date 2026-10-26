@@ -679,7 +679,11 @@ address. A later `cotal up` of
 the same space from the same folder starts from the URL that mesh recorded; an explicit `--server`
 stays fail-loud on collision. An address that a space registered for another folder keeps while it
 is stopped refuses `CONFLICT`, exit 2, naming that space and folder, and nothing starts, unless this
-`up` takes that space's name over. When the named space runs from another folder on this machine,
+`up` takes that space's name over. `up -f` reads its address from the manifest's `broker.servers`
+and is refused there by the same rule, with the field to point at another address in place of the
+`--server` to pass. Each refusal also names `cotal space forget <space>`, which frees that address
+with the name. A second stack started on a held address answers for both registrations, which
+leaves the other space's `down` and its reads reaching this one. When the named space runs from another folder on this machine,
 `up --space` refuses `CONFLICT`, exit 2, naming that folder, with or without `--server`, `--json` or
 `--plain`, and writes nothing in the folder it ran from. A bare `up` whose folder names a space that
 runs from another folder refuses `CONFLICT` as well. Its Next names
@@ -1488,7 +1492,11 @@ says so with a `REGISTRATION_REBUILT` warning, as `--dry-run` does. It does that
 stack's broker is the launch the journal records at that root and address, and otherwise refuses
 `CONFLICT`, exit 2, before any member stops. A registration added by hand at another address or
 folder is not replaced: `down` refuses `CONFLICT` and names `cotal space forget <space>`, after
-which `down` stops the stack through its journal. A user-auth stack's registration is not rebuilt,
+which `down` stops the stack through its journal. While another registered space names this
+stack's exact broker address, bare `down` refuses `LIFECYCLE_BLOCKED`, exit 2, and stops nothing,
+because one listener answers for both registrations. It names each of those spaces with the
+`cotal space show <space>` that reads one, the `cotal space forget <space>` that takes it off this
+address once its own stack is stopped, and the `cotal down` to run again after that. A user-auth stack's registration is not rebuilt,
 so it refuses `UNSUPPORTED`. A stop that refuses or is cancelled before any member stops puts the
 registration back as it was.
 
@@ -3192,7 +3200,12 @@ stopped counts as running, as it does for `clean`. A hand-added record is remove
 mesh and so takes the record over (a `cotal up` for that space anywhere else refuses instead).
 Nothing that merely *infers* a record is stale from a dead broker touches it: an
 unreachable broker is listed `offline` and stays, whether `cotal up` or `cotal meshes add`
-wrote the record; a foreground `up` whose broker exits unexpectedly keeps its record the same way.
+wrote the record; a foreground `up` whose broker exits unexpectedly keeps its record the same way. A broker that answers at a record's address and refuses the connection is read the same way
+while another registered space names that address: the broker there is that space's, so the record
+is kept and the refusal is `CONFLICT`, exit 2, naming the space that holds the address, the
+`cotal space forget <space>` that frees it and the `cotal up --server <url>` that moves this one.
+`cotal status` shows that space as `address held`. Deleting the record would leave its folder
+naming no space, after which nothing there says which space its commands meant.
 A bare command does not treat that offline record as a running mesh;
 name it with `--space` to restart it. An operator command whose target is the selected space, or
 the space registered at its project's root, probes no other recorded broker. When it picks among

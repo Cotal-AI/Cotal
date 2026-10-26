@@ -353,12 +353,37 @@ try {
   if (otherUp.status === 0) cliIn(other, "down");
   ok("another folder's up at this stopped space's address refuses CONFLICT, exit 2, naming this one, and writes nothing",
     otherUp.status === 2 && /Code:\s+CONFLICT/.test(plain(otherUp.stderr)) && plain(otherUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)} and stopped`) && !existsSync(join(other, ".cotal")), otherUp.stdout + otherUp.stderr);
-  rmSync(other, { recursive: true, force: true });
+  // A manifest names its broker in `broker.servers`, and that address is held by the same rule, so
+  // `up -f` is refused there too and its next step names the field to change.
+  const manifestRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-manifest-"));
+  writeFileSync(join(manifestRoot, "cotal.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: upstackmanifest\nbroker:\n  servers: ${SERVER}\n  auth: false\nchannels:\n  general:\n    description: address reservation cell\n`, { mode: 0o600 });
+  const manifestUp = cliIn(manifestRoot, "up", "-f", "cotal.yaml");
+  if (manifestUp.status === 0) cliIn(manifestRoot, "down", "--yes");
+  ok("an up -f whose broker.servers is this stopped space's address refuses CONFLICT, exit 2, naming this one and broker.servers, and writes nothing",
+    manifestUp.status === 2 && /Code:\s+CONFLICT/.test(plain(manifestUp.stderr)) &&
+      plain(manifestUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)} and stopped`) &&
+      plain(manifestUp.stderr).includes("point broker.servers in cotal.yaml at another address") &&
+      plain(manifestUp.stderr).includes(`cotal space forget ${SPACE}`) && !existsSync(join(manifestRoot, ".cotal")), manifestUp.stdout + manifestUp.stderr);
+  rmSync(manifestRoot, { recursive: true, force: true });
   const restart = cli("up", "--detach", "--server", SERVER);
   if (existsSync(join(root, ".cotal", "nats.pid"))) pids.push(pidOf("nats.pid"));
   ok("a bare up starts it again on the retained launcher, with no stack journal",
     restart.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: cotal down$/m.test(plain(restart.stdout)) && !existsSync(join(root, ".cotal", "stack-controller.json")),
     restart.stdout + restart.stderr);
+  // A read of a registration whose address this running stack serves is refused by the holder's
+  // name, and the record stays: deleting it would leave its folder naming no space at all, and the
+  // address is held rather than reused.
+  const heldRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-held-"));
+  const heldFile = join(home, "meshes", `space.${Buffer.from("upstackheld").toString("hex")}.json`);
+  writeFileSync(heldFile, `${JSON.stringify({ space: "upstackheld", server: SERVER, root: heldRoot, mode: "open", origin: "up", ts: new Date().toISOString() })}\n`, { mode: 0o600 });
+  const heldRead = cliIn(heldRoot, "ps", "--space", "upstackheld");
+  ok("a read of another space registered at this running stack's address refuses CONFLICT, names this space as the holder, and keeps that registration",
+    heldRead.status === 2 && /Code:\s+CONFLICT/.test(plain(heldRead.stderr)) &&
+      plain(heldRead.stderr).includes(`"${SPACE}" is registered at that address`) &&
+      plain(heldRead.stderr).includes("the registry entry was kept") &&
+      plain(heldRead.stderr).includes(`cotal space forget ${SPACE}`) && existsSync(heldFile), heldRead.stdout + heldRead.stderr);
+  rmSync(heldFile, { force: true });
+  rmSync(heldRoot, { recursive: true, force: true });
   ok("its down exits 0", cli("down").status === 0);
   // The kept registration does not make the stopped stack look like one to stop.
   const again = cli("down");

@@ -381,7 +381,14 @@ function guardLegacyBareDown(): { space: string } {
   if (unsettled.length || attempts.refused.length || summaries.refused.length)
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a fresh boot attempt is unsettled or a boot record unreadable; legacy bare down did not stop a process whose original launch outcome is unknown", { target: { ...scoped, unsettledIds: unsettled.map((row) => row.deploymentId), unreadable: [...attempts.refused, ...summaries.refused].map(({ path }) => path) }, remedy: "inspect the original boot and process custody before any stop; the pidfile sweep is not recovery" });
   const other = loadMeshes().filter((row) => row.space !== mesh.space && row.server === mesh.server);
-  if (other.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registered space names this exact broker address; bare down did not stop its shared listener", { target: { ...scoped, otherSpaces: other.map((row) => row.space) }, remedy: "inspect both registrations and their native ownership; an exact-address match is a blocker, while no match does not prove exclusivity" });
+  // The stop is refused because this listener answers for more than one registration, so the
+  // operator needs the command that takes the other registration off this address. Each other space
+  // is named with its own `space forget`, which `cotal space show` reads first and which refuses
+  // while that space runs, and the stop to run again once the address is this stack's alone.
+  if (other.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registered space names this exact broker address; bare down did not stop its shared listener", { target: { ...scoped, otherSpaces: other.map((row) => row.space) }, remedy: [
+    ...other.map((row) => `read "${row.space}" with \`cotal space show ${row.space}\`, stop it in its own folder, then take it off this address with \`cotal space forget ${row.space}\``),
+    "then run `cotal down` again",
+  ].join("; ") });
   assertNoLiveServices(mesh.space, "down");
   return { space: mesh.space };
 }

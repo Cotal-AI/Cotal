@@ -57,8 +57,8 @@ const {
 
 // The canonical preflight copy now comes from the renderer (workspace's optional, command-agnostic
 // presentation helper); this shim keeps the message assertions below reading unchanged.
-const preflightMessage = (kind: PreflightFailure, t: MeshTarget, pruned: boolean): string =>
-  renderWorkspaceError({ kind: "preflight", failure: kind, target: t, pruned });
+const preflightMessage = (kind: PreflightFailure, t: MeshTarget, pruned: boolean, heldBy?: string): string =>
+  renderWorkspaceError({ kind: "preflight", failure: kind, target: t, pruned, ...(heldBy === undefined ? {} : { heldBy }) });
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -123,6 +123,28 @@ for (const s of REGISTRY)
       const r = classifyPreflightFailure(s, "auth-required", hasAuth, true);
       return r.prune === false && r.kind === (hasAuth ? "registry-creds-rejected" : "registry-open-now-auth");
     })());
+// ADDRESS HELD: a broker answered and refused the credentials, and another registered space names
+// this exact address, so the broker there is that space's. The entry is not stale, and the prune
+// that a bare rejection earns would delete a sound record and leave its folder naming no space.
+for (const s of REGISTRY)
+  for (const hasAuth of [true, false])
+    for (const inferred of [true, false])
+      check(`auth-required + ${s} / auth=${hasAuth} / inferred=${inferred} + a holder → NO prune + 'address-held'`, (() => {
+        const r = classifyPreflightFailure(s, "auth-required", hasAuth, inferred, "beta");
+        return r.prune === false && r.kind === "address-held";
+      })());
+// A non-registry source keeps its own kinds: its endpoint was operator-supplied, and it never pruned.
+for (const s of NON_REGISTRY)
+  for (const hasAuth of [true, false])
+    check(`auth-required + ${s} / auth=${hasAuth} + a holder keeps its own kind`, (() => {
+      const r = classifyPreflightFailure(s, "auth-required", hasAuth, false, "beta");
+      return r.prune === false && r.kind === (hasAuth ? "creds-rejected" : "open-wants-auth");
+    })());
+// No holder is the unchanged decision, so the arm above is the holder's doing and not the source's.
+check("auth-required + registry + has-auth with no holder still prunes as 'registry-creds-rejected'", (() => {
+  const r = classifyPreflightFailure("registry", "auth-required", true, false, undefined);
+  return r.prune === true && r.kind === "registry-creds-rejected";
+})());
 // STALE-AUTH (D5 slice 6): a dead CREDENTIAL on a LIVE broker — never a prune, whatever the
 // source (deleting a live mesh's entry for an expired cred would misdirect the repair).
 for (const s of [...REGISTRY, ...NON_REGISTRY])
@@ -158,6 +180,24 @@ check("tls-trust preflight copy names NODE_EXTRA_CA_CERTS, NATS listener, unauth
     && msg.includes("unauthenticated")
     && msg.includes("conservatively kept")
     && !msg.includes("removed");
+})());
+
+// ADDRESS HELD copy: names the space holding the address, the `space forget` that frees it and the
+// address this one can move to, says the entry was kept, and never claims a removal.
+check("address-held preflight copy names the holder, space forget, the move, and the kept entry", (() => {
+  const t = { space: "team", server: "nats://127.0.0.1:14990", root: "/tmp/p", source: "registry", mode: "auth" } as never;
+  const msg = renderWorkspaceError({ kind: "preflight", failure: "address-held", target: t, pruned: false, heldBy: "beta" });
+  return msg.includes('"beta" is registered at that address')
+    && msg.includes("the registry entry was kept")
+    && msg.includes("`cotal space forget beta`")
+    && msg.includes("`cotal up --server nats://127.0.0.1:<port>`")
+    && !msg.includes("removed");
+})());
+// With no holder name the copy still works and names the lister instead of an undefined space.
+check("address-held copy with no holder name points at `cotal space` and names no undefined space", (() => {
+  const t = { space: "team", server: "nats://127.0.0.1:14990", root: "/tmp/p", source: "registry", mode: "auth" } as never;
+  const msg = renderWorkspaceError({ kind: "preflight", failure: "address-held", target: t, pruned: false });
+  return msg.includes("another registered space names that address") && msg.includes("`cotal space`") && !msg.includes("undefined");
 })());
 
 // `auth-required` on the RAW probe splits the same way the registry path splits it. Both cells are

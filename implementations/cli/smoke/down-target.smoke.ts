@@ -656,6 +656,18 @@ try {
   removeMesh("twin-b");
   check("two registrations for the root refuse CONFLICT, naming both, and point at space forget",
     twins.error?.code === "CONFLICT" && /"twin-a"/.test(twins.error.message ?? "") && /"twin-b"/.test(twins.error.message ?? "") && /cotal space forget/.test(twins.error.remedy ?? ""), twins);
+  // One listener two registrations name is not this stack's alone to stop, so the refusal names the
+  // step that takes the other registration off the address and the stop to run after it.
+  recordMesh({ ...entry("shared-here", stoppedRoot), origin: "up" });
+  recordMesh({ ...entry("shared-there", neverRoot), origin: "up" });
+  const shared = await bareDownIn(stoppedRoot);
+  removeMesh("shared-here");
+  removeMesh("shared-there");
+  check("a second registration at this stack's exact broker address refuses LIFECYCLE_BLOCKED, names that space, and its next step names space show, space forget and the down to run again",
+    shared.error?.code === "LIFECYCLE_BLOCKED" && /shared listener/.test(shared.error.message ?? "") &&
+      (shared.error as { target?: { otherSpaces?: string[] } } | undefined)?.target?.otherSpaces?.includes("shared-there") === true &&
+      /`cotal space show shared-there`/.test(shared.error.remedy ?? "") && /`cotal space forget shared-there`/.test(shared.error.remedy ?? "") &&
+      /then run `cotal down` again/.test(shared.error.remedy ?? ""), shared);
   // An installed extension may record its process deeper in `.cotal` or under another suffix. While
   // either still runs, bare down does not call the stack stopped, and it leaves both as they were.
   const priorXdg = process.env.XDG_CONFIG_HOME;
