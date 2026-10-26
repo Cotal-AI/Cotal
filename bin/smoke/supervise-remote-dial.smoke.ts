@@ -23,11 +23,13 @@
  *   G: the remote space's OWN split records — refused with the combination message.
  *   I: an unreadable auth/auth.json — refused on the store's parse message before any exchange.
  *   H: no trust text may name auth/auth.json in F's output.
- *   J: with two of the owner's managers up, one started with `--name`, an unpinned `ps` lists each
- *      one by name with its host and gives the command again with `--on` for each, by name where
- *      the name picks it; `ps --on <name>` is answered and `who --all` shows the name. On a
- *      terminal a bare `spawn` asks where the agent runs, this terminal first, and a launch pinned
- *      to a manager whose presence reports this host asks no folder.
+ *   J: with two of the owner's managers up, one started with `--name`, an unpinned `ps` asks
+ *      nothing and lists each one under its own header with its host; an unpinned detached spawn
+ *      lists each one by name with its host and gives the command again with `--on` for each, by
+ *      name where the name picks it; `ps --on <name>` is answered and `who --all` shows the name.
+ *      With no manager answering, `ps` lists presence.
+ *      On a terminal a bare `spawn` asks where the agent runs, this terminal first, and a launch
+ *      pinned to a manager whose presence reports this host asks no folder.
  *   K: a managed spawn the host refuses at enrollment, for a role outside the caller's grant, is
  *      refused as PERMISSION_DENIED with the host's reason, and no secret staged for the agent
  *      remains under the manager's root.
@@ -420,6 +422,10 @@ try {
       setTimeout(() => { clearInterval(timer); resolve(); }, 120_000).unref?.();
     });
     await done;
+    // SIGTERM, which tsx passes on, so a manager that came up stops and deregisters. A SIGKILL ends
+    // tsx alone and leaves that manager running and answering for the cells after this one.
+    try { child.kill("SIGTERM"); } catch { /* already gone */ }
+    await awaitExit(child, 15_000);
     try { child.kill("SIGKILL"); } catch { /* already gone */ }
     await awaitExit(child);
     trustOutcomes.set(label, output);
@@ -473,12 +479,12 @@ try {
   ok("H: the wrong-space monolith is never used as this space's trust (no trust text names auth/auth.json)",
     !/corrupt or mislabeled|cannot be combined|space trust bundle \(auth\/auth\.json\)/.test(fLine), fLine.slice(-600));
 
-  // J: two of the owner's managers live at once. An unpinned managed verb cannot choose between
-  // them, so its refusal lists each one with the host its presence reports, and the caller's own
-  // command again with `--on` for each. The caller registered the space as `cotal meshes add --from`
-  // does, with the sentinel under its own user-auth state dir. `ps` needs the admin scope. The
-  // earlier cells leave registrations the exchange still counts as live, so the cell finds its own
-  // two managers among the rows by their instance ids.
+  // J: two of the owner's managers live at once. `ps` reads each of them, and a verb that needs one
+  // manager refuses with each one and the host its presence reports, and the caller's own command
+  // again with `--on` for each. The caller registered the space as `cotal meshes add --from` does,
+  // with the sentinel under its own user-auth state dir. `ps` needs the admin scope. The earlier
+  // cells leave registrations without a manager that the exchange still counts as live, so the cell
+  // finds its own two managers among the rows by their instance ids.
   const jGrant = grantActor(hostDir, { owner, actor: "cli", scope: ["spawn", "supervise", "admin"], allowSubscribe: ["general"], allowPublish: ["general"] });
   const scratch = (label: string): string => {
     const path = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}supervise-${label}-${fixtureId}-`));
@@ -520,60 +526,73 @@ try {
     child.stderr?.on("data", (chunk: Buffer) => { err += chunk.toString(); });
     child.on("close", (code) => resolveRun({ code, out, err }));
   });
-  const ps = await caller("ps", "--space", space);
-  ok("J: an unpinned ps with several live managers refuses as PERMISSION_DENIED, exit 2",
-    ps.code === 2 && /Code:\s+PERMISSION_DENIED/.test(ps.err) && /\d+ of your managers are live/.test(ps.err), ps);
-  const rows = new Map([...(ps.err.split("Live managers")[1] ?? "").matchAll(/^\s+(\S+)\s+([a-z0-9]{26,32})\s+(\S+)\s/gm)].map((m) => [m[2]!, { name: m[1]!, host: m[3]! }]));
-  ok("J: the refusal lists each of its live managers on its own row, by name, with the host its presence reports",
-    twoIds.length === 2 && twoIds.every((id) => rows.get(id)?.host === hostname()) && rows.get(twoIds[0]!)?.name === "j-one" && rows.get(twoIds[1]!)?.name === `${hostname()}/pty`, { twoIds, err: ps.err.slice(-900) });
-  ok("J: its Next reruns the caller's own ps on each of them, by the name or <host>/<runtime> that picks it, otherwise by instance id",
-    ps.err.includes(`ps --space ${space} --on j-one`) && [`${hostname()}/pty`, twoIds[1]].some((selector) => ps.err.includes(`ps --space ${space} --on ${selector}`)), ps.err.slice(-600));
-  const pinned = await caller("ps", "--space", space, "--on", "j-one");
-  ok("J: ps --on <name> is answered by the manager started with that name", pinned.code === 0, pinned);
-  const who = await caller("who", "--all", "--space", space);
-  ok("J: who --all shows that manager by its name", who.code === 0 && who.out.includes("manager j-one"), who.out.slice(-900));
-  // On a terminal the same unpinned ps asks which manager, the most recently started first and the
-  // default, and Enter runs it there. COTAL_NO_PROMPT=1 keeps the refusal.
-  const onTerminal = async (keys: string | undefined, extra: Record<string, string> = {}) => {
+  // A command run on a terminal, with `keys` typed once `until` shows, or with nothing typed.
+  const inTerminal = async (args: string[], until: RegExp | undefined, keys: string | undefined, extra: Record<string, string> = {}) => {
     const env = Object.fromEntries(Object.entries({ ...childHomeEnv(callerHome), TERM: "xterm-256color", ...extra }).filter((entry): entry is [string, string] => entry[1] !== undefined));
-    const pty = cotalPty(["ps", "--space", space], { cwd: callerRoot, env });
-    let raw = "", code: number | undefined;
-    pty.onData((data) => { raw += data; });
-    pty.onExit((e) => { code = e.exitCode; });
-    for (let i = 0; i < 600 && code === undefined && !(keys !== undefined && /Which one should run this/.test(clean(raw))); i++) await sleep(100);
-    if (keys !== undefined && code === undefined) pty.write(keys);
-    for (let i = 0; i < 600 && code === undefined; i++) await sleep(100);
-    if (code === undefined) pty.kill();
-    return { code, out: clean(raw) };
-  };
-  const picked = await onTerminal("\r");
-  ok("J: on a terminal, an unpinned ps asks which of the live managers should run it, marking the most recent",
-    /\d+ of your managers are live\. Which one should run this\?/.test(picked.out) && picked.out.includes("most recent"), picked.out.slice(-1200));
-  ok("J: Enter runs it on the most recently started manager, and a receipt names that manager",
-    picked.code === 0 && new RegExp(`Manager chosen[\\s\\S]*Instance:\\s+${twoIds[1]}`).test(picked.out) && /No managed agents/.test(picked.out), picked);
-  const scripted = await onTerminal(undefined, { COTAL_NO_PROMPT: "1" });
-  ok("J: with COTAL_NO_PROMPT=1 the terminal is not asked and the refusal stands",
-    scripted.code === 2 && /of your managers are live, and this command needs exactly one of them/.test(scripted.out) && !/Which one should run this/.test(scripted.out), scripted.out.slice(-900));
-  // A bare spawn on a terminal asks where the agent runs, with this terminal first and the default,
-  // and Ctrl-C does nothing. A launch pinned to a manager whose presence reports this host asks no
-  // folder; it is refused for the persona its catalog lacks, so nothing is launched.
-  const spawnOnTerminal = async (args: string[], until: RegExp, keys: string | undefined) => {
-    const env = Object.fromEntries(Object.entries({ ...childHomeEnv(callerHome), TERM: "xterm-256color" }).filter((entry): entry is [string, string] => entry[1] !== undefined));
     const pty = cotalPty(args, { cwd: callerRoot, env });
     let raw = "", code: number | undefined;
     pty.onData((data) => { raw += data; });
     pty.onExit((e) => { code = e.exitCode; });
-    for (let i = 0; i < 600 && code === undefined && !until.test(clean(raw)); i++) await sleep(100);
+    for (let i = 0; i < 600 && code === undefined && until !== undefined && !until.test(clean(raw)); i++) await sleep(100);
     if (keys !== undefined && code === undefined) pty.write(keys);
     for (let i = 0; i < 600 && code === undefined; i++) await sleep(100);
     if (code === undefined) pty.kill();
     return { code, out: clean(raw) };
   };
-  const place = await spawnOnTerminal(["spawn", "--space", space], /Where should the agent run/, "\x03");
+  // An unpinned ps asks nothing. It reads each live manager the exchange names, each through its own
+  // one-instance view, and lists each under its own header with the host its presence reports. The
+  // earlier cells' registrations do not answer, so they are listed as silent and only they make the
+  // read partial.
+  const psJson = await caller("ps", "--space", space, "--json");
+  let psDoc: { target?: { scope?: string }; result?: { managers?: { instanceId: string; state: string; reportedHost?: string }[] } } | undefined;
+  try { psDoc = JSON.parse(psJson.out); } catch { /* the cell below reports the output */ }
+  const answers = new Map((psDoc?.result?.managers ?? []).map((m) => [m.instanceId, m]));
+  const others = [...answers.keys()].filter((id) => !twoIds.includes(id));
+  ok("J: an unpinned ps --json with several live managers reads each of them, with the host its presence reports",
+    twoIds.length === 2 && twoIds.every((id) => answers.get(id)?.state === "answered" && answers.get(id)?.reportedHost === hostname()) && psDoc?.target?.scope === "your-managers", { twoIds, code: psJson.code, out: psJson.out.slice(-1500), err: psJson.err.slice(-900) });
+  ok("J: a registration that does not answer is listed as silent, and only that makes the read partial",
+    others.every((id) => answers.get(id)?.state === "silent") && psJson.code === (others.length ? 4 : 0), { code: psJson.code, others: others.map((id) => answers.get(id)) });
+  const ps = await caller("ps", "--space", space);
+  ok("J: the human ps lists each manager under its own header, and no refusal",
+    ps.code === psJson.code && twoIds.every((id) => ps.out.includes(`manager ${id} · reports host ${hostname()}`)) && !/PERMISSION_DENIED|Which one/.test(ps.out + ps.err), { code: ps.code, out: ps.out.slice(-1500), err: ps.err.slice(-900) });
+  const psTerminal = await inTerminal(["ps", "--space", space], undefined, undefined);
+  ok("J: on a terminal an unpinned ps asks nothing and lists each manager",
+    psTerminal.code === psJson.code && !/Which one should run this/.test(psTerminal.out) && twoIds.every((id) => psTerminal.out.includes(`manager ${id}`)), psTerminal.out.slice(-1500));
+  const pinned = await caller("ps", "--space", space, "--on", "j-one");
+  ok("J: ps --on <name> is answered by the manager started with that name", pinned.code === 0, pinned);
+  const who = await caller("who", "--all", "--space", space);
+  ok("J: who --all shows that manager by its name, partial only for a registration that does not answer",
+    who.code === (others.length ? 4 : 0) && who.out.includes("manager j-one"), { code: who.code, out: who.out.slice(-900), err: who.err.slice(-600) });
+
+  // A launch needs one manager, so a detached spawn with no `--on` refuses among several live ones.
+  // The refusal lists each by name with the host its presence reports, and its Next runs the caller's
+  // own command again with `--on` for each. On a terminal it asks instead, most recent first.
+  const launch = await caller("spawn", "idle", "-d", "--space", space);
+  ok("J: an unpinned detached spawn with several live managers refuses as PERMISSION_DENIED, exit 2",
+    launch.code === 2 && /Code:\s+PERMISSION_DENIED/.test(launch.err) && /\d+ of your managers are live/.test(launch.err), launch);
+  const rows = new Map([...(launch.err.split("Live managers")[1] ?? "").matchAll(/^\s+(\S+)\s+([a-z0-9]{26,32})\s+(\S+)\s/gm)].map((m) => [m[2]!, { name: m[1]!, host: m[3]! }]));
+  ok("J: the refusal lists each of its live managers on its own row, by name, with the host its presence reports",
+    twoIds.every((id) => rows.get(id)?.host === hostname()) && rows.get(twoIds[0]!)?.name === "j-one" && rows.get(twoIds[1]!)?.name === `${hostname()}/pty`, { twoIds, err: launch.err.slice(-900) });
+  ok("J: its Next reruns the caller's own spawn on each of them, by the name or <host>/<runtime> that picks it, otherwise by instance id",
+    launch.err.includes(`spawn idle -d --space ${space} --on j-one`) && [`${hostname()}/pty`, twoIds[1]].some((selector) => launch.err.includes(`spawn idle -d --space ${space} --on ${selector}`)), launch.err.slice(-600));
+  const scripted = await inTerminal(["spawn", "idle", "-d", "--space", space], undefined, undefined, { COTAL_NO_PROMPT: "1" });
+  ok("J: with COTAL_NO_PROMPT=1 the terminal is not asked and the refusal stands",
+    scripted.code === 2 && /of your managers are live, and this command needs exactly one of them/.test(scripted.out) && !/Which one should run this/.test(scripted.out), scripted.out.slice(-900));
+
+  // On a terminal the same launch asks which manager, and Enter takes the most recently started.
+  const picked = await inTerminal(["spawn", "idle", "-d", "--space", space], /Which one should run this/, "\r");
+  ok("J: on a terminal, an unpinned detached spawn asks which of the live managers should run it, marking the most recent",
+    /\d+ of your managers are live\. Which one should run this\?/.test(picked.out) && picked.out.includes("most recent"), picked.out.slice(-1200));
+  ok("J: Enter runs it on the most recently started manager, and a receipt names that manager",
+    new RegExp(`Manager chosen[\\s\\S]*Instance:\\s+${twoIds[1]}`).test(picked.out), picked);
+  // A bare spawn on a terminal asks where the agent runs, with this terminal first and the default,
+  // and Ctrl-C does nothing. A launch pinned to a manager whose presence reports this host asks no
+  // folder; it is refused for the persona its catalog lacks, so nothing is launched.
+  const place = await inTerminal(["spawn", "--space", space], /Where should the agent run/, "\x03");
   ok("J: on a terminal, a bare spawn asks where the agent runs, with this terminal first and the managers after it",
     /\d+ of your managers are live\. Where should the agent run\?/.test(place.out) && /This terminal[\s\S]*j-one/.test(place.out), place.out.slice(-1200));
   ok("J: cancelling that question does nothing and exits 0", place.code === 0 && place.out.includes("nothing was done - no place was chosen"), place);
-  const local = await spawnOnTerminal(["spawn", "-d", "--space", space, "--on", "j-one"], /Request refused|Which folder/, undefined);
+  const local = await inTerminal(["spawn", "-d", "--space", space, "--on", "j-one"], /Request refused|Which folder/, undefined);
   ok("J: a launch pinned to a manager whose presence reports this host asks no folder",
     local.code === 2 && /Managed launch/.test(local.out) && !/Which folder/.test(local.out), local.out.slice(-900));
 
@@ -619,6 +638,11 @@ try {
   ok("K: and no secret staged for that agent remains under the manager's root", staged.length === 0, staged);
   for (const child of twoManagers) child.kill("SIGTERM");
   await Promise.all(twoManagers.map((child) => awaitExit(child, 15_000)));
+  // With none of the owner's managers answering, ps lists the agents presence reports, read-only, and
+  // exits 0. The registrations the exchange still counts do not answer.
+  const none = await caller("ps", "--space", space);
+  ok("J: with no manager answering, ps lists the agents presence shows, says so, and exits 0",
+    none.code === 0 && /No manager answered/.test(none.out) && none.out.includes("cotal supervise") && !/PERMISSION_DENIED|Authorization Violation|timeout/i.test(none.out + none.err), none);
 
   await teardown();
   const remainingArtifacts = [brokerStore, root, home, xdg, ...releaseRoots].filter((path) => existsSync(path)).length;

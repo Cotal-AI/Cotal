@@ -1,8 +1,11 @@
-import { DEV_OWNER, assertLifecycleToken, dialerFor, mintCreds, newIdentity, openSessionRail, peerLabel, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
+import { DEV_OWNER, assertLifecycleToken, dialerFor, mintCreds, newIdentity, openSessionRail, peerLabel, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type Presence, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
 import {
   CommandFailure,
   ConnectRefusal,
   divergentCwdAnchor,
+  findMesh,
+  isCommandFailure,
+  isConnectRefusal,
   isWorkspaceTargetError,
   jsonFlag,
   oneLine,
@@ -29,8 +32,9 @@ import * as prompts from "../lib/prompts.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { c, presenceFacts } from "../ui.js";
-import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, refuseUnregisteredManager, unansweredDescribeRefusal, resolveControlTarget, onInstance, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin } from "../lib/control.js";
-import { managerPin } from "../lib/manager-choice.js";
+import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, refuseUnregisteredManager, unansweredDescribeRefusal, resolveControlTarget, onInstance, onFlag, type ManagerReply, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin } from "../lib/control.js";
+import { managerPin, noLiveManager, rosterOf, severalLive, type ManagerCandidate } from "../lib/manager-choice.js";
+import { openTransient } from "../lib/transient.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
@@ -648,7 +652,17 @@ export async function ps(args: ParsedArgs): Promise<void> {
     throw new CommandFailure("refused", "USAGE_INVALID", "--slots and --wide are mutually exclusive: --slots lists durable static slot rows, --wide the live seat facts", { remedy: "pass one of them" });
   const command = slots ? "slots" : "ps";
   const kind = slots ? "slots" : "seats";
-  const census = await readSeats(v, command, await managerPin(v, "cotal ps"));
+  const on = await managerPin(v, "cotal ps");
+  let census: SeatCensus;
+  try {
+    census = await readSeats(v, command, on);
+  } catch (e) {
+    // On a user-auth mesh where no manager of yours answers, or none is live, your agents are read
+    // from presence instead. Static slots are a manager's own records, so `--slots` keeps the refusal.
+    const failure = isCommandFailure(e) ? e : isConnectRefusal(e) ? e.failure() : undefined;
+    if (slots || on !== undefined || !failure || !(failure instanceof NoManagerAnswered || noLiveManager(failure))) throw e;
+    return psFromPresence(v, presentation);
+  }
   const view = (result: PsResult): Report => psView(result, wide, census.rowsOf, !result.items.length && noApplicationHere(), census.mode);
   writeResult(
     presentation,
@@ -662,6 +676,45 @@ export async function ps(args: ParsedArgs): Promise<void> {
     },
     view,
   );
+}
+
+/** `ps` on a user-auth mesh where no manager of yours answers: your agents as presence shows them,
+ *  read-only. A manager stops, attaches and types into them, so the Next starts one. */
+async function psFromPresence(v: FlagValues<typeof psFlags>, presentation: ReturnType<typeof presentationOf>): Promise<void> {
+  const { ep, space, connection } = await openTransient(v, "ps", { throwOnRefusal: true, report: () => {} });
+  let roster: Presence[];
+  try { roster = ep.getRoster(); } finally { await ep.stop().catch(() => {}); }
+  recordOperationSpace(space);
+  const owner = connection.epCaller?.owner;
+  const meta = (p: Presence, key: string): string | null => typeof p.card.meta?.[key] === "string" && p.card.meta[key] ? p.card.meta[key] as string : null;
+  const items = roster
+    .filter((p) => p.card.kind !== "endpoint" && (owner === undefined || p.card.id.startsWith(`${owner}.`)))
+    .map((p) => ({ name: p.card.name, id: p.card.id, status: p.status, activity: p.activity ?? null, harness: meta(p, "connector"), host: meta(p, "host") }))
+    .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  const next = startManagerNext(connection.root, space, v.space !== undefined);
+  writeResult(presentation, { command: "ps", target: { space, scope: "presence" }, result: { kind: "presence", items, managers: [] } }, (result): Report => ({ sections: [
+    { title: "Agents on the mesh", blocks: [
+      { kind: "lines", lines: [{ text: "No manager answered, so these are your agents as presence shows them. Stopping or attaching one needs a manager.", tone: "waiting" }] },
+      result.items.length
+        ? { kind: "table", columns: [{ key: "name", label: "Agent" }, { key: "status", label: "State" }, { key: "harness", label: "Application" }, { key: "host", label: "Host" }],
+            rows: result.items.map((row) => ({ name: row.name, status: row.status, harness: row.harness ?? "-", host: row.host ?? "-" })) }
+        : { kind: "lines", lines: [{ text: "No agents of yours are on the mesh.", tone: "hint" }] },
+    ] },
+    { title: "Next", blocks: [{ kind: "commands", items: [next] }] },
+  ] }));
+}
+
+/** What gets `space` a manager that answers. On the root whose `cotal up` started the space, as `ps`
+ *  refuses for a static stack: waiting for the `up` that is starting its manager, ending the stack
+ *  manager that does not answer, or bare `cotal up`. Anywhere else, `cotal supervise`. */
+function startManagerNext(root: string | undefined, space: string, named: boolean): { command: string; description: string } {
+  const at = named ? ` --space ${space}` : "";
+  if (root !== undefined && stackManagerStarting(root, space)) return { command: `cotal ps${at}`, description: "List again once cotal up reports the manager started" };
+  const pid = root === undefined ? undefined : runningStackManagerPid(root, space);
+  if (pid !== undefined) return { command: `kill -KILL ${pid}`, description: "End the stack manager that does not answer; bare cotal up then starts it again" };
+  const entry = findMesh(space);
+  if (root !== undefined && (stackManagerAbsent(root, space) || (entry?.origin === "up" && entry.root === root))) return { command: "cotal up", description: "Start the stack's manager" };
+  return { command: `cotal supervise${at}`, description: "Start a manager for this space" };
 }
 
 /** A named-agent detail uses the same authorized census as ps, never an invented process view. */
@@ -742,12 +795,23 @@ export interface SeatCensus {
 }
 
 /** Read the managed seats the way `ps` lists them: from one manager when `on` pins it or the caller
- *  holds a user bearer, otherwise from every registered instance. Throws the classified failure when
- *  the target cannot be resolved or no manager can be asked. */
+ *  holds a user bearer, from each of your live managers when a user-auth mesh has several and none
+ *  is named, otherwise from every registered instance. Throws the classified failure when the target
+ *  cannot be resolved or no manager can be asked, and {@link NoManagerAnswered} when none of your
+ *  managers answered on a user-auth mesh. */
 export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: string | undefined): Promise<SeatCensus> {
   // `--on` must reach the MINT, not just the invoke: the one-shot instrument is issued during
   // this resolve, and a credential cannot gain an instance rail after it is minted.
-  const t = await resolveControlTarget(v, "control-caller-privileged", on, { onRefusal: "throw" });
+  let t: Awaited<ReturnType<typeof resolveControlTarget>>;
+  try {
+    t = await resolveControlTarget(v, "control-caller-privileged", on, { onRefusal: "throw" });
+  } catch (e) {
+    // The exchange refused to pick one of your several live managers and named them, so each is
+    // read. That is the whole set it counts, not a fallback after a failed read.
+    const managers = on === undefined ? await refusedManagers(e, v) : undefined;
+    if (!managers) throw e;
+    return readYourManagers(v, command, managers);
+  }
   recordOperationSpace(t.space);
   // A pin the registry does not list is refused at once, as spawn refuses it; only a registered manager is waited on.
   if (on !== undefined && !t.auth.bearer) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
@@ -766,18 +830,9 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
     const target = { space: t.space, scope: "manager", managerInstanceId: instanceId ?? null };
     const reply = await askManager(t.space, t.server, command, undefined, t.auth, "owner", undefined, on !== undefined ? { instanceId: on } : {});
     if (!reply.ok) {
-      const failure = readFailure(reply, target);
-      // A user-mode manager view that the broker refused before any responder saw the call. The
-      // broker does not say which row was missing, so this names the documented requirement for
-      // these reads instead of asserting a cause, and keeps the native refusal as it was. A refusal
-      // the manager answered, such as a retiring caller's, already states its own reason.
-      if (t.auth.bearer && failure.code === "PERMISSION_DENIED" && reply.nativeOutcome === "not-executed" && !reply.answered)
-        throw new CommandFailure(failure.outcome, failure.code, failure.message, {
-          target,
-          remedy: `on a user-auth mesh, the manager's \`${command}\` read is documented to need the \`admin\` scope on your actor grant; \`spawn\` alone does not carry it. Check what your row holds with \`cotal auth grants\``,
-          ...(failure.native ? { native: failure.native } : {}),
-        });
-      throw failure;
+      // The one manager the exchange picked for you did not answer, so none of yours did.
+      if (t.auth.bearer && on === undefined && reply.unanswered) throw new NoManagerAnswered(readFailure(reply, target));
+      throw managerReadFailure(reply, target, command, t.auth.bearer !== undefined);
     }
     const items = (reply.data as unknown[]) ?? [];
     return { target, items, managers: instanceId ? [{ instanceId, state: "answered" }] : [], warnings: [], rowsOf: new Map() };
@@ -803,8 +858,15 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
   if (!scatter.ok && silentPid !== undefined)
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `this space's stack manager (pid ${silentPid}) is running but did not answer, so no agents were listed`, { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: `if it stays unresponsive, end that process with kill -KILL ${silentPid}; then bare cotal up starts the manager again` });
   if (!scatter.ok) throw readFailure(scatter, target);
+  return seatCensus(target, scatter.instances, command, t.mode);
+}
+
+/** A census from the slots of a scatter: each answered instance's rows as it returned them, every
+ *  instance's answer, a warning for each one that did not return its rows, and the partial notice
+ *  when any did not. */
+function seatCensus(target: SeatCensus["target"], slots: readonly ScatterInstanceReply[], command: "ps" | "slots", mode: string | undefined): SeatCensus {
   // Stable ordering: reachable instances first, then by instance id.
-  const instances = [...scatter.instances].sort(
+  const instances = [...slots].sort(
     (a, b) => Number(b.reachable) - Number(a.reachable) || a.instanceId.localeCompare(b.instanceId),
   );
   const items: unknown[] = [];
@@ -813,7 +875,7 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
   const mismatches: string[] = [];
   const rowsOf = new Map<string, unknown[]>();
   for (const inst of instances) {
-    const at = { space: t.space, managerInstanceId: inst.instanceId };
+    const at = { space: target.space, managerInstanceId: inst.instanceId };
     if (!inst.reachable) {
       // Not "unreachable": the client holds no network verdict. What it knows is which question it
       // asked about this instance and what came back, which is narrower and more useful. The four
@@ -850,7 +912,78 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
           : "retry, or read one manager with `cotal ps --on <instance>`",
       }
     : undefined;
-  return { target, items, managers, warnings, rowsOf, mode: t.mode, ...(partial ? { partial } : {}) };
+  return { target, items, managers, warnings, rowsOf, mode, ...(partial ? { partial } : {}) };
+}
+
+/** A manager read that failed, as the classified failure. For a user-mode manager view that the
+ *  broker refused before any responder saw the call, the broker does not say which row was missing,
+ *  so this names the documented requirement for these reads instead of asserting a cause, and keeps
+ *  the native refusal as it was. A refusal the manager answered, such as a retiring caller's, already
+ *  states its own reason. */
+function managerReadFailure(reply: ManagerReply, target: Record<string, unknown>, command: string, userAuth: boolean): CommandFailure {
+  const failure = readFailure(reply, target);
+  if (!userAuth || failure.code !== "PERMISSION_DENIED" || reply.nativeOutcome !== "not-executed" || reply.answered) return failure;
+  return new CommandFailure(failure.outcome, failure.code, failure.message, {
+    target,
+    remedy: `on a user-auth mesh, the manager's \`${command}\` read is documented to need the \`admin\` scope on your actor grant; \`spawn\` alone does not carry it. Check what your row holds with \`cotal auth grants\``,
+    ...(failure.native ? { native: failure.native } : {}),
+  });
+}
+
+/** None of your managers answered a read on a user-auth mesh: the one the exchange picked, or each of
+ *  the several it counts live. `ps` then lists your agents as presence shows them. */
+export class NoManagerAnswered extends CommandFailure {
+  constructor(cause: CommandFailure) {
+    super("refused", "TARGET_UNAVAILABLE", "none of your managers in this space answered", {
+      target: cause.target,
+      remedy: "start a manager for this space with cotal supervise",
+      ...(cause.native ? { native: cause.native } : {}),
+      cause,
+    });
+  }
+}
+
+/** The managers an unpinned manager selection refused to choose between, when `e` is that refusal. */
+async function refusedManagers(e: unknown, v: ConnectFlags): Promise<ManagerCandidate[] | undefined> {
+  const failure = isCommandFailure(e) ? e : isConnectRefusal(e) ? e.failure() : undefined;
+  return failure ? severalLive(failure, () => rosterOf(v)) : undefined;
+}
+
+/** Each of `managers` asked `command` through its own one-instance view, one after another, as the
+ *  slots of a class scatter: the rows of one that answered, the refusal of one that answered with an
+ *  error, and as silent one that did not answer or whose view was refused. The host its presence
+ *  reports is kept for display. A read the broker refused before any manager saw it is thrown,
+ *  because every view of the same grant is refused the same way. */
+async function askYourManagers(v: ConnectFlags, command: "ps" | "slots", managers: readonly ManagerCandidate[]): Promise<{ space?: string; mode?: string; instances: ScatterInstanceReply[] }> {
+  let space: string | undefined, mode: string | undefined;
+  const instances: ScatterInstanceReply[] = [];
+  for (const { instanceId, host } of managers) {
+    let t: Awaited<ReturnType<typeof resolveControlTarget>>;
+    try {
+      t = await resolveControlTarget(v, "control-caller-privileged", instanceId, { onRefusal: "throw" });
+    } catch (e) {
+      if (!isCommandFailure(e) && !isConnectRefusal(e)) throw e;
+      instances.push({ instanceId, reachable: false });
+      continue;
+    }
+    space ??= t.space;
+    mode ??= t.mode;
+    const reply = await askManager(t.space, t.server, command, undefined, t.auth, "owner", undefined, { instanceId });
+    if (reply.ok) instances.push({ instanceId, reachable: true, data: reply.data, ...(host ? { reportedHost: host } : {}) });
+    else if (reply.answered) instances.push({ instanceId, reachable: true, error: reply.error ?? "the manager refused the read", ...(reply.code ? { code: reply.code } : {}) });
+    else if (reply.unanswered) instances.push({ instanceId, reachable: false });
+    else throw managerReadFailure(reply, { space: t.space, scope: "manager", managerInstanceId: instanceId }, command, true);
+  }
+  return { ...(space !== undefined ? { space } : {}), ...(mode !== undefined ? { mode } : {}), instances };
+}
+
+/** {@link readSeats} on a user-auth mesh with several of your managers live and none named. */
+async function readYourManagers(v: ConnectFlags, command: "ps" | "slots", managers: readonly ManagerCandidate[]): Promise<SeatCensus> {
+  const { space, mode, instances } = await askYourManagers(v, command, managers);
+  if (space !== undefined) recordOperationSpace(space);
+  if (space === undefined || !instances.some((i) => i.reachable))
+    throw new NoManagerAnswered(new CommandFailure("refused", "TARGET_UNAVAILABLE", `none of the ${managers.length} managers the exchange counts live answered`, { target: { space: space ?? null, scope: "your-managers" } }));
+  return seatCensus({ space, scope: "your-managers" }, instances, command, mode);
 }
 
 /** Re-establishment backoff, in order; the last value is the cap and repeats forever. A seat that

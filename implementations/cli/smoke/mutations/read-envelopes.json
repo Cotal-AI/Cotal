@@ -49,8 +49,8 @@
     {
       "name": "ps exits on a connect refusal instead of throwing it",
       "file": "implementations/cli/src/commands/agents.ts",
-      "find": "  const t = await resolveControlTarget(v, \"control-caller-privileged\", on, { onRefusal: \"throw\" });",
-      "replace": "  const t = await resolveControlTarget(v, \"control-caller-privileged\", on);",
+      "find": "    t = await resolveControlTarget(v, \"control-caller-privileged\", on, { onRefusal: \"throw\" });",
+      "replace": "    t = await resolveControlTarget(v, \"control-caller-privileged\", on);",
       "expectRed": "ps --json with no mesh is one TARGET_NOT_FOUND envelope, exit 2",
       "cell": "ps --json with no mesh is one TARGET_NOT_FOUND envelope, exit 2",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -58,8 +58,8 @@
     {
       "name": "ps validates --on by exiting",
       "file": "implementations/cli/src/commands/agents.ts",
-      "find": "readSeats(v, command, await managerPin(v, \"cotal ps\"))",
-      "replace": "readSeats(v, command, await managerPin(v, \"cotal ps\").catch(() => process.exit(1)))",
+      "find": "  const on = await managerPin(v, \"cotal ps\");",
+      "replace": "  const on = await managerPin(v, \"cotal ps\").catch(() => process.exit(1));",
       "expectRed": "ps an empty --on is one USAGE_INVALID envelope, exit 1, before any mesh is resolved",
       "cell": "ps an empty --on is one USAGE_INVALID envelope, exit 1, before any mesh is resolved",
       "afterRestore": "pnpm --filter cotal-ai... build"

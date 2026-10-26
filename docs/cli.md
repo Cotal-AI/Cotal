@@ -3771,8 +3771,9 @@ for one started without a name.
 
 `managed` says whether a manager runs the seat. With no manager on the roster it is `false` for
 every row and no manager is asked. Otherwise every registered manager is asked for its seats, and a
-seat is matched on its lifecycle UID. In a user-auth space the manager answers only for the
-caller's own seats, so other seats show `managed: null` with a `MANAGED_SCOPE` warning. An
+seat is matched on its lifecycle UID. In a user-auth space each of your live managers is asked, and
+each answers only for the caller's own seats, so other seats show `managed: null` with a
+`MANAGED_SCOPE` warning. An
 identity the broker does not let ask the managers, such as a user whose grant has no `admin`, sees
 every seat `null` with a `MANAGERS_DENIED` warning. So does a credential passed with `--creds`: it
 carries no caller the managers accept from this command, so they are not asked. These two warnings
@@ -4130,19 +4131,22 @@ status reply. The host shows as `· reports host <host>` after the id, or as a `
 under `Manager`. It is that manager's own claim, and `ps` does not check it. Two managers on one
 host report the same name, and `--on` never takes it on a static or open mesh. These asks share one
 2-second limit. A manager that has not answered by then is listed without a host, and the read
-stays as complete as the census found it. `ps` does not show a manager's name.
+stays as complete as the census found it. `ps` does not show a manager's name. On a user-auth mesh
+with several of your managers live, the host is the one each manager's presence reports.
 
 The human `ps` report is presentation text and is not a stable parsing target. Scripts use `--json`,
 one envelope whose `result` is:
 
 | Field | Meaning |
 |---|---|
-| `kind` | `seats`, or `slots` with `--slots` |
+| `kind` | `seats`, `slots` with `--slots`, or `presence` when no manager of yours answered on a user-auth mesh |
 | `items` | Each seat (or slot) row as its manager returned it, unchanged |
 | `managers` | Each manager instance asked: `{instanceId, state}`, where `state` is `answered`, `silent` (registered, no answer within the deadline, with the `liveness` this command established), `refused` (with its `error` and `code`) or `contract-mismatch`. An `answered` manager that gave a host name in time also has `reportedHost` |
 
-`target` is `{space, scope: "all-managers"}` for the class scatter, and
-`{space, scope: "manager", managerInstanceId}` for `--on` or a user-auth mesh. A manager that is not
+`target` is `{space, scope: "all-managers"}` for the class scatter,
+`{space, scope: "your-managers"}` for a user-auth mesh with several of your managers live,
+`{space, scope: "presence"}` when none of them answered, and
+`{space, scope: "manager", managerInstanceId}` for `--on` or a user-auth mesh with one. A manager that is not
 `answered` makes the read `partial` (exit 4), with a `MANAGER_SILENT`, `MANAGER_REFUSED` or
 `MANAGER_CONTRACT_MISMATCH` warning naming it. A `silent` manager whose `liveness` is `gone` is a
 registration its host never removed. On an auth space its row names `cotal endpoint deregister
@@ -4260,8 +4264,9 @@ instance id otherwise. The code stays
 `PERMISSION_DENIED` and the exit 2. `who --all` lists the same managers at any time. By default, when every manager you registered has
 exited, the refusal says to start one with [`supervise`](#supervise); the command is not sent to the local manager.
 
-On a terminal, `spawn -d`, `ps`, `stop`, `attach`, `input`, `models`, `persona` and `status` ask
-instead of refusing. Every manager the exchange counts is one of yours in the space the command
+`ps` and `status <agent>` do not refuse: they read each of your live managers, as the user-auth
+mode below describes. On a terminal, `spawn -d`, `stop`, `attach`, `input`, `models` and `persona`
+ask instead of refusing. Every manager the exchange counts is one of yours in the space the command
 resolved, from the folder or `--space`, so the question lists those managers with the most recently
 started first, and that one is the default. The command then runs on the manager you pick, as the
 Next would run it. The question and a `Manager chosen` receipt, with the manager, its instance id
@@ -4296,12 +4301,18 @@ that it is not a report that the seat is gone. Read it as unknown and retry with
 still running. A single manager cannot tell "hosted elsewhere" from "does not exist": it answers
 `not-found` for both, which is why the search asks all of them and why an incomplete search
 concludes nothing.
-- **User-auth mesh.** `cotal ps` reports what **one** authorized manager knows about your agents
-  (an instance-addressed read against its in-memory roster, owner-filtered). It does **not** report
-  other manager instances or establish whether they are reachable. Completeness across a
-  multi-manager user-auth space is not claimed.
-  A manager that does not answer fails the command outright (`TARGET_UNAVAILABLE`, exit 2), rather
-  than printing an empty list that could be read as "no agents". Your ledger row needs the `admin` scope to
+- **User-auth mesh.** With one of your managers live, `cotal ps` reports what that manager knows
+  about your agents (an instance-addressed read against its in-memory roster, owner-filtered). With
+  several live, `ps` asks nothing: it reads each manager the exchange counts live through its own
+  one-instance view, one after another, and lists each under its own `manager <id>` header, as the
+  class scatter does. A manager that does not answer is listed as silent and makes the read
+  `partial` (exit 4). Managers of other owners are not asked, so completeness across the space is
+  not claimed. `status <agent>` and `who` read your managers the same way.
+  When none of your managers answers, or none is live, `ps` lists your agents as presence shows
+  them, read-only, with their state, application and host, and exits 0. It says that no manager
+  answered, and its Next starts one: bare `cotal up` on the root of the space's own stack, as for a
+  static stack above, and `cotal supervise` anywhere else. `--on` and `--slots` keep refusing
+  `TARGET_UNAVAILABLE`, exit 2, when their manager does not answer. Your ledger row needs the `admin` scope to
   reach `ps` at all; `spawn` alone is refused by the broker (the ep tier boundary). A broker-refused
   read keeps that refusal and adds the documented scope requirement and `cotal auth grants` remedy.
   The broker does not identify whether the missing permission is for the route, command or target;

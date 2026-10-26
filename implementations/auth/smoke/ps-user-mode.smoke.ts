@@ -3,21 +3,15 @@
  *
  *   1. up --user-auth + device login + admin grant (the arm-2 shape that may reach ps)
  *   2. cotal ps exits 0 (the product claim C authorises)
- *   3. manager killed — ps exits non-zero, never a bare empty list
+ *   3. manager killed — ps says no manager answered and lists your agents from presence, exit 0,
+ *      never a bare empty list
  *
  * Spawn-only refusal is asserted in user-spawn.smoke.ts B1e (ungated); not duplicated here.
  * Gated: a RED here is C or the user-mode connect path broken.
  *
- * STEP 3 IS DELIBERATELY STRICTER THAN ITS SIBLING, and the difference is not an oversight.
- * `ps-operator-path.smoke.ts` accepts exit 0 for a dead manager as long as the output says
- * "unreachable"; this suite demands a non-zero exit. Different rails, different observable
- * vocabularies: a class scatter can attribute a specific instance and label it unreachable, while
- * `ep.one` has no such label to print — it either got its one answer or it did not. Asking the
- * user-mode path for the operator path's wording would be asking for a sentence it cannot say.
- *
- * The strictness only ever errs toward RED, and only if user-mode ps deliberately moves to a
- * label-and-exit-0 shape. That is a product decision to be made on its own evidence; a red here
- * demanding a human look at it is then the correct behaviour, not a defect in this file.
+ * STEP 3 follows the product decision that a user-auth `ps` with no manager answering is not an
+ * error: it says so, lists the agents presence shows, read-only, and names how to start the manager.
+ * What it must never be is a bare empty list, which reads as "no agents".
  */
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
@@ -638,7 +632,7 @@ try {
   check("under --json that refusal is one DEPENDENCY_UNAVAILABLE envelope",
     expiredJson.status === 2 && /"code":"DEPENDENCY_UNAVAILABLE"/.test(expiredJson.out) && /"outcome":"refused"/.test(expiredJson.out), expiredJson.out.slice(-400));
 
-  console.log("4) kill manager — ps must fail loud, not empty-success");
+  console.log("4) kill manager — ps says no manager answered, never a bare empty list");
   // The mesh can only root somewhere else if a `.cotal` appeared above the scratch mid-run; witness
   // it here so that shows up as itself and not as the cell below.
   assertScratchHeld(root, "fixture root");
@@ -652,12 +646,9 @@ try {
   console.log(`   dead exit=${psDead.status}\n` + psDead.out.split("\n").map((l) => `   | ${l}`).join("\n").slice(0, 500));
   // Fatal BEFORE grading, not a cell alongside it.
   mustHaveRun(psDead, "the dead-manager `cotal ps`");
-  const emptySuccess =
-    psDead.status === 0 &&
-    !/unreachable/i.test(psDead.out) &&
-    (/\(no managed agents\)/.test(psDead.out) || psDead.out.trim() === "");
-  check("dead manager: non-zero or explicit failure, never bare empty success",
-    psDead.status !== 0 && !emptySuccess, { status: psDead.status, out: psDead.out.slice(-200) });
+  check("dead manager: ps says no manager answered and lists presence, exit 0, never a bare empty list",
+    psDead.status === 0 && /No manager answered/.test(psDead.out) && !/No managed agents/.test(psDead.out), { status: psDead.status, out: psDead.out.slice(-400) });
+  check("dead manager: its Next is the stack's own bare cotal up", /^\s+cotal up\s/m.test(psDead.out), psDead.out.slice(-400));
 
   console.log(`\nPS USER MODE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
 } catch (e) {

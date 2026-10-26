@@ -12,13 +12,14 @@ import { Kvm } from "@nats-io/kv";
 import { createSpaceAuth, epAuthBucket, isReachable, mintCreds, mintLifecycleUid, newIdentity,
   permissionsFor, recordSpecKey, recordStatusKey, recordsBucket, RECORD_KINDS, remoteManagerActors,
   serverConfig, setupSpaceStreams, standaloneConnectOpts } from "@cotal-ai/core";
-import { authDir, assertUserAuthInfo, isConnectRefusal, loadManagerInstanceIdentity, recordMesh, resolveControlTarget, saveSpaceAuth, spaceSegment,
+import { authDir, assertUserAuthInfo, isCommandFailure, isConnectRefusal, loadManagerInstanceIdentity, recordMesh, resolveControlTarget, saveSpaceAuth, spaceSegment,
   userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { cotalAuthProvider, deriveOwnerForIdpSubject, grantActor, grantManagedActor, loadAuthServiceInfo,
   loadOwnerSecret, newActorToken, runAuthService, saveIdpSession } from "@cotal-ai/auth";
 import { Manager } from "@cotal-ai/manager";
 import { formatSentinel, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { askManager } from "../../cli/src/lib/control.js";
+import { noLiveManager } from "../../cli/src/lib/manager-choice.js";
 import { pickFreePort } from "./_free-port.js";
 
 if (process.argv[2] === "auth-service") {
@@ -125,6 +126,10 @@ try {
   stage = "baseline";
   const legacy = await exchange();
   check("absent option preserves dead-remote refusal", legacy.status === 401 && /none live/.test(legacy.body.error ?? ""));
+  // `ps` reads presence on this refusal, so the CLI must still recognise the exchange's words for it.
+  const noneLive = await resolveControlTarget({ space }, "control-caller-privileged", undefined, { onRefusal: "throw" }).then(() => undefined, (e: unknown) => e);
+  const noneLiveFailure = isConnectRefusal(noneLive) ? noneLive.failure() : isCommandFailure(noneLive) ? noneLive : undefined;
+  check("the CLI reads that refusal as no live manager of yours", noneLiveFailure !== undefined && noLiveManager(noneLiveFailure));
   const pinned = await exchange(local.instanceId);
   check("explicit genuine local pin still succeeds", pinned.status === 200 && pinned.instance === local.instanceId);
   const nativePs = async (bearer: string) => {
@@ -237,7 +242,7 @@ try {
   await new Promise<void>(r => idp.close(() => r()));
   check("owned child PID/start/cwd generations exited", children.every(x => { try { const now = identity(x.pid); return now.start !== x.start || now.cwd !== x.cwd; } catch (error) { return ["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? ""); } }));
   check("owned broker and listener ports closed", (await Promise.all([port, issuerPort, exchangePort].filter(Boolean).map(gone))).every(Boolean));
-  if (checks.every(x => x.ok)) assert.equal(checks.length, 32, "all named selection, scope and cleanup cells ran");
+  if (checks.every(x => x.ok)) assert.equal(checks.length, 33, "all named selection, scope and cleanup cells ran");
   if (managerClosed && checks.slice(-2).every(x => x.ok) && existsSync(root)) rmSync(root, { recursive: true });
   const failed = checks.filter(x => !x.ok).length;
   process.stdout.write(JSON.stringify({ checks: checks.length, passed: checks.length - failed, failed }) + "\n");
