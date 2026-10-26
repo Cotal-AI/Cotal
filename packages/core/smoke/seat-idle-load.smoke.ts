@@ -274,7 +274,7 @@ const CONCURRENCY = num("concurrency", "8");
 const SETTLE_S = num("settle", "20");
 const SECONDS = num("seconds", "60");
 const HEARTBEAT = flag("heartbeat-ms", ""); // empty: the endpoint's own default
-const WATCH_PRESENCE = flag("watch-presence", "true") !== "false";
+const WATCH_PRESENCE = flag("watch-presence", "false") === "true";
 const WATCH_CHANNELS = flag("watch-channels", "true") !== "false";
 const RAM = argv.includes("--ram");
 const NATS_BIN = process.env.NATS_SERVER_BIN ?? "nats-server";
