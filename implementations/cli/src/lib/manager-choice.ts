@@ -1,6 +1,6 @@
 import type { Readable, Writable } from "node:stream";
 import { BASELINE_LIFECYCLE_ENDPOINT, invokeCommand, remoteManagerActors, resolveService, type Presence } from "@cotal-ai/core";
-import { CommandFailure, DEFAULT_MANAGER_NAME, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, terminalWidth } from "@cotal-ai/workspace";
+import { CommandFailure, DEFAULT_MANAGER_NAME, codeSpan, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, terminalWidth } from "@cotal-ai/workspace";
 import { askManager, liveManagerIds, onInstance, onInstanceId, reportedManagerHost, resolveControlTarget, type ControlAuth } from "./control.js";
 import { openEndpointConnection } from "./endpoint-client.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -246,7 +246,7 @@ function choose(chosen: ManagerCandidate, managers: readonly ManagerCandidate[],
   pick = { manager: chosen, selector: selectorFor(chosen, managers) };
   process.stderr.write(`${renderReport({ sections: [{ title: "Manager chosen", blocks: [
     { kind: "fields", rows: [["Manager", chosen.name ?? chosen.instanceId], ["Instance", chosen.instanceId], ["Host", chosen.host ?? "not reported (started by an older cotal)"]] },
-    { kind: "lines", lines: [{ text: `To choose it without this question: ${rerunOn(argv, pick.selector)}`, tone: "hint" }] },
+    { kind: "lines", lines: [{ text: `To choose it without this question: ${codeSpan(rerunOn(argv, pick.selector))}`, tone: "hint" }] },
   ] }] }, "rich", terminalWidth(process.stderr))}\n`);
   return chosen;
 }
@@ -400,13 +400,13 @@ export async function askManagerFolder(
     typed = answer ?? "";
     const checked = typed ? await check(typed) : undefined;
     if (checked && "refusal" in checked) {
-      prompts.log.warn(`the manager on ${host} cannot use it: ${checked.refusal}`, { output });
+      prompts.log.warn(prompts.logLines(`the manager on ${host} cannot use it: ${checked.refusal}`, output), { output });
       continue;
     }
     const folder = checked?.cwd;
     output.write(`${renderReport({ sections: [{ title: "Folder chosen", blocks: [
       { kind: "fields", rows: [["Folder", folder ?? MANAGER_WORKSPACE], ["Host", selection.manager.host ?? "not reported"]] },
-      ...(folder === undefined ? [] : [{ kind: "lines" as const, lines: [{ text: `To choose it without this question: ${rerunWithCwd(argv, folder, selection.selector)}`, tone: "hint" as const }] }]),
+      ...(folder === undefined ? [] : [{ kind: "lines" as const, lines: [{ text: `To choose it without this question: ${codeSpan(rerunWithCwd(argv, folder, selection.selector))}`, tone: "hint" as const }] }]),
     ] }] }, "rich", terminalWidth(output as { isTTY?: boolean; columns?: number }))}\n`);
     return folder;
   }
