@@ -233,6 +233,9 @@ try {
     tools.map((t) => ({ name: t.name, annotations: t.annotations })),
   );
   check("connect and disconnect are offered", names.has("cotal_connect") && names.has("cotal_disconnect"));
+  check("a hosted gateway does not offer native space selection", tools.find((t) => t.name === "cotal_connect")?.inputSchema.properties?.space === undefined);
+  const hostedSpace = await call(a, "cotal_connect", { name: "space_probe", space: "another_mesh" }).catch(() => ({ isError: true, text: "schema refusal" }));
+  check("a hosted caller cannot retarget its signed-in space", hostedSpace.isError && opened.length === 0, hostedSpace);
   check("seat authority is not offered", !["cotal_spawn", "cotal_despawn", "cotal_persona", "cotal_run", "cotal_reconnect", "cotal_yield"].some((n) => names.has(n)));
   const routed = tools.filter((t) => t.name !== "cotal_connect");
   check(

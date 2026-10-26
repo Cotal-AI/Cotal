@@ -81,9 +81,10 @@ export async function appIdentity(args: ParsedArgs): Promise<void> {
 /** The mesh the conversation joins, resolved as a bare `cotal spawn` resolves it: `--space`, then
  *  the `cotal use` mesh, then the working directory's project, then the only one running. Without
  *  `--space` it first sweeps the registry, so a recorded mesh whose broker is down does not count
- *  as running. */
+ *  as running. A present `--space` that is blank is not a default: it names no mesh. */
 function target(space: string | undefined): Promise<MeshTarget> {
-  return resolveTargetOrThrow(space ? { space } : {});
+  if (space !== undefined && !space.trim()) throw new Error("--space needs a space name; a blank name selects no mesh");
+  return resolveTargetOrThrow(space !== undefined ? { space } : {});
 }
 
 async function provision(values: FlagValues<typeof appIdentityFlags>): Promise<AppIdentityReply> {

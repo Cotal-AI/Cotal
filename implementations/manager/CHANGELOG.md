@@ -1,5 +1,15 @@
 # @cotal-ai/manager
 
+## 0.103.4
+
+### Patch Changes
+
+- 0199170: Report unconfirmed orphan retirement by lifecycle without claiming a despawn, a held name or a same-name spawn retry. Preserve the existing diagnostics when that lifecycle's hold still stands.
+- Updated dependencies [e6af269]
+  - @cotal-ai/workspace@0.103.4
+  - @cotal-ai/core@0.103.4
+  - @cotal-ai/seat@0.103.4
+
 ## 0.103.3
 
 ### Patch Changes

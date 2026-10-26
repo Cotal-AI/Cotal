@@ -5009,8 +5009,18 @@ export class Manager {
       if (held) held.lastError = `the retirement was NOT requested: this manager has no serve identity yet, so it cannot speak as the registered serving instance. The despawn stopped "${a.name}" and the name stays held. NEXT: let the manager finish registering, then re-attempt the same-name spawn to re-drive the teardown.`;
       return;
     }
-    const uncertain = (why: string) =>
-      `the despawn stopped "${a.name}", but the retirement's completion could NOT be confirmed (${why}). The name stays held - not failed, not done - and a same-name spawn re-drives the same teardown; the auth service also finishes any started retirement on its next boot. NEXT: if the auth rail stays unreachable, recover the stack (\`cotal supervise\`), then re-attempt the same-name spawn.`;
+    const reportFailure = (why: string, unconfirmed = false): void => {
+      // An orphan rollback owns no name hold. Re-read after the rail awaits so a successor's
+      // hold never receives the predecessor's error or supplies its despawn/retry claims.
+      const current = this.retiring.get(a.name);
+      const held = current?.target.lifecycleUid === a.lifecycleUid ? current : undefined;
+      const copy = !unconfirmed ? why : held
+        ? `the despawn stopped "${a.name}", but the retirement's completion could NOT be confirmed (${why}). The name stays held - not failed, not done - and a same-name spawn re-drives the same teardown; the auth service also finishes any started retirement on its next boot. NEXT: if the auth rail stays unreachable, recover the stack (\`cotal supervise\`), then re-attempt the same-name spawn.`
+        : `the retirement's completion could NOT be confirmed (${why}). No hold reserves the name for this lifecycle.`;
+      if (held) held.lastError = copy;
+      const prefix = held ? `despawn ${a.name}` : `retire ${a.name}: lifecycle ${a.lifecycleUid}`;
+      console.error(`${prefix}: ${copy}`);
+    };
     try {
       // The caller triple and the TARGET are both grant-pinned now (#350): the `handle` target
       // rides the subject, so this ephemeral credential can ask to retire exactly this
@@ -5063,27 +5073,20 @@ export class Manager {
         if (r.ok) {
           this.confirmRetirement(a);
         } else if (r.error?.code === "expired") {
-          // A stale-epoch refusal: the responder answered, but at another epoch than this resolve
-          // bound (a plane restart mid-despawn landed on the new epoch) - the retry copy, never a
-          // hard despawn failure line, since a same-name spawn (or the auth service's own boot
-          // resume) re-drives the same teardown.
-          const copy = uncertain(r.error.message);
-          if (held) held.lastError = copy;
-          console.error(`despawn ${a.name}: ${copy}`);
+          // A stale-epoch refusal cannot confirm retirement. The retry copy follows the
+          // current lifecycle's hold, which an orphan rollback does not create.
+          reportFailure(r.error.message, true);
         } else {
           // The rail's refusal is already the operator copy (lease-loss/stale/foreign-op faces,
           // full-no-op statements included) - surface it INTACT, never flattened.
           const message = r.error?.message ?? "the auth service refused the retirement without a reason";
-          if (held) held.lastError = message;
-          console.error(`despawn ${a.name}: ${message}`);
+          reportFailure(message);
         }
       } finally {
         await nc.close().catch(() => {});
       }
     } catch (e) {
-      const copy = uncertain(rejectionText(e));
-      if (held) held.lastError = copy;
-      console.error(`despawn ${a.name}: ${copy}`);
+      reportFailure(rejectionText(e), true);
     }
   }
 

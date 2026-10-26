@@ -1,5 +1,24 @@
 # cotal-ai
 
+## 0.103.4
+
+### Patch Changes
+
+- c05e0e3: Let personal Claude Code conversations choose a registered mesh with `cotal_connect`'s optional `space` argument, without changing project configuration. Keep hosted grants space-bound, require disconnect before replacing a live connection, and retire a previous space's pending identity before requesting another.
+- Updated dependencies [e6af269]
+- Updated dependencies [0199170]
+- Updated dependencies [e6af269]
+- Updated dependencies [c05e0e3]
+  - @cotal-ai/cli@0.103.4
+  - @cotal-ai/manager@0.103.4
+  - @cotal-ai/workspace@0.103.4
+  - @cotal-ai/connector-core@0.103.4
+  - @cotal-ai/auth@0.103.4
+  - @cotal-ai/delivery@0.103.4
+  - @cotal-ai/runtime@0.103.4
+  - @cotal-ai/core@0.103.4
+  - @cotal-ai/seat@0.103.4
+
 ## 0.103.3
 
 ### Patch Changes
