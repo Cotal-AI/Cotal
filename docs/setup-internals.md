@@ -321,6 +321,8 @@ atomic hard-link publish, PID + process-start liveness, bounded wait, dead-owner
 whole reconcile and every `cotal ext` mutation; a live reconcile is waited on, not mistaken for a crash.
 On Linux, inspection reads the owner's process state and start token from one `/proc/<pid>/stat`
 snapshot. An unavailable identity leaves a live PID active with a bounded wait; it does not invoke `ps`.
+Each inspection reads the owner record once and keeps its verdict with the observed inode. Reclaim
+checks both again under its sentinel before removing that generation.
 A crash **cursor** is journaled before each connector mutation and cleared only at the final commit, so
 a SIGKILL mid-run is detected on the next boot (fail loud → `ext seed --repair` re-installs the
 interrupted connector before it clears the evidence). Seed children are authenticated (they carry the
