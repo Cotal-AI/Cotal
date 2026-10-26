@@ -338,7 +338,10 @@ reply proves process cleanup or that another host stopped. Revoked runs remain r
 `run show`, but cannot receive new drive or answering authority. The endpoint's `run-status`
 reply carries `revoked: { by, reason }` independently of the recorded run state. A running record
 with that marker is not proof of a stopped holder. `revocationUnreadable` means the marker could
-not be checked; do not read that as unrevoked or resumable. A released record without a marker can
+not be checked; do not read that as unrevoked or resumable. The same reply carries the run's
+`programHash`, the value its `run-ps` row carries, read from that run's records alone, so checking one
+run's program identity needs no full run list. It is absent when the run has no recorded program,
+and `programUnreadable` replaces it when the program record cannot be read. A released record without a marker can
 be resumed under its original admission; a released record with a marker cannot. The human
 `run show` view displays admission revocation separately from recorded state. An unreadable marker
 produces a partial result with exit 4, in human and JSON output, as it does in the run list.
