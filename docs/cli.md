@@ -634,6 +634,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing. Without `-f` it refuses `USAGE_INVALID` before anything starts or is written. A preview from an unprepared folder under the machine home reads that folder's empty policy rather than inheriting the home store; applying there requires `space create` first. |
 | `--runtime <name>` | `pty` (or the manifest's, with `-f`) | Agent runtime for the mesh manager (`pty` built in; others are installed extensions, explicit-only). Resolved + probed before the broker starts; an uninstalled/unreachable runtime fails loud. Without `-f`, that refusal is `DEPENDENCY_UNAVAILABLE` (exit 2) before anything is written, and for a known runtime the remedy names the `cotal ext add <pkg>` to run. With `-f`, overrides the manifest's runtime |
 | `--max-sessions <n>` | 64 | Live-session ceiling for the mesh manager. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. Recorded on the mesh, and for a controller stack in its saved manager definition, and reused by every later manager launch, so a bare `up` after `down`, a repair or a resume does not silently drop back to 64. A running manager cannot change it: `cotal down` first, then `cotal up --max-sessions <n>` |
+| `--seat-cap <n\|unlimited>` | `unlimited` | Live seats this root's manager admits for one owner. Recorded in this root and read by the manager at each start, so a bare `up` after `down`, a repair or a resume keeps it. A running manager cannot change it: `cotal down` first, then `cotal up --seat-cap <n>`. Cannot be combined with `--restore`, `--file` or `--no-manager` |
 | `--manager-name <name>` | none | Name this root's manager. `who --all` and the manager choice show the name, and on a user-auth mesh `--on` takes it. It is recorded in the root, so a restart or repair keeps it. A running manager keeps the name it started with, so a different name is refused until `cotal down`. The name is one line of at most 128 characters with no `/` or `\`, and it may not look like an instance id (26 to 32 lowercase letters and digits). Cannot be combined with `--no-manager`, `--file` or `--restore` |
 | `--no-manager` | off | Broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager. A refresh under the flag of a mesh whose manager is live refuses rather than keeping or stopping it. For a controller stack, use `cotal service stop stack-manager --space <s> --yes` first. A legacy stack has no command that stops only its manager: `cotal down` stops the whole stack, then `cotal up --no-manager --space <s>` starts it broker-only. Cannot be combined with `--runtime`, `--max-sessions`, or an agent-declaring manifest |
 | `--rotate-sys` | off | Rotate the space's system account and re-mint its two `$SYS` creds. Needs a stopped mesh; refused with `--open`. A controller stack takes it once every member is stopped, and a first start on a prepared root refuses it |
@@ -3668,6 +3669,23 @@ fails, and a managed seat frees its slot only when it stops. The refusal counts 
 only while it holds a slot, so a launch whose seat already ended is not counted. The roster counts
 presence, which also includes peers no manager owns, so its total is a different number.
 
+Those 50 slots bound the host. A manager started with `--seat-cap <n>` also bounds how many live
+seats it holds for ONE owner, so a manager shared by several owners cannot be filled by the first
+one to ask. The default is `unlimited`, which leaves the 50 slots as the only bound. The cap counts
+the seats that manager supervises for the owner the launch belongs to, plus its launches that have
+not started a process yet; it does not count cooling slots, or any other owner's seats. A launch
+over the cap is refused before a name is reserved or anything is minted, and the seats already
+running are untouched:
+
+```text
+owner <owner> holds 4 of the 4 seats manager <id> admits per owner; stop one of that owner's seats, or ask the operator who runs this manager for a higher seat cap
+```
+
+The CLI exits 2 with `CONFLICT` and a remedy naming `cotal stop --name <name>` and `--seat-cap`.
+Under `--json`, `error.cause.code` is `resource-exhausted` and `error.cause.detail` carries
+`owner`, `seats` and `cap`, so a caller can decide without reading the sentence. `cotal_spawn`
+shows the agent the same sentence. Stopping one of that owner's seats admits the next launch.
+
 Run from a managed seat's own shell on a static or open mesh, a managed `cotal spawn` (with `-d`
 or `--on`) launches as that seat when it targets the seat's own space. A bare `spawn` there runs in
 that shell, as anywhere else. Without `--space` it picks that target the way the
@@ -4643,6 +4661,7 @@ registered at, so a start from any folder is the same manager, with the same ins
 | `--console-port <n>` | none | Protocol-console port |
 | `--console-host <host>` | loopback | Bind host for the console endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets the browser console reach this manager from another machine. `cotal attach` does not use this face: it redeems a mesh session grant over the broker |
 | `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair keeps it |
+| `--seat-cap <n\|unlimited>` | `unlimited` | Live seats this manager admits for one owner. `unlimited` leaves the manager's own 50-slot ceiling as the only bound, so a mesh with one owner keeps every slot. Set a number where several owners share a manager, and one owner cannot take the host. A launch over it is refused before anything is reserved, naming the owner's count, the cap and the remedy. It is recorded in this root, so a later start without the flag keeps it |
 | `--name <name>` | none | The manager's name. Its presence card carries it, `who --all` and the manager choice show it, and `--on` takes it on a user-auth mesh. It is recorded in this root, so a later start without `--name` keeps it. Without a name, the manager shows as `<host>/<runtime>` |
 | `--roster <file>` | none | Declarative roster to boot at startup. See [Roster files](define-a-team.md#roster-files) |
 | `--launch <spec>` | none | Resolved manifest launch spec (from `up -f` / `team boot`) |

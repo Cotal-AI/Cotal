@@ -315,6 +315,43 @@ export function lifecycleBlockedFrom(source: unknown): EpLifecycleBlockedDetail 
   return detailsOf(source)?.find((d): d is EpLifecycleBlockedDetail => d.kind === EP_LIFECYCLE_BLOCKED);
 }
 
+/**
+ * `details[].kind` for a launch refused because the owner already holds every seat this manager
+ * admits for one owner. The message states the refusal; these are the facts behind it, which a
+ * caller needs to render a remedy or decide on its own: how many seats the owner holds right now,
+ * and the ceiling it met. Without the marker those numbers die at the reply's string boundary and
+ * a structured caller can only re-read prose.
+ */
+export const EP_SEAT_CAP = "ai.cotal.ep.seat-cap";
+
+/** What a manager counted when it refused a launch: the owner, its live seats on that manager, and
+ *  the per-owner ceiling that manager enforces. `seats` is what the manager supervises for that
+ *  owner at the moment of the refusal, so `seats >= cap` holds wherever the marker is produced. */
+export interface SeatCapFacts {
+  owner: string;
+  seats: number;
+  cap: number;
+}
+
+export interface EpSeatCapDetail extends EpErrorDetail, SeatCapFacts {
+  kind: typeof EP_SEAT_CAP;
+}
+
+export function seatCapDetail(facts: SeatCapFacts): EpSeatCapDetail {
+  return { kind: EP_SEAT_CAP, owner: facts.owner, seats: facts.seats, cap: facts.cap };
+}
+
+/** Throw-site constructor: `resource-exhausted`, the seat-cap marker, and `not-executed`, because
+ *  the ceiling is consulted before the launch reserves a name or mints anything. */
+export function seatCapRefused(message: string, facts: SeatCapFacts): EpEnvelopeError {
+  return new EpEnvelopeError("resource-exhausted", message, [seatCapDetail(facts)], "not-executed");
+}
+
+/** The seat-cap marker on a thrown envelope, an `EpError`, or a ControlReply-shaped object. */
+export function seatCapFrom(source: unknown): EpSeatCapDetail | undefined {
+  return detailsOf(source)?.find((d): d is EpSeatCapDetail => d.kind === EP_SEAT_CAP);
+}
+
 /** Append a stable `[lifecycle …]` suffix so a string-only caller still carries the facts. */
 export function renderLifecycleBlocked(message: string, source: unknown): string {
   const d = lifecycleBlockedFrom(source);

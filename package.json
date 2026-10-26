@@ -320,6 +320,7 @@
     "smoke:control-transport-crash-cleanup": "tsx bin/smoke/fixtures/control-transport-crash-cleanup.mts",
     "smoke:session-ledger-family": "tsx implementations/manager/smoke/session-ledger-family.smoke.ts",
     "smoke:session-cap": "tsx implementations/manager/smoke/session-cap.smoke.ts",
+    "smoke:seat-cap": "tsx implementations/manager/smoke/seat-cap.smoke.ts",
     "smoke:renewal-terminal-race": "tsx implementations/manager/smoke/renewal-terminal-race.smoke.ts",
     "smoke:lease-renew": "tsx implementations/manager/smoke/lease-renew-no-answer.smoke.ts",
     "smoke:sibling-mint-fence": "tsx implementations/manager/smoke/sibling-mint-fence.smoke.ts",

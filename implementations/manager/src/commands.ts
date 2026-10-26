@@ -26,11 +26,11 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  assertManagerName, authDir, canonicalLocalProcessPath, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, publishManagerSpareCapability, readManagerName, reclaimDeadPreUpgradeRecord, recordManagerName, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
+  assertManagerName, authDir, canonicalLocalProcessPath, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, parseSeatCapFlag, publishManagerSpareCapability, readManagerName, readManagerSeatCap, reclaimDeadPreUpgradeRecord, recordManagerName, recordManagerSeatCap, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
   c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, untilInputEnds,
   brokerAddressForDisplay, brokerUrlCredentialRefusal, brokerUrlHasUserinfo, CommandFailure, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
-  ConfirmationRequired, findMesh, folderSpace, getCurrent, type MeshEntry,
+  ConfirmationRequired, findMesh, folderSpace, getCurrent, type MeshEntry, type SeatCap,
 } from "@cotal-ai/workspace";
 import { Manager, rejectionText } from "./manager.js";
 import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, managerServiceStopRequested, type ManagerServiceChild } from "./service-child.js";
@@ -549,6 +549,18 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
+  // The per-owner seat ceiling, resolved like the name below: the flag wins, else what this root
+  // recorded at an earlier start, else the shipped default. Reading the record is what makes a
+  // bare restart, a repair, or a `spawn -f` that relaunches the manager keep a cap the operator
+  // set, instead of silently reopening the host to one owner.
+  let seatCap: SeatCap | undefined;
+  try {
+    seatCap = parseSeatCapFlag("--seat-cap", v["seat-cap"]) ?? readManagerSeatCap({ root: managerRoot, space });
+  } catch (e) {
+    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
+    console.error(c.red(`✗ ${rejectionText(e)}`));
+    process.exit(1);
+  }
   // A name given here is recorded for this root's manager once it is up, so a restart keeps it.
   // Without one, the name an earlier start recorded applies.
   let name: string | undefined;
@@ -577,6 +589,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       wsPort,
       attachHost,
       maxSessions,
+      ...(seatCap !== undefined ? { seatCap } : {}),
       ...(name !== undefined ? { name } : {}),
       installedExtensions: true,
       resumeAttemptId: v["resume-attempt"],
@@ -673,6 +686,10 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   if (v.name !== undefined && name !== undefined) {
     try { if (readManagerName(managerContext) !== name) recordManagerName(managerContext, name); }
     catch (e) { console.error(c.yellow(`! the manager name was not recorded, so the next start does not keep it: ${(e as Error).message}`)); }
+  }
+  if (v["seat-cap"] !== undefined && seatCap !== undefined) {
+    try { if (readManagerSeatCap(managerContext) !== seatCap) recordManagerSeatCap(managerContext, seatCap); }
+    catch (e) { console.error(c.yellow(`! the manager seat cap was not recorded, so the next start does not keep it: ${(e as Error).message}`)); }
   }
   if (!service) console.log(
     c.green("✓ manager up") +
@@ -886,6 +903,7 @@ const managerCommands: Command[] = [
       { name: "console-host", type: "string", description: "explicit native console bind host" },
       { name: "ws-port", type: "string", description: "the prepared broker websocket port" },
       { name: "max-sessions", type: "string", description: "explicit positive native session ceiling" },
+      { name: "seat-cap", type: "string", description: "explicit native per-owner seat ceiling, or unlimited" },
       { name: "launch", type: "string", description: "private native launch spec for this selected space" },
       { name: "launch-sha256", type: "string", description: "full digest pinned by the saved service definition" },
       { name: "roster", type: "string", description: "absolute roster file whose agents start at launch" },
@@ -912,7 +930,7 @@ const managerCommands: Command[] = [
     hidden: true,
     group: "Manager",
     summary:
-      "run a manager - [--runtime <name>] (default pty; extension runtimes are explicit-only) [--space <s>] [--server <url>] [--console-port <n>] [--max-sessions <n>] [--name <name>] [--roster <file>] [--launch <spec>] [--resume-attempt <id>]",
+      "run a manager - [--runtime <name>] (default pty; extension runtimes are explicit-only) [--space <s>] [--server <url>] [--console-port <n>] [--max-sessions <n>] [--seat-cap <n|unlimited>] [--name <name>] [--roster <file>] [--launch <spec>] [--resume-attempt <id>]",
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space to supervise (default: env COTAL_SPACE, else this folder's space, else the one `cotal use` selected)" },
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh; env COTAL_SERVER when unset)" },
@@ -922,6 +940,7 @@ const managerCommands: Command[] = [
       { name: "console-host", type: "string", value: "<host>", description: "bind host for the console endpoint (default: loopback)" },
       { name: "ws-port", type: "string", value: "<n>", description: "broker ws listener port for the console session client" },
       { name: "max-sessions", type: "string", value: "<n>", description: "live-session ceiling (default 64; one session per console pane, so size for agents × panes)" },
+      { name: "seat-cap", type: "string", value: "<n|unlimited>", description: "live seats this manager admits per owner (default unlimited); kept for later starts in this root" },
       { name: "name", type: "string", value: "<name>", description: "the name who --all, the manager choice and --on use for this manager; kept for later starts in this root" },
       { name: "roster", type: "string", value: "<file>", description: "declarative roster to boot at startup" },
       { name: "launch", type: "string", value: "<spec>", description: "resolved mesh-manifest launch spec (cotal up -f / spawn -f)" },

@@ -34,6 +34,7 @@ import {
   runAgentBearer,
   CotalEndpoint,
   GOAL_ENTITY_RUNNING_DETAIL_KIND,
+  seatCapFrom,
   acquireLock,
   inspectLock,
   localConsumerClaimPath,
@@ -726,6 +727,16 @@ export async function launchManagedPersona(
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `manager instance ${on} did not answer, so the launch was not sent and nothing was launched`, { target, native: { code: reply.code, ...(reply.error ? { detail: oneLine(reply.error) } : {}) }, remedy: "cotal ps shows which managers answer; rerun the spawn on one of them with --on <instance>" });
     // So does an unpinned one: no manager answered, and the launch was never published.
     if (on === undefined && describeUnanswered(reply)) throw unansweredClassLaunch(t, { target, native: { code: reply.code, ...(reply.error ? { detail: oneLine(reply.error) } : {}) } });
+    // The owner's seat cap. Keyed on the marker, not the code: the numbers are what a script acts
+    // on, and the remedy is the operator's knob, neither of which a code alone can carry. It is a
+    // CONFLICT with the seats this owner already holds, the same shape as a pinned-name collision:
+    // nothing here is unreachable or unauthorized, and freeing one seat admits the launch.
+    const cap = seatCapFrom(reply);
+    if (cap !== undefined)
+      throw new CommandFailure("refused", "CONFLICT", reply.error ? oneLine(reply.error) : "the manager refused the launch: this owner is at its seat cap", {
+        target, native: { code: reply.code, outcome: reply.nativeOutcome, detail: { owner: cap.owner, seats: cap.seats, cap: cap.cap } },
+        remedy: `nothing was launched; stop one of this owner's seats with cotal stop --name <name>, or ask the operator who runs that manager to restart it with a higher --seat-cap (it admits ${cap.cap} per owner)`,
+      });
     // A manager without the connector: it is added where that manager runs, not on this machine.
     const absent = reply.nativeOutcome === "not-executed" && reply.error !== undefined ? hintedConnector(reply.error) : undefined;
     if (absent !== undefined) {
