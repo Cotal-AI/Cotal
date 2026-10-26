@@ -1,7 +1,7 @@
 # Design note: the upgrade-section gate
 
-**Status:** historical design, alongside `docs/UPGRADING.md` (see #1578). The Attribution workflow and its required-status rule were removed on 22 October 2026. The script remains available for manual checks.
-**Scope:** one CI check, `scripts/upgrade-section-gate.mjs`, run as `smoke:upgrade-section`.
+**Status:** historical design, alongside `docs/UPGRADING.md` (see #1578). The Attribution workflow and its required-status rule were removed on 22 October 2026, so no workflow grades pull requests with this gate. The script remains available for manual checks (`pnpm upgrade-section-gate --base <ref>` or `--range <a>..<b>`), and CI still runs its self-test as `smoke:upgrade-section`. Sections below that describe the gate running in the `attribution` job, blocking a merge, and the cell and mutant counts describe the design as it shipped in September 2026. With no workflow hosting it, the self-test now expects 90 cells before its sentinel, and the mutation fixture holds 28 mutants.
+**Scope:** one script, `scripts/upgrade-section-gate.mjs`, whose self-test runs as `smoke:upgrade-section`.
 
 ## The problem it addresses
 

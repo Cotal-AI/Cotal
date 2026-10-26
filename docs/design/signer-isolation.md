@@ -6,6 +6,17 @@
 
 Review gate: this doc is approved before any code lands.
 
+**Status on 26 October 2026.** Not implemented. No signer process, `sign-user` or `mac` socket,
+`cotal-seat-launch` helper or `adopterUid` exists, and `runCustodian` still `chmod`s its socket
+`0600` and requires a peer uid equal to its own. Two things in the tree have moved since
+`c5c462886`. The CLI redesign in 0.91.0 renamed `cotal mint` to `cotal auth mint`, and
+`cotal mint --signer` became `cotal auth signer --out <file>`, which still exports the stripped
+signer with its signing seed. Since 0.59.0 the default `pty` runtime spawns seats in-process on
+every platform, and on Linux `CustodialPtyRuntime` only adopts and reaps seats an earlier manager
+left under a custodian, so section 2.1's "production Linux goes through `CustodialPtyRuntime.spawn`"
+and the `defaultCustodyRoot` name (now `custodyRoot`) describe the tree at the citation head. The
+seat-launch design below still assumes a custodial spawn path.
+
 **Citations.** Every `file` / function below was read in this worktree at `c5c462886`. No seed, key,
 or credential value is reproduced.
 

@@ -4,6 +4,15 @@ Status: proposed implementation contract. This document extends the generic envi
 manager can drive a local microVM provider or a hosted provider over HTTPS. It does not put provider
 API concepts on the Cotal wire.
 
+On main the contract types landed in 0.51.0 as `packages/core/src/environment.ts` (#1723), exported
+from `@cotal-ai/core`. They are declarations only. The pending local contract this page extends
+(`EnvironmentDriver`, `ManagerEnvironments` and `implementations/manager/src/environment-operations.ts`)
+is not on main, no manager code consumes the hosted types, and the `environment-host-facts` command
+of section 8 is not in the manager contract. The only other use on main is the
+`HostedEnvironmentReference` type in the auth service's environment-manager admission index.
+`execBearerPreflight`, named below, was replaced in 0.70.1 by `runAgentBearer` in
+`packages/core/src/auth-provider.ts`.
+
 ## Current contract
 
 The pending environment contract defines `EnvironmentDriver.describeImage`, `preflight`, `reserve`,

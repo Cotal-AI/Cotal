@@ -1,7 +1,10 @@
 # U2 — resolver-inventory CAS
 
-**Status:** design, Phase 1. Nothing here is implemented. Review gate: this doc is approved
-before any code lands.
+**Status:** design, Phase 1. Nothing here is implemented: on 26 October 2026 the tree has no
+`cotal_broker_inventory` bucket, writer lease or `cotal broker reconcile` verb. Review gate: this doc
+is approved before any code lands. The `file:line` citations are to the commits named under
+Citations and have moved since. The renderer's note quoted in section 1.1 now sits near
+`provision.ts:3130`.
 
 **Revision 2** — folds the `rev_u2doc_glm` adversarial review (2 blockers, approve withheld) in
 full. What moved:
@@ -657,6 +660,10 @@ space is gone from the broker. So before doing anything, `reconcile` prints:
   These records are NOT deleted. Re-add with `cotal space add <name>`.
 Confirm by re-running with --yes, or choose --adopt-disk to keep them.
 ```
+
+The re-add command in that sample is the tenant-add verb of
+[per-space-lifecycle](per-space-lifecycle.md) section 2.1, which is not built. The shipped
+`cotal space add` registers a space that runs elsewhere and does not add a tenant to a broker.
 
 Every evicted space is listed **by name** — never "2 spaces will be affected" — because the operator
 needs to recognise the tenant, and a count is not recognisable. The confirmation (`--yes`

@@ -1,5 +1,21 @@
 # One callout process for every space on a host
 
+Status: implemented in 0.103.0 by #4819. `openCalloutLane` is in
+`implementations/auth/src/callout-lane.ts`, `runCalloutHost` and the manifest parser are in
+`implementations/auth/src/callout-host.ts`, and `cotal auth-service --callout-only --spaces
+<manifest>` is documented under [server daemons](../cli.md#server-daemons). SPEC §10 and Appendix B
+were amended in the same change. `pnpm smoke:callout-multi-tenant:auth` drives two spaces through
+one process on a live broker. The shipped code settles or extends the text below in three places:
+
+- Reconcile also runs when a lane is lost and a fixed 5 seconds after a lane fails to open, and its
+  backstop interval is 60 seconds. A manifest that cannot be read or parsed whole is reported and
+  the live lanes are kept.
+- Decision 1 is settled as one `--server` per host. A manifest entry that is not a space name string
+  is refused with a message to run one host process per broker.
+- The single-space journal line carries `space=<space>`, as decision 4 proposed.
+
+The record below is the design as written before implementation.
+
 A design record, not a description of shipped behavior. Every claim about current behavior names the
 file and the function it was read from. Everything else is proposed. Once this record is approved the
 surface below is frozen and the implementation follows it as written.
