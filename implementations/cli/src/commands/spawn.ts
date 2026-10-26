@@ -743,6 +743,10 @@ export async function launchManagedPersona(
         : missing ? "nothing was launched; create that file on the manager's host, then run the spawn again"
         : "nothing was launched; fix what the manager reported, then run the spawn again" });
     }
+    // A committed `failed` terminal is the manager's answer: the launch ran and failed, as an agent
+    // that exits at once does, and the manager says why.
+    if (reply.code === "failed")
+      throw new CommandFailure("failed", "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager reported that the launch failed", { target, native, remedy: "fix what the manager reported, then run the spawn again" });
     const unknown = reply.nativeOutcome !== "executed" || reply.unanswered;
     throw new CommandFailure(unknown ? "unknown" : "failed", unknown ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager did not confirm launch readiness", { target, native, remedy: "inspect cotal ps and the selected manager before retrying; this launch was not submitted again" });
   }

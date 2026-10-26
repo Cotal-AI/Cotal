@@ -10,6 +10,7 @@
  *     mesh caller rail opens + handshakes over the real broker (item 6 replaced the loopback WS).
  *  D. `COTAL_DEFAULT_PERSONA` supplies the persona for a bare `spawn --detach`.
  *  G. a persona the manager cannot find is refused (exit 2) with the manager's reason, and nothing launches.
+ *  I. an agent that exits at once fails OPERATION_FAILED (exit 5) with the manager's reason.
  *  E. the `start` tombstone errors, naming `spawn --detach` (subprocess through bin/cotal.ts).
  *  F. `--foreground --creds` fails loud (subprocess).
  *  H. a spawn in this terminal refuses a missing persona or connector with its code and Next, before
@@ -119,6 +120,14 @@ const e2eCon: Connector = {
   },
 };
 registry.register(e2eCon);
+// A connector whose child prints one line and exits at once: a launch the manager reports failed.
+const exitCon: Connector = {
+  kind: "connector",
+  name: "e2e-exit",
+  requires: ["node"],
+  buildLaunch: () => ({ command: "node", args: ["-e", "console.log('e2e-exit quits');process.exit(3)"], env: { PATH: process.env.PATH ?? "" } }),
+};
+registry.register(exitCon);
 
 const cmd = (name: string): Command => {
   const c = registry.all<Command>("command").find((c) => c.name === name);
@@ -344,6 +353,24 @@ try {
     ok("...and nothing launched", lastOpts === undefined, lastOpts?.name);
     const psRefused = await capture(() => run("ps", ["--space", SPACE]));
     ok("...and ps is still empty", NO_AGENTS.test(psRefused), psRefused);
+  }
+
+  // I — an agent whose process exits at once is a launch the manager reports failed. The CLI says so
+  // with the manager's reason, OPERATION_FAILED, exit 5, never as an unknown outcome.
+  {
+    let failure: unknown;
+    try {
+      await capture(() => run("spawn", ["poet", "--detach", "--no-events", "--agent", "e2e-exit", "--space", SPACE, "--name", "quitter"]));
+    } catch (e) {
+      failure = e;
+    }
+    const seen = isCommandFailure(failure) ? { outcome: failure.outcome, code: failure.code, message: failure.message, native: failure.native } : String(failure);
+    ok("an agent that exits at once fails OPERATION_FAILED, exit 5",
+      isCommandFailure(failure) && failure.outcome === "failed" && failure.code === "OPERATION_FAILED" && exitCode(failure.outcome, failure.code) === 5, seen);
+    ok("...with the manager's reason and the agent's last output",
+      isCommandFailure(failure) && failure.message.includes("quitter exited on launch") && failure.message.includes("e2e-exit quits"), seen);
+    const psExited = await capture(() => run("ps", ["--space", SPACE]));
+    ok("...and nothing is left running", NO_AGENTS.test(psExited), psExited);
   }
 
   // E/F run TRUE subprocesses through bin/cotal.ts with `extensions: true`, so the sandbox must
