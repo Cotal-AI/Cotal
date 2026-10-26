@@ -33,8 +33,8 @@ The settings live in the OS user's own Cotal directory, `~/.cotal/telemetry.json
 (`%LOCALAPPDATA%\Cotal\telemetry.json` on Windows), mode `0600`: the level, a random install id
 (uuid v4), the file's creation time, and the times of the one-time notice and the last install
 event. `COTAL_HOME` does not move this file, so every workspace one person runs under their own
-account reports the same install id. A file that does not validate refuses every command with
-`SCHEMA_INVALID` and is never replaced.
+account reports the same install id. An invalid file is not replaced: a command that reads
+telemetry settings refuses with `SCHEMA_INVALID`. Environment opt-outs bypass that read.
 
 <a id="never-sent"></a>
 
@@ -68,8 +68,9 @@ change the command's exit code; the exit hook waits at most 1.5 seconds for deli
 refuses with `USAGE_INVALID` before the command runs whenever the level in force sends events, and
 `cotal telemetry` refuses it at every level, since it reports that URL.
 
-The first interactive run at `regular` prints one notice to stderr and records it; a run whose
-stderr is not a terminal (CI logs) sends but prints nothing, so a later terminal run still shows it.
+When the settings file selects `regular`, the first run with a terminal on stderr prints
+one notice and records it. A non-terminal run can send events without printing the notice;
+a later terminal run still shows it. An environment-selected level does not trigger that notice.
 
 ## The `command` event
 
