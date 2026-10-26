@@ -257,9 +257,15 @@ own once a person approves it. To choose a registered mesh for this conversation
 This is the native plugin's `cotal_connect` argument. It takes precedence over the saved selection
 and the project folder, without changing either. `cotal space` lists this machine's registered
 spaces. A blank or unknown space is refused; it is never replaced by another mesh. With no `space`,
-the plugin uses the mesh a bare `cotal spawn` from the session's directory would pick. A saved
-`cotal use` selection wins over the folder's mesh. Do not rename `.cotal` directories or add
+the plugin uses the mesh a bare `cotal spawn` from the session's directory would pick, following
+[the CLI's selection rules](cli.md#selecting-a-space). Do not rename `.cotal` directories or add
 `COTAL_SPACE` to choose a personal conversation's target.
+
+A connected conversation must call `cotal_disconnect` before choosing another space. If its request
+is still awaiting approval, choosing another space first finishes recovery and retirement of the
+previous request, then asks for a new approval. An unconfirmed retirement blocks the switch and keeps
+the old recovery record. A second host cannot open the same native session on another mesh while
+its original consumer is still alive.
 
 The hosted HTTPS connector chooses its space during browser authorization. Its OAuth grant is
 bound to that space; a native `space` argument cannot retarget a hosted grant.
