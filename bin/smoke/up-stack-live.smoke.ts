@@ -191,6 +191,15 @@ try {
     ok(`${label} is up (${file} + alive)`, Number.isFinite(pid) && alive(pid), pid);
   }
   ok("delivery-aware marker is bound to the manager pid", pidOf(recordName(MANAGER_DELIVERY_AWARE_MARKER)) === pidOf(recordName(MANAGER_PIDFILE)));
+  // The launcher starts each daemon under the daemon node flag: it is among the node flags before
+  // the entry script, which is what the daemon's own process.execArgv holds.
+  if (process.platform === "linux") {
+    for (const [file, label] of [[recordName(DELIVERY_PIDFILE), "delivery daemon"], [recordName(MANAGER_PIDFILE), "manager"]] as const) {
+      const argv = readFileSync(`/proc/${pidOf(file)}/cmdline`, "utf8").split("\0").filter(Boolean);
+      const entry = argv.indexOf(CLI);
+      ok(`the ${label} runs under node --max-semi-space-size=1`, entry > 0 && argv.slice(1, entry).includes("--max-semi-space-size=1"), argv);
+    }
+  }
   ok("auth material was provisioned (.cotal/auth)", existsSync(join(root, ".cotal", "auth")));
   const persona = join(root, ".cotal", "agents", "default.md");
   ok("up --detach writes the default persona into the root's catalog and says so", existsSync(persona) && /wrote default persona: .*default\.md/.test(plain(up.stdout)), up.stdout);

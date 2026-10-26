@@ -11,7 +11,7 @@ import {
   deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
 import { DELIVERY_PROCESS, DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type CommandReader, type LivenessProbe, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
-import { selfArgv, displayCmd } from "./self-exec.js";
+import { daemonArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
 import { clearManagerArtifacts, ensureManager, managerHasDeliveryMarker, managerRecordState, stopManager } from "./manager-proc.js";
@@ -165,7 +165,8 @@ export async function stopOldHostingManagerIfPresent(
 
 /** Start the delivery daemon detached (pid in `.cotal/delivery.<spaceKey>.pid`, output to
  *  `.cotal/delivery.<spaceKey>.log`), stopped by `cotal down`. Re-execs this CLI's hidden
- *  `__daemon-deliver`, the `deliver` entry without its deprecation warning; the daemon loads the
+ *  `__daemon-deliver`, the `deliver` entry without its deprecation warning, under the daemon node
+ *  flags ({@link daemonArgv}); the daemon loads the
  *  pre-minted scoped `delivery.creds` (written by {@link ensureDelivery}) — it never sees the signer. */
 export function startDeliveryDetached(o: Opts = {}): number {
   const space = o.space ?? folderSpace();
@@ -173,7 +174,7 @@ export function startDeliveryDetached(o: Opts = {}): number {
   // pre-upgrade record, or leave a delivery log and a leaked descriptor behind. Then, as there,
   // reclaim a provably dead pre-upgrade record before claiming the canonical slot, and refuse rather
   // than start a second daemon beside a live one.
-  const [node, ...self] = selfArgv();
+  const [node, ...self] = daemonArgv();
   reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));
   const fd = openPrivateAppend(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)));
   const args = [

@@ -7,7 +7,7 @@ import { refuseRecordedSupervisor } from "./service-supervision.js";
 import { serviceInstallIntents } from "./service-install-intent.js";
 import { serviceUninstallIntents } from "./service-uninstall-intent.js";
 import { serviceUnitActionStore } from "./service-unit-action.js";
-import { selfArgv } from "./self-exec.js";
+import { daemonArgv } from "./self-exec.js";
 import { loadServiceAdapter, resolveServiceAdapter, sameServiceAdapterPin, type LoadedServiceAdapter, type ResolvedServiceAdapter } from "./service-adapters.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { instanceProjection, observeServiceProcess, processServiceHost, requireProcessIdentity, serviceInstances, serviceInstanceStore, type ServiceCustody, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
@@ -468,7 +468,7 @@ export function prepareProcessService(definition: ServiceDefinitionSnapshot) {
   const adapter = launch.type === "adapter" ? resolveServiceAdapter(launch.adapter, launch.options) : undefined;
   let cliInvocation: string[] | undefined;
   if (adapter?.declaration.requiresCli) {
-    try { cliInvocation = selfArgv(); }
+    try { cliInvocation = daemonArgv(); }
     catch { throw new CommandFailure("refused", "UNSUPPORTED", "this native adapter requires the verified cotal binary entry; an arbitrary library entry was not re-executed"); }
   }
   return { program, adapter, cliInvocation, env: environment(definition.record.value), launcher: requireProcessIdentity(process.pid) };

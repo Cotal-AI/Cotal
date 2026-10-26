@@ -33,6 +33,7 @@ function runsCliEntry(): boolean {
 
 /** This CLI's own invocation as argv: `[node, ...loaderFlags, entryScript]`. The loader flags carry
  *  tsx in dev (so a re-exec can run the `.ts` entry) and are empty in prod (entry = compiled JS).
+ *  A daemon is started from {@link daemonArgv} instead.
  *  Re-execed children (web, manager) and cmux pane commands use this so they never depend on
  *  `cotal` being on PATH — works the same via `npx`, `npm i -g`, and a dev clone.
  *
@@ -57,7 +58,25 @@ export function selfArgv(): string[] {
         "A child spawned from that entry re-runs it with a cotal subcommand appended, which it does not read; if that file reaches this call on load, every child spawns the next one.\n" +
         "NEXT: reach this through the `cotal` binary. A fixture that means to start a real daemon points `process.argv[1]` at the cotal entry first; one that does not must not call ensureManager, ensureDelivery, ensureControlPlane or ensureAuthService.",
     );
-  return [process.execPath, ...process.execArgv, entry];
+  // The daemon heap flags belong to the daemon a launcher started, not to the CLI's invocation, so
+  // a daemon's own re-exec of an ordinary command does not pass them on.
+  return [process.execPath, ...process.execArgv.filter((flag) => !DAEMON_NODE_FLAGS.includes(flag)), entry];
+}
+
+/** The node flags every daemon launcher puts on the daemon it starts: the manager, delivery and
+ *  auth daemons `cotal up` starts, every service the controller launches through this CLI, and the
+ *  unit entry `service install` writes. A 1 MB semi-space caps V8's young generation at 2 MB, where
+ *  Node 24 otherwise lets it grow to 64 MB; a daemon allocates little per second, so it gives up
+ *  little speed for that memory. One value, set here only; the container entry in deploy/docker
+ *  passes the same flag. */
+export const DAEMON_NODE_FLAGS: readonly string[] = ["--max-semi-space-size=1"];
+
+/** {@link selfArgv} for a long-lived daemon: the same verified entry, under {@link DAEMON_NODE_FLAGS}.
+ *  The flags come before any inherited loader flag, so a node flag the operator passed explicitly
+ *  still wins. */
+export function daemonArgv(): string[] {
+  const [node, ...self] = selfArgv();
+  return [node!, ...DAEMON_NODE_FLAGS, ...self];
 }
 
 /** True when launched via `npx` — the package is unpacked under `~/.npm/_npx/<hash>/…`. */

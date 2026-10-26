@@ -33,4 +33,9 @@ for i in $(seq 1 60); do
   sleep 2
 done
 
-exec pnpm exec tsx bin/cotal.ts "$@" --server "$COTAL_SERVERS"
+# --max-semi-space-size=1 is the daemon node flag `cotal up` and the service controller put on every
+# daemon they start (DAEMON_NODE_FLAGS in implementations/cli/src/lib/self-exec.ts): it caps V8's
+# young generation at 2 MB. tsx passes a node flag given before the script to the node it starts.
+# It is not set through NODE_OPTIONS, which every node child would inherit, including the agent
+# processes a manager launches.
+exec pnpm exec tsx --max-semi-space-size=1 bin/cotal.ts "$@" --server "$COTAL_SERVERS"
