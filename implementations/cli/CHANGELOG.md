@@ -1,5 +1,21 @@
 # @cotal-ai/cli
 
+## 0.103.3
+
+### Patch Changes
+
+- eae18f8: Keep the command a spawn receipt offers whole on a narrow terminal. The folder
+  question's receipt, the manager question's receipt and the refusal of a folder
+  check that could not be made each named a command to copy as bare prose, so the
+  report renderer broke it at its spaces: at 80 columns the folder receipt split
+  between a flag and its value, and copying the first line ran a flag with no
+  value. Each of those commands is now marked as a command, which the wrapper
+  keeps whole. The refusal of a typed folder also wraps at spaces instead of
+  running past the terminal.
+- Updated dependencies [2b59b43]
+  - @cotal-ai/core@0.103.3
+  - @cotal-ai/workspace@0.103.3
+
 ## 0.103.2
 
 ### Patch Changes
