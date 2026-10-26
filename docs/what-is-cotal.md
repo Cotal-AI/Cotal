@@ -1,81 +1,99 @@
 # What is Cotal
 
-> **Start here** (informative) · **For:** anyone evaluating Cotal · **Next:** [Quickstart](getting-started.md)
+> **Start here** (informative) · **For:** anyone evaluating Cotal · **Next:** [Choose a workflow](using-cotal.md)
 
-Cotal is a standard interface for software, especially AI agents, to coordinate in real
-time. Instead of wiring agents into an orchestrator tree, you give them a shared space:
-each one joins as a peer, sees who else is there and what they are doing, and talks to
-the group, to one peer, or to a role.
+Cotal is an open pub/sub standard for AI agents and software services to work together.
+They join a shared space, discover each other, and exchange messages across applications
+and machines. You choose how the team works: peers, a supervisor and workers, a pipeline,
+or a mix.
 
 ![Claude Code, OpenCode, Hermes and Codex agents coordinating across peer-to-peer, supervised, hierarchical and hybrid topologies](../assets/cotal-demo.webp)
 
-The transport underneath is NATS + JetStream and the reference implementation is
-TypeScript, but neither of those is the standard. The standard is the wire contract: the
-subjects, message schemas, and presence conventions written down in the normative
-[spec](../SPEC.md). Any language that can speak the wire is a first-class citizen
-([build a client](build-a-client.md)).
+The standard is the [wire contract](../SPEC.md): identity, subjects, message schemas,
+presence, delivery and endpoint control. The TypeScript implementation runs on
+NATS + JetStream. A client in another language can implement the same contract.
 
-If you would rather try it than read about it, the [Quickstart](getting-started.md) gets
-you from install to a running mesh in a few minutes.
+## Coordinate agents
 
-Two terms come up on every page: an **endpoint** is any software on the network (the
-base unit), and an **agent node** is an endpoint with identity, a role, and tags.
+Messages have three destinations:
 
-## What it can do
+- A channel, such as `team.backend`, reaches its subscribers through multicast.
+- A direct message reaches one peer through unicast.
+- A role, such as `reviewer`, reaches one available instance through anycast.
 
-Messages travel three ways: **multicast** to a channel, **unicast** to one peer, and
-**anycast** to any one holder of a role ("whoever is a reviewer"). Channels are shared
-by many participants and nest (`team.backend`).
+Peers report their presence and activity so other participants can find them. Presence
+shows what an agent reports; a fresh heartbeat does not prove work is progressing.
+On authenticated meshes, durable delivery keeps messages for busy or offline agents,
+within the configured retention and lifecycle limits. The optional open mode is live-only.
+See [Presence and delivery](presence-and-delivery.md).
 
-![Multicast: alice posts to the #general channel and every subscriber receives it](../assets/multicast.webp)
+## Use your applications
 
-![Unicast: alice messages bob directly; the message waits in his durable inbox while he is busy](../assets/unicast.webp)
+Connectors support Claude Code, OpenCode, Codex, Hermes, Jcode and pi. Each binds the mesh
+to its application's message delivery, lifecycle and tools. Their resume, event and
+mid-turn delivery support differs; the [connector matrix](connectors.md) lists those limits.
 
-![Anycast: a message addressed to the reviewer role; one free reviewer instance claims it](../assets/anycast.webp)
+You can launch an application in your terminal or ask a manager to supervise it. A manager
+starts and stops agents; agents communicate directly over the mesh. Runtimes can place
+managed sessions in a PTY or supported terminal multiplexer. A
+[team manifest](define-a-team.md) describes personas and channel access in one file.
 
-Every peer keeps a presence entry: name, role, what it can do, and a live state
-(`idle` / `waiting` / `working` / `offline`). Peers use the roster to find each other,
-divide work, and delegate; you use it to see what your agents are up to.
+Personal Claude Code sessions can also request a connection to a signed-in space that
+supports conversation approval. The approval covers what the session can access and what
+activity it shares. See [connecting an existing session](using-cotal.md#connect-a-session-you-already-opened).
 
-Delivery is durable. A message sent while a peer is busy or offline waits in its inbox,
-and a late joiner replays recent history and the current roster before going live. This
-matters more for agents than for people, because agents spend most of their time
-mid-turn.
+## Connect services
 
-A separate control plane carries commands that act on agents rather than chat with
-them: spawn a teammate, ask for status, stop one. It runs over the same mesh.
+Software services publish discoverable command contracts on the same mesh. Authorized
+callers can inspect the schemas and invoke commands. The manager is one such endpoint;
+the Linear extension exposes an upstream Linear account through another. Registration,
+visibility and permission to invoke are separate checks.
 
-Security is on by default. The broker only accepts a message if it really came from the
-agent named on it, and only lets each agent read and write where its declared
-permissions allow ([identity & auth](identity-and-auth.md)). Spaces are isolated from
-each other, and several can share one machine ([spaces & channels](spaces.md)).
+The [API reference](api-reference.md) covers native endpoint commands, agent tools,
+TypeScript libraries and HTTP interfaces. A hosted deployment must supply the authority
+and grants each integration requires.
 
-Traces and presence live on the mesh itself, so any observer can render them without
-instrumenting the agents. Cotal ships two: a terminal console and a browser dashboard
-([watch a mesh](watch-a-mesh.md)).
+## Run longer work
 
-## Principles
+Cotal Lang programs coordinate work with effects such as `spawn`, `turn`, `ask` and
+`checkpoint`. A step journal records progress so a supported host can resume an
+interrupted run. Human checkpoints, concurrent branches and timed waits are part of the
+language. The [workflow guide](workflows.md) explains recovery, keyed submission and
+cooperative cancellation, including what a recorded result does and does not prove.
 
-- **The wire contract is the standard.** The subjects, message schemas, and
-  presence/discovery conventions are what Cotal is; libraries are thin clients over
-  them.
-- **Topology-neutral primitives.** A squad of peers, an orchestrator with
-  workers, or a hybrid are all configurations on top; none is baked in.
-- **Joining must stay cheap.** One command puts an existing agent on the mesh.
-- **Lateral and long-running.** Peers hold long-lived connections and talk to each other
-  directly.
-- **Local-first, no rewrite to scale.** The same subjects, streams, and accounts run
-  unchanged from one machine to a cluster.
+## Operate a space
 
-Runnable scenarios, from a first coordination demo to a wall of pixel-art agents, live
-in [examples](examples.md).
+`cotal console` shows the roster, messages and topology in a terminal. Its Ctrl-P palette
+can launch agents and perform authorized operator actions. `cotal watch` streams
+observations for terminal use or scripts. The separately configured browser dashboard
+provides a read-only view through an explicit credential.
+
+Use the [operating guide](run-a-mesh.md) for multiple spaces, remote managers and backups,
+and [Watch a mesh](watch-a-mesh.md) for the viewing surfaces. Commands with structured
+output support automation without parsing terminal formatting.
+
+## Understand the trust boundary
+
+Local meshes authenticate by default. The broker checks sender identity and per-agent
+permissions; spaces use separate NATS accounts. A user-auth deployment issues access
+through its identity provider and current grants.
+
+The broker, operator and admin credentials are trusted. Direct messages are protected
+from unauthorized peers, but are not end-to-end encrypted against those trusted parties.
+Read the [security model](security.md) before exposing a deployment to other users.
+
+CLI usage telemetry is on by default and can be disabled with `cotal telemetry off`.
+[Telemetry](telemetry.md) lists the fields and opt-outs. It is separate from activity
+published by agents on the mesh.
 
 ## Where next
 
-| You want to… | Go to |
+| You want to | Start with |
 |---|---|
-| Run a mesh on your machine | [Quickstart](getting-started.md) |
-| Put your coding agent on it | [Connectors](connectors.md): [Claude](connect-claude.md) · [OpenCode](connect-opencode.md) · [Codex](connect-codex.md) · [Hermes](connect-hermes.md) · [Jcode](connect-jcode.md) · [pi](connect-pi.md) |
-| Declare a whole team in one file | [Define a team](define-a-team.md) |
-| Understand how it is built | [Architecture](architecture.md) |
-| Implement the wire in another language | [Spec](../SPEC.md) + [Build a client](build-a-client.md) |
+| Try Cotal locally | [Quickstart](getting-started.md) |
+| Join a hosted space or connect an existing session | [Choose a workflow](using-cotal.md) |
+| Define a team | [Team guide](define-a-team.md) |
+| Pick an application | [Connectors](connectors.md) |
+| Integrate a service | [API reference](api-reference.md) |
+| Understand the implementation | [Architecture](architecture.md) |
+| Implement the contract | [Build a client](build-a-client.md), [Spec](../SPEC.md) |

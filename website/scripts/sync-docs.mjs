@@ -46,7 +46,7 @@ const slugFor = (name) => name.toLowerCase();
 const groups = [
   {
     label: 'Start here',
-    files: ['docs/what-is-cotal.md', 'docs/getting-started.md'],
+    files: ['docs/what-is-cotal.md', 'docs/getting-started.md', 'docs/using-cotal.md'],
   },
   {
     // Three lanes, in order: operators → connector users → protocol implementers

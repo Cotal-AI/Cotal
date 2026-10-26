@@ -1,120 +1,91 @@
 # Substrate stability
 
-> **Project** (informative) · **For:** anyone building a product on the published packages · **See also:** [Embedding Cotal](embedding.md), [Release](release.md), the spec's [versioning rules](../SPEC.md#11-versioning-and-extensibility)
+> **Project** (informative) · **For:** anyone building on the published packages · **See also:** [Embedding Cotal](embedding.md), [Release](release.md), [wire versioning](../SPEC.md#11-versioning-and-extensibility)
 
-If you build on the `@cotal-ai/*` packages, this page is what you can rely on and what will change.
-Two versions matter and they move independently: the **wire** version (`protocolVersion`) and the
-**package** versions (npm semver).
+Cotal's packages are pre-1.0 and publish in lockstep. Pin the versions you embed and read
+[Upgrading](UPGRADING.md) before changing them. A package version, a wire revision and a
+service's discovered contract revision describe different compatibility boundaries.
 
-## What is stable today
+## What you can build on
 
-- **Wire shape: v0.3, version marker unset.** The implemented and documented binding shape is v0.3:
-  both binding revisions are merged, owner+actor identity (which *supersedes* the old single-id
-  grammar and re-keys every subject) and manager-free channel live delivery (which *replaced* the
-  mediated live-tail; the implementation staged it as an additive overlay, but the resulting wire
-  revision is breaking). The `protocolVersion` field is **optional and the reference implementation
-  does not populate it**: normative [SPEC section 11](../SPEC.md#11-versioning-and-extensibility)
-  still names the contract version v0.2, and cards carry no marker (a receiver treats an omitted
-  marker as the v0.x line). So the shape you build against is v0.3 while nothing on the wire announces
-  it, and old and new channel clients do not interoperate (core CHANGELOG). The wire is pre-1.0 and
-  may still change.
-- **Packages: pre-1.0 (the 0.x line).** core, workspace, auth, delivery, manager, web, and the
-  connectors publish in lockstep. The exact version is whatever the packages' `package.json` (and
-  `cotal_docs`) report, so any number on this page is illustrative.
-  These are the surfaces [Embedding Cotal](embedding.md) documents.
+| Interface | Reference and boundary |
+|---|---|
+| Messaging, presence and channel access | [Spec](../SPEC.md) and [Build a client](build-a-client.md); sender identity and durable state include the documented lifecycle rules. |
+| Service discovery and invocation | [Control surface](control-surface.md); use discovered schemas and issued grants, not a cached command name alone. |
+| TypeScript embedding | [Embedding Cotal](embedding.md); use public exports and keep first-party package versions matched. |
+| CLI automation | [Structured output](cli.md#structured-output); each command declares its output formats and failure outcomes. |
+| Agent integrations | [Connectors](connectors.md); delivery, resume and event support vary by application. |
+| Durable workflows | [Cotal Lang](../spec/cotal-lang.md) and [Workflow runs](workflows.md); replay compatibility depends on the recorded language version and step journal. |
 
-Buildable on today: the owner+actor identity grammar, the lateral chat/DM/task envelopes and
-subjects, presence and discovery, channels, the three delivery modes, and the Plane-3 durable
-backstop. The auth callout and delivery daemon are the two hardest server-side pieces and both are
-standalone and merged.
+These interfaces are implemented, but a deployed host may not enable every one. In
+particular, user-auth service serving, personal-session approval and remote workflow
+hosting require authority supplied by that deployment. The
+[composition limits](embedding.md#hosted-composition-gaps) remain part of the embedding contract.
 
-## The npm semver caveat
+## Package versions
 
-The packages are **pre-1.0**. Under semver, a pre-1.0 line makes no compatibility promise across
-minor bumps: a `0.13.x` to `0.14.0` change may break an API. So a product that embeds these packages
-must **pin exact versions** and upgrade deliberately, reading the changelog and the diff, not float a
-caret range. The support and deprecation policy for the embedding surface is
-[below](#compatibility-policy).
+A `0.N.x` patch carries no intended breaking change. A minor bump from `0.N` to `0.N+1`
+may break an API. Pin an exact `0.N.P` for an embedded deployment and upgrade its
+first-party dependency set together. Inspect the changelog and migration instructions;
+a successful install does not update modules already loaded by running processes.
+
+`cotal version` reports the installed CLI and extension versions. Inside an agent,
+`cotal_docs` reports the version of its documentation bundle. Neither observation proves
+that every remote manager or service runs the same build.
 
 ## The wire compatibility signal
 
-Per [SPEC section 11](../SPEC.md#11-versioning-and-extensibility):
+The normative [versioning rules](../SPEC.md#11-versioning-and-extensibility) distinguish
+advertised compatibility from the revisions being implemented. The spec is Draft v0.5:
+section 13 defines the v0.4 endpoint control surface, and section 14 adds workflow runs.
+Its migration notes are not a declaration that every implementation path has completed
+the corresponding conformance requirements.
 
-- `AgentCard.protocolVersion` is the one-way compatibility signal, but it is optional and the
-  reference implementation currently leaves it unset (an omitted marker means "assume the v0.x
-  line"). v0 has **no** in-band capability negotiation; deployments agree on the binding and version
-  out of band.
-- Additive changes (a new optional field, a namespaced `Part.kind`, a new subject) are
-  backward-compatible and ship as a minor bump; receivers ignore what they do not recognize.
-- Changing the meaning of an existing field or subject, or removing or renaming one, is breaking and
-  ships under a new version marker.
+`AgentCard.protocolVersion` is a compatibility signal, not capability negotiation.
+Before the v0.4 marker boundary it was optional; v0.4 conformance requires the marker.
+The reference card type still permits omission. Do not infer complete conformance from
+a package number, an optional TypeScript field or the existence of an endpoint command.
+Use the [conformance rules](../SPEC.md#12-conformance) and the endpoint's verified contract.
 
-Because the field is optional and the reference implementation leaves it unset, a broker cannot gate
-on it today: there is no marker to read, and a v0.2-shaped and a v0.3-shaped card look the same. So a
-hosted broker that must refuse wrong-wire clients gates out of band on the package or build version,
-or another agreed signal. Whether `protocolVersion` becomes populated and sufficient at the v0.4 hard
-cut, or a dedicated gate is added, is open operator-readiness work.
+Additive wire changes and breaking changes follow the spec's change process. Workflow
+programs also carry a language version, which is independent of npm and wire versions.
 
-## The coming v0.4 cut
+<a id="the-coming-v04-cut"></a>
 
-The one currently planned hard cut ahead of the substrate is the control surface's **v0.4**. It is a
-deliberate pre-1.0 breaking hard cut (no dual-serving, no translation shims); old subjects,
-envelopes, handlers, and credential grants are removed after the cut, and `protocolVersion` targets
-`0.4` at completion.
+## Endpoint migration
 
-**Projected break families.** The control-surface campaign is
-mid-flight (its later phases are not complete), so the exact set of deleted subjects and changed
-signatures is generated from the integrated diff at cutover, not knowable precisely today. The
-families that are in scope to break:
+The endpoint surface is already used by the manager and other services. The migration
+has broader compatibility consequences than renaming control commands:
 
-- **Control grammar.** The authority-tier service taxonomy, the old control envelope, control
-  subjects and handlers, and their credential grants are deleted and replaced by the typed
-  endpoint/class/instance rails.
-- **Lifecycle-UID API changes.** Public durable, history, ACL, member, provision, and deprovision
-  APIs change to require a lifecycle UID; `dinbox`/`dlv` subjects, ACL/member keys, and
-  presence/membership schemas become lifecycle-scoped.
-- **Daemon control absorbed.** The manager control plane (attach moves from a loopback endpoint to
-  sessions; spawn becomes an action) and the delivery control shapes are migrated onto the surface;
-  the old delivery-specific control protocol is deleted.
-- **Broker floor.** v0.4 raises the minimum NATS server to 2.12.
+- Typed endpoint/class/instance subjects replace earlier control subjects and grants.
+- Lifecycle UIDs scope durable readers, membership and authority to an incarnation.
+- Manager spawn is an action; attach uses a mesh session rather than a public loopback socket.
+- The control surface requires NATS server 2.12 or newer; particular persisted stores can
+  require a newer server, as the [Quickstart](getting-started.md) explains.
 
-What **stays** across v0.4: the lateral chat/DM message envelopes and the owner+actor identity
-grammar. What breaks alongside the control grammar is the presence/membership and durable-delivery
-**backing** grammar and API, so "only the control surface breaks" understates it.
+Keep the [spec's migration boundary](../SPEC.md#1311-the-hard-cut) separate from the package
+upgrade you are performing. The current [upgrade guide](UPGRADING.md) records package-specific
+contract changes and operator steps. A source merge alone is not proof that old clients,
+credentials or persisted state have been migrated.
 
-## Building around the cut
+<a id="building-around-the-cut"></a>
 
-- **Pin an exact patch** (for example `0.13.1`, not a `0.13.x` range) and treat the embedding surface as pre-1.0.
-- **Shim every control-plane, lifecycle, durable-delivery, and presence/membership call** behind an
-  internal client, so the v0.4 swap is one contained change rather than a rewrite. This is broader
-  than "control subjects."
-- **Do not ship a public API on v0.3 shapes that v0.4 deletes** until the control surface reaches its
-  consolidation phase and the final v0.4 inventory exists.
+## Building around changes
+
+Keep control, lifecycle and storage calls behind a small integration boundary in your
+application. Use public APIs rather than importing internal files. Test the actual
+credential and host modes you deploy; a static-auth fixture does not establish user-auth
+support. Preserve journals and credential state until the upgrade instructions say how
+to handle them.
 
 ## Compatibility policy
 
-The substrate packages stay **pre-1.0 (0.x)** for now. The project does **not** declare a 1.0 line
-for them yet, because a known breaking change is still ahead (the [v0.4 cut](#the-coming-v04-cut)),
-and a 1.0 promise made right before a deliberate break would be hollow. A 1.0 line is revisited once
-v0.4 has landed and the hosted-composition gaps [Embedding Cotal](embedding.md) documents (the secret
-seam, multi-space) have closed.
+The substrate remains pre-1.0. There is no 1.0 compatibility promise yet.
 
-What a product embedding the packages can rely on in the meantime:
+- Every intended breaking change ships with a changeset and changelog entry.
+- Where practical, an API is deprecated for one minor line before removal. The documented
+  v0.4 hard cut is an exception with no dual-serving guarantee.
+- The latest minor is supported. The previous minor receives patch fixes until the next
+  minor ships, a one-minor overlap.
 
-- **Pin an exact patch.** A caret or tilde range can pull in a breaking minor. Pin `0.N.P`, not
-  `^0.N.P` or `~0.N`.
-- **Patch is bug-fix only.** A `0.N.x` patch bump carries no intended breaking change. A **minor**
-  bump (`0.N` to `0.N+1`) may break an API; read the changeset and the diff before taking one.
-- **Every break is written down.** A breaking change ships with a changeset entry and a changelog
-  note that names what changed, so an upgrade is never a silent surprise.
-- **One minor of deprecation notice, where practical.** A symbol slated for removal is marked
-  deprecated for one minor line before it is removed (soft-deprecate in `0.N`, remove in `0.N+1`).
-  The v0.4 hard cut is the explicit exception: it is a coordinated break with no dual-serving,
-  signalled in advance rather than soft-deprecated.
-- **Supported line.** The latest minor is supported; the previous minor gets patch-level fixes until
-  the next minor ships (a one-minor overlap). This is deliberately light-touch while the only
-  consumer is the project's own hosted repo; it tightens (a longer window, a firmer deprecation
-  period) when there are external embedders.
-
-Until the 1.0 line exists, the [build-around guidance](#building-around-the-cut) above (pin exact,
-shim the breaking families) is the safe posture.
+These package rules do not replace wire conformance or a hosted service's deployment policy.

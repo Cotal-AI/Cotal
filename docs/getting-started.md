@@ -49,11 +49,14 @@ setup. `npx cotal-ai setup` works too and offers to install the global `cotal` a
 Declining is fine: the hints stay `npx cotal-ai …`, and the background processes `cotal up`
 starts invoke their own resolved path rather than a global `cotal`.
 
+The CLI sends usage telemetry by default. Run `cotal telemetry off` to disable it, or read
+[Telemetry](telemetry.md) for the fields and other settings.
+
 Requirements:
 
 - Node 22 or newer. The installer handles this for you; it downloads an official Node build
   and checks it against the SHA-256 sums published beside it on nodejs.org.
-- A glibc system. Cotal's terminal layer ships prebuilt native binaries for glibc only, so
+- On Linux, a glibc system. Cotal's Linux terminal binaries target glibc, so
   musl distributions (Alpine) are not supported yet and the installer refuses them rather
   than leaving you with an install that cannot start.
 - A `nats-server` binary, version 2.12 or newer (the control surface uses its message
@@ -114,8 +117,9 @@ the [capability update steps](workflows.md#if-cotal_run-is-missing). Run via `np
 `cotal`, setup also offers to `npm i -g cotal-ai` so you can just type `cotal`. The dashboard
 needs no install: `@cotal-ai/web` ships inside `cotal-ai`.
 
-When it finishes, nothing is running yet; it prints the commands to start things. The
-whole loop is four commands:
+With `--configure-only`, setup leaves the space stopped and prints the next commands.
+If you accepted its startup offer, use `cotal status` to inspect that launch before starting
+another agent. For manual startup, run:
 
 ```bash
 cotal up --detach          # start the mesh + delivery daemon + manager (JWT-authed by default)
@@ -231,10 +235,10 @@ up the mesh, delivery daemon and background manager so an agent can use the `cot
 ## Troubleshooting
 
 - The full log is at `.cotal/setup.log` (and `.cotal/nats.log` for the server).
-- Re-running setup is safe. It reuses a running web and keeps your files.
+- Re-running setup preserves edited personas. Use `--configure-only` to avoid a startup offer;
+  dashboard configuration and startup are separate.
 - Set `COTAL_SKIP_ASSIST=1` to disable the debug handoff offer on failures.
 
-Next: put your own agent on the mesh ([Connectors](connectors.md) compares them:
-[Claude](connect-claude.md) · [OpenCode](connect-opencode.md) ·
-[Hermes](connect-hermes.md) · [pi](connect-pi.md)), declare a team
-([Define a team](define-a-team.md)), or watch it live ([Watch a mesh](watch-a-mesh.md)).
+Next: [Choose a workflow](using-cotal.md) for existing sessions, hosted spaces, teams,
+services and durable runs. The [connector matrix](connectors.md) compares all supported
+applications.
