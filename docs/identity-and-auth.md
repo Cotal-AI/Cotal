@@ -381,6 +381,45 @@ separate `${owner}.${actor}` principals) can evict an earlier full window and re
 loopback face, an authenticated unpinned refusal caused by no live manager or ambiguous candidates
 keeps its actionable reason without spending the shared probing budget.
 
+### Callout deadlines
+
+nats-server waits for the auth callout's answer for its `authorization { timeout }`, two seconds
+unless the broker config sets it. From 2.15 a connect with no answer by then is refused; 2.14 leaves
+it waiting for the client's own connect timeout. The callout answers inside that window. A request's
+deadline is the broker timeout less 250 ms, counted from when the callout received it. A request
+still unanswered then gets a signed denial with the reason
+`timeout: the auth callout could not answer inside the broker's authorization timeout`, and its work
+stops at its next step. While the oldest request still waiting for a slot has waited more than half
+that budget, the queue is not draining in time, and a new request gets the same denial at once
+instead of joining it. Requests start oldest first, at most `maxInFlight` at a time.
+
+The client sees `Authorization Violation` for this denial as for any other, because nats-server does
+not pass a callout's reason to the client. The broker logs the reason after
+`Auth callout service returned an error`, and the callout logs it on its own line.
+
+Each answered request writes one line to the auth service's standard error:
+
+```
+auth callout: level=info outcome=minted req=<user nkey> cid=<broker client id> owner=<owner> actor=<actor> queue_ms=0 verify_ms=1 ledger_ms=2 policy_ms=0 sign_ms=1 total_ms=4
+```
+
+`outcome` is `minted`, `denied`, `timeout` when the deadline passed, or `shed` when admission
+refused the request. `req` is the user key the broker generated for this connect. `cid` is the broker's client id,
+which the broker's own log lines carry as `cid:<n>`. `queue_ms` is the time spent waiting for a slot. `verify_ms` covers the request and bearer checks, `ledger_ms` the actor
+check and the issuance record, `policy_ms` the permission build, and `sign_ms` signing the user JWT
+and the response. A `denied` line adds `reason="<message>"`, a `timeout` line adds `at=<step>` for
+the step it was in, and a `shed` line adds `waited_ms=<ms> ahead=<n>`: how long the oldest waiting
+request had waited, and how many requests were queued or in progress. The line logs at `level=warn`
+when the request took longer than 500 ms or its outcome is `timeout` or `shed`. A request that fails
+the provenance checks still gets no answer and logs why it was dropped.
+
+A hosted context sets its limits with `startAuthService({ ..., calloutLimits })`, where
+`calloutLimits` is `{ authTimeoutMs, maxInFlight, slowMs }`. `authTimeoutMs` (default 2000) must
+match the broker's `authorization { timeout }` in milliseconds: against a broker set to 10 seconds,
+the default refuses at 1.75 seconds connects the broker would still wait for. `maxInFlight` (default
+32) bounds the requests in progress, and `slowMs` (default 500) sets when a line logs at warn. The
+CLI's `auth-service` uses the defaults, which match the broker config `cotal up` writes.
+
 ### Enrollment redeem
 
 A remote owner may pre-mint a one-time enrollment for a seat that has no browser, TTY, or cached

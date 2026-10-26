@@ -213,6 +213,14 @@ try {
   const badActor = await tryConnect(await bearer({ actor: "agent_2" }));
   check("ledger-denied actor refused", !badActor.nc);
 
+  // Each answered request writes one line naming the request, the principal, the outcome and the
+  // time each step took.
+  const steps = "queue_ms=\\d+ verify_ms=\\d+ ledger_ms=\\d+ policy_ms=\\d+ sign_ms=\\d+ total_ms=\\d+";
+  check("a mint writes its callout line with the request id, owner, actor and step times",
+    calloutLog.some((line) => new RegExp(`^auth callout: level=info outcome=minted req=\\S+ cid=\\d+ owner=${owner} actor=agent_1 ${steps}$`).test(line)));
+  check("a ledger denial writes its line with the reason",
+    calloutLog.some((line) => new RegExp(`^auth callout: level=info outcome=denied req=\\S+ cid=\\d+ owner=${owner} actor=agent_2 ${steps} reason="actor agent_2 not in the spawn ledger"$`).test(line)));
+
   // Inbox-escalation guard: a client that supplies a wildcard-bearing inbox nonce (connection `name`)
   // to widen its `_INBOX_<nonce>.>` grant toward `_INBOX_>.>` is refused at connect — assertInboxConnId
   // (core) throws, the callout turns it into a signed deny. Even a VALID bearer can't buy a wide inbox.

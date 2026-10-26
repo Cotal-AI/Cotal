@@ -376,8 +376,18 @@ const conf = serverConfig(auth, [auth], {
   extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }],
 }) + `\nhttp: 127.0.0.1:${MON_PORT}\n` + (AUTH_TIMEOUT ? `authorization { timeout: ${AUTH_TIMEOUT} }\n` : "");
 writeFileSync(join(dir, "server.conf"), conf);
-const srv = spawn(NATS_BIN, ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const srv = spawn(NATS_BIN, ["-c", join(dir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
 const releaseBroker = teardownOnSignal(srv, dir);
+// The client sees the same "Authorization Violation" for a signed callout denial and for a callout
+// the broker gave up on, so the broker's own log tells them apart: a connect the callout refused in
+// time logs the callout's reason, and any other refusal does not.
+const brokerLog = { calloutReasons: 0, partial: "" };
+srv.stderr!.setEncoding("utf8");
+srv.stderr!.on("data", (d: string) => {
+  const lines = (brokerLog.partial + d).split("\n");
+  brokerLog.partial = lines.pop() ?? "";
+  for (const l of lines) if (l.includes("Auth callout service returned an error")) brokerLog.calloutReasons++;
+});
 
 const varz = async (): Promise<Record<string, number>> => {
   const r = await fetch(`http://127.0.0.1:${MON_PORT}/varz`);
@@ -449,7 +459,12 @@ const timed = (nc: NatsConnection) => ({
 /** When set, `recordIssuance` (the durable auth-ledger write) blocks until this resolves — the
  *  "ledger stalled" scenario, applied to the real hook the production service awaits. */
 let ledgerStall: Promise<void> | undefined;
+/** The ledger-stall window, on this process's `performance.now()` clock. */
+let stallWindow: [number, number] | undefined;
 const calloutLog: string[] = [];
+/** One per answered callout, parsed from its `auth callout: level=…` line. */
+const answers: Array<{ level: string; outcome: string; totalMs: number; arrivedAt: number }> = [];
+const ANSWER_LINE = /^auth callout: level=(\w+) outcome=(\w+) .* total_ms=(\d+)/;
 
 let calloutNc: NatsConnection | undefined;
 const children: ChildProcess[] = [];
@@ -517,7 +532,13 @@ try {
     authorizeActor: () => {},
     // The production permission builder, not a stub: its work is part of the per-connect cost.
     permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"], lifecycleUid: UID, scope: [] })),
-    log: (l) => { if (calloutLog.length < 200) calloutLog.push(l); },
+    log: (l) => {
+      const m = ANSWER_LINE.exec(l);
+      if (m) answers.push({ level: m[1], outcome: m[2], totalMs: Number(m[3]), arrivedAt: performance.now() - Number(m[3]) });
+      if (calloutLog.length < 200) calloutLog.push(l);
+    },
+    // The broker's `authorization { timeout }` under test, so the callout's deadline matches it.
+    ...(AUTH_TIMEOUT ? { limits: { authTimeoutMs: Math.round(Number(AUTH_TIMEOUT) * 1000) } } : {}),
   });
   await calloutNc.flush();
 
@@ -552,7 +573,8 @@ try {
   // Warm the path: the first callout after startup pays module/JIT warm-up that belongs to neither
   // arm's steady state, and on a loaded box can be dropped outright.
   await runLoad({ mode: "churn", servers: SERVERS, sentinelCreds: callout.sentinelCreds, bearers: bearers.slice(0, 4), connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: 4, seconds: 1 });
-  handlerMs.length = 0; served = 0;
+  handlerMs.length = 0; served = 0; answers.length = 0;
+  const broker0 = { ...brokerLog };
 
   const v0 = await varz();
   const brokerCpu0 = procCpuMs(srv.pid!);
@@ -590,8 +612,10 @@ try {
     await wait((SECONDS * 1000) / 3);
     let release!: () => void;
     ledgerStall = new Promise<void>((r) => { release = r; });
+    const stalledAt = performance.now();
     await wait(STALL_MS);
     release(); ledgerStall = undefined;
+    stallWindow = [stalledAt, performance.now()];
     result = merge(await load);
     note = `${RATE}/s for ${SECONDS}s, auth ledger stalled ${STALL_MS}ms starting at t=${((SECONDS * 1000) / 3 / 1000).toFixed(1)}s`;
   } else if (SCENARIO === "msgrate") {
@@ -670,6 +694,28 @@ try {
   }
   for (const [k, v] of [...denyReasons].sort((a, b) => b[1] - a[1]).slice(0, 4)) row(`  callout deny: ${k}`, `${v} (of ${calloutLog.length} log lines)`);
   row("callout log lines", calloutLog.length);
+  rows.push(["", ""]);
+  const reasoned = brokerLog.calloutReasons - broker0.calloutReasons;
+  row("refusals with a callout reason (broker log)", reasoned);
+  row("refusals without one", result.attempts - result.ok - reasoned);
+  const outcomes = (set: typeof answers, label: string) => {
+    for (const o of [...new Set(set.map((a) => a.outcome))].sort()) {
+      const ms = set.filter((a) => a.outcome === o).map((a) => a.totalMs);
+      row(`  ${label}${o}`, `${ms.length} (total ms p50 ${n2(pct(ms, 50))}, p99 ${n2(pct(ms, 99))}, max ${n2(Math.max(...ms))})`);
+    }
+  };
+  row("callout answer lines", `${answers.length} (${answers.filter((a) => a.level === "warn").length} at warn)`);
+  outcomes(answers, "");
+  if (stallWindow) {
+    const [from, to] = stallWindow;
+    const before = answers.filter((a) => a.arrivedAt < from), during = answers.filter((a) => a.arrivedAt >= from && a.arrivedAt < to), after = answers.filter((a) => a.arrivedAt >= to);
+    row("arrived before the stall", before.length);
+    outcomes(before, "before: ");
+    row("arrived during the stall", during.length);
+    outcomes(during, "during: ");
+    row("arrived after the stall", after.length);
+    outcomes(after, "after: ");
+  }
 
   const w = Math.max(...rows.map(([k]) => k.length));
   console.log(`\n${"=".repeat(w + 34)}`);
