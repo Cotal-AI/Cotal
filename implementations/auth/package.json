@@ -23,6 +23,7 @@
     "test": "tsx smoke/auth-response-json.smoke.ts && tsx smoke/backup-continuity.smoke.ts && tsx smoke/retained-manager-validation.smoke.ts && tsx smoke/manager-admin-authorization.smoke.ts && tsx smoke/views.smoke.ts && tsx smoke/chat-session-row.smoke.ts && tsx smoke/managed-grant-transaction.smoke.ts && tsx smoke/chat-session-authority.smoke.ts",
     "smoke:chat-session-authority": "tsx smoke/chat-session-authority.smoke.ts",
     "smoke:chat-session-row": "tsx smoke/chat-session-row.smoke.ts",
+    "smoke:callout-load": "tsx smoke/callout-load.smoke.ts",
     "prepublishOnly": "pnpm run build",
     "smoke:service-custody": "tsx smoke/service-custody.smoke.ts",
     "smoke:service-custody-writer": "tsx smoke/service-custody-writer.smoke.ts",
