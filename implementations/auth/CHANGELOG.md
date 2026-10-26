@@ -1,5 +1,36 @@
 # @cotal-ai/auth
 
+## 0.101.7
+
+### Patch Changes
+
+- 668ef6a: `cotal agent-bearer` now runs before the rest of the CLI loads. A spawned seat execs it at the spawn preflight, at its first connect, at every bearer renewal and for every manager call, and loading the whole command surface made each run take about 400 ms. It now takes about 60 ms, close to the 50 ms of a bare exchange. It reads none of the CLI's preferences, extensions or config folder. A command line it cannot parse still goes to the full CLI, which refuses it with the command's help as before. The command lives in `@cotal-ai/auth/agent-bearer`, and `@cotal-ai/core/command`, `@cotal-ai/core/loopback`, `@cotal-ai/core/subjects` and `@cotal-ai/workspace/liveness` export the parser and checks it uses without loading either package root.
+- ae43b58: A long-lived connection now renews its bearer at a random point between half and four fifths of the
+  bearer's lifetime and moves the live connection onto the new one, so the broker no longer closes it
+  for an expired bearer. Connections in one process and space renew at least a second apart, so seats
+  that started together no longer rebind through the auth callout in the same second. A reconnect
+  never presents an expired bearer. While renewal fails, the endpoint retries on a growing, randomized
+  wait of up to a minute and reports the failure once. The auth service's own connections renew the
+  same way, and its connect-credential reader proves a replacement on a new connection before it
+  switches to it, so a renewal no longer denies connects while the reader rebinds.
+- 2459c19: The auth callout limits connects: 60 a minute per actor and 600 per owner, with a bearer that does
+  not verify charged to its client host at 60 a minute. A reconnect loop now settles at one connect a
+  second instead of spending the callout, the ledger and the issuance writes of everyone else in the
+  space. A limited connect gets a signed `RATE_LIMITED retry-after <n>s` denial that the auth service
+  logs with the actor and owner, and the exchange for a limited actor answers 429 with
+  `{code: "RATE_LIMITED", retryAfterSeconds, error}` and `Retry-After`. A hosted composition sets
+  other limits with `startAuthService`'s `connectLimits`. The connect-load harness takes
+  `--connect-limits <actor>,<owner>,<host>` for capacity runs.
+- ae43b58: The auth service no longer exits when a native-key issuance cleanup pass fails because the store did
+  not answer, as happened when one of its connections reconnected under load. The pass is retried on a
+  growing wait and logged once, and the service keeps serving. Evidence that does not parse still
+  stops the service.
+- Updated dependencies [668ef6a]
+- Updated dependencies [ae43b58]
+  - @cotal-ai/core@0.101.7
+  - @cotal-ai/workspace@0.101.7
+  - @cotal-ai/lang@0.101.7
+
 ## 0.101.6
 
 ### Patch Changes
