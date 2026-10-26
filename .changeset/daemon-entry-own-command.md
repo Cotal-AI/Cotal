@@ -1,0 +1,6 @@
+---
+"@cotal-ai/core": minor
+"@cotal-ai/cli": minor
+---
+
+A daemon entry now loads only the modules its own command needs, not every command of the CLI. The registry in `@cotal-ai/core` gains `provide`, `provides` and `load`. A composition root declares a module and the keys it registers before importing it, and `load` imports only the module behind the key a process asks for, once. A key whose module did not register it is refused, never stood in for. `cotal` declares its daemon entries this way: `supervise`, `deliver`, `feedback-intake`, `auth-service`, their `__daemon-*` and `__service-*` forms, and `__service-unit`. The entry's flags, usage, refusals and exit are unchanged. `@cotal-ai/cli` gains two exports: `./dispatch` (`commandWord` and `runCli`, without the command surface) and `./service-unit` (the unit entry alone). On a stack with no seats, 30 seconds and 5 minutes after `cotal up` (the mean of three runs each), the manager went from 148 MB to 106 MB of private memory in its first minutes and from 112 MB to 75 MB once settled. The delivery daemon went from 110 MB to 65 MB, then from 105 MB to 60 MB. The user-auth service went from 115 MB to 74 MB, then from 105 MB to 62 MB.

@@ -59,8 +59,6 @@ import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printCommandHelp, printHelpPath, printEntry } from "./help.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
-import { servicePresetCommand } from "./lib/service-presets.js";
-import { managerServiceCommand } from "./commands/manager-service.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
 import { metadataPositionals } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
@@ -69,13 +67,16 @@ import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
 import { reportLostOutput } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
-import { managerChoiceFailure, pickManager, rosterOf } from "./lib/manager-choice.js";
-import { goneStackRefusal } from "./commands/stack-gone.js";
-import { canPrompt } from "./commands/meshes-wizard.js";
+import { GLOBAL_FLAG_WORDS, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { didYouMean, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { UnusableFile } from "./lib/unusable-file.js";
 import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./telemetry.js";
+
+// The service surfaces, the manager choice and the gone-stack refusal are imported where a command
+// or a failure needs them, so a process that runs one daemon command never loads them.
+const serviceSurfaces = () => Promise.all([import("./lib/service-presets.js"), import("./commands/manager-service.js")]);
+const managerChoice = () => import("./lib/manager-choice.js");
 
 /** Whether `args` ask for help: `--help` or `-h` before any `--`, after which every word is text. */
 function asksForHelp(args: readonly string[]): boolean {
@@ -84,8 +85,10 @@ function asksForHelp(args: readonly string[]): boolean {
   return options.includes("--help") || options.includes("-h");
 }
 
-/** Whether a global flag (`--no-color`, `--no-input`) is `word`, applying it when it is. */
+/** Whether a global flag ({@link GLOBAL_FLAG_WORDS}: `--no-color`, `--no-input`) is `word`, applying
+ *  it when it is. */
 function takeGlobalFlag(word: string): boolean {
+  if (!GLOBAL_FLAG_WORDS.has(word)) return false;
   if (word === "--no-color") disableColor();
   else if (word === "--no-input") disableInput();
   else return false;
@@ -284,10 +287,11 @@ const PICKS_MANAGER: ReadonlySet<string> = new Set(["spawn", "ps", "stop", "atta
  *  `--no-input` or `COTAL_NO_PROMPT=1` is not asked and keeps the refusal. A cancelled question exits 0, having
  *  done nothing. */
 async function pinPickedManager(e: unknown, cmd: Command, parsed: ParsedArgs, argv: readonly string[]): Promise<boolean> {
-  if (!PICKS_MANAGER.has(cmd.name) || parsed.values.on !== undefined || !canPrompt()) return false;
+  if (!PICKS_MANAGER.has(cmd.name) || parsed.values.on !== undefined || !(await import("./commands/meshes-wizard.js")).canPrompt()) return false;
   const failure = isCommandFailure(e) ? e : isConnectRefusal(e) ? e.failure() : undefined;
   if (!failure) return false;
   const target = { space: typeof parsed.values.space === "string" ? parsed.values.space : undefined, server: typeof parsed.values.server === "string" ? parsed.values.server : undefined };
+  const { pickManager, rosterOf } = await managerChoice();
   const picked = await pickManager(failure, () => rosterOf(target), argv);
   if (picked === null) process.exit(0);
   if (picked === undefined) return false;
@@ -531,7 +535,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   let lead = 0;
   for (; lead < argv.length; lead++) {
     const word = argv[lead]!;
-    if (word === "--json" || word === "-j" || word === "--plain") output.push(word);
+    if (OUTPUT_FLAG_WORDS.has(word)) output.push(word);
     else if (leadingGlobals.has(word)) usageExit(`Option '${word}' cannot be repeated`);
     else if (takeGlobalFlag(word)) leadingGlobals.add(word);
     else break;
@@ -602,8 +606,9 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const wantsHelp = asksForHelp(rest);
   // A service invocation takes its preset's flags, and `manager <verb>` is `service <verb> manager`.
   // Both are read again after the seed below re-resolves the command.
-  const serviceSurface = (found: Command | undefined, words: string[]): { cmd: Command | undefined; rest: string[] } => {
+  const serviceSurface = async (found: Command | undefined, words: string[]): Promise<{ cmd: Command | undefined; rest: string[] }> => {
     if (found?.name !== "service" && found?.name !== "manager") return { cmd: found, rest: words };
+    const [{ servicePresetCommand }, { managerServiceCommand }] = await serviceSurfaces();
     try {
       if (found.name === "service") return { cmd: servicePresetCommand(found, words), rest: words };
       const lifecycle = managerServiceCommand(found, words);
@@ -613,7 +618,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"));
     }
   };
-  ({ cmd, rest } = serviceSurface(cmd, rest));
+  ({ cmd, rest } = await serviceSurface(cmd, rest));
   // The usage telemetry hook is armed as soon as the command is known, so a usage refusal below
   // counts too, and before anything runs, so the one-time notice precedes the command's output.
   const arm = (): void => {
@@ -664,7 +669,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       commands = surface();
       cmd = findCommand(commands, word);
       if (!cmd) usageExit(unknownCommandMessage(commands, word));
-      ({ cmd, rest } = serviceSurface(cmd, ownWords(cmd, words, leadingGlobals)));
+      ({ cmd, rest } = await serviceSurface(cmd, ownWords(cmd, words, leadingGlobals)));
       arm();
     }
   }
@@ -742,7 +747,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // A refused manager selection among several live managers becomes the choice: each manager
     // and the command again with `--on` for it. A space whose stack folder is gone names its stop.
     const target = { space: typeof parsed.values.space === "string" ? parsed.values.space : undefined, server: typeof parsed.values.server === "string" ? parsed.values.server : undefined };
-    const choice = async (failure: CommandFailure) => (await managerChoiceFailure(failure, () => rosterOf(target), argv)) ?? goneStackRefusal(failure);
+    const choice = async (failure: CommandFailure) => {
+      const [{ managerChoiceFailure, rosterOf }, { goneStackRefusal }] = await Promise.all([managerChoice(), import("./commands/stack-gone.js")]);
+      return (await managerChoiceFailure(failure, () => rosterOf(target), argv)) ?? goneStackRefusal(failure);
+    };
     if (isCommandFailure(e)) failureExit(cmd, inOperationSpace(await choice(e), scope.space), json, parsed.values.plain === true, scope);
     // A command that declares a structured output reports by the outcome table. A target it could
     // not resolve or connect to is refused before any request, under the refusal's own code; a
@@ -772,7 +780,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       process.exit(1);
     }
     // A command without structured output shows the same choice and keeps its exit 1.
-    const restated = isConnectRefusal(e) ? await managerChoiceFailure(e.failure(), () => rosterOf(target), argv) : undefined;
+    const restated = isConnectRefusal(e) ? await managerChoice().then(({ managerChoiceFailure, rosterOf }) => managerChoiceFailure(e.failure(), () => rosterOf(target), argv)) : undefined;
     if (restated) {
       writeSync(2, `${renderReport(commandFailureReport(restated), parsed.values.plain === true ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
       process.exit(1);

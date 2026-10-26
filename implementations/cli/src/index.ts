@@ -1,6 +1,6 @@
 import "./exec-endpoint/service-adapter.js";
 import "./lib/broker-service.js";
-import { serviceUnitEntry } from "./commands/service-unit-entry.js";
+import "./service-unit.js";
 import { registry, type Command } from "@cotal-ai/core";
 import {
   CommandFailure, credentialMintFlags, jsonFlag, plainFlag, presentationOf, serverFlag, spaceFlag, targetFlags, validateCredentialMintArguments, validateCredentialRevokeArguments,
@@ -890,5 +890,3 @@ export { updateFlags } from "./commands/update.js";
 // must outlive the manager's readiness wait (#159 B1).
 export { START_TIMEOUT_MS } from "./lib/control.js";
 export { launchAgent } from "./lib/manifest/live.js";
-
-registry.register(serviceUnitEntry);
