@@ -83,7 +83,7 @@ import {
   digestIdToken,
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type UserAuthInfo } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -189,6 +189,7 @@ import {
   submissionFingerprint,
   EpEnvelopeError,
   lifecycleBlocked,
+  seatCapRefused,
   lifecycleBlockedFrom,
   renderLifecycleBlocked,
   controlReplyFromThrown,
@@ -342,6 +343,13 @@ interface StaticReconcileAttempt {
  *  chars = in the lifecycle-token grammar `[a-z0-9]{26,32}`, collision-resistant. */
 function retireOpId(lifecycleUid: string): string {
   return managedRetirementOpId(lifecycleUid);
+}
+
+/** The owner a retained seat resumes under: its inventory identity's, which is the same value the
+ *  adopted seat records as `userOwner`, so a resumed seat is counted against the owner that held
+ *  it before the restart ({@link Manager.ownerSeats}) and not against the mesh's default one. */
+function resumeOwner(entry: ManagerResumeAgent): string {
+  return entry.identity.mode === "user" ? entry.identity.owner : DEV_OWNER;
 }
 
 /** Sentinel owner-filter value that matches NO agent's `userOwner` (owner tokens never contain a
@@ -500,6 +508,16 @@ export interface ManagerOptions {
    *  `cotal up --max-sessions` (recorded on the mesh so a repair does not silently drop to 64).
    *  {@link ManagerSessionPlaneDeps.maxSessions} carries the per-caller-scoping residual. */
   maxSessions?: number;
+  /** The ceiling on live seats this manager supervises for ONE owner. Defaults to
+   *  {@link DEFAULT_SEAT_CAP}, under which {@link MAX_AGENTS} stays the only bound, so a
+   *  single-owner mesh keeps every slot it had. An operator hosting several owners on one manager
+   *  sets a number with `cotal supervise --seat-cap <n>`, so one owner cannot take the whole host;
+   *  the value is recorded for the root, so a restart keeps it. A launch over the ceiling refuses
+   *  `resource-exhausted` before the reserve, carrying the owner's count and the cap.
+   *
+   *  It is deliberately NOT the global ceiling in another spelling: {@link MAX_AGENTS} bounds the
+   *  host, this bounds one tenant's share of it, and the two refusals name different remedies. */
+  seatCap?: SeatCap;
   /** Remote manager-service prepare material. The participant owns every private seed; the host
    * returned only scoped JWTs. When present, local signer/static trust is forbidden and the
    * manager follows the remote authority path. */
@@ -1298,6 +1316,8 @@ export class Manager {
   private readonly eventsRequired: boolean;
   /** The operator-set global live-session ceiling (see {@link ManagerOptions.maxSessions}). */
   private readonly maxSessions?: number;
+  /** The operator-set per-owner seat ceiling (see {@link ManagerOptions.seatCap}). */
+  private readonly seatCap: SeatCap;
   /** The ONE secret store for every kind this manager touches (daemon-cred remint + agent kinds).
    *  See {@link ManagerOptions.secretStore}. */
   private readonly secrets: SecretStore;
@@ -1316,8 +1336,11 @@ export class Manager {
   private readonly agents = new Map<string, ManagedAgent>();
   /** Names whose spawn is in flight (reserved synchronously before the provision await) — counted
    *  toward the ceiling (once per name, see {@link Manager.occupancy}) so two concurrent same-name
-   *  spawns can't both pass the gate (P4a). */
-  private readonly reserved = new Set<string>();
+   *  spawns can't both pass the gate (P4a). Each name carries the OWNER its launch was admitted
+   *  for, so the per-owner ceiling ({@link Manager.ownerSeats}) counts a launch from the moment it
+   *  is reserved; a cap read only off `agents` would let a burst of concurrent spawns overshoot it,
+   *  because none of them has a seat yet when the next one checks. */
+  private readonly reserved = new Map<string, string>();
   /** Reserved names whose launch already put its seat in `agents`. The name stays reserved until
    *  the launch settles, so no other spawn can take it, but the ceiling counts that seat through
    *  `agents` and, if it frees young, its cooling stamp, never through the reservation (#906). */
@@ -1645,6 +1668,7 @@ export class Manager {
     this.onServiceIdentity = opts.onServiceIdentity;
     this.eventsRequired = opts.eventsRequired === true;
     this.maxSessions = opts.maxSessions;
+    this.seatCap = opts.seatCap ?? DEFAULT_SEAT_CAP;
     this.remoteAuthority = opts.remoteAuthority;
     this.remoteExecutorCreds = opts.remoteAuthority?.executorCreds;
     this.remoteSupervisorCreds = opts.remoteAuthority?.supervisorCreds;
@@ -6347,6 +6371,15 @@ export class Manager {
     // collision, a manifest name and a `--name` override all meet it, and before the reservation.
     if (name.startsWith(CHAT_ALIAS_PREFIX))
       return { ok: false, error: `the name "${name}" starts with "${CHAT_ALIAS_PREFIX}", which is reserved for chat sessions; pick another name` };
+    // THE PER-OWNER CEILING, read in the same synchronous window as the reserve below rather than
+    // beside the host capacity gate higher up: the count it takes must be the one the reservation
+    // lands against, or a burst of concurrent launches for one owner each reads a count taken
+    // before any of the others reserved, and they all pass. Nothing between here and the reserve
+    // awaits. It refuses BEFORE `onEffect`, so the launch states `not-executed` and leaves no
+    // name, no mint and no footprint behind.
+    const owner = this.launchOwner(opts, spawner);
+    const overCap = this.seatCapRefusal(owner);
+    if (overCap) return { ok: false, code: overCap.code, error: overCap.message, ...(overCap.details ? { details: overCap.details } : {}) };
     // Set once the agent's footprint (durables + creds, or the user-mode grant + secret files)
     // exists; cleared when a live slot takes ownership. If it survives to `finally`, the spawn threw
     // AFTER provisioning (buildLaunch / runtime.spawn) — the orphan-rollback tears it down. Carries
@@ -6363,7 +6396,7 @@ export class Manager {
     // Taken right before the try so its finally is the only release; a refusal belongs above the
     // allocation, where there is no name to give back.
     hooks?.onEffect?.();
-    this.reserved.add(name);
+    this.reserved.set(name, owner);
     try {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
       // COTAL_ID); the seed is retained to mint matching creds later.
@@ -6393,8 +6426,8 @@ export class Manager {
       // freshly-minted nkey; user mode keys on the derived owner (opts.owner, else a u_-owner spawner)
       // + the alias — derived HERE where the mode and owner source are in scope.
       const agentTriple = this.userMode
-        ? { owner: opts.owner ?? (spawner && parsePrincipalKey(spawner)?.owner.startsWith("u_") ? parsePrincipalKey(spawner)!.owner : DEV_OWNER), actor: name, uid: lifecycleUid }
-        : { owner: DEV_OWNER, actor: identity.id, uid: lifecycleUid };
+        ? { owner, actor: name, uid: lifecycleUid }
+        : { owner, actor: identity.id, uid: lifecycleUid };
       // THE EVENT GRANT, derived from the principal that was actually ALLOCATED and never from the
       // display name. A display name is UI convenience: this mesh permits two live agents to carry
       // one, so a name-keyed channel fuses two principals onto one subject and, in auth mode,
@@ -6912,7 +6945,7 @@ export class Manager {
           return { ok: false, agents: [], error: `retained agent "${entry.name}" is already managed or reserved` };
       }
       for (const entry of entries) {
-        this.reserved.add(entry.name);
+        this.reserved.set(entry.name, resumeOwner(entry));
         batchReservations.push(entry.name);
       }
       const preflight: Array<{ name: string; reply: ControlReply }> = [];
@@ -7327,7 +7360,7 @@ export class Manager {
     batchReserved: boolean,
     supervised?: SupervisedRestart,
   ): Promise<ControlReply> {
-    if (!batchReserved) this.reserved.add(entry.name);
+    if (!batchReserved) this.reserved.set(entry.name, resumeOwner(entry));
     try {
       // Unit B F5(b): recover the STATIC identity's nkey seed from the adopted credential (the
       // creds file embeds it) so the manager stays this incarnation's RENEWAL OWNER across a
@@ -7715,7 +7748,7 @@ export class Manager {
     const cooling = this.coolingCount();
     let reserved = 0;
     let launching = 0;
-    for (const name of this.reserved) {
+    for (const name of this.reserved.keys()) {
       const placed = this.reservedLive.has(name);
       if (!placed) reserved++;
       if (!placed || this.agents.has(name)) launching++;
@@ -7745,6 +7778,60 @@ export class Manager {
         ? `waiting frees a slot only if an unsettled launch fails (${o.launching} pending); otherwise despawn one`
         : "waiting frees no slot; despawn one";
     return `at capacity (${this.occupancyText(o)}); ${remedy}`;
+  }
+
+  /**
+   * The owner a launch belongs to, read ONCE so the per-owner ceiling, the agent's addressing
+   * triple and the user-mode provisioner cannot charge three different owners for one seat. A
+   * static or open mesh has one owner by construction; a user-auth mesh takes the spec's owner,
+   * else the owner of the principal that asked, which is what {@link provisionUserAgent} resolves
+   * from the same two values (it refuses outright where this falls back, so the two never disagree
+   * on an admitted launch).
+   */
+  private launchOwner(opts: Pick<StartAgentOpts, "owner">, spawner?: string): string {
+    if (!this.userMode) return DEV_OWNER;
+    const asked = spawner === undefined ? undefined : parsePrincipalKey(spawner)?.owner;
+    return opts.owner ?? (asked?.startsWith("u_") ? asked : DEV_OWNER);
+  }
+
+  /** The owner of a seat this manager supervises, by the same rule {@link launchOwner} admitted it
+   *  under: a user-mode seat records its derived owner, and every other seat is the mesh's one owner. */
+  private seatOwner(a: Pick<ManagedAgent, "userOwner">): string {
+    return a.userOwner ?? DEV_OWNER;
+  }
+
+  /**
+   * Live seats this manager holds for one owner: the seats it supervises, plus the launches it has
+   * reserved for that owner and not yet placed. It deliberately does NOT count cooling stamps — a
+   * cooling slot is a seat that already freed, and the recycle floor it holds is a global
+   * fork-bomb bound (P4c), not one tenant's occupancy. Mirrors {@link occupancy}'s reserved rule,
+   * so a reservation stops being counted twice the moment its seat reaches `agents`.
+   */
+  private ownerSeats(owner: string): number {
+    let seats = 0;
+    for (const a of this.agents.values()) if (this.seatOwner(a) === owner) seats++;
+    for (const [name, reservedFor] of this.reserved)
+      if (reservedFor === owner && !this.reservedLive.has(name)) seats++;
+    return seats;
+  }
+
+  /**
+   * The per-owner ceiling, consulted at accept: `undefined` admits the launch, and a refusal
+   * carries the owner's count and the cap so a caller can render a remedy and a script can decide
+   * without re-reading prose. Distinct from {@link capacityRefusal}, which bounds the HOST: that
+   * one frees when anyone stops a seat or a cooling slot expires, this one frees only when THIS
+   * owner stops one of its own, or the operator raises the cap, so they cannot share a sentence.
+   */
+  private seatCapRefusal(owner: string): EpEnvelopeError | undefined {
+    const cap = this.seatCap;
+    if (cap === SEAT_CAP_UNLIMITED) return undefined;
+    const seats = this.ownerSeats(owner);
+    if (seats < cap) return undefined;
+    return seatCapRefused(
+      `owner ${owner} holds ${seats} of the ${cap} seat${cap === 1 ? "" : "s"} manager ${this.managerInstanceId} admits per owner; ` +
+        `stop one of that owner's seats, or ask the operator who runs this manager for a higher seat cap`,
+      { owner, seats, cap },
+    );
   }
 
   private async opStop(args: Record<string, unknown>, caller: string, admin: boolean): Promise<ControlReply> {

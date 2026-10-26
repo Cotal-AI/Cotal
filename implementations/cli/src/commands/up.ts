@@ -73,7 +73,11 @@ import { Kvm } from "@nats-io/kv";
 import {
   assertManagerName,
   readManagerName,
+  readManagerSeatCap,
   recordManagerName,
+  recordManagerSeatCap,
+  parseSeatCapFlag,
+  seatCapText,
   assertRecordIdentity,
   formatRecord,
   identityRecord,
@@ -368,6 +372,7 @@ export const upFlags: FlagSpec[] = [
   { name: "runtime", type: "string", value: "<name>", description: "agent runtime for the mesh manager (default pty; extension runtimes are explicit-only, see `cotal runtimes`); with -f overrides the manifest's runtime" },
   { name: "max-sessions", type: "string", value: "<n>", description: "live-session ceiling for the mesh manager (default 64; one session per console pane, so size for agents × panes). Recorded and reused by later manager launches" },
   { name: "manager-name", type: "string", value: "<name>", description: "name this root's manager for who --all, the manager choice and --on; kept for later starts" },
+  { name: "seat-cap", type: "string", value: "<n|unlimited>", description: "live seats this root's manager admits per owner (default unlimited); kept for later starts" },
   { name: "no-manager", type: "boolean", description: "broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager (refuses on a mesh whose manager is live)" },
   { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "launch a whole mesh from a manifest" },
   { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
@@ -435,6 +440,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
   // its own checks for maintenance re-entries, which do not pass through this validation.
   parsePositiveIntegerFlag("--max-sessions", args.values["max-sessions"] as string | undefined);
+  parseSeatCapFlag("--seat-cap", args.values["seat-cap"] as string | undefined);
   parseMaxFileStore(args.values["max-file-store"] as string | undefined);
   // The timeout belongs to the auth callout, which only a user-auth space has. A manifest or a
   // restore starts the broker its own record describes, so neither takes it.
@@ -888,6 +894,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     "tls-cert"?: string; "tls-key"?: string;
     "max-sessions"?: string;
     "manager-name"?: string;
+    "seat-cap"?: string;
     "no-manager"?: boolean;
     json?: boolean; plain?: boolean;
     __restoreAttempt?: string;
@@ -897,6 +904,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   };
   if (freshTeamBoot && (!values.file || values.restore || values.__restoreAttempt || values.__ordinaryResumeAttempt || values["rotate-sys"] || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "fresh team boot accepts one manifest and its selected lifetime, not a restore, rotation or manager-free override");
   if (values["manager-name"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--manager-name names the manager a plain cotal up starts; it cannot be combined with --restore, --file or --no-manager");
+  if (values["seat-cap"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--seat-cap caps the manager a plain cotal up starts; it cannot be combined with --restore, --file or --no-manager");
   // `space create` and `down` refuse a root other local accounts can write, so `up` refuses it too,
   // before anything is written: a stack started there could not be stopped from it.
   protectedLocalDirectory(canonicalRoot(cotalRoot()), "the project root");
@@ -1347,6 +1355,18 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       if (managerRecordState(undefined, undefined, named.space, named.root).state === "alive")
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${named.space}, and it keeps the name it started with`, { target: { root: named.root, space: named.space }, remedy: `stop it with cotal down, then run cotal up --manager-name ${shellWord(name)}` });
       if (!values["dry-run"]) recordManagerName(named, name);
+    }
+  }
+  // `--seat-cap` is recorded the same way, and read by the manager at each start, so a repair, a
+  // resume or a bare `up` after `down` keeps a ceiling the operator set instead of reopening the
+  // host to one owner. A running manager keeps the cap it started with.
+  if (values["seat-cap"] !== undefined) {
+    const cap = parseSeatCapFlag("--seat-cap", values["seat-cap"])!;
+    const capped = { root: cotalRoot(), space: values.space ?? folderSpace() };
+    if (readManagerSeatCap(capped) !== cap) {
+      if (managerRecordState(undefined, undefined, capped.space, capped.root).state === "alive")
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${capped.space}, and it keeps the seat cap it started with`, { target: { root: capped.root, space: capped.space }, remedy: `stop it with cotal down, then run cotal up --seat-cap ${seatCapText(cap)}` });
+      if (!values["dry-run"]) recordManagerSeatCap(capped, cap);
     }
   }
 
