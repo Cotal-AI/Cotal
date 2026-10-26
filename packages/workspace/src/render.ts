@@ -99,6 +99,12 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
               : `start it again with \`cotal up\` in ${d.root}`)
           : parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
       const broker = d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`;
+      // A legacy root whose space is registered for another folder, as a copy, a folder the name was
+      // taken over from, or one moved away from its recorded path. It names that folder, because
+      // `cotal up` here refuses the name or takes it over rather than starting what was asked for.
+      // Read before the journal sentence below: a legacy root holds no journal to name.
+      if (d.lastRun && d.recordedRoot !== undefined && d.stackRemedy !== undefined)
+        return parts(`the mesh "${d.stackSpace}" in ${d.root} last ran at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid address"}, and "${d.stackSpace}" is registered for ${d.recordedRoot}, not for this folder`, d.stackRemedy);
       if (d.home === undefined && d.recordedRoot !== undefined && d.stackRemedy !== undefined)
         return parts(`the stack journal in ${d.root} was recorded at ${d.recordedRoot}, so this folder is a copy or was moved from there`, d.stackRemedy);
       if (d.lastRun) return parts(`the mesh${d.stackSpace === undefined ? "" : ` "${d.stackSpace}"`} in ${d.root} last ran at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid address"}, and no space is registered for it here`, `start it again with \`cotal up\` in ${d.root}`);
