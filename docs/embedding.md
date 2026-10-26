@@ -419,11 +419,11 @@ to 86400 seconds. It is a trusted-host input for the renewal rehearsal, and no r
 sets it. `issuerSessionTtlSeconds` sets the credential lifetime of the plane's held issuer session
 the same way, bounded to 5 to 300 seconds, with the five-minute `issuer` lifetime as the default. SPEC §13.1 and §13.6 define the view.
 
-The auth plane can renew a registered manager's
-five standing credentials from the current service registration. Run-driver renewal still
-refuses without an authoritative activated-run reader, so these handles do not yet make a
-complete pooled auth and delivery host. A fresh auth plane can initialize without a
-delivery-admin responder. Reclaiming a held claim from a dead predecessor needs the delivery
+The auth plane can renew a registered manager's five standing credentials from the current
+service registration. Run-driver renewal reads the hosted run attempt and checks its active
+fence as well as the manager's open issuance gate and process epoch. A moved gate or run
+fence refuses issuance. These primitives do not establish a complete pooled deployment.
+A fresh auth plane can initialize without a delivery-admin responder. Reclaiming a held claim from a dead predecessor needs the delivery
 instance first: its admin rail must complete the broker connection-liveness sweep before the
 auth plane takes the claim. An absent or inconclusive oracle refuses the reclaim.
 
@@ -1180,34 +1180,31 @@ low-level operator primitives. Handle them as account-authority material:
 
 ## Hosted composition gaps
 
-The primitives above are present as exports, but four capabilities are **not** cleanly composable
-from the public contract today. Each is tied to work in flight; a host either waits for the seam or
-scopes the capability out. None is a wire concern.
+Three composition limits remain. A host must supply the missing isolation or integration,
+or leave the affected capability unavailable.
 
-1. **Delivery immediate live eviction and a fully-hosted membership feed.** The renewable
-   `membership-rw.creds` is now a `SecretStore` kind. `startMembership` reads it through the
-   injected store, and the manager re-signs it there. The graph-feed writer therefore renews on a hosted
-   backend (its data connection adopts each generation on a preflight-proven 75% timer). What still
-   reads from a fixed on-disk path are the *static* `membership-observer.creds` and
-   `connection-evictor.creds` ($SYS creds, minted at the `up` that provisions the account and renewed by `up --rotate-sys`) and `membership.json`
-   (`{accountId}`, non-secret config); those, plus the private provisioning wrapper, keep immediate
-   live eviction and a fully-hosted feed a partial gap. A host that re-mints the observer into the
-   injected store under the same system signer and scope has it adopted by the running feed at 75%
-   of its lifetime. Missing files degrade membership to
-   traffic-only and make live eviction refuse (loudly). The supported delivery contract here is the
-   Plane-3 durable backstop.
-2. **Supervisor signer isolation.** `ManagerOptions.secretStore` now injects the one `SecretStore` the
+Membership and live eviction already read their credentials through `SecretStore`.
+`startMembership` reads the data-account writer and system-account observer there; eviction
+reads the observer and evictor pair on each operation. Both use per-space keys and check
+that the observer names the daemon's account. The feed derives that account from the
+daemon's credential, without `membership.json`. The host still owns provisioning and
+rotation. An absent observer leaves the feed traffic-only; missing eviction authority
+refuses eviction. The membership reader can adopt a host-renewed observer with the same
+issuer and scope at 75% of its lifetime.
+
+1. **Supervisor signer isolation.** `ManagerOptions.secretStore` now injects the one `SecretStore` the
    manager reads/writes every secret through, including the composed `SpaceAuth`
    signer (the split trust records), its daemon-cred renewal, and its per-agent kinds. What remains is process
    isolation: the manager still decrypts the signer in-process at its uid, so untrusted agent children
    must run under a different uid/container/mount namespace or behind a future remote signer.
-3. **Per-space lifecycle on a shared broker.** The trust layer is multi-space
+2. **Per-space lifecycle on a shared broker.** The trust layer is multi-space
    (`createBrokerAuth` + `createSpaceAccountAuth` + N-space `serverConfig`, persisted as
-   `broker.json` + `account.<key>.json`) and `cotal up` renders the whole tenant list, but there is
-   no per-space provisioning verb and no per-space teardown/backup/restore: the CLI's broker-wide
-   lifecycle verbs refuse on a multi-space root, naming the tenants.
-   This is the remaining multi-space operator layer.
-4. **A non-Better-Auth production IdP.** The exchange core (`createIdpBridge`) is EdDSA-generic, but
+   `broker.json` + `account.<key>.json`) and `cotal up` renders the whole tenant list. The CLI
+   still lacks tenant-account provisioning and per-space teardown/backup/restore on that
+   broker. Its broker-wide lifecycle verbs refuse on a multi-space root, naming the tenants.
+   The existing `cotal space add` registers a connection, and `space delete` removes a
+   space's streams; neither supplies that tenant-account lifecycle.
+3. **A non-Better-Auth production IdP.** The exchange core (`createIdpBridge`) is EdDSA-generic, but
    the stock provider and login client are Better-Auth-endpoint-shaped, `cotalAuthProvider`
    self-registers on import (colliding with a host-owned provider under `resolveAuthProvider`), and
    the login flow speaks Better Auth's device-code endpoints. A different IdP is a host-built auth
@@ -1231,7 +1228,7 @@ place and keep:
 | `delivery.creds` | standing scoped cred | `SecretStore` or `--creds` | `SecretStore` (delivery) |
 | actor ledger, IdP pin | authorization + trust config | ambient `userAuthStateDir(findCotalRoot(), space)` | none (root-relative; not `store`/`COTAL_HOME`) |
 | `membership-rw.creds` | standing scoped cred | `SecretStore` | `SecretStore` (delivery + manager renewal) |
-| membership-observer / connection-evictor creds + `membership.json` | scoped $SYS creds / config | workspace filesystem | none (see gap 1) |
+| membership-observer / connection-evictor creds | scoped $SYS creds | per-space `SecretStore` keys | injected `SecretStore`; account identity is checked against the daemon credential, not `membership.json` |
 | manager agent creds, actor tokens, sentinel creds | lifecycle authority | `SecretStore` | `SecretStore` (manager `secretStore`) |
 | `~/.cotal/meshes/space.<key>.json` record (holds IdP trust pins/root pointers) | non-secret, integrity-critical | machine home | process-global `COTAL_HOME` only |
 | auth-health, renewal records | non-secret diagnostics | workspace filesystem | `workspaceRoot` |
