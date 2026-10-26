@@ -31,24 +31,41 @@
  * binding composed from core exactly as `runDelivery` binds it (same endpoint options, lease, and
  * `startPlane3`), without the CLI runner and membership feed around it.
  *
+ * `--watch-presence false` builds every seat without the presence watch (it still registers and
+ * heartbeats), so the difference against a default run is what the per-seat watch costs;
+ * `--watch-channels false` does the same for the channel-registry watch.
+ *
+ * `--ram` adds the RAM profile. The broker's live heap and goroutines are read from its pprof
+ * endpoint after a forced GC at each step of the build-up (empty, message streams, KV buckets and
+ * registries, provisioned durables, delivery daemons, seats), so each step's delta is that part's
+ * memory; the final heap is also split by the functions that allocated it (consumers, streams,
+ * connections) with its top allocation sites. The delivery daemon and seat processes report V8's
+ * view of their memory and write a heap snapshot after the window, summarised by class. Every
+ * process is also read as RSS, PSS and USS (`procMem`), because the RSS of many Node processes
+ * double-counts the `node` binary they share.
+ *
  * Seats run in CHILD PROCESSES (`--seat-procs`), never in this process, so the broker's CPU and the
  * seats' CPU stay separately readable from /proc. Credentials reach a child over IPC, never argv.
  *
  * Run (needs nats-server 2.15.1 on PATH or NATS_SERVER_BIN, and an fd limit above 2N):
- *   ulimit -n 65536; pnpm -C packages/core smoke:seat-idle-load --seats 500 --space-size 10
+ *   ulimit -n 65536; pnpm -C packages/core smoke:seat-idle-load --seats 500 --space-size 10 [--ram]
  */
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { availableParallelism, tmpdir, totalmem } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { getHeapSpaceStatistics, writeHeapSnapshot } from "node:v8";
+import { jetstreamManager } from "@nats-io/jetstream";
 import {
   CotalEndpoint, LEASE_TTL_MS, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable,
   lastKvEntries, mintCreds, mintLifecycleUid, newIdentity, provisionAgent, serverConfig, setupSpaceStreams,
   type SpaceAuth,
 } from "../src/index.js";
+import { spaceMessageStreamConfigs, standaloneConnectOpts } from "../src/streams.js";
+import { dialerFor } from "../src/endpoint.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, brokerHeap, heapSnapshotTop, procMem, teardownOnSignal, type BrokerHeap, type BrokerPart } from "@cotal-ai/smoke-kit";
 
 // ---------------------------------------------------------------------------------------------
 // shared shapes
@@ -58,12 +75,16 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 interface SeatSpec { space: string; id: string; name: string; uid: string; creds: string }
 /** One space's delivery daemon. Carries its credential, so it travels over IPC only. */
 interface DaemonSpec { space: string; id: string; creds: string }
-interface SeatJob { kind: "seats"; servers: string; seats: SeatSpec[]; heartbeatMs?: number; concurrency: number }
+interface SeatJob { kind: "seats"; servers: string; seats: SeatSpec[]; heartbeatMs?: number; watchPresence: boolean; watchChannels: boolean; concurrency: number }
 interface DaemonJob { kind: "daemons"; servers: string; daemons: DaemonSpec[] }
+/** V8's view of a child's memory, in MB: the JS heap in use and what V8 holds for it, memory
+ *  outside the heap (Buffers, ArrayBuffers), and compiled code. */
+interface NodeMem { heapUsedMb: number; heapTotalMb: number; externalMb: number; arrayBuffersMb: number; codeMb: number }
+type ChildCmd = { cmd: "sample" | "readcost" | "stop" } | { cmd: "snapshot"; path: string };
 /** What a seat child reports when asked to sample. `ages` are the ages (ms) of every same-space
  *  peer's last heartbeat as each seat's roster holds it; `missing` counts peers a seat's roster
  *  should hold and does not. */
-interface SeatSample { up: number; failed: number; errors: number; ages: number[]; missing: number; stale: number; cpuMs: number; rssMb: number }
+interface SeatSample { up: number; failed: number; errors: number; ages: number[]; missing: number; stale: number; cpuMs: number; rssMb: number; mem: NodeMem }
 /** What one on-demand roster read costs, from one seat per space: its latency, and the records and
  *  bytes the broker sends for it (subject + value of every record, not counting framing). */
 interface ReadCost { ms: number[]; msgs: number[]; bytes: number[] }
@@ -88,6 +109,14 @@ function pct(xs: number[], p: number): number {
 }
 
 const ipcSend = (m: unknown): Promise<void> => new Promise((r) => { process.send!(m, () => r()); });
+const MB = 1048576;
+const nodeMem = (): NodeMem => {
+  const m = process.memoryUsage();
+  const code = getHeapSpaceStatistics().filter((s) => s.space_name.startsWith("code")).reduce((a, s) => a + s.space_used_size, 0);
+  return { heapUsedMb: m.heapUsed / MB, heapTotalMb: m.heapTotal / MB, externalMb: m.external / MB, arrayBuffersMb: m.arrayBuffers / MB, codeMb: code / MB };
+};
+/** Write a heap snapshot where the orchestrator asked, after a full GC when one is exposed. */
+const snapshot = (path: string): string => { (globalThis as { gc?: () => void }).gc?.(); return writeHeapSnapshot(path); };
 const nextJob = <T>(): Promise<T> => new Promise((r) => process.once("message", (m) => r(m as T)));
 
 // ---------------------------------------------------------------------------------------------
@@ -113,8 +142,10 @@ async function runSeats(job: SeatJob): Promise<void> {
       lifecycleUid: s.uid,
       channels: [CHANNEL],
       card: { id: s.id, name: s.name, role: ROLE, kind: "agent", meta: { connector: "claude-code", model: "claude-opus-5-5", host: "seat-host", cwd: "/home/user/project" } },
-      // MeshAgent reads the roster on demand instead of watching it (AGENT-979).
-      watchPresence: false,
+      // MeshAgent reads the roster on demand instead of watching it (AGENT-979); the job's
+      // default says so, and the RAM profile can switch the watches on to price them.
+      watchPresence: job.watchPresence,
+      watchChannels: job.watchChannels,
       ...(job.heartbeatMs !== undefined ? { heartbeatMs: job.heartbeatMs } : {}),
     });
     ep.on("error", note);
@@ -133,8 +164,9 @@ async function runSeats(job: SeatJob): Promise<void> {
   const readers = new Map<string, CotalEndpoint>();
   for (const { ep, space } of eps) if (!readers.has(space)) readers.set(space, ep);
   for (;;) {
-    const cmd = await nextJob<{ cmd: "sample" | "readcost" | "stop" }>();
+    const cmd = await nextJob<ChildCmd>();
     if (cmd.cmd === "stop") break;
+    if (cmd.cmd === "snapshot") { await ipcSend({ snapshot: snapshot(cmd.path) }); continue; }
     if (cmd.cmd === "readcost") {
       const cost: ReadCost = { ms: [], msgs: [], bytes: [] };
       for (const ep of [...readers.values()].slice(0, 20)) {
@@ -163,7 +195,7 @@ async function runSeats(job: SeatJob): Promise<void> {
     const cpu = process.cpuUsage(cpu0);
     // Every seat's view, but never more ages than one IPC message should carry.
     const step = Math.max(1, Math.ceil(ages.length / 200_000));
-    await ipcSend({ sample: { up, failed, errors, ages: ages.filter((_, i) => i % step === 0), missing, stale, cpuMs: (cpu.user + cpu.system) / 1000, rssMb: process.memoryUsage().rss / 1048576 } satisfies SeatSample });
+    await ipcSend({ sample: { up, failed, errors, ages: ages.filter((_, i) => i % step === 0), missing, stale, cpuMs: (cpu.user + cpu.system) / 1000, rssMb: process.memoryUsage().rss / MB, mem: nodeMem() } satisfies SeatSample });
   }
   await Promise.all(eps.map(({ ep }) => ep.stop().catch(() => {})));
   await ipcSend({ stopped: true });
@@ -197,7 +229,12 @@ async function runDaemons(job: DaemonJob): Promise<void> {
     eps.push(ep);
   }
   await ipcSend({ ready: true });
-  await nextJob<{ cmd: "stop" }>();
+  for (;;) {
+    const cmd = await nextJob<ChildCmd>();
+    if (cmd.cmd === "stop") break;
+    if (cmd.cmd === "snapshot") await ipcSend({ snapshot: snapshot(cmd.path) });
+    else await ipcSend({ sample: { mem: nodeMem() } });
+  }
   for (const r of renewals) clearInterval(r);
   await Promise.all(eps.map((ep) => ep.stop().catch(() => {})));
   await ipcSend({ stopped: true });
@@ -237,6 +274,9 @@ const CONCURRENCY = num("concurrency", "8");
 const SETTLE_S = num("settle", "20");
 const SECONDS = num("seconds", "60");
 const HEARTBEAT = flag("heartbeat-ms", ""); // empty: the endpoint's own default
+const WATCH_PRESENCE = flag("watch-presence", "true") !== "false";
+const WATCH_CHANNELS = flag("watch-channels", "true") !== "false";
+const RAM = argv.includes("--ram");
 const NATS_BIN = process.env.NATS_SERVER_BIN ?? "nats-server";
 
 const REPO = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", cwd: import.meta.dirname }).trim();
@@ -272,6 +312,7 @@ const memAvailableMb = (): number => Number(/MemAvailable:\s+(\d+) kB/.exec(read
 // ---- broker -------------------------------------------------------------------------------------
 const PORT = await pickFreePort();
 const MON_PORT = await pickFreePort();
+const PROF_PORT = RAM ? await pickFreePort() : 0;
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const tag = randomUUID().slice(0, 6);
 const brokerAuth = await createBrokerAuth(`seat-idle-load-${tag}`);
@@ -279,7 +320,7 @@ const spaceNames = Array.from({ length: SPACES }, (_, i) => `idle-${tag}-${i}`);
 const accounts = await Promise.all(spaceNames.map((s) => createSpaceAccountAuth(brokerAuth, s)));
 const auths: SpaceAuth[] = accounts.map((a) => composeSpaceAuth(brokerAuth, a));
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-writeFileSync(join(dir, "server.conf"), serverConfig(brokerAuth, accounts, { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }) + `\nhttp: 127.0.0.1:${MON_PORT}\n`);
+writeFileSync(join(dir, "server.conf"), serverConfig(brokerAuth, accounts, { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }) + `\nhttp: 127.0.0.1:${MON_PORT}\n` + (RAM ? `prof_port: ${PROF_PORT}\n` : ""));
 const srv = spawn(NATS_BIN, ["-c", join(dir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
 const releaseBroker = teardownOnSignal(srv, dir);
 // The broker's warnings and errors are part of the result (an fd limit, a slow consumer, a refused
@@ -316,7 +357,7 @@ const startChild = (job: SeatJob | DaemonJob, onMessage: (m: Record<string, unkn
   child.send(job);
   return child;
 };
-const ask = (child: ChildProcess, cmd: { cmd: "sample" | "readcost" | "stop" }, key: string): Promise<Record<string, unknown>> => new Promise((resolve, reject) => {
+const ask = (child: ChildProcess, cmd: ChildCmd, key: string): Promise<Record<string, unknown>> => new Promise((resolve, reject) => {
   const on = (m: Record<string, unknown>) => { if (key in m) { child.off("message", on); resolve(m); } };
   child.on("message", on);
   child.once("exit", (c) => reject(new Error(`child ${child.pid} exited ${c} before answering ${key}`)));
@@ -338,15 +379,37 @@ try {
   // space's streams, buckets and daemon, not only its own connection.
   await wait(500);
   const boot = { rss: procRssMb(srv.pid!), jsz: await monitor<Jsz>("/jsz") };
+  /** The broker at each step of the build-up, read only under --ram. */
+  const steps: Array<{ step: string; rssMb: number; heap: BrokerHeap; jsz: Jsz; varz: Record<string, number> }> = [];
+  const step = async (name: string) => {
+    if (!RAM) return;
+    const heap = await brokerHeap(`http://127.0.0.1:${PROF_PORT}`);
+    steps.push({ step: name, rssMb: procMem(srv.pid!).rssMb, heap, jsz: await monitor<Jsz>("/jsz"), varz: await monitor("/varz") });
+  };
+  await step("empty broker");
 
   // ---- per space: streams, provisioner, seats' footprints, delivery creds ----------------------
+  // In three passes over the spaces, so the broker can be read between them: the message streams,
+  // then the rest of the space's assets (KV buckets, registries, the object store), then the seats'
+  // durables and ACL rows. `setupSpaceStreams` re-adds the message streams idempotently.
   const tSetup = performance.now();
   const seats: SeatSpec[] = [];
   const daemons: DaemonSpec[] = [];
+  const provCredsOf: string[] = [];
+  for (let s = 0; s < SPACES; s++) {
+    provCredsOf.push(await mintCreds(auths[s], newIdentity(), "provisioner"));
+    // Dialled as `setupSpaceStreams` dials, so the provisioner's scoped inbox prefix applies.
+    const nc = await dialerFor(SERVERS)({ servers: SERVERS, ...standaloneConnectOpts({ creds: provCredsOf[s], tls: false }) });
+    const jsm = await jetstreamManager(nc);
+    for (const definition of spaceMessageStreamConfigs(spaceNames[s])) await jsm.streams.add(definition);
+    await nc.drain();
+  }
+  await step("+ message streams");
+  for (let s = 0; s < SPACES; s++) await setupSpaceStreams({ servers: SERVERS, space: spaceNames[s], creds: provCredsOf[s] });
+  await step("+ KV buckets, registries, object store");
   for (let s = 0; s < SPACES; s++) {
     const space = spaceNames[s], auth = auths[s];
-    const provCreds = await mintCreds(auth, newIdentity(), "provisioner");
-    await setupSpaceStreams({ servers: SERVERS, space, creds: provCreds });
+    const provCreds = provCredsOf[s];
     const prov = new CotalEndpoint({ space, servers: SERVERS, creds: provCreds, channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false, card: { name: "prov", role: "manager", kind: "endpoint" } });
     prov.on("error", () => {});
     await prov.start();
@@ -363,6 +426,7 @@ try {
     if ((s + 1) % Math.max(1, Math.floor(SPACES / 10)) === 0) console.error(`  … ${s + 1}/${SPACES} spaces provisioned (${((performance.now() - tSetup) / 1000).toFixed(0)}s)`);
   }
   const setupS = (performance.now() - tSetup) / 1000;
+  await step("+ seat durables and ACL rows");
 
   // ---- delivery daemons -------------------------------------------------------------------------
   let daemonReady!: () => void;
@@ -372,6 +436,7 @@ try {
   console.error(`  … ${SPACES} delivery daemon(s) ready`);
   await wait(2000);
   const base = { rss: procRssMb(srv.pid!), varz: await monitor("/varz"), jsz: await monitor<Jsz>("/jsz") };
+  await step("+ delivery daemons");
 
   // ---- seats ------------------------------------------------------------------------------------
   const perProc = Math.ceil(seats.length / SEAT_PROCS);
@@ -385,7 +450,7 @@ try {
     if (!mine.length) continue;
     let done!: (m: Record<string, unknown>) => void;
     allUp.push(new Promise((r) => { done = r; }));
-    seatKids.push(startChild({ kind: "seats", servers: SERVERS, seats: mine, concurrency: CONCURRENCY, ...(HEARTBEAT ? { heartbeatMs: Number(HEARTBEAT) } : {}) }, (m) => {
+    seatKids.push(startChild({ kind: "seats", servers: SERVERS, seats: mine, watchPresence: WATCH_PRESENCE, watchChannels: WATCH_CHANNELS, concurrency: CONCURRENCY, ...(HEARTBEAT ? { heartbeatMs: Number(HEARTBEAT) } : {}) }, (m) => {
       if (typeof m.progress === "number") {
         started.set(p, m.progress);
         console.error(`  … ${[...started.values()].reduce((a, b) => a + b, 0)}/${seats.length} seats started (${((performance.now() - tRamp) / 1000).toFixed(0)}s)`);
@@ -402,6 +467,7 @@ try {
 
   // ---- settle, then the measured idle window ------------------------------------------------------
   await wait(SETTLE_S * 1000);
+  await step("+ seats (settled)");
   const v0 = await monitor("/varz"), j0 = await monitor<Jsz>("/jsz");
   const b0 = procCpuMs(srv.pid!), d0 = procCpuMs(daemon.pid!), s0 = seatKids.map((c) => procCpuMs(c.pid!));
   const box0 = boxCpu();
@@ -421,6 +487,7 @@ try {
   const brokerRss = procRssMb(srv.pid!), daemonRss = procRssMb(daemon.pid!);
   const seatRss = seatKids.reduce((a, c) => a + procRssMb(c.pid!), 0);
   const memAvail = memAvailableMb();
+  const memAt = RAM ? { broker: procMem(srv.pid!), daemon: procMem(daemon.pid!), seats: seatKids.map((c) => procMem(c.pid!)) } : undefined;
 
   const N = seatsUp || 1;
   const perMin = (x: number) => (x / winS) * 60 / N;
@@ -434,7 +501,7 @@ try {
   row("git sha", SHA);
   row("nats-server", `${serverVersion} (${NATS_BIN})`);
   row("host", `${availableParallelism()} cores, ${(totalmem() / 1073741824).toFixed(1)} GB`);
-  row("shape", `${SEATS} seats in ${SPACES} space(s) of ${SPACE_SIZE}, ${seatKids.length} seat process(es), heartbeat ${HEARTBEAT ? `${HEARTBEAT}ms (override)` : "endpoint default"}`);
+  row("shape", `${SEATS} seats in ${SPACES} space(s) of ${SPACE_SIZE}, ${seatKids.length} seat process(es), heartbeat ${HEARTBEAT ? `${HEARTBEAT}ms (override)` : "endpoint default"}, presence watch ${WATCH_PRESENCE ? "on" : "OFF"}, channel registry watch ${WATCH_CHANNELS ? "on" : "OFF"}`);
   row("setup (spaces + provisioning) (s)", setupS);
   row("seats up / failed", `${seatsUp} / ${seatsFailed}`);
   for (const e of startErrors) row("  start error", e);
@@ -489,6 +556,74 @@ try {
   console.log(`\n${"=".repeat(w + 34)}`);
   for (const [k, v] of rows) console.log(k === "" ? "" : `${k.padEnd(w)}  ${v}`);
   console.log(`${"=".repeat(w + 34)}\n`);
+
+  if (RAM && memAt) {
+    // ---- RAM profile ----------------------------------------------------------------------------
+    const f1 = (x: number) => (Number.isFinite(x) ? x.toFixed(1) : "n/a");
+    const f3 = (x: number) => (Number.isFinite(x) ? x.toFixed(3) : "n/a");
+    console.log(`RAM profile: ${SEATS} seats in ${SPACES} space(s) of ${SPACE_SIZE}, presence watch ${WATCH_PRESENCE ? "on" : "OFF"}, channel registry watch ${WATCH_CHANNELS ? "on" : "OFF"}\n`);
+    console.log("Broker, step by step (live heap after a forced GC; each delta is that step's memory):\n");
+    console.log("| step | RSS MB | live heap MB | Δ live heap MB | goroutine stacks MB | goroutines | streams | consumers | connections | subscriptions |");
+    console.log("|---|---|---|---|---|---|---|---|---|---|");
+    steps.forEach((st, i) => {
+      const prev = steps[i - 1];
+      console.log(`| ${st.step} | ${f1(st.rssMb)} | ${f1(st.heap.heapAllocMb)} | ${prev ? f1(st.heap.heapAllocMb - prev.heap.heapAllocMb) : ""} | ${f1(st.heap.stackInuseMb)} | ${st.heap.goroutines} | ${st.jsz.streams} | ${st.jsz.consumers} | ${st.varz.connections ?? 0} | ${st.varz.subscriptions ?? 0} |`);
+    });
+    const last = steps[steps.length - 1], before = steps.find((st) => st.step === "+ delivery daemons") ?? steps[0];
+    const parts = Object.keys(last.heap.heapByPart) as BrokerPart[];
+    console.log("\nBroker live heap and goroutines by part, at the end and per seat (the part comes from the functions on each allocation's stack):\n");
+    console.log("| part | live heap MB | per seat KB (all-in) | seats' share per seat KB | goroutines |");
+    console.log("|---|---|---|---|---|");
+    for (const p of parts)
+      console.log(`| ${p} | ${f1(last.heap.heapByPart[p])} | ${f1((last.heap.heapByPart[p] / N) * 1024)} | ${f1(((last.heap.heapByPart[p] - before.heap.heapByPart[p]) / N) * 1024)} | ${last.heap.goroutinesByPart[p]} |`);
+    const headroom = last.rssMb - last.heap.heapInuseMb - last.heap.stackInuseMb;
+    console.log(`| goroutine stacks | ${f1(last.heap.stackInuseMb)} | ${f1((last.heap.stackInuseMb / N) * 1024)} | ${f1(((last.heap.stackInuseMb - before.heap.stackInuseMb) / N) * 1024)} | ${last.heap.goroutines} |`);
+    console.log(`| heap spans not live (GC headroom, fragmentation) | ${f1(last.heap.heapInuseMb - last.heap.heapAllocMb)} | | | |`);
+    console.log(`| RSS beyond heap and stacks (runtime, freed-not-returned pages, binary) | ${f1(headroom)} | | | |`);
+    console.log("\nTop broker allocation sites (live heap at the end):\n");
+    for (const t of last.heap.topSites) console.log(`- ${t.site} (${t.part}): ${f1(t.mb)} MB, ${f1((t.mb / N) * 1024)} KB per seat`);
+
+    // JetStream assets by kind, and every connection's queued outbound bytes.
+    interface StreamDetail { name: string; state: { messages: number; bytes: number; num_subjects?: number; consumer_count: number }; consumer_detail?: Array<{ config?: { durable_name?: string } }> }
+    const jd = await monitor<{ account_details?: Array<{ stream_detail?: StreamDetail[] }> }>("/jsz?accounts=true&streams=true&consumers=true&config=true");
+    const kinds = new Map<string, { streams: number; durable: number; ephemeral: number; msgs: number; bytes: number; subjects: number }>();
+    for (const a of jd.account_details ?? []) for (const sd of a.stream_detail ?? []) {
+      const kind = sd.name.startsWith("KV_") ? "KV bucket" : sd.name.startsWith("OBJ_") ? "object store" : sd.name.replace(/_.*/, "");
+      const k = kinds.get(kind) ?? { streams: 0, durable: 0, ephemeral: 0, msgs: 0, bytes: 0, subjects: 0 };
+      k.streams++; k.msgs += sd.state.messages; k.bytes += sd.state.bytes; k.subjects += sd.state.num_subjects ?? 0;
+      for (const c of sd.consumer_detail ?? []) { if (c.config?.durable_name) k.durable++; else k.ephemeral++; }
+      kinds.set(kind, k);
+    }
+    console.log("\nJetStream assets by kind (all spaces):\n");
+    console.log("| kind | streams | durable consumers | ephemeral consumers | messages | MB stored | subjects |");
+    console.log("|---|---|---|---|---|---|---|");
+    for (const [kind, k] of [...kinds].sort((a, b) => b[1].durable + b[1].ephemeral - (a[1].durable + a[1].ephemeral)))
+      console.log(`| ${kind} | ${k.streams} | ${k.durable} | ${k.ephemeral} | ${k.msgs} | ${f3(k.bytes / MB)} | ${k.subjects} |`);
+    const cz = await monitor<{ connections?: Array<{ pending_bytes?: number; subscriptions?: number }> }>("/connz?limit=100000");
+    const conns = cz.connections ?? [];
+    console.log(`\nconnections ${conns.length}, outbound bytes queued ${conns.reduce((a, c) => a + (c.pending_bytes ?? 0), 0)}, subscriptions per connection ${f1(conns.reduce((a, c) => a + (c.subscriptions ?? 0), 0) / Math.max(1, conns.length))}`);
+
+    // Node processes: from outside (RSS, PSS, USS) and from V8, then a heap snapshot of each kind.
+    const daemonMem = ((await guard(ask(daemon, { cmd: "sample" }, "sample"))).sample as { mem: NodeMem }).mem;
+    const seatUss = memAt.seats.reduce((a, m) => a + m.ussMb, 0), seatPss = memAt.seats.reduce((a, m) => a + m.pssMb, 0);
+    const seatHeap = end.reduce((a, x) => a + x.mem.heapUsedMb, 0), seatExt = end.reduce((a, x) => a + x.mem.externalMb, 0);
+    console.log("\nProcesses at the end of the window:\n");
+    console.log("| process | RSS MB | PSS MB | USS MB | JS heap used MB | external MB | per seat USS KB |");
+    console.log("|---|---|---|---|---|---|---|");
+    console.log(`| broker | ${f1(memAt.broker.rssMb)} | ${f1(memAt.broker.pssMb)} | ${f1(memAt.broker.ussMb)} | | | ${f1((memAt.broker.ussMb / N) * 1024)} |`);
+    console.log(`| delivery daemon (${SPACES} space(s)) | ${f1(memAt.daemon.rssMb)} | ${f1(memAt.daemon.pssMb)} | ${f1(memAt.daemon.ussMb)} | ${f1(daemonMem.heapUsedMb)} | ${f1(daemonMem.externalMb)} | ${f1((memAt.daemon.ussMb / N) * 1024)} |`);
+    console.log(`| seat processes (${seatKids.length}) | ${f1(memAt.seats.reduce((a, m) => a + m.rssMb, 0))} | ${f1(seatPss)} | ${f1(seatUss)} | ${f1(seatHeap)} | ${f1(seatExt)} | ${f1((seatUss / N) * 1024)} |`);
+    const snaps: Array<[string, ChildProcess]> = [["delivery daemon", daemon], [`seat process 1 (${Math.min(perProc, seats.length)} seats)`, seatKids[0]]];
+    for (const [label, child] of snaps) {
+      const file = ((await guard(ask(child, { cmd: "snapshot", path: join(dir, `${child.pid}.heapsnapshot`) }, "snapshot"))).snapshot as string);
+      const top = heapSnapshotTop(file, 3);
+      rmSync(file, { force: true });
+      console.log(`\n${label} heap snapshot: ${f1(top.totalBytes / MB)} MB of objects; top classes by self size:`);
+      for (const t of top.top) console.log(`- ${t.name}: ${f1(t.bytes / MB)} MB in ${t.count} objects`);
+      console.log(`- script source ${f1(top.sources.bytes / MB)} MB in ${top.sources.scripts} scripts; largest by package: ${top.sources.byPackage.map((t) => `${t.name} ${f1(t.bytes / MB)} MB`).join(", ")}`);
+    }
+    console.log("");
+  }
 
   stopping = true;
   await Promise.all([...seatKids, daemon].map((c) => ask(c, { cmd: "stop" }, "stopped").catch(() => undefined)));
