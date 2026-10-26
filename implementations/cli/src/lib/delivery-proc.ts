@@ -151,10 +151,14 @@ export async function stopOldHostingManagerIfPresent(
     console.error("• stopping an old Plane-3-hosting manager before starting the delivery daemon (cutover preflight)");
     // stopManager THROWS rather than reporting a stop it did not achieve (a refused stop, or a process
     // whose death it could not confirm). Letting that throw propagate is the point: the daemon must not
-    // start beside a manager still bound to Plane 3. The stop is bound to the judged pid because a record
-    // a successor published since names a process this verdict never judged; ensureDelivery's own
-    // verdict reads that record, and the artifacts beside it are that successor's.
-    if (await stopManager(space, { pid: record.pid })) clearManagerArtifacts(space);
+    // start beside a manager still bound to Plane 3. A false result means the judged record changed
+    // or disappeared, not that this manager stopped. Refuse rather than treating a successor's marker
+    // as proof that the predecessor released Plane 3, and leave the successor's artifacts untouched.
+    if (!await stopManager(space, { pid: record.pid }))
+      throw new Error(
+        `the manager record changed or disappeared during the delivery cutover preflight (judged pid ${record.pid}); refusing to start the daemon. Retry once the manager restart has completed.`,
+      );
+    clearManagerArtifacts(space);
   }
 }
 

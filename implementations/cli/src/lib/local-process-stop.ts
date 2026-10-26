@@ -30,8 +30,8 @@ export interface StopLocalProcessOptions {
   /** Whether a live process's command line is this component's. Consulted only for a record with no
    *  identity pin, where the command line is the only evidence of what the pid now runs. */
   owns?: (command: string) => boolean;
-  /** The pid the caller decided to stop. A record naming another pid was published by a successor
-   *  after that decision, so the stop leaves it untouched and returns false. */
+  /** The pid the caller decided to stop. A record naming another pid, an absent record or an empty
+   *  husk cannot confirm that target stopped. Leave those records and artifacts untouched and return false. */
   pid?: number;
 }
 
@@ -91,6 +91,9 @@ export async function stopLocalProcess(
   const pidPath = localProcessPath(component.pidFile, context);
   const found = processRecorded(component, context);
   const rawPid = readPidfile(pidPath);
+  // Artifact-only and empty-husk cleanup is valid for an unbound stop, but says nothing about a
+  // process a caller already judged live. A pid-bound stop must not report that cleanup as its stop.
+  if (options.pid !== undefined && (rawPid === undefined || rawPid === "")) return false;
   if (rawPid === undefined) return found;
 
   if (rawPid.startsWith("removing:")) {
