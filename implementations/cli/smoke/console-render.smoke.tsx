@@ -15,12 +15,14 @@
 import { render } from "ink";
 import React from "react";
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import { PassThrough, Writable } from "node:stream";
 import { peerLabel, type AgentCard, type CotalEndpoint, type Presence } from "@cotal-ai/core";
 import { App } from "../src/console/app.js";
 import { StatusBar } from "../src/console/ui/StatusBar.js";
 import { Topo, type TopoVariant } from "../src/console/ui/topo/Topo.js";
 import { MEMBERSHIP_STALE_MS } from "../src/console/ui/topo/model.js";
+import { sidePaneSize } from "../src/console/ui/theme.js";
 import type { FeedEntry, MembershipView } from "../src/view/mesh-view.js";
 
 let pass = 0, fail = 0;
@@ -284,6 +286,98 @@ console.log("6. every topology lens labels a peer as the roster does");
     check(`the ${lens} prints each peer's shared label after its status dot`,
       labels.every((l) => out.includes("○ " + l)), out.slice(0, 800));
     check(`...and never the bracketed role`, !out.includes("ops]x[y"), out.slice(0, 800));
+  }
+}
+
+console.log("7. the roster and DM lens share pane geometry without changing their rendered split");
+{
+  // Rendering alone cannot catch two identical copies. Keep the sizing rules in one module too.
+  const source = (file: string) => readFileSync(new URL(file, import.meta.url), "utf8");
+  const appSource = source("../src/console/app.tsx");
+  const dmSource = source("../src/console/ui/Dm.tsx");
+  const themeSource = source("../src/console/ui/theme.ts");
+  for (const [name, text] of [["roster", appSource], ["DM", dmSource]]) {
+    check(`${name} imports the shared sizing helper`, /import \{[^}]*\bsidePaneSize\b[^}]*\} from "[^"\n]*theme\.js"/.test(text));
+    check(`${name} computes its pane size once`, (text.match(/\bsidePaneSize\(/g) ?? []).length === 1);
+    check(`${name} has no local pane sizing formulas`, !text.includes("* 0.3)") && !text.includes("* 0.35)"));
+  }
+  check("the shared module owns each sizing formula once",
+    (themeSource.match(/\* 0\.3\)/g) ?? []).length === 1 && (themeSource.match(/\* 0\.35\)/g) ?? []).length === 1);
+  const widths = [40, 60, 79, 80, 100, 119, 120, 121, 160, 200, 300];
+  const expectedWidths = [24, 24, 24, 24, 30, 35, 36, 36, 36, 36, 36];
+  const heights = [5, 8, 9, 10, 20, 22, 23, 24, 30, 40, 60];
+  const expectedHeights = [3, 3, 3, 3, 7, 7, 8, 8, 8, 8, 8];
+  check("wide widths preserve the lower cap, ratio, floor and upper cap",
+    widths.every((w, i) => sidePaneSize(w, 20, false).w === expectedWidths[i]));
+  check("narrow heights preserve the lower cap, ratio, floor and upper cap",
+    heights.every((h, i) => sidePaneSize(79, h, true).h === expectedHeights[i]));
+  check("the unsplit dimension uses the full available body",
+    widths.every((w) => sidePaneSize(w, 20, true).w === w) &&
+    heights.every((h) => sidePaneSize(120, h, false).h === h));
+
+  class Observer extends EventEmitter {
+    space = "pane-geometry";
+    card = { id: "local.operator", name: "operator", kind: "endpoint", role: "operator" };
+    async start() {}
+    async stop() {}
+    getRoster(): Presence[] {
+      return ["alice", "bob"].map((name) => ({
+        card: { id: "local." + name, name, kind: "agent" }, status: "idle", ts: Date.now(),
+      }));
+    }
+    tap() {}
+    async listChannels() { return [{ channel: "general", messages: 0 }]; }
+    async channelHistory() { return []; }
+    async dmHistory() {
+      return [{ id: "geometry-dm", ts: Date.now(), from: { id: "local.alice", name: "alice" },
+        to: "local.bob", parts: [{ kind: "text", text: "geometry thread" }] }];
+    }
+    ref() { return this.card; }
+    async readMembership() { return { asOf: undefined, members: [] }; }
+    async watchMembership() { return { stop: async () => {} }; }
+  }
+  for (const [cols, rows, paneWidth, paneHeight] of [
+    [80, 25, 24, 20], [100, 25, 30, 20], [119, 25, 35, 20], [120, 25, 36, 20],
+    [79, 14, 79, 3], [79, 25, 79, 7], [79, 28, 79, 8],
+  ]) {
+    const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
+    stdin.isTTY = true;
+    stdin.setRawMode = () => stdin;
+    stdin.ref = () => stdin;
+    stdin.unref = () => stdin;
+    const frames: string[] = [];
+    const stdout = new Writable({ write(c, _e, cb) {
+      frames.push(strip(String(c))); cb();
+    } }) as unknown as NodeJS.WriteStream;
+    stdout.columns = cols; stdout.rows = rows; stdout.isTTY = true;
+    const app = render(<App ep={new Observer() as unknown as CotalEndpoint} canWrite={false} canControl={false} />,
+      { stdin, stdout, debug: true, patchConsole: false, exitOnCtrlC: false });
+    // Tabs occupy three rows and tiles one; the next border belongs to the body pane.
+    const sizeOfPane = (frame: string) => {
+      const lines = frame.split("\n");
+      const width = lines[4]?.indexOf("╮") + 1;
+      const bottom = lines.findIndex((line, i) => i > 4 && line.startsWith("╰"));
+      return { w: width, h: bottom - 4 + 1 };
+    };
+    try {
+      await waitForFrame(frames, "2 agents", 5_000);
+      check(`${cols}x${rows} loads the roster fixture`, frames.at(-1)?.includes("2 agents") === true, frames.at(-1));
+      check(`${cols}x${rows} roster paints its expected pane`,
+        JSON.stringify(sizeOfPane(frames.at(-1)!)) === JSON.stringify({ w: paneWidth, h: paneHeight }), frames.at(-1));
+      if (cols === 100) {
+        frames.length = 0; stdin.write("n");
+        await waitForFrame(frames, "NEEDS", 5_000);
+        check("the roster sizes against the body remaining after the needs-you column",
+          sizeOfPane(frames.at(-1)!).w === 24, frames.at(-1));
+      }
+      frames.length = 0; stdin.write("d");
+      await waitForFrame(frames, "geometry thread", 5_000);
+      check(`${cols}x${rows} loads the DM fixture`, frames.at(-1)?.includes("geometry thread") === true, frames.at(-1));
+      check(`${cols}x${rows} DM paints the same peer pane`,
+        JSON.stringify(sizeOfPane(frames.at(-1)!)) === JSON.stringify({ w: paneWidth, h: paneHeight }), frames.at(-1));
+    } finally {
+      app.unmount(); app.cleanup();
+    }
   }
 }
 

@@ -9,6 +9,7 @@ import { detachKey } from "../lib/attach-client.js";
 import { Tabs } from "./ui/Tabs.js";
 import { Tiles } from "./ui/Tiles.js";
 import { Roster, harnessTag } from "./ui/Roster.js";
+import { sidePaneSize } from "./ui/theme.js";
 import { Feed } from "./ui/Feed.js";
 import { NeedsYou } from "./ui/NeedsYou.js";
 import { Dm } from "./ui/Dm.js";
@@ -109,17 +110,10 @@ export function App({
   const railOverlay = railOpen && mode === "normal" && !railAsColumn;
   const railW = railAsColumn ? Math.min(34, Math.max(24, Math.floor(size.cols * 0.28))) : 0;
   const bodyW = size.cols - railW;
-  let roster: { w: number; h: number };
-  let feed: { w: number; h: number };
-  if (narrow) {
-    const rH = Math.min(8, Math.max(3, Math.floor(bodyH * 0.35)));
-    roster = { w: bodyW, h: rH };
-    feed = { w: bodyW, h: bodyH - rH };
-  } else {
-    const rW = Math.min(36, Math.max(24, Math.floor(bodyW * 0.3)));
-    roster = { w: rW, h: bodyH };
-    feed = { w: bodyW - rW, h: bodyH };
-  }
+  const roster = sidePaneSize(bodyW, bodyH, narrow);
+  const feed = narrow
+    ? { w: bodyW, h: bodyH - roster.h }
+    : { w: bodyW - roster.w, h: bodyH };
   const normalFocus: FocusId =
     focusedId === "roster" ? "roster" : focusedId === "needsyou" && railAsColumn ? "needsyou" : "feed";
 
