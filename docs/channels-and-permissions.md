@@ -55,8 +55,10 @@ A malformed payload does not stop later live delivery or retained-message reads.
 An agent **self-joins** a channel's live subscription on its own, with no manager, as long as the
 channel is within its `allowSubscribe`. The broker enforces every subscribe against the ACL;
 leave is the unsubscribe ([SPEC §7](../SPEC.md#7-channels)). On a `durable` channel, join
-additionally establishes **durable membership** through the privileged provisioner (a separate
-step from the live subscribe); a leave is a hard read boundary on that member's backstop.
+additionally establishes **durable membership**: a durable-join command to the
+[delivery daemon](delivery-daemon.md), which writes the membership record. That step is separate
+from the live subscribe, so a missing daemon leaves the agent joined live with no backstop. A leave
+is a hard read boundary on that member's backstop.
 
 Leaving your **last** channel is allowed, and lands you in the same state as an agent that listed
 none: on the mesh, DM-reachable, reading no channel, with no default send channel until you join

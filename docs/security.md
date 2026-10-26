@@ -17,8 +17,8 @@ what is (not) defended**.
 - On a per-user-auth mesh, ledger scope `admin` is the same trust grade as an `admin`
   credential: it unlocks the elevated views (the whole-space read tap, history and channel
   purges, channel-registry writes, cross-owner control). The public exchange serves only
-  `channel-writer` and `channel-purger` from that set; god-view and space-history purge stay
-  loopback-only. Grant `admin` as operator authority, not as a convenience
+  `channel-writer`, `channel-purger` and the one-object `transfer-writer` from that set; god-view
+  and space-history purge stay loopback-only. Grant `admin` as operator authority, not as a convenience
   ([identity & auth](identity-and-auth.md)).
 - Agents are not trusted to self-report sender identity, channel permissions, or DM access.
 

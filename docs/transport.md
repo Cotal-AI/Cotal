@@ -33,7 +33,7 @@ transport.
 
 | # | Capability | What it means |
 |---|---|---|
-| 1 | **Addressed routing** | Hierarchical names with wildcards, and the three delivery modes: multicast (publish to one concrete channel, subscribe to a channel or subtree), unicast (one instance), and anycast (one-of-N for a role, load-balanced). Also includes service-addressed control request/reply. Sender **and** delivery-class must be attributable to the delivering subject, not the payload. |
+| 1 | **Addressed routing** | Hierarchical names with wildcards, and the three delivery modes: multicast (publish to one concrete channel, subscribe to a channel or subtree), unicast (one instance), and anycast (one-of-N for a role, load-balanced). Also includes service-addressed control request/reply. Sender **and** delivery kind (channel, DM or anycast) must be attributable to the delivering subject, not the payload. |
 | 2 | **Durable delivery and history** | At-least-once store-and-forward so an offline or mid-turn agent misses nothing: per-instance bookmarks for unicast and durable-channel backstops, per-role queued work for anycast, explicit ack plus redelivery, duplicate tolerance by message id, and bounded late-join replay. |
 | 3 | **Presence and registry state** | A small per-space key/value store: own-key presence writes keyed by instance id, TTL/stale/delete-derived `offline`, and durable channel config. |
 | 4 | **Identity** | A stable per-instance id the transport can bind delivery and authenticity to. |
@@ -50,7 +50,7 @@ NATS/JetStream satisfies all five capabilities:
 | Capability | NATS realization |
 |---|---|
 | Routing | Subjects `cotal.<space>.{chat\|inst\|svc}.<sender\|route>.…`; sender encoded in the subject (`parseSubject` is the sole authority); `*`/`>` wildcards; queue groups for anycast; typed commands ride the endpoint control surface ([SPEC §13](../SPEC.md#13-endpoint-control-surface-v04)). ([SPEC §3](../SPEC.md#3-subject-layout)) |
-| Durability and history | JetStream streams `CHAT_/DM_/TASK_<space>`. Channel **live** reads are native core subscriptions bounded by `sub.allow`; **durable** channels add a per-member backstop via the [delivery daemon](delivery-daemon.md); DM/task ride per-instance/per-role durables (`dm_`/`svc_`), history rides pinned single-filter consumer creates; at-least-once ack-on-surface, `Nats-Msg-Id` publish dedup, Direct-Get chat backfill for late join. ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)) |
+| Durability and history | JetStream streams `CHAT_/DM_/TASK_<space>`. Channel **live** reads are native core subscriptions bounded by `sub.allow`; **durable** channels add a per-member backstop via the [delivery daemon](delivery-daemon.md); DM/task ride per-instance/per-role durables (`dm_`/`svc_`); history and late-join backfill ride pinned single-filter consumer creates, since agents hold no Direct Get; at-least-once ack-on-surface and `Nats-Msg-Id` publish dedup. ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)) |
 | Presence and registry | KV buckets `cotal_presence_<space>` (TTL/stale/delete-derived liveness), `cotal_channels_<space>` (durable channel config), and the derived membership feed. ([SPEC §6–§8](../SPEC.md#6-presence-and-discovery)) |
 | Identity | The instance's **principal** (`owner.actor`) = `card.id` = the subject sender tokens = the presence key = the token pair in per-instance durable names; the connection's nkey is the transport credential, scoping only the per-connection reply inbox ([`identity.ts`](../packages/core/src/identity.ts), [SPEC §2](../SPEC.md#2-identity)). |
 | Authz and isolation | Operator-signed **account per space** plus per-profile JWT ACLs built from the shared subject/stream builders ([SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization), [Appendix B](../SPEC.md#appendix-b-profile-acls)). |
@@ -81,8 +81,8 @@ consumer before closing the connection. The lease watch of a connection that clo
 left to the broker's five-minute inactive threshold.
 
 The v0.4 endpoint control surface pins this binding to **nats-server >= 2.12**: it relies on
-native message schedules (durable timers) and per-message TTLs, with no degraded fallback
-([SPEC §13.12](../SPEC.md#1312-nats--jetstream-binding)).
+native message schedules (durable timers), atomic create-CAS and counters, with no degraded
+fallback ([SPEC §13.12](../SPEC.md#1312-nats--jetstream-binding)).
 
 ## Binding to another transport
 
