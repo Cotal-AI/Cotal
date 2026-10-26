@@ -1,13 +1,12 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
 import { peerLabel, presenceText, type Presence } from "@cotal-ai/core";
-import { progressSignal } from "@cotal-ai/workspace";
 import { activityAge, presenceFacts } from "../../ui.js";
 import { agentColor, STATUS, ago, windowAround, wrapFacts, type FactRow } from "./theme.js";
 
 function progressText(p: Presence): string {
   if (p.card.kind !== "agent" || p.status !== "working") return ago(p.ts);
-  return progressSignal(undefined, Date.now()).kind === "unknown" ? "progress unknown" : "progress observed";
+  return "progress unknown";
 }
 
 /** Short display tag for an agent's harness (which tool it IS): known connectors get a familiar

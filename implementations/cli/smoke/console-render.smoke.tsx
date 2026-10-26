@@ -15,10 +15,12 @@
 import { render } from "ink";
 import React from "react";
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import { PassThrough, Writable } from "node:stream";
 import { peerLabel, type AgentCard, type CotalEndpoint, type Presence } from "@cotal-ai/core";
 import { App } from "../src/console/app.js";
 import { StatusBar } from "../src/console/ui/StatusBar.js";
+import { Roster } from "../dist/console/ui/Roster.js";
 import { Topo, type TopoVariant } from "../src/console/ui/topo/Topo.js";
 import { MEMBERSHIP_STALE_MS } from "../src/console/ui/topo/model.js";
 import type { FeedEntry, MembershipView } from "../src/view/mesh-view.js";
@@ -284,6 +286,38 @@ console.log("6. every topology lens labels a peer as the roster does");
     check(`the ${lens} prints each peer's shared label after its status dot`,
       labels.every((l) => out.includes("○ " + l)), out.slice(0, 800));
     check(`...and never the bracketed role`, !out.includes("ops]x[y"), out.slice(0, 800));
+  }
+}
+
+console.log("the built roster reports only the progress information it has");
+{
+  // This defect has no visible output difference: the classifier always received undefined.
+  // Check the shipped module as well as its rendered output, without lifting a private helper.
+  const built = readFileSync(new URL("../dist/console/ui/Roster.js", import.meta.url), "utf8");
+  check("the built roster has no unused observation classifier or unreachable observed arm",
+    !built.includes("progressSignal") && !built.includes("progress observed"));
+  const now = Date.now();
+  const rows: Presence[] = [0, 1_000, 60_000, 3_600_000, 86_400_000].map((age, i) => ({
+    card: { id: `working-${i}`, name: `working-${i}`, kind: "agent" },
+    status: "working", ts: now - age,
+  }));
+  rows.push(
+    { card: { id: "idle", name: "idle-control", kind: "agent" }, status: "idle", ts: now - 65_000 },
+    { card: { id: "endpoint", name: "endpoint-control", kind: "endpoint" }, status: "working", ts: now - 3_600_000 },
+  );
+  const out = await paint(
+    <Roster agents={rows.filter((p) => p.card.kind === "agent")} endpoints={rows.filter((p) => p.card.kind === "endpoint")}
+      query="" boxWidth={200} boxHeight={24} blocked onOpenDetail={() => {}} onFocus={() => {}} />,
+  );
+  for (const row of rows) {
+    const line = out.split("\n").find((line) => line.includes(row.card.name));
+    const expected = row.card.kind === "agent" && row.status === "working" ? "progress unknown"
+      : row.card.kind === "agent" ? "1m" : "1h";
+    check(`built roster row ${row.card.name}: ${expected}`,
+      line?.includes(expected) === true && !line.includes("progress observed"), line);
+    if (row.card.kind !== "agent" || row.status !== "working")
+      check(`control ${row.card.name}: heartbeat is not progress`,
+        line !== undefined && !line.includes("progress unknown"), line);
   }
 }
 
