@@ -1,5 +1,21 @@
 # cotal-ai
 
+## 0.104.2
+
+### Patch Changes
+
+- 6150d08: Keep all replayed channel messages, including mentions, pull-only so joining a channel cannot revive old requests as new agent turns. Frame historical content separately without the action-oriented footer, while preserving wakes for new mentions and direct messages.
+- Updated dependencies [6150d08]
+  - @cotal-ai/connector-core@0.104.2
+  - @cotal-ai/manager@0.104.2
+  - @cotal-ai/auth@0.104.2
+  - @cotal-ai/cli@0.104.2
+  - @cotal-ai/delivery@0.104.2
+  - @cotal-ai/runtime@0.104.2
+  - @cotal-ai/core@0.104.2
+  - @cotal-ai/seat@0.104.2
+  - @cotal-ai/workspace@0.104.2
+
 ## 0.104.1
 
 ### Patch Changes
