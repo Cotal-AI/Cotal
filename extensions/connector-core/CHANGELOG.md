@@ -1,5 +1,20 @@
 # @cotal-ai/connector-core
 
+## 0.102.0
+
+### Patch Changes
+
+- 30fb90c: `cotal up` on a root with no prepared record and no stack journal starts on the legacy launcher whatever it names, including a root whose space its `up` registered. Before, such a root took the controller route when the invocation named no legacy-only option. On a stopped legacy user-auth root that started a controller broker beside the root's retained auth-service record, failed its auth member (`OPERATION_PARTIAL`), and wrote a stack journal that tied the root to the controller from then on. Only a root prepared here, or one whose stack journal exists, takes the controller route.
+- f149d6a: On a user-auth mesh, when some of your managers do not answer, `cotal ps` and `cotal who` name each of them by instance id in their Next, so a registration left by a manager that ended without a clean stop can be told apart from the managers that answer. The Next used to say only to retry or read one manager with `--on`.
+- f149d6a: `cotal ps` on a user-auth mesh with several of your managers live no longer refuses or asks which one. It reads each manager the exchange counts live through its own one-instance view and lists each under its own `manager <id>` header with the host its presence reports. A manager that does not answer is listed as silent and makes the read partial, as on a static mesh. `status <agent>`, `who` and the `attach` picker read your managers the same way. When none of your managers answers, or none is live, `ps` lists your agents as presence shows them, read-only, and exits 0. Its next step starts a manager: bare `cotal up` on the root of the space's own stack, `cotal supervise` anywhere else. `--json` reports that read as `result.kind` `presence`.
+- 10ad6d3: The delivery daemon's timer writer now presents the credential the daemon holds on every connect and
+  reconnects onto each renewed credential the daemon adopts. The broker no longer closes the writer's
+  connection when the credential it dialed with expires, and a re-dial never presents an expired
+  credential, so the writer no longer goes down for a few seconds at each expiry. `standaloneConnectOpts`
+  accepts a creds getter that is read on every attempt, and `CotalEndpoint.wireCreds()` returns the
+  endpoint's checked credential.
+- d0d9e66: Deliver run turns to idle seats by notice instead of a 15-second poll. The manager publishes a data-free turn notice on the seat's own reply rail whenever the seat's pending turns change, and repeats it every 5 seconds until the seat pulls a new turn. The seat pulls `turn-pending` when a notice arrives, when it connects, and after a reconnect while it holds a turn. A seat's manager-call bearer is reused for its lifetime minus two minutes, shared by concurrent calls, and dropped after any failed call. An idle manager-launched seat no longer exchanges a manager-call bearer or opens a control connection every 15 seconds. A seat under a manager that predates notices keeps pulling every 15 seconds and logs that once. The notice needs no new grant: only the manager instance's serve credential can publish it, and a seat can read only its own.
+
 ## 0.101.7
 
 ### Patch Changes

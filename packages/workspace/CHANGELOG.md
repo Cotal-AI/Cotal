@@ -1,5 +1,23 @@
 # @cotal-ai/workspace
 
+## 0.102.0
+
+### Patch Changes
+
+- 9a75f1b: Clients now treat the exchange's rate limit as one. The 429 names the bucket that ran out as `limit`,
+  `actor` or `owner`. A CLI command prints the auth service's sentence and exits 2 as
+  `DEPENDENCY_UNAVAILABLE`, with a remedy saying whether only that actor or the whole account is
+  limited and `RATE_LIMITED`, the seconds and the `limit` in its JSON cause, where it used to report
+  `PERMISSION_DENIED`. `cotal agent-bearer` prints `retry-after <n>` on stdout and exits 2, and an
+  endpoint asks a bearer source again when a `retryAfterSeconds` it was given has passed, not before.
+  When the broker refuses an endpoint's bearer, the warning says so and names where the reason is, and
+  the reconnect backoff is randomized so endpoints refused together spread their retries.
+- Updated dependencies [9a75f1b]
+- Updated dependencies [bf8978b]
+- Updated dependencies [10ad6d3]
+- Updated dependencies [d0d9e66]
+  - @cotal-ai/core@0.102.0
+
 ## 0.101.7
 
 ### Patch Changes

@@ -1,5 +1,29 @@
 # @cotal-ai/core
 
+## 0.102.0
+
+### Minor Changes
+
+- bf8978b: The auth service now holds one issuer session for the issuance its callout makes on a user-auth connect, where it used to mint credentials and dial a new connection for every issued connect. That dial was most of an issued connect's cost: about 15 ms one at a time, and over 200 ms each when 16 arrived together. Each auth-service context and each `--callout-only` replica holds its own session. Its credential keeps the five-minute `issuer` expiry and is replaced before it expires. The connection never reconnects. It is closed and drained when the plane is fenced, when the service stops, or when the connection is lost, and the next issuance dials a new one. Each issuance still makes its own reads and writes, and a write in flight at a loss is never sent again. Retiring a lifecycle's issuances and every other issuance window still use a one-shot session. `@cotal-ai/core` exports `holdIssuerSession`, and `startAuthService` takes an optional `issuerSessionTtlSeconds` from 5 to 300 seconds.
+
+### Patch Changes
+
+- 9a75f1b: Clients now treat the exchange's rate limit as one. The 429 names the bucket that ran out as `limit`,
+  `actor` or `owner`. A CLI command prints the auth service's sentence and exits 2 as
+  `DEPENDENCY_UNAVAILABLE`, with a remedy saying whether only that actor or the whole account is
+  limited and `RATE_LIMITED`, the seconds and the `limit` in its JSON cause, where it used to report
+  `PERMISSION_DENIED`. `cotal agent-bearer` prints `retry-after <n>` on stdout and exits 2, and an
+  endpoint asks a bearer source again when a `retryAfterSeconds` it was given has passed, not before.
+  When the broker refuses an endpoint's bearer, the warning says so and names where the reason is, and
+  the reconnect backoff is randomized so endpoints refused together spread their retries.
+- 10ad6d3: The delivery daemon's timer writer now presents the credential the daemon holds on every connect and
+  reconnects onto each renewed credential the daemon adopts. The broker no longer closes the writer's
+  connection when the credential it dialed with expires, and a re-dial never presents an expired
+  credential, so the writer no longer goes down for a few seconds at each expiry. `standaloneConnectOpts`
+  accepts a creds getter that is read on every attempt, and `CotalEndpoint.wireCreds()` returns the
+  endpoint's checked credential.
+- d0d9e66: Deliver run turns to idle seats by notice instead of a 15-second poll. The manager publishes a data-free turn notice on the seat's own reply rail whenever the seat's pending turns change, and repeats it every 5 seconds until the seat pulls a new turn. The seat pulls `turn-pending` when a notice arrives, when it connects, and after a reconnect while it holds a turn. A seat's manager-call bearer is reused for its lifetime minus two minutes, shared by concurrent calls, and dropped after any failed call. An idle manager-launched seat no longer exchanges a manager-call bearer or opens a control connection every 15 seconds. A seat under a manager that predates notices keeps pulling every 15 seconds and logs that once. The notice needs no new grant: only the manager instance's serve credential can publish it, and a seat can read only its own.
+
 ## 0.101.7
 
 ### Patch Changes

@@ -1,5 +1,20 @@
 # @cotal-ai/cli
 
+## 0.102.0
+
+### Patch Changes
+
+- 30fb90c: `cotal up` on a root with no prepared record and no stack journal starts on the legacy launcher whatever it names, including a root whose space its `up` registered. Before, such a root took the controller route when the invocation named no legacy-only option. On a stopped legacy user-auth root that started a controller broker beside the root's retained auth-service record, failed its auth member (`OPERATION_PARTIAL`), and wrote a stack journal that tied the root to the controller from then on. Only a root prepared here, or one whose stack journal exists, takes the controller route.
+- f149d6a: On a user-auth mesh, when some of your managers do not answer, `cotal ps` and `cotal who` name each of them by instance id in their Next, so a registration left by a manager that ended without a clean stop can be told apart from the managers that answer. The Next used to say only to retry or read one manager with `--on`.
+- f149d6a: `cotal ps` on a user-auth mesh with several of your managers live no longer refuses or asks which one. It reads each manager the exchange counts live through its own one-instance view and lists each under its own `manager <id>` header with the host its presence reports. A manager that does not answer is listed as silent and makes the read partial, as on a static mesh. `status <agent>`, `who` and the `attach` picker read your managers the same way. When none of your managers answers, or none is live, `ps` lists your agents as presence shows them, read-only, and exits 0. Its next step starts a manager: bare `cotal up` on the root of the space's own stack, `cotal supervise` anywhere else. `--json` reports that read as `result.kind` `presence`.
+- bc290bd: A refused `cotal up` no longer moves the operator-global connector seed store. `up` reconciled that store at the boot gate, before its own checks, so an `up` that then refused (a folder named after a space another folder holds, a `--channels` file that is not JSON) had already stamped the store with its generation while saying nothing was written, and an older `cotal` then refused the store as a downgrade. `up` now seeds when it first starts a process, or when `up -f` checks its agents' connectors, and a start that fails after the seed moved the store says so and names it. An older `cotal` still refuses a newer store before writing anything; its refusal now names the store and the extensions folder and says to restore both from a backup taken before the store moved, with the versions as context.
+- Updated dependencies [9a75f1b]
+- Updated dependencies [bf8978b]
+- Updated dependencies [10ad6d3]
+- Updated dependencies [d0d9e66]
+  - @cotal-ai/core@0.102.0
+  - @cotal-ai/workspace@0.102.0
+
 ## 0.101.7
 
 ### Patch Changes

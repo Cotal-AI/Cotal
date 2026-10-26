@@ -1,5 +1,11 @@
 # @cotal-ai/tmux
 
+## 0.102.0
+
+### Patch Changes
+
+- a8e82a6: Report failed session-name and pane-capture reads with the tmux operation, error text and original cause.
+
 ## 0.101.7
 
 No changes in this release.
