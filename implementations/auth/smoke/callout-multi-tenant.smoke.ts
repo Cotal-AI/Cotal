@@ -371,22 +371,28 @@ if (process.argv[2] === "__daemon-auth-service") {
       } catch (e) { crossed = e instanceof Error ? e.message : String(e); }
       check("a bearer for space A is refused by space B's lane", crossed !== undefined, crossed?.slice(0, 120));
 
+      // The cells below ask which lane answers and whether one lane stops another, not how fast the
+      // host is. The connect-load harness offers its rate whatever the service does, so it can
+      // deliberately overload it, and on a shared host at a high load average the callout then
+      // answers some connects with a signed timeout denial, which a client sees as
+      // `Authorization Violation`. That is this box's capacity, not an isolation or continuity
+      // failure, so these cells offer a rate with headroom and keep their zero-loss assertions
+      // there, where a loss means what the cell says it means.
+      const HEADROOM_RATE = Math.max(2, Math.round(RATE / 4));
+
       // ---- request routing: a space's callouts reach only its own lane -----------------------------
       const before = await calloutsByLane();
-      const onlyA = await load(spaces[0], SECONDS, RATE);
+      const onlyA = await load(spaces[0], SECONDS, HEADROOM_RATE);
       const routed = delta(before, await calloutsByLane());
       check("every connect to space A succeeds", onlyA.ok === onlyA.attempts, onlyA.byReason);
+      // Rate-independent, and non-vacuous: lane A's subscription counter must actually have moved,
+      // so "B saw none" cannot pass by nothing being delivered to either lane.
       check("space A's callout requests reach space A's lane and never space B's",
-        routed[spaces[0].name] >= onlyA.ok && (routed[spaces[1].name] ?? 0) === 0, routed);
+        routed[spaces[0].name] > 0 && routed[spaces[0].name] >= onlyA.ok && (routed[spaces[1].name] ?? 0) === 0, routed);
 
       // ---- a lane removed while traffic flows to the other -----------------------------------------
-      // This phase asks whether closing one lane stops the other, not how fast the host is, so it
-      // offers a rate with headroom: the connect-load harness can deliberately overload the
-      // service, and a shared host at a high load average then loses connects for want of CPU
-      // rather than for anything the removal did.
-      const CONTINUITY_RATE = Math.max(2, Math.round(RATE / 4));
       const beforeRemoval = await calloutsByLane();
-      const removal = load(spaces[0], SECONDS, CONTINUITY_RATE);
+      const removal = load(spaces[0], SECONDS, HEADROOM_RATE);
       await wait(500);
       writeManifest([spaces[0].name]);
       await until(() => host.out.join("").includes(`space "${spaces[1].name}" left the manifest`), `the host did not close the removed lane: ${host.out.join("").slice(-400)}`);
