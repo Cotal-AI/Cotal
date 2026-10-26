@@ -1,5 +1,34 @@
 # @cotal-ai/cli
 
+## 0.108.1
+
+### Patch Changes
+
+- c5d23cf: Daemons now run under the Node flag `--max-semi-space-size=1`, which caps V8's young generation at 2 MB. `cotal up` puts it on the manager, delivery daemon and user-auth service it starts. `cotal service start` puts it on every service it launches through the CLI, and the unit `cotal service install` writes carries it too, as does the container entry in `deploy/docker`. On a stack with no seats, 30 seconds and 5 minutes after `cotal up` (the mean of two runs each), the manager went from 268 MB to 147 MB of private memory in its first minutes and from 126 MB to 111 MB once settled. The delivery daemon went from 174 MB to 108 MB, then from 118 MB to 105 MB. The user-auth service went from 254 MB to 112 MB, then from 153 MB to 105 MB. Nothing else changes. A unit an earlier release wrote keeps its own command line.
+- 25e980f: A copy, a moved folder and a taken-over folder refuse again with another space selected
+  
+  Since a folder's space became the target only while it runs, a copy of a project whose space runs
+  elsewhere, a folder moved away from its recorded path and the folder a later `cotal up` took the
+  name over from sent their reads to the selected space when one was selected, under a note to
+  restart the folder's space with `cotal up`, which refuses there. They refuse `TARGET_UNAVAILABLE`
+  again and name the folder or Cotal home the stack runs from, and bare `cotal` and `cotal space show`
+  there no longer offer that `cotal up`.
+  
+  In a folder whose registered space is stopped, `cotal spawn -d --dry-run` now previews the space
+  `cotal spawn -d` launches on, and `cotal space show` calls that space stopped. `cotal status --json`
+  and `cotal space --json` give no folder space there and the listing marks none. Bare `cotal` and
+  `cotal use`, which read no broker, say the folder's space applies while it runs. With nothing
+  selected, bare `cotal` names the space the folder prepared again.
+  
+  `--json` in a folder holding a prepared or stopped space carries the note under the `Mesh:` heading
+  as a `FOLDER_SPACE_NOT_RUNNING` warning, and `cotal chat` names the selection it joins with that
+  note. A refusal there whose own next step names `cotal up` no longer names a second one under its
+  heading.
+- 91cc1d8: `cotal up` no longer prints its full help after a TLS address refusal whose remedy names the fix: a `nats://` `--server` in a root whose recorded broker policy serves TLS, a `nats://` `--server` with `--tls-cert`, and a `tls://` `--server` with no certificate. Each now prints the refusal and the address to pass. The `--help` page of each command hidden from `cotal help` as legacy (`clean`, `join`, `topology`, `endpoints`, `describe`, `invoke`, `console` and `actor`, as `meshes` and `personas` already did) now says it is legacy and names what replaces it in the words of its row in the CLI docs. `cotal status` in a stopped folder whose broker kept a store now names `cotal reset store <space>` for a stale store when that reset reaches the folder's store, in place of the legacy `cotal clean store --force`, which it still names where no registration lets a reset reach the folder.
+- Updated dependencies [25e980f]
+  - @cotal-ai/workspace@0.108.1
+  - @cotal-ai/core@0.108.1
+
 ## 0.108.0
 
 ### Minor Changes
