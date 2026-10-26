@@ -1,5 +1,26 @@
 # @cotal-ai/connector-core
 
+## 0.103.2
+
+### Patch Changes
+
+- 2f74981: A read whose recorded broker answers and refuses the connection now keeps its registration when
+  another registered space names that same address, and refuses `CONFLICT`, exit 2, naming the space
+  that holds the address, the `cotal space forget <space>` that frees it and the
+  `cotal up --server <url>` that moves this one. `cotal status` reports that space as `address held`.
+  The rejection used to count as a stale record and delete it, which left the folder naming no space,
+  so nothing there said which space its commands meant.
+- 2f74981: The bare `cotal down` that refuses `LIFECYCLE_BLOCKED` while another registered space names this
+  stack's exact broker address now names what to run: `cotal space show <space>` for each of those
+  spaces, the `cotal space forget <space>` that takes one off this address, and the `cotal down` to run
+  again. Its next step used to name no command, so the running stack had no documented stop.
+- 2f74981: `cotal up -f` now refuses `CONFLICT`, exit 2, when its manifest's `broker.servers` is the address a
+  space registered for another folder keeps while stopped, naming that space and folder, the field to
+  point elsewhere and `cotal space forget <space>`, and starts nothing. The flag path already refused
+  this; the manifest path started a second stack on that address, after which one listener answered
+  for both registrations, the running stack's own `down` refused, and a read in the other folder
+  deleted that space's registration.
+
 ## 0.103.1
 
 No changes in this release.
