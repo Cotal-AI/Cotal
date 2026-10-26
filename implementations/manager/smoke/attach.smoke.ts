@@ -68,6 +68,13 @@ const cwd = process.cwd();
   else process.env.TMUX = prevTmux;
 }
 
+// What a runtime DECLARES must match what its handle does. A caller reads `streamsTerminal` to
+// decide whether to ask for an attach at all - a foreground `cotal spawn` on a runtime that
+// declares false launches the seat and stops there - so a backend that declares the opposite of
+// what `attach()` does sends that caller into a refusal it was told could not happen, or withholds
+// a terminal that was there all along. Each extension runtime states the same in its own smoke.
+check("pty: declares that it streams a terminal", createRuntime("pty", SESSION).streamsTerminal === true);
+
 // Detach key (no fallbacks): default is Ctrl-] (0x1d); `COTAL_DETACH_KEY` rebinds it to a control
 // key; an unparseable value throws (named), never silently keeping the default.
 {
@@ -113,6 +120,7 @@ const cwd = process.cwd();
       err.includes("tmux attach-session -t cotal-smoke") && err.includes("select-window"),
     );
     check("tmux: hint is tmux-specific, never a cmux tab", !err.includes("cmux tab"));
+    check("tmux: the throw is what the runtime declared", rt.streamsTerminal === false && err !== "");
     h.stop({ graceful: false });
     try {
       execFileSync("tmux", ["kill-session", "-t", SESSION], { stdio: "ignore" });
@@ -143,18 +151,19 @@ const cwd = process.cwd();
         'cmux: attach() points to the "cotal-smoke-cmux" tab (not tmux)',
         err.includes('switch to the "cotal-smoke-cmux" cmux tab') && !err.includes("tmux attach"),
       );
+      check("cmux: the throw is what the runtime declared", rt.streamsTerminal === false && err !== "");
       h.stop({ graceful: false });
     }
   }
 }
 
 {
-  const unsupported: Runtime = { kind: "fixture", spawn: () => { throw new Error("unused"); } };
+  const unsupported: Runtime = { kind: "fixture", streamsTerminal: false, spawn: () => { throw new Error("unused"); } };
   const err = attachError(() => requireRuntimeAdopt(unsupported, { kind: "fixture", id: "opaque" }));
   check('absent adopt refuses by runtime name', err === 'runtime "fixture" does not support adopt');
 
   const handle: AgentHandle = { name: "ok", kind: "capable", status: () => "running", stop: () => {}, interrupt: () => {}, attach: () => { throw new Error("unused"); } };
-  const capable: Runtime = { kind: "capable", spawn: () => handle, adopt: () => handle };
+  const capable: Runtime = { kind: "capable", streamsTerminal: false, spawn: () => handle, adopt: () => handle };
   check("present adopt returns the runtime handle", requireRuntimeAdopt(capable, { kind: "capable", id: "opaque" }) === handle);
 
   // A pty spawn starts no custodian on any platform, so it carries no custody reference (#1391).

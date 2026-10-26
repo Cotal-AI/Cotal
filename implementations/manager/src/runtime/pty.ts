@@ -21,6 +21,7 @@ const GRACE_MS = 3_000;
  */
 export class LegacyPtyRuntime implements Runtime {
   readonly kind = "pty" as const;
+  readonly streamsTerminal = true;
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     // POSIX: passthrough (node-pty's exec resolves the bare name). win32: resolve the EXACT file and

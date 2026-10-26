@@ -251,6 +251,10 @@ console.log("\n── registry registration ────────────
 const resolvedRuntime = registry.resolve("runtime", "tmux");
 ok("tmuxRuntimeProvider registered as 'runtime/tmux'", resolvedRuntime != null);
 ok("tmuxRuntimeProvider.available() returns true", tmuxRuntimeProvider.available());
+// Declared, not discovered by catching the throw below: a caller reads this to decide whether to
+// ask for an attach at all, so a foreground `cotal spawn` on this runtime launches the seat and
+// stops there instead of failing on an attach that cannot open.
+ok("the runtime declares that it streams no terminal", new TmuxRuntime(SESSION).streamsTerminal === false);
 
 const resolvedTerminal = registry.resolve("terminal", "tmux");
 ok("tmuxTerminalProvider registered as 'terminal/tmux'", resolvedTerminal != null);

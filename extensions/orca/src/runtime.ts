@@ -74,6 +74,7 @@ function cleanupLauncher(launcher: PrivateLauncher): void {
 /** Spawns each managed agent into an Orca terminal in the Orca worktree enclosing the launch cwd. */
 export class OrcaRuntime implements Runtime {
   readonly kind = "orca" as const;
+  readonly streamsTerminal = false;
   readonly #worktrees = new Map<string, orca.OrcaWorktree>();
 
   #cacheWorktree(cwd: string, worktree: orca.OrcaWorktree): void {

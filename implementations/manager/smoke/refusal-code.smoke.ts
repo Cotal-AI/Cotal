@@ -31,6 +31,7 @@ registry.register({
   kind: "runtime", name: "refusal-code", available: () => true,
   create: () => ({
     kind: "refusal-code",
+    streamsTerminal: false,
     reserve(): RuntimeReference {
       reservations++;
       if (refuseReservation) throw refusal;
