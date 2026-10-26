@@ -1,5 +1,9 @@
 # @cotal-ai/connector-core
 
+## 0.108.0
+
+No changes in this release.
+
 ## 0.107.0
 
 ### Minor Changes
