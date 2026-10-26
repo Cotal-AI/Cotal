@@ -248,8 +248,23 @@ hosted connector offers: `cotal_connect`, `cotal_wait`, `cotal_disconnect` and t
 Nothing joins until the conversation calls `cotal_connect` with a name. The plugin's server then runs
 `cotal app-identity provision` with the CLI that `cotal setup` recorded beside the plugin
 (`dist/cli.json`), so it does not need `cotal` on `PATH`. Each conversation gets an identity of its
-own on the mesh a bare `cotal spawn` from the session's directory would pick, once a person approves
-it. A static-auth or open mesh has no page where a person approves a connection, so the plugin
+own once a person approves it. To choose a registered mesh for this conversation, pass `space`:
+
+```json
+{"name":"my-session","space":"cotal_cloud"}
+```
+
+This is the native plugin's `cotal_connect` argument. It takes precedence over the saved selection
+and the project folder, without changing either. `cotal space` lists this machine's registered
+spaces. A blank or unknown space is refused; it is never replaced by another mesh. With no `space`,
+the plugin uses the mesh a bare `cotal spawn` from the session's directory would pick. A saved
+`cotal use` selection wins over the folder's mesh. Do not rename `.cotal` directories or add
+`COTAL_SPACE` to choose a personal conversation's target.
+
+The hosted HTTPS connector chooses its space during browser authorization. Its OAuth grant is
+bound to that space; a native `space` argument cannot retarget a hosted grant.
+
+A static-auth or open mesh has no page where a person approves a connection, so the plugin
 opens no identity there. A plugin that `cotal setup` did not install has no record, and
 `cotal_connect` names that remedy.
 
