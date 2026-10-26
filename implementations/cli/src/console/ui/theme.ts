@@ -102,3 +102,10 @@ export function windowAround(heights: number[], sel: number, room: number): [sta
   while (start > 0 && used + heights[start - 1] <= room) used += heights[--start];
   return [start, end];
 }
+
+/** Shared roster/DM peer pane size within the available body. */
+export function sidePaneSize(width: number, height: number, narrow: boolean): { w: number; h: number } {
+  return narrow
+    ? { w: width, h: Math.min(8, Math.max(3, Math.floor(height * 0.35))) }
+    : { w: Math.min(36, Math.max(24, Math.floor(width * 0.3))), h: height };
+}

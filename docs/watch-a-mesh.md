@@ -40,7 +40,10 @@ material, which names the resume transfer buckets the space holds at that moment
 deleted under the console's own connection, bare on an open mesh or your `--creds` file.
 
 **Lenses and keys** (TUI). The layout is a roster, a live feed, per-channel tabs, a golden-signal
-tiles strip, and toggleable lenses:
+tiles strip, and toggleable lenses. The roster and DM peer list share the same pane sizing:
+side by side with content on wide terminals, stacked above it below 80 columns.
+
+The keys are:
 
 | Key | Does |
 |---|---|
