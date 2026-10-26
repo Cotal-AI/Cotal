@@ -60,7 +60,7 @@
     {
       "name": "M1 the shipped wording: reply-only tail, no mention of doing the work",
       "file": "extensions/connector-core/src/control.ts",
-      "find": "    `(If this asks for work, do it with your own tools first and verify the result, then reply with ` +\n    `cotal_dm / cotal_send — never report an action you did not actually perform. cotal_roster shows who's here.)`;",
+      "find": "      `(If this asks for work, do it with your own tools first and verify the result, then reply with ` +\n      `cotal_dm / cotal_send — never report an action you did not actually perform. cotal_roster shows who's here.)`;",
       "replace": "    `(Reply with cotal_send / cotal_dm, or cotal_roster to see who's here.)`;",
       "cell": "tail does not open with a bare reply instruction",
       "expectRed": "tail does not open with a bare reply instruction"
@@ -68,7 +68,7 @@
     {
       "name": "M2 the half-fix: work-first phrasing kept, the do-not-fabricate warning dropped",
       "file": "extensions/connector-core/src/control.ts",
-      "find": "    `(If this asks for work, do it with your own tools first and verify the result, then reply with ` +\n    `cotal_dm / cotal_send — never report an action you did not actually perform. cotal_roster shows who's here.)`;",
+      "find": "      `(If this asks for work, do it with your own tools first and verify the result, then reply with ` +\n      `cotal_dm / cotal_send — never report an action you did not actually perform. cotal_roster shows who's here.)`;",
       "replace": "    `(If this asks for work, do it with your own tools first, then reply with cotal_dm / cotal_send. cotal_roster shows who's here.)`;",
       "cell": "tail warns against reporting work that was not performed",
       "expectRed": "tail warns against reporting work that was not performed"
@@ -76,7 +76,7 @@
     {
       "name": "M3 the over-correction: warning kept, the reply verbs lost",
       "file": "extensions/connector-core/src/control.ts",
-      "find": "    `(If this asks for work, do it with your own tools first and verify the result, then reply with ` +\n    `cotal_dm / cotal_send — never report an action you did not actually perform. cotal_roster shows who's here.)`;",
+      "find": "      `(If this asks for work, do it with your own tools first and verify the result, then reply with ` +\n      `cotal_dm / cotal_send — never report an action you did not actually perform. cotal_roster shows who's here.)`;",
       "replace": "    `(If this asks for work, do it with your own tools first and verify the result — never report an action you did not actually perform.)`;",
       "cell": "tail still names the reply verbs (an agent must know how to answer)",
       "expectRed": "tail still names the reply verbs (an agent must know how to answer)"
@@ -84,8 +84,8 @@
     {
       "name": "M4 the shipped rendering: each item interpolated raw again",
       "file": "extensions/connector-core/src/control.ts",
-      "find": "  return `${head}\\n${items.map(options.metadata ? fmtDeliveryItem : fmtItem).join(\"\\n\")}\\n${tail}`;",
-      "replace": "  const raw = (i: InboxItem): string => `• ${i.kind} from ${i.fromRole ? `${i.fromName}/${i.fromRole}` : i.fromName}: ${i.text}`;\n  return `${head}\\n${items.map(raw).join(\"\\n\")}\\n${tail}`;",
+      "find": "  const format = options.metadata ? fmtDeliveryItem : fmtItem;",
+      "replace": "  const format = (i: InboxItem): string => `• ${i.kind} from ${i.fromRole ? `${i.fromName}/${i.fromRole}` : i.fromName}: ${i.text}`;",
       "cell": "a message body cannot add an injected item by a newline",
       "expectRed": "a message body cannot add an injected item by a newline",
       "note": "The pre-fix formatter verbatim. A body carrying a newline puts a second line at column zero, which reads as a separate delivered message from a peer that never sent one."

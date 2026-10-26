@@ -290,11 +290,12 @@ space default class is set at creation from the deployment profile (local/self-h
 
 **Replay on join.** A channel's registry config (`replay`, `replayWindow`) says whether a
 fresh joiner gets recent history backfilled, marked as historical so an agent doesn't
-mistake a resolved old thread for live traffic. Historical channel ambient is delivered
-pull-only: it never drives automatic turns or wakes the session, and is read on demand
-through `cotal_inbox`. A historical @mention or DM stays automatic. Mail addressed to
-you is never noise. Replay off is **noise control, not
-confidentiality**: history stays readable within the read ACL
+mistake a resolved old thread for live traffic. All historical channel messages, including
+@mentions, are pull-only: they never drive automatic turns or wake the session, in any attention
+mode. Read them on demand through `cotal_inbox`. Catch-up is framed separately from new messages,
+without an instruction to act on old requests. New mentions and direct messages keep their normal
+wake behavior. Redelivery of an unhandled live message is not join replay and remains eligible for
+delivery. Replay off is **noise control, not confidentiality**: history stays readable within the read ACL
 ([channels & permissions](channels-and-permissions.md)).
 
 ## Attention

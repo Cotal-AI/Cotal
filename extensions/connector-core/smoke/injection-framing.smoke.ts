@@ -104,17 +104,16 @@ console.log("injection framing");
   check("empty input yields no block", formatInjection([]) === undefined);
 }
 
-// 4. Historical items keep their marker (the #775 contract).
-//
-// Scope, stated so the comment does not outrun the assertion: this proves the marker SURVIVES the
-// new tail, nothing more. The tail itself is one string per batch, identical for historical and live
-// items, exactly as before this change - so a historical DM that was already auto-injected now also
-// carries the work-first footer, with its `(history)` marker still on the item line. Narrowing which
-// items get an imperative tail would be a behaviour change, not a framing fix, and is not this
-// suite's claim.
+// 4. History is context, even when a caller explicitly includes it in a mixed batch.
 {
-  const out = formatInjection([dm("old channel chatter", { historical: true })]) ?? "";
+  const old = dm("old channel chatter", { historical: true });
+  const out = formatInjection([old]) ?? "";
   check("historical marker survives", out.includes("(history)"), out);
+  check("history-only framing never calls the messages new", out.includes("1 historical message") && !out.includes("new message"), out);
+  check("history has no action-oriented footer", !out.includes("If this asks for work") && out.includes("not new work"), out);
+  const mixed = formatInjection([old, dm("current request")]) ?? "";
+  check("a mixed batch counts live and historical items separately", mixed.includes("1 new message") && mixed.includes("1 historical message") && !mixed.includes("2 new messages"), mixed);
+  check("the live action footer cannot apply to the later history block", mixed.indexOf("If this asks for work") < mixed.indexOf("1 historical message") && mixed.endsWith("unless the person explicitly asks.)"), mixed);
 }
 
 // 5. THE SEPARATOR IS UNAVAILABLE TO A PEER (#623).
