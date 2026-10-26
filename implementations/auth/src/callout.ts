@@ -24,7 +24,6 @@
  */
 import {
   Algorithms,
-  decode,
   encodeAccount,
   encodeAuthorizationResponse,
   encodeUser,
@@ -32,7 +31,7 @@ import {
   type AuthorizationRequest,
 } from "@nats-io/jwt";
 import { createAccount, createCurve, fromCurveSeed, fromPublic, fromSeed } from "@nats-io/nkeys";
-import { assertInboxConnId, calloutReaderId, nativeNkeySigner, newIdentity, principalKey, principalTags, token } from "@cotal-ai/core";
+import { assertInboxConnId, calloutReaderId, decodeNatsJwt, nativeNkeySigner, newIdentity, principalKey, principalTags, token } from "@cotal-ai/core";
 import type { JWTVerifyGetKey, CryptoKey } from "jose";
 import { validateUserToken, type ValidatedUserToken } from "./token.js";
 import { SESSION_EXP, ENDPOINT_CALLER_EXP, ENDPOINT_CALLER_RECHECK } from "./permissions.js";
@@ -228,7 +227,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
       try {
         const plain = xkp.open(msg.data, serverXkey);
         if (plain === null) throw new Error("xkey open failed");
-        claims = decode<AuthorizationRequest>(dec(plain)); // ed25519 signature verified in decode()
+        claims = decodeNatsJwt<AuthorizationRequest>(dec(plain)); // the issuer's ed25519 signature, verified natively
       } catch (e) {
         log(`auth callout: dropped an undecryptable/unverifiable request (${e instanceof Error ? e.message : String(e)})`);
         return;
@@ -238,7 +237,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         log("auth callout: dropped a request without user_nkey/server_id");
         return;
       }
-      // Request provenance — prove nats-server sent this, not an in-account publisher. `decode()`
+      // Request provenance — prove nats-server sent this, not an in-account publisher. `decodeNatsJwt()`
       // verified the signature against the embedded `iss`, but that alone accepts ANY self-signed
       // JWT; without pinning, a holder of callout creds could publish a sealed forged request to a
       // reply subject it controls and be minted a data-account JWT. So: the issuer must be the
@@ -336,7 +335,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
           { ...perms, tags: principalTags(validated.owner, validated.act.actor) },
           { signer: userSigner, exp }, // NATS access dies with the bearer (a session-caller: with its grant)
         );
-        await opts.recordIssuance({ userNkey: req.user_nkey, token: validated, connId: inboxNonce, iat: decode(userJwt).iat, exp });
+        await opts.recordIssuance({ userNkey: req.user_nkey, token: validated, connId: inboxNonce, iat: signedIat(userJwt), exp });
         if (endpointRecheck !== undefined) {
           if (typeof endpointRecheck !== "function") throw new Error("callout: invalid endpoint caller final check");
           await endpointRecheck();
@@ -384,6 +383,14 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
   });
 
   return { done };
+}
+
+/** The `iat` `encodeUser` stamped into a JWT this process just signed, read from its claims: the
+ *  signature is ours, so verifying it again would only spend time. */
+function signedIat(jwt: string): number {
+  const { iat } = JSON.parse(Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString("utf8")) as { iat?: unknown };
+  if (typeof iat !== "number") throw new Error("callout: the minted user JWT carries no iat");
+  return iat;
 }
 
 /** Fold a string to ASCII so the Latin1-limited auth-response encoder can always send it (a denied

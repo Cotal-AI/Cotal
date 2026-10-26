@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { Algorithms, decode, encodeAuthorizationResponse, encodeUser } from "@nats-io/jwt";
 import { createAccount, createCluster, createCurve, createOperator, createServer, createUser, fromPublic, NKeysErrorCode, Prefix } from "@nats-io/nkeys";
 import { Codec } from "@nats-io/nkeys/lib/codec.js";
-import { nativeNkeySigner } from "../src/nkey-signer.js";
+import { decodeNatsJwt, nativeNkeySigner } from "../src/nkey-signer.js";
 
 const messages = [new Uint8Array(), new TextEncoder().encode("NATS signing: café"), Uint8Array.from({ length: 256 }, (_, i) => i)];
 let cases = 0;
@@ -74,4 +74,40 @@ try {
     cases++;
   }
 } finally { native.clear(); account.clear(); user.clear(); server.clear(); }
-console.log(`native nkey signing smoke: ${cases} cases passed (5 key kinds × 3 payloads, invalid seeds, v1/v2 JWTs and callout responses)`);
+// decodeNatsJwt verifies with Node and returns what @nats-io/jwt's decode returns, and refuses what it
+// refuses: changed claims, a changed signature, and a token that is not a NATS JWT.
+{
+  const issuer = createAccount(), holder = createUser(), srv = createServer();
+  const signer = nativeNkeySigner(issuer.getSeed());
+  try {
+    for (const algorithm of [Algorithms.v1, Algorithms.v2]) {
+      const jwt = await encodeUser("decode-smoke", fromPublic(holder.getPublicKey()), fromPublic(issuer.getPublicKey()),
+        { pub: { allow: ["a.b"] } }, { signer, exp: Math.floor(Date.now() / 1000) + 60, algorithm });
+      const response = await encodeAuthorizationResponse(fromPublic(holder.getPublicKey()), fromPublic(srv.getPublicKey()), signer,
+        { error: "RATE_LIMITED café", issuer_account: issuer.getPublicKey() }, { algorithm });
+      for (const token of [jwt, response]) {
+        assert.deepEqual(decodeNatsJwt(token), decode(token), "the native decode returns the stock claims");
+        const parts = token.split(".");
+        const claims = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("latin1")) as Record<string, unknown>;
+        const changed = [parts[0], Buffer.from(JSON.stringify({ ...claims, iat: Number(claims.iat) + 1 }), "latin1").toString("base64url"), parts[2]].join(".");
+        assert.throws(() => decode(changed));
+        assert.throws(() => decodeNatsJwt(changed), /sig verification failed/, "changed claims are refused");
+        const sig = Buffer.from(parts[2]!, "base64url");
+        sig[0] = sig[0]! ^ 1;
+        assert.throws(() => decodeNatsJwt([parts[0], parts[1], sig.toString("base64url")].join(".")), /sig verification failed/, "a changed signature is refused");
+        const foreign = [parts[0], Buffer.from(JSON.stringify({ ...claims, iss: srv.getPublicKey() }), "latin1").toString("base64url"), parts[2]].join(".");
+        assert.throws(() => decodeNatsJwt(foreign), /sig verification failed/, "another issuer's key does not verify it");
+      }
+      const parts = jwt.split(".");
+      const header = (h: Record<string, unknown>) => [Buffer.from(JSON.stringify(h)).toString("base64url"), parts[1], parts[2]].join(".");
+      const claims = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8")) as Record<string, unknown>;
+      const withIss = (iss: unknown) => [parts[0], Buffer.from(JSON.stringify({ ...claims, iss })).toString("base64url"), parts[2]].join(".");
+      const corrupt = issuer.getPublicKey().slice(0, -1) + (issuer.getPublicKey().endsWith("A") ? "B" : "A");
+      for (const [bad, why] of [[parts.slice(0, 2).join("."), /2 chunks/], [header({ typ: "JWS", alg: algorithm }), /typ/], [header({ typ: "JWT", alg: "HS256" }), /alg/],
+        [withIss(undefined), /no issuer/], [withIss(42), /no issuer/], [withIss(Buffer.from(issuer.getSeed()).toString()), /./], [withIss(createCurve().getPublicKey()), /./], [withIss(corrupt), /./]] as const)
+        assert.throws(() => decodeNatsJwt(bad), why, "a token that is not a NATS JWT signed by a public nkey is refused");
+    }
+    cases++;
+  } finally { signer.clear(); issuer.clear(); holder.clear(); srv.clear(); }
+}
+console.log(`native nkey signing smoke: ${cases} cases passed (5 key kinds × 3 payloads, invalid seeds, v1/v2 JWTs and callout responses, native JWT decode)`);
