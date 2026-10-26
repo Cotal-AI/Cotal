@@ -2665,7 +2665,9 @@ record, because a space added from elsewhere is carried by the same files.
 It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
 space's root, and the home folder, whose `.cotal` holds this machine's own records. It refuses a
 folder that is, or is in, a control directory, which is a project's `.cotal` or the Cotal home,
-judged by the path given and by the path its links lead to, with `CONFLICT` and nothing written. The
+judged by the path given and by the path its links lead to, with `CONFLICT` and nothing written. A
+home `COTAL_HOME` redirects may hold project folders beside its records, so under it only the home
+itself and its record entries (`meshes`, `prepared`, `services` and the like) are control paths. The
 next step names the project folder that `.cotal` belongs to. A project folder inside another project,
 outside its `.cotal`, is a project of its own. For a folder
 another space uses, the next step names creating it in another folder with `--root <dir>`, and
