@@ -52,7 +52,7 @@ export function seededInstallDiffers(name: string, generation: string, entry: In
  */
 export function prefixLockDiffers(): string | undefined {
   const prefix = extensionsDir();
-  let lock: { packages?: Record<string, { version?: unknown; link?: unknown; optional?: unknown; os?: unknown; cpu?: unknown }> };
+  let lock: { packages?: Record<string, LockEntry> };
   try {
     lock = JSON.parse(readFileSync(join(prefix, "package-lock.json"), "utf8")) as typeof lock;
   } catch (e) {
@@ -66,9 +66,9 @@ export function prefixLockDiffers(): string | undefined {
     try {
       actual = (JSON.parse(readFileSync(join(prefix, key, "package.json"), "utf8")) as { version?: unknown }).version;
     } catch {
-      // npm installs an optional package only on a platform its `os` and `cpu` lists admit; one the lock
-      // records for another platform is absent by npm's own rule, not missing.
-      if (recorded.optional === true && (excludesHost(recorded.os, process.platform) || excludesHost(recorded.cpu, process.arch))) continue;
+      // npm installs an optional package only on a platform its `os`, `cpu` and `libc` lists admit; one
+      // the lock records for another platform is absent by npm's own rule, not missing.
+      if (recorded.optional === true && platformExcludesHost(recorded)) continue;
       return `${key} is recorded in the prefix lock but not installed`;
     }
     if (actual !== recorded.version) return `${key} is ${String(actual)} on disk and ${recorded.version} in the prefix lock`;
@@ -102,9 +102,67 @@ function payloadFiles(root: string): string[] | string {
   return walk(root, "") ?? files;
 }
 
-/** Whether a lock entry's `os` or `cpu` list, when it is one, leaves this host out. */
-function excludesHost(list: unknown, value: string): boolean {
-  return Array.isArray(list) && list.every((entry) => typeof entry === "string") && !list.includes(value);
+interface LockEntry {
+  readonly version?: unknown;
+  readonly link?: unknown;
+  readonly optional?: unknown;
+  readonly os?: unknown;
+  readonly cpu?: unknown;
+  readonly libc?: unknown;
+}
+
+/** npm's platform rule for a package (npm-install-checks `checkPlatform`): it is left out of this
+ *  host when its `os`, `cpu` or `libc` list does not admit the host, and a `libc` requirement on a
+ *  host whose libc npm cannot name is left out too. A list this function cannot read admits the host,
+ *  so the absent package is reported rather than excused. */
+export function platformExcludesHost(
+  entry: Pick<LockEntry, "os" | "cpu" | "libc">,
+  host: { platform: string; arch: string; libc: () => string | undefined } = { platform: process.platform, arch: process.arch, libc: hostLibc },
+): boolean {
+  if (entry.os !== undefined && !admits(host.platform, entry.os)) return true;
+  if (entry.cpu !== undefined && !admits(host.arch, entry.cpu)) return true;
+  if (entry.libc !== undefined) {
+    const libc = host.libc();
+    if (!libc || !admits(libc, entry.libc)) return true;
+  }
+  return false;
+}
+
+/** npm-install-checks `checkList`: a string is a one-entry list, `["any"]` admits everything, and
+ *  the value must match none of the negated (`!x`) entries and, when a plain entry exists, at least
+ *  one of them. Anything that is not a list of strings is read as admitting the host. */
+export function admits(value: string, list: unknown): boolean {
+  const entries = typeof list === "string" ? [list] : Array.isArray(list) && list.every((entry) => typeof entry === "string") ? list : undefined;
+  if (entries === undefined) return true;
+  if (entries.length === 1 && entries[0] === "any") return true;
+  let negated = 0;
+  let match = false;
+  for (const entry of entries) {
+    const negate = entry.startsWith("!");
+    const test = negate ? entry.slice(1) : entry;
+    if (negate) {
+      negated++;
+      if (value === test) return false;
+    } else match = match || value === test;
+  }
+  return match || negated === entries.length;
+}
+
+/** The host's libc family the way npm names it (npm-install-checks `current-env`): on Linux, read
+ *  from `/usr/bin/ldd`, else from the process report; elsewhere there is none. */
+function hostLibc(): string | undefined {
+  if (process.platform !== "linux") return undefined;
+  try {
+    const ldd = readFileSync("/usr/bin/ldd", "utf8");
+    if (ldd.includes("musl")) return "musl";
+    if (ldd.includes("GNU C Library")) return "glibc";
+    return undefined;
+  } catch {
+    const report = process.report?.getReport() as { header?: { glibcVersionRuntime?: unknown }; sharedObjects?: unknown } | undefined;
+    if (report?.header?.glibcVersionRuntime) return "glibc";
+    if (Array.isArray(report?.sharedObjects) && report.sharedObjects.some((file) => typeof file === "string" && (file.includes("libc.musl-") || file.includes("ld-musl-")))) return "musl";
+    return undefined;
+  }
 }
 
 function sameBytes(a: string, b: string): boolean {
