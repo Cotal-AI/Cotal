@@ -143,3 +143,4 @@ export * from "./issuer-session.js";
 export * from "./service-gate.js";
 
 export { parseClosureManifest } from "./contract-manifest.js";
+export { armRenewal, jitteredBackoffMs } from "./renewal.js";

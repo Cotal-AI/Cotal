@@ -17,17 +17,19 @@
  *    bearer stamp the leader-served connect arm re-checks, so bind-time proof suffices.
  *
  * RENEWAL IS A FAIL-CLOSED BOUNDARY: each connection authenticates with a SHORT-exp user JWT over
- * a stable nkey, re-minted in-process at half-life; the broker disconnects the connection at JWT
- * expiry and the reconnect presents the freshest mint. A renewal-mint failure fires
+ * a stable nkey, re-minted in-process at a random point between 50% and 80% of its lifetime, spaced
+ * from the process's other renewals in the space; a reconnecting connection then moves onto the
+ * fresh mint once no request is in flight, so the broker never expires it. The supervised reader
+ * is replaced instead (see {@link openSupervisedConnectReader}). A renewal-mint failure fires
  * {@link AuthorityClientOpts.onRenewalFailure} IMMEDIATELY — the supervised reader downs itself
  * on it (unproved + connection closed), so connects DENY from the moment the renewal fails, not
  * only when the old credential eventually expires. A downed reader never comes back without a
  * service restart; there is no file-only fallback.
  */
 import { jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { encodeUser } from "@nats-io/jwt";
+import { decode, encodeUser } from "@nats-io/jwt";
 import { fromPublic } from "@nats-io/nkeys";
-import { nativeNkeySigner, EpEnvelopeError, admissionBucket, dialerFor, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, BASELINE_LIFECYCLE_ENDPOINT, epCallerGrantRows, instanceOnlyManagerCapabilities, type EpCaller, type PlaneConnTuple } from "@cotal-ai/core";
+import { armRenewal, jitteredBackoffMs, nativeNkeySigner, EpEnvelopeError, admissionBucket, dialerFor, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, BASELINE_LIFECYCLE_ENDPOINT, epCallerGrantRows, instanceOnlyManagerCapabilities, type EpCaller, type PlaneConnTuple } from "@cotal-ai/core";
 import { chatAuthorityWriteSubjects } from "./chat-session-store.js";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 import { environmentManagerAdmissionIndexBucket } from "./environment-manager-admission-index.js";
@@ -36,6 +38,12 @@ import type { ServiceWriteScope } from "./service-write.js";
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
  *  in-memory credential that closes with the service — never an unbounded persisted one). */
 export const AUTHORITY_CLIENT_TTL_SEC = 15 * 60;
+
+/** Signing the connection's own JWT failed: no connection was attempted. */
+class AuthorityMintFailure extends Error {}
+
+/** The least wait before a renewal, so a failed mint retried late in a JWT's life is paced. */
+const AUTHORITY_RENEWAL_FLOOR_MS = 5_000;
 
 /** The longest window one service host effect credential covers: one service host invocation. */
 export const SERVICE_HOST_INVOCATION_MS = 60_000;
@@ -495,7 +503,12 @@ export interface AuthorityClientOpts {
    *  this to down itself immediately — renewal failure is a fail-closed boundary NOW, never
    *  "at the old credential's eventual expiry". */
   onRenewalFailure?: () => void;
-  /** SMOKE-ONLY renewal probe: override the half-life interval and/or force every renewal mint
+  /** Renew by REPLACEMENT: at the renewal point the client calls this instead of re-minting and
+   *  reconnecting, and its owner opens and proves a successor before it retires this one. The
+   *  supervised reader uses it, because an in-place reconnect leaves the reader unproved, and every
+   *  connect is denied, until the rebind shape proof passes again. */
+  onRenewalDue?: () => void;
+  /** SMOKE-ONLY renewal probe: renew at this fixed interval and/or force every renewal mint
    *  to reject deterministically (the mint is a local signing operation with no natural failure
    *  to inject). Production compositions never set this. */
   probeRenewal?: { intervalMs: number; fail?: boolean };
@@ -564,6 +577,9 @@ export interface AuthorityClient {
    *  resolves it; the composition's `closing` flag tells a deliberate teardown from a mid-life
    *  death). */
   gone?: Promise<void>;
+  /** {@link AuthorityClientOpts.onRenewalDue} clients only: the expiry, in epoch seconds, of the
+   *  JWT this connection authenticates with for its whole life. */
+  exp?: number;
   close(): Promise<void>;
 }
 
@@ -575,7 +591,7 @@ function refuseServiceHostEffect(detail: string): never {
 function serviceHostInvocationExpiry(opts: AuthorityClientOpts): { exp: number; deadlineMs: number } {
   if (opts.label !== serviceHostEffectLabel(opts.space)) refuseServiceHostEffect(`requires the label ${serviceHostEffectLabel(opts.space)}`);
   if (opts.noReconnect !== true) refuseServiceHostEffect("requires noReconnect");
-  if (opts.planeCandidate || opts.toolResultCustody || opts.probeRenewal !== undefined || opts.onRenewalFailure !== undefined)
+  if (opts.planeCandidate || opts.toolResultCustody || opts.probeRenewal !== undefined || opts.onRenewalFailure !== undefined || opts.onRenewalDue !== undefined)
     refuseServiceHostEffect("is never a plane, custody or renewing profile");
   const deadlineMs: unknown = opts.serviceHostInvocation?.deadlineMs, now = Date.now();
   if (typeof deadlineMs !== "number" || !Number.isSafeInteger(deadlineMs)) refuseServiceHostEffect("requires a safe-integer original deadline in milliseconds");
@@ -589,9 +605,9 @@ function serviceHostInvocationExpiry(opts: AuthorityClientOpts): { exp: number; 
 
 /**
  * Open one self-minted data-account connection: a stable user nkey, a short-exp user JWT signed
- * by the data account's signing seed, re-minted in-process at half-life. The authenticator
- * presents the FRESHEST mint on every (re)connect; see the module header for why a failed
- * renewal fail-closes instead of retrying on a lapsed credential.
+ * by the data account's signing seed, re-minted in-process before it expires (see the module
+ * header). The authenticator presents the FRESHEST mint on every (re)connect; see the module header
+ * for why a failed renewal fail-closes instead of retrying on a lapsed credential.
  */
 export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<AuthorityClient> {
   if (opts.toolResultCustody && (opts.planeCandidate || !["cotal:tool-result-snapshot", "cotal:tool-result-revocation"].includes(opts.label)))
@@ -611,10 +627,10 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
         ...(opts.principal ? { tags: principalTags(opts.principal.owner, opts.principal.actor) } : {}) },
       // Plane scanners and the separate custody profile require uninterrupted identities. A
       // service host effect expires at its invocation's original deadline. Every other authority
-      // connection keeps short expiry and half-life renewal.
+      // connection keeps short expiry and renews before it.
       uninterrupted ? { signer } : { signer, exp: invocation ? invocation.exp : Math.floor(Date.now() / 1000) + AUTHORITY_CLIENT_TTL_SEC },
     );
-  let currentJwt = await mint();
+  let currentJwt = await mint().catch((e: unknown) => { throw new AuthorityMintFailure(e instanceof Error ? e.message : String(e), { cause: e }); });
   const renew = async (): Promise<string> => {
     if (opts.probeRenewal?.fail) throw new Error("probe-forced renewal failure");
     return mint();
@@ -623,16 +639,41 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
   // host effect never outlives its one fixed expiry.
   const remaining = invocation ? invocation.deadlineMs - Date.now() : undefined;
   if (remaining !== undefined && remaining <= 0) refuseServiceHostEffect("its original deadline passed before the connect");
-  const renewal = uninterrupted || invocation ? undefined : setInterval(() => {
-    void renew().then(
-      (jwt) => { currentJwt = jwt; },
+  // The renewal point is drawn from the middle of the JWT's lifetime and spaced from this process's
+  // other renewals in the space, and a new JWT moves the live connection onto itself at once. A
+  // fixed half-life left every connection opened at boot for the broker to expire at one second,
+  // and the supervised reader denying connects while it rebound.
+  let nc: NatsConnection;
+  let cancelRenewal: (() => void) | undefined;
+  let renewing = !(uninterrupted || invocation);
+  const armRenewalFor = (jwt: string): void => {
+    if (!renewing) return;
+    const fire = opts.onRenewalDue ?? ((): void => void renew().then(
+      (fresh) => {
+        if (!renewing) return;
+        currentJwt = fresh;
+        if (!opts.noReconnect && nc) void swapWhenQuiet(nc);
+        armRenewalFor(fresh);
+      },
       (e) => {
         opts.log(`${opts.label}: credential renewal FAILED (${(e as Error)?.message ?? String(e)}) - failing closed NOW (fail-closed renewal boundary)`);
         opts.onRenewalFailure?.();
+        armRenewalFor(currentJwt);
       },
-    );
-  }, opts.probeRenewal?.intervalMs ?? (AUTHORITY_CLIENT_TTL_SEC / 2) * 1000);
-  let nc: NatsConnection;
+    ));
+    if (opts.probeRenewal) {
+      const timer = setTimeout(fire, opts.probeRenewal.intervalMs);
+      cancelRenewal = () => clearTimeout(timer);
+      return;
+    }
+    const { iat, exp } = decode(jwt);
+    cancelRenewal = armRenewal(opts.space, iat * 1000, (exp ?? iat + AUTHORITY_CLIENT_TTL_SEC) * 1000, fire, AUTHORITY_RENEWAL_FLOOR_MS);
+  };
+  const stopRenewal = (): void => {
+    renewing = false;
+    cancelRenewal?.();
+  };
+  armRenewalFor(currentJwt);
   try {
     nc = await dialerFor(opts.server)({
       servers: opts.server,
@@ -646,9 +687,12 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
       ...(remaining !== undefined ? { timeout: remaining } : {}),
     });
   } catch (e) {
-    if (renewal !== undefined) clearInterval(renewal);
+    stopRenewal();
     throw e;
   }
+  // Read once here, so a nats-core whose request multiplexer moved fails this open rather than
+  // a renewal minutes later.
+  requestsInFlight(nc);
   opts.onConnection?.(nc, opts.label);
   let tuple: PlaneConnTuple | undefined;
   let gone: Promise<void> | undefined;
@@ -670,13 +714,37 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
     ...(opts.principal ? { principal: principalKey(opts.principal.owner, opts.principal.actor).key } : {}),
     ...(tuple ? { tuple } : {}),
     ...(gone ? { gone } : {}),
+    ...(opts.onRenewalDue ? { exp: decode(currentJwt).exp } : {}),
     close: async () => {
-      if (renewal !== undefined) clearInterval(renewal);
+      stopRenewal();
       try { await nc.close(); }
       catch (cause) { throw new Error(`auth connection ${opts.label} failed to close`, { cause }); }
       await nc.closed();
     },
   };
+}
+
+/** nats-core keeps a connection's outstanding requests on its protocol handler, the same pinned
+ *  internal surface CotalEndpoint uses for its reconnect switch; there is no public count. */
+function requestsInFlight(nc: NatsConnection): number {
+  const mux = (nc as unknown as { protocol?: { muxSubscriptions?: { size?: () => number } } }).protocol?.muxSubscriptions;
+  if (typeof mux?.size !== "function")
+    throw new Error("nats-core no longer exposes its request multiplexer; an authority connection cannot swap credentials without losing replies in flight");
+  return mux.size();
+}
+
+/** How long a live credential swap waits for a moment with no request in flight. */
+const QUIET_SWAP_WAIT_MS = 30_000;
+
+/** Move a reconnecting connection onto its freshest JWT once no request is in flight. A reply that is
+ *  still on the wire when the transport closes is lost, and its caller (a connect's issuance record,
+ *  a cleanup read) waits out its whole timeout; requests made during the reconnect are queued and
+ *  sent on the new connection. A connection that is never idle inside the wait is swapped anyway:
+ *  the broker would otherwise close it at expiry with every request in flight. */
+async function swapWhenQuiet(nc: NatsConnection): Promise<void> {
+  const until = Date.now() + QUIET_SWAP_WAIT_MS;
+  while (requestsInFlight(nc) > 0 && Date.now() < until) await new Promise((r) => setTimeout(r, 10));
+  await nc.reconnect().catch(() => {});
 }
 
 export interface SupervisedConnectReader {
@@ -687,61 +755,140 @@ export interface SupervisedConnectReader {
   close(): Promise<void>;
 }
 
+/** How long a replaced reader keeps its connection, so a read already in flight on it completes. */
+const READER_RETIRE_GRACE_MS = 10_000;
+
 /**
  * Open the supervised connect reader: the self-minted reader connection plus the §13.12 bind
  * discipline ACROSS RECONNECTS. The shape proof re-runs on EVERY (re)bind, not just startup — a
  * dropped reader reconnecting could land on a mirror/follower, so it is UNPROVED from the moment
  * the connection drops until {@link openConnectReader} passes again, and `current()` refuses in
  * between. The initial proof is awaited: this constructor resolving IS the readiness signal.
+ *
+ * Renewal does not drop the connection. At its renewal point the supervisor opens a successor
+ * connection on a fresh credential and proves a reader on it, and only then serves it; the
+ * reader it replaces answers until that moment and keeps its connection for a grace period, so
+ * a read already in flight completes. A rebind therefore leaves no window in which a connect is
+ * denied. A successor that cannot connect is retried while the serving reader keeps answering; if
+ * none is proved before the serving credential expires, the reader goes down and connects deny
+ * until one is.
  */
 export async function openSupervisedConnectReader(
   opts: Omit<AuthorityClientOpts, "grants" | "label">,
 ): Promise<SupervisedConnectReader> {
   const label = `cotal:auth-reader:${opts.space}`;
   let reader: ConnectReader | undefined;
-  let closed = false;
   let client: AuthorityClient | undefined;
-  client = await openAuthorityClient({
+  let closed = false, downed = false, replaceFailures = 0;
+  let retry: ReturnType<typeof setTimeout> | undefined, expiry: ReturnType<typeof setTimeout> | undefined;
+  const retiring = new Set<AuthorityClient>();
+  const retire = (c: AuthorityClient, graceMs: number): void => {
+    retiring.add(c);
+    const t = setTimeout(() => { retiring.delete(c); void c.close().catch(() => {}); }, graceMs);
+    t.unref?.();
+  };
+  // Renewal failure is a fail-closed boundary NOW: down the reader the instant a remint rejects, so
+  // connects DENY immediately instead of riding the old credential to its expiry.
+  const failClosed = (why: string): void => {
+    if (closed || downed) return;
+    downed = true;
+    reader = undefined;
+    clearTimeout(retry);
+    clearTimeout(expiry);
+    opts.log(`${label}: ${why} - reader downed NOW, connects deny until the service restarts (fail-closed)`);
+    void client?.close().catch(() => {});
+  };
+  const openClient = (): Promise<AuthorityClient> => openAuthorityClient({
     ...opts,
     label,
     grants: (connId) => authConnectReaderGrants(opts.space, connId),
-    // Renewal failure is a fail-closed boundary NOW: down the reader the instant a remint
-    // rejects, so connects DENY immediately instead of riding the old credential to its expiry.
-    onRenewalFailure: () => {
-      reader = undefined;
-      opts.log(`${label}: credential renewal failed - reader downed NOW, connects deny until the service restarts (fail-closed)`);
-      if (!closed) void client?.close();
-    },
+    onRenewalDue: () => void replace(),
   });
-  const c = client;
-  try {
-    reader = await openConnectReader(c.nc, opts.space);
-  } catch (e) {
-    await c.close();
-    throw e;
-  }
-  void (async () => {
-    for await (const s of c.nc.status()) {
-      if (closed) break;
-      if (s.type === "disconnect") {
-        reader = undefined;
-        opts.log(`${label}: connection lost - connects DENY until the rebind shape proof passes`);
-      } else if (s.type === "error") {
-        // An -ERR leaves the bind as it was. nats.js reports every loss of the link as
-        // `disconnect`, the losses an -ERR causes included, and an -ERR that keeps the link up
-        // (a refused publish or subscribe) is followed by no `reconnect` that could restore it.
-        opts.log(`${label}: broker error (${s.error.message})`);
-      } else if (s.type === "reconnect") {
-        try {
-          reader = await openConnectReader(c.nc, opts.space);
-          opts.log(`${label}: rebound and shape-proved; connect reads resume`);
-        } catch (e) {
+  const watch = (c: AuthorityClient): void => {
+    void (async () => {
+      for await (const s of c.nc.status()) {
+        if (closed || c !== client) break;
+        if (s.type === "disconnect") {
           reader = undefined;
-          opts.log(`${label}: REBIND SHAPE PROOF FAILED (${(e as Error)?.message ?? String(e)}) - connects stay denied`);
+          opts.log(`${label}: connection lost - connects DENY until the rebind shape proof passes`);
+        } else if (s.type === "error") {
+          // An -ERR leaves the bind as it was. nats.js reports every loss of the link as
+          // `disconnect`, the losses an -ERR causes included, and an -ERR that keeps the link up
+          // (a refused publish or subscribe) is followed by no `reconnect` that could restore it.
+          opts.log(`${label}: broker error (${s.error.message})`);
+        } else if (s.type === "reconnect") {
+          try {
+            const proved = await openConnectReader(c.nc, opts.space);
+            if (c === client && !downed) reader = proved;
+            opts.log(`${label}: rebound and shape-proved; connect reads resume`);
+          } catch (e) {
+            if (c === client) reader = undefined;
+            opts.log(`${label}: REBIND SHAPE PROOF FAILED (${(e as Error)?.message ?? String(e)}) - connects stay denied`);
+          }
         }
       }
+    })();
+  };
+  const serve = (c: AuthorityClient, r: ConnectReader): void => {
+    const old = client;
+    client = c;
+    reader = r;
+    watch(c);
+    clearTimeout(expiry);
+    // A serving credential that reaches its expiry with no proved successor would otherwise make
+    // the library redial with dead material for as long as the process lives.
+    expiry = setTimeout(() => {
+      if (client !== c || closed || downed) return;
+      reader = undefined;
+      client = undefined;
+      retire(c, 0);
+      opts.log(`${label}: its credential expired before a replacement reader was proved - connects DENY until one is`);
+    }, Math.max(0, (c.exp ?? 0) * 1000 - Date.now() - 1_000));
+    expiry.unref?.();
+    if (old) retire(old, READER_RETIRE_GRACE_MS);
+  };
+  const retryLater = (why: string): void => {
+    if (replaceFailures === 0) opts.log(`${label}: ${why} - retrying with backoff`);
+    retry = setTimeout(() => void replace(), jitteredBackoffMs(replaceFailures++, 1_000, 60_000));
+    retry.unref?.();
+  };
+  const replace = async (): Promise<void> => {
+    if (closed || downed) return;
+    let c: AuthorityClient;
+    try {
+      // The smoke-only probe forces the renewal mint to reject.
+      if (opts.probeRenewal?.fail) throw new AuthorityMintFailure("probe-forced renewal failure");
+      c = await openClient();
+    } catch (e) {
+      if (e instanceof AuthorityMintFailure) return failClosed(`credential renewal failed (${e.message})`);
+      return retryLater(`could not connect a replacement reader (${(e as Error)?.message ?? String(e)}); the current one keeps serving`);
     }
-  })();
+    let r: ConnectReader;
+    try {
+      r = await openConnectReader(c.nc, opts.space);
+    } catch (e) {
+      await c.close().catch(() => {});
+      // The stores failed the shape proof, and the serving reader reads the same stores.
+      reader = undefined;
+      opts.log(`${label}: REPLACEMENT SHAPE PROOF FAILED (${(e as Error)?.message ?? String(e)}) - connects stay denied`);
+      return retryLater("no replacement reader is proved");
+    }
+    if (closed || downed) {
+      await c.close().catch(() => {});
+      return;
+    }
+    replaceFailures = 0;
+    serve(c, r);
+  };
+  const first = await openClient();
+  let firstReader: ConnectReader;
+  try {
+    firstReader = await openConnectReader(first.nc, opts.space);
+  } catch (e) {
+    await first.close();
+    throw e;
+  }
+  serve(first, firstReader);
   return {
     current: () => {
       if (reader === undefined)
@@ -751,7 +898,9 @@ export async function openSupervisedConnectReader(
     close: async () => {
       closed = true;
       reader = undefined; // a closed reader refuses immediately, not on the next status event
-      await c.close();
+      clearTimeout(retry);
+      clearTimeout(expiry);
+      await Promise.all([client, ...retiring].map((c) => c?.close()));
     },
   };
 }

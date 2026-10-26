@@ -92,7 +92,7 @@ import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster,
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, servedRunCancelRequestSubject, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
 import { createNativeServiceCalloutAuthority, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
 import { openChatSessionAuthority, type ChatAdmissionRequest, type ChatRetireRequest, type ChatRetireResult, type ChatSessionAdmitted } from "./chat-session-authority.js";
-import { pruneNativeIssuance } from "./native-issuance.js";
+import { CorruptNativeIssuanceEvidence, pruneNativeIssuance } from "./native-issuance.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { parseServiceHostRequest, type ServiceEndpointHost } from "./service-host-contract.js";
@@ -110,7 +110,7 @@ import { makeRetirementCleaners } from "./retirement-cleaner.js";
 import { makeDrainRepairers } from "./drain-repair.js";
 import { serializedFor } from "./serialized.js";
 import { RunCancelObservations, type RunCancelLimits } from "./run-cancel-observation.js";
-import { readCancellationAdmission } from "@cotal-ai/core";
+import { jitteredBackoffMs, readCancellationAdmission } from "@cotal-ai/core";
 import type { DelegatedUserIntentIncarnation } from "./delegated-user-intent.js";
 import { joinOrStartRetirement, openAuthAdminListener, type RetirementFlights } from "./auth-admin.js";
 import { AUTH_SERVICE_ENDPOINT, authClusterArtifacts, authContractArtifactValues } from "./auth-service-contract.js";
@@ -763,19 +763,41 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   const authAdmin = await openAuthAdminListener({ onConnection, server, space, dataAccount, reg: barrierReg, retirement, barrierFlight: retirementFlights, instanceId: authServeInstanceId, epoch: authServeGrant.epoch, grant: authServeGrant, log });
   unwind.push(() => authAdmin.close());
   const recordToolResultConsent = makeToolResultConsentRecorder(registryStores(registry).authKv, () => refuseIfFenced(), space);
-  // Expired evidence goes at boot (a failure refuses the open) and then on the plane's own timer;
-  // a failed pass fences the plane like a scanner death, never a silently unbounded recorder.
+  // Expired evidence goes at boot and then on the plane's own timer. Corrupt evidence means the
+  // store is inconsistent: it refuses the open, and mid-life it fences the plane like a scanner
+  // death, never a silently unbounded recorder. Any other failure leaves the store as it was, such
+  // as a read timing out while the writer's connection rebinds under load, so the pass is retried
+  // on a jittered, capped backoff with one log line for the run of failures, and the plane serves on.
   const pruneMs = opts.nativeIssuancePruneMs ?? 60_000;
   if (!Number.isSafeInteger(pruneMs) || pruneMs < 100 || pruneMs > 3_600_000)
     throw new Error(`nativeIssuancePruneMs must be an integer between 100 and 3600000 (got ${pruneMs})`);
-  await pruneNativeIssuance(registry, Math.floor(Date.now() / 1000));
+  let pruneFailures = 0;
+  const pruneRetryMs = (e: unknown): number => {
+    if (pruneFailures === 0)
+      log(`auth-plane: native-issuance cleanup failed (${e instanceof Error ? e.message : String(e)}) - retrying with backoff; expired evidence stays until a pass succeeds`);
+    return jitteredBackoffMs(pruneFailures++, Math.min(pruneMs, 1_000), 60_000);
+  };
+  let firstPruneMs = pruneMs;
+  try {
+    await pruneNativeIssuance(registry, Math.floor(Date.now() / 1000));
+  } catch (e) {
+    if (e instanceof CorruptNativeIssuanceEvidence) throw e;
+    firstPruneMs = pruneRetryMs(e);
+  }
   let pruneTimer: ReturnType<typeof setTimeout> | undefined;
   let pruneFlight: Promise<void> = Promise.resolve();
-  const schedulePrune = (): void => {
+  const schedulePrune = (delayMs: number): void => {
     if (closing || fatalReason !== undefined) return;
     pruneTimer = setTimeout(() => {
-      pruneFlight = pruneNativeIssuance(registry, Math.floor(Date.now() / 1000)).then(schedulePrune, (e: unknown) => {
-        const copy = `native-issuance cleanup failed: ${e instanceof Error ? e.message : String(e)}`;
+      pruneFlight = pruneNativeIssuance(registry, Math.floor(Date.now() / 1000)).then(() => {
+        pruneFailures = 0;
+        schedulePrune(pruneMs);
+      }, (e: unknown) => {
+        if (!(e instanceof CorruptNativeIssuanceEvidence)) {
+          if (!closing) schedulePrune(pruneRetryMs(e));
+          return;
+        }
+        const copy = `native-issuance cleanup failed: ${e.message}`;
         // As for a scanner death: a closing plane does not go fatal, but a call it is draining stops.
         if (closing) { serviceHost?.trip(copy); return; }
         hold?.fence(copy);
@@ -784,11 +806,11 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         fireFatal(copy);
         log(`auth-plane: ${copy}`);
       });
-    }, pruneMs);
+    }, delayMs);
   };
   const stopPrune = async (): Promise<void> => { clearTimeout(pruneTimer); await pruneFlight; };
   unwind.push(async () => { closing = true; await stopPrune(); });
-  schedulePrune();
+  schedulePrune(firstPruneMs);
   // The service endpoint host, default off. Its discovery client only reads, on the ordinary
   // renewing profile: a broker loss makes its reads fail until it reconnects, and a renewal failure
   // closes it for good, after which decide and revoke answer unavailable until the plane is opened

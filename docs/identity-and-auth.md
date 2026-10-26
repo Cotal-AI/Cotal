@@ -512,6 +512,15 @@ on a standalone broker (a clustered one refuses the reclaim, since a partitioned
 could still hold them). If the claim's connections die mid-run, the service downs itself
 loudly instead of serving from a half-dead plane.
 
+The service's own broker connections renew their credentials before they expire, at a random
+point between half and four fifths of each credential's lifetime and at least a second apart
+within a space. Each reconnects onto its new credential at a moment with no request in flight.
+The connect-credential reader opens a new connection instead, proves its stores on it, and only
+then switches to it, so a renewal never denies a connect. The service also removes expired
+native-key issuance evidence on a timer. A pass that fails because the store did not answer, as can
+happen while a connection reconnects under load, is retried with growing waits and logged once, and
+the service keeps serving. Evidence that does not parse stops the service and refuses its next start.
+
 Ctrl-C on a foreground `up`, and a broker that exits under it, stop the service with the same stop
 bare `cotal down` uses for it. It holds the reservation `down` takes, so the auth stop of a
 concurrent `cotal down` is refused while it runs, and it sends SIGKILL to a service that has not
@@ -520,8 +529,13 @@ exited 15 seconds after SIGTERM. A legacy stack has no command that stops only t
 **Your agents are yours.** `cotal spawn` on a user mesh grants a managed actor under the
 *spawning operator's* owner and launches the agent with a bearer command instead of a
 creds file. The agent exchanges its spawn-time secret for short bearers (five minutes or
-less) and refreshes ahead of each expiry. A locally provisioned foreground launch refuses an
-existing actor rather than rotating another launch's secret. Its exit and failed-start cleanup
+less). It renews each one at a random point between half and four fifths of its lifetime and
+moves its connection onto the new bearer, so the broker never closes the connection for an
+expired one. Agents started together draw different points, and two connections in one process
+for the same space renew at least a second apart. An agent never presents an expired bearer: it
+renews first. While renewal fails it retries with growing, randomized waits of up to a minute,
+and reports the failure once until renewal works again. A locally provisioned foreground launch
+refuses an existing actor rather than rotating another launch's secret. Its exit and failed-start cleanup
 revoke only the grant matching the launch's token and lifecycle. Broker-footprint deletion follows
 a successful owned revoke; credential files are removed only while they still hold this launch's
 material. Cleanup reports failures without deleting a successor's state. A crashed launcher can
