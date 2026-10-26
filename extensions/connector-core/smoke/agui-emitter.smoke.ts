@@ -740,7 +740,8 @@ try {
     }
     c(
       "pack:one-observation-one-frame-a-single-oversized-unit-FAILS-LOUD",
-      oversized instanceof AguiVocabularyError && /does not fit in one frame/.test(oversized.message) && /One source observation is one frame/.test(oversized.message),
+      oversized instanceof AguiVocabularyError &&
+        oversized.message === `a single unit does not fit in one frame (${alone} > ${alone - 1} bytes, 5 event(s), run r1)`,
       oversized?.message ?? "no throw",
     );
     // CONTROL: one byte more and the SAME unit packs. Without this, the cell above passes for a

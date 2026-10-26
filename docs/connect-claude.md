@@ -596,6 +596,10 @@ Its native lifecycle drives presence and recording for that session only; a suba
 conversation cannot end its main run. The event channel keeps the space's normal read permissions.
 A personal connection makes manager calls only with its own selected grant.
 
+An event unit that cannot fit in one frame is refused. The failure reports its measured size,
+the payload limit, event count and run. This also applies to an authored run terminal, which
+consumes no source record and leaves the source cursor unchanged.
+
 If the event plane stops, the seat keeps running and its mesh connection, on every connector and
 on every space. The connector log records `AG-UI emitter stopped` with the reason and the delay
 before it re-establishes the plane: at once after a failure, then every second while the plane

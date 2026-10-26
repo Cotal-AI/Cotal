@@ -532,6 +532,48 @@ try {
     c("holder:a-close-does-not-BIND-a-path", holder.path === undefined, holder.path);
   });
 
+  // A terminal consumes no source record. Its size refusal must describe the unit, not a source
+  // observation cut mid-record, including when the failure is surfaced by the holder.
+  for (const type of ["RUN_FINISHED", "RUN_ERROR"] as const) {
+    await block(`AN OVERSIZED ${type} ENVELOPE NAMES THE UNIT`, async () => {
+      const { src, walPath, wal, source } = await fresh(`small-terminal-${type}`);
+      const ep = new FakeEndpoint();
+      const errors: Error[] = [];
+      const closedRuns: string[] = [];
+      const holder = new AguiEmitterHolder<Rec>(
+        async () => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }),
+        { onError: (e) => errors.push(e), onRunClosed: (runId) => closedRuns.push(runId), sourceEnd: (p) => new JsonlFileSource(p).end() },
+      );
+      holder.flush(src);
+      await holder.settled();
+      append(src, { open: "run-small" });
+      ep.answers = [{ seq: 65, duplicate: false }];
+      holder.flush(src);
+      await holder.settled();
+      const before = await reopen(walPath);
+      c(`holder:${type}-CONTROL-the-run-is-open-before-the-close`,
+        holder.running && ep.publishes.length === 1 && before.brackets?.run === "run-small",
+        { failure: holder.failure?.message, brackets: before.brackets });
+
+      ep.maxPayload = 32;
+      holder.closeRun(99, type === "RUN_ERROR" ? { message: "upstream failure" } : undefined);
+      await holder.settled();
+      await holder.close();
+      const failure = holder.failure;
+      c(`holder:${type}-an-oversized-terminal-reports-the-unit-not-a-source-record`,
+        failure instanceof AguiVocabularyError &&
+          /^a single unit does not fit in one frame \([0-9]+ > 32 bytes, 1 event\(s\), run run-small\)$/.test(failure.message) &&
+          errors.length === 1 && errors[0] === failure && !holder.running,
+        { failure: failure?.message, errors: errors.map((e) => e.message) });
+      const after = await reopen(walPath);
+      c(`holder:${type}-an-oversized-terminal-publishes-and-advances-nothing`,
+        ep.publishes.length === 1 && closedRuns.length === 0 && after.pending === null &&
+          after.frontier.sourceCursor === before.frontier.sourceCursor &&
+          after.frontier.seq === before.frontier.seq && after.brackets?.run === "run-small",
+        { publishes: ep.publishes.length, closedRuns, frontier: after.frontier, brackets: after.brackets });
+    });
+  }
+
   // ── AN OVERSIZED FAILURE DETAIL STILL CLOSES, AND NEITHER IT NOR A SHORT ONE REACHES THE WIRE ──
   //
   // The close frame is the one a reader waits on. Upstream free text (`error_details` /
