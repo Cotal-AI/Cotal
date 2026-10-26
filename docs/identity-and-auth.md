@@ -432,8 +432,15 @@ A hosted context sets its limits with `startAuthService({ ..., calloutLimits })`
 `calloutLimits` is `{ authTimeoutMs, maxInFlight, slowMs }`. `authTimeoutMs` (default 2000) must
 match the broker's `authorization { timeout }` in milliseconds: against a broker set to 10 seconds,
 the default refuses at 1.75 seconds connects the broker would still wait for. `maxInFlight` (default
-32) bounds the requests in progress, and `slowMs` (default 500) sets when a line logs at warn. The
-CLI's `auth-service` uses the defaults, which match the broker config `cotal up` writes.
+32) bounds the requests in progress, and `slowMs` (default 500) sets when a line logs at warn.
+
+`cotal up --auth-timeout <seconds>` sets both sides for a CLI stack from one value. It renders the
+broker's `authorization { timeout }` and starts the space's auth service with that timeout as its
+callout deadline. The value is recorded with the root's broker policy, so a later `cotal up`
+renders it again and passes it to the auth service again. Without it the broker config has no
+`authorization` block and the auth service uses the defaults, which match nats-server's. `cotal up`
+does not start callout replicas, so start each one with the same `--auth-timeout <seconds>` as the
+broker config.
 
 ### Enrollment redeem
 

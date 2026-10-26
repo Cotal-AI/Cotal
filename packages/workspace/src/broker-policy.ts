@@ -1,6 +1,6 @@
 /**
  * The broker LAUNCH POLICY: how this mesh's broker must be served, recorded durably so that every
- * later `up` renders the same transport.
+ * later `up` renders the same transport and auth callout timeout.
  *
  * Why this is a separate record from the mesh registry entry. `MeshEntry` lives in the machine
  * home and carries TLS-required CLIENT INTENT only — enough for a resolved connection to become
@@ -30,6 +30,9 @@ export interface BrokerPolicy {
    *  guess at one. */
   readonly version: 1;
   readonly transport: BrokerTransport;
+  /** The broker's `authorization { timeout }` in whole seconds (`cotal up --auth-timeout`), which
+   *  the auth service also takes as its callout deadline. Absent: nats-server's default. */
+  readonly authTimeout?: number;
 }
 
 /** Thrown for every unreadable, unparseable or unusable policy. Distinct so callers can report a
@@ -93,7 +96,12 @@ export function readBrokerPolicy(root: string): BrokerPolicy | undefined {
   if (!t || typeof t !== "object")
     throw new BrokerPolicyError(`broker policy at ${path} is missing its transport`);
 
-  if (t.kind === "plaintext") return { version: 1, transport: { kind: "plaintext" } };
+  const authTimeout = doc.authTimeout;
+  if (authTimeout !== undefined && (!Number.isSafeInteger(authTimeout) || authTimeout <= 0))
+    throw new BrokerPolicyError(`broker policy at ${path} names an auth timeout that is not a positive whole number of seconds: ${JSON.stringify(authTimeout)}`);
+  const limits = authTimeout !== undefined ? { authTimeout } : {};
+
+  if (t.kind === "plaintext") return { version: 1, transport: { kind: "plaintext" }, ...limits };
 
   if (t.kind !== "tls-required")
     throw new BrokerPolicyError(`broker policy at ${path} names an unknown transport ${JSON.stringify((t as { kind?: unknown }).kind)}`);
@@ -112,5 +120,5 @@ export function readBrokerPolicy(root: string): BrokerPolicy | undefined {
       );
   }
 
-  return { version: 1, transport: { kind: "tls-required", certFile: t.certFile, keyFile: t.keyFile } };
+  return { version: 1, transport: { kind: "tls-required", certFile: t.certFile, keyFile: t.keyFile }, ...limits };
 }

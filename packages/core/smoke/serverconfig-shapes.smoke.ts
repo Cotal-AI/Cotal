@@ -133,5 +133,21 @@ for (const [what, tlsConf, plainConf] of [
   }
 }
 
-console.log(`serverconfig-shapes smoke: OK - all 4 call-site shapes render (incl. the :live-only extraAccounts-from-variable form), tls renders on both renderers, allow_non_tls/handshake_first/verify never emitted, open renderer carries no auth material, maxFileStore unset is byte-identical and set renders max_file_store, invalid caps refused`);
+// The auth callout timeout (`authTimeout`). Unset renders no `authorization` block, so every config
+// that never asks for one stays byte-identical. Set renders `authorization { timeout: N }` after the
+// control-line limit and changes nothing else. An invalid value is refused by the renderer.
+{
+  const unset = serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: 4331, storeDir, wsPort: 4332, extraAccounts: extra });
+  assert.ok(!unset.includes("authorization"), "serverConfig: unset authTimeout renders no authorization block");
+  assert.equal(serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: 4331, storeDir, wsPort: 4332, extraAccounts: extra, authTimeout: undefined }), unset,
+    "serverConfig: an explicit undefined authTimeout renders byte-identical config");
+  const set = serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: 4331, storeDir, wsPort: 4332, extraAccounts: extra, authTimeout: 10 });
+  assert.ok(set.includes("\nmax_control_line: 65536\nauthorization { timeout: 10 }\n"), "serverConfig: a set authTimeout renders the authorization block after the control-line limit");
+  assert.equal(set.replace("authorization { timeout: 10 }\n", ""), unset, "serverConfig: a set authTimeout adds only that line");
+  for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53])
+    assert.throws(() => serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: 4331, storeDir, authTimeout: bad }),
+      /serverConfig: authTimeout must be a positive whole number of seconds/, `serverConfig: authTimeout ${bad} is refused naming the option`);
+}
+
+console.log(`serverconfig-shapes smoke: OK - all 4 call-site shapes render (incl. the :live-only extraAccounts-from-variable form), tls renders on both renderers, allow_non_tls/handshake_first/verify never emitted, open renderer carries no auth material, maxFileStore unset is byte-identical and set renders max_file_store, invalid caps refused, authTimeout unset is byte-identical and set renders the authorization block`);
 emitSentinel({ passed: cells(), failed: 0 });

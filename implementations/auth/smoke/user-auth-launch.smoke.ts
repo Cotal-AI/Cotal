@@ -2,7 +2,7 @@
  * USER-AUTH LAUNCH live smoke (D4c, the composition-root E2E) — the whole operator story against a
  * REAL broker, a REAL Better Auth IdP, and the REAL `cotal` binary as subprocesses:
  *
- *   A. `cotal up --user-auth --idp <real IdP> --detach` — provider prepareServer persists the
+ *   A. `cotal up --user-auth --idp <real IdP> --auth-timeout 3 --detach` — provider prepareServer persists the
  *      space-scoped material, the broker preloads the callout account, the auth-service daemon
  *      comes up (callout + exchange/JWKS), the mesh records mode "user".
  *   B. gate-4 surface checks: JWKS served with the explicit cache contract; /exchange rejects
@@ -145,8 +145,8 @@ async function approve(userCode: string): Promise<void> {
 let witnessNc: Awaited<ReturnType<typeof connect>> | undefined;
 try {
   // ---------- A. up --user-auth ----------
-  console.log("A) cotal up --user-auth --idp <real IdP> --detach");
-  const up = await cotal(["up", "--user-auth", "--idp", base, "--detach", "--server", SERVER, "--space", SPACE]);
+  console.log("A) cotal up --user-auth --idp <real IdP> --auth-timeout 3 --detach");
+  const up = await cotal(["up", "--user-auth", "--idp", base, "--auth-timeout", "3", "--detach", "--server", SERVER, "--space", SPACE]);
   check("up exits 0", up.status === 0, up.out);
   check("up announces the user-auth service + login line", up.out.includes("user-auth service up") && up.out.includes(`cotal login --idp ${base}`), up.out);
   check(
@@ -158,6 +158,14 @@ try {
   for (const f of ["callout.json", "issuer.json", "owner-secret.json", "idp.json", "service-keys.json", "auth-service.json"])
     check(`space-scoped state exists: ${f}`, existsSync(join(stateDir, f)));
   check("auth-service pid file is space-scoped", existsSync(join(root, ".cotal", `auth-service.${spaceKey(SPACE)}.pid`)));
+  // One value sets both sides: the broker's authorization timeout and the callout's deadline.
+  const brokerConf = readFileSync(join(root, ".cotal", "auth", "server.conf"), "utf8");
+  check("--auth-timeout renders the broker's authorization block and is recorded in the broker policy",
+    brokerConf.includes("\nauthorization { timeout: 3 }\n") && (JSON.parse(readFileSync(join(root, ".cotal", "broker-policy.json"), "utf8")) as { authTimeout?: number }).authTimeout === 3,
+    brokerConf.split("\n").filter((line) => line.startsWith("authorization")));
+  const authLog = join(root, ".cotal", `auth-service.${spaceKey(SPACE)}.log`);
+  const timeoutStarts = () => (readFileSync(authLog, "utf8").match(/ with a 3s authorization timeout,/g) ?? []).length;
+  check("…and the auth service it starts takes the same timeout as its callout deadline", timeoutStarts() === 1, readFileSync(authLog, "utf8").split("\n").filter((line) => line.includes("auth service up")));
   const meshFile = join(home, "meshes", `${spaceSegment(SPACE)}.json`);
   const mesh = JSON.parse(readFileSync(meshFile, "utf8")) as { mode: string; userAuth?: { idp?: { url?: string } } };
   check('mesh recorded mode "user" with the IdP trust pin', mesh.mode === "user" && mesh.userAuth?.idp?.url === base, mesh);
@@ -521,8 +529,10 @@ try {
   );
   const deadSend = await cotal(["send", "-c", "general", "service is dead", "--space", SPACE]);
   check("send with a dead auth service names the `cotal up` recovery", deadSend.status !== 0 && deadSend.out.includes("restart it with `cotal up`"), deadSend.out);
+  const startsBeforeHeal = timeoutStarts();
   const heal = await cotal(["up", "--server", SERVER, "--space", SPACE]);
   check("refresh `cotal up` on the running broker heals the auth service", heal.status === 0 && heal.out.includes("already running") && heal.out.includes("user-auth service up"), heal.out);
+  check("…with the running broker's recorded auth timeout as its callout deadline, though the refresh named none", timeoutStarts() === startsBeforeHeal + 1, readFileSync(authLog, "utf8").split("\n").filter((line) => line.includes("auth service up")));
   const renewal = readRenewalRecord(root, SPACE);
   check("refresh `cotal up` also ensures the manager renewal owner", renewal?.owner === "manager", renewal);
   const healedSend = await cotal(["send", "-c", "general", "healed", "--space", SPACE]);

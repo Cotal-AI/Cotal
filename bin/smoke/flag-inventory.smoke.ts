@@ -89,6 +89,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "rotate-sys:boolean",
       // `--max-file-store` (2026-09): the broker's JetStream file storage cap, fixed at start (#1888).
       "max-file-store:string",
+      // `--auth-timeout` (2026-10): the broker's auth callout timeout, threaded to the auth-service
+      // daemon as its callout deadline; every auth-service inventory carries it.
+      "auth-timeout:string",
       // `--no-manager` (2026-09): broker-only boot, the broker and in auth mode the delivery daemon (#1856).
       "no-manager:boolean",
       // `--service-endpoints` (2026-10, #4396): hosts the service endpoint authority door and host
@@ -328,6 +331,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "callout-only:boolean",
       "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
       "port:string", "server:string", "service-endpoints:boolean", "space:string",
+      // `--auth-timeout` (2026-10): the broker's auth callout timeout in seconds, from `up`.
+      "auth-timeout:string",
     ],
     positionals: false,
   },
@@ -335,7 +340,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: [
       "advertised-server:string", "agent-provisioning-url:string", "callout-only:boolean",
       "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
-      "port:string", "server:string", "service-endpoints:boolean", "space:string",
+      "port:string", "server:string", "service-endpoints:boolean", "space:string", "auth-timeout:string",
     ],
     positionals: false,
   },
@@ -367,7 +372,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "advertised-server:string", "agent-provisioning-url:string", "exchange-public-port:string",
       "exchange-public-url:string", "exchange-trusted-proxy:boolean", "launch-request:string", "port:string",
       "ready-file:string", "root:string", "server:string", "service-endpoints:boolean", "service-instance:string",
-      "space:string",
+      "space:string", "auth-timeout:string",
     ],
     positionals: false,
   },
