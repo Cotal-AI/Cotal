@@ -13,8 +13,10 @@ again and name the folder or Cotal home the stack runs from, and bare `cotal` an
 there no longer offer that `cotal up`.
 
 In a folder whose registered space is stopped, `cotal spawn -d --dry-run` now previews the space
-`cotal spawn -d` launches on, and `cotal space show` calls that space stopped. Bare `cotal`, which
-reads no broker, says the folder's space applies while it runs.
+`cotal spawn -d` launches on, and `cotal space show` calls that space stopped. `cotal status --json`
+and `cotal space --json` give no folder space there and the listing marks none. Bare `cotal` and
+`cotal use`, which read no broker, say the folder's space applies while it runs. With nothing
+selected, bare `cotal` names the space the folder prepared again.
 
 `--json` in a folder holding a prepared or stopped space carries the note under the `Mesh:` heading
 as a `FOLDER_SPACE_NOT_RUNNING` warning, and `cotal chat` names the selection it joins with that

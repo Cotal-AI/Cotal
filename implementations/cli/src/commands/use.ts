@@ -98,7 +98,8 @@ function selectionView(s: Selection): Report {
     : s.preparedState === "stopped" ? { text: `  stopped; its last operation, ${s.lastOperation} - start it again with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" }
     : s.preparedState === "unsettled" ? { text: `  its last operation, ${s.lastOperation} - run \`cotal status\` in ${s.preparedRoot}, which names the step that finishes or settles it`, tone: "waiting" }
     : { text: `  prepared, not started - start it with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" });
-  if (s.folder) lines.push({ text: `  commands in this folder target its space "${s.folder}"; the selection applies outside it`, tone: "hint" });
+  // `use` reads no broker, so it says when this folder's space is the target rather than whether it is.
+  if (s.folder) lines.push({ text: `  commands in this folder target its space "${s.folder}" while it runs; the selection applies outside it and while it is stopped`, tone: "hint" });
   return { sections: [{ blocks: [{ kind: "lines", lines }] }] };
 }
 

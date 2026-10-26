@@ -2884,9 +2884,11 @@ the command that targets it reports that. Selecting the selected space again is 
 registered or prepared is refused with `TARGET_NOT_FOUND`, exit 2, naming the known spaces, and the
 selection stays. That refusal has no `Mesh:` heading, and its remedy names `cotal use --clear` only
 while a space is selected. Bare `use` reports
-the selection. Inside a project whose root has one registered or prepared space other than the
-selection, `use` also says that commands in the folder target that space, and `--json` gives it as
-`folder`. A selection that names a space no longer registered is reported with a
+the selection. Inside a project whose root has one registered space other than the selection, `use`
+also says that commands in the folder target that space while it runs, and `--json` gives it as
+`folder`; `use` reads no broker, so it does not say whether that space runs. `cotal space` and
+`cotal status`, which read its broker, give `folder` and `meshes.folder` as null when it does not
+answer, and the listing does not mark it as this folder's. A selection that names a space no longer registered is reported with a
 `SELECTION_NOT_REGISTERED` warning by `use` and `space`, and stays until `use` changes it.
 `use --clear` removes the selection, so a command targets its folder's space again. Its receipt
 names the space that was selected, and `--json` gives `current: null` with that `previous`. With

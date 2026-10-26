@@ -258,6 +258,15 @@ const QUESTION = "Which one?";
       /^Mesh: beta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(shownRunning.stdout), { stopped: shown(shownStopped), running: shown(shownRunning) });
   check("bare cotal there says this folder's space applies while it runs and the selection otherwise",
     entryStopped.status === 0 && entryStopped.stdout.includes(`this folder's space while it runs; the selected space "alpha" applies outside it and while it is stopped`), shown(entryStopped));
+  // status and the listing read the folder's broker, so a stopped one is not this folder's target
+  // there; in a running folder space's root it is. `use` reads no broker and says when it applies.
+  const statusStopped = run(["status", "--json"], zetaRoot), listStopped = run(["space", "--json"], zetaRoot), listStoppedText = run(["space"], zetaRoot), listRunning = run(["space", "--json"], join(home, "beta")), useStopped = run(["use"], zetaRoot);
+  check("status --json and space --json there give no folder space, the listing marks none, and in beta's root space --json gives beta",
+    envelope(statusStopped)?.target?.space === "alpha" && envelope(statusStopped)?.result?.meshes?.folder === null && envelope(listStopped)?.result?.folder === null &&
+      !/\(this folder's\)/.test(listStoppedText.stdout) && envelope(listRunning)?.result?.folder === "beta",
+    { status: envelope(statusStopped)?.result?.meshes?.folder, list: shown(listStopped), text: shown(listStoppedText), running: shown(listRunning) });
+  check("use there says commands target zeta while it runs and the selection while it is stopped",
+    useStopped.stdout.includes(`commands in this folder target its space "zeta" while it runs; the selection applies outside it and while it is stopped`), shown(useStopped));
   removeMesh("zeta");
   const clearChannel = run(["history", "clear", "general"], delta);
   check("history clear with a channel refuses naming the space it targets, not the selected space",

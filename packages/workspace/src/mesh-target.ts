@@ -713,12 +713,14 @@ export function folderSpace(cwd: string): string | undefined {
 }
 
 /** The space a command without `--space` targets in the project folder `cwd` is in when that is not
- *  the selection `current`: the root's one registered space. Undefined with nothing selected,
- *  outside a project, and where the selection is the target. */
-export function folderSpaceOverSelection(cwd: string, current: string | null): string | undefined {
+ *  the selection `current`: the root's one registered space, while it runs. `offline` names the spaces
+ *  whose broker the caller found not answering, which do not capture a command; a caller that reads
+ *  no broker passes none. Undefined with nothing selected, outside a project, and where the selection
+ *  is the target. */
+export function folderSpaceOverSelection(cwd: string, current: string | null, offline: readonly string[] = []): string | undefined {
   if (current === null) return undefined;
   const folder = folderSpace(cwd);
-  return folder !== current ? folder : undefined;
+  return folder !== undefined && folder !== current && !offline.includes(folder) ? folder : undefined;
 }
 
 /** The one registration recorded for `root`, if any. A broker that runs several spaces records one

@@ -157,7 +157,7 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     const offline = new Set(sweep.offline);
     const items = loadMeshes().map((m) => row(m, current, m.origin === "catalog" ? "not-checked" : offline.has(m.space) ? "unreachable" : "reachable"));
     const prepared = loadPreparedSpaces().map((p) => preparedRow(p, current));
-    const folder = folderSpaceOverSelection(process.cwd(), current) ?? null;
+    const folder = folderSpaceOverSelection(process.cwd(), current, sweep.offline) ?? null;
     const result: SpacesResult = { kind: "spaces", current, currentRecorded: current === null || items.some((s) => s.current), folder, items, prepared };
     writeResult(presentation, { command: "space", target: null, result, warnings: selectionWarnings(result) }, spacesView);
     return;

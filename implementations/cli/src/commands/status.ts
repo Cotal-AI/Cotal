@@ -420,7 +420,8 @@ export async function status(args: ParsedArgs): Promise<void> {
     });
   const cwd = process.cwd();
   const root = findCotalRoot(cwd);
-  const selected = resolveSelected(cwd, values, await folderSpacesOffline(cwd, values));
+  const offline = await folderSpacesOffline(cwd, values);
+  const selected = resolveSelected(cwd, values, offline);
   const gaps = new Gaps();
   const hints: string[] = [];
   // A folder this account cannot read hides everything in it, so that is the one gap reported for it.
@@ -439,7 +440,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   // the delivery process row, and a live pid means nothing without it.
   const responder = await readResponderAxis(selected);
   const folder = blocked ? unreadFolder(root, blocked) : await readFolder(root, selected, values, responder.state, gaps, hints);
-  const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps);
+  const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline);
   const target = await readSelected(selected, responder, folder, gaps, hints);
   const services = readOwnedServices(selected, gaps);
   const bootAttempts: StatusResult["bootAttempts"] = blocked ? { root, state: "partial", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] } : readBootAttempts(root, gaps);
@@ -1064,7 +1065,7 @@ function deliveryDetail(live: boolean, responder: DeliveryResponderState): strin
  *  with its own recorded TLS requirement. A bare TCP/INFO probe would green-light a plaintext broker
  *  that has substituted for a TLS-required mesh — the FAIL1 attack — so a list that only asks "is
  *  anything listening" cannot report on the one property the record claims. */
-async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: Gaps): Promise<StatusResult["meshes"]> {
+async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: Gaps, offline: readonly string[]): Promise<StatusResult["meshes"]> {
   // A registry file that cannot be read is named, and the readable records are still listed and
   // checked. Only an absent directory or pointer is an empty registry or no current mesh.
   const unreadable: StatusResult["meshes"]["unreadable"] = [];
@@ -1090,7 +1091,8 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
   }
   // A record this needs that cannot be read is already named above.
   let folder: string | null = null;
-  try { folder = folderSpaceOverSelection(cwd, current) ?? null; } catch (e) { if (!isMeshRegistryError(e)) throw e; }
+  // A folder space whose broker did not answer is not the target, so it is not this folder's here.
+  try { folder = folderSpaceOverSelection(cwd, current, offline) ?? null; } catch (e) { if (!isMeshRegistryError(e)) throw e; }
   const chosen = selected.ok ? selected.target : undefined;
   // A `--server` that names another address is the only broker dialed for the selected space.
   const checked = (m: MeshEntry) => all || (m.space === chosen?.space && m.server === chosen.server);
