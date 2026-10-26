@@ -597,7 +597,7 @@ current.
 ```bash
 cotal up [--foreground|--detach] [--open] [--space <s>] [--root <prepared-dir>] [--server <url>] [--channels <path>] [--runtime <name>] [--manager-name <name>]
 cotal up --user-auth --idp <url> [--exchange-public-port <n> --exchange-public-url <https://…> [--exchange-trusted-proxy]]
-         [--advertised-server <url>] [--agent-provisioning-url <https://…>]
+         [--advertised-server <url>] [--agent-provisioning-url <https://…>] [--auth-timeout <seconds>]
 cotal up --tls-cert <cert.pem> --tls-key <key.pem>   # serve broker TLS (both, or neither)
 cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
 cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
@@ -611,6 +611,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--root <prepared-dir>` | current folder's workspace | Start the project in `<dir>` instead of the folder you run `up` from. `<dir>` must already have its own `.cotal`, which `space create <space> --root <dir>` or an earlier `up` there made. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
 | `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it). Also accepted with `-f`. A path that is a link refuses `USAGE_INVALID`, naming the directory it points to. A store folder belongs to one space: a folder another space uses refuses `CONFLICT`, naming that space |
 | `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). At least 67108865: the space's membership bucket reserves 67108864 (64 MiB), and nats-server creates each of the other streams only while one more byte is free. A smaller value refuses `USAGE_INVALID`, naming 67108865, before anything starts. Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), and a stopped stack's next `up --max-file-store` replaces the recorded cap. A controller stack keeps it across `cotal down`, because it refuses `down --preserve-state` in this release. On a legacy root, `down --preserve-state` keeps it for the resume, and a resume with a different value refuses `CONFLICT`, exit 2. When a broker `up` started cannot create the space's streams for want of storage, the failure names the cap and `cotal up --max-file-store <bytes>`. Once the space holds more than the cap, the broker refuses every write: `send` refuses naming the cap, and `status` shows the store full. Not accepted with `-f` |
+| `--auth-timeout <seconds>` | nats-server's 2 seconds | User-auth only: how long the broker waits for the auth callout's answer before it refuses a connect, a whole number from 1 to 60. `up` renders it as `authorization { timeout: <seconds> }` in `.cotal/auth/server.conf` and starts the space's auth service with the same value as its callout deadline, so the two never differ ([callout deadlines](identity-and-auth.md#callout-deadlines)). It is recorded in `.cotal/broker-policy.json`, so a later `up` on the root renders it again without the flag, after `cotal down` or a preserved resume included. It is fixed at broker start: a running broker refuses a different value (`cotal down` first), and a stopped stack's next `up --auth-timeout` replaces the recorded one. Refused `USAGE_INVALID` with `--open`, without user auth, with `-f` or with `--restore`. A resume renders the recorded value and refuses another one |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON), in the [channel seed file](#channel-seed-file) format. An explicit path that is missing, unreadable or not JSON refuses `USAGE_INVALID`, naming the file, before anything is written. Content the registry would not take refuses `SCHEMA_INVALID` before anything starts, naming the file and the entry. `up` reads the file once, so a pipe or a FIFO such as `--channels <(…)` works. A default `.cotal/channels.json` that is not a regular file, such as a FIFO, refuses `USAGE_INVALID` the same way |
 | `--restore <dir>` | none | Restore a completed offline backup before exposing the normal listener |
 | `--restore-only registry` | artifact selection | Restore only the registry component |
@@ -7144,8 +7145,8 @@ and print no warning. New setups use `cotal service add <name> --preset <preset>
 
 ```bash
 cotal deliver --space <s> [--server <url>] [--creds <file>] [--root <dir>]
-cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy] [--advertised-server <url>] [--agent-provisioning-url <https://…>]
-cotal auth-service --space <s> --server <url> --callout-only
+cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy] [--advertised-server <url>] [--agent-provisioning-url <https://…>] [--auth-timeout <seconds>]
+cotal auth-service --space <s> --server <url> --callout-only [--auth-timeout <seconds>]
 cotal service add intake --preset feedback-intake --space <s> --root <absolute-root> --keys <private-keys.json> --creds <private-creds>
 cotal service start intake --space <s>
 ```
@@ -7155,13 +7156,16 @@ capability-gated local exchange and JWKS, and, when `--exchange-public-port` is 
 exchange/discovery face forwarded by an HTTPS reverse proxy. `--exchange-public-url` is the proxy URL
 advertised to clients; `--exchange-trusted-proxy` opts into last-hop `X-Forwarded-For` attribution.
 `--advertised-server` and `--agent-provisioning-url` set the broker address and agent-provisioning
-endpoint the public bundle advertises, as on [`up`](#up).
+endpoint the public bundle advertises, as on [`up`](#up). `--auth-timeout` is the broker's
+`authorization { timeout }` in whole seconds, which the callout answers inside; give it the value the
+broker config renders, which `cotal up` passes from `--auth-timeout`.
 `cotal up --user-auth` starts and supervises the service for you, so you run it directly only to
 recover one by hand.
 `--callout-only` runs a callout replica beside the full service: it answers connects alongside it
 and serves no HTTP, so it refuses `--port`, the public-face flags and `--service-endpoints`. It
 refuses to start in a space that admits service endpoints. It never writes `auth-service.json`, and
-it exits non-zero when it loses a store connection or the broker.
+it exits non-zero when it loses a store connection or the broker. Give it the same `--auth-timeout`
+as the full service, the value the broker config renders.
 See [callout replicas](identity-and-auth.md#per-user-authentication).
 
 `deliver` runs the server-side Plane-3 delivery daemon: the durable backstop and membership/ACL

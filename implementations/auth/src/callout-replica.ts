@@ -15,14 +15,16 @@ import { dialerFor, EpEnvelopeError, isReachable, type SecretStore } from "@cota
 import { loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { calloutReplicaGrants, openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 import { calloutAuthority, managerGateReads, serveCallout } from "./callout-authority.js";
+import type { AuthCalloutLimits } from "./callout.js";
 import { chatConnectAuthority } from "./chat-session-authority.js";
 import { authConnectReaderGrants, openConnectReader } from "./connect-reader.js";
 import { openLifecycleRegistry, registryStores } from "./lifecycle-registry.js";
 import { ADMISSION_KEY, parseServiceAdmissionRecord } from "./service-host-ops.js";
 import { loadCalloutAuth, loadIssuer, loadServiceKeys, spaceIssuer } from "./store.js";
 
-/** Run one callout replica for `space` until a signal or a lost connection ends it. */
-export async function runAuthCalloutReplica(args: { space: string; server: string; root: string }, store?: SecretStore): Promise<void> {
+/** Run one callout replica for `space` until a signal or a lost connection ends it. `limits` are the
+ *  full service's: the broker's timeout is one value for every member of the queue group. */
+export async function runAuthCalloutReplica(args: { space: string; server: string; root: string; limits?: AuthCalloutLimits }, store?: SecretStore): Promise<void> {
   const { space, server, root } = args;
   const dir = userAuthStateDir(root, space);
   const secrets = store ?? workspaceSecretStore(root);
@@ -79,7 +81,7 @@ export async function runAuthCalloutReplica(args: { space: string; server: strin
       authenticator: credsAuthenticator(new TextEncoder().encode(callout.calloutCreds)),
       name: `cotal:auth-callout-replica:${space}`,
     });
-    serveCallout(calloutNc as never, { space, dir, callout, dataAccount, issuer, hooks });
+    serveCallout(calloutNc as never, { space, dir, callout, dataAccount, issuer, hooks, ...(args.limits !== undefined ? { limits: args.limits } : {}) });
     await calloutNc.flush();
   } catch (e) {
     await closeAll();
@@ -110,6 +112,6 @@ export async function runAuthCalloutReplica(args: { space: string; server: strin
     void c.nc.closed().then(() => lose("its store connection"));
   }
   void calloutNc.closed().then(() => lose("its broker connection"));
-  console.log(`✓ auth callout replica up (space ${space}) - answering the callout on ${server}; no HTTP listener, no auth-service.json`);
+  console.log(`✓ auth callout replica up (space ${space}) - answering the callout on ${server}${args.limits?.authTimeoutMs !== undefined ? ` with a ${args.limits.authTimeoutMs / 1000}s authorization timeout` : ""}; no HTTP listener, no auth-service.json`);
   process.exit(await ended);
 }

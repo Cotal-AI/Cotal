@@ -463,6 +463,10 @@ try {
     && m4?.answer.state === "approved" && m4.answer.outcome === "applied" && m4.requestId === mLostId, { mLost, mUnseen, m4 });
   const parsed = (values: Record<string, string | boolean | undefined>) => authServiceConfiguration({ values: { space, server: "nats://127.0.0.1:1", ...values }, positionals: [], raw: [], positionalIndices: [] } as unknown as ParsedArgs);
   c.check("L10 --service-endpoints turns the engine on; its absence leaves it off", parsed({ "service-endpoints": true }).serviceEndpoints === true && parsed({}).serviceEndpoints === false);
+  const refusedTimeout = (raw: string) => { try { parsed({ "auth-timeout": raw }); return false; } catch (e) { return /--auth-timeout must be a positive whole number of seconds/.test((e as Error).message); } };
+  c.check("L11 --auth-timeout <seconds> becomes the callout deadline in milliseconds; its absence keeps the callout's default, and a value that is not whole seconds refuses",
+    parsed({ "auth-timeout": "10" }).calloutLimits?.authTimeoutMs === 10000 && parsed({}).calloutLimits === undefined
+    && ["0", "1.5", "-2", "10s", ""].every(refusedTimeout));
 } finally {
   await harness?.close().catch(() => {});
   if (prevHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = prevHome;

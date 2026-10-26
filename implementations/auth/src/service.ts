@@ -2155,8 +2155,16 @@ export function authServiceConfiguration(args: ParsedArgs) {
   // Service endpoints are off unless the flag names them: an absent flag opens no engine, no
   // discovery connection and no door, and the routes answer 404 as before.
   const serviceEndpoints = v["service-endpoints"] !== undefined;
+  // The broker's `authorization { timeout }`, which `cotal up` renders and passes here from the same
+  // value. Absent: the callout's default, which is nats-server's.
+  const authTimeoutRaw = v["auth-timeout"];
+  const authTimeout = authTimeoutRaw === undefined ? undefined : Number(authTimeoutRaw);
+  if (authTimeout !== undefined && (!/^[1-9][0-9]*$/.test(authTimeoutRaw!) || !Number.isSafeInteger(authTimeout)))
+    throw new Error(`auth-service: --auth-timeout must be a positive whole number of seconds, got "${authTimeoutRaw}"`);
+  const limits: AuthCalloutLimits | undefined = authTimeout === undefined ? undefined : { authTimeoutMs: authTimeout * 1000 };
+  if (limits !== undefined) calloutLimits(limits);
 
-  return { space, server, port, publicFace, serviceEndpoints, calloutOnly };
+  return { space, server, port, publicFace, serviceEndpoints, calloutOnly, calloutLimits: limits };
 }
 
 /** Trusted local embedding hooks. They carry no prepared key material or loopback capability. */
@@ -2182,12 +2190,12 @@ export interface AuthDaemonLifecycle extends AuthServiceRuntimeOptions {
 export async function runAuthService(args: ParsedArgs, store?: SecretStore, options: AuthServiceRuntimeOptions | AuthDaemonLifecycle = {}): Promise<void> {
   const interactiveManagerSelection = runtimeSelection(options);
   const lifecycle = "root" in options ? options : undefined;
-  const { space, server, port, publicFace, serviceEndpoints, calloutOnly } = authServiceConfiguration(args);
+  const { space, server, port, publicFace, serviceEndpoints, calloutOnly, calloutLimits: limits } = authServiceConfiguration(args);
   // The provider's space-scoped state dir for NON-SEAM material (ledger, IdP pin, discovery). The
   // layout fact is workspace-owned (userAuthStateDir); this daemon never touches `.cotal/auth/auth.json`.
   const root = lifecycle?.root ?? findCotalRoot();
   // A replica never reads or writes the space's one discovery file: that file names the primary.
-  if (calloutOnly) return runAuthCalloutReplica({ space, server, root }, store);
+  if (calloutOnly) return runAuthCalloutReplica({ space, server, root, ...(limits !== undefined ? { limits } : {}) }, store);
   const dir = userAuthStateDir(root, space);
   const secrets = store ?? workspaceSecretStore(root);
   // Scrub any stale discovery file FIRST — a dead prior daemon's entry must never satisfy a
@@ -2226,13 +2234,14 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
     localManager: () => loadManagerInstanceIdentity(root, space),
     ...(interactiveManagerSelection !== undefined ? { interactiveManagerSelection } : {}),
     ...(options.runCancelLimits !== undefined ? { runCancelLimits: options.runCancelLimits } : {}),
+    ...(limits !== undefined ? { calloutLimits: limits } : {}),
   });
 
   // All planes bound — NOW write the discovery file (its existence is the readiness signal).
   const { url, publicUrl, cap } = started.handle;
   saveAuthServiceInfo(dir, { url, pid: process.pid, cap, ...(publicUrl !== undefined ? { publicUrl } : {}) });
   if (!lifecycle?.quiet) console.log(
-    `✓ auth service up (space ${space}) - callout on ${server}, exchange/JWKS at ${url}${publicUrl !== undefined ? `, public exchange at ${publicUrl}` : ""}`,
+    `✓ auth service up (space ${space}) - callout on ${server}${limits?.authTimeoutMs !== undefined ? ` with a ${limits.authTimeoutMs / 1000}s authorization timeout` : ""}, exchange/JWKS at ${url}${publicUrl !== undefined ? `, public exchange at ${publicUrl}` : ""}`,
   );
 
   // The CLI wrapper, not the context, owns process signals and exit codes.

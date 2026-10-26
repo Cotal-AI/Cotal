@@ -11,6 +11,7 @@ export const authServiceFlags = [
   { name: "advertised-server", type: "string", value: "<url>", description: "with --exchange-public-port: the broker address the public bundle advertises - what participants dial (default: --server)" },
   { name: "agent-provisioning-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the deployment's remote agent-provisioning endpoint the public bundle advertises (spawn POSTs it with the login bearer)" },
   { name: "service-endpoints", type: "boolean", description: "host service endpoints: the public /service-endpoint-authority door and the /service-endpoint-host route for owner decisions and operator name binding" },
+  { name: "auth-timeout", type: "string", value: "<seconds>", description: "the broker's authorization timeout in whole seconds, which the callout answers inside (default: 2, nats-server's default)" },
 ] as const satisfies readonly FlagSpec[];
 
 /** The replica flag. Only the daemon entry takes it: the native service preset runs the one primary
