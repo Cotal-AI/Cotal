@@ -5,7 +5,7 @@ import {
   CotalEndpoint, acquireLock, assertLifecycleToken, canonicalJson, checkConversationApprovalPending, checkConversationPendingAnswer,
   checkConversationSelection, conversationApprovalRefusal, conversationGrant, deprovisionAgent, mintCreds, mkSecretDir, newIdentity,
   principalKey, provisionAgentDurables, processStartToken, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider,
-  type ConversationApprovalPending, type ConversationGrant, type ConversationPending, type ConversationSelection,
+  type ConversationApprovalPending, type ConversationApprovalRefusal, type ConversationGrant, type ConversationPending, type ConversationSelection,
 } from "@cotal-ai/core";
 import { getSpaceAuth, homeCotalDir, resolveTargetOrThrow, userAuthStateDir, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
 import {
@@ -104,19 +104,29 @@ function markUnderApproval(dir: string, record: SavedIdentity): void {
   save(dir, record);
 }
 
+/** The authority recorded that nothing was issued for this request, and the saved request is gone.
+ *  `decision` says why in a form a host can act on: the person's denial, the approval's expiry, or
+ *  a refusal of the proposed selection. */
+export class ConversationRefusal extends Error {
+  constructor(readonly decision: ConversationApprovalRefusal | "refused", message: string) {
+    super(message);
+    this.name = "ConversationRefusal";
+  }
+}
+
 /** What one creation answer proves. A selection refusal, a recorded denial or expiry, and a pending
  *  approval each prove that nothing was issued. Any other answer than an exact issued identity
  *  leaves the outcome unknown, so it throws and the request stays saved. */
 function creationOutcome(
   record: SavedIdentity, authority: ConversationAuthority, response: { status: number; body: unknown }, what: "creation" | "recovery",
-): { refused: string } | { pending: ConversationPending } | { material: ConversationMaterial } {
+): { refused: string; decision: ConversationRefusal["decision"] } | { pending: ConversationPending } | { material: ConversationMaterial } {
   const remote = record.remote!;
   if (!remote.material) {
     const refusal = selectionRefusal(response.status, response.body);
-    if (refusal) return { refused: `${refusal}; no identity was issued` };
+    if (refusal) return { refused: `${refusal}; no identity was issued`, decision: "refused" };
     const decided = conversationApprovalRefusal(response.status, response.body);
-    if (decided === "denied") return { refused: "the person denied this connection; no identity was issued" };
-    if (decided === "expired") return { refused: "the approval expired before this connection was issued; no identity was issued. Connect again to ask again" };
+    if (decided === "denied") return { refused: "the person denied this connection; no identity was issued", decision: "denied" };
+    if (decided === "expired") return { refused: "the approval expired before this connection was issued; no identity was issued. Connect again to ask again", decision: "expired" };
     if (response.status === 202) {
       const pending = checkConversationPendingAnswer(response.body,
         { requestId: record.requestId, authorityOrigin: new URL(authority.url).origin, proposed: record.selection ?? null });
@@ -247,7 +257,7 @@ async function provisionOnSpace(
       const outcome = creationOutcome(record, authority, response, "creation");
       if ("refused" in outcome) {
         discard(dir);
-        throw new Error(outcome.refused);
+        throw new ConversationRefusal(outcome.decision, outcome.refused);
       }
       if ("pending" in outcome) {
         record.remote.approval = { pending: outcome.pending.approval };
