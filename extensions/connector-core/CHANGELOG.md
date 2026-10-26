@@ -1,5 +1,30 @@
 # @cotal-ai/connector-core
 
+## 0.101.3
+
+### Patch Changes
+
+- 883c555: Refresh the documentation with task-oriented guides for local teams, personal sessions, hosted spaces, services and durable workflows. Correct setup and dashboard credential descriptions, document Linear user-auth support, and clarify package versus wire compatibility.
+- c54a604: `cotal help`, and `cotal --help` and `cotal -h` with it, now lists every command group under the entry screen, so no flag is needed to see what the CLI can do. Bare `cotal` keeps the compact entry screen and points to `cotal help` for the rest. `cotal help --all` is no longer needed; it still works and prints the same list. A hidden command, such as a deprecated daemon entry, is still left out of the list and still runs.
+- 6bcb8b6: `cotal help` no longer lists `cotal agent-bearer`, the plumbing spawned user-auth agents exec to fetch a fresh bearer; its docs say people never run it. It is still registered, still runs for those agents, and `cotal help agent-bearer` still prints its help.
+- 620d7ff: `cotal spawn -d` with no `--on` on a user-auth mesh now asks, in a terminal, which folder the agent
+  works in when the manager the exchange picks is on another host, as a launch with `--on` does. The
+  launch is pinned to that manager, so if it stops before you answer the launch is refused and goes
+  to no other manager.
+- a677726: `cotal spawn` handles a name that is already taken. When a live manager of yours runs that agent,
+  or presence or the mesh reports it online, the spawn launches nothing, says where it runs and exits
+  0; in a terminal it attaches to that agent, and otherwise it prints the `cotal attach` command. When
+  the mesh answers that the name is held by a lifecycle that does not run, the spawn releases that one
+  lifecycle by its UID with your login and asks again, waiting up to 2 minutes while the mesh says the
+  name is still retiring. This applies to managed launches and to spawns in this terminal; an
+  implicit name is numbered past an online holder only. The auth client keeps a host's typed HTTP 409
+  answer (`AGENT_LIFECYCLE_HELD`) and passes it through the manager. The stock auth service answers
+  409 for its own conflicts, which the CLI now reports as `CONFLICT`, and a manager's refusal of a
+  hard-pinned name it holds carries `already-exists`. `cotal auth retire <uid>` releases a lifecycle
+  on such a mesh. A failed agent provisioning now says its outcome is unknown instead of calling it
+  refused.
+- 330127a: `cotal supervise` is no longer deprecated. Help lists it under its own Run a manager group, it prints no deprecation warning, and it is not removed in `1.0.0`. Without `--space` it now supervises the space every other command targets: `COTAL_SPACE`, else the space this folder hosts or is registered for, else the one `cotal use` selected. A bare `cotal supervise` with a hosted space selected used to target the default space and refuse that it was neither hosted nor registered. A manager started for a selected space keeps its records in the folder that space is registered at, so a start from any folder is the same manager. The CLI docs gain a section on starting a manager for a hosted space.
+
 ## 0.101.2
 
 ### Patch Changes
