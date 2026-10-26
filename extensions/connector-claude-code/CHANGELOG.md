@@ -1,5 +1,16 @@
 # @cotal-ai/connector-claude-code
 
+## 0.104.0
+
+### Minor Changes
+
+- a4bbb26: A personal Claude Code conversation whose `cotal_connect` is awaiting approval no longer depends on the person coming back to say "retry". The plugin's server follows the pending request, serialized with the conversation's own connect, until the authority records the decision, the request expires, or the session ends. An approval finishes the same request and holds the issued identity for that conversation's `cotal_connect` with its `approval_id`; the person's decision reaches only the native session that asked, through its wake reader, as one fixed approved, denied or expired line that the native module admits exactly. An approved identity nobody claimed is retired when its session ends. `cotal app-identity provision` now reports a recorded refusal as `refused: denied | expired | refused` beside its message, so a host never classifies a decision from prose.
+
+### Patch Changes
+
+- 3149792: Point the absent-origin mapper comment at its rule table for accepted prompt sources and attribution, preserving the historical measurements. Runtime behavior is unchanged.
+- e0c4e6e: Correct the documentation page by page against the implementation, including CLI commands, connector delivery and activity sharing, authentication, observer surfaces, hosted composition, telemetry and historical design status. Refresh package guides and generated tool and HTTP references while preserving existing links and normative contracts.
+
 ## 0.103.4
 
 ### Patch Changes

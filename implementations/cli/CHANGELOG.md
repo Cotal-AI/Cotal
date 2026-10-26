@@ -1,5 +1,37 @@
 # @cotal-ai/cli
 
+## 0.104.0
+
+### Minor Changes
+
+- b7d4f22: A foreground `cotal spawn` on a manager whose runtime streams no terminal now launches the agent
+  and stops there, instead of launching it and then failing `OPERATION_PARTIAL` on an attach that
+  runtime cannot open. Only the built-in `pty` runtime streams a terminal; `tmux`, `cmux`, `orca` and
+  `herdr` start the agent in a surface the manager does not own. A launch on one of those exits 0
+  with the agent running, and its receipt names the runtime, says the seat runs in the manager's own
+  session, and gives `cotal watch` and `cotal send` as the way to reach it. `--json` carries the same
+  answer as `result.streamsTerminal`. A `pty` manager still attaches.
+  
+  `cotal attach <name>` on such a seat is refused once as `UNSUPPORTED`, carrying that runtime's own
+  guidance for watching the agent where it runs, and the reconnect loop no longer retries it. The
+  manager question's rows name each manager's runtime and whether a terminal attaches to its seats,
+  so the choice is informed before a launch.
+  
+  Breaking for anyone who implements the `Runtime` contract outside this repo: `streamsTerminal` is a
+  required field, and a backend that streams no terminal must say so rather than leave a caller to
+  find out by catching the throw from `attach()`. The manager reports it to its callers on the launch
+  reply and in its presence card, and a manager that does not report it is attached to as before.
+
+### Patch Changes
+
+- e101048: `cotal help` no longer lists the legacy `meshes` and `personas` commands, and completion no longer offers them. Both still run, and `cotal help meshes` and `cotal help personas` still print their help, now marked `(legacy)` and naming the replacement: `cotal space`, `space add` and `space forget` for `meshes`, and `cotal persona` for `personas`. The redesigned commands have carried the same work since 0.91.0, so the listing showed two entries for every registry and persona task.
+- a4bbb26: A personal Claude Code conversation whose `cotal_connect` is awaiting approval no longer depends on the person coming back to say "retry". The plugin's server follows the pending request, serialized with the conversation's own connect, until the authority records the decision, the request expires, or the session ends. An approval finishes the same request and holds the issued identity for that conversation's `cotal_connect` with its `approval_id`; the person's decision reaches only the native session that asked, through its wake reader, as one fixed approved, denied or expired line that the native module admits exactly. An approved identity nobody claimed is retired when its session ends. `cotal app-identity provision` now reports a recorded refusal as `refused: denied | expired | refused` beside its message, so a host never classifies a decision from prose.
+- e0c4e6e: Correct the documentation page by page against the implementation, including CLI commands, connector delivery and activity sharing, authentication, observer surfaces, hosted composition, telemetry and historical design status. Refresh package guides and generated tool and HTTP references while preserving existing links and normative contracts.
+- Updated dependencies [e0c4e6e]
+- Updated dependencies [b7d4f22]
+  - @cotal-ai/core@0.104.0
+  - @cotal-ai/workspace@0.104.0
+
 ## 0.103.4
 
 ### Patch Changes
