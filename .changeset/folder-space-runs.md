@@ -1,6 +1,6 @@
 ---
-"@cotal-ai/workspace": patch
-"@cotal-ai/cli": patch
+"@cotal-ai/workspace": minor
+"@cotal-ai/cli": minor
 ---
 
 A folder's space is the target of the commands run there only while it runs

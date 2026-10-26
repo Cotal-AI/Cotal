@@ -88,6 +88,23 @@ runs a launch only with `--detach` (`-d`), which returns once the agent joins, o
   agent-provisioning endpoint the mesh advertises. A mesh that advertises none refuses it and names
   `-d` among the remedies.
 
+## A folder's space captures commands only while it runs, after 0.105.0
+
+A space prepared in a project folder and never started, or one whose stack there is stopped, no
+longer captures the commands run in that folder. They target the space `cotal use` selected, and
+the line under the `Mesh:` heading names what the folder holds and the `cotal up` that starts it.
+A running folder space keeps capturing them, as after 0.100.2. `cotal up`, `cotal down`,
+`cotal space show` and the folder part of `cotal status` keep their folder scope. Nothing on a
+running mesh changes.
+
+- A script that runs in a folder whose space is prepared or stopped and means that space names it
+  with `--space`, or starts it with `cotal up` first.
+- `meshes.folder` in `cotal status --json` and `folder` in `cotal space --json` are `null` in such
+  a folder; `target.space` names what the command targeted.
+- `cotal status` reports what it found at a glance; `cotal status --wide` prints every row in full,
+  and `cotal status --all` dials every space. `--json` is unchanged, with an optional
+  `meshes.catalogs[].account`.
+
 ## Space selection inside a project folder after 0.100.2
 
 A command run without `--space` inside a project folder whose root has one registered or prepared
