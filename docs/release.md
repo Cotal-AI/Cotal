@@ -37,12 +37,13 @@ workflow so publication has the configured identity and the native binaries are 
 
 ## Verify the result
 
-The publish action reports the packages published and pushes one git tag per package. The workflow
-then cuts one GitHub Release for the version, tagged `v<version>`: its notes open with the install
-command, continue with the changeset summaries of what changed, and end with the merged pull
-requests since the previous version release. The Discord announcement follows that release. A
-separate job then installs the published CLI into an isolated prefix and runs it. Check that result
-and the relevant existing-installation upgrade before reporting the fix delivered.
+The publish action reports the packages published and pushes one git tag per package. A separate
+job then installs the published CLI into an isolated prefix and runs it, and only once that install
+succeeded cuts one GitHub Release for the version, tagged `v<version>`: its notes open with the
+install command, continue with the changeset summaries of what changed, and end with the merged pull
+requests since the previous version release. The Discord announcement follows that release, so it
+never names a version the installer cannot yet resolve. Check that result and the relevant
+existing-installation upgrade before reporting the fix delivered.
 
 An accepted upload and a successful install are separate observations. npm may temporarily return
 cached missing-package responses after an upload, and the large `cotal-ai` tarball has taken up to
