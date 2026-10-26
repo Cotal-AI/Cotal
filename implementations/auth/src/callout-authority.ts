@@ -13,12 +13,15 @@ import {
   type EpGateState, type IssuedAuthorityRef,
 } from "@cotal-ai/core";
 import type { ManagerInstanceIdentity } from "@cotal-ai/workspace";
-import type { ChatSessionAuthority } from "./chat-session-authority.js";
+import { startAuthCallout, type AuthCalloutLimits, type CalloutAuth, type CalloutConnection } from "./callout.js";
+import { chatAwareAclResolver, type ChatSessionAuthority } from "./chat-session-authority.js";
 import { authorizeConnectCredential, type ConnectReader } from "./connect-reader.js";
-import { ledgerAuthorizeConnect } from "./ledger.js";
+import type { UserTokenIssuer } from "./issuer.js";
+import { ledgerAclResolver, ledgerAuthorizeConnect } from "./ledger.js";
 import type { LifecycleRegistry } from "./lifecycle-registry.js";
 import { makeNativeIssuanceRecorder, type NativeIssuanceRecorder } from "./native-issuance.js";
-import type { EndpointCallerResolver, UserCallerIssuer } from "./permissions.js";
+import type { NativeServiceCalloutAuthority } from "./native-service-callout.js";
+import { calloutPermissions, type EndpointCallerResolver, type UserCallerIssuer } from "./permissions.js";
 import { effectiveEndpointCaller } from "./service-caller-effective.js";
 import { verifySessionRedemption } from "./session-redemption.js";
 import { dataAccountAuth } from "./store.js";
@@ -212,4 +215,35 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
       }, principal, claim);
     },
   };
+}
+
+/** Subscribe the auth callout on `nc` with these hooks. The full service and a replica both start
+ *  their callout here, so they answer with the same options and the same limits. */
+export function serveCallout(nc: CalloutConnection, args: {
+  space: string;
+  /** The provider state dir holding the actor ledger. */
+  dir: string;
+  callout: Pick<CalloutAuth, "xkey" | "account">;
+  dataAccount: { pub: string; signingSeed: string };
+  issuer: UserTokenIssuer;
+  hooks: CalloutAuthority;
+  serviceAuthority?: NativeServiceCalloutAuthority;
+  limits?: AuthCalloutLimits;
+}): { done: Promise<void> } {
+  const { space, dir, callout, issuer, hooks } = args;
+  return startAuthCallout(nc, {
+    ...(args.serviceAuthority !== undefined ? { serviceAuthority: args.serviceAuthority } : {}),
+    xkeySeed: callout.xkey.seed,
+    authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
+    dataAccount: args.dataAccount,
+    space,
+    token: { key: issuer.localKeySet(), issuer: issuer.issuer },
+    authorizeActor: hooks.authorizeConnect,
+    recordIssuance: hooks.recordIssuance,
+    // A chat principal resolves from its closed row (the agent leaf, no role); every other
+    // principal from the grant ledger.
+    permissionsFor: calloutPermissions(chatAwareAclResolver(dir, ledgerAclResolver(dir)), hooks.authorizeManagerCaller, hooks.verifySession, hooks.issueUserCaller, hooks.resolveEndpointCaller),
+    log: (l) => console.error(l),
+    ...(args.limits !== undefined ? { limits: args.limits } : {}),
+  });
 }

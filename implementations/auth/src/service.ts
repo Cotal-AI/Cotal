@@ -6,7 +6,7 @@ import { createToolResultConsentSigner, makeToolResultConsentRecorder, type Tool
  * `cotal down`). It hosts BOTH halves of the identity plane, which share state and so belong in one
  * isolated process rather than smeared across the manager/delivery daemons:
  *
- *  - **Plane 2 — the NATS auth callout** ({@link startAuthCallout}): answers `$SYS.REQ.USER.AUTH`
+ *  - **Plane 2 — the NATS auth callout** ({@link serveCallout}): answers `$SYS.REQ.USER.AUTH`
  *    over its own callout-account connection, validating bearers offline against the LOCAL issuer
  *    key set and minting scoped data-account user JWTs.
  *  - **Plane 1 — the token exchange + JWKS, over loopback HTTP**: `POST /exchange` turns a fresh
@@ -73,14 +73,13 @@ import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
 import { makePlatformControlAuthority, makePlatformControlReadiness, requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 import { OwnedConnections, type AuthConnectionState, type AuthServiceClosed } from "./owned-connections.js";
 import { makePlatformSupervisorAuthority, makePlatformSupervisorEnd, platformSupervisorEnded, requirePlatformSupervisorAdmin, type PlatformSupervisorInput, type PlatformSupervisorAuthorityRequest } from "./platform-supervisor.js";
-import { calloutLimits, startAuthCallout, type AuthCalloutLimits } from "./callout.js";
+import { calloutLimits, type AuthCalloutLimits } from "./callout.js";
 import { runAuthCalloutReplica } from "./callout-replica.js";
-import { calloutAuthority, managerGateReads, type CalloutAuthority } from "./callout-authority.js";
+import { calloutAuthority, managerGateReads, serveCallout, type CalloutAuthority } from "./callout-authority.js";
 import { createIdpBridge, verifyIdpToken, verifyToolResultHumanProof, type IdpBridge } from "./idp.js";
 import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, validateUserToken, type UserTokenView, type ValidatedUserToken } from "./token.js";
 import { grantCoordinates } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
-import { calloutPermissions } from "./permissions.js";
 import { bootstrapServiceCallerPayload, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
 import { handleRemoteRunCancel, parseRemoteRunCancelRequest, admitRemoteRun, handleRemoteRunSubmission, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
@@ -92,7 +91,7 @@ import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster, remoteManagerSurface, type ManagerCluster } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, servedRunCancelRequestSubject, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
 import { createNativeServiceCalloutAuthority, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
-import { chatAwareAclResolver, openChatSessionAuthority, type ChatAdmissionRequest, type ChatRetireRequest, type ChatRetireResult, type ChatSessionAdmitted } from "./chat-session-authority.js";
+import { openChatSessionAuthority, type ChatAdmissionRequest, type ChatRetireRequest, type ChatRetireResult, type ChatSessionAdmitted } from "./chat-session-authority.js";
 import { pruneNativeIssuance } from "./native-issuance.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
@@ -122,7 +121,6 @@ import {
   findInteractiveActor,
   findManagedActor,
   findActorUnified,
-  ledgerAclResolver,
   ledgerActorSourceIsLive,
   ledgerAuthorizeAgentExchange,
   ledgerAuthorizeGrant,
@@ -2543,19 +2541,14 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     });
     onConnection(nc, `cotal:auth-service:${space}`);
     const serviceCallout = plane.serviceEndpointHost !== undefined ? serviceHostCalloutOf(plane.serviceEndpointHost) : undefined;
-    startAuthCallout(nc as never, {
-      ...(serviceCallout !== undefined ? { serviceAuthority: serviceCallout } : {}),
-      xkeySeed: callout.xkey.seed,
-      authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
-      dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
+    serveCallout(nc as never, {
       space,
-      token: { key: issuer.localKeySet(), issuer: issuer.issuer },
-      authorizeActor: plane.authorizeConnect,
-      recordIssuance: plane.recordIssuance,
-      // A chat principal resolves from its closed row (the agent leaf, no role); every other
-      // principal from the grant ledger.
-      permissionsFor: calloutPermissions(chatAwareAclResolver(dir, ledgerAclResolver(dir)), plane.authorizeManagerCaller, plane.verifySession, plane.issueUserCaller, plane.resolveEndpointCaller),
-      log: (l) => console.error(l),
+      dir,
+      callout,
+      dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
+      issuer,
+      hooks: plane,
+      ...(serviceCallout !== undefined ? { serviceAuthority: serviceCallout } : {}),
       ...(o.calloutLimits !== undefined ? { limits: o.calloutLimits } : {}),
     });
     // The subscription must be ON the broker before readiness is signaled — an `up` that recorded a

@@ -14,13 +14,10 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { dialerFor, EpEnvelopeError, isReachable, type SecretStore } from "@cotal-ai/core";
 import { loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { calloutReplicaGrants, openAuthorityClient, type AuthorityClient } from "./authority-client.js";
-import { startAuthCallout } from "./callout.js";
-import { calloutAuthority, managerGateReads } from "./callout-authority.js";
-import { chatAwareAclResolver, chatConnectAuthority } from "./chat-session-authority.js";
+import { calloutAuthority, managerGateReads, serveCallout } from "./callout-authority.js";
+import { chatConnectAuthority } from "./chat-session-authority.js";
 import { authConnectReaderGrants, openConnectReader } from "./connect-reader.js";
-import { ledgerAclResolver } from "./ledger.js";
 import { openLifecycleRegistry, registryStores } from "./lifecycle-registry.js";
-import { calloutPermissions } from "./permissions.js";
 import { ADMISSION_KEY, parseServiceAdmissionRecord } from "./service-host-ops.js";
 import { loadCalloutAuth, loadIssuer, loadServiceKeys, spaceIssuer } from "./store.js";
 
@@ -82,17 +79,7 @@ export async function runAuthCalloutReplica(args: { space: string; server: strin
       authenticator: credsAuthenticator(new TextEncoder().encode(callout.calloutCreds)),
       name: `cotal:auth-callout-replica:${space}`,
     });
-    startAuthCallout(calloutNc as never, {
-      xkeySeed: callout.xkey.seed,
-      authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
-      dataAccount,
-      space,
-      token: { key: issuer.localKeySet(), issuer: issuer.issuer },
-      authorizeActor: hooks.authorizeConnect,
-      recordIssuance: hooks.recordIssuance,
-      permissionsFor: calloutPermissions(chatAwareAclResolver(dir, ledgerAclResolver(dir)), hooks.authorizeManagerCaller, hooks.verifySession, hooks.issueUserCaller, hooks.resolveEndpointCaller),
-      log,
-    });
+    serveCallout(calloutNc as never, { space, dir, callout, dataAccount, issuer, hooks });
     await calloutNc.flush();
   } catch (e) {
     await closeAll();
