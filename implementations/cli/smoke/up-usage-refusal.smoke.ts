@@ -449,6 +449,30 @@ try {
   check("a bare up whose folder names a space that runs from another folder refuses CONFLICT, exit 2, naming cotal up --space <name> and the down in that folder",
     inUse.status === 2 && /Code:\s+CONFLICT/.test(inUse.stderr) && inUse.stderr.includes(`space "main" is already in use by a mesh at nats://127.0.0.1:${greeting} (${other})`)
       && inUse.stderr.includes(`start a separate space in this folder with cotal up --space <name>, naming one no other folder uses, or stop "main" first with cotal down in ${other}`), shown(inUse));
+
+  // THE SAME SPACE, RUNNING FROM THIS VERY PROJECT, started again at another address. The refusal
+  // above belongs to a name another folder holds; here the folder IS that space's project, so the
+  // offer to start a separate space in it names the project it is already in. A subfolder of the
+  // project resolves to the same root, which is where `up` there reaches this branch at all.
+  const inner = join(legacy, "inner");
+  mkdirSync(inner, { recursive: true });
+  const greeterHere = spawn(process.execPath, ["-e", `require("node:net").createServer((s) => { s.on("error", () => {}); s.write('INFO {"server_id":"here","proto":1}\\r\\n'); }).listen(0, "127.0.0.1", function () { console.log(this.address().port); });`], { stdio: ["ignore", "pipe", "inherit"] });
+  const here = Number((await once(greeterHere.stdout!, "data"))[0].toString().trim());
+  process.env.COTAL_HOME = join(home, ".cotal");
+  recordMesh({ space: "main", server: `nats://127.0.0.1:${here}`, root: legacy, mode: "auth", origin: "up", ts: now });
+  const elsewhereAddress = `nats://127.0.0.1:${await freePort()}`;
+  const ownProject = run(["up", "--server", elsewhereAddress], legacy);
+  const subfolder = run(["up", "--server", elsewhereAddress], inner);
+  if (started(legacy)) run(["down", "--yes"], legacy);
+  removeMesh("main");
+  delete process.env.COTAL_HOME;
+  greeterHere.kill();
+  for (const [where, r] of [["its own project root", ownProject], ["a subfolder of that project", subfolder]] as const)
+    check(`up --server naming another address, run from ${where} of a space that runs there, refuses CONFLICT, exit 2, naming the address it runs at and the bare up that reaches it`,
+      r.status === 2 && /Code:\s+CONFLICT/.test(r.stderr)
+        && r.stderr.includes(`space "main" already runs from this project at nats://127.0.0.1:${here}, and this start names ${elsewhereAddress}`)
+        && r.stderr.includes(`run cotal up here with no --server or --host to reach the mesh at nats://127.0.0.1:${here}, or stop it first with cotal down in ${legacy}`)
+        && !r.stderr.includes("start a separate space in this folder"), shown(r));
 } finally {
   holder.close();
 }

@@ -316,6 +316,19 @@ try {
     new RegExp(`✓ mesh "${SPACE}" already running at`).test(noopOut),
     noopOut,
   );
+  // A refresh is a receipt like a launch: it names its mesh first and ends with the steps to take.
+  // It used to print the green line alone, so `up` in a running project answered without saying
+  // which mesh it reached or what to do next.
+  ok(
+    "a no-op refresh names its mesh before the already-running line",
+    plain(noop.stdout).startsWith(`Mesh: ${SPACE}\n\n✓ mesh "${SPACE}" already running at`),
+    plain(noop.stdout),
+  );
+  ok(
+    "a no-op refresh ends with the Next a launch ends with: spawn, because its manager runs, and the stop",
+    /\nNext\n\s+cotal spawn --space \S+\s+Launch your default agent\n\s+cotal down\s+Stop the stack\s*$/.test(plain(noop.stdout)),
+    plain(noop.stdout),
+  );
   ok("the manager pidfile is unchanged by the no-op refresh", pidOf(recordName(MANAGER_PIDFILE)) === restoredPid, managerPidFile);
   ok("a no-op refresh leaves an edited default persona byte-identical and prints no write", readFileSync(persona, "utf8") === editedPersona && !/wrote default persona/.test(noopOut), noopOut);
 

@@ -1903,6 +1903,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         stderrLine("✗ ", `mesh "${held.space}" is running at ${server} but its presence/lease TTLs could not be reconciled: ${(e as Error).message}`, c.red);
         process.exit(1);
       }
+      // A refresh is a receipt like any other start: it names its mesh before it says anything
+      // about it, and ends with the steps to take. It used to print this one green line alone, so
+      // `up` in a running project's subfolder answered without saying which mesh it reached or what
+      // to do next, while the launch beside it printed both.
+      console.log(`${renderReport({ space: held.space, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
       console.log(c.green(`✓ mesh "${held.space}" already running at ${server}`));
       // USER MODE: re-upping IS the documented recovery for a dead auth service (the provider's
       // failure copy says "restart it with `cotal up`"), so a refresh must re-ensure the service —
@@ -1981,6 +1986,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // ceiling, the store) from the record as it stands at write time, not from `held`.
       recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ...(values.host ? { attachHost: values.host } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ts: new Date().toISOString() }, "refresh");
       seedPersonaAfterUp(root);
+      // The same Next a launch ends with: this mesh runs, so the steps are the ones that use and
+      // stop it. A manager the refresh found or healed is what makes `spawn` one of them.
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecordState(undefined, undefined, held.space).state === "alive", machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}) }, held.space) }] }] }, "rich", terminalWidth(process.stdout))}`);
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -4292,6 +4300,19 @@ export async function claimSpace(space: string, server: string, root: string): P
     // A space name is this machine's, so a separate space here needs a name of its own.
     let controller = false;
     try { controller = readStackJournal(existing.root)?.journal.space === space; } catch { /* named with the legacy stop */ }
+    // THIS project's own space, running at its own address, started again with another one. The
+    // refusal below belongs to a name another folder holds: it reads as if this folder were a
+    // stranger to the space and offers to start a separate one here, when the folder IS that
+    // space's project and a start naming no address joins the mesh already running in it. No
+    // command moves a stack that ran to another address, so say which address it runs at.
+    // The address must differ for this sentence to be true: the early return above compares roots
+    // as written while this compares them resolved, so a record naming this root by another
+    // spelling reaches here at its OWN address, and that case keeps the refusal below.
+    if (canonicalRoot(existing.root) === canonicalRoot(root) && existing.server !== server)
+      throw new CommandFailure("refused", "CONFLICT", `space "${space}" already runs from this project at ${existing.server}, and this start names ${server}; nothing was started`, {
+        target,
+        remedy: `run cotal up here with no --server or --host to reach the mesh at ${existing.server}, or stop it first with cotal down${controller ? " --yes" : ""} in ${shellWord(existing.root)}`,
+      });
     throw new CommandFailure("refused", "CONFLICT", `space "${space}" is already in use by a mesh at ${existing.server} (${existing.root})`, { target, remedy: `start a separate space in this folder with cotal up --space <name>, naming one no other folder uses, or stop "${space}" first with cotal down${controller ? " --yes" : ""} in ${shellWord(existing.root)}` });
   }
   // The recorded root is this root only where it physically resolves, so it is resolved before any
