@@ -26,6 +26,13 @@
  * Members and the poster run in CHILD PROCESSES, and the daemon in its own, so the daemon's CPU is
  * read from /proc without the members' work in it. Credentials reach a child over IPC, never argv.
  *
+ * `--ram` adds the RAM cost of what a post leaves behind. The broker's live heap is read from its
+ * pprof endpoint after a forced GC before the posts and after the drain, so the difference per
+ * stored INBOX or DLV copy is what a retained copy costs the broker in memory, split by the site
+ * that allocated it (the message store's index and cache, the duplicate window's message ids). No
+ * space credential may purge or reconfigure INBOX or DLV, so the run reads them as shipped. The
+ * daemon reports V8's view of its memory and a heap snapshot summarised by class.
+ *
  * Run (needs nats-server 2.15.1 on PATH or NATS_SERVER_BIN):
  *   pnpm -C implementations/delivery smoke:fanout-load --members 50 --rate 10 --seconds 30
  */
@@ -34,13 +41,15 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { availableParallelism, tmpdir, totalmem } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { getHeapSpaceStatistics, writeHeapSnapshot } from "node:v8";
+import { jetstreamManager } from "@nats-io/jetstream";
 import {
   CotalEndpoint, chatStream, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, dlvStream, inboxStream,
   isReachable, mintCreds, mintLifecycleUid, mintMembershipObserverCreds, newIdentity, provisionAgent, serverConfig,
-  setupSpaceStreams, type CotalMessage, type SecretStore,
+  setupSpaceStreams, dialerFor, standaloneConnectOpts, type CotalMessage, type SecretStore,
 } from "@cotal-ai/core";
 import { deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, brokerHeap, heapSnapshotTop, killAndAwaitExit, procMem, teardownOnSignal, type BrokerHeap } from "@cotal-ai/smoke-kit";
 import { startDeliveryService } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -167,7 +176,14 @@ async function runDaemon(job: DaemonJob): Promise<void> {
     space: job.space, servers: job.servers, store, storeIdentity: store.identity, stateDir: job.stateDir,
   });
   await ipcSend({ ready: (await handle.readiness()).state });
-  await nextJob<{ cmd: "stop" }>();
+  for (;;) {
+    const cmd = await nextJob<{ cmd: "stop" } | { cmd: "sample" } | { cmd: "snapshot"; path: string }>();
+    if (cmd.cmd === "stop") break;
+    if (cmd.cmd === "snapshot") { (globalThis as { gc?: () => void }).gc?.(); await ipcSend({ snapshot: writeHeapSnapshot(cmd.path) }); continue; }
+    const m = process.memoryUsage();
+    const code = getHeapSpaceStatistics().filter((x) => x.space_name.startsWith("code")).reduce((a, x) => a + x.space_used_size, 0);
+    await ipcSend({ sample: { heapUsedMb: m.heapUsed / 1048576, heapTotalMb: m.heapTotal / 1048576, externalMb: m.external / 1048576, codeMb: code / 1048576 } });
+  }
   await handle.close().catch(() => {});
   await ipcSend({ stopped: true });
 }
@@ -203,6 +219,9 @@ const SECONDS = num("seconds", "30");
 const DRAIN_S = num("drain", "120");
 const MEMBER_PROCS = Math.max(1, Math.min(availableParallelism() * 2, num("member-procs", String(Math.min(availableParallelism(), Math.ceil(MEMBERS / 100))))));
 const NATS_BIN = process.env.NATS_SERVER_BIN ?? "nats-server";
+const RAM = argv.includes("--ram");
+/** Seconds to wait after the drain before reading the broker's retained heap. */
+const RAM_WAIT_S = num("ram-wait", "30");
 
 const REPO = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", cwd: import.meta.dirname }).trim();
 const SHA = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", cwd: REPO }).trim();
@@ -231,13 +250,14 @@ const procWriteBytes = (pid: number): number => Number(/write_bytes:\s+(\d+)/.ex
 // ---- broker -------------------------------------------------------------------------------------
 const PORT = await pickFreePort();
 const MON_PORT = await pickFreePort();
+const PROF_PORT = RAM ? await pickFreePort() : 0;
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const space = `fanout-${randomUUID().slice(0, 8)}`;
 const brokerAuth = await createBrokerAuth(`fanout-load-${space}`);
 const account = await createSpaceAccountAuth(brokerAuth, space);
 const auth = composeSpaceAuth(brokerAuth, account);
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-writeFileSync(join(dir, "server.conf"), serverConfig(brokerAuth, [account], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }) + `\nhttp: 127.0.0.1:${MON_PORT}\n`);
+writeFileSync(join(dir, "server.conf"), serverConfig(brokerAuth, [account], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }) + `\nhttp: 127.0.0.1:${MON_PORT}\n` + (RAM ? `prof_port: ${PROF_PORT}\n` : ""));
 const srv = spawn(NATS_BIN, ["-c", join(dir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
 const releaseBroker = teardownOnSignal(srv, dir);
 let brokerPartial = "";
@@ -283,7 +303,7 @@ const startChild = (job: MemberJob | DaemonJob): ChildProcess => {
   child.send(job);
   return child;
 };
-type Cmd = { cmd: "post"; rate: number; seconds: number } | { cmd: "reset" } | { cmd: "sample" } | { cmd: "stop" };
+type Cmd = { cmd: "post"; rate: number; seconds: number } | { cmd: "reset" } | { cmd: "sample" } | { cmd: "snapshot"; path: string } | { cmd: "stop" };
 const ask = (child: ChildProcess, cmd: Cmd | undefined, key: string): Promise<Record<string, unknown>> => guard(new Promise((resolve) => {
   const on = (m: Record<string, unknown>) => { if (key in m) { child.off("message", on); resolve(m); } };
   child.on("message", on);
@@ -302,6 +322,11 @@ try {
   // ---- space, daemon, members ------------------------------------------------------------------
   const provCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: SERVERS, space, creds: provCreds });
+  // The window INBOX and DLV keep message ids for, as shipped: the RAM profile reports it beside the cost.
+  const dupWindowS = RAM && await (async () => {
+    const nc = await dialerFor(SERVERS)({ servers: SERVERS, ...standaloneConnectOpts({ creds: provCreds, tls: false }) });
+    try { return (await (await jetstreamManager(nc)).streams.info(inboxStream(space))).config.duplicate_window / 1e9; } finally { await nc.drain(); }
+  })();
   const composition = { injected: true as const };
   const daemon = startChild({
     kind: "daemon", servers: SERVERS, space, accountPub: account.account.pub, stateDir: join(dir, "delivery-state"),
@@ -351,6 +376,7 @@ try {
   const daemonIdleCoresMs = (procCpuMs(daemon.pid!) - idle0) / 5000;
 
   // ---- the measured run ---------------------------------------------------------------------------
+  const heap0: BrokerHeap | undefined = RAM ? await brokerHeap(`http://127.0.0.1:${PROF_PORT}`) : undefined;
   const s0 = await streams();
   const d0 = procCpuMs(daemon.pid!), b0 = procCpuMs(srv.pid!), w0 = procWriteBytes(srv.pid!), rss0 = procRssMb(srv.pid!);
   const k0 = kids.map((k) => procCpuMs(k.pid!));
@@ -421,6 +447,43 @@ try {
   for (const [k, v] of rows) console.log(k === "" ? "" : `${k.padEnd(w)}  ${v}`);
   console.log(`${"=".repeat(w + 34)}\n`);
 
+  if (RAM && heap0) {
+    // ---- RAM profile: what the run's stored copies cost the broker, and the daemon -------------
+    // The message store keeps recently written blocks cached for a while after the last write; the
+    // retained cost is what is left once that has expired, not the burst's working set.
+    await wait(RAM_WAIT_S * 1000);
+    const prof = `http://127.0.0.1:${PROF_PORT}`;
+    const heap1 = await brokerHeap(prof);
+    const stored = (m: Map<string, StreamDetail>) => [inboxStream(space), dlvStream(space)].reduce((a, n) => a + (m.get(n)?.state.messages ?? 0), 0);
+    const storedCopies = stored(s1) - stored(s0);
+    const rss1 = procMem(srv.pid!);
+    const f1 = (x: number) => (Number.isFinite(x) ? x.toFixed(1) : "n/a");
+    const perCopyB = (mb: number) => (storedCopies > 0 ? ((mb * 1048576) / storedCopies).toFixed(0) : "n/a");
+    console.log(`RAM profile: ${storedCopies} INBOX + DLV copies stored by the run, duplicate window ${dupWindowS}s (shipped)\n`);
+    console.log("| broker | before posts | after drain |");
+    console.log("|---|---|---|");
+    console.log(`| live heap MB | ${f1(heap0.heapAllocMb)} | ${f1(heap1.heapAllocMb)} |`);
+    console.log(`| RSS MB | ${f1(rss0)} | ${f1(rss1.rssMb)} |`);
+    for (const p of ["streams", "consumers", "connections", "other"] as const)
+      console.log(`| ${p} part of live heap MB | ${f1(heap0.heapByPart[p])} | ${f1(heap1.heapByPart[p])} |`);
+    console.log("");
+    console.log(`live heap per stored copy: ${perCopyB(heap1.heapAllocMb - heap0.heapAllocMb)} B`);
+    const delta = new Map<string, number>();
+    for (const t of heap1.sites) delta.set(t.site, (delta.get(t.site) ?? 0) + t.mb);
+    for (const t of heap0.sites) delta.set(t.site, (delta.get(t.site) ?? 0) - t.mb);
+    console.log("\nTop broker allocation sites grown by the run (live heap after the drain minus before the posts):\n");
+    for (const [site, mb] of [...delta].sort((a, b) => b[1] - a[1]).slice(0, 5)) console.log(`- ${site}: ${f1(mb)} MB, ${perCopyB(mb)} B per stored copy`);
+
+    const dm = procMem(daemon.pid!);
+    const dv = (await ask(daemon, { cmd: "sample" }, "sample")).sample as { heapUsedMb: number; heapTotalMb: number; externalMb: number; codeMb: number };
+    console.log(`\ndelivery daemon (1 space, ${membersUp} members): RSS ${f1(dm.rssMb)} MB, PSS ${f1(dm.pssMb)} MB, USS ${f1(dm.ussMb)} MB; JS heap used ${f1(dv.heapUsedMb)} of ${f1(dv.heapTotalMb)} MB, external ${f1(dv.externalMb)} MB, compiled code ${f1(dv.codeMb)} MB`);
+    const file = (await ask(daemon, { cmd: "snapshot", path: join(dir, "daemon.heapsnapshot") }, "snapshot")).snapshot as string;
+    const top = heapSnapshotTop(file, 3);
+    rmSync(file, { force: true });
+    console.log(`delivery daemon heap snapshot: ${f1(top.totalBytes / 1048576)} MB of objects; top classes by self size: ${top.top.map((t) => `${t.name} ${f1(t.bytes / 1048576)} MB (${t.count})`).join(", ")}`);
+    console.log(`  script source ${f1(top.sources.bytes / 1048576)} MB in ${top.sources.scripts} scripts; largest by package: ${top.sources.byPackage.map((t) => `${t.name} ${f1(t.bytes / 1048576)} MB`).join(", ")}\n`);
+  }
+
   stopping = true;
   await Promise.all([...kids, daemon].map((c) => ask(c, { cmd: "stop" }, "stopped").catch(() => undefined)));
 } catch (e) {
@@ -429,7 +492,9 @@ try {
 } finally {
   stopping = true;
   for (const c of children) { try { c.kill("SIGKILL"); } catch { /* already gone */ } }
-  srv.kill("SIGKILL");
+  // A broker killed without waiting can still be writing its store after the dir is removed, and
+  // recreate it: wait for the exit first.
+  await killAndAwaitExit(srv, "SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
   await new Promise<void>((r) => { process.stdout.write("", () => r()); });
