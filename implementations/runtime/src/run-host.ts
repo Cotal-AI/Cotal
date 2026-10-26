@@ -399,10 +399,20 @@ export const cotalLangRunHost: RunHost = {
     } catch (error) {
       revocation = { revocationUnreadable: (error as Error).message };
     }
+    // The run's program identity, as its run-list row carries it, from this run's record alone. A
+    // record that cannot be read or parsed is reported as such, never as a hash or as no program.
+    let program: Pick<RunStatusView, "programHash" | "programUnreadable"> = {};
+    try {
+      const recorded = await readRunProgram(planes.kv, req.endpoint, req.runId);
+      if (recorded !== undefined) program = { programHash: programHashOf(recorded.source) };
+    } catch (error) {
+      program = { programUnreadable: (error as Error).message };
+    }
     const view: RunStatusView = {
       runId: req.runId,
       endpoint: req.endpoint,
       ...revocation,
+      ...program,
       spec: record.spec.value,
       ...(record.status !== undefined ? { status: record.status.value } : {}),
       journal: await journalRows(planes.kv, req.endpoint, replay.records),

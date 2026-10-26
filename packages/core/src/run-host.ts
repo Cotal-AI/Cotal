@@ -289,6 +289,12 @@ export interface RunStatusView {
   readonly revoked?: { readonly by: string; readonly reason: string };
   /** A failed marker read is unknown, not an absent marker or a resumable run. */
   readonly revocationUnreadable?: string;
+  /** The language's hash of the run's recorded program, the value its run-list row carries. Absent
+   *  for a run with no recorded program. */
+  readonly programHash?: string;
+  /** Why the recorded program could not be read or parsed. The view then carries no `programHash`,
+   *  and the run's program identity is unknown, not absent. */
+  readonly programUnreadable?: string;
   readonly journal: RunJournalRow[];
   /** On a paged read, the journal's row count; `journal` then holds the rows from the requested
    *  offset that fit in one reply. */

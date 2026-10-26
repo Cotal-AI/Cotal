@@ -6171,6 +6171,12 @@ a released record with a marker cannot resume. A failed marker read MUST be repo
 not as marker absence or permission to resume. A terminal record remains terminal whether or not
 it has a marker.
 
+The `run-status` view also carries optional `programHash`, the language's hash of the run's
+recorded program, which is the value the run list carries for that run. It is read from that run's
+program record alone. It is absent when the run has no recorded program. A program record that
+cannot be read or parsed MUST be reported as `programUnreadable: string`, with no `programHash`,
+and never as a hash or as an absent program.
+
 A `run-status` request MAY carry `journal: { offset }`, a row offset into the journal. The reply
 then carries `journalTotal`, the journal's row count, and its `journal` holds the rows from
 `offset`, in journal order, that fit in one reply under the serving connection's payload limit: at
