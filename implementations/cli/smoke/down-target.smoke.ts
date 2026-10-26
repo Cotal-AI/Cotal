@@ -665,7 +665,7 @@ try {
   removeMesh("shared-there");
   check("a second registration at this stack's exact broker address refuses LIFECYCLE_BLOCKED, names that space, and its next step names space show, space forget and the down to run again",
     shared.error?.code === "LIFECYCLE_BLOCKED" && /shared listener/.test(shared.error.message ?? "") &&
-      (shared.error.target as { otherSpaces?: string[] } | undefined)?.otherSpaces?.includes("shared-there") === true &&
+      (shared.error as { target?: { otherSpaces?: string[] } } | undefined)?.target?.otherSpaces?.includes("shared-there") === true &&
       /`cotal space show shared-there`/.test(shared.error.remedy ?? "") && /`cotal space forget shared-there`/.test(shared.error.remedy ?? "") &&
       /then run `cotal down` again/.test(shared.error.remedy ?? ""), shared);
   // An installed extension may record its process deeper in `.cotal` or under another suffix. While
