@@ -595,6 +595,24 @@ function holdsOwnStack(root: string): boolean {
   return stackRecord(root) !== undefined || retainedLegacyBroker(root) !== undefined;
 }
 
+/** Whether a folder with no space registered or prepared for it holds the records of a stack that is
+ *  not its own to restart: a journal recorded at another folder (a copy, a moved folder, a `.cotal`
+ *  linked to another's), a stack that runs under another Cotal home, or a legacy root whose space this
+ *  machine registered for another folder ({@link legacyStackElsewhere}). `cotal up` there refuses or
+ *  takes the name over, so the commands run there refuse and name that folder or home rather than
+ *  release to the selection. */
+function recordsRunElsewhere(folder: { root: string; registered: readonly string[]; prepared?: string }): boolean {
+  if (folder.registered.length || folder.prepared !== undefined) return false;
+  const stack = stackRecord(folder.root);
+  if (stack !== undefined) return stack.recordedRoot !== undefined || stack.home !== undefined;
+  const retained = retainedLegacyBroker(folder.root);
+  // A tenant count this cannot read cannot say the space runs elsewhere, as for legacyStackElsewhere.
+  try {
+    const named = retained === undefined || retained.open ? undefined : soleSpaceOf(authDir(folder.root));
+    return named !== undefined && legacyStackElsewhere(folder.root, named) !== undefined;
+  } catch { return false; }
+}
+
 /**
  * Whether the selection is the target here.
  *
@@ -604,7 +622,9 @@ function holdsOwnStack(root: string): boolean {
  * with only its journal or rendered broker configuration left, or its broker not answering the run's
  * liveness sweep), is the target of `up`, `down`, `space show` and `status`'s folder section only —
  * the commands that are about the folder itself. Everything else run there targets the selection,
- * and the run says under its heading what this folder holds ({@link noteFolderSpaceHeld}).
+ * and the run says under its heading what this folder holds ({@link noteFolderSpaceHeld}). A folder
+ * whose records are those of a stack that runs elsewhere ({@link recordsRunElsewhere}) is not released
+ * to the selection: the command refuses and names where that stack runs.
  *
  * It used to be enough to be registered OR prepared: a folder's prepared space captured every read
  * there, so `status` in a project whose space was never started reported that space rather than the
@@ -618,6 +638,7 @@ function selectionTargetsHere(cwd: string, current: string, meshes: readonly Mes
   if (!folder || folder.registered.includes(current) || folder.prepared === current) return true;
   const running = folder.registered.filter((space) => !offline.has(space));
   if (running.length === 0) {
+    if (recordsRunElsewhere(folder)) return false;
     noteFolderSpaceHeld(folder, current);
     return true;
   }
@@ -656,10 +677,13 @@ function noteFolderSpaceHeld(folder: { root: string; registered: readonly string
 
 /** The space a folder holds that is not running: the one it prepared, the one its stopped stack is
  *  registered for, or the one its own stack journal or rendered broker configuration names after a
- *  legacy `down` dropped its registration. Undefined for a folder that holds none. */
+ *  legacy `down` dropped its registration. Undefined for a folder that holds none, and for one whose
+ *  records are those of a stack that runs elsewhere ({@link recordsRunElsewhere}), which `cotal up`
+ *  there does not start. */
 function heldSpace(folder: { root: string; registered: readonly string[]; prepared?: string }): { space: string; state: "prepared" | "stopped" } | undefined {
   if (folder.prepared !== undefined) return { space: folder.prepared, state: preparedLifecycle(folder.root, folder.prepared).state === "prepared" ? "prepared" : "stopped" };
   if (folder.registered.length === 1) return { space: folder.registered[0]!, state: "stopped" };
+  if (recordsRunElsewhere(folder)) return undefined;
   const named = stackRecord(folder.root)?.stackSpace ?? (retainedLegacyBroker(folder.root) ? soleSpaceOf(authDir(folder.root)) : undefined);
   return named === undefined ? undefined : { space: named, state: "stopped" };
 }
@@ -760,7 +784,9 @@ export function resolveReadsLiveness(cwd: string, flags: ResolveFlags = {}): boo
  *  2. `--server` — registry entry on that server (for creds/personas), else the local project.
  *  3. The `current` selected by `cotal use`, except inside a project whose root has one RUNNING space
  *     other than it, where step 4 applies. A space this folder prepared and never started, and one
- *     whose stack here is stopped, does not take the selection's place. It stays the target when its
+ *     whose stack here is stopped, does not take the selection's place; a folder holding the records
+ *     of a stack that runs from another folder or under another Cotal home refuses at step 4 and
+ *     names where it runs ({@link recordsRunElsewhere}). The selection stays the target when its
  *     own broker is down, and a selection that names no registration refuses rather than reaching
  *     another mesh. Inside a project whose root has several running spaces, none of them the
  *     selection, the run warns first.

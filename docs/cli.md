@@ -915,7 +915,8 @@ unstarted member. The failure target names that stage. Typed JetStream API error
 numeric code and status without copying the server's description or changing the unknown outcome.
 The journal records the absolute root it was written in, and the stack runs only from that folder.
 In a copy of a controller project, or after the folder is moved, commands that read the journal
-refuse `TARGET_UNAVAILABLE`, exit 2, and name the recorded folder, while `up` and `down` there
+refuse `TARGET_UNAVAILABLE`, exit 2, and name the recorded folder, with another space selected too,
+while `up` and `down` there
 refuse `CONFLICT`: a copy is told to use the stack from the original, and a moved folder to move
 back there first. A folder is moved when its recorded folder no longer holds the journal. A second Cotal home that reaches the original over a shared filesystem is
 told the same, and it can adopt the copy only after the original's stack is stopped there and that
@@ -949,7 +950,7 @@ another root says so and names that root, and in a linked folder it names the li
 A project the legacy launcher started writes no journal, so a copy of one, the folder a later `up`
 took its name over from, and one moved away from its recorded path are recognized from the
 registration instead. While this machine registers that space for another folder, reads there refuse
-`TARGET_UNAVAILABLE`, exit 2, and name that folder: the next step is to use the stack from it, or,
+`TARGET_UNAVAILABLE`, exit 2, and name that folder, with another space selected too: the next step is to use the stack from it, or,
 when it no longer exists, to move this folder back there first. A bare `down` there refuses
 `CONFLICT`, exit 2, and names the same step, because the folder holds the space's records and no
 stack of its own. A legacy root whose space this machine registers for no folder keeps its own
@@ -2905,7 +2906,11 @@ included, says the selection applies outside the folder. A space `cotal space cr
 and no `cotal up` started, and one whose stack there is stopped, is the target of the commands about
 the folder itself only: `cotal up`, `cotal down`, `cotal space show` and the folder part of
 `cotal status`. Every other command run there targets the selection, and the note under its `Mesh:`
-heading says what this folder holds and the `cotal up` that starts it. Inside a project whose root
+heading says what this folder holds and the `cotal up` that starts it. A folder that holds
+the records of a stack that runs from another folder or under another Cotal home, as a copy, a moved
+folder or one whose space name a later `up` took over, is not released to the selection: commands
+there refuse `TARGET_UNAVAILABLE` and name that folder or home, as they do with nothing selected.
+Inside a project whose root
 has several running spaces, none of them the selection, the command targets the selection. Before it
 acts, it warns on stderr and in its JSON `warnings` with `SELECTION_NOT_FOLDER_SPACE`, naming those
 spaces and `--space <space>`.
