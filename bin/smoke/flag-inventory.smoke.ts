@@ -121,7 +121,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   use: { flags: ["clear:boolean", "json:boolean:j", "plain:boolean"], positionals: true },
   // Bare status is the infrastructure inventory; `status <agent> [--on]` inspects one incarnation.
   // `--components` (2026-08) is the historical health pass the bare service inventory replaces.
-  status: { flags: ["all:boolean", "components:boolean", "creds:string", "json:boolean:j", "on:string", "plain:boolean", "server:string", "space:string:s", "verbose:boolean:v"], positionals: true },
+  status: { flags: ["all:boolean", "components:boolean", "creds:string", "json:boolean:j", "on:string", "plain:boolean", "server:string", "space:string:s", "verbose:boolean:v", "wide:boolean"], positionals: true },
   doctor: { flags: ["fix:boolean", "json:boolean:j", "plain:boolean", "space:string"], positionals: true },
   // `who` and `whoami` (2026-10): the roster and the CLI's own identity, on the structured output contract.
   who: { flags: [...TARGET, "all:boolean", "waiting:boolean", "json:boolean:j", "plain:boolean"], positionals: false },
