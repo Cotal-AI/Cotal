@@ -592,7 +592,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const agents = join(prepared, ".cotal", "agents");
   const definition = readFileSync(join(agents, "default.md"), "utf8");
   for (const name of ["\u001b[2Jx", "nl\n:default\nforged", "bidi‮z", "tab\tx"]) writeFileSync(join(agents, `${name}.md`), definition, { mode: 0o600 });
-  for (const words of [["persona", "show"], ["persona", "edit"], ["persona", "remove"], ["personas", "show"]]) {
+  for (const words of [["persona", "show"], ["persona", "edit"], ["persona", "remove"]]) {
     const r = offered([...words, "--space", "cc"]);
     const directives = r.stdout.split("\n").filter((line) => line.startsWith(":"));
     check(`${words.join(" ")} leaves out a catalog file name with a control character`, exactly(r, ["default"]) && directives.length === 1 && !/[\u0000-\u0009\u000b-\u001f\u007f‮]/u.test(r.stdout), shown(r));
@@ -603,7 +603,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const folder = realpathSync(agents);
     chmodSync(agents, 0o000);
-    for (const words of [["persona", "show"], ["persona", "edit"], ["personas", "show"], ["spawn"]]) {
+    for (const words of [["persona", "show"], ["persona", "edit"], ["spawn"]]) {
       const r = s.run(["__complete", ...words, "--space", "cc", ""], { COTAL_COMPLETE_DEBUG: "1" });
       check(`${words.join(" ")} fails its completion on an unreadable catalog folder and names it`,
         r.status === 1 && r.stdout === "" && r.stderr.includes(`cannot read the persona catalog ${folder}: permission denied`), shown(r));

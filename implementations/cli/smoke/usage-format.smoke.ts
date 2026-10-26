@@ -234,10 +234,12 @@ if (process.platform !== "win32") {
   check("up --help still answers from a removed folder", upHelp.status === 0 && /cotal up/.test(upHelp.stdout + upHelp.stderr), shown(upHelp));
   // Help said the space or defaults could not be read, and docs and telemetry, which use no folder,
   // refused.
+  // `cotal help` leads with the title line; the bare entry screen does not.
   for (const args of [["help"], []]) {
     const r = fromRemoved(args);
+    const body = r.stdout.replace(/^cotal - lateral agent coordination over NATS\n\n/, "");
     check(`${["cotal", ...args].join(" ")} from a removed folder says the folder no longer exists, exit 0`,
-      r.status === 0 && r.stdout.startsWith("This folder no longer exists, so commands that use a space refuse here. cd to an existing folder first.\n") && !/could not be read/.test(r.stdout), shown(r));
+      r.status === 0 && body.startsWith("This folder no longer exists, so commands that use a space refuse here. cd to an existing folder first.\n") && !/could not be read/.test(r.stdout), shown(r));
   }
   const docs = fromRemoved(["docs", "--json"]);
   check("docs runs from a removed folder", docs.status === 0 && docs.stdout.includes('"outcome":"ok"'), shown(docs));

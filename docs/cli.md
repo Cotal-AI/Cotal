@@ -331,7 +331,7 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Mesh | [`backup`](#backups) | Create an offline full-space or registry-only artifact from a preserved cut |
 | Mesh | [`clean`](#clean) | Configurable cleanup: purge history (live), or wipe the local store / identity (stopped) |
 | Mesh | [`reset`](#reset) | Preview or reset one stopped local store or space identity |
-| Mesh | [`meshes`](#mesh-registry) | List, register and drop meshes; `space` replaces its listing |
+| Mesh | [`meshes`](#mesh-registry) | Legacy, hidden from `cotal help`: list, register and drop meshes; `space`, `space add` and `space forget` replace it |
 | Mesh | [`space`](#selecting-a-space) | List the spaces this machine can reach, or show one in full |
 | Mesh | [`sync`](#mesh-registry) | Refresh the signed-in account's advertised spaces |
 | Mesh | [`status`](#mesh-registry) | Read-only diagnostics for setup, processes, and the selected mesh |
@@ -354,7 +354,7 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Agents | [`attach`](#managed-seats) | Stream and drive a managed agent's terminal (pty runtime) |
 | Agents | [`input`](#input) | Type one line into a managed agent's terminal without attaching |
 | Agents | [`persona`](#persona) | List, show, edit, create, or remove local personas |
-| Agents | [`personas`](#persona) | The legacy persona parser, kept during the migration to `persona` |
+| Agents | [`personas`](#persona) | Legacy, hidden from `cotal help`: the earlier persona parser; `persona` replaces it |
 | Run a manager | [`supervise`](#supervise) | Run a manager in this terminal for the selected space; see [Start a manager for a hosted space](#start-a-manager-for-a-hosted-space) |
 | Observe | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
 | Observe | [`who`](#who) | The live roster of the selected space, and whether a manager runs each seat |
@@ -2980,6 +2980,11 @@ cotal status [--json|--plain] [--all] [-v|--verbose] [--space <s>] [--server <ur
 cotal status --components [--space <s>] [--server <url>]
 ```
 
+`cotal meshes` is a legacy command. It still runs, and `cotal help meshes` still prints its help,
+but `cotal help` no longer lists it and completion does not offer it. `cotal space` lists the
+spaces, `space add <name>` registers one that runs elsewhere, including a user-auth space with
+`--file` or `--from`, and `space forget <name>` drops a registration.
+
 Everyday command forms use positional agent names: `cotal attach <name>` and `cotal stop <name>`.
 For one-shot messages, choose one destination with `--to/-t`, `--channel/-c` or `--role/-r`:
 `cotal send -t reviewer "Please inspect the patch"`. Message receipts do not repeat the body.
@@ -4536,6 +4541,10 @@ cotal persona create <name> --prompt <text> --subscribe <a,b> [--allow-subscribe
 cotal persona edit <name>
 cotal persona remove <name> --yes
 ```
+
+`cotal personas` is the earlier parser for the same catalog and is a legacy command. It still
+runs, and `cotal help personas` still prints its help, but `cotal help` no longer lists it and
+completion does not offer it.
 
 `p` aliases `persona`; `persona rm` aliases `persona remove`. These commands manage the
 selected space's local `.cotal/agents` catalog without connecting, refreshing a remote catalog
