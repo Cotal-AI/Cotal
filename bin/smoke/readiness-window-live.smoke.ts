@@ -30,7 +30,7 @@ const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
 const home = mkdtempSync(join(tmpdir(), "cotal-readiness-home-"));
 process.env.COTAL_HOME = home;
 
-const { probeConnect, registry, CotalEndpoint } = await import("@cotal-ai/core");
+const { probeConnect, registry, CotalEndpoint, GOAL_ENTITY_RUNNING_DETAIL_KIND } = await import("@cotal-ai/core");
 const { recordMesh } = await import("@cotal-ai/workspace");
 const { launchAgent, START_TIMEOUT_MS } = await import("@cotal-ai/cli");
 const { MeshAgent, SPAWN_TIMEOUT_MS } = await import("@cotal-ai/connector-core");
@@ -131,6 +131,18 @@ const ghostCon: Connector = {
   buildLaunch: () => ({ command: "node", args: ["-e", "setInterval(()=>{},1000)"], env: { PATH: process.env.PATH ?? "" } }),
 };
 registry.register(ghostCon);
+
+// The OPERATOR connector: the ghost's child, whose launch with `pick: ""` waits for the operator at a
+// screen the connector names, as Claude waits at its session picker for a resume with no id. With
+// `exit: ""` the child exits at once.
+const operatorCon: Connector = {
+  kind: "connector",
+  name: "operator-e2e",
+  requires: ["node"],
+  waitsForOperator: (options) => (options?.pick === "" ? "the fixture picker" : undefined),
+  buildLaunch: (o) => ({ command: "node", args: ["-e", o.launchOptions?.exit === "" ? "process.exit(3)" : "setInterval(()=>{},1000)"], env: { PATH: process.env.PATH ?? "" } }),
+};
+registry.register(operatorCon);
 
 let mgr: InstanceType<typeof Manager> | undefined;
 let driver: InstanceType<typeof MeshAgent> | undefined;
@@ -288,9 +300,39 @@ try {
     }
   }
 
+  // E. A launch whose agent application waits for the operator is ready once its process runs: it
+  // succeeds without presence, well inside the window, and names the screen. One whose process exits
+  // at once is still a failure.
+  {
+    for (const persona of ["picker", "pickexit", "ghostspawn"])
+      writeFileSync(join(workspaceRoot, ".cotal", "agents", `${persona}.md`), `---\nname: ${persona}\n---\nNever joins.\n`);
+    const t0 = Date.now();
+    const reply = await driver.spawn("picker", undefined, { agent: "operator-e2e", events: false, launchOptions: { pick: "" } });
+    const elapsed = Date.now() - t0;
+    ok("a launch that waits for the operator succeeds once its process runs, naming the screen", reply.ok === true && (reply.data as { waitingFor?: unknown } | undefined)?.waitingFor === "the fixture picker", reply);
+    ok(`...without waiting for presence (${elapsed}ms)`, elapsed < 10_000, elapsed);
+    const exited = await driver.spawn("pickexit", undefined, { agent: "operator-e2e", events: false, launchOptions: { pick: "", exit: "" } });
+    ok("...and one whose process exits at once fails", exited.ok === false && exited.code === "failed", exited);
+  }
+
+  // F. A spawn whose process runs but never joins settles `uncertain` with the entity-running
+  // detail, which is what lets a caller say it is still starting.
+  {
+    const restore = (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs;
+    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2_000;
+    try {
+      const reply = await driver.spawn("ghostspawn", undefined, { agent: "ghost-e2e", events: false });
+      ok("a running spawn that never joins settles `uncertain`", reply.ok === false && reply.code === "uncertain", reply);
+      ok("...with the entity-running detail", reply.details?.some((d) => d.kind === GOAL_ENTITY_RUNNING_DETAIL_KIND) === true, reply);
+      ok("...and says its process is running", reply.error?.includes("its process is running") === true, reply.error);
+    } finally {
+      (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = restore;
+    }
+  }
+
   // Tear the spawned keepalives down through the manager (they don't exit on broker loss):
   // inspect resolves the wire target, then the targeted ep despawn (the CLI's stop shape).
-  for (const name of ["slowpoke", "slowlaunch", "jcodeslow", "ghost"]) {
+  for (const name of ["slowpoke", "slowlaunch", "jcodeslow", "ghost", "picker", "ghostspawn"]) {
     const info = await ep.invokeService("manager", "inspect", { name });
     ok(`inspect resolves ${name}`, info.reply.ok === true, info.reply);
     const row = info.reply.data as { id: string; lifecycleUid: string };

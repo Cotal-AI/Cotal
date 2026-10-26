@@ -165,6 +165,9 @@ export const claudeConnector: Connector = {
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   supportsPrompt: true, // a leading positional is auto-submitted as the first turn — see buildLaunch
   launchHint: "press Enter at the dev-channels prompt", // Claude Code opens on that one-time gate
+  // `--opt resume=` renders a bare `--resume`, which opens Claude's session picker; the session joins
+  // the mesh only after the operator picks one. `--opt resume=<id>` resumes that session directly.
+  waitsForOperator: (launchOptions) => (launchOptions?.resume === "" ? "Claude's session picker" : undefined),
 
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("claude connector does not support exact-session continuation");

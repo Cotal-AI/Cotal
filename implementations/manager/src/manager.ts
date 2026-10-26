@@ -254,6 +254,10 @@ export const READINESS_TIMEOUT_MS = 30_000;
  *  how long it waits past the window for the proof of its last read. An operator waits on this reply,
  *  so it asks more often than the exit watch that outlives readiness. */
 const READINESS_EXIT_POLL_MS = 1_000;
+/** How long the process of a launch that waits for the operator ({@link Connector.waitsForOperator})
+ *  must run without exiting before it is ready: long enough that a harness refusing its arguments
+ *  exits first and is reported as failed. */
+const OPERATOR_READINESS_MS = 3_000;
 /** Managed same-session crash recovery follows the Codex host precedent: three restarts are allowed
  * inside a rolling two-minute window; the fourth crash is a loop and retires the seat loud. */
 const SESSION_RESTART_LIMIT = 3;
@@ -6706,8 +6710,10 @@ export class Manager {
       // #159 B1: reply on a REAL outcome, not a timer. Wait for the agent to actually join the mesh
       // (presence) → started, the child to exit → failed (with its last output; already reaped), or
       // neither in time → uncertain. `✓ started` therefore means "it joined", never just "a process
-      // launched".
-      const readiness = await this.awaitReadiness(managed, readinessTimeoutMs);
+      // launched", except for a launch whose options make the harness wait for the operator first: that
+      // one is ready once its process runs, and its reply names the screen it waits at.
+      const operator = connector.waitsForOperator?.(launchOptions);
+      const readiness = await this.awaitReadiness(managed, readinessTimeoutMs, operator === undefined ? {} : { operator });
       // Deliberately stopped mid-launch: reaped by onExit, and the despawn/stop path owns the
       // goal terminal. Return BEFORE the failed/uncertain arms so this emits no competing
       // outcome and does not re-arm an exit watcher on an agent already gone.
@@ -6726,7 +6732,7 @@ export class Manager {
       if (!readiness.ok) {
         this.watchExit(managed);
         if (managed.launch.carried) void this.refuseLateCarriedFork(managed, readinessTimeoutMs);
-        await hooks?.onOutcome?.({ kind: "uncertain", data: { reason: readiness.detail } });
+        await hooks?.onOutcome?.({ kind: "uncertain", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });
         return { ok: false, error: readiness.detail };
       }
       if (managed.launch.carried) {
@@ -6791,7 +6797,7 @@ export class Manager {
       // "no role", so dropping the key preserves the reply (surfaced by readiness:live).
       // A host that granted other channels than this spawn asked for: the receipt carries both.
       const acl = enrolled ? enrolledAcl({ allowSubscribe, allowPublish }, enrolled.material) : undefined;
-      const okData = { name, agent, id: managed.id, mode: handle.kind, lifecycleUid, ...(role !== undefined ? { role } : {}), ...(opts.eventsNotice !== undefined ? { eventsNotice: opts.eventsNotice } : {}), ...(acl ? { acl } : {}) };
+      const okData = { name, agent, id: managed.id, mode: handle.kind, lifecycleUid, ...(role !== undefined ? { role } : {}), ...(opts.eventsNotice !== undefined ? { eventsNotice: opts.eventsNotice } : {}), ...(acl ? { acl } : {}), ...(readiness.operator !== undefined ? { waitingFor: readiness.operator } : {}) };
       await hooks?.onOutcome?.({ kind: "succeeded", data: okData });
       return { ok: true, data: okData };
     } catch (e) {
@@ -7502,8 +7508,11 @@ export class Manager {
    *  catches a join/exit that landed before we subscribed). A runtime whose `attach()` throws (an external
    *  surface) streams no output or exit, so its exit leg polls the runtime's exit proof ({@link pollProvedExit}),
    *  reads it once more when the window closes, and its failure carries no last output; one that cannot prove an
-   *  exit either races presence-vs-backstop only. */
-  private async awaitReadiness(a: ManagedAgent, readinessTimeoutMs: number, opts: { reapOnExit?: boolean; joinedAfter?: number } = {}): Promise<{ ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }> {
+   *  exit either races presence-vs-backstop only.
+   *  A launch that waits for the operator at `opts.operator`, a screen its connector names, is ready once a
+   *  process this runtime owns has run for {@link OPERATOR_READINESS_MS} without exiting. An uncertain verdict
+   *  says whether a process this runtime owns is still running. */
+  private async awaitReadiness(a: ManagedAgent, readinessTimeoutMs: number, opts: { reapOnExit?: boolean; joinedAfter?: number; operator?: string } = {}): Promise<{ ok: true; operator?: string } | { ok: false; uncertain?: boolean; running?: boolean; deliberate?: boolean; detail: string }> {
     let session: AttachSession | undefined;
     try {
       session = a.handle.attach();
@@ -7539,10 +7548,12 @@ export class Manager {
       let timer: ReturnType<typeof setTimeout>;
       let unsubExit = (): void => {};
       let joinedPoll: ReturnType<typeof setInterval> | undefined;
-      const finish = (r: { ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }): void => {
+      let operatorTimer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (r: { ok: true; operator?: string } | { ok: false; uncertain?: boolean; running?: boolean; deliberate?: boolean; detail: string }): void => {
         if (done) return;
         done = true;
         clearTimeout(timer);
+        clearTimeout(operatorTimer);
         if (joinedPoll !== undefined) clearInterval(joinedPoll);
         this.ep.off("presence", onPresence);
         unsubExit();
@@ -7562,6 +7573,7 @@ export class Manager {
       const onExit = (): void => {
         if (done) return;
         clearTimeout(timer);
+        clearTimeout(operatorTimer);
         // `stopHandle` sets `terminalizing` synchronously before it kills, and `onAgentExit` sets it
         // through `freeSlot` when it retires the seat, so only a read before the await and the reap
         // tells a deliberate stop from a launch failure.
@@ -7604,12 +7616,20 @@ export class Manager {
           finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}${exitDetail}` });
         })();
       };
-      const uncertain = (): void =>
+      // A process this runtime owns reports its own exit, so one still running here is running.
+      const uncertain = (): void => {
+        const running = s !== undefined && a.handle.status() === "running";
         finish({
           ok: false,
           uncertain: true,
-          detail: `${a.name} (${a.id}): launch status uncertain - no process exit and no mesh presence within ${readinessTimeoutMs}ms; it may still be booting or stuck before connector startup. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`; do not stop it solely because this bounded wait elapsed.`,
+          running,
+          detail: running
+            ? `${a.name} (${a.id}): launch status uncertain - its process is running but did not join the mesh within ${readinessTimeoutMs}ms; it may still be starting or waiting at a prompt. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`; do not stop it solely because this bounded wait elapsed.`
+            : `${a.name} (${a.id}): launch status uncertain - no process exit and no mesh presence within ${readinessTimeoutMs}ms; it may still be booting or stuck before connector startup. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`; do not stop it solely because this bounded wait elapsed.`,
         });
+      };
+      if (opts.operator !== undefined && s)
+        operatorTimer = setTimeout(() => { if (a.handle.status() === "running") finish({ ok: true, operator: opts.operator }); }, OPERATOR_READINESS_MS);
       // The exit poll read the runtime up to a poll ago, and a window can be shorter than a poll, so
       // the window closes on a fresh read: a child that exited by then is reported as exited. Nothing
       // bounds how long a runtime's proof takes, so it gets one more poll before the launch is uncertain.
@@ -9047,8 +9067,8 @@ export class Manager {
         } else {
           // Forward the readiness detail as the terminal's reason: this manager owns the deadline,
           // so it owns what elapsing it MEANS. Absent, core commits its own generic line (#605).
-          const why = (o.data as { reason?: unknown } | undefined)?.reason;
-          ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch }, ...(typeof why === "string" && why.length > 0 ? { reason: why } : {}) }));
+          const { reason: why, running } = (o.data ?? {}) as { reason?: unknown; running?: unknown };
+          ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch }, ...(typeof why === "string" && why.length > 0 ? { reason: why } : {}), ...(running === true ? { running: true } : {}) }));
         }
         this.expireGoalAcceptance(ref);
         this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });

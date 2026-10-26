@@ -3048,7 +3048,11 @@ action command's submissions are `class: journal` (§13.3).
    acceptance-relative bound persisted in the acceptance fact/goal state, NOT the
    submission's `deadlineMs` (which bounds only the decision, §13.3). Spawn readiness is
    the reference case: its readiness deadline is **30 s**, the migrated presence-or-exit
-   backstop, D29; every legacy spawn-timeout consumer converges on this single bound. When
+   backstop, D29; every legacy spawn-timeout consumer converges on this single bound. A
+   spawn whose agent application waits for the operator before its session joins, as its
+   connector declares for the launch's options (a session picker, for one), has its running
+   process as the success signal: the owner records `succeeded` once that process has run
+   briefly without exiting, and the result's `waitingFor` names the screen. When
    the deadline passes without the signal, the owner records the goal's terminal **result
    fact** (`goal….result`, §13.2) with the outcome
    `uncertain`, and the goal IS terminal: `uncertain` is a terminal outcome like
@@ -3057,7 +3061,10 @@ action command's submissions are `class: journal` (§13.3).
    the caller-visible outcome, item 5). The underlying ENTITY's later convergence
    (ready/exited) is observable on that entity's own status record (`svc….status`, the
    lifecycle mapping); a caller that needs the eventual answer watches the entity, never
-   the goal; the goal is not rewritten and its status does not linger non-terminal.
+   the goal; the goal is not rewritten and its status does not linger non-terminal. An owner
+   that observed the entity still running when the deadline passed MAY add a detail of kind
+   `ai.cotal.goal.entity-running` to the `uncertain` result's `details`, and a caller then
+   reports the action as still starting.
 7. Goals bind the target's `(principal, lifecycleUid)` (§13.1): a goal accepted against a
    lifecycle is not redeemable, cancellable, or effectful against a same-name successor. A
    restarted instance (same `instanceId`/UID, advanced epoch) recovers its goals from journal
@@ -6597,6 +6604,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-26 | **Spawn readiness for a launch that waits for the operator (§13.6 item 6), additive.** A spawn whose agent application waits for the operator before its session joins, such as at a session picker, succeeds once its process runs, and its result's `waitingFor` names the screen. An `uncertain` result MAY carry `details[].kind = ai.cotal.goal.entity-running` when the owner saw the entity still running at the deadline. A reader that does not read `waitingFor` sees such a launch succeed before its session joins. |
 | 2026-10-23 | **A revoked run takes no answer (§14.8).** An answer to an open checkpoint or ask of a revoked run, or of a run whose marker cannot be read, is refused before anything is filed. The leader-served marker read before the answer record orders the answer against the revocation. |
 | 2026-10-23 | **A failed run records its cause (§13.7), additive.** A `failed` run status MAY carry `failure: { code?, message }`, the error the program failed with, so a reader of the record learns why without the host's log. It is optional on read and absent from every other state. |
 | 2026-10-21 | **Own-DM-only reader (§8), additive.** A client may read its DM inbox holding only its own `dm_` durable: it binds an existing durable, never creates one, refuses when it is missing, keeps the §5 sender check, and issues only CONSUMER.INFO, MSG.NEXT and ack requests on that durable. No credential profile is added. |

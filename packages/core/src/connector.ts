@@ -325,6 +325,11 @@ export interface Connector extends Extension {
    *  one is worse than none: someone waits for a prompt that will never appear and reads the
    *  startup as hung. Omit when there is nothing specific to say. */
   readonly launchHint?: string;
+  /** The screen, named for the operator, at which a launch with these options waits for the
+   *  operator before its session joins the mesh, such as Claude's session picker for a resume with
+   *  no session id. Undefined when the launch joins on its own. The manager reports such a launch
+   *  ready once its process runs, without waiting for presence. */
+  waitsForOperator?(launchOptions: Record<string, unknown> | undefined): string | undefined;
 }
 
 /** Finds the transcript of a resumable session on this host. */

@@ -229,7 +229,9 @@ laterally; the manager only births and configures them.
   then report the launch until a terminal outcome. Presence within the readiness window is
   `succeeded`, an early exit is `failed`, and the window passing with neither is
   `uncertain`: a bounded, reconcilable outcome a later `ps` settles against the live roster,
-  never a silent hang.
+  never a silent hang. An `uncertain` result says when the manager saw the process still running.
+  A launch whose agent application waits for the operator first, such as at a session picker, is
+  `succeeded` once its process runs, and its result names that screen.
 - **Bounded spawn.** A gate caps concurrent and in-flight agents and a minimum-lifetime
   floor bounds spawn/despawn churn, so a capability-holding but compromised peer cannot
   fork-bomb the host. The gate runs at goal acceptance, before any identity is minted or
