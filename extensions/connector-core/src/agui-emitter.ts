@@ -100,6 +100,38 @@ export interface ReportedTerminal {
 }
 
 /**
+ * A durable position waiting to be placed against a read, and what to do when it cannot be.
+ *
+ * Two kinds of position queue here — a reported turn terminal and a consent's §13.19.2 capture
+ * frontier — and they share ONE comparison, {@link AguiEmitter.boundary}. The comparison is the
+ * delicate part: it reads positions through the source rather than off the cursor string, and the
+ * paragraph above it is the record of why. A second copy for the frontier is a second place for
+ * that reasoning to drift, and the two copies would disagree exactly where it matters, so the
+ * kind-specific parts are pushed out here instead: `what` names the position in a drop message,
+ * and `drop` removes it from whichever queue holds it.
+ */
+interface QueuedPosition {
+  at: Promise<string>;
+  what: string;
+  drop: () => void;
+}
+
+/**
+ * A consent's §13.19.2 capture frontier: the position `P` the connector sampled with the source's
+ * end operation after verifying the consent, and the life generation the consent held then.
+ *
+ * `generation` is re-read, not captured: §13.19.2 requires the generation be compared again after
+ * every asynchronous step, and placement is asynchronous. A revoke or replacement advances it, and
+ * an in-flight activation for a superseded generation must commit nothing — so the emitter asks for
+ * it at the moment of commit rather than trusting the number it was handed when the consent arrived.
+ */
+export interface ConsentFrontier {
+  consentId: string;
+  at: Promise<string>;
+  generation: () => number;
+}
+
+/**
  * What the mapper returns for one source record: its run and its events, or `null` for a record
  * this plane deliberately drops, and it drops many. `null` is NOT an error: a deliberate drop and
  * a failed map are kept apart, because conflating them turns a parser bug into skipped history.
@@ -306,6 +338,12 @@ export class AguiEmitter<T> {
   private owed = new Map<string, ReportedTerminal>();
   /** Terminals reported at a position no pump has read up to yet, in the order they arrived. */
   private queued: ReportedTerminal[] = [];
+  /** Frontiers no read has placed yet. An unresolved frontier grants NO eligibility (§13.19.2). */
+  private frontiers: { frontier: ConsentFrontier; generation: number }[] = [];
+  /** Consents whose frontier a previous read placed: every record from this read on is after `P`. */
+  private settled = new Set<string>();
+  /** Consents placed inside the CURRENT read, at the index from which their records are after `P`. */
+  private placing = new Map<string, number>();
   /**
    * The turn the frozen frames most recently began: the run it opened, `null` for one that opened
    * none, `undefined` while the log shows no turn. A terminal reported before any record a pump
@@ -479,6 +517,10 @@ export class AguiEmitter<T> {
       else for (const e of m.events) if (e.type === AGUI_EVENT_TYPE.RUN_STARTED) begun.set(i, e.runId);
     });
     await this.place(read, begun);
+    // Frontiers are placed with the terminals, against the same read and the same comparison, and
+    // BEFORE any record of this read is turned into a unit: §13.19.2's eligibility is a property of
+    // a record's position, so it has to be known before the loop that walks those positions.
+    await this.placeFrontiers(read);
 
     // Units the mapper dropped are not errors and not frames. Their cursor folds FORWARD into the
     // preceding unit, so consuming that frame consumes them too and they are never re-read. A drop
@@ -605,7 +647,16 @@ export class AguiEmitter<T> {
    */
   private async place(read: SourceRead<T>, begun: Map<number, string | null>): Promise<void> {
     for (const entry of [...this.queued]) {
-      const before = await this.boundary(entry, read);
+      const before = await this.boundary(
+        {
+          at: entry.at,
+          what: `the turn terminal reported at ${entry.terminal.timestamp}`,
+          drop: () => {
+            this.queued = this.queued.filter((q) => q !== entry);
+          },
+        },
+        read,
+      );
       if (before === undefined) continue;
       this.queued = this.queued.filter((q) => q !== entry);
       let turn = this.lastTurn;
@@ -628,14 +679,14 @@ export class AguiEmitter<T> {
    * read), drops the terminal and fails this pump, once: the plane reports it and the next pump
    * goes on without it. Waiting for a pump that reads up to such a position would wait forever.
    */
-  private async boundary(entry: ReportedTerminal, read: SourceRead<T>): Promise<number | undefined> {
+  private async boundary(entry: QueuedPosition, read: SourceRead<T>): Promise<number | undefined> {
     let at: string;
     try {
       at = await entry.at;
     } catch (e) {
-      this.queued = this.queued.filter((q) => q !== entry);
+      entry.drop();
       throw new Error(
-        `event emitter for ${this.channel}: dropping the turn terminal reported at ${entry.terminal.timestamp}: ` +
+        `event emitter for ${this.channel}: dropping ${entry.what}: ` +
           `the source position it was reported at could not be read (${(e as Error).message})`,
       );
     }
@@ -644,9 +695,9 @@ export class AguiEmitter<T> {
     try {
       ahead = await this.source.read(at);
     } catch (e) {
-      this.queued = this.queued.filter((q) => q !== entry);
+      entry.drop();
       throw new Error(
-        `event emitter for ${this.channel}: dropping the turn terminal reported at ${entry.terminal.timestamp}: ` +
+        `event emitter for ${this.channel}: dropping ${entry.what}: ` +
           `the source could not be read from the position it was reported at (${(e as Error).message})`,
       );
     }
@@ -667,9 +718,9 @@ export class AguiEmitter<T> {
     const i = read.records.findIndex((r) => r.cursor === first);
     if (i >= 0) return i;
     if ((await this.source.read(read.cursor)).records.some((r) => r.cursor === first)) return undefined;
-    this.queued = this.queued.filter((q) => q !== entry);
+    entry.drop();
     throw new Error(
-      `event emitter for ${this.channel}: dropping the turn terminal reported at ${entry.terminal.timestamp}: ` +
+      `event emitter for ${this.channel}: dropping ${entry.what}: ` +
         `it was reported at a position this emitter had already read past`,
     );
   }
@@ -817,6 +868,82 @@ export class AguiEmitter<T> {
     // unhandled rejection before any pump has.
     entry.at.catch(() => undefined);
     this.queued.push(entry);
+  }
+
+  /**
+   * Queue a consent's §13.19.2 capture frontier, for the records that lie after it.
+   *
+   * `P` is a position the caller sampled with the source's end operation after verifying the
+   * consent, and the emitter's job is only to say which records fall after it. It says so through
+   * the SAME comparison a reported terminal is placed with ({@link boundary}): source-only
+   * position comparison, never a cursor-string comparison. Physical tool execution time decides
+   * nothing — a slow call whose START lies before `P` is ineligible, and a fast one after it is
+   * eligible, which is the whole point of placing a position rather than reading a clock.
+   *
+   * The frontier grants nothing until a read places it, so a consent in flight is a consent that
+   * can read nothing. It is committed at placement, and the life generation is re-read there: a
+   * revoke or replacement that landed while the position was resolving has advanced the generation,
+   * and the activation then commits nothing, as §13.19.2 requires. A position that cannot be placed
+   * drops the frontier — the caller refuses that consent as `failed-precondition`; it does not fall
+   * back to eligible-for-everything, which is the one failure mode worth more than the surface.
+   */
+  queueFrontier(frontier: ConsentFrontier): void {
+    if (this.halted) throw this.halted;
+    // A position that could not be read is reported by the pump that meets it, not as an unhandled
+    // rejection before any pump has — the same reason {@link queueTerminal} does this.
+    frontier.at.catch(() => undefined);
+    this.frontiers.push({ frontier, generation: frontier.generation() });
+  }
+
+  /**
+   * Place every queued frontier the read has reached, and retire the ones a previous read placed.
+   *
+   * Retiring first is what makes {@link eligibleAt} cheap and correct: a frontier placed in an
+   * EARLIER read is behind every record of this one, so it needs no index, and only frontiers
+   * placed inside this read carry a boundary to compare against.
+   */
+  private async placeFrontiers(read: SourceRead<T>): Promise<void> {
+    for (const consentId of this.placing.keys()) this.settled.add(consentId);
+    this.placing.clear();
+    for (const entry of [...this.frontiers]) {
+      const before = await this.boundary(
+        {
+          at: entry.frontier.at,
+          what: `the capture frontier for consent ${entry.frontier.consentId}`,
+          drop: () => {
+            this.frontiers = this.frontiers.filter((f) => f !== entry);
+          },
+        },
+        read,
+      );
+      // Past this read: the frontier stays queued, and grants nothing in the meantime.
+      if (before === undefined) continue;
+      this.frontiers = this.frontiers.filter((f) => f !== entry);
+      // THE LIFETIME FENCE, immediately before the commit and after the asynchronous placement.
+      // A superseded generation commits nothing at all — not a narrowed frontier, not a frontier
+      // starting here. The consent is simply gone.
+      if (entry.frontier.generation() !== entry.generation) continue;
+      this.placing.set(entry.frontier.consentId, before);
+    }
+  }
+
+  /**
+   * The consents a START at index `i` of the current read is eligible for (§13.19.2/.3).
+   *
+   * A record is eligible for a consent when its durable position lies AFTER that consent's `P`:
+   * either the frontier was placed in an earlier read, or it was placed in this one at a boundary
+   * this record is at or past. The answer is a fresh set so a caller cannot widen the emitter's
+   * own state by holding onto it — an audience that grows is the §13.19.3 leak.
+   */
+  eligibleAt(i: number): string[] {
+    const out = [...this.settled];
+    for (const [consentId, before] of this.placing) if (i >= before) out.push(consentId);
+    return out;
+  }
+
+  /** How many frontiers no pump has placed yet. One that is still waiting grants no eligibility. */
+  get waitingFrontiers(): number {
+    return this.frontiers.length;
   }
 
   /** How many terminals no pump has placed yet. A pump places every one the read reaches. */
