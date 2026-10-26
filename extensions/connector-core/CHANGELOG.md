@@ -1,5 +1,13 @@
 # @cotal-ai/connector-core
 
+## 0.101.5
+
+### Patch Changes
+
+- a9ece42: `cotal spawn` reports a managed launch the manager reports failed, such as an agent whose process
+  exits at once, as `OPERATION_FAILED` (exit 5) with the manager's reason. It used to print "Outcome
+  unconfirmed" with `OPERATION_UNKNOWN` (exit 3), though the manager had answered.
+
 ## 0.101.4
 
 ### Patch Changes
