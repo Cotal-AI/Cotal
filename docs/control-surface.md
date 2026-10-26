@@ -266,7 +266,9 @@ still legitimately waiting for its terminal.
 
 The manager keeps a spawn or launch exception's error code and details when turning it
 into a refusal. Failed `ControlReply` values keep their code and details at the serving
-boundary. A reply without a code remains `failed-precondition`.
+boundary. A host enrollment refusal that proves nothing was executed also keeps its
+code in the public `Manager.startAgent` reply after staged-secret cleanup. A reply
+without a code remains `failed-precondition`.
 
 A spawn that is **refused** because a lifecycle barrier already holds the actor (a frozen
 issuance gate, a retiring alias, a retired uid) is not a wait-timeout. The manager already

@@ -6472,7 +6472,7 @@ export class Manager {
         });
         if ("error" in prep) {
           if (prep.refused !== undefined) hooks?.onUndone?.(prep.refused);
-          return { ok: false, error: prep.error, ...(prep.details ? { details: prep.details } : {}) };
+          return { ok: false, error: prep.error, ...(prep.refused !== undefined ? { code: prep.refused } : {}), ...(prep.details ? { details: prep.details } : {}) };
         }
         // THE HOST'S UID WINS (#1972). On the local arm this is the value passed in, unchanged. On
         // the hosted enrollment arm the host selected it, and from here every lifecycle-keyed thing

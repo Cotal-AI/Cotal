@@ -9,7 +9,7 @@ import { connect } from "@nats-io/transport-node";
 import {
   DEV_OWNER, EpEnvelopeError, invokeCommand, lifecycleBlocked, mintLifecycleUid, newIdentity,
   registry, renderLifecycleBlocked, resolveService, type Connector, type ControlReply, type EpErrorCode, type RuntimeProvider,
-  isReachable,
+  isReachable, type RuntimeReference,
 } from "@cotal-ai/core";
 import {
   SMOKE_BROKER_TOKEN, awaitBrokerReady, emitSentinel, freePort, killAndAwaitExit, teardownOnSignal,
@@ -26,11 +26,16 @@ writeFileSync(join(workspaceRoot, ".cotal", "agents", "worker.md"), "---\nname: 
 let refusal: unknown;
 let reservations = 0;
 let launches = 0;
+let refuseReservation = true;
 registry.register({
   kind: "runtime", name: "refusal-code", available: () => true,
   create: () => ({
     kind: "refusal-code",
-    reserve() { reservations++; throw refusal; },
+    reserve(): RuntimeReference {
+      reservations++;
+      if (refuseReservation) throw refusal;
+      return { kind: "refusal-code", id: mintLifecycleUid() };
+    },
     async reap() { throw new Error("a refused reservation has no custody to reap"); },
     spawn() { launches++; throw new Error("a refused reservation must not launch"); },
   }),
@@ -106,6 +111,73 @@ try {
         assert.equal(reply.error?.outcome, undefined, "reservation refusal does not invent rollback proof");
       });
     }
+  }
+
+  // Exercise the actual enrollment/staged-secret cleanup path without rebuilding a hosted
+  // authority stack. This fixture switches only the mode and host callbacks on the already
+  // started open manager, then restores them before shutdown. It is not hosted-auth admission
+  // coverage. A host callback that refuses returns no material and creates no remote grant.
+  await import("@cotal-ai/auth"); // register the real provider used by enrollUserAgent
+  const hostState = manager as unknown as {
+    userMode: boolean;
+    remoteAuthority: { owner: string; authorizeAdmin(): Promise<boolean>; enrollManagedAgent(): Promise<never> } | undefined;
+  };
+  const savedMode = hostState.userMode;
+  const savedAuthority = hostState.remoteAuthority;
+  const owner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
+  let enrollments = 0;
+  const enrollmentDetails = [{ kind: "org.example.enrollment-refusal", retryable: false }];
+  try {
+    refuseReservation = false;
+    hostState.userMode = true;
+    hostState.remoteAuthority = {
+      owner,
+      authorizeAdmin: async () => true,
+      enrollManagedAgent: async () => { enrollments++; throw refusal; },
+    };
+    for (const test of [
+      { name: "permission-denied", error: new EpEnvelopeError("permission-denied", "enrollment retired", enrollmentDetails, "not-executed"), code: "permission-denied" },
+      { name: "conflict", error: new EpEnvelopeError("conflict", "enrollment held", enrollmentDetails, "not-executed"), code: "conflict" },
+      { name: "unproven envelope control", error: new EpEnvelopeError("permission-denied", "enrollment outcome unknown"), code: undefined },
+      { name: "plain Error control", error: new Error("enrollment unavailable"), code: undefined },
+    ]) {
+      refusal = test.error;
+      const expectedError = `agent auth preflight failed for "worker": ${test.error.message}`;
+      const expectedDetails = test.code === undefined ? undefined : enrollmentDetails;
+      await cell(`startAgent enrollment ${test.name} retains classified refusal`, async () => {
+        const before = enrollments;
+        const reply = await manager.startAgent({ name: "worker", agent: "refusal-code", events: false });
+        assert.equal(enrollments, before + 1, "public startAgent reaches host enrollment");
+        assert.equal(reply.ok, false);
+        assert.equal(reply.error, expectedError);
+        assert.equal(reply.code, test.code);
+        assert.deepEqual(reply.details, expectedDetails);
+      });
+      for (const command of ["spawn", "launch"] as const) {
+        await cell(`${command} enrollment ${test.name} keeps classification and outcome`, async () => {
+          const before = enrollments;
+          const args = command === "spawn" ? { name: "worker", agent: "refusal-code", events: false } : {
+            runId: "enrollment-refusal", name: "worker", spec: {
+              apiVersion: "cotal-launch/v1", space, owner, runId: "enrollment-refusal",
+              agents: [{ name: "worker", agent: "refusal-code", events: false, subscribe: [], allowSubscribe: [], allowPublish: [], hash: "enrollment" }],
+            },
+          };
+          // launch's owner-equality check must see a user principal, not the open fixture caller.
+          const userService = { ...service, caller: { ...caller, owner } };
+          const reply = (await invokeCommand(nc!, space, userService, command, args, {})).reply;
+          assert.equal(enrollments, before + 1, "described command reaches host enrollment");
+          assert.equal(reply.ok, false);
+          assert.equal(reply.error?.message, expectedError);
+          assert.equal(reply.error?.code, test.code ?? "failed-precondition");
+          assert.deepEqual(reply.error?.details, expectedDetails);
+          assert.equal(reply.error?.outcome, test.code === undefined ? undefined : "not-executed");
+        });
+      }
+    }
+  } finally {
+    hostState.userMode = savedMode;
+    hostState.remoteAuthority = savedAuthority;
+    refuseReservation = true;
   }
 
   // Non-action producers currently return uncoded refusals. Inject their ControlReply at the
