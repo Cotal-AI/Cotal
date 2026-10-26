@@ -21,6 +21,7 @@ import { authConnectReaderGrants, openConnectReader } from "./connect-reader.js"
 import { ledgerAclResolver } from "./ledger.js";
 import { openLifecycleRegistry, registryStores } from "./lifecycle-registry.js";
 import { calloutPermissions } from "./permissions.js";
+import { ADMISSION_KEY, parseServiceAdmissionRecord } from "./service-host-ops.js";
 import { loadCalloutAuth, loadIssuer, loadServiceKeys, spaceIssuer } from "./store.js";
 
 /** Run one callout replica for `space` until a signal or a lost connection ends it. */
@@ -60,6 +61,11 @@ export async function runAuthCalloutReplica(args: { space: string; server: strin
     const stores = await open(`cotal:auth-replica-store:${space}`, (id) => calloutReplicaGrants(space, id));
     const readerClient = await open(`cotal:auth-replica-reader:${space}`, (id) => authConnectReaderGrants(space, id));
     const registry = await openLifecycleRegistry(stores.nc, space);
+    // A replica cannot issue a service-endpoint connection, so in a space that admits them it would
+    // deny the service connects the broker routes to it. It refuses to start there instead.
+    const admission = await registryStores(registry).authKv.get(ADMISSION_KEY);
+    if (admission?.operation === "PUT" && parseServiceAdmissionRecord(admission.json()).state === "open")
+      throw new Error(`auth-service --callout-only: space "${space}" admits service endpoints (its auth service runs with --service-endpoints), and a callout replica cannot issue a service-endpoint connection - run no replica for this space`);
     const reader = await openConnectReader(readerClient.nc, space);
     const recordsJsm = await jetstreamManager(stores.nc);
     const hooks = calloutAuthority({

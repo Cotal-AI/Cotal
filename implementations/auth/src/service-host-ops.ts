@@ -75,7 +75,8 @@ export const S3_MAX_INTENTS_PER_INSTANCE = 64;
  *  revoking or orphaned by a grant attempt refused after its index write. Nothing is pruned. */
 export const S3_MAX_CALLER_GRANTS_PER_INSTANCE = 256;
 
-const ADMISSION_KEY = "svchost.admission";
+/** The space's service host admission row: `open` while the auth service admits service endpoints. */
+export const ADMISSION_KEY = "svchost.admission";
 const CAPACITY_KEY = "svccap.space";
 const opKey = (operationId: string) => `svcop.${operationId}`;
 const proposalKey = (proposalId: string) => `svcprop.${proposalId}`;

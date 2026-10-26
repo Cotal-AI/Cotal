@@ -10,7 +10,7 @@
  * after; a replica whose store connection is cut exits non-zero and the primary alone serves
  * every connect; a primary restarted, then killed, under load loses at most its own in-flight
  * connects while the replicas answer; the replicas alone serve every connect and deny an actor
- * revoked in the live ledger.
+ * revoked in the live ledger; a replica refuses to start in a space that admits service endpoints.
  *
  * Run: pnpm smoke:callout-replica [--rate 20] [--seconds 6]   (nats-server on PATH, or NATS_SERVER_BIN)
  */
@@ -38,10 +38,12 @@ if (process.argv[2] === "__daemon-auth-service") {
   const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-io/transport-node");
   const { encodeUser, fmtCreds } = await import("@nats-io/jwt");
   const { createUser, fromPublic, fromSeed } = await import("@nats-io/nkeys");
-  const { createSpaceAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams } = await import("@cotal-ai/core");
+  const { Kvm } = await import("@nats-io/kv");
+  const { createSpaceAuth, epAuthBucket, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams } = await import("@cotal-ai/core");
   const { authDir, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
   const { cotalAuthProvider, grantManagedActor, loadAuthServiceInfo, loadCalloutAuth, newActorToken } = await import("@cotal-ai/auth");
   const { revokeManagedActorIf } = await import("../src/ledger.js");
+  const { openAuthorityClient } = await import("../src/authority-client.js");
   const { saveIdpSession } = await import("../src/login.js");
   const { pickFreePort } = await import("./_free-port.js");
 
@@ -334,6 +336,21 @@ if (process.argv[2] === "__daemon-auth-service") {
       child.kill("SIGTERM");
       check(`${label} stops cleanly on SIGTERM`, (await exited(child)) === 0);
     }
+
+    // ---- a space that admits service endpoints runs no replica --------------------------------------------
+    // The row a full service started with --service-endpoints writes, written here by a fixture client.
+    const bucket = epAuthBucket(space);
+    const admitter = await openAuthorityClient({ server: servers, space, dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed }, label: `fixture-service-admission:${space}`, log: () => {},
+      grants: (id) => ({ publish: ["$JS.API.INFO", `$JS.API.STREAM.INFO.KV_${bucket}`, `$KV.${bucket}.svchost.admission`], subscribe: [`_INBOX_${id}.>`] }) });
+    try {
+      await (await new Kvm(admitter.nc).open(bucket)).put("svchost.admission", JSON.stringify({ v: 1, kind: "service-host-admission", state: "open", epoch: 1, restoreId: null }));
+    } finally {
+      await admitter.close();
+    }
+    const admitted = startDaemon("replica-admitted", ["--callout-only"]);
+    const admittedCode = await exited(admitted.child);
+    check("a replica refuses to start in a space that admits service endpoints, naming the primary's flag",
+      admittedCode !== 0 && admitted.out.join("").includes("runs with --service-endpoints") && !admitted.out.join("").includes("✓ auth callout replica up"), admitted.out.join("").trim().slice(0, 240));
 
     complete = true;
     emitSentinel({ passed, failed: 0 });

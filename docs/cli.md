@@ -7157,8 +7157,9 @@ endpoint the public bundle advertises, as on [`up`](#up).
 `cotal up --user-auth` starts and supervises the service for you, so you run it directly only to
 recover one by hand.
 `--callout-only` runs a callout replica beside the full service: it answers connects alongside it
-and serves no HTTP, so it refuses `--port`, the public-face flags and `--service-endpoints`. It never
-writes `auth-service.json`, and it exits non-zero when it loses a store connection or the broker.
+and serves no HTTP, so it refuses `--port`, the public-face flags and `--service-endpoints`. It
+refuses to start in a space that admits service endpoints. It never writes `auth-service.json`, and
+it exits non-zero when it loses a store connection or the broker.
 See [callout replicas](identity-and-auth.md#per-user-authentication).
 
 `deliver` runs the server-side Plane-3 delivery daemon: the durable backstop and membership/ACL

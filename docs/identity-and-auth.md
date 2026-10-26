@@ -314,8 +314,8 @@ and the same secret entries the full service's callout reads, the bearer issuer 
 it runs only on a host trusted like the full service's. A replica that loses a store connection or
 the broker stops answering and exits non-zero, and the broker sends later connects to the other
 members; restart it with the unit that runs it. It refuses the HTTP flags and `--service-endpoints`.
-A space that hosts service endpoints should not run replicas: a replica cannot issue a
-service-endpoint connection, so a service connect the broker routes to it is denied.
+A replica cannot issue a service-endpoint connection, so it refuses to start in a space that admits
+service endpoints, one whose full service runs with `--service-endpoints`.
 
 The loopback face also serves four host-only doors, all capability-gated and never on the public
 face. Two retire a lifecycle: `/interactive-lifecycle/retire` (used by `cotal actor grant/revoke`)
