@@ -229,6 +229,7 @@ function discardOnExit(name: string, handle: AgentHandle, artifacts: readonly st
   let done = false;
   // Runs only once the exit is proved.
   const finish = () => {
+    // waitForExit also calls finish directly, independently of the exit watcher.
     if (done) return;
     done = true;
     removeOwned(name, artifacts);
@@ -251,9 +252,10 @@ export function watchProvedExit(handle: AgentHandle, onExit: () => void, watchin
   } catch {
     return pollProvedExit(handle, onExit, watching, EXIT_POLL_MS);
   }
-  session.onExit(onExit);
+  const notify = () => { if (watching()) onExit(); };
+  session.onExit(notify);
   // A child that exited before the subscription fires no event for it.
-  if (handle.status() === "exited") onExit();
+  if (handle.status() === "exited") notify();
   return true;
 }
 
@@ -275,7 +277,7 @@ export function pollProvedExit(handle: AgentHandle, onExit: () => void, watching
     proof.then(
       () => {
         clearInterval(poll);
-        onExit();
+        if (watching()) onExit();
       },
       () => {
         waiting = false;

@@ -217,6 +217,8 @@ laterally; the manager only births and configures them.
   that throw when the extension isn't loaded, never a silent fallback); **byo** is the
   floor (a human's own terminal, tracked via presence); **host** (Agent SDK, true mid-turn
   interrupt) is the documented upgrade path ([roadmap](roadmap.md)).
+  Exit watchers notify only while they still own the watched handle, including when a polling
+  exit proof finishes after a restart replaced it.
 - **Served commands.** `spawn` (an action, below), `stop`, `ps`, `status`, `attach`,
   `models`, and `define-persona` are among its endpoint commands
   ([§13.5](../SPEC.md#135-verbs)) any authorized node can send, policy-gated
