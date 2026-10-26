@@ -711,14 +711,14 @@ export function cotalToolSpecs(
         "your capabilities, the tools available to you (grouped into a core loop plus the rest), who's " +
         "present, your status/attention, and how many messages are unread. Call this first to get your " +
         "bearings; it's read-only and safe to re-check anytime.",
-      run(agent) {
+      async run(agent) {
         // Reflect the SAME gated tool list the connector exposes (cotalToolSpecs already filters
         // spawn/persona by capability), so the card can't claim a tool the agent can't call.
         const visible: OrientationTool[] = cotalToolSpecs(config, source, env, offered).map((s) => ({
           name: s.name,
           title: s.title,
         }));
-        const card = renderOrientation(buildOrientation(agent, config, visible, Date.now()));
+        const card = renderOrientation(buildOrientation(agent, config, visible, Date.now(), await agent.readRoster()));
         const issue = agent.connectionIssue;
         return ok(
           agent.connected
@@ -862,13 +862,14 @@ export function cotalToolSpecs(
       title: "Cotal: who's present",
       description:
         "List the agents currently present in your Cotal space, with their role, status, and current activity.",
-      run(agent) {
+      async run(agent) {
         if (!agent.connected) return ok(`Not connected to the mesh yet (${config.servers}).`);
-        // #1229: rendering never refuses, but it must not present a partial or last-known roster
-        // as a complete one.
-        const presence = presenceLiveness(agent);
+        // #1229: rendering never refuses, but it must not present a last-known roster as a
+        // current one.
+        const read = await agent.readRoster();
+        const presence = presenceLiveness(agent, read);
         const preface = presence.live ? "" : `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: ${presence.detail}.\n\n`;
-        const roster = agent.roster();
+        const roster = read.roster;
         if (!roster.length) return ok(`${preface}No one is present in "${config.space}" yet.`);
         // Names aren't unique. Where one repeats, append the instance id so a DM can target the
         // exact peer (the id is the only authoritative address); keep unique rows clean.

@@ -394,6 +394,15 @@ show its peer live after the key expired. Readers print the string fields as tex
 such as `{"toString":null,"valueOf":null}` throws when converted, so one kept row would fail every
 reader's roster.
 
+A watch delivers every member's heartbeat to every watcher, so a space of K watching members moves
+K² deliveries per heartbeat interval. A participant that needs the roster only when it acts (an
+agent resolving a DM target, checking an `@mention`, listing who is present) SHOULD read it on
+demand instead: batched Direct Gets over `$KV.cotal_presence_<space>.>` (`next_by_subj`, paged), which
+bind no consumer. A read applies the reader rules above, and a record whose `ts` is older than the
+liveness window reads `offline`. Only a read that completed supports an absence verdict; a failed
+read MUST NOT be reported as "no such peer". Observers that act on liveness transitions
+(supervision, delivery `@mention` resolution, dashboards) watch.
+
 `PresenceCondition`:
 
 | Field | Type | Req | Notes |
@@ -6377,6 +6386,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.API.CONSUMER.INFO.<DLV>.<dlvD>`
 - `$JS.API.CONSUMER.MSG.NEXT.<DLV>.<dlvD>`
 - `$JS.ACK.<DLV>.<dlvD>.>`, the **durable backstop**: BIND-ONLY its own pre-created per-member DELIVER consumer `dlvD` (the trusted reader's re-authorized handoff, §8). The agent holds NO grant on the mixed pre-auth `INBOX` fan-out stream.
+- `$JS.API.DIRECT.GET.<KV>` (the on-demand presence read, §6)
 - `$JS.API.CONSUMER.CREATE.<KV>.>`
 - `$JS.API.CONSUMER.INFO.<KV>.>`
 - `$JS.FC.>`
