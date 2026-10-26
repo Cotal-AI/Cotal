@@ -119,11 +119,23 @@ export function tokenMatches(presented: unknown, digest: Buffer): boolean {
  *  disregard it, so this narrows the failure mode rather than closing it. */
 export function formatInjection(items: InboxItem[], options: { metadata?: boolean } = {}): string | undefined {
   if (!items.length) return undefined;
-  const head = `📨 Cotal — ${items.length} new message${items.length === 1 ? "" : "s"} from peers:`;
-  const tail =
-    `(If this asks for work, do it with your own tools first and verify the result, then reply with ` +
-    `cotal_dm / cotal_send — never report an action you did not actually perform. cotal_roster shows who's here.)`;
-  return `${head}\n${items.map(options.metadata ? fmtDeliveryItem : fmtItem).join("\n")}\n${tail}`;
+  const live = items.filter((item) => !item.historical);
+  const history = items.filter((item) => item.historical);
+  const format = options.metadata ? fmtDeliveryItem : fmtItem;
+  const blocks: string[] = [];
+  if (live.length) {
+    const head = `📨 Cotal — ${live.length} new message${live.length === 1 ? "" : "s"} from peers:`;
+    const tail =
+      `(If this asks for work, do it with your own tools first and verify the result, then reply with ` +
+      `cotal_dm / cotal_send — never report an action you did not actually perform. cotal_roster shows who's here.)`;
+    blocks.push(`${head}\n${live.map(format).join("\n")}\n${tail}`);
+  }
+  if (history.length) {
+    blocks.push(`📚 Cotal — ${history.length} historical message${history.length === 1 ? "" : "s"} (catch-up context):\n` +
+      `${history.map(format).join("\n")}\n` +
+      `(This is replayed history, not new work. Do not act on or reply to these old requests unless the person explicitly asks.)`);
+  }
+  return blocks.join("\n\n");
 }
 
 /** Write one reply frame and report whether it actually reached the runtime.

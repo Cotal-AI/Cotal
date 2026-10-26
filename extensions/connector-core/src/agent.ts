@@ -1140,7 +1140,7 @@ export class MeshAgent extends EventEmitter {
       }
       const remembered = item.id === "" ? undefined : this.evictedClassifications.get(item.id); // #624: an empty id never carries a remembered classification
       if (remembered) this.evictedClassifications.delete(item.id);
-      const snapshottedPullOnly = !item.mentionsMe && (remembered?.pullOnly ?? cm === "quiet");
+      const snapshottedPullOnly = item.historical || (!item.mentionsMe && (remembered?.pullOnly ?? cm === "quiet"));
       if (cm === "quiet" || snapshottedPullOnly) this.excludeFromFocus(item);
       // Current normal+focus remains the stronger hard gate unless this exact id was previously
       // received pull-only. classificationUnsafe must not turn focus-dropped traffic into a buffer.
@@ -1153,18 +1153,16 @@ export class MeshAgent extends EventEmitter {
         if (item.mentionsMe) this.emit("mention-wake", item);
         return;
       }
-      // Historical channel ambient is pull-only (#775): a join backfill is context, not instruction.
-      // Delivered as automatic it becomes a storm of user turns for host-mode drive loops — measured
-      // on a real mesh as 119 injected digests / 0 assistant turns and an emergency compaction before
-      // the seat's first real order could run. It stays recallable (cotal_inbox, recall), and a
-      // historical @mention stays automatic: directed catch-up is the reader's call, not noise.
+      // Every historical channel message is pull-only, including mentions. Joining a channel must
+      // not revive an old request as a fresh turn. This is decided before focus handling too, so
+      // history stays recallable without emitting mention-wake.
       // A reply on a channel is pull-only too when the host answers every turn on the channel
       // (config.channelRepliesPullOnly): that answer replies to the message that started the turn,
       // so a turn on a peer's reply is a turn on its automatic output, and two such seats on one
       // channel would answer each other without end (#2395).
       const automaticReply = this.config.channelRepliesPullOnly === true && !!item.replyTo;
       const pullOnly =
-        snapshottedPullOnly || (!item.mentionsMe && (item.historical || automaticReply || this.classificationUnsafe));
+        snapshottedPullOnly || (!item.mentionsMe && (automaticReply || this.classificationUnsafe));
       if (pullOnly) this.excludeFromFocus(item);
       this.buffer(item, delivery, pullOnly, idless);
       return;
@@ -1188,9 +1186,9 @@ export class MeshAgent extends EventEmitter {
       // handled. An evicted directed item is never acked (below).
       let excess = this.inbox.length - MAX_INBOX;
       while (excess-- > 0) {
-        // Eviction order, weakest claim first. The tiers below `pullOnly` exist because `pullOnly`
-        // is `!mentionsMe && historical`, and `mentionsMe` derives from the payload `mentions` field
-        // — forgeable by the sender. A peer that stamps every flooded message with the victim's name
+        // Eviction order, weakest claim first. The tiers below `pullOnly` also protect against live
+        // mention floods: `mentionsMe` derives from the payload `mentions` field, forgeable by the
+        // sender. A peer that stamps every flooded message with the victim's name
         // makes none of its traffic pull-only, so `findIndex` returned -1, the old code fell through
         // to index 0, and index 0 is the OLDEST entry: a directed message waiting to be handled. It
         // was spliced out and acked unhandled, which is unrecoverable (#791). Ambient channel chatter
@@ -1732,17 +1730,16 @@ export class MeshAgent extends EventEmitter {
     return pending ? (pending.pullOnly ? "pull-only" : "automatic") : undefined;
   }
 
-  /** Count of buffered messages that count as *directed* for a wake decision: real dm/anycast
-   *  (authenticated kind) or a channel @-mention. The Stop→idle flush uses this in `dnd`/`focus`
-   *  so held *ambient* alone never wakes a turn (which would empty-wake busy-loop). In `focus`
-   *  the buffer is directed-only, so this equals {@link inboxCount}. */
+  /** Count of automatic messages that count as directed for a wake decision: real dm/anycast
+   *  (authenticated kind) or a live channel @mention. Pull-only history never counts, including
+   *  mentions retained while focused. The Stop→idle flush uses this in `dnd`/`focus`. */
   directedPendingCount(): number {
-    return this.inbox.filter((p) => p.item.kind !== "channel" || p.item.mentionsMe).length;
+    return this.inbox.filter((p) => !p.pullOnly && (p.item.kind !== "channel" || (!p.item.historical && p.item.mentionsMe))).length;
   }
 
   /** Buffered items that should WAKE a Stop→idle flush — the mode-and-channel-aware predicate the
    *  connectors use instead of branching on attention themselves:
-   *  - directed (dm/anycast) or an @mention → always (a quiet @mention still wakes; muted never buffers);
+   *  - directed (dm/anycast) or a live @mention → always (a quiet live @mention wakes; muted never buffers);
    *  - NORMAL automatic ambient → only under global `open` (today's behavior);
    *  - receive-time pull-only ambient → never.
    *  Subsumes {@link directedPendingCount}: in `dnd`/`focus` (no override) the open term is false, so it
@@ -1761,7 +1758,7 @@ export class MeshAgent extends EventEmitter {
   inboxWake(skip?: (item: InboxItem) => boolean): number {
     return this.inbox.filter((p) => {
       const it = p.item;
-      if (p.pullOnly || skip?.(it)) return false;
+      if (p.pullOnly || (it.kind === "channel" && it.historical) || skip?.(it)) return false;
       if (it.kind !== "channel" || it.mentionsMe) return true;
       return this._attention === "open";
     }).length;
