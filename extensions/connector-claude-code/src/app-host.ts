@@ -204,6 +204,17 @@ export function createAppHost(o: AppHostOptions): AppHost {
     }
     const args = ["provision", "--require-approval", "--name", name, ...(space === undefined ? [] : ["--space", space]), ...(binding ? ["--session", binding.session, "--events"] : []),
       ...(selection ? ["--selection", JSON.stringify(selection)] : [])];
+    if (watched && JSON.stringify(watched.args) !== JSON.stringify(args)) {
+      if (approvalId !== undefined)
+        throw new Error("approval_id resumes only the unchanged request; omit it to replace the pending name or permissions");
+      stopWatch(context!);
+      // An approved replay may have issued an identity without the conversation claiming it yet.
+      // Retire that identity before requesting anything else, never ask the person to connect it.
+      if (watched.issued) {
+        try { await retire(watched.issued); }
+        catch (error) { pending.set(context!, watched.issued); throw error; }
+      }
+    }
     const reply = await plumbing(args);
     if (!reply.ok) {
       if (reply.pending) {
