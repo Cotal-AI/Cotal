@@ -23,7 +23,7 @@
     {
       "name": "help leaves its usage to the report renderer's wrap",
       "file": "implementations/cli/src/help.ts",
-      "find": "usageLines(usageTokens(usage), width - 2)",
+      "find": "usage.split(\"\\n\").flatMap((form) => usageLines(usageTokens(form), width - 2))",
       "replace": "[usage]",
       "expectRed": "on 60 columns its usage wraps only between options",
       "cell": "on 60 columns its usage wraps only between options",
