@@ -7207,7 +7207,9 @@ exchanges it and prints the bearer without consulting or writing the operator-gl
 a newer store generation cannot refuse a live seat's refresh. For the same reason the seat's command
 names the CLI entry file the `cotal` bin link resolved to at spawn, not the link: an install that
 later replaces the link, such as the get.cotal.ai launcher over an `npm i -g` link, leaves running
-seats able to refresh. `--manager-call` asks for the
+seats able to refresh. The command runs before the rest of the CLI loads and reads none of its
+preferences, extensions or config folder, so a refresh does not pay the CLI's start-up time. A command line it
+cannot parse goes on to the full CLI, which refuses it with the command's help. `--manager-call` asks for the
 instance-bound `manager-caller` view; `--manager-instance <id>` selects an explicit live candidate,
 and an owner with more than one live candidate is refused with their ids until it names one.
 That mode still prints only the raw token and does not update `--health-file`. A spawn runs it once as the agent auth

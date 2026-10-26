@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { hardenPrivate, saveAgentFile } from "@cotal-ai/core";
 import { MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, canonicalLocalProcessPath, claimServicePid, identityPinPath } from "@cotal-ai/workspace";
 import { recordManagerPid } from "../../implementations/manager/src/commands.js";
-import { writeAgentAuthHealth } from "../../implementations/auth/src/commands.js";
+import { writeAgentAuthHealth } from "../../implementations/auth/src/agent-bearer.js";
 import { markOnboarded } from "../../implementations/cli/src/lib/onboard.js";
 import { openSetupLog } from "../../implementations/cli/src/lib/setup-log.js";
 import { reconcileDefaultAgent } from "../../implementations/cli/src/lib/default-persona.js";

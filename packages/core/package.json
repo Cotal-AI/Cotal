@@ -48,6 +48,18 @@
       "types": "./dist/peer-label.d.ts",
       "import": "./dist/peer-label.js"
     },
+    "./command": {
+      "types": "./dist/command.d.ts",
+      "import": "./dist/command.js"
+    },
+    "./loopback": {
+      "types": "./dist/loopback.d.ts",
+      "import": "./dist/loopback.js"
+    },
+    "./subjects": {
+      "types": "./dist/subjects.d.ts",
+      "import": "./dist/subjects.js"
+    },
     "./browser-control": {
       "types": "./dist/browser-control.d.ts",
       "import": "./dist/browser-control.js"
