@@ -13,6 +13,7 @@ import { materializeExtension } from "../../ext-loader.js";
 import type { PreparedManifest } from "./preflight.js";
 import type { PreparedAgent } from "./prepare.js";
 import type { ResolvedChannel } from "./model.js";
+import { seedBeforeLaunch } from "../../seed/launch.js";
 
 /** A path-safe run id naming the transient `.cotal/run/<runId>/` dir and tying to the ledger. */
 export function genRunId(): string {
@@ -125,6 +126,8 @@ export function manifestToChannels(prepared: PreparedManifest): ChannelRegistryF
  *  PATH. Fail before any mutation (no fallback). Returns an error sentence, or "". */
 export async function preflightConnectors(prepared: PreparedManifest): Promise<string> {
   const types = [...new Set(prepared.agents.map((a) => a.agentType))];
+  // The connectors it reads are the ones `up` seeds, so an `up` that deferred its seed runs it here.
+  if (types.length) await seedBeforeLaunch();
   const problems: string[] = [];
   for (const type of types) {
     let connector: Connector;

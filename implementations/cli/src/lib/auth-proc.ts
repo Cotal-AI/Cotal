@@ -17,6 +17,7 @@ import { stopLocalProcess } from "./local-process-stop.js";
 
 import { selfArgv } from "./self-exec.js";
 import { cotalPath, cotalRoot } from "./paths.js";
+import { seedBeforeLaunch } from "../seed/launch.js";
 
 const PID_PATH = (space: string) => cotalPath(`auth-service.${spaceKey(space)}.pid`);
 const LOG_PATH = (space: string) => cotalPath(`auth-service.${spaceKey(space)}.log`);
@@ -218,7 +219,10 @@ export async function ensureAuthService(opts: {
   extraArgs?: string[];
 }): Promise<Record<string, unknown>> {
   let launched: number | undefined;
-  if (!authServiceUp(opts.space)) launched = startAuthServiceDetached(opts.space, opts.server, opts.prepared.service.command, opts.extraArgs);
+  if (!authServiceUp(opts.space)) {
+    await seedBeforeLaunch();
+    launched = startAuthServiceDetached(opts.space, opts.server, opts.prepared.service.command, opts.extraArgs);
+  }
   const pid = authServiceWaitPid(opts.space, launched);
   try {
     return await opts.prepared.service.ready({ dir: opts.stateDir, pid });

@@ -17,6 +17,7 @@ import { cotalRoot } from "./paths.js";
 import { clearManagerArtifacts, ensureManager, managerHasDeliveryMarker, managerRecordState, stopManager } from "./manager-proc.js";
 import { stopLocalProcess } from "./local-process-stop.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "./delivery-responder.js";
+import { seedBeforeLaunch } from "../seed/launch.js";
 
 /** The space this folder's commands mean, and the per-space record paths over it. The daemon is
  *  minted a space-scoped cred and binds that space's durables, so a root-scoped record gave one root
@@ -305,6 +306,7 @@ export async function ensureDelivery(
     // this write lands a SECOND live delivery cred beside the one the flat file still holds.
     await credsStore().put(credsKey, creds);
     logStart = statSync(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)), { throwIfNoEntry: false })?.size ?? 0;
+    await seedBeforeLaunch();
     launched = startDeliveryDetached({ ...o, space, server });
   }
   // ALWAYS wait for the daemon to be READY (lease flipped ready AFTER it bound ctl.delivery) before

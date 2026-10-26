@@ -7,6 +7,7 @@ import {
   SEEDED_EXTENSIONS,
   connectorMetadataStale,
   extensionPackageDir,
+  extensionsDir,
   installedExtensionPackage,
   loadExtensionsManifest,
   quarantineExtensionsManifest,
@@ -15,7 +16,7 @@ import {
 import { c } from "../ui.js";
 import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
-import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedGeneration, stampPath, type Semver } from "./paths.js";
+import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, stampPath, type Semver } from "./paths.js";
 import {
   acquireReconcileLock,
   clearChildMarker,
@@ -264,29 +265,8 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   //
   // Every mode refuses a backward migration, including force/reset. A shadowed older executable
   // must not replace a newer machine-wide generation. Check before any maintenance quarantine.
-  let storeGeneration: string | undefined;
-  try {
-    storeGeneration = readStamp()?.generation;
-  } catch {
-    storeGeneration = undefined; // corrupt JSON: the maintenance path below quarantines it
-  }
-  if (
-    storeGeneration !== undefined &&
-    isValidSemver(storeGeneration) &&
-    isStrictlyNewer(storeGeneration, generation)
-  ) {
-    const newerExecutable = verifiedCotalExecutables().find(
-      (candidate) => compareSemver(candidate.version, storeGeneration) >= 0,
-    );
-    const recovery = newerExecutable
-      ? `run the cotal-ai ${newerExecutable.version} executable at ${JSON.stringify(newerExecutable.path)}`
-      : "run the newer cotal";
-    const stampProvenance = describeStampProvenance(readStamp());
-    throw new Error(
-      `this cotal ${generation} is older than the seed store's generation ${storeGeneration}${stampProvenance} - ` +
-        `${recovery}; this executable will not downgrade the shared connector store`,
-    );
-  }
+  const downgrade = seedDowngradeRefusal(generation);
+  if (downgrade) throw downgrade;
 
   // Maintenance modes must survive a corrupt manifest / corrupt seed state: quarantine the unreadable
   // file(s) aside so the reads below (and the commit) can't wedge on them. `manifestRebuilt` ⇒ reconcile
@@ -398,6 +378,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   writeAuthority(everSeeded);
   ensureWitness(generation);
   const committedStamp = writeStamp(generation, entryScript());
+  if (stampGen !== generation) moved = { ...(stampGen === undefined ? {} : { from: stampGen }), to: generation };
   if (migrationFrom) announceSeedMigration(migrationFrom, committedStamp);
   clearCursor();
   clearRecovery();
@@ -406,6 +387,64 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
     loadExtensionsManifest().extensions.map((e) => e.spec),
   );
   return { noop: false, seeded, refreshed, removedKept };
+}
+
+/** What refuses an `up` at the boot gate, where it defers its seed to its first launch, in the order
+ *  {@link reconcile} would refuse: a writer that may not write a store that is not current, then an
+ *  executable older than the store. Neither check writes anything. */
+export function deferredSeedRefusal(): Error | undefined {
+  const generation = seedGeneration();
+  let current = false;
+  try {
+    current = !readCursor() && !recoveryPending() && !!readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && readStamp()?.generation === generation;
+  } catch {
+    current = false; // unreadable seed state: the deferred reconcile reports it
+  }
+  if (current) return undefined;
+  try {
+    assertReleasedSeedWriter(generation, "reconcile");
+  } catch (error) {
+    return error as Error;
+  }
+  return seedDowngradeRefusal(generation);
+}
+
+/** The refusal an executable older than the seed store's generation meets before it writes anything,
+ *  or undefined when the store is not newer than `generation`. It names the store, because restoring
+ *  that store is what lets this executable run, and gives the versions as context. */
+export function seedDowngradeRefusal(generation: string = seedGeneration()): Error | undefined {
+  let storeGeneration: string | undefined;
+  try {
+    storeGeneration = readStamp()?.generation;
+  } catch {
+    storeGeneration = undefined; // corrupt JSON: the maintenance path quarantines it
+  }
+  if (
+    storeGeneration !== undefined &&
+    isValidSemver(storeGeneration) &&
+    isStrictlyNewer(storeGeneration, generation)
+  ) {
+    const newerExecutable = verifiedCotalExecutables().find(
+      (candidate) => compareSemver(candidate.version, storeGeneration) >= 0,
+    );
+    const newer = newerExecutable
+      ? `; the cotal-ai ${newerExecutable.version} executable at ${JSON.stringify(newerExecutable.path)} uses the store as it is`
+      : "";
+    const stampProvenance = describeStampProvenance(readStamp());
+    return new Error(
+      `the connector seed store ${seedDir()} is at generation ${storeGeneration}${stampProvenance}, and this cotal ${generation} does not move it back to an older one - ` +
+        `to run this cotal, restore that store and the extensions folder ${extensionsDir()} from a backup taken before the store moved to ${storeGeneration}${newer}`,
+    );
+  }
+  return undefined;
+}
+
+/** The seed store generation this process moved, from the one its stamp named (absent on a first
+ *  seed) to its own; undefined while it moved none. */
+let moved: { readonly from?: string; readonly to: string } | undefined;
+
+export function seedStoreMoved(): { readonly from?: string; readonly to: string } | undefined {
+  return moved;
 }
 
 function describeStampProvenance(stamp: Stamp | undefined): string {
