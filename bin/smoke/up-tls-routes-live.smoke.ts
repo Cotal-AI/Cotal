@@ -413,6 +413,41 @@ async function main(): Promise<void> {
     cotal(["down"], home, cwd);
   });
 
+  // ── ROUTE B2: a RECORDED TLS policy with a `nats://` --server. The flag path's half of Route B. ─
+  //    `--tls-cert` with a `nats://` address was refused, and so was a manifest naming one, but a
+  //    root whose RECORDED policy serves TLS reached neither check: it started a TLS broker, wrote
+  //    the `nats://` address into the registry that every later client dials, and printed
+  //    `TLS: serving <subject> at nats://…` over it.
+  await route("recorded-tls nats:// address", async () => {
+    const { home, cwd } = sandbox();
+    const port = await freePort();
+    rememberSandbox(home, port, cwd);
+    const first = cotal(["up", "--detach", "--open", "--server", `tls://127.0.0.1:${port}`,
+      "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
+    assert.equal(first.status, 0, `the recording start must succeed:\n${first.out}`);
+    assert.equal((await serverInfo(port))?.tls_required, true, "the recording start must require TLS");
+    cotal(["down"], home, cwd);
+
+    const policy = readFileSync(join(cwd, ".cotal", "broker-policy.json"), "utf8");
+    const plain = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`], home, cwd);
+    assert.notEqual(plain.status, 0, `a nats:// address against a TLS-recorded root must refuse:\n${plain.out}`);
+    assert.match(plain.out, /must be a tls:\/\/ address/, `the refusal must say the address must be tls://:\n${plain.out}`);
+    assert.ok(plain.out.includes(join(cwd, ".cotal", "broker-policy.json")),
+      `the refusal must name the recorded policy that serves TLS:\n${plain.out}`);
+    assert.ok(plain.out.includes(`--server tls://127.0.0.1:${port}`), `the refusal must name the tls:// form:\n${plain.out}`);
+    assert.ok(!/TLS: serving/.test(plain.out), `a refused start must not claim it is serving TLS:\n${plain.out}`);
+    assert.equal(await serverInfo(port), undefined, "the refused start must leave no listener");
+    assert.equal(readFileSync(join(cwd, ".cotal", "broker-policy.json"), "utf8"), policy, "the refused start must leave the recorded policy as it was");
+
+    // CONTROL: the form the refusal names starts the same root again, over TLS.
+    const again = cotal(["up", "--detach", "--open", "--server", `tls://127.0.0.1:${port}`], home, cwd);
+    assert.equal(again.status, 0, `the tls:// form must still restart it:\n${again.out}`);
+    assert.equal((await serverInfo(port))?.tls_required, true, "the restart must require TLS");
+    assertCleartextRefused(await cleartextReply(port), "recorded-tls/nats-address");
+    console.log("  ✓ recorded-tls: a nats:// --server REFUSED before launch naming the policy and the tls:// form; the tls:// form restarts it");
+    cotal(["down"], home, cwd);
+  });
+
   // ── ROUTE C: the already-running refresh. Printed `✓ already running` over an unchanged listener. ─
   await route("refresh", async () => {
     const { home, cwd } = sandbox();
@@ -1109,11 +1144,11 @@ async function main(): Promise<void> {
     if (!o.ok) console.log((o.err ?? "").split("\n").map((l) => `        ${l}`).join("\n"));
   }
   const failed = outcomes.filter((o) => !o.ok);
-  if (outcomes.length !== 19)
-    throw new Error(`HARNESS: expected 19 routes, recorded ${outcomes.length} — a route did not run at all`);
+  if (outcomes.length !== 20)
+    throw new Error(`HARNESS: expected 20 routes, recorded ${outcomes.length} — a route did not run at all`);
   if (failed.length > 0)
-    throw new Error(`${failed.length}/19 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
-  console.log("✓ up-tls-routes: 19/19 routes encrypt or refuse; admission proved on each, one variable apart");
+    throw new Error(`${failed.length}/20 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
+  console.log("✓ up-tls-routes: 20/20 routes encrypt or refuse; admission proved on each, one variable apart");
 }
 
 try {

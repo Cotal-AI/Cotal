@@ -94,6 +94,7 @@ import {
   assertUserAuthInfo,
   authDir,
   brokerAddressForDisplay,
+  brokerPolicyPath,
   getSoleSpaceAuth,
   soleSpaceOf,
   getSpaceAuth,
@@ -1416,6 +1417,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   });
   // The manifest route checks its own effective address, which `--server` only overrides.
   if (!values.file && values.server !== undefined) assertTlsIntentServed(values.server, transport, "--server");
+  // AND THE OTHER DIRECTION. `assertTlsIntentServed` refuses a `tls://` address this start would
+  // serve in cleartext; this refuses a `nats://` one it would serve over TLS. `up -f` has carried
+  // the same check since it gained one, and so has a `--server nats://` passed with `--tls-cert`
+  // (see `validateUpArguments`), but a root whose RECORDED policy serves TLS reached neither: it
+  // started a TLS broker, registered it under the `nats://` address nothing can dial, and printed
+  // `TLS: serving <subject> at nats://…` over it.
+  if (!values.file && values.server !== undefined) assertTlsAddressServed(values.server, transport, meshRoot);
 
   // CONTROLLER-OWNED STACK. A root whose stack the service controller owns, or a fresh prepared
   // static-auth, open or user-auth root with nothing legacy retained, starts as exact controller members instead
@@ -1584,12 +1592,23 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const keptStopped = registration !== undefined && !resumeAttempt && values.server === undefined && keepsRegistration(registration) && !(await isReachable(registration.server));
     const registeredServer = keptStopped ? undefined : registration?.server;
     const implicit = !resumeAttempt && registeredServer === undefined && values.server === undefined && values.host === undefined && !values["user-auth"];
-    const retained = implicit ? retainedLegacyBroker(cotalRoot()) : undefined;
+    // THE ADDRESS AND THE MODE ARE TWO DECISIONS, and only the address belongs to `--server` and
+    // `--host`. Reading both off `implicit` meant that naming the address dropped the mode: an open
+    // root restarted at the address it already ran on came back in static auth, with a delivery
+    // daemon and no line saying so, and the broker that had served its agents unauthenticated now
+    // refused them. The address still follows the flags; the recorded mode is inherited whenever
+    // this start names no mode of its own.
+    const recorded = resumeAttempt ? undefined : retainedLegacyBroker(cotalRoot());
+    // A flag still wins: `--open` over a root that last ran with auth starts it open, as it always
+    // has, and `--user-auth` asks for the mode the user-auth state decides. Only silence inherits.
+    if (recorded?.open && values["user-auth"] !== true) values.open = true;
+    const retained = implicit ? recorded : undefined;
     // An address up chooses for a TLS broker names TLS, as an explicit one must.
     const serving = (url: string) => transport.kind === "tls-required" ? tlsAddress(url) : url;
     if (retained) {
-      if (retained.open) values.open = true;
       console.log(c.dim(`starting this folder's stopped stack as it last ran: ${serving(retained.server)}${values.open ? ", open" : ""}`));
+    } else if (recorded?.open) {
+      console.log(c.dim("starting this folder's stopped stack in the mode it last ran: open"));
     } else if (implicit) {
       const cleaned = cleanedManifestStart(cotalRoot(), recordedSpace, values.open === true);
       if (cleaned) throw new CommandFailure("refused", "CONFLICT", `this folder was deployed from a manifest as "${cleaned.space}" at ${cleaned.server} in ${cleaned.mode === "open" ? "open" : "static auth"} mode, and its identity and broker configuration were removed, so a bare up would not start it as it was deployed; nothing was started`, { target: { root: cotalRoot(), space: cleaned.space, server: cleaned.server }, remedy: `deploy it again with ${cleaned.command}` });
@@ -4908,6 +4927,18 @@ function assertTlsIntentServed(server: string, transport: BrokerTransport, sourc
   const tls = server.split(",").some((url) => url.trim().toLowerCase().startsWith("tls://"));
   if (tls && transport.kind !== "tls-required")
     throw new CommandFailure("refused", "USAGE_INVALID", `${source} names a tls:// address, but no TLS certificate and key are configured, so the broker would serve plaintext; nothing was started`, { target: { server: brokerAddressForDisplay(server) ?? "not displayable" }, remedy: "serve TLS with --tls-cert <cert.pem> --tls-key <key.pem>, or use a nats:// address" });
+}
+
+/** A broker that serves TLS is dialed `tls://`, so an address naming `nats://` would be recorded,
+ *  registered and handed to every later client as plaintext. Refuse it before anything starts,
+ *  naming the recorded policy that serves TLS and the address to pass instead. */
+function assertTlsAddressServed(server: string, transport: BrokerTransport, root: string): void {
+  if (transport.kind !== "tls-required") return;
+  if (!server.split(",").some((url) => /^nats:\/\//i.test(url.trim()))) return;
+  throw new CommandFailure("refused", "USAGE_INVALID", `this root serves the broker over TLS (${brokerPolicyPath(root)}), so --server must be a tls:// address; nothing was started or written`, {
+    target: { root, server: brokerAddressForDisplay(server) ?? "not displayable" },
+    remedy: `pass --server ${tlsAddress(server)}`,
+  });
 }
 
 /** Persist a transport, and the auth callout timeout the broker configuration rendered, after its
