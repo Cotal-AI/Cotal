@@ -2700,6 +2700,13 @@ export class CotalEndpoint extends EventEmitter {
     return m.json<ControlReply>();
   }
 
+  /** The caller this connection's endpoint requests ride as: the legacy triple, or the issued
+   *  caller with its discovered generation (SPEC 13.15). It names the reply rail this connection's
+   *  credential reads, which is where a manager's turn notice for it lands (SPEC 14.3). */
+  serviceRailCaller(): EpCaller {
+    return this.serviceCaller();
+  }
+
   /** This endpoint's v0.4 caller triple (§13.2) — the identity its minted ep-rail rows pin. The
    *  owner/actor principal is mode-correct by construction (static: DEV_OWNER + the connection
    *  identity; user mode: the bearer's callout-derived pair), and the lifecycle UID is the

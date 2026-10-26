@@ -613,10 +613,13 @@ const INPUT_OUTPUT_SCHEMA = {
 } as const;
 
 /** `turn-pending`: the SEAT's own pull of the turns accepted against it and not yet terminal,
- *  oldest first. Self-targeted, so the caller triple IS the query; there is no other input. */
+ *  oldest first. Self-targeted, so the caller triple IS the query; there is no other input.
+ *  `notices` says this manager publishes a turn notice whenever the answer changes (SPEC 14.3),
+ *  so the seat pulls on notices instead of on a timer. */
 const TURN_PENDING_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["turns"],
   properties: {
+    notices: { const: true },
     turns: {
       type: "array",
       items: {

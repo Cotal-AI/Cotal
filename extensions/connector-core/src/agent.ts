@@ -24,6 +24,7 @@ import {
   controlReplyFromThrown,
   runAgentBearer,
   type EpAttributedReply,
+  type EpCaller,
   type EpVerbTarget,
   type ControlReply,
   type Delivery,
@@ -39,9 +40,10 @@ import {
   type ChannelMode,
   type CotalMessage,
   type GoalResultFact,
+  turnNoticeFilter,
 } from "@cotal-ai/core";
 import type { AgentConfig } from "./config.js";
-import { TURN_POLL_MS } from "./turn-poll.js";
+import { TURN_PULL_RETRY_MS } from "./turn-poll.js";
 import { attributionSafe } from "./framing.js";
 import { invokeUserManager } from "./manager-call.js";
 
@@ -54,6 +56,9 @@ export type { AttentionMode, ChannelMode };
  *  delivery margin. This floor still outlives the manager's generic 30s default and protects
  *  older responders whose acceptance predates that field. */
 export const SPAWN_TIMEOUT_MS = 40_000;
+/** A manager-call bearer is reused only while more than this remains before its `exp`, so a
+ *  control connection opened with it outlives the longest call it carries ({@link SPAWN_TIMEOUT_MS}). */
+const MANAGER_BEARER_MARGIN_MS = 120_000;
 
 /** Grace for a mesh op issued while the link is still coming up. `start()` deliberately returns
  *  immediately so the connector's MCP surface boots while the broker is absent — which means a
@@ -374,6 +379,28 @@ function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unkno
     + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json>'`;
 }
 
+/** A bearer JWT's `exp` in milliseconds, or undefined when it names none. */
+function bearerExpiryMs(token: string): number | undefined {
+  try {
+    const exp = (JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as { exp?: unknown }).exp;
+    return typeof exp === "number" && Number.isFinite(exp) ? exp * 1000 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** `p`, or the signal's reason as soon as it aborts. A shared exchange keeps running for the
+ *  other callers when one of them gives up. */
+function abortable<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return p;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then((v) => { signal.removeEventListener("abort", onAbort); resolve(v); }, (e) => { signal.removeEventListener("abort", onAbort); reject(e); });
+  });
+}
+
 /**
  * A thin, mesh-native agent: a {@link CotalEndpoint} plus a buffered inbox and
  * name-based peer resolution. This is the shared core behind the MCP server
@@ -464,8 +491,8 @@ export class MeshAgent extends EventEmitter {
   /** The turn relay's seat-side intake: every pulled-and-unyielded run turn, by goal id. Fed by
    *  {@link pollTurns}; surfaced into host context by {@link surfacePendingTurns}; drained by
    *  {@link yieldTurn} (explicit) and the working→idle boundary in {@link setStatus} (automatic
-   *  `done`). The poll is also the reconciler: a turn settled elsewhere (deadline, another yield
-   *  path) vanishes from `turn-pending` and is dropped here on the next pull. */
+   *  `done`). The pull is also the reconciler: a turn settled elsewhere (deadline, another yield
+   *  path) vanishes from `turn-pending`, and the manager's notice for it brings the pull that drops it. */
   private activeTurns = new Map<string, ActiveTurn>();
   /** Deadlines of turns the run settled before this seat yielded them, by goal id, so a late yield
    *  is refused with {@link settledTurnError}. Bounded by {@link MAX_SETTLED_TURNS}. */
@@ -474,10 +501,19 @@ export class MeshAgent extends EventEmitter {
    *  snapshotted a goal before its answer; taking it back would surface the settled turn again, and
    *  the next pull would record it as the run's settlement. */
   private yieldedSincePull = new Set<string>();
-  private turnPollTimer?: ReturnType<typeof setInterval>;
+  /** Set once the launching manager's turn notices are subscribed; the endpoint re-binds the
+   *  subscription on every rebuilt connection. */
+  private turnNoticeArmed = false;
+  /** The single retry after a pull that failed for a reason that can pass. Unset while pulls succeed. */
+  private turnRetryTimer?: ReturnType<typeof setTimeout>;
+  /** The timed pull for a launching manager whose answers say it sends no turn notices: a manager
+   *  from before them. Unset while the manager says it sends them. */
+  private legacyTurnPoll?: ReturnType<typeof setInterval>;
   /** The last pull failure this seat reported, so one that keeps failing is said once. */
   private pullTrouble?: string;
   private turnPollBusy = false;
+  /** A notice or reconnect arrived while a pull was in flight, so one more pull follows it. */
+  private turnPullAgain = false;
   private _contextId: string | undefined;
   /** The per-call correlation a {@link withCorrelation} scope binds for the sends inside it. */
   private readonly correlation = new AsyncLocalStorage<Correlation>();
@@ -599,6 +635,9 @@ export class MeshAgent extends EventEmitter {
       this._transportConnected = e.connected;
       if (!e.connected) this.transportDrops++;
       this.emit("transport", e);
+      // A notice lost while the transport was down can only matter to a turn this seat holds: the
+      // manager repeats the notice for a turn the seat has not pulled yet. So only a holder pulls.
+      if (e.connected && this.turnNoticeArmed && this.activeTurns.size > 0) this.requestTurnPull();
     });
     // The endpoint's (re)binds are the single source of truth for connectedness: this fires on
     // initial start, manual reconnect, AND the background self-heal — so a recovery the endpoint
@@ -613,6 +652,8 @@ export class MeshAgent extends EventEmitter {
         this.endpointNoticeLog.clear();
       }
       this.emit("connection", e);
+      // A rebuilt connection re-bound the notice subscription first; a holder pulls for the gap.
+      if (e.connected && this.turnNoticeArmed && this.activeTurns.size > 0) this.requestTurnPull();
     });
   }
 
@@ -891,7 +932,7 @@ export class MeshAgent extends EventEmitter {
           `joined ${this.config.subscribe.length} boot channel(s): ${historicalBuffered} historical message(s) buffered pull-only` +
             (this.config.backfillFloor !== undefined ? ` (backfill floor ${this.config.backfillFloor})` : ""),
         );
-        this.ensureTurnPoll();
+        this.armTurnRelay();
       } catch (e) {
         const error = e instanceof Error ? e : new Error(String(e));
         // stop() can win while the initial endpoint start is still pending. A rejection arriving
@@ -934,9 +975,14 @@ export class MeshAgent extends EventEmitter {
     this._stopping = true;
     this.emit("stopping");
     for (const key of [...this.renewals.keys()]) this.stopRenewal(key);
-    if (this.turnPollTimer !== undefined) {
-      clearInterval(this.turnPollTimer);
-      this.turnPollTimer = undefined;
+    this.managerBearers.clear();
+    if (this.turnRetryTimer !== undefined) {
+      clearTimeout(this.turnRetryTimer);
+      this.turnRetryTimer = undefined;
+    }
+    if (this.legacyTurnPoll !== undefined) {
+      clearInterval(this.legacyTurnPoll);
+      this.legacyTurnPoll = undefined;
     }
     // stop() is a local terminal fact. Do not wait for an endpoint event that intentionally ignores
     // its own stopped close, or leave a cleanly stopped session reporting either state as live.
@@ -2213,6 +2259,27 @@ export class MeshAgent extends EventEmitter {
     return { ok: true, model };
   }
 
+  /** Manager-call bearers this session holds, by the exact bearer argv (so by selected manager;
+   *  the space, owner, actor and lifecycle are this session's own). One exchange serves every call
+   *  until {@link MANAGER_BEARER_MARGIN_MS} before the bearer expires, and concurrent calls share it.
+   *  Each call still presents the bearer to the broker and checks its binding, so this keeps no
+   *  authorization decision; any failed call drops the entry, so the next one exchanges afresh. */
+  private managerBearers = new Map<string, { flight: Promise<string>; refreshAt?: number }>();
+
+  private managerCallBearer(argv: string[], signal?: AbortSignal): Promise<string> {
+    const key = JSON.stringify(argv);
+    const held = this.managerBearers.get(key);
+    if (held && (held.refreshAt === undefined || Date.now() < held.refreshAt)) return abortable(held.flight, signal);
+    const entry: { flight: Promise<string>; refreshAt?: number } = { flight: this.execBearerCmd(argv) };
+    this.managerBearers.set(key, entry);
+    entry.flight.then((token) => {
+      const exp = bearerExpiryMs(token);
+      if (exp === undefined || exp - MANAGER_BEARER_MARGIN_MS <= Date.now()) { if (this.managerBearers.get(key) === entry) this.managerBearers.delete(key); }
+      else entry.refreshAt = exp - MANAGER_BEARER_MARGIN_MS;
+    }, () => { if (this.managerBearers.get(key) === entry) this.managerBearers.delete(key); });
+    return abortable(entry.flight, signal);
+  }
+
   /** Run the spawner's bearer command with this session's environment on every credential path. */
   private async execBearerCmd(argv: string[], signal?: AbortSignal, timeoutMs?: number): Promise<string> {
     const bearer = await runAgentBearer(argv, { env: this.launchEnv, signal, timeoutMs });
@@ -2234,6 +2301,7 @@ export class MeshAgent extends EventEmitter {
   ): Promise<ControlReply> {
     const clean = args === undefined ? undefined : Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
     let r: EpAttributedReply;
+    let dropBearer: (() => void) | undefined;
     try {
       const input = clean && Object.keys(clean).length ? clean : undefined;
       if (this.config.userAuth) {
@@ -2244,13 +2312,11 @@ export class MeshAgent extends EventEmitter {
         const { instanceId: _instanceId, follow, ...invokeOpts } = opts;
         // An ambiguity refusal names the bearer command's own selector. This caller passes it from
         // the tool's `instance` argument, so the tool's caller is told that argument instead.
-        const bearer = (signal?: AbortSignal) => this.execBearerCmd([
-          ...bearerCmd,
-          "--manager-call",
-          ...(managerInstanceId ? ["--manager-instance", managerInstanceId] : []),
-        ], signal).catch((e: unknown) => {
+        const bearerArgv = [...bearerCmd, "--manager-call", ...(managerInstanceId ? ["--manager-instance", managerInstanceId] : [])];
+        const bearer = (signal?: AbortSignal) => this.managerCallBearer(bearerArgv, signal).catch((e: unknown) => {
           throw e instanceof Error ? new Error(e.message.replace("--manager-instance <instanceId>", "the instance argument")) : e;
         });
+        dropBearer = () => { this.managerBearers.delete(JSON.stringify(bearerArgv)); };
         // Subscribe before submission on the renewing main connection. A long accepted launch
         // must not inherit the short-lived control credential's expiry.
         r = await invokeUserManager({ ...this.config, managerInstanceId }, bearer, command, input, {
@@ -2291,12 +2357,14 @@ export class MeshAgent extends EventEmitter {
       // half: this surface is read by agents, and "no responder answered" invites the retry that
       // duplicates a spawn. Only the marker distinguishes them, and core sets it exactly where it
       // observed silence.
+      dropBearer?.();
       if (e instanceof EpEnvelopeError)
         return controlReplyFromThrown(e, unansweredRequest(e)
           ? `${e.message} (no responder answered - a manager may be down, or this credential holds no "${command}" capability and the broker denied the request)`
           : `${e.code}: ${e.message}`);
       return { ok: false, error: (e as Error).message };
     }
+    if (r.reply.ok !== true) dropBearer?.();
     return controlReplyFrom(r.reply);
   }
 
@@ -2388,36 +2456,54 @@ export class MeshAgent extends EventEmitter {
   /** Whether a manager launched this seat. A manager accepts a run turn only against a seat it
    *  launched (`serveTurnGoal`), and every manager launch path (local spawn, restart, resume, and
    *  `delegatedSeatCommand` → `cotal spawn` handoff) sets `COTAL_MANAGER_INSTANCE`
-   *  (`config.managerInstanceId`), so a directly connected session has no turn relay to poll. */
+   *  (`config.managerInstanceId`), so a directly connected session has no turn relay to arm. */
   private hasTurnRelay(): boolean {
     return this.config.managerInstanceId !== undefined;
   }
 
-  private ensureTurnPoll(): void {
-    if (this.config.turnRelay === false || !this.hasTurnRelay() || this.turnPollTimer !== undefined) return;
-    const t = setInterval(() => {
-      void this.pollTurns().catch((e: unknown) => this.notePullTrouble((e as Error).message));
-    }, TURN_POLL_MS);
-    (t as { unref?: () => void }).unref?.();
-    this.turnPollTimer = t;
+  /** Subscribe to the launching manager's turn notices (SPEC 14.3) and pull once. The manager
+   *  publishes a notice whenever this seat's `turn-pending` answer changes, and repeats it until
+   *  the seat pulls a new turn, so an idle seat sends nothing, across reconnects too. The pull on a
+   *  notice, here at the first bind, and on a reconnect while the seat holds a turn is the only
+   *  intake; the subscription exists before the first pull, so a turn accepted in between is not missed. */
+  private armTurnRelay(): void {
+    if (this.config.turnRelay === false || !this.hasTurnRelay()) return;
+    if (!this.turnNoticeArmed) {
+      let caller: EpCaller;
+      try { caller = this.ep.serviceRailCaller(); }
+      catch (e) { this.log(`the run-turn relay cannot name this seat's reply rail (${(e as Error).message}); no turn will reach this seat`); return; }
+      this.ep.tap(() => this.requestTurnPull(), { subject: turnNoticeFilter(this.config.space, this.config.managerInstanceId!, caller) });
+      this.turnNoticeArmed = true;
+    }
+    this.requestTurnPull();
+  }
+
+  /** Pull now, or once more after the pull in flight, so notices that arrive together cost one pull. */
+  private requestTurnPull(): void {
+    if (this.config.turnRelay === false || this._stopping) return;
+    if (this.turnPollBusy) { this.turnPullAgain = true; return; }
+    void this.pollTurns().catch((e: unknown) => this.turnPullFailed((e as Error).message, undefined));
   }
 
   /** Pull this seat's pending run turns from its launching manager (`turn-pending`, self-mode).
    *  New turns request a wake so the payload surfaces on the next injectable frame; turns gone from
    *  the reply were settled elsewhere (deadline, agent-down, a competing yield path) and are
-   *  dropped. Only a manager-launched seat (`hasTurnRelay`) arms this poll; any failure to reach
-   *  the launching manager is passed to {@link notePullTrouble}. */
+   *  dropped. Only a manager-launched seat (`hasTurnRelay`) pulls; any failure to reach the
+   *  launching manager is passed to {@link turnPullFailed}. */
   private async pollTurns(): Promise<void> {
     if (this.config.turnRelay === false || !this._connected || this._stopping || this.turnPollBusy) return;
     this.turnPollBusy = true;
+    this.turnPullAgain = false;
     this.yieldedSincePull.clear();
     try {
       const r = await this.managerInvoke("turn-pending", undefined, { target: { mode: "self" } });
-      if (!r.ok) { this.notePullTrouble(r.error ?? "refused with no message"); return; }
+      if (!r.ok) { this.turnPullFailed(r.error ?? "refused with no message", r.code); return; }
       const rows = (r.data as { turns?: unknown } | undefined)?.turns;
       // A reply with no turns array is no snapshot: reconciling on it would drop every accepted
       // turn, including one already shown. Keep what the seat holds until a well-formed pull.
-      if (!Array.isArray(rows)) { this.notePullTrouble("turn-pending returned no turns array"); return; }
+      if (!Array.isArray(rows)) { this.turnPullFailed("turn-pending returned no turns array", "bad-reply"); return; }
+      if (this.turnRetryTimer !== undefined) { clearTimeout(this.turnRetryTimer); this.turnRetryTimer = undefined; }
+      this.noteTurnNotices((r.data as { notices?: unknown }).notices === true);
       // A responder off the contract must not reach the formatter: one row with no numeric
       // deadline made peekPendingTurns throw on every frame.
       const turns = rows.filter(isPendingTurn);
@@ -2434,24 +2520,52 @@ export class MeshAgent extends EventEmitter {
       if (fresh > 0) this.requestWake();
     } finally {
       this.turnPollBusy = false;
+      if (this.turnPullAgain) this.requestTurnPull();
     }
+  }
+
+  /** Follow what the launching manager says about turn notices. A manager from before them never
+   *  sends one, so this seat pulls on a timer while its answers say so, and says that once. */
+  private noteTurnNotices(sent: boolean): void {
+    if (sent) {
+      if (this.legacyTurnPoll !== undefined) { clearInterval(this.legacyTurnPoll); this.legacyTurnPoll = undefined; }
+      return;
+    }
+    if (this.legacyTurnPoll !== undefined || this._stopping) return;
+    this.log(`manager ${this.config.managerInstanceId} sends no turn notices (it predates them), so this seat pulls its turns every ${TURN_PULL_RETRY_MS}ms`);
+    const t = setInterval(() => this.requestTurnPull(), TURN_PULL_RETRY_MS);
+    (t as { unref?: () => void }).unref?.();
+    this.legacyTurnPoll = t;
+  }
+
+  /** A pull failed. A manager that is down, still reconciling or unanswered can recover, so ONE
+   *  retry is armed for {@link TURN_PULL_RETRY_MS} later and re-armed while that keeps failing. A
+   *  refusal (a denied capability, a request the manager rejects) is reported and not retried:
+   *  asking again on a timer would be the idle poll this relay removed, against a door that is shut.
+   *  The next notice or reconnect pulls again either way. */
+  private turnPullFailed(reason: string, code: string | undefined): void {
+    this.notePullTrouble(reason);
+    const transient = code === undefined || code === "unavailable" || code === "deadline-exceeded";
+    if (!transient || this._stopping || this.turnRetryTimer !== undefined) return;
+    const t = setTimeout(() => { this.turnRetryTimer = undefined; this.requestTurnPull(); }, TURN_PULL_RETRY_MS);
+    (t as { unref?: () => void }).unref?.();
+    this.turnRetryTimer = t;
   }
 
   /**
    * A pull that did not come back, said ONCE.
    *
-   * Only a manager-launched seat polls (`hasTurnRelay`), so an unanswered pull means its own
-   * launching manager did not answer. The poll runs every few seconds for the life of the session,
-   * so a line per failure would be a torrent; instead each distinct reason is reported once and
-   * saying it again waits for the reason to change or for a pull to succeed. Only the manager's
-   * startup reconciliation window (`still reconciling`) stays silent because it resolves itself.
+   * Only a manager-launched seat pulls (`hasTurnRelay`), so an unanswered pull means its own
+   * launching manager did not answer. Each distinct reason is reported once and saying it again
+   * waits for the reason to change or for a pull to succeed. Only the manager's startup
+   * reconciliation window (`still reconciling`) stays silent because it resolves itself.
    */
   private notePullTrouble(reason: string): void {
     // The boot window is a manager telling the seat to come back once startup reconciliation finishes.
     if (/still reconciling/i.test(reason)) return;
     if (this.pullTrouble === reason) return;
     this.pullTrouble = reason;
-    this.log(`the run-turn pull is not answering (${reason}); retrying every ${TURN_POLL_MS}ms`);
+    this.log(`the run-turn pull is not answering (${reason}); the seat pulls again on its next turn notice or reconnect`);
   }
 
   /** Format every not-yet-surfaced turn still inside its deadline as an injectable context block,
@@ -2792,10 +2906,9 @@ export class MeshAgent extends EventEmitter {
   }
 
   /** The working→idle boundary: yield `done` for every SURFACED turn (its payload was in the
-   *  context of the turn that just ended; ending without an explicit yield IS the done signal),
-   *  then re-poll immediately on a manager-launched seat (`hasTurnRelay`) so a queued turn wakes
-   *  the seat without waiting out the cadence. Fire-and-forget from the presence path — a yield
-   *  must never block a status write. */
+   *  context of the turn that just ended; ending without an explicit yield IS the done signal).
+   *  The manager's notice for each settled yield brings the next queued turn. Fire-and-forget
+   *  from the presence path — a yield must never block a status write. */
   private onTurnBoundary(): void {
     for (const t of [...this.activeTurns.values()]) {
       if (!t.surfaced) continue;
@@ -2803,7 +2916,6 @@ export class MeshAgent extends EventEmitter {
         .then((r) => { if (!r.ok) this.log(`turn ${t.goalId} auto-yield: ${r.error ?? "refused"}`); })
         .catch((e) => this.log(`turn ${t.goalId} auto-yield: ${(e as Error).message}`));
     }
-    if (this.hasTurnRelay()) void this.pollTurns().catch(() => { /* the interval retries */ });
   }
 
   /** Record the host's actual model and optional variant learned after launch, so peers see the

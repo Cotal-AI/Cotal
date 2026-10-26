@@ -229,6 +229,8 @@
     "smoke:hook-relay-startup": "tsx extensions/connector-core/smoke/hook-relay-startup.smoke.ts",
     "smoke:manager-invoke-verdict": "tsx extensions/connector-core/smoke/manager-invoke-verdict.smoke.ts",
     "smoke:manager-connect-deadline": "tsx extensions/connector-core/smoke/manager-connect-deadline.smoke.ts",
+    "smoke:turn-notice": "tsx extensions/connector-core/smoke/turn-notice.smoke.ts",
+    "smoke:idle-seat-connects": "tsx extensions/connector-core/smoke/idle-seat-connects.smoke.ts",
     "smoke:manager-caller-transport": "tsx implementations/runtime/smoke/manager-caller-transport.smoke.ts",
     "smoke:manager-launch-reads": "tsx implementations/manager/smoke/launch-reads.smoke.ts",
     "smoke:manager-chat-session": "tsx implementations/manager/smoke/chat-session.smoke.ts",

@@ -184,6 +184,7 @@ import {
   GOAL_TERMINAL_STATES,
   goalRefOf,
   goalProgressTopic,
+  turnNoticeSubject,
   epeSubject,
   submissionFingerprint,
   EpEnvelopeError,
@@ -1175,6 +1176,9 @@ interface PendingTurn {
   holdEpoch: number;
   /** The goal-chain link the caller declared (lang §5.3), mirrored into every terminal's data. */
   handoffFrom?: string;
+  /** When the seat's `turn-pending` first served this turn. Until then the turn sweep repeats the
+   *  seat's notice, because a seat that was offline when it went out never heard it. */
+  pulledAt?: number;
   /** When the addressed seat incarnation was reaped, if it died before yielding. A dead target
    *  has NO early goal ending (a completion must prove the executor's LIVE currency, and the
    *  hold is only owner-expirable once due — SPEC 13.6 item 7), so the entry rides to its
@@ -8864,6 +8868,10 @@ export class Manager {
       console.error(`! goal-index boot reconcile failed: ${rejectionText(e)} - accepted goals from a predecessor may stay unsettled until the next restart`);
     } finally {
       this.goalReconcileDone = true;
+      // A seat that pulled during the window was refused, and a predecessor may have died before
+      // its notice went out, so every seat holding a rebuilt turn is told once.
+      const seats = new Map([...this.pendingTurns.values()].map((p) => [`${p.seat.owner}.${p.seat.actor}.${p.seat.uid}`, p.seat]));
+      for (const seat of seats.values()) this.noticeSeatTurns(seat);
     }
   }
 
@@ -9375,6 +9383,7 @@ export class Manager {
     };
     this.pendingTurns.set(key, pending);
     this.ensureTurnSweep();
+    this.noticeSeatTurns(pending.seat);
     const acceptance: TurnAcceptance = { name: a.name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid, goalId, fingerprint, deadlineAt, executor };
     this.turnAcceptances.set(key, { acceptance, ref });
     this.emitGoalProgress(ref, executor.epoch, { phase: "relayed" });
@@ -9383,7 +9392,7 @@ export class Manager {
 
   /** The seat's pull: every pending turn addressed to the CALLER's incarnation, oldest first.
    *  The uid is part of the address — a successor seat never receives a predecessor's turn. */
-  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[] } {
+  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[]; notices: true } {
     // AN EMPTY LIST IS AN ANSWER, so it must not be given before the index is rebuilt. Between
     // registration and `reconcileGoalIndex`, `pendingTurns` holds nothing a predecessor accepted,
     // and a seat that pulls in that window is told authoritatively that it has no turn. The seat
@@ -9398,13 +9407,31 @@ export class Manager {
     // its own pause, so handing it to the seat buys work whose yield is refused. It also cannot be
     // allowed to stay the head, or one expired turn dams every later turn for that seat.
     const now = Date.now();
-    const turns = [...this.pendingTurns.values()]
+    const head = [...this.pendingTurns.values()]
       .filter((p) => p.seat.owner === c.owner && p.seat.actor === c.actor && p.seat.uid === c.uid)
       .filter((p) => now < p.deadlineAt)
       .sort((x, y) => x.acceptedAt - y.acceptedAt)
-      .slice(0, 1)
-      .map((p) => ({ goalId: p.goalId, payload: p.payload, acceptedAt: p.acceptedAt, deadlineAt: p.deadlineAt }));
-    return { turns };
+      .slice(0, 1);
+    for (const p of head) p.pulledAt ??= now;
+    const turns = head.map((p) => ({ goalId: p.goalId, payload: p.payload, acceptedAt: p.acceptedAt, deadlineAt: p.deadlineAt }));
+    return { turns, notices: true };
+  }
+
+  /** Tell a seat that its `turn-pending` answer changed (SPEC 14.3 turn notice), over the serve
+   *  connection that holds this instance's reply rows. The notice carries no turn and the seat
+   *  pulls on it, so a lost notice delays that seat until its next pull, and nothing else. */
+  private noticeSeatTurns(seat: { name: string; owner: string; actor: string; uid: string }): void {
+    const serve = this.serviceServe;
+    if (!serve) return;
+    // An issued seat credential reads only the versioned rail, under the generation it was issued.
+    const a = this.agents.get(seat.name);
+    const generation = a?.lifecycleUid === seat.uid ? a.issued?.generation : undefined;
+    const caller = { owner: seat.owner, actor: seat.actor, uid: seat.uid, ...(generation !== undefined ? { generation } : {}) };
+    try {
+      serve.nc.publish(turnNoticeSubject(this.space, this.managerInstanceId, serve.grant.epoch, caller), new TextEncoder().encode(JSON.stringify({ v: 1 })));
+    } catch (e) {
+      console.error(`! turn notice for ${seat.actor} failed: ${rejectionText(e)}`);
+    }
   }
 
   /** A seat names a turn by goal id alone when it yields, so one incarnation holding two callers'
@@ -9495,6 +9522,7 @@ export class Manager {
     this.emitGoalProgress(p.ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
     await clearGoalIndex(gw.ctx, p.ref);
     this.pendingTurns.delete(key);
+    this.noticeSeatTurns(p.seat);
     this.markTurnLatchDropped(key, at);
     this.rememberSettledTurn(key, fact.state, at);
     this.maybeStopTurnSweep();
@@ -9543,6 +9571,7 @@ export class Manager {
       throw e;
     }
     this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
+    this.noticeSeatTurns(p.seat);
     this.markTurnLatchDropped(key);
     this.rememberSettledTurn(key, fact.state, Date.now());
     await clearGoalIndex(gw.ctx, ref);
@@ -9559,6 +9588,7 @@ export class Manager {
     if (!gw) return;
     const key = goalKey(p.ref);
     if (!this.pendingTurns.delete(key)) return;
+    this.noticeSeatTurns(p.seat);
     this.markTurnLatchDropped(key);
     const epoch = this.serviceServe?.grant.epoch ?? 0;
     try {
@@ -9660,6 +9690,16 @@ export class Manager {
     // The prune above is the one event after which the sweep may have nothing left to do, and
     // the settle-time callers cannot see it: they run when an answer has just been remembered.
     this.maybeStopTurnSweep();
+    // A notice is at-most-once, so a seat offline when it went out has not pulled its head turn.
+    // Repeat the notice until it does; a seat that pulled is not told again for that turn.
+    const heads = new Map<string, PendingTurn>();
+    for (const p of this.pendingTurns.values()) {
+      if (now >= p.deadlineAt) continue;
+      const k = `${p.seat.owner}.${p.seat.actor}.${p.seat.uid}`;
+      const h = heads.get(k);
+      if (h === undefined || p.acceptedAt < h.acceptedAt) heads.set(k, p);
+    }
+    for (const p of heads.values()) if (p.pulledAt === undefined) this.noticeSeatTurns(p.seat);
     for (const p of [...this.pendingTurns.values()]) {
       if (now < p.deadlineAt) continue;
       try {

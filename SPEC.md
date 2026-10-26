@@ -5878,6 +5878,26 @@ split, mediated, written by the driver's commit path only.
   journal's tail, which nothing inside the journal can see, and the driver MUST refuse to resume it.
   Interior loss is the journal's own ordinal chain's.
 
+**Turn notices.** A run's `turn` reaches its seat through the hosting manager, and the seat reads
+it with its own self-mode `turn-pending`. The manager MUST publish a turn notice to the seat
+whenever the set that seat's `turn-pending` would answer changes: on accepting a turn, on its
+yield, cancellation or deadline, and once per seat holding a turn after the boot reconcile. The
+notice is published by the manager's serve connection on the seat's own reply rail (§13.2), under
+the reserved nonce `turn-pending-notice-v1`:
+`ep[.v1].reply.manager.<instanceId>.<epoch>.<owner>.<actor>.<uid>[.<generation>].turn-pending-notice-v1`,
+on the versioned rail exactly when the seat's credential is an issuance (§13.15). Only that
+instance's serve credential may publish it, every baseline seat credential may read its own, and
+no new grant exists for it. Its body is `{ "v": 1 }` and carries no turn, so a seat MUST treat the
+notice only as a reason to pull; the pull's answer is the authority. A notice is at-most-once, so
+the manager MUST repeat it, at most every 5 seconds, while the oldest turn it would serve a seat has
+not yet been served to that seat by a `turn-pending`. A seat MUST subscribe before its first pull,
+and MUST pull again after a reconnect while it holds a turn, since a lost notice of that turn's
+ending is not repeated. A seat MUST NOT
+pull on a timer while it is connected and its last pull succeeded, except under a manager whose
+`turn-pending` answer lacks `notices: true`, which predates notices and is pulled every 15 seconds.
+A pull that fails because the manager is unavailable or unanswered MAY be retried at that same
+interval until one succeeds; a refusal MUST NOT be retried on a timer.
+
 ### 14.4 The step journal on the wire
 
 The journal of a run is carried by the per-space **`WFJ_<space>` stream** (§13.12) on **one subject

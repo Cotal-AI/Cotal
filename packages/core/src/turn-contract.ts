@@ -7,6 +7,9 @@
  * the manager's contract changes.
  */
 
+import { callerRailTokens, endpointToken, epPlaneTokens, epReplySubject, type EpCaller } from "./endpoint-subjects.js";
+import { assertLifecycleToken, spacePrefix } from "./subjects.js";
+
 /** `turn` (workflow runs, cotal-lang §5.3): wake the TARGET seat for one turn on behalf of a
  *  workflow run. The manager relays and stays run-ignorant: `payload` is an opaque bounded string
  *  the seat pulls back verbatim through `turn-pending` — its shape is the runtime↔connector
@@ -59,4 +62,26 @@ function deepFreeze<T>(v: T): T {
     Object.freeze(v);
   }
   return v;
+}
+
+/** The reserved reply-rail nonce of a turn notice (SPEC 14.3). A seat's own requests use random
+ *  nonces, so no reply it awaits can arrive on this one. */
+export const TURN_NOTICE_NONCE = "turn-pending-notice-v1";
+
+/** The subject a manager publishes a turn notice on: the seat's own reply rail (the versioned one
+ *  when the seat's credential is an issuance, SPEC 13.15), under the manager's instance and serve
+ *  epoch. Only that instance's serve credential may publish it, and every baseline seat credential
+ *  may read it, so the notice needs no new grant. It carries no turn: the seat answers it with its
+ *  authenticated `turn-pending` pull. */
+export function turnNoticeSubject(space: string, instanceId: string, epoch: number, seat: EpCaller): string {
+  return epReplySubject(space, { endpoint: "manager", instanceId, epoch, caller: seat, nonce: TURN_NOTICE_NONCE });
+}
+
+/** The seat's subscription for {@link turnNoticeSubject}: its launching manager instance at any
+ *  epoch, so a manager that re-serves under a new epoch still reaches it. */
+export function turnNoticeFilter(space: string, instanceId: string, seat: EpCaller): string {
+  return [
+    spacePrefix(space), ...epPlaneTokens(seat), "reply", endpointToken("manager"), assertLifecycleToken(instanceId, "instanceId"), "*",
+    ...callerRailTokens(seat), TURN_NOTICE_NONCE,
+  ].join(".");
 }

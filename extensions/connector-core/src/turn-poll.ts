@@ -1,5 +1,5 @@
-/** Cadence of the turn-pending pull while connected. The relay is PULL-shaped by design (the
- *  manager holds no DM machinery and a pushed relay could not authenticate its sender), so this
- *  poll is the intake's whole latency: a fresh turn waits at most one interval plus one wake.
- *  Deadlines are minutes-scale; fifteen seconds of intake lag is invisible to a run. */
-export const TURN_POLL_MS = 15_000;
+/** Delay before the one retry after a run-turn pull that failed for a reason that can pass (a
+ *  manager down, still reconciling, or unanswered), and the pull interval under a launching
+ *  manager that predates turn notices. Pulls are otherwise driven by the manager's turn notices
+ *  and by reconnects (SPEC 14.3), so an idle seat that pulled successfully sends nothing. */
+export const TURN_PULL_RETRY_MS = 15_000;
