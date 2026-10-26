@@ -428,6 +428,8 @@ This is what lets `cotal status` and `cotal down` work in a folder whose mesh ru
 `broker: { auth: false }`, where there is no `auth/account.<key>.json` to name the space.
 A record, or a `.cotal` listing, that exists but cannot be read is reported as that read error
 rather than read as absent. A process record's read error names the record's path.
+An `absent` process record has no `path`, whether its file is missing or empty. Every other
+state carries the path of the file read, including a pre-segmentation spelling.
 
 ### Machine files
 

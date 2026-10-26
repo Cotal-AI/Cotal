@@ -249,6 +249,7 @@ export function assertManagerRecordReplaceable(
   space: string = folderSpace(),
 ): void {
   const record = managerRecordState(probe, readCommand, space);
+  if (record.state === "absent") return;
   const state = record.state;
   // The record this is about, named in full: on a root that hosts two spaces "the manager pidfile"
   // is not a location an operator can act on, and on an un-upgraded one it is not even this name.

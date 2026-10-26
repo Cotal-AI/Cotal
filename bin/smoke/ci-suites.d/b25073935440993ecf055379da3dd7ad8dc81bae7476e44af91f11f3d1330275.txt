@@ -1,0 +1,2 @@
+# Missing and empty process records must not carry a computed read path.
+smoke:absent-process-record
