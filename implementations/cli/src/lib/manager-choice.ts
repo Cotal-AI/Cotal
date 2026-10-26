@@ -25,6 +25,13 @@ export interface ManagerCandidate {
   readonly instanceId: string;
   readonly host: string | null;
   readonly activity: string | null;
+  /** The runtime it spawns agents through, read from its activity; null when presence does not
+   *  carry it. */
+  readonly runtime: string | null;
+  /** Whether a seat it spawns can be attached in a terminal, as it reports: `none` means no
+   *  `cotal attach` and no attached foreground spawn can open one there. Null when presence does
+   *  not carry it, as for a manager started by a cotal before 0.104.0. */
+  readonly terminal: "stream" | "none" | null;
   readonly since: string | null;
 }
 
@@ -34,17 +41,27 @@ export interface ManagerCandidate {
 export function managerLabel(p: Presence): string {
   if (p.card.name !== DEFAULT_MANAGER_NAME) return p.card.name;
   const host = presenceHost(p);
-  const runtime = /^supervisor \((.+)\)$/.exec(p.activity ?? "")?.[1];
+  const runtime = presenceRuntime(p);
   return host !== null && runtime ? `${host}/${runtime}` : host ?? runtime ?? p.card.name;
 }
 
 const presenceHost = (p: Presence): string | null => typeof p.card.meta?.host === "string" && p.card.meta.host ? p.card.meta.host : null;
+
+/** The runtime a manager reports, read from its `supervisor (<runtime>)` activity. */
+const presenceRuntime = (p: Presence): string | null => /^supervisor \((.+)\)$/.exec(p.activity ?? "")?.[1] ?? null;
+
+/** What a manager reports about attaching to its seats' terminals. Only the two values it writes
+ *  are taken; anything else, an absent key included, is "it did not say". */
+const presenceTerminal = (p: Presence): "stream" | "none" | null =>
+  p.card.meta?.terminal === "stream" ? "stream" : p.card.meta?.terminal === "none" ? "none" : null;
 
 const candidateOf = (instanceId: string, row: Presence | undefined): ManagerCandidate => ({
   name: row ? managerLabel(row) : null,
   instanceId,
   host: row ? presenceHost(row) : null,
   activity: row?.activity ?? null,
+  runtime: row ? presenceRuntime(row) : null,
+  terminal: row ? presenceTerminal(row) : null,
   since: row?.runtime ? new Date(row.runtime.startedAt).toISOString() : null,
 });
 
@@ -233,11 +250,20 @@ export async function severalLive(failure: CommandFailure, readRoster: () => Pro
   return ids.map((instanceId) => candidateOf(instanceId, roster.find((p) => p.card.id === `${owner}.${remoteManagerActors(instanceId).supervisor}` && p.status !== "offline")));
 }
 
+/** What a manager's row says about its backend: the runtime it spawns through and whether a
+ *  terminal attaches to a seat it starts, so the choice is informed before anything is launched. A
+ *  manager whose presence carries neither falls back to the activity line it does carry. */
+function runtimeCell(m: ManagerCandidate): string | null {
+  if (m.runtime === null) return m.activity;
+  if (m.terminal === null) return `${m.runtime} · terminal attach not reported`;
+  return m.terminal === "stream" ? `${m.runtime} · terminal attach` : `${m.runtime} · no terminal attach`;
+}
+
 /** Your managers newest first, as each is offered in a question: by name, with its instance id and
- *  the host, activity and process start its presence reports. */
-function managerOptions(managers: readonly ManagerCandidate[]): { newest: ManagerCandidate[]; options: { value: number; label: string; hint: string }[] } {
+ *  the host, backend and process start its presence reports. */
+export function managerOptions(managers: readonly ManagerCandidate[]): { newest: ManagerCandidate[]; options: { value: number; label: string; hint: string }[] } {
   const newest = [...managers].sort((a, b) => (b.since ?? "").localeCompare(a.since ?? ""));
-  return { newest, options: newest.map((m, index) => ({ value: index, label: m.name ?? m.instanceId, hint: [m.instanceId, m.host ?? "host not reported (started by an older cotal)", m.activity, m.since ? `since ${m.since}` : null, index === 0 ? "most recent" : null].filter(Boolean).join(" · ") })) };
+  return { newest, options: newest.map((m, index) => ({ value: index, label: m.name ?? m.instanceId, hint: [m.instanceId, m.host ?? "host not reported (started by an older cotal)", runtimeCell(m), m.since ? `since ${m.since}` : null, index === 0 ? "most recent" : null].filter(Boolean).join(" · ") })) };
 }
 
 /** Record `chosen` as this terminal's pick among `managers` and write the `Manager chosen` receipt,

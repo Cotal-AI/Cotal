@@ -294,6 +294,10 @@ const INPUT_SLICE_CHARS = 2048;
  * are not counted into the receipt, so `bytes` still reports what the caller asked to deliver. */
 export const PASTE_START = "\x1b[200~";
 export const PASTE_END = "\x1b[201~";
+/** `details[].kind` on an `attach` refusal raised because the seat's runtime opens no terminal
+ * stream. The message carries that runtime's own guidance, which is operator copy and changes; this
+ * marker is the contract a caller keys on so it can act without reading the wording. */
+export const RUNTIME_NO_TERMINAL_DETAIL = "ai.cotal.manager.runtime-no-terminal";
 /** Pick a `setInterval` period for {@link Manager.renewDaemonCreds} that guarantees at least one
  * tick lands inside every renewal owner's `[renewAt, exp)` window.
  *
@@ -1721,6 +1725,13 @@ export class Manager {
     return this.executionState.kind === "none" ? "none" : this.requiredRuntime.kind;
   }
 
+  /** Whether this manager's runtime opens a terminal stream on the seats it spawns, so a caller
+   *  knows before it asks whether `attach` can open one here. A control instance with no execution
+   *  spawns no seat, so it streams no terminal either. */
+  get streamsTerminal(): boolean {
+    return this.executionState.kind !== "none" && this.requiredRuntime.streamsTerminal;
+  }
+
   get execution(): "runtime" | "none" {
     return this.executionState.kind;
   }
@@ -2077,7 +2088,7 @@ export class Manager {
       watchChannels: false,
       // `host` says which machine runs this manager, as an agent's card does: an owner with several
       // managers tells them apart by it. Advisory display metadata, never a routing input.
-      card: { id, ...(this.remoteAuthority ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.supervisor } : {}), name: this.name, role: "manager", kind: "endpoint", meta: { host: hostname() } },
+      card: { id, ...(this.remoteAuthority ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.supervisor } : {}), name: this.name, role: "manager", kind: "endpoint", meta: { host: hostname(), terminal: this.streamsTerminal ? "stream" : "none" } },
     });
     // Raw failures ride error; conditions the endpoint is already surviving ride warning. Both
     // matter to a supervisor operator, especially a failed standing-credential renewal.
@@ -6838,7 +6849,7 @@ export class Manager {
       // "no role", so dropping the key preserves the reply (surfaced by readiness:live).
       // A host that granted other channels than this spawn asked for: the receipt carries both.
       const acl = enrolled ? enrolledAcl({ allowSubscribe, allowPublish }, enrolled.material) : undefined;
-      const okData = { name, agent, id: managed.id, mode: handle.kind, lifecycleUid, ...(role !== undefined ? { role } : {}), ...(opts.eventsNotice !== undefined ? { eventsNotice: opts.eventsNotice } : {}), ...(acl ? { acl } : {}), ...(readiness.operator !== undefined ? { waitingFor: readiness.operator } : {}) };
+      const okData = { name, agent, id: managed.id, mode: handle.kind, streamsTerminal: this.streamsTerminal, lifecycleUid, ...(role !== undefined ? { role } : {}), ...(opts.eventsNotice !== undefined ? { eventsNotice: opts.eventsNotice } : {}), ...(acl ? { acl } : {}), ...(readiness.operator !== undefined ? { waitingFor: readiness.operator } : {}) };
       await hooks?.onOutcome?.({ kind: "succeeded", data: okData });
       return { ok: true, data: okData };
     } catch (e) {
@@ -11292,6 +11303,16 @@ export class Manager {
     } catch (e) {
       slot.release();
       // The external runtimes refuse attach() before acquiring anything (see the residual above).
+      //
+      // A runtime that streams NO terminal is `unimplemented` and not a precondition: asking again
+      // cannot change it, and a caller that reads this as transient retries a refusal forever. The
+      // runtime's own throw is the guidance for watching the agent where it really runs, so it is
+      // carried through verbatim, and the namespaced detail lets a caller act on the one fact
+      // without reading the wording. This is the same answer `input` gives a runtime that cannot
+      // write, for the same reason.
+      if (!this.streamsTerminal)
+        throw new EpEnvelopeError("unimplemented", `the ${a.handle.kind} runtime streams no terminal, so agent "${a.name}" has none to attach: ${rejectionText(e)}`,
+          [{ kind: RUNTIME_NO_TERMINAL_DETAIL, runtime: a.handle.kind }], "not-executed");
       throw new EpEnvelopeError("failed-precondition", rejectionText(e), undefined, "not-executed");
     }
     // establishAttach releases the claim it was handed on every exit; nothing to unwind here.

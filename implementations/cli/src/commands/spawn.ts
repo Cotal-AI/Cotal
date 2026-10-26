@@ -533,6 +533,10 @@ export interface ManagedLaunchResult {
   readiness: "joined";
   requestedModel: string | null;
   detached: boolean;
+  /** Whether this seat's runtime opens a terminal stream, as its manager reports: false means no
+   *  `cotal attach` can open one here and this launch never tried. Null when the manager is too old
+   *  to report it, which is the only case that still finds out by attaching. */
+  streamsTerminal: boolean | null;
   /** The channels the agent asked to read and post on and the ones its host granted, when the host
    *  granted other ones. Null when it granted what was asked. */
   acl: ManagedLaunchAcl | null;
@@ -566,12 +570,20 @@ export interface ManagedLaunchObserver {
 export function managedLaunchView(r: ManagedLaunchResult): Report {
   const concrete = [r.name, r.space, r.managerInstanceId].every((value) => /^[A-Za-z0-9_-]+$/.test(value));
   const target = concrete ? `${r.name} --space ${r.space} --on ${r.managerInstanceId}` : "<name> --space <space> --on <manager-instance>";
+  const noStream = r.streamsTerminal === false;
   return { sections: [
     { title: "Agent joined", blocks: [
-      { kind: "fields", rows: [["Agent", r.name], ["Identity", r.id], ["Lifecycle", r.lifecycleUid], ["Space", r.space], ["Manager receipt", r.managerInstanceId], ["Original request", r.intent?.requestId ?? r.request?.requestId ?? "not recorded"], ["Accepted goal", r.request?.goalId ?? "not reported"], ["Application", r.harness], ["Runtime", r.runtime], ["Role", r.role ?? "not recorded"], ...(r.acl ? [["Granted", `read ${channelList(r.acl.effective.allowSubscribe)} · post ${channelList(r.acl.effective.allowPublish)}; asked for read ${channelList(r.acl.requested.allowSubscribe)} · post ${channelList(r.acl.requested.allowPublish)}`] as [string, string]] : []), ["Model request", r.requestedModel ?? "persona/manager precedence; not inspected"], ["View", r.detached ? "not attached" : "attaching to the allocated incarnation"]] },
+      { kind: "fields", rows: [["Agent", r.name], ["Identity", r.id], ["Lifecycle", r.lifecycleUid], ["Space", r.space], ["Manager receipt", r.managerInstanceId], ["Original request", r.intent?.requestId ?? r.request?.requestId ?? "not recorded"], ["Accepted goal", r.request?.goalId ?? "not reported"], ["Application", r.harness], ["Runtime", noStream ? `${r.runtime} · no terminal stream` : r.runtime], ["Role", r.role ?? "not recorded"], ...(r.acl ? [["Granted", `read ${channelList(r.acl.effective.allowSubscribe)} · post ${channelList(r.acl.effective.allowPublish)}; asked for read ${channelList(r.acl.requested.allowSubscribe)} · post ${channelList(r.acl.requested.allowPublish)}`] as [string, string]] : []), ["Model request", r.requestedModel ?? "persona/manager precedence; not inspected"], ["View", noStream ? `not attached; the seat runs in the manager's ${r.runtime} session` : r.detached ? "not attached" : "attaching to the allocated incarnation"]] },
       { kind: "lines", lines: [{ text: "The manager confirmed presence readiness. This is not proof that the kickoff task completed.", tone: "hint" }] },
     ] },
-    ...(r.detached ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [
+    ...(noStream ? [{ title: "Next", blocks: [
+      { kind: "commands" as const, items: [
+        { command: `${displayCmd()} watch --space ${r.space}`, description: "Follow this mesh, this agent's messages included" },
+        { command: `${displayCmd()} send -t ${r.name} "<message>"`, description: "Give the agent work over the mesh" },
+        { command: `${displayCmd()} status ${target}`, description: "Read the agent's reported state" },
+      ] },
+      { kind: "lines" as const, lines: [{ text: `${displayCmd()} attach is not available here: the ${r.runtime} runtime streams no terminal.`, tone: "hint" as const }] },
+    ] }] : r.detached ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [
       { command: `${displayCmd()} attach ${target}`, description: concrete ? "Return to this allocated incarnation's manager" : "Use the full identities recorded above" },
       { command: `${displayCmd()} status ${target}`, description: "Read the agent's reported state" },
     ] }] }] : []),
@@ -772,13 +784,18 @@ export async function launchManagedPersona(
     const unknown = reply.nativeOutcome !== "executed" || reply.unanswered;
     throw new CommandFailure(unknown ? "unknown" : "failed", unknown ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager did not confirm launch readiness", { target, native, remedy: "inspect cotal ps and the selected manager before retrying; this launch was not submitted again" });
   }
-  const d = reply.data as { name?: unknown; id?: unknown; lifecycleUid?: unknown; role?: string; agent?: unknown; mode?: unknown; eventsNotice?: string; acl?: unknown };
+  const d = reply.data as { name?: unknown; id?: unknown; lifecycleUid?: unknown; role?: string; agent?: unknown; mode?: unknown; streamsTerminal?: unknown; eventsNotice?: string; acl?: unknown };
   if (!d || typeof d.name !== "string" || typeof d.id !== "string" || typeof d.lifecycleUid !== "string" || typeof d.agent !== "string" || typeof d.mode !== "string" || !reply.managerInstanceId)
     throw new CommandFailure("partial", "OPERATION_PARTIAL", "the manager reported a successful launch but did not supply the identity and manager needed for a safe handoff", { target, changed: [{ kind: "managed-launch", readinessReported: true }], remedy: "inspect cotal ps before doing anything else; do not relaunch" });
   const acl = managedLaunchAcl(d.acl);
   if (acl === undefined)
     throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but the manager's report of the channels its host granted could not be read; no replacement was launched", { target, changed: [{ kind: "managed-launch", readinessReported: true }], remedy: "inspect cotal ps before doing anything else; do not relaunch" });
-  const result: ManagedLaunchResult = { kind: "managed-launch", name: d.name, id: d.id, lifecycleUid: d.lifecycleUid, space: t.space, managerInstanceId: reply.managerInstanceId, harness: d.agent, runtime: d.mode, role: d.role ?? null, request: reply.request ?? null, intent: reply.intent ?? null, readiness: "joined", requestedModel: values.model ?? null, detached: values.detach === true, acl };
+  // The manager's own answer about the runtime it spawned through. A manager too old to report it
+  // leaves null, and that launch finds out by attaching, as every launch used to: the CLI cannot
+  // know better from here, and reading an absent field as "no stream" would leave a pty foreground
+  // spawn unattached against every manager below this version.
+  const streamsTerminal = typeof d.streamsTerminal === "boolean" ? d.streamsTerminal : null;
+  const result: ManagedLaunchResult = { kind: "managed-launch", name: d.name, id: d.id, lifecycleUid: d.lifecycleUid, space: t.space, managerInstanceId: reply.managerInstanceId, harness: d.agent, runtime: d.mode, role: d.role ?? null, request: reply.request ?? null, intent: reply.intent ?? null, readiness: "joined", requestedModel: values.model ?? null, detached: values.detach === true, streamsTerminal, acl };
   const presentation = presentationOf(values);
   const warnings: OutputWarning[] = d.eventsNotice ? [{ code: "EVENT_PLANE_NOTICE", target, message: d.eventsNotice }] : [];
   if (observer) {
@@ -786,6 +803,12 @@ export async function launchManagedPersona(
     catch { throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but the composite command could not record its native readiness; no replacement was launched", { target, changed: [result], remedy: "inspect the original agent and manager before another launch" }); }
   } else writeResult(presentation, { command: "spawn", target, result, warnings }, managedLaunchView);
   if (values.detach) return;
+  // A runtime that streams no terminal has none to attach, so this launch does not ask for one: the
+  // seat is up, the receipt above says where it runs and what reaches it, and the command is done.
+  // Asking anyway is the whole of this failure mode - the manager's refusal is correct and cannot
+  // be retried, and turning a launch that did everything the runtime allows into a partial told the
+  // operator to reattach, which that runtime cannot do either.
+  if (streamsTerminal === false) return;
   let verdict: Awaited<ReturnType<typeof attachSeat>>;
   try {
     verdict = await attachSeat({ space: t.space, server: t.server, creds: values.creds, name: d.name, expectedTarget: { id: d.id, lifecycleUid: d.lifecycleUid }, asSeat: seat !== undefined }, { on: reply.managerInstanceId, reconnect: true, onRefusal: "throw" });

@@ -3454,7 +3454,11 @@ A bare `spawn` runs the application in this terminal, on every kind of mesh, and
 involved unless you pick one when it asks where to run, as described below. Its exit, or the terminal's, may end the agent. A manager runs the launch only when you
 ask for one. `--detach` (`-d`) hands it to a manager, waits until the agent joins, and returns
 without attaching. `--on <instance>` hands it to that manager and attaches this terminal to the
-agent (see [Managed launch view](#managed-launch-view)). Attaching needs usable input and output
+agent (see [Managed launch view](#managed-launch-view)), when that manager's runtime streams a
+terminal. The built-in `pty` runtime streams one. The `tmux`, `cmux`, `orca` and `herdr` runtimes
+start the agent in a surface they do not own and stream none, so a launch on one of those managers
+is not attached: it returns once the agent joins, with a receipt that names the runtime and what
+reaches the agent instead. Attaching needs usable input and output
 terminals and refuses `--json` and `--plain`, before an identity is allocated. A spawn in this
 terminal writes no structured receipt, so `--json` and `--plain` need `-d`, except with
 `--dry-run`. `--foreground` names the default and is kept for scripts. A spawn in this terminal
@@ -3467,7 +3471,11 @@ passed to `--file` is refused with that command.
 On a terminal, a bare `spawn` on a user-auth mesh where several of your managers are live asks
 where the agent runs before it does anything else. The managers listed are the ones the exchange
 counts for a manager selection, so the question comes up only when `spawn -d` would ask which
-manager to use. `This terminal` is the default and runs it as above. Picking a manager launches the
+manager to use. Each manager's row gives its instance id, the host it reports, the runtime it
+spawns through and whether a terminal attaches to its seats (`pty · terminal attach`, or
+`tmux · no terminal attach`), so the choice is made before anything is launched. A manager whose
+presence does not carry it reads as `tmux · terminal attach not reported`.
+`This terminal` is the default and runs it as above. Picking a manager launches the
 agent there and attaches this terminal, as `--on` does, and a `Manager chosen` receipt names the
 `--on` that skips the question. No manager credential is held while you answer. `--foreground`,
 `--file` and `--live-only` keep the spawn in this terminal without asking, and so does a command
@@ -4381,6 +4389,12 @@ drives the same session. `stop` and `attach` need a running manager to talk to. 
 they are cross-agent admin operations. On a user-auth mesh, your own agents (any agent under your
 owner) need only the `spawn` scope; another owner's agent needs `admin` on your ledger row
 ([identity & auth](identity-and-auth.md)). Launch detached agents with [`spawn --detach`](#spawn).
+
+`pty` is the only runtime that streams a terminal. A seat started by the `tmux`, `cmux`, `orca` or
+`herdr` runtime runs in a surface the manager does not own, so there is no stream to give and
+`attach` refuses once with `UNSUPPORTED`, exit 2, carrying that runtime's own guidance for watching
+the agent where it runs, and a Next that names `cotal send` and `cotal watch`. The reconnect loop
+below does not retry that refusal, because asking again cannot change it.
 
 **`attach` reconnects when the link dies.** A session lives on a network link, and a laptop that
 sleeps, a VPN that drops or a wifi handover kills it. When that happens `attach` prints
@@ -7579,7 +7593,7 @@ record has none. The report works out the ages it prints from those times.
 ## Managed launch view
 
 `spawn [<persona>] --on <instance>` launches through that manager and attaches after its native
-readiness result. The attachment is pinned to the attributed accepting manager and the allocated identity/incarnation,
+readiness result, when that manager's runtime streams a terminal. The attachment is pinned to the attributed accepting manager and the allocated identity/incarnation,
 not a second display-name guess. `--detach/-d` returns a finite JSON/plain-capable receipt after
 the same readiness result. While it waits, it prints the launch it asked for, with the space as a
 field, and one line that says the manager answers when it refuses the launch, or when the agent
@@ -7591,7 +7605,16 @@ agent other read or post channels than it asked for, as a host that narrows a re
 does, the receipt adds a `Granted` line with the channels it got and the ones it asked for, and
 `--json` carries both as `acl.requested` and `acl.effective`. Its Next section names the actual agent, space and accepting manager
 in attach/status commands when their tokens are safe shell words; it otherwise retains
-placeholders beside the full identity fields. Without usable input/output terminals, an attaching
+placeholders beside the full identity fields.
+
+A manager on a runtime that streams no terminal, which is `tmux`, `cmux`, `orca` and `herdr`,
+answers with that fact and the launch stops there: no attach is asked for, nothing is partial, and
+the command exits 0 with the agent running. Its `Runtime` row reads `<runtime> · no terminal
+stream`, its `View` row reads `not attached; the seat runs in the manager's <runtime> session`, and
+its Next gives `cotal watch` and `cotal send -t <name>` with one line saying `attach` is not
+available there. `--json` carries the same answer as `result.streamsTerminal`, beside the
+`result.runtime` that names the backend. A manager from before 0.104.0 reports neither, so a launch
+on one is attached as it always was and `streamsTerminal` is null. Without usable input/output terminals, an attaching
 `--on` launch refuses before allocation and names `-d` or a spawn in this terminal. A shell tool's
 inherited parent PTY is not enough.
 

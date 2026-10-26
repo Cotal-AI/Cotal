@@ -41,7 +41,7 @@ const { connect } = await import("@nats-io/transport-node");
 const { recordMesh, isCommandFailure, exitCode } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop/ps/attach) into the registry
 const { Manager } = await import("@cotal-ai/manager");
-import type { Command, Connector, ControlReply, LaunchOpts, SessionGrant } from "@cotal-ai/core";
+import type { AgentHandle, Command, Connector, ControlReply, LaunchOpts, LaunchSpec, RuntimeProvider, SessionGrant } from "@cotal-ai/core";
 const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx");
 
 let pass = 0;
@@ -59,6 +59,8 @@ const receiptFor = (out: string, heading: string, name: string): boolean =>
 const joinedAs = (out: string, name: string): boolean => receiptFor(out, "Agent joined", name);
 const stopped = (out: string, name: string): boolean => receiptFor(out, "Agent stop acknowledged", name);
 const NO_AGENTS = /^\s*No managed agents\.$/m;
+/** A report read without its color, for the cells that run with `isTTY` forced on. */
+const plain = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, "");
 
 const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
@@ -128,6 +130,36 @@ const exitCon: Connector = {
   buildLaunch: () => ({ command: "node", args: ["-e", "console.log('e2e-exit quits');process.exit(3)"], env: { PATH: process.env.PATH ?? "" } }),
 };
 registry.register(exitCon);
+// A runtime with NO terminal to stream — the shape tmux, cmux, orca and herdr have. It starts a
+// real child and its `attach()` throws its own guidance, as theirs do, and `attachCalls` counts
+// every attach the manager was asked to open: "the foreground launch did not attempt an attach" is
+// then measured at the runtime rather than read off the receipt that claims it.
+let attachCalls = 0;
+const noStream: RuntimeProvider = {
+  kind: "runtime",
+  name: "e2e-nostream",
+  available: () => true,
+  create: () => ({
+    kind: "e2e-nostream",
+    streamsTerminal: false,
+    spawn: (name: string, spec: LaunchSpec, cwd: string): AgentHandle => {
+      const child = spawnProc(spec.command, spec.args, { cwd, env: spec.env, stdio: "ignore" });
+      kids.push(child);
+      return {
+        name, kind: "e2e-nostream",
+        status: () => (child.exitCode === null && child.signalCode === null ? "running" : "exited"),
+        stop: () => { child.kill("SIGKILL"); },
+        waitForExit: () => awaitExit(child),
+        interrupt: () => {},
+        attach: () => {
+          attachCalls++;
+          throw new Error(`e2e-nostream runtime: watch this agent where it runs; agent "${name}" has no terminal here`);
+        },
+      };
+    },
+  }),
+};
+registry.register(noStream);
 
 const cmd = (name: string): Command => {
   const c = registry.all<Command>("command").find((c) => c.name === name);
@@ -400,6 +432,72 @@ try {
   const noConnector = direct("poet", "--harness", "nosuch");
   ok("a bare spawn whose harness has no connector refuses DEPENDENCY_UNAVAILABLE, exit 2, naming cotal ext add, before the banner",
     noConnector.status === 2 && /no connector "nosuch" is installed/.test(noConnector.stderr) && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(noConnector.stderr) && /cotal ext add <npm-package>/.test(noConnector.stderr) && !/Direct application/.test(noConnector.stderr), noConnector.stderr.slice(0, 600));
+
+  // J — a FOREGROUND launch on a manager whose runtime streams no terminal. The launch is complete
+  // and the command is done: no attach is attempted, nothing is partial, and the receipt says where
+  // the seat runs and what reaches it. Before this, the CLI launched the agent and then asked for a
+  // terminal attach the runtime cannot open, which came back OPERATION_PARTIAL on a launch that had
+  // in fact done everything the runtime allows, with a Next telling the operator to reattach.
+  //
+  // `isTTY` is forced for the foreground launch alone, and only to pass the argument check that a
+  // foreground managed launch runs at a terminal: it reads no key, and the attach this cell is
+  // about is the one that must NOT happen. It is restored before `attach` runs, which at a stdin
+  // that is not really a terminal would reach for raw mode. The pty arm is the same launch on the
+  // other manager: its reply says the terminal IS there, so nothing skips an attach of its own.
+  {
+    const root2 = mkdtempSync(join(tmpdir(), "cotal-detach-ws2-"));
+    mkdirSync(join(root2, ".cotal", "agents"), { recursive: true });
+    writeFileSync(join(root2, ".cotal", "agents", "poet.md"), "---\nname: poet\nrole: writer\n---\nYou write verse.\n");
+    const mgr2 = new Manager({ space: SPACE, servers: SERVER, runtime: "e2e-nostream", workspaceRoot: root2 });
+    await mgr2.start();
+    const on2 = (mgr2 as unknown as { managerInstanceId: string }).managerInstanceId;
+    const on1 = (mgr as unknown as { managerInstanceId: string }).managerInstanceId;
+    const tty = { in: process.stdin.isTTY, out: process.stdout.isTTY };
+    const atTerminal = <T>(fn: () => Promise<T>): Promise<T> => {
+      Object.assign(process.stdin, { isTTY: true });
+      Object.assign(process.stdout, { isTTY: true });
+      return fn().finally(() => {
+        Object.assign(process.stdin, { isTTY: tty.in });
+        Object.assign(process.stdout, { isTTY: tty.out });
+      });
+    };
+    try {
+      // The DETACHED launch first, as the baseline: a manager attaches to its own seats to read
+      // readiness and to watch for the exit (both are caught where a runtime streams nothing), so
+      // the bare count says nothing on its own. The foreground launch below must add none of its
+      // own to it. The same launch also carries the answer over the wire, for a caller that reads
+      // the envelope rather than the report.
+      const beforeDetached = attachCalls;
+      const fgJson = await capture(() => run("spawn", ["poet", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "pane2", "--on", on2, "--json"]));
+      const managerOwn = attachCalls - beforeDetached;
+      const paneResult = (JSON.parse(fgJson) as { result: { runtime: string; streamsTerminal: boolean | null } }).result;
+      ok("--json names the runtime and that it streams no terminal", paneResult.runtime === "e2e-nostream" && paneResult.streamsTerminal === false, paneResult);
+      const before = attachCalls;
+      // Forcing `isTTY` also turns the report's color on, so the receipt is read without it.
+      const fgOut = plain(await atTerminal(() => capture(() => run("spawn", ["poet", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "pane", "--on", on2]))));
+      ok("a foreground launch on a runtime with no terminal joins and returns", joinedAs(fgOut, "pane"), fgOut);
+      ok("and asks for no attach the detached launch did not also make", attachCalls - before === managerOwn, { foreground: attachCalls - before, detached: managerOwn });
+      ok("nothing about it is partial", !/Partly completed|OPERATION_PARTIAL/.test(fgOut), fgOut);
+      ok("its receipt names the runtime as streaming no terminal", /Runtime:\s+e2e-nostream [·-] no terminal stream/.test(fgOut), fgOut);
+      ok("and says where the seat runs instead of claiming a view", /View:\s+not attached; the seat runs in the manager's e2e-nostream session/.test(fgOut), fgOut);
+      ok("its Next names what reaches the agent without a terminal", /watch --space/.test(fgOut) && /send -t pane/.test(fgOut), fgOut);
+      ok("and says once that attach is not available here", /attach is not available here: the e2e-nostream runtime streams no terminal\./.test(fgOut), fgOut);
+      const ptyJson = await capture(() => run("spawn", ["poet", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "ptyseat", "--on", on1, "--json"]));
+      ok("a pty manager reports the terminal it does have, so nothing skips its attach", (JSON.parse(ptyJson) as { result: { streamsTerminal: boolean | null } }).result.streamsTerminal === true, ptyJson);
+      // And `attach` on such a seat refuses once, by the runtime's own guidance, naming what does
+      // reach it — never "inspect and reattach", which that runtime cannot do either.
+      let refusal: { code?: string; message?: string; remedy?: string } | undefined;
+      try { await run("attach", ["pane", "--space", SPACE, "--on", on2, "--no-reconnect"]); }
+      catch (e) { refusal = e as { code?: string; message?: string; remedy?: string }; }
+      const said = { code: refusal?.code, message: refusal?.message, remedy: refusal?.remedy };
+      ok("attach on that seat is refused UNSUPPORTED, not as a lifecycle condition to retry", refusal?.code === "UNSUPPORTED", said);
+      ok("the refusal carries the runtime's own guidance", /e2e-nostream runtime: watch this agent where it runs/.test(refusal?.message ?? ""), said);
+      ok("and its Next names the mesh, never a reattach", /send -t pane/.test(refusal?.remedy ?? "") && !/reattach/.test(refusal?.remedy ?? ""), said);
+      for (const name of ["pane", "pane2", "ptyseat"]) await capture(() => run("stop", ["--name", name, "--space", SPACE]));
+    } finally {
+      await mgr2.stop().catch(() => {});
+    }
+  }
 
   // F — direct foreground (`--foreground`) with --creds fails loud. A foreground spawn REQUIRES its connector materialized
   // pre-dispatch (spawnRequiredExtensions), so first `ext add` THIS WORKTREE's claude connector

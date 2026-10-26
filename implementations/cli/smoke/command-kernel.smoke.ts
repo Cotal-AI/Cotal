@@ -1323,12 +1323,15 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   assert.equal(restated.outcome, "refused", "the outcome is kept");
   assert.equal(restated.code, "PERMISSION_DENIED", "the code is kept");
   assert.deepEqual((restated.native?.detail as { managers: unknown }).managers, [
-    { name: "box-a/orca", instanceId: "aaa1", host: "box-a", activity: "supervisor (orca)", since: "2026-10-01T00:00:00.000Z" },
-    { name: "manager", instanceId: "bbb2", host: null, activity: null, since: null },
-  ], "each manager carries what its presence reports, and nothing it does not; one without a name shows as <host>/<runtime>");
+    { name: "box-a/orca", instanceId: "aaa1", host: "box-a", activity: "supervisor (orca)", runtime: "orca", terminal: null, since: "2026-10-01T00:00:00.000Z" },
+    { name: "manager", instanceId: "bbb2", host: null, activity: null, runtime: null, terminal: null, since: null },
+  ], "each manager carries what its presence reports, and nothing it does not; one without a name shows as <host>/<runtime>, and a presence that does not say whether a terminal attaches reports neither way");
   assert.equal(restated.remedy, `rerun it on one: ${displayCmd()} stop --name 'x y' --json --on box-a/orca or ${displayCmd()} stop --name 'x y' --json --on bbb2`, "the Next reruns the caller's own command with --on for each manager, by the shortest value that picks it");
   const shown = renderReport(commandFailureReport(restated), "plain");
   assert.match(shown, /Live managers[\s\S]*Manager\s+Instance[\s\S]*box-a\/orca\s+aaa1\s+box-a\s+supervisor \(orca\)\s+2026-10-01T00:00:00\.000Z/, "the report lists each manager on its own row, by name first");
+  const reported = [{ ...(roster[0] as unknown as { card: Record<string, unknown> }), card: { ...(roster[0] as unknown as { card: Record<string, unknown> }).card, meta: { host: "box-a", terminal: "none" } } }] as unknown as import("@cotal-ai/core").Presence[];
+  const said = await managerChoiceFailure(refusal, async () => reported, ["ps"]);
+  assert.equal(((said?.native?.detail as { managers: { terminal: unknown }[] }).managers[0])?.terminal, "none", "a manager that reports no terminal attach is carried as reporting none");
   const unread = await managerChoiceFailure(refusal, async () => { throw new Error("no roster"); }, ["ps"]);
   assert.deepEqual((unread?.native?.detail as { managers: { instanceId: string }[] }).managers.map((m) => m.instanceId), ["aaa1", "bbb2"], "an unreadable roster still names the instance ids");
   let read = false;
@@ -1352,8 +1355,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   const hostless = new CommandFailure("refused", "PERMISSION_DENIED", "2 of your managers are live, and this command needs exactly one of them", { native: { detail: { managers: [{ name: "orca", instanceId: "c".repeat(30), host: null, activity: "supervisor (orca)", since: null }] } } });
   assert.match(renderReport(commandFailureReport(hostless), "plain"), /orca\s+c{30}\s+not reported \(started by an older cotal\)\s+supervisor \(orca\)/, "a manager with no host in its presence reads as started by an older cotal, not as a bare dash");
   const candidates = [
-    { name: "factory", instanceId: "a".repeat(30), host: "pc", activity: "supervisor (tmux)", since: null },
-    { name: "pc/pty", instanceId: "b".repeat(30), host: "pc", activity: "supervisor (pty)", since: null },
+    { name: "factory", instanceId: "a".repeat(30), host: "pc", activity: "supervisor (tmux)", runtime: "tmux", terminal: "none" as const, since: null },
+    { name: "pc/pty", instanceId: "b".repeat(30), host: "pc", activity: "supervisor (pty)", runtime: "pty", terminal: "stream" as const, since: null },
   ];
   const ambiguous = new ManagerPinUnmatched("pc", candidates, 2);
   assert.equal(ambiguous.code, "TARGET_AMBIGUOUS", "a value that matches several managers is ambiguous");
@@ -1363,6 +1366,19 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   const equals = await managerChoiceFailure(ambiguous, async () => { throw new Error("not read"); }, ["ps", "--on=pc"]);
   assert.equal(equals?.remedy, `rerun it on one: ${displayCmd()} ps --on factory or ${displayCmd()} ps --on pc/pty`, "and replaces an --on=<value> the same way");
   assert.equal(await managerChoiceFailure(new ManagerPinUnmatched("x", [], 0), async () => [], ["ps", "--on", "x"]), undefined, "with no manager to offer, the refusal stands as it is");
+
+  // The question's rows carry the backend, so the choice is informed BEFORE a launch: picking a
+  // manager whose runtime streams no terminal is what sent an operator through a complete launch to
+  // a partial failure, and the row that offered it said only `supervisor (tmux)`.
+  const { managerOptions } = await import("../src/lib/manager-choice.js");
+  const hints = managerOptions(candidates).options.map((option) => option.hint);
+  assert.match(hints[0]!, /tmux · no terminal attach/, "an external runtime's row says no terminal attaches to its seats");
+  assert.match(hints[1]!, /pty · terminal attach/, "a pty manager's row says one does");
+  assert.doesNotMatch(hints.join("\n"), /supervisor \(/, "the runtime cell replaces the activity line it was read from, rather than repeating it");
+  const unreported = managerOptions([{ ...candidates[0]!, terminal: null }]).options[0]!.hint;
+  assert.match(unreported, /tmux · terminal attach not reported/, "a manager that does not report it is shown as not reporting it, never as attachable");
+  const activityOnly = managerOptions([{ ...candidates[0]!, runtime: null, activity: "busy", terminal: null }]).options[0]!.hint;
+  assert.match(activityOnly, /busy/, "and one whose presence carries no runtime keeps the activity it does carry");
 }
 
 {
@@ -1395,11 +1411,26 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   assert.deepEqual(managedLaunchAcl(acl), acl, "the manager's acl field is carried as it was sent");
   assert.equal(managedLaunchAcl(undefined), null, "a launch without one carries null");
   assert.equal(managedLaunchAcl({ requested: acl.requested }), undefined, "one that cannot be read is told apart from none");
-  const result = { kind: "managed-launch", name: "worker", id: "u_own.worker", lifecycleUid: "a".repeat(26), space: "demo", managerInstanceId: "b".repeat(26), harness: "probe", runtime: "pty", role: null, request: null, intent: null, readiness: "joined", requestedModel: null, detached: true } as const;
+  const result = { kind: "managed-launch", name: "worker", id: "u_own.worker", lifecycleUid: "a".repeat(26), space: "demo", managerInstanceId: "b".repeat(26), harness: "probe", runtime: "pty", role: null, request: null, intent: null, readiness: "joined", requestedModel: null, detached: true, streamsTerminal: true } as const;
   const narrowed = renderReport(managedLaunchView({ ...result, acl }), "plain");
   assert.match(narrowed, /Granted:\s+read general [·-] post none; asked for read > [·-] post >\n/, "the receipt lists what was granted");
   assert.equal(narrowed.match(/Granted/g)?.length, 1, "on one line");
   assert.doesNotMatch(renderReport(managedLaunchView({ ...result, acl: null }), "plain"), /Granted/, "a launch granted what it asked for shows no such line");
+
+  // A seat on a runtime that streams no terminal: the receipt says so where the runtime and the
+  // view are named, and its Next is what actually reaches the agent. `attach` is named once, as
+  // the thing that is not available, and never offered as a command to run.
+  const { displayCmd: cmd } = await import("../src/lib/self-exec.js");
+  const external = renderReport(managedLaunchView({ ...result, acl: null, runtime: "orca", detached: false, streamsTerminal: false }), "plain");
+  assert.match(external, /Runtime:\s+orca [·-] no terminal stream\n/, "the runtime row says it streams no terminal");
+  assert.match(external, /View:\s+not attached; the seat runs in the manager's orca session\n/, "and the view row says where the seat runs instead");
+  assert.match(external, new RegExp(`${cmd()} watch --space demo`), "the Next follows the mesh");
+  assert.match(external, new RegExp(`${cmd()} send -t worker`), "and gives the agent work over it");
+  assert.match(external, /attach is not available here: the orca runtime streams no terminal\./, "and says once that attach is not available");
+  assert.doesNotMatch(external, new RegExp(`${cmd()} attach worker`), "never offering the attach command itself");
+  const streaming = renderReport(managedLaunchView({ ...result, acl: null, detached: false }), "plain");
+  assert.match(streaming, /View:\s+attaching to the allocated incarnation\n/, "a streaming runtime still attaches in this terminal");
+  assert.match(renderReport(managedLaunchView({ ...result, acl: null, streamsTerminal: null }), "plain"), /Runtime:\s+pty\n/, "a manager too old to report it is shown as before");
 }
 
 console.log("✓ command-kernel smoke passed");

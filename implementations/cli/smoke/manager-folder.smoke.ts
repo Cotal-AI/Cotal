@@ -24,8 +24,8 @@ const { check, finish } = createSuite();
 const plain = (text: string) => text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
-const remote: ManagerSelection = { manager: { name: "remote", instanceId: "krudqi08ilzx2viqeh8sv34ygs1surr", host: "fx6-remote", activity: null, since: null }, selector: "remote" };
-const unknown: ManagerSelection = { manager: { name: null, instanceId: "krudqi08ilzx2viqeh8sv34ygs1surr", host: null, activity: null, since: null }, selector: "krudqi08ilzx2viqeh8sv34ygs1surr" };
+const remote: ManagerSelection = { manager: { name: "remote", instanceId: "krudqi08ilzx2viqeh8sv34ygs1surr", host: "fx6-remote", activity: null, runtime: null, terminal: null, since: null }, selector: "remote" };
+const unknown: ManagerSelection = { manager: { name: null, instanceId: "krudqi08ilzx2viqeh8sv34ygs1surr", host: null, activity: null, runtime: null, terminal: null, since: null }, selector: "krudqi08ilzx2viqeh8sv34ygs1surr" };
 
 /** Ask once over in-memory streams. Each step waits for its pattern in what was written since the
  *  last step, then types its keys. */
