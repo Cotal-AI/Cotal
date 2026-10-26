@@ -2,7 +2,7 @@ import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { agentFilePath, token, type AgentDef, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, presentationOf, resolveAgentType, resolveMeshTarget, resolvePreference, targetErrorCode, writeResult, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, presentationOf, resolveAgentType, resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts, writeResult, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { callerHarness, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import type { spawnFlags } from "./spawn.js";
@@ -42,7 +42,13 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     if (!isWorkspaceTargetError(error)) throw error;
     if (error.code === "not-started" && error.details.root && error.details.space) { root = error.details.root; space = error.details.space; site = { root, space, personaRoot: personaDir(root), origin: "up" }; }
     else if (error.code === "unknown-space" && values["enrollment-file"] && values.file && values.space && token(values.space) === values.space) { root = process.cwd(); space = values.space; site = { root, space, personaRoot: personaDir(root) }; }
-    else throw new CommandFailure("refused", targetErrorCode(error.code), "the preview target could not be resolved without changing the catalog; no different space was selected");
+    // Every other resolution failure keeps the sentence and next step the reads print for it, so a
+    // preview in a copied, moved or taken-over folder names that folder rather than reporting only
+    // that a target could not be resolved. The preview's own assurance is appended to it.
+    else {
+      const resolved = workspaceErrorParts({ kind: "target", error });
+      throw new CommandFailure("refused", targetErrorCode(error.code), `${resolved.message}; the preview resolved no target and selected no different space`, resolved.remedy === undefined ? {} : { remedy: resolved.remedy });
+    }
   }
   recordOperationSpace(space);
   const { ref, from } = spawnPersona(values.config, args.positionals, { space, preferences: cachedPreferences() });

@@ -864,7 +864,7 @@ try {
       return dir;
     };
     const sa = stackAt("sa"), sb = stackAt("sb");
-    const elsewhere = `--space sb names a controller stack rooted at ${sb}`;
+    const elsewhere = `--space sb names a stack rooted at ${sb}`;
     for (const [flag, again] of [["yes", "cotal down --yes"], ["dry-run", "cotal down --dry-run"]] as const) {
       const r = await bareDownIn(sa, { space: "sb", [flag]: true });
       check(`down --${flag} --space sb in another stack's folder refuses CONFLICT, naming sb's root, this folder's stack, and \`${again}\` from sb's root`,
@@ -889,8 +889,29 @@ try {
       fromLeftover.error?.code === "TARGET_NOT_FOUND" && Boolean(fromLeftover.error.message?.includes(elsewhere)) && fromLeftover.error.remedy === `run \`cotal down --yes\` from ${sb}`, fromLeftover);
     const own = await bareDownIn(leftover);
     check("a bare down there still answers for the folder's own root", own.error === undefined && own.exitCode === 0 && /is not running/.test(own.out), own);
+    // A stack the legacy launcher started writes no journal, and `cotal down` in its own root stops
+    // it just the same, so the folder with no stack names that root too. It used to fall through to
+    // "there is no stack at this folder's root" with no space, no root and no concrete down, and
+    // `--json` there refused UNSUPPORTED instead of carrying the refusal.
+    const lg = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-legacy-stack-")));
+    mkdirSync(join(lg, ".cotal"), { recursive: true, mode: 0o700 });
+    recordMesh({ space: "lgs", server: "nats://127.0.0.1:2", root: lg, mode: "open", origin: "up", ts });
+    const empty = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-empty-")));
+    setCurrent("lgs");
+    const bareCases: { label: string; again: string; values: Record<string, string | boolean> }[] = [
+      { label: "a bare down", again: "cotal down --yes", values: { yes: true } },
+      { label: "a bare down --json", again: "cotal down --yes", values: { yes: true, json: true } },
+      { label: "a bare down --dry-run", again: "cotal down --dry-run", values: { "dry-run": true } },
+    ];
+    for (const { label, again, values } of bareCases) {
+      const r = await bareDownIn(empty, values);
+      check(`${label} in an empty folder names the selected legacy stack's space, its root and \`${again}\` there`,
+        r.error?.code === "TARGET_NOT_FOUND" && Boolean(r.error.message?.includes(`the selected space "lgs" is a stack rooted at ${lg}`)) && r.error.remedy === `run \`${again}\` from ${lg}`, r);
+    }
+    setCurrent("sa");
+    removeMesh("lgs");
     removeMesh("sa"); removeMesh("sb");
-    for (const dir of [sa, sb, leftover]) rmSync(dir, { recursive: true, force: true });
+    for (const dir of [sa, sb, leftover, lg, empty]) rmSync(dir, { recursive: true, force: true });
   }
 
   console.log(`\ndown-target smoke: ${pass} checks passed`);

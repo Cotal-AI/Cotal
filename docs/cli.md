@@ -905,9 +905,9 @@ unstarted member. The failure target names that stage. Typed JetStream API error
 numeric code and status without copying the server's description or changing the unknown outcome.
 The journal records the absolute root it was written in, and the stack runs only from that folder.
 In a copy of a controller project, or after the folder is moved, commands that read the journal
-refuse `CONFLICT`, exit 2, and name the recorded folder: a copy is told to use the stack from the
-original, and a moved folder to move back there first. A folder is moved when its recorded folder no
-longer holds the journal. A second Cotal home that reaches the original over a shared filesystem is
+refuse `TARGET_UNAVAILABLE`, exit 2, and name the recorded folder, while `up` and `down` there
+refuse `CONFLICT`: a copy is told to use the stack from the original, and a moved folder to move
+back there first. A folder is moved when its recorded folder no longer holds the journal. A second Cotal home that reaches the original over a shared filesystem is
 told the same, and it can adopt the copy only after the original's stack is stopped there and that
 folder no longer holds its journal. When this machine records neither the space nor an instance of
 its stack, as on another machine, moving back would not start it, so a moved folder is told only to
@@ -935,6 +935,15 @@ inventories through the link. It warns `COTAL_DIR_LINKED`, or `COTAL_DIR_DANGLIN
 leads nowhere, with the same next step, and exits 4. For a linked folder, its selected space names
 the same refusal, and Next gives that step in place of starting the space with `cotal up`. `space create` in a copy whose records name
 another root says so and names that root, and in a linked folder it names the link.
+
+A project the legacy launcher started writes no journal, so a copy of one, the folder a later `up`
+took its name over from, and one moved away from its recorded path are recognized from the
+registration instead. While this machine registers that space for another folder, reads there refuse
+`TARGET_UNAVAILABLE`, exit 2, and name that folder: the next step is to use the stack from it, or,
+when it no longer exists, to move this folder back there first. A bare `down` there refuses
+`CONFLICT`, exit 2, and names the same step, because the folder holds the space's records and no
+stack of its own. A legacy root whose space this machine registers for no folder keeps its own
+`cotal up`, which starts it again at the address its last start configured.
 
 A journal that is not valid JSON, as an interrupted write or a full disk can leave it, makes `up`,
 `down`, `clean`, `reset` and `space create` refuse `SCHEMA_INVALID`, exit 1, naming its path, and
@@ -1501,13 +1510,14 @@ so it refuses `UNSUPPORTED`. A stop that refuses or is cancelled before any memb
 registration back as it was.
 
 A bare `down` stops only the stack of the folder it runs in. In a folder whose root holds no
-stack, when the space named by `--space`, or else the selected space, is a controller stack rooted
-in another folder, `down` refuses with `TARGET_NOT_FOUND`, exit 2, and stops nothing. A folder whose
+stack, when the space named by `--space`, or else the selected space, is a stack this machine
+started in another folder, `down` refuses with `TARGET_NOT_FOUND`, exit 2, and stops nothing. A folder whose
 own `.cotal` holds no stack, such as one a failed start left, answers for itself unless `--space`
 names another folder's stack. In a folder with its own controller stack, a `--space` that names
 another space refuses with `CONFLICT`, exit 2, and names this folder's stack. Each refusal names
 the space and, when this machine started it elsewhere, its root, and its next step runs the same
-`down` from that root.
+`down` from that root. `--json` and `--plain` carry that refusal as structured output, because the
+folder has no stack for a bare stop to print its own lines about.
 
 When the folder of a running controller stack is deleted, its stack journal and broker
 configuration go with it, so no member's own stop can run. A running broker writes `.cotal/nats`
