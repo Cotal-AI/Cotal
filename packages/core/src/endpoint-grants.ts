@@ -404,6 +404,14 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin", cal
       ...(command === "ps" || command === "slots" ? { routes: ["one", "all"] as ("one" | "all")[] } : {}),
     })),
     ...SPAWN_CREATE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    // The placement read of the same `manager.spawn` class as the `spawn` row above: it has one
+    // manager canonicalize an absolute path on its own host, creates nothing, and is what the
+    // folder question a managed launch asks must call before anything is launched. The instrument
+    // IS the caller on a static mesh, so without this row that question's typed-folder arm is
+    // refused at the broker on every static mesh, while the user-auth `manager-caller` view carries
+    // it. The standing agent `spawn` set still does not: it reaches every manager in the space
+    // through the class rail, and this instrument is pinned and one-shot.
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "resolve-cwd" },
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "define-persona" },
     ...CHAT_SESSION_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
     // The workflow-run surface (SPEC 14.3) rides the privileged tier as `cotal run`'s instrument:
