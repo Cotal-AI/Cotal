@@ -843,6 +843,12 @@ for (const { alias, cmd } of aliases) {
   refused("a missing flag value writes no seed store", cotal(["spawn", "--space"]), /--space/);
   const control = cotal(["sync"]);
   check("control: a valid command that is not a read seeds the same sandbox shape", control.status === 0 && control.wrote.length > 0, shown(control));
+  // `manager start` replaces `supervise`, which seeds on first run, so it seeds too; the group's
+  // other verbs keep the native-maintenance rule and seed nothing.
+  const managerStart = cotal(["manager", "start"]);
+  check("manager start seeds on first run, as the supervise it replaces does", managerStart.wrote.length > 0, shown(managerStart));
+  const managerStatus = cotal(["manager", "status"]);
+  check("manager status seeds nothing", managerStatus.wrote.length === 0, shown(managerStatus));
 }
 
 // ── A signal while the CLI loads ──────────────────────────────────────────────────────────────────
