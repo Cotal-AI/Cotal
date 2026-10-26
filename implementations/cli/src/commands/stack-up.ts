@@ -22,7 +22,6 @@ import {
   deliveryCredsKey,
   findMesh,
   findPreparedSpace,
-  keepsRegistration,
   getCurrent,
   getSpaceAuth,
   hasUserAuthState,
@@ -255,10 +254,11 @@ export function requestedStackMode(values: ParsedArgs["values"]): StackMode | un
   return values["user-auth"] === true ? "user" : values.open === true ? "open" : undefined;
 }
 
-/** A root takes the controller route when it already has a stack journal, or when it is a fresh,
- *  prepared root with nothing legacy, maintenance or team-owned retained under it. On either, an
- *  input the controller has no route for refuses `UNSUPPORTED`; a root the retained launcher
- *  already started keeps that launcher for such an input. A recorded stack that launched a
+/** A root takes the controller route when it already has a stack journal, or when it is a fresh
+ *  root prepared here with nothing legacy, maintenance or team-owned retained under it. A root with
+ *  neither, its space registered by `up` included, keeps the retained path. On either, an input the
+ *  controller has no route for refuses `UNSUPPORTED`; a prepared root the retained launcher already
+ *  started keeps that launcher for such an input. A recorded stack that launched a
  *  member keeps its auth mode. A static-auth request needs an `up`
  *  registration in auth mode or none. An `--open` request needs an open registration or none, and
  *  a root that holds no broker account. A prepared user-auth root uses the same controller with
@@ -287,16 +287,16 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   // empty path would canonicalize to the working directory and admit an unprepared legacy folder.
   const prepared = findPreparedSpace(space);
   const preparedHere = prepared !== undefined && canonicalRoot(prepared.root) === canonical;
-  if (!registered && !preparedHere) return false;
-  // A legacy `down` keeps the registration of a space named after its folder, and the retained
-  // launcher that wrote it starts it again.
-  if (registered && !preparedHere && keepsRegistration(registered)) return false;
+  // A registration alone is no prepared root. The retained launcher wrote it, and the root keeps what
+  // that launcher left there: a legacy `down` keeps the registration of a space named after its
+  // folder, and a stack stopped without `down` keeps it along with its pid files and user-auth state.
+  if (!preparedHere) return false;
   if (readMaintenanceJournal(canonical)) return false;
   if (existsSync(join(canonical, ".cotal", "nats.pid")) || liveMeshProcesses(canonical, space).length) return false;
   if (unsupported.length) {
-    // A root the retained launcher already started, registered by it with no prepared record here or
-    // holding the user-auth state it wrote, keeps that launcher for an option only it takes.
-    if (!preparedHere || wanted === "user" && hasUserAuthState(canonical, space, { readOnly: true })) return false;
+    // A prepared root the retained launcher already started holds the user-auth state it wrote, and
+    // keeps that launcher for an option only it takes.
+    if (wanted === "user" && hasUserAuthState(canonical, space, { readOnly: true })) return false;
     // A fresh prepared root never falls through to the legacy launcher, so an option the controller
     // stack has no route for refuses here as it does on a root whose stack the controller owns.
     throw controllerUnsupported(canonical, unsupported, true);

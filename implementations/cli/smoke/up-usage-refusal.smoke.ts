@@ -345,10 +345,14 @@ try {
     process.env.COTAL_HOME = join(home, ".cotal");
     recordMesh({ space: "legacyface", server: `nats://127.0.0.1:${held}`, root: legacy, mode: "user", origin: "up", ts: new Date().toISOString() });
     const face = run(["up", "--space", "legacyface", "--user-auth", "--idp", "https://idp.example.test/api/auth", "--server", `nats://127.0.0.1:${held}`, "--exchange-public-port", String(await freePort()), "--exchange-public-url", "https://mesh.example.test", "--json"], legacy);
+    const plainUp = run(["up", "--space", "legacyface", "--user-auth", "--idp", "https://idp.example.test/api/auth", "--server", `nats://127.0.0.1:${held}`, "--json"], legacy);
     removeMesh("legacyface");
     delete process.env.COTAL_HOME;
+    const launcher = /retained native launcher, which has no structured or plain receipt/;
     check("a stopped root the legacy launcher registered with no prepared record keeps that launcher for the public face, not UNSUPPORTED for a prepared root",
-      face.status === 2 && face.envelope?.error?.code === "UNSUPPORTED" && /retained native launcher, which has no structured or plain receipt/.test(face.envelope.error.message ?? "") && !started(legacy) && !existsSync(join(legacy, ".cotal", "stack-controller.json")), shown(face));
+      face.status === 2 && face.envelope?.error?.code === "UNSUPPORTED" && launcher.test(face.envelope.error.message ?? "") && !started(legacy) && !existsSync(join(legacy, ".cotal", "stack-controller.json")), shown(face));
+    check("…and an up that names no legacy-only option there takes that launcher too, writing no stack journal into the root",
+      plainUp.status === 2 && plainUp.envelope?.error?.code === "UNSUPPORTED" && launcher.test(plainUp.envelope.error.message ?? "") && !started(legacy) && !existsSync(join(legacy, ".cotal", "stack-controller.json")), shown(plainUp));
   }
 
   const bind = run(["up", "--server", `nats://127.0.0.1:${held}`], unprepared);
