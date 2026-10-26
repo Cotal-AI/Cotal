@@ -84,6 +84,14 @@ interface ChildJob {
   pubSubjects?: string[];
 }
 
+// Scrub any ambient COTAL_* before anything is handed to a child. Whatever runs this harness may
+// itself be a managed agent session, and its COTAL_SERVERS / credential variables name a LIVE mesh:
+// a bare `...process.env` would hand a load child a real broker and a real identity, which is a
+// different mesh from the private one this harness builds and measures. Enforced tree-wide by
+// `smoke:suite-ambient-env`.
+const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
+for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
+
 const RESULT_PREFIX = "RESULT ";
 /** Keep every Nth delivery latency, and never more than this many, so one run's result stays a
  *  document the parent can parse. Percentiles over a systematic sample of a steady stream are
@@ -477,7 +485,7 @@ const runLoad = (job: ChildJob): Promise<ChildResult> =>
   new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [...process.execArgv, import.meta.filename, "load"], {
       stdio: ["pipe", "pipe", "inherit"],
-      env: { ...process.env, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off" },
+      env: { ...cleanEnv, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off" },
     });
     children.push(child);
     let out = "";
@@ -548,7 +556,7 @@ try {
   for (let i = 1; i < CALLOUTS; i++) {
     const child = spawn(process.execPath, [...process.execArgv, import.meta.filename, "callout"], {
       stdio: ["pipe", "pipe", "inherit"],
-      env: { ...process.env, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off" },
+      env: { ...cleanEnv, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off" },
     });
     calloutChildren.push(child);
     const ready = new Promise<void>((resolve, reject) => {
