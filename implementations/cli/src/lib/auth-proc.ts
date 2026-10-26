@@ -3,7 +3,7 @@
  * throughout (pid/log names carry the space): `cotal down` on one space must never kill another
  * space's auth service once multi-space-per-root lands. The CLI stays provider-agnostic: it
  * resolves the ONE registered `auth-provider` extension, re-execs its self-registered daemon
- * command via {@link selfArgv} (argv array — never shell interpolation), and delegates readiness
+ * command via {@link daemonArgv} (argv array — never shell interpolation), and delegates readiness
  * to the provider's `ready()` contract. No `@cotal-ai/auth` import anywhere in this package.
  */
 import { spawn } from "node:child_process";
@@ -15,7 +15,7 @@ import { AUTH_PIDFILE, spaceKey } from "@cotal-ai/workspace";
 import { parsePid, probeLiveness, readPidfile, writePidPair, type LocalProcess } from "@cotal-ai/workspace";
 import { stopLocalProcess } from "./local-process-stop.js";
 
-import { selfArgv } from "./self-exec.js";
+import { daemonArgv } from "./self-exec.js";
 import { cotalPath, cotalRoot } from "./paths.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
 
@@ -160,7 +160,7 @@ function startAuthServiceDetached(space: string, server: string, command: string
   //
   // Then: a pre-hex crash leaves a dead legacy pidfile; clear it or the canonical claim produces the
   // both-present wedge readPidPath refuses.
-  const [node, ...self] = selfArgv();
+  const [node, ...self] = daemonArgv();
   reclaimDeadLegacyPid(space);
   const slot = claimAuthPidSlot(space);
   if (slot === undefined) return 0;

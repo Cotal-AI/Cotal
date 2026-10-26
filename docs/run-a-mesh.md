@@ -29,6 +29,12 @@ pre-signal agent inventory was spared; those agents may have been reaped.
 - **Manager**: a detached supervisor answering the control plane, so
   `cotal spawn --detach` and the `cotal_spawn` tool work right after `up`.
 
+`up` starts the manager, the delivery daemon and the user-auth service under the Node flag
+`--max-semi-space-size=1`, which caps V8's young generation at 2 MB. Each service that
+`cotal service start` or `cotal manager start` launches through the CLI gets the same flag, and so
+does the unit that `cotal service install` writes. A daemon then holds less memory, most of all
+in its first minutes.
+
 Cotal creates the presence bucket in memory storage. Its records are liveness that every endpoint
 rewrites each heartbeat, so nothing is lost when a broker restart empties it, and nats-server's file
 store write latch cannot reach it. A broker stop removes the memory stream itself, so every `cotal up`,

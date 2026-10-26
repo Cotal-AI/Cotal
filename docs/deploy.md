@@ -15,7 +15,7 @@ is the map: what the tree provides, what you need, and how creds flow.
 | file | what it is |
 |---|---|
 | `deploy/docker/Dockerfile` | Builds one image (`cotal-runner`) bundling the `cotal`, `claude`, and `opencode` CLIs, installing the mesh plugin (`cotal setup`), and pre-completing Claude's first-run onboarding for unattended use. |
-| `deploy/docker/entrypoint.sh` | Waits for the broker to be reachable, then runs `cotal <cmd> --server $COTAL_SERVERS`. |
+| `deploy/docker/entrypoint.sh` | Waits for the broker to be reachable, then runs `cotal <cmd> --server $COTAL_SERVERS` under the daemon Node flag `--max-semi-space-size=1`. |
 | `deploy/docker/compose.yaml` | Two example services: `team-a` (a manager + roster) and `solo` (one agent). |
 | `deploy/docker/roster.example.yaml` | A roster template to copy. |
 
