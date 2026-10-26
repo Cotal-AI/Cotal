@@ -503,7 +503,7 @@ const authCommands: Command[] = [
     name: "actor",
     hidden: true,
     group: "Identity",
-    summary: "manage the space's actor ledger - grant/revoke which (user, actor) pairs may run agents",
+    summary: "(legacy) manage the space's actor ledger - grant/revoke which (user, actor) pairs may run agents. `auth grants`, `auth grant` and `auth revoke` replace it",
     usage: "cotal actor <grant <actor> | revoke <actor> | label <actor> <label> | list> [--sub <IdP subject>|--owner <u_…>] [--space <s>] [--full | --scope a,b --allow-subscribe a,b --allow-publish a,b] [--role r] [--label l] [--json|--plain]",
     positionals: "<grant <actor> | revoke <actor> | label <actor> <label> | list>",
     subcommands: [
