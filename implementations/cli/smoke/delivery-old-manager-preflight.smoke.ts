@@ -14,9 +14,10 @@ import { once } from "node:events";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { probeLiveness } from "@cotal-ai/workspace";
-import { managerUp, managerHasDeliveryMarker } from "../dist/lib/manager-proc.js";
+import { MANAGER_SHUTDOWN_INTENT, localProcessPath, probeLiveness } from "@cotal-ai/workspace";
+import { managerUp, managerHasDeliveryMarker, stopManager } from "../dist/lib/manager-proc.js";
 import { stopOldHostingManagerIfPresent } from "../dist/lib/delivery-proc.js";
+import { resolveRuntimeSpace } from "../dist/lib/status.js";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -30,6 +31,7 @@ const origCwd = process.cwd();
 process.chdir(root); // findCotalRoot()/cotalPath() resolve `.cotal/` from cwd
 const pidPath = join(root, ".cotal", "manager.pid");
 const markerPath = join(root, ".cotal", "manager.delivery-aware");
+const shutdownPath = localProcessPath(MANAGER_SHUTDOWN_INTENT, { root, space: resolveRuntimeSpace(root) });
 const children: ReturnType<typeof spawn>[] = [];
 
 try {
@@ -92,6 +94,47 @@ try {
   }), /manager record changed or disappeared.*refusing to start the daemon/);
   check("disappeared record refuses cutover without stopping the judged manager",
     removed && alive(predecessor.pid!) && !existsSync(pidPath));
+
+  // 6. A leftover successor marker or shutdown artifact makes an unbound stop report artifacts
+  // found, not a process stopped. An empty husk is similarly not proof about the judged predecessor.
+  for (const artifact of [markerPath, shutdownPath]) {
+    writeFileSync(pidPath, String(predecessor.pid));
+    rmSync(markerPath, { force: true });
+    rmSync(shutdownPath, { force: true });
+    let dropped = false;
+    await assert.rejects(stopOldHostingManagerIfPresent((pid) => {
+      const state = probeLiveness(pid);
+      if (!dropped) {
+        dropped = true;
+        rmSync(pidPath);
+        writeFileSync(artifact, String(m2.pid));
+      }
+      return state;
+    }), /manager record changed or disappeared.*refusing to start the daemon/);
+    check("missing pid with remaining artifact refuses and preserves successor evidence",
+      dropped && alive(predecessor.pid!) && alive(m2.pid!) &&
+      !existsSync(pidPath) && readFileSync(artifact, "utf8") === String(m2.pid));
+  }
+  writeFileSync(pidPath, String(predecessor.pid));
+  rmSync(markerPath, { force: true });
+  rmSync(shutdownPath, { force: true });
+  let emptied = false;
+  await assert.rejects(stopOldHostingManagerIfPresent((pid) => {
+    const state = probeLiveness(pid);
+    if (!emptied) {
+      emptied = true;
+      writeFileSync(pidPath, "");
+    }
+    return state;
+  }), /manager record changed or disappeared.*refusing to start the daemon/);
+  check("empty replacement refuses without removing the husk or stopping the judged manager",
+    emptied && alive(predecessor.pid!) && readFileSync(pidPath, "utf8") === "");
+
+  // Unbound maintenance still cleans empty husks and reports artifact-only records.
+  check("unbound stop still clears an empty pidfile", await stopManager() && !existsSync(pidPath));
+  writeFileSync(markerPath, String(m2.pid));
+  check("unbound stop still reports an artifact-only record",
+    await stopManager() && readFileSync(markerPath, "utf8") === String(m2.pid));
 
   console.log(`\nDELIVERY-OLD-MANAGER-PREFLIGHT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

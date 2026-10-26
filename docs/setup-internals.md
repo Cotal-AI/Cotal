@@ -146,7 +146,9 @@ the manager record once and judges that one process: it stops a live manager who
 `manager.<key>.delivery-aware` marker does not hold its pid, and leaves one whose marker does or
 that exited while the preflight looked. The stop signals only that pid. If the judged record
 changes or disappears before the stop, cutover refuses to start the daemon and preserves any
-successor's records. Retry after the manager restart completes. A successor's marker does not
+successor's records, including leftover artifacts or an emptied pidfile. Cleaning a husk or
+finding an artifact does not confirm the judged manager stopped. Retry after the manager restart
+completes. A successor's marker does not
 prove the predecessor released Plane 3. The detached processes, all stopped by `cotal down`:
 
 With no explicit `--server`, `cotal up` auto-selects a free local port when the default broker
