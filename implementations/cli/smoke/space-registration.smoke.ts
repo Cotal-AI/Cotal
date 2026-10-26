@@ -1442,11 +1442,14 @@ if (process.platform === "linux") {
 // names a new store on purpose and passes.
 {
   const lastRoot = projectRoot("store-last");
+  // Its own address: `DEAD` is the one a hand-added registration holds in this suite, and a start
+  // there is refused by that claim before it reaches the store rules these cells are about.
+  const unheld = `nats://127.0.0.1:${await freePort()}`;
   const last = join(lastRoot, "altstore");
   const typo = join(lastRoot, "altstoer");
   mkdirSync(join(last, "jetstream"), { recursive: true });
   writeFileSync(join(lastRoot, ".cotal", "server-open.conf"), `jetstream { store_dir: ${JSON.stringify(last)} }\n`);
-  writeFileSync(join(lastRoot, "cotal.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: store-last\nbroker: { servers: "${DEAD}", auth: false }\nchannels:\n  lobby: { description: "base" }\n`);
+  writeFileSync(join(lastRoot, "cotal.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: store-last\nbroker: { servers: "${unheld}", auth: false }\nchannels:\n  lobby: { description: "base" }\n`);
   const mistyped = await run(["up", "-f", "cotal.yaml", "--dry-run", "--store-dir", typo], {}, lastRoot);
   check("up -f --store-dir naming a missing path while the last store holds data refuses CONFLICT, exit 2, naming both",
     mistyped.status === 2 && mistyped.stderr.includes("CONFLICT") && mistyped.stderr.includes(`served the store ${last}, and --store-dir names ${typo}, which does not exist`) &&
