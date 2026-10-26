@@ -7169,6 +7169,7 @@ and print no warning. New setups use `cotal service add <name> --preset <preset>
 cotal deliver --space <s> [--server <url>] [--creds <file>] [--root <dir>]
 cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy] [--advertised-server <url>] [--agent-provisioning-url <https://…>] [--auth-timeout <seconds>]
 cotal auth-service --space <s> --server <url> --callout-only [--auth-timeout <seconds>]
+cotal auth-service --server <url> --callout-only --spaces <manifest> [--auth-timeout <seconds>]
 cotal service add intake --preset feedback-intake --space <s> --root <absolute-root> --keys <private-keys.json> --creds <private-creds>
 cotal service start intake --space <s>
 ```
@@ -7189,6 +7190,29 @@ refuses to start in a space that admits service endpoints. It never writes `auth
 it exits non-zero when it loses a store connection or the broker. Give it the same `--auth-timeout`
 as the full service, the value the broker config renders.
 See [callout replicas](identity-and-auth.md#per-user-authentication).
+
+`--spaces` serves several spaces from one callout process, one lane each, and stands in for
+`--space`. The two are alternatives: naming both refuses, and `--spaces` without `--callout-only`
+refuses. The manifest is a JSON file holding the spaces this process serves:
+
+```json
+{ "version": 1, "spaces": ["<s>", "<s>"] }
+```
+
+An empty list, a repeated space, an unknown field, a version other than 1 and an entry that is not
+a space name all refuse. Every lane dials the one `--server`, so a deployment whose spaces live on
+different brokers runs one host process per broker rather than naming a server per space.
+
+Each lane applies the per-space refusals a single-space replica applies, so a space with missing
+material, a mismatched issuer pin, an unreachable broker or open service-endpoint admission refuses.
+At startup the host serves every space in the manifest or none: one that cannot be served is an
+error naming that space, and no lane is left running.
+
+The host rereads the manifest when it changes on disk, on `SIGHUP`, and on a slow backstop interval,
+and opens or closes the difference. Write a replacement and rename it into place: a manifest that
+does not read or parse whole is reported and the lanes already open are kept. A lane that loses its
+store connection or the broker closes on its own and the other lanes keep answering; the host
+reopens it, retrying every 5 seconds while it fails.
 
 `deliver` runs the server-side Plane-3 delivery daemon: the durable backstop and membership/ACL
 authority. It is auth-mode-only and single-instance (`--shard`/`--shards` accept only `N=1`);

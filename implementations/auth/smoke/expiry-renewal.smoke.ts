@@ -119,7 +119,7 @@ try {
     permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"], lifecycleUid: smokeUid, scope: [] })),
     log: (l) => {
       // One line per answered request; every outcome but `minted` refused the connect.
-      const m = /outcome=(denied|timeout|shed) req=(\S+).*?(?: reason=(".*"))?$/.exec(l);
+      const m = /outcome=(denied|timeout|shed) space=\S+ req=(\S+).*?(?: reason=(".*"))?$/.exec(l);
       if (m) denials.push({ ms: Date.now() - t0, nkey: m[2]!, reason: m[3] ? JSON.parse(m[3]) as string : m[1]! });
     },
   });

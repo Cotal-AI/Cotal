@@ -295,7 +295,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
     const total = now - c.arrivedAt;
     const level = total > limits.slowMs || outcome === "timeout" || outcome === "shed" ? "warn" : "info";
     const ms = (n: number) => Math.round(n);
-    log(`auth callout: level=${level} outcome=${outcome} req=${field(c.id)} cid=${c.req.client_info?.id ?? "-"}` +
+    log(`auth callout: level=${level} outcome=${outcome} space=${field(opts.space)} req=${field(c.id)} cid=${c.req.client_info?.id ?? "-"}` +
       ` owner=${field(c.owner ?? "-")} actor=${field(c.actor ?? "-")} queue_ms=${ms((c.startedAt ?? now) - c.queuedAt)}` +
       ` verify_ms=${ms(c.ms.verify)} ledger_ms=${ms(c.ms.ledger)} policy_ms=${ms(c.ms.policy)} sign_ms=${ms(c.ms.sign)} total_ms=${ms(total)}${extra}`);
   };
