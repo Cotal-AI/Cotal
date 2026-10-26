@@ -588,7 +588,7 @@ export async function launchManagedPersona(
   // `COTAL_DEFAULT_PERSONA` > `default`). Identity is separate:
   // when `--name` is given it OVERRIDES the file's `name:` (foreground's `requested`), threaded
   // as the op's `identity` so it is never silently dropped in detached mode.
-  const on = await managerPin(values, "cotal spawn <persona>");
+  let on = await managerPin(values, "cotal spawn <persona>");
   // From a managed seat's own shell the launch is the SEAT's, as its `cotal_spawn` tool is: the
   // manager records the seat as the spawner, so the seat can stop the child it asked for (#718).
   // `--on` keeps the pin on that path too.
@@ -600,6 +600,15 @@ export async function launchManagedPersona(
   // typed folder is checked under a view of that manager acquired after it is answered, and the
   // launch acquires its own below.
   let cwd = values.cwd;
+  // On a user-auth mesh, a launch with no --on goes to the manager the exchange picks, your only
+  // live one. On a terminal that pick is read once, its view dropped, and the launch is pinned to it,
+  // so the folder question asks about the manager that runs the agent. If that manager is gone by
+  // the time the launch is sent, the launch is refused and goes to no other manager.
+  if (cwd === undefined && on === undefined && !seatIntent && values.creds === undefined && canPrompt()) {
+    let mode: string | undefined;
+    try { mode = resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server }).mode; } catch { /* not a registered mesh */ }
+    if (mode === "user") on = (await resolveControlTarget(flags, "control-caller-privileged", undefined, { onRefusal: "throw" })).auth.managerInstanceId;
+  }
   if (cwd === undefined && on !== undefined && !seatIntent && canPrompt()) {
     const selection = await managerSelection(values, on);
     if (selection.manager.host !== hostname()) {
