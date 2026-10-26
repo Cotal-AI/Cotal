@@ -55,7 +55,7 @@ import { launchEnv } from "@cotal-ai/connector-core";
 import { cotalToolSpecs } from "../../../extensions/connector-core/src/tool-specs.js";
 import type { AgentConfig } from "../../../extensions/connector-core/src/config.js";
 import { Manager } from "../src/manager.js";
-import { SMOKE_BROKER_TOKEN, freePort, makeSeatRoot, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, emitSentinel, freePort, makeSeatRoot, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -347,4 +347,5 @@ try {
 }
 
 console.log(`\n${fail === 0 ? "✓" : "✗"} seat-cap: ${pass} passed, ${fail} failed`);
+emitSentinel({ passed: pass, failed: fail });
 process.exit(fail === 0 ? 0 : 1);
