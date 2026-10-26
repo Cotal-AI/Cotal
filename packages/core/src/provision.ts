@@ -1546,7 +1546,12 @@ export function permissionsFor(
     `$JS.API.CONSUMER.INFO.${DLV}.${dlvD}`,
     `$JS.API.CONSUMER.MSG.NEXT.${DLV}.${dlvD}`,
     `$JS.ACK.${DLV}.${dlvD}.>`,
-    // Presence: watch (read, public roster) + flow control + PUT OWN KEY ONLY.
+    // Presence: on-demand read + watch (read, public roster) + flow control + PUT OWN KEY ONLY.
+    // The read is a batched Direct Get of the bucket (SPEC §6): a seat reads the roster when it acts
+    // instead of receiving every member's heartbeat. Its reply subject is caller-chosen, the same
+    // vector the consumer create below already grants on the same world-readable bucket, so it
+    // reaches no byte the watch could not. The watch rows stay for seats built before the read.
+    `$JS.API.DIRECT.GET.${KV}`,
     `$JS.API.CONSUMER.CREATE.${KV}.>`,
     `$JS.API.CONSUMER.INFO.${KV}.>`,
     // No CONSUMER.DELETE here or on the registry below: the watch's `oc_<nuid>_<serial>` name

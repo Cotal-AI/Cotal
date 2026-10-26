@@ -350,7 +350,10 @@ export interface EndpointOptions {
   ttlMs?: number;
   /** Publish our own presence (default true). */
   registerPresence?: boolean;
-  /** Track the roster of peers (default true). */
+  /** Track the roster of peers with a live watch (default true). Every watcher receives every
+   *  member's heartbeat, so a space of K watching members moves K² deliveries per heartbeat. An
+   *  endpoint that only needs the roster when it acts sets this false and calls
+   *  {@link CotalEndpoint.readPresence} instead (SPEC §6). */
   watchPresence?: boolean;
   /** Open + watch the channel registry (default true). Independent of {@link watchPresence}: a
    *  presence-only supervisor sets this false to track the roster WITHOUT opening the channel-registry
@@ -358,13 +361,13 @@ export interface EndpointOptions {
    *  true: the join-time replay decision reads the registry, so a consumer always opens it. */
   watchChannels?: boolean;
   /** Read presence and the channel registry ONCE at start instead of watching them (default false),
-   *  for an endpoint that does one thing and stops (`cotal send`, a roster probe). Each read is one
-   *  Direct Get of every key's last record, so it binds no consumer. A watch's ordered consumer
+   *  for an endpoint that does one thing and stops (`cotal send`, a roster probe). Each read is a
+   *  batched Direct Get of every key's last record, so it binds no consumer. A watch's ordered consumer
    *  outlives {@link CotalEndpoint.stop} by the broker's five-minute inactive threshold, because the
    *  operator and agent profiles hold no CONSUMER.DELETE on these buckets (#691), and one per
    *  short-lived process piles up until the broker refuses new consumers there (#4091). The roster
-   *  and the channel cache hold the state at start and never update, and no sweep runs. A bucket of
-   *  more than 1024 keys refuses the read. Requires `consume` and `registerPresence` false. */
+   *  and the channel cache hold the state at start and never update, and no sweep runs. Requires
+   *  `consume` and `registerPresence` false. */
   readOnce?: boolean;
   /** Consume ONLY this endpoint's own existing DM durable, for a credential that can read nothing
    *  else. The endpoint binds `dm_<owner>-<actor>-<uid>` and opens no channel registry, presence,
@@ -766,6 +769,11 @@ export class CotalEndpoint extends EventEmitter {
    * or `undefined` when none ever has. A put that is merely in flight is not evidence yet. */
   private presencePutSettled?: number;
   private readonly roster = new Map<string, Presence>();
+  /** The {@link readPresence} in flight; calls made before it settles share it. */
+  private presenceRead?: Promise<Presence[]>;
+  /** Orders {@link readPresence} merges: a read that settles after a newer one was applied is dropped. */
+  private presenceReadGeneration = 0;
+  private presenceReadApplied = 0;
   /** Resolves when the current presence watch has consumed its complete initial KV snapshot. */
   private presenceSnapshot = Promise.resolve();
   /** False from connection reset until the watch marks the last entry in its initial replay. */
@@ -1863,6 +1871,10 @@ export class CotalEndpoint extends EventEmitter {
     this.chatSubDenied.clear();
     this.ownWatchDeletePrefixes.clear();
     this.roster.clear();
+    // A read in flight on the old connection must not land in the new connection's roster.
+    this.presenceRead = undefined;
+    this.presenceReadGeneration++;
+    this.presenceReadApplied = this.presenceReadGeneration;
     // #1356: the presence-refusal record is connection-scoped like everything else torn down here.
     // It says "the broker on THIS connection refuses writes to this bucket", so it cannot outlive the
     // connection that observed it. Left behind, a later failure on a different connection inherits it
@@ -3015,6 +3027,56 @@ export class CotalEndpoint extends EventEmitter {
     return [...this.roster.values()].sort((a, b) =>
       a.card.name.localeCompare(b.card.name),
     );
+  }
+
+  /**
+   * Read the roster from the broker now, for an endpoint that does not watch presence (SPEC §6). One
+   * batched Direct Get of the bucket that binds no consumer, decoded and dropped as the watch decodes.
+   * A record that says `offline` or whose `ts` is past the liveness window reads offline. A peer an
+   * earlier read saw that is gone from the bucket stays in the roster as offline, as a watch keeps
+   * it. The result is also what {@link getRoster} returns until the next read.
+   *
+   * Calls made while a read is in flight share it, and every other call reads anew, so a verdict
+   * never rests on a read that settled before it was asked. A failed read throws and changes
+   * nothing. A credential that may not make the read is refused with the grant it lacks.
+   */
+  async readPresence(): Promise<Presence[]> {
+    if (this.doWatch && !this.readOnce)
+      throw new Error("readPresence is for an endpoint that does not watch presence; this one keeps its roster live (getRoster)");
+    const kv = this.kv;
+    if (!kv) throw new Error(this.nc ? "readPresence needs the presence bucket open (registerPresence or watchPresence)" : this.notLiveMsg());
+    if (this.presenceRead) return this.presenceRead;
+    const generation = ++this.presenceReadGeneration;
+    const roster = (async () => {
+      let entries: KvEntry[];
+      try {
+        entries = await lastKvEntries(kv);
+      } catch (e) {
+        if (!isPublishPermissionDenied(e)) throw e;
+        throw new Error(
+          `presence read refused for ${this.card.id}: this credential may not publish $JS.API.DIRECT.GET.KV_${presenceBucket(this.space)}, the on-demand roster read (SPEC Appendix B). A credential minted before that grant existed lacks it; mint a new one with the current manager or auth service.`,
+          { cause: e },
+        );
+      }
+      const at = Date.now();
+      const read = new Map<string, Presence>();
+      for (const e of entries) {
+        if (e.key === TTL_RECONCILE_CANARY_KEY || e.operation === "DEL" || e.operation === "PURGE") continue;
+        const p = this.decodePresence(e);
+        if (p) read.set(e.key, p.status === "offline" || at - p.ts > this.ttlMs ? this.toOffline(p) : p);
+      }
+      if (generation > this.presenceReadApplied) {
+        this.presenceReadApplied = generation;
+        for (const [id, p] of this.roster) if (!read.has(id)) read.set(id, p.status === "offline" ? p : this.toOffline(p));
+        this.roster.clear();
+        for (const [id, p] of read) this.roster.set(id, p);
+      }
+      return this.getRoster();
+    })();
+    this.presenceRead = roster;
+    const settled = () => { if (this.presenceRead === roster) this.presenceRead = undefined; };
+    roster.then(settled, settled);
+    return roster;
   }
 
   /**
@@ -7297,31 +7359,38 @@ export class CotalEndpoint extends EventEmitter {
       this.markOffline(e.key);
       return;
     }
+    const p = this.decodePresence(e);
+    if (p) this.applyPresence(e.key, p);
+  }
+
+  /** The record a presence PUT carries, or undefined when a reader must drop it (SPEC §6). The watch
+   *  and {@link readPresence} decode through this one gate, so they drop the same records. */
+  private decodePresence(e: KvEntry): Presence | undefined {
     let p: unknown;
     try {
       p = e.json<unknown>();
     } catch {
-      return;
+      return undefined;
     }
     if (!isUsablePresence(p)) {
       this.presenceBindingDrops++;
       this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(e.key)}: not a record with a string card.name, a known status, a finite ts, string display fields and a condition with a string code`));
-      return;
+      return undefined;
     }
-    this.applyPresence(e.key, p);
-  }
-
-  private applyPresence(id: string, raw: Presence): void {
     // Defense-in-depth: the KV key IS the publisher's identity —
     // publishPresence() writes its record under card.id — so a record whose embedded card.id disagrees
     // with its bucket key is forged or corrupt. Drop it rather than surface a spoofed roster identity.
     // The write-side scoping ($KV.<presenceBucket>.<own-id>) is the primary guard; this rejects a
     // mis-keyed record even if a broad writer slips one in under another agent's key.
-    if (raw.card.id !== id) {
+    if (p.card.id !== e.key) {
       this.presenceBindingDrops++;
-      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(id)}: card.id ${JSON.stringify(raw.card.id)} does not match its KV key`));
-      return;
+      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(e.key)}: card.id ${JSON.stringify(p.card.id)} does not match its KV key`));
+      return undefined;
     }
+    return p;
+  }
+
+  private applyPresence(id: string, raw: Presence): void {
     const prev = this.roster.get(id);
     const stale = Date.now() - raw.ts > this.ttlMs;
     // A watch recovering from a stall replays the bucket. Those PUTs still carry the publisher's

@@ -6,8 +6,8 @@
  * (`provisionAgent`: the DM, DLV and role TASK durables, the read-ACL row and a scoped credential,
  * the step the manager runs at spawn), binds the delivery daemon's Plane-3 for every space, and then
  * brings up N seats as real `CotalEndpoint`s configured the way connector-core's `MeshAgent`
- * configures them: one boot channel, consume on, presence registered AND watched, channel registry
- * watched, the endpoint's own default heartbeat and TTL. Nothing on the wire is hand-rolled, so the
+ * configures them: one boot channel, consume on, presence registered and read on demand (not
+ * watched, AGENT-979), channel registry watched, the endpoint's own default heartbeat and TTL. Nothing on the wire is hand-rolled, so the
  * subscriptions, consumers, presence puts and pull keep-alives the broker serves are the product's.
  *
  * What it reports, once every seat is up and has settled: broker CPU and RSS per seat, broker
@@ -44,7 +44,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   CotalEndpoint, LEASE_TTL_MS, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable,
-  mintCreds, mintLifecycleUid, newIdentity, provisionAgent, serverConfig, setupSpaceStreams,
+  lastKvEntries, mintCreds, mintLifecycleUid, newIdentity, provisionAgent, serverConfig, setupSpaceStreams,
   type SpaceAuth,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -64,6 +64,9 @@ interface DaemonJob { kind: "daemons"; servers: string; daemons: DaemonSpec[] }
  *  peer's last heartbeat as each seat's roster holds it; `missing` counts peers a seat's roster
  *  should hold and does not. */
 interface SeatSample { up: number; failed: number; errors: number; ages: number[]; missing: number; stale: number; cpuMs: number; rssMb: number }
+/** What one on-demand roster read costs, from one seat per space: its latency, and the records and
+ *  bytes the broker sends for it (subject + value of every record, not counting framing). */
+interface ReadCost { ms: number[]; msgs: number[]; bytes: number[] }
 
 // Scrub any ambient COTAL_* before anything is handed to a child. Whatever runs this harness may
 // itself be a managed agent session, and its COTAL_SERVERS / credential variables name a LIVE mesh.
@@ -110,6 +113,8 @@ async function runSeats(job: SeatJob): Promise<void> {
       lifecycleUid: s.uid,
       channels: [CHANNEL],
       card: { id: s.id, name: s.name, role: ROLE, kind: "agent", meta: { connector: "claude-code", model: "claude-opus-5-5", host: "seat-host", cwd: "/home/user/project" } },
+      // MeshAgent reads the roster on demand instead of watching it (AGENT-979).
+      watchPresence: false,
       ...(job.heartbeatMs !== undefined ? { heartbeatMs: job.heartbeatMs } : {}),
     });
     ep.on("error", note);
@@ -123,15 +128,35 @@ async function runSeats(job: SeatJob): Promise<void> {
   }));
   await ipcSend({ allUp: true, up, failed, firstErrors });
 
+  // Seats hold no roster now, so freshness is what an on-demand read returns, read by ONE seat per
+  // space (the first this process holds): every seat reading would add K² messages to the window.
+  const readers = new Map<string, CotalEndpoint>();
+  for (const { ep, space } of eps) if (!readers.has(space)) readers.set(space, ep);
   for (;;) {
-    const cmd = await nextJob<{ cmd: "sample" | "stop" }>();
+    const cmd = await nextJob<{ cmd: "sample" | "readcost" | "stop" }>();
     if (cmd.cmd === "stop") break;
+    if (cmd.cmd === "readcost") {
+      const cost: ReadCost = { ms: [], msgs: [], bytes: [] };
+      for (const ep of [...readers.values()].slice(0, 20)) {
+        for (let i = 0; i < 5; i++) {
+          const t = performance.now();
+          await ep.readPresence();
+          cost.ms.push(performance.now() - t);
+        }
+        const entries = await lastKvEntries((ep as unknown as { kv: Parameters<typeof lastKvEntries>[0] }).kv);
+        cost.msgs.push(entries.length);
+        cost.bytes.push(entries.reduce((a, e) => a + e.value.length + `$KV.${e.bucket}.${e.key}`.length, 0));
+      }
+      await ipcSend({ readcost: cost });
+      continue;
+    }
     const now = Date.now();
     const ages: number[] = [];
     let missing = 0, stale = 0;
-    for (const { ep, space } of eps) {
-      if (!ep.presenceView().fresh) stale++;
-      const peers = ep.getRoster().filter((p) => p.card.kind === "agent" && p.card.id !== ep.card.id && p.status !== "offline");
+    for (const [space, ep] of readers) {
+      let roster;
+      try { roster = await ep.readPresence(); } catch (e) { stale++; note(e as Error); continue; }
+      const peers = roster.filter((p) => p.card.kind === "agent" && p.card.id !== ep.card.id && p.status !== "offline");
       for (const p of peers) ages.push(now - p.ts);
       missing += Math.max(0, (bySpace.get(space) ?? 1) - 1 - peers.length);
     }
@@ -291,7 +316,7 @@ const startChild = (job: SeatJob | DaemonJob, onMessage: (m: Record<string, unkn
   child.send(job);
   return child;
 };
-const ask = (child: ChildProcess, cmd: { cmd: "sample" | "stop" }, key: string): Promise<Record<string, unknown>> => new Promise((resolve, reject) => {
+const ask = (child: ChildProcess, cmd: { cmd: "sample" | "readcost" | "stop" }, key: string): Promise<Record<string, unknown>> => new Promise((resolve, reject) => {
   const on = (m: Record<string, unknown>) => { if (key in m) { child.off("message", on); resolve(m); } };
   child.on("message", on);
   child.once("exit", (c) => reject(new Error(`child ${child.pid} exited ${c} before answering ${key}`)));
@@ -391,6 +416,8 @@ try {
   const box1 = boxCpu();
   const v1 = await monitor("/varz"), j1 = await monitor<Jsz>("/jsz");
   const end = (await guard(Promise.all(seatKids.map((c) => ask(c, { cmd: "sample" }, "sample"))))).map((m) => m.sample as SeatSample);
+  // After every counter above was read, so the reads cost nothing in the measured window.
+  const reads = (await guard(Promise.all(seatKids.map((c) => ask(c, { cmd: "readcost" }, "readcost"))))).map((m) => m.readcost as ReadCost);
   const brokerRss = procRssMb(srv.pid!), daemonRss = procRssMb(daemon.pid!);
   const seatRss = seatKids.reduce((a, c) => a + procRssMb(c.pid!), 0);
   const memAvail = memAvailableMb();
@@ -400,7 +427,8 @@ try {
   const agesEnd = end.flatMap((s) => s.ages), agesMid = mid.flatMap((s) => s.ages);
   const perSpace = new Map<string, number>();
   for (const s of seats) perSpace.set(s.space, (perSpace.get(s.space) ?? 0) + 1);
-  const expectedPeers = [...perSpace.values()].reduce((a, n) => a + n * (n - 1), 0);
+  // One reader per space now, so a space contributes its K - 1 peers once, not K(K - 1).
+  const expectedPeers = [...perSpace.values()].reduce((a, n) => a + (n - 1), 0);
   const missingEnd = end.reduce((a, s) => a + s.missing, 0), staleEnd = end.reduce((a, s) => a + s.stale, 0);
 
   row("git sha", SHA);
@@ -450,7 +478,11 @@ try {
   row("peer heartbeat age mid-window p50 / p99 / max (ms)", `${n2(pct(agesMid, 50))} / ${n2(pct(agesMid, 99))} / ${n2(maxOf(agesMid))}`);
   row("peer heartbeat age at end p50 / p99 / max (ms)", `${n2(pct(agesEnd, 50))} / ${n2(pct(agesEnd, 99))} / ${n2(maxOf(agesEnd))}`);
   row("roster entries missing at end", `${missingEnd} of ${expectedPeers}`);
-  row("seats whose presence view is not fresh", staleEnd);
+  row("roster reads that failed (one reader per space)", staleEnd);
+  const readMs = reads.flatMap((r) => r.ms), readMsgs = reads.flatMap((r) => r.msgs), readBytes = reads.flatMap((r) => r.bytes);
+  row("one roster read: records sent (median)", pct(readMsgs, 50));
+  row("one roster read: subject+value bytes sent (median)", pct(readBytes, 50));
+  row("one roster read: latency p50 / p99 (ms)", `${n2(pct(readMs, 50))} / ${n2(pct(readMs, 99))} (${readMs.length} reads)`);
   row("endpoint errors and warnings (all seats)", end.reduce((a, s) => a + s.errors, 0));
 
   const w = Math.max(...rows.map(([k]) => k.length));

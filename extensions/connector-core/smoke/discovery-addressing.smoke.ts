@@ -99,7 +99,7 @@ try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   const me = await connectSeat("scout", "default");
   const human = await connectSeat("ada-lovelace (web)");
-  await until(() => me.agent.roster().some((p) => p.card.name === "ada-lovelace (web)"));
+  await until(async () => (await me.agent.readRoster()).roster.some((p) => p.card.name === "ada-lovelace (web)"));
 
   // ---- traffic: 120 readable channels, 40 event channels, one outside the read ACL ----
   const readable = Array.from({ length: 120 }, (_, i) => `team.lane${String(i).padStart(3, "0")}`);

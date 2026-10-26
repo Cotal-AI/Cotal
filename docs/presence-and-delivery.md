@@ -72,7 +72,17 @@ reader's roster.
 Details: [SPEC §6](../SPEC.md#6-presence-and-discovery). The dashboard surfaces a stale view
 on the same header mark it uses for a refused poll ([watch a mesh](watch-a-mesh.md)).
 
-`CotalEndpoint.presenceView()` reports whether its local roster can support an absence verdict.
+An agent seat does not watch presence. A watch delivers every member's heartbeat to every watcher,
+so a space of K watching members moves K² deliveries every heartbeat. A seat reads the roster when
+a tool needs it instead: `CotalEndpoint.readPresence()` pages batched Direct Gets over the bucket,
+binds no consumer, applies the reader rules above and reads a record older than the liveness window
+as offline. Calls made while a read is in flight share it. A peer an earlier read saw that has left
+the bucket stays in the roster as offline. The manager, the delivery daemon, `cotal chat` and the
+dashboard keep their watches, because they act on liveness transitions. The read needs the agent
+grant `$JS.API.DIRECT.GET.KV_cotal_presence_<space>`, and a credential minted before that grant
+existed is refused with the grant named.
+
+`CotalEndpoint.presenceView()` reports whether a watching endpoint's roster can support an absence verdict.
 `current` is usable, `unpopulated` means the current watch has not completed its initial snapshot,
 and `stale` means the watch has been silent past its liveness window. Both unsafe states carry
 `fresh: false`, so an older consumer degrades instead of treating a partial reconnect refill as a
@@ -97,12 +107,11 @@ recoverable warning. If consecutive writes keep failing for a full presence TTL,
 last-known until a write succeeds. A successful write resets the consecutive count and clears the
 condition. The condition is local diagnosis, not a new wire field.
 
-The same two tools also render the view's own trust state: under an `unpopulated` view they say
-the presence watch has not completed its initial snapshot, so the roster may be partial and a
-missing name is not an absence verdict, and under a `stale` view they name the silent-since instant
-and call the roster last-known. A DM to a name, or a send that @mentions a name, that the observer
-cannot verify is refused with that condition rather than sent, instead of being reported as an
-unknown peer. Both tools and both refusals print each condition in the same words.
+The same two tools also render a failed roster read: they say the presence read failed and why,
+call the roster last-known, and say a missing name is not an absence verdict. A DM to a name, or a
+send that @mentions a name, that a failed read cannot verify is refused with that reason rather
+than sent, instead of being reported as an unknown peer; a name an earlier read saw is still
+accepted. Both tools and both refusals print the reason in the same words.
 
 ## Plane liveness
 
