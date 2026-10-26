@@ -45,9 +45,9 @@
       "file": "packages/core/src/endpoint.ts",
       "find": "        if (bearer === held && Date.now() >= bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))",
       "replace": "        if (expiryMs <= bearerExpiryMs(held) && Date.now() >= bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))",
-      "expectRed": "a re-signed token carrying the same exp IS adopted",
-      "cell": "a re-signed token carrying the same exp IS adopted",
-      "note": "The false refusal that advancement produces, and the reason the shipped test is byte identity. A token re-signed under a rotated key carries the same exp, so an advancement test calls it stale and backs off 15s against material the broker has just started requiring."
+      "expectRed": "a re-signed token carrying the same exp past its renewal window IS adopted, with no warning",
+      "cell": "a re-signed token carrying the same exp past its renewal window IS adopted, with no warning",
+      "note": "The false refusal that advancement produces, and the reason the shipped test is byte identity. A token re-signed under a rotated key carries the same exp, so past the renewal window an advancement test calls it stale and backs off against material the broker has just started requiring. Inside the window neither test refuses, so only this cell tells them apart."
     },
     {
       "name": "a short-lived token's renewal is backed off to the old 15s failure cadence",

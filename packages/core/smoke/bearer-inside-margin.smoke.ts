@@ -200,6 +200,20 @@ await rotated.internals.refreshBearer();
 c("a re-signed token carrying the same exp IS adopted", rotated.internals.currentBearer === AFTER_ROTATION, rotated.internals.currentBearer?.slice(0, 24));
 c("and it is not reported as a failure", rotated.warnings.length === 0, rotated.warnings.map((e) => e.message));
 
+// The same re-signing past the held token's renewal window, where the re-serve refusal applies. Only
+// byte identity tells this new material from the same token back: an advancement test refuses it,
+// because its `exp` has not moved.
+const EDGE_RESIGNED = mintAt(EDGE_IAT + 600, "edge-newkey", EDGE_IAT);
+let resignReads = 0;
+const resigned = armed("s1572d", async () => { resignReads++; return resignReads === 1 ? EDGE : EDGE_RESIGNED; });
+await resigned.internals.refreshBearer(true);
+await refreshAt(resigned.internals, OVERDUE_AT);
+c(
+  "a re-signed token carrying the same exp past its renewal window IS adopted, with no warning",
+  resigned.internals.currentBearer === EDGE_RESIGNED && resigned.warnings.length === 0,
+  { adopted: resigned.internals.currentBearer === EDGE_RESIGNED, warnings: resigned.warnings.map((e) => e.message) },
+);
+
 // ── A run of failures: one warning, growing jittered retries, and a new run warns again ───────────
 let down = true;
 const flaky = armed("s-flaky", async () => { if (down) throw new Error("exchange down"); return mintBearer(10 * 60_000, `f${Date.now()}`); });
