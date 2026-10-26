@@ -5,11 +5,13 @@ import { join } from "node:path";
 import {
   CorruptExtensionPackageError,
   SEEDED_EXTENSIONS,
+  bindExtensionPeers,
   connectorMetadataStale,
   extensionPackageDir,
   extensionsDir,
   installedExtensionPackage,
   loadExtensionsManifest,
+  provenance,
   quarantineExtensionsManifest,
   type InstalledExtension,
 } from "@cotal-ai/workspace";
@@ -47,6 +49,7 @@ import {
   type Stamp,
 } from "./authority.js";
 import { gcSeedStore, stageSeedPayload } from "./store.js";
+import { prefixLockDiffers, seededInstallDiffers } from "./verify.js";
 
 /**
  * The connector seeding reconcile: makes the four first-party connectors present on a fresh install
@@ -70,18 +73,24 @@ import { gcSeedStore, stageSeedPayload } from "./store.js";
  *    upgrade; an operator-managed official entry (a manual `ext add` at a chosen version) is left alone.
  */
 
-type Mode = "auto" | "force" | "repair" | "reset";
+/** `verify` is `cotal update`'s mode: every built-in is reconciled under the locks like `force`, but a
+ *  seeded entry at the running generation whose installed copy is proven identical to the shipped
+ *  payload ({@link seededInstallDiffers}) is kept rather than reinstalled. */
+type Mode = "auto" | "force" | "repair" | "reset" | "verify";
 
 export interface SeedFlags {
   readonly repair?: boolean;
   readonly reset?: boolean;
   readonly force?: boolean;
+  /** Reinstall only a built-in whose installed copy differs from the shipped payload. */
+  readonly verify?: boolean;
 }
 
 export interface ReconcileResult {
   readonly noop: boolean;
   readonly seeded: string[];
   readonly refreshed: string[];
+  readonly verified: string[];
   readonly removedKept: string[];
 }
 
@@ -92,7 +101,7 @@ export async function reconcileSeededConnectors(): Promise<void> {
 
 /** `cotal ext seed [--repair|--reset|--force]`: the maintenance entry. Prints a summary. */
 export async function runSeed(flags: SeedFlags): Promise<void> {
-  const mode: Mode = flags.reset ? "reset" : flags.repair ? "repair" : flags.force ? "force" : "auto";
+  const mode: Mode = flags.reset ? "reset" : flags.repair ? "repair" : flags.force ? "force" : flags.verify ? "verify" : "auto";
   const result = await reconcile(mode);
   if (result.noop) {
     console.log(c.green("✓ built-in connectors up to date"));
@@ -101,11 +110,12 @@ export async function runSeed(flags: SeedFlags): Promise<void> {
   const parts: string[] = [];
   if (result.seeded.length) parts.push(`seeded ${result.seeded.join(", ")}`);
   if (result.refreshed.length) parts.push(`refreshed ${result.refreshed.join(", ")}`);
+  if (result.verified.length) parts.push(`verified ${result.verified.join(", ")}`);
   if (result.removedKept.length) parts.push(`kept removed ${result.removedKept.join(", ")}`);
   console.log(c.green(`✓ connectors reconciled`) + (parts.length ? c.dim(` - ${parts.join("; ")}`) : ""));
 }
 
-const NOOP: ReconcileResult = { noop: true, seeded: [], refreshed: [], removedKept: [] };
+const NOOP: ReconcileResult = { noop: true, seeded: [], refreshed: [], verified: [], removedKept: [] };
 
 async function reconcile(mode: Mode): Promise<ReconcileResult> {
   const generation = seedGeneration();
@@ -322,7 +332,24 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   const repairTarget = mode === "repair" ? cursor?.package : undefined;
   const seeded: string[] = [];
   const refreshed: string[] = [];
+  const verified: string[] = [];
   const removedKept: string[] = [];
+  // A verify run keeps a built-in only on proof. An interrupted or failed earlier run and a prefix
+  // that is not the tree its lock records each void that proof for every built-in at once, so the run
+  // reinstalls all of them the way `--force` does, and says why. Read when the first installed
+  // built-in asks, so a first boot with nothing installed yet reports no prefix at all.
+  let voided: string | undefined;
+  let voidedRead = false;
+  const unverifiable = (): string | undefined => {
+    if (!voidedRead) {
+      voidedRead = true;
+      voided = cursor ? `a previous seed of "${cursor.package}" did not finish`
+        : recoveryPending() ? "a previous repair did not finish"
+        : prefixLockDiffers();
+      if (voided) console.error(c.dim(`reinstalling every built-in: ${voided}`));
+    }
+    return voided;
+  };
 
   for (const name of SEED_BUILTINS) {
     const entry = installedEntry(name);
@@ -349,7 +376,20 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
       const isSeeded = entry.source === "seeded";
       const torn = mode === "repair" && isSeeded && (repairAllSeeded || installState(name) !== "intact");
       const metadataStale = isSeeded && connectorMetadataStale(entry);
-      const refresh = mode === "force" || torn || metadataStale || (isSeeded && isStrictlyNewer(generation, stampGen));
+      let refresh = mode === "force" || torn || metadataStale || (isSeeded && isStrictlyNewer(generation, stampGen));
+      if (mode === "verify" && !refresh) {
+        const differs = unverifiable() ?? seededInstallDiffers(name, generation, entry);
+        if (differs === undefined) {
+          // Proven identical to the shipped payload. The reinstall it replaces also rebinds the shared
+          // peers to this binary's copies, so a stale link is rebound here too, under the same locks.
+          for (const link of bindExtensionPeers([entry.pkg], entry.pkg))
+            provenance.wrote(`${link.peer} link (${link.owner} → this CLI's copy)`, link.destination);
+          verified.push(name);
+        } else {
+          if (!voided) console.error(c.dim(`${name}: ${differs}; reinstalling`));
+          refresh = true;
+        }
+      }
       if (refresh) {
         seedOne(name, generation, nonce, true);
         verifyInstalled(name, generation);
@@ -386,7 +426,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
     generation,
     loadExtensionsManifest().extensions.map((e) => e.spec),
   );
-  return { noop: false, seeded, refreshed, removedKept };
+  return { noop: false, seeded, refreshed, verified, removedKept };
 }
 
 /** What refuses an `up` at the boot gate, where it defers its seed to its first launch, in the order

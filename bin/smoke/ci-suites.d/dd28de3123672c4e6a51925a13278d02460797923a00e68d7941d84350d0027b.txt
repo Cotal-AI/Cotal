@@ -1,0 +1,4 @@
+# `cotal update` keeps a built-in only when the extensions prefix matches its lock, and an absent
+# optional package is excused only under npm's own platform rule (negated os/cpu entries, `any`, libc).
+# Proven against lock entries real npm wrote for file: packages, not hand-written ones.
+smoke:seed-verify-platform
