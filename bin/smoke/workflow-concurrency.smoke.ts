@@ -79,10 +79,13 @@ function check(name: string, cond: boolean, extra?: unknown): void {
  *  Lowered to 11 when `attribution.yml` was removed (9cc9117c6). It was pull_request only, so it
  *  never counted toward push-to-main or EXPECTED_GROUPED, and only the total moves.
  *
+ *  Bumped to 12 for `cli-startup.yml` (a649d6eae): it starts on a dispatch only, so it is not
+ *  push-to-main startable and declares no group; only the total moves.
+ *
  *  `changesets.yml` moved its group from the workflow to its `version-pr` and `publish` jobs
  *  (5046e8632), so a publication waits only for the previous upload and not for its install check.
  *  It still counts as grouped: a job's own group evicts its pending job the same way. */
-const EXPECTED_WORKFLOWS = 11;
+const EXPECTED_WORKFLOWS = 12;
 const EXPECTED_PUSH_TO_MAIN = 7;
 /** Of those, the ones that declare a concurrency group and therefore CAN evict. Every push-to-main
  *  workflow but `windows-identity.yml` carries one: `docs.yml` and `mutation-reproof.yml` were groupless until 2026-09-10,
