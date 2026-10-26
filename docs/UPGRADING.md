@@ -514,32 +514,31 @@ terminal again; see [Spawn in this terminal after 0.100.0](#spawn-in-this-termin
 
 ### Deprecated daemon entries
 
-`supervise`, `deliver`, `auth-service` and `feedback-intake` stay accepted with their existing
-flags for every caller: units Cotal installed, units and scripts you wrote, and container commands.
-They are deprecated and are removed in `1.0.0`, one release for all four. Help and completion no
-longer list them. Each run prints one line on stderr naming its replacement and that release.
+`deliver`, `auth-service` and `feedback-intake` stay accepted with their existing flags for every
+caller: units Cotal installed, units and scripts you wrote, and container commands. They are
+deprecated and are removed in `1.0.0`, one release for all three. Help and completion no longer
+list them. Each run prints one line on stderr naming its replacement and that release.
 Stdout, behavior and exit codes are unchanged, so no unit restarts in a loop because of the
 upgrade. `deliver pending` warns the same way and names `cotal pending <agent>`.
 
 | Entry | Replacement |
 |---|---|
-| `supervise` | `cotal service add <name> --preset manager` |
 | `deliver` | `cotal service add <name> --preset delivery` |
 | `auth-service` | `cotal service add <name> --preset auth-service` |
 | `feedback-intake` | `cotal service add <name> --preset feedback-intake` |
 
 `cotal service add <name> --preset <preset> --help` lists the options a preset takes, and
-`cotal service start <name>` starts it. A `supervise --roster <file>` line maps to the manager
-preset's `--roster <file>`, with an absolute path, and `cotal service start <name> --foreground`
-keeps the manager in the foreground as `supervise` did. The manager, delivery daemon and auth service that `up`
-starts itself do not warn, so the line in a log always comes from a unit, script or container you
-can change.
+`cotal service start <name>` starts it. The delivery daemon and auth service that `up` starts
+itself do not warn, so the line in a log always comes from a unit, script or container you can
+change.
+
+`supervise` was deprecated with them in 0.91.0 and no longer is. It keeps its flags, prints no
+warning, is not removed in `1.0.0`, and help lists it under Run a manager.
 
 ### Owned units
 
 A manager unit that an earlier `cotal service install` wrote keeps calling `supervise`. After the
-upgrade it starts the new binary and prints the deprecation warning on each start. This release
-does not rewrite that unit.
+upgrade it starts the new binary. This release does not rewrite that unit.
 
 A unit that this release's `cotal service install <name>` writes runs the hidden `__service-unit`
 entry, which an earlier binary does not have. Before you downgrade, stop it with
@@ -549,17 +548,16 @@ downgrade, install the unit again with the earlier binary's `service install`.
 ### Containers
 
 The `solo` service in `deploy/docker/compose.yaml` runs `spawn scout --foreground`. The team
-service and the image's default command still run `supervise` with `--roster`, so their logs show
-the deprecation warning. An image you already built carries its own CLI and is unaffected until
-you rebuild it.
+service and the image's default command run `supervise` with `--roster`. An image you already
+built carries its own CLI and is unaffected until you rebuild it.
 
 ### Before the upgrade
 
 - Add `--foreground` to every unit, launchd job, container command or script that supervises
   `cotal up`.
 - Add `--foreground` to every container command or script that runs `cotal spawn <name>` directly.
-- Move units and scripts that call `supervise`, `deliver`, `auth-service` or `feedback-intake` to
-  their service presets before `1.0.0`.
+- Move units and scripts that call `deliver`, `auth-service` or `feedback-intake` to their service
+  presets before `1.0.0`.
 - Before a downgrade, stop and uninstall every unit this release's `service install` wrote.
 
 ## Team commands in 0.91.0

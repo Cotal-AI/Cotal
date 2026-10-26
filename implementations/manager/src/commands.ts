@@ -30,7 +30,7 @@ import {
   c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, untilInputEnds,
   brokerAddressForDisplay, brokerUrlCredentialRefusal, brokerUrlHasUserinfo, CommandFailure, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
-  ConfirmationRequired, deprecatedDaemonEntry, type MeshEntry,
+  ConfirmationRequired, findMesh, folderSpace, getCurrent, type MeshEntry,
 } from "@cotal-ai/workspace";
 import { Manager, rejectionText } from "./manager.js";
 import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, managerServiceStopRequested, type ManagerServiceChild } from "./service-child.js";
@@ -130,6 +130,19 @@ export function recordManagerPid(root: string, space: string): () => void {
  *  default — so a manually-run manager matches the folder's mesh instead of assuming the default. */
 function spaceFor(v: Values, root = findCotalRoot()): string {
   return v.space ?? soleSpaceOf(authDir(root)) ?? DEFAULT_SPACE;
+}
+
+/** The space and root a `supervise` runs for. `--space` or `COTAL_SPACE` names the space, and a
+ *  folder that hosts a space supervises that one; the manager then runs in this folder's root.
+ *  Otherwise the space is the one every other command targets here, this folder's registered space
+ *  or else the `cotal use` selection, and the manager runs in the root that space is registered at,
+ *  so its identity and name are the same whichever folder it is started from. */
+function superviseSelection(v: Values): { values: Values; root: string } {
+  const root = findCotalRoot();
+  if (v.space !== undefined || process.env.COTAL_SPACE !== undefined || soleSpaceOf(authDir(root)) !== undefined) return { values: v, root };
+  const space = folderSpace(process.cwd()) ?? getCurrent();
+  if (space === undefined) return { values: v, root };
+  return { values: { ...v, space }, root: findMesh(space)?.root ?? root };
 }
 
 /**
@@ -237,8 +250,7 @@ function superviseExecution(v: Values): "runtime" | "none" {
 // the cmux-tab manager.
 async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service?: ManagerServiceChild): Promise<void> {
   stampConsole();
-  const v = args.values as Values;
-  const managerRoot = service?.root ?? findCotalRoot();
+  const { values: v, root: managerRoot } = service ? { values: args.values as Values, root: service.root } : superviseSelection(args.values as Values);
   const execution = superviseExecution(v);
   let runtime: RuntimeMode | undefined = execution === "none" ? undefined : defaultRuntime;
   if (defaultRuntime === "auto" && v.runtime) {
@@ -895,15 +907,14 @@ const managerCommands: Command[] = [
   },
   {
     kind: "command",
-    // The manager daemon `up` launches. `supervise` is the same entry for persisted callers, plus the
-    // deprecation warning; help and completion list neither.
+    // The manager daemon `up` launches. `supervise` is the same entry, listed in help.
     name: "__daemon-manager",
     hidden: true,
     group: "Manager",
     summary:
       "run a manager - [--runtime <name>] (default pty; extension runtimes are explicit-only) [--space <s>] [--server <url>] [--console-port <n>] [--max-sessions <n>] [--name <name>] [--roster <file>] [--launch <spec>] [--resume-attempt <id>]",
     flags: [
-      { name: "space", type: "string", value: "<s>", description: "space to supervise (default: this folder's auth space; env COTAL_SPACE when unset)" },
+      { name: "space", type: "string", value: "<s>", description: "space to supervise (default: env COTAL_SPACE, else this folder's space, else the one `cotal use` selected)" },
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh; env COTAL_SERVER when unset)" },
       { name: "runtime", type: "string", value: "<name>", description: "agent runtime (default pty; others come from installed extensions)" },
       { name: "execution", type: "string", value: "<runtime|none>", description: "runtime by default; none requires a fresh hosting user-auth control instance and no runtime or startup workload" },
@@ -1037,4 +1048,6 @@ const managerGroup: Command = {
 };
 
 const daemonManager = managerCommands.find((command) => command.name === "__daemon-manager")!;
-registry.register(...managerCommands.map((command) => command.name === "seats" || command.name === "reconcile-gate" ? { ...command, hidden: true } : command), deprecatedDaemonEntry("supervise", daemonManager), managerGroup, endpointDeregisterAction);
+/** The manager `up` launches, under its own name and listed in help. */
+const supervise: Command = { ...daemonManager, name: "supervise", hidden: false, group: "Run a manager" };
+registry.register(...managerCommands.map((command) => command.name === "seats" || command.name === "reconcile-gate" ? { ...command, hidden: true } : command), supervise, managerGroup, endpointDeregisterAction);

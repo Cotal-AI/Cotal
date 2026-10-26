@@ -151,8 +151,8 @@ export function managerHasDeliveryMarker(pid: number, space: string = folderSpac
 
 /** Start the control-plane manager detached (pid in `.cotal/manager.<spaceKey>.pid`, output to
  *  `.cotal/manager.<spaceKey>.log`), stopped by `cotal down`. Re-execs this same CLI's hidden
- *  `__daemon-manager`, the `supervise` entry without its deprecation warning — the composed `cotal`
- *  binary registers it; `process.execArgv` carries the tsx loader in dev and is empty in prod. Its
+ *  `__daemon-manager`, the same entry as `supervise`, which the composed `cotal` binary registers;
+ *  `process.execArgv` carries the tsx loader in dev and is empty in prod. Its
  *  auto runtime resolves to pty when detached, which answers the control plane
  *  (`cotal_spawn`/`despawn`/`purge`/`persona`) with no tmux/cmux needed. */
 export type ManagerStartOpts = {

@@ -1,11 +1,13 @@
 /**
- * Deprecated daemon entries: `supervise`, `deliver`, `auth-service` and `feedback-intake` keep their
- * pre-cut argv for the units, scripts and containers written before the CLI redesign, hidden from
- * help and completion. The entry's own help marks it deprecated and names its preset; it used to
- * list it unmarked. Each run prints one stderr line naming its service preset and the removal
- * release, which is one value for all four and is recorded in docs/UPGRADING.md. Stdout and the run
- * itself stay the entry's own. `up` launches a hidden twin of `supervise`, `deliver` and
- * `auth-service` that has the same parser, validation and runner without the warning.
+ * Deprecated daemon entries: `deliver`, `auth-service` and `feedback-intake` keep their pre-cut argv
+ * for the units, scripts and containers written before the CLI redesign, hidden from help and
+ * completion. The entry's own help marks it deprecated and names its preset; it used to list it
+ * unmarked. Each run prints one stderr line naming its service preset and the removal release,
+ * which is one value for all three and is recorded in docs/UPGRADING.md. Stdout and the run itself
+ * stay the entry's own. `up` launches a hidden twin of `deliver` and `auth-service` that has the
+ * same parser, validation and runner without the warning. `supervise` is no longer deprecated: it is
+ * `__daemon-manager`, the manager `up` launches, under its own name, listed in help under "Run a
+ * manager", and it prints no warning.
  *
  * The real binary runs each entry's pre-cut line from a sandboxed HOME, COTAL_HOME and project root
  * against a port nothing listens on. A run is stopped once its warning appears; no broker, manager
@@ -46,7 +48,6 @@ writeFileSync(keys, JSON.stringify({ keys: [{ key: "k".repeat(32), tester: "t" }
 
 /** Each entry's pre-cut command line, as units, scripts and containers written before the cut carry it. */
 const lines: Record<DeprecatedDaemonEntry, string[]> = {
-  supervise: ["supervise", "--space", SPACE, "--server", SERVER],
   deliver: ["deliver", "--space", SPACE, "--server", SERVER],
   "deliver pending": ["deliver", "pending", "scout", "--space", SPACE, "--server", SERVER],
   "auth-service": ["auth-service", "--space", SPACE, "--server", SERVER],
@@ -92,16 +93,15 @@ const count = (text: string, line: string) => text.split(line).length - 1;
 // ---- The warning leaves stdout and the exit code alone ----------------------------------------
 {
   const exitCode = process.exitCode;
-  const { out, err } = await captured(() => warnDeprecatedDaemonEntry("supervise"));
+  const { out, err } = await captured(() => warnDeprecatedDaemonEntry("deliver"));
   check("the warning is one stderr line, nothing on stdout, no exit code",
-    out === "" && count(err, deprecatedDaemonEntryWarning("supervise")) === 1 && process.exitCode === exitCode,
+    out === "" && count(err, deprecatedDaemonEntryWarning("deliver")) === 1 && process.exitCode === exitCode,
     { out, err, exitCode: process.exitCode });
 }
 
 // ---- `up` launches a twin with the entry's parser, validation and runner ----------------------
 /** A pre-cut line per twinned entry that each runner refuses before it touches a broker. */
 const refusals: Record<keyof typeof DAEMON_ENTRY_TWINS | "deliver pending", string[]> = {
-  supervise: ["--space", SPACE, "--server", SERVER],
   deliver: ["--space", SPACE, "--server", SERVER, "--shard", "1"],
   "deliver pending": ["pending", "scout", "--limit", "0", "--space", SPACE, "--server", SERVER],
   "auth-service": ["--space", SPACE, "--server", SERVER, "--port", "99999"],
@@ -130,6 +130,17 @@ for (const [entry, twinName] of Object.entries(DAEMON_ENTRY_TWINS) as [keyof typ
     check(`${mode} warns once and then runs ${twinName}'s runner with its arguments`,
       seen === args && printed.out === "" && count(printed.err, deprecatedDaemonEntryWarning(mode)) === 1, printed);
   }
+}
+
+// ---- `supervise` is a listed command, the manager `up` launches -------------------------------
+{
+  const supervise = registry.all<Command>("command").find((row) => row.name === "supervise");
+  const twin = registry.all<Command>("command").find((row) => row.name === "__daemon-manager");
+  check("supervise is listed in help under Run a manager, with the summary of the manager up launches",
+    supervise !== undefined && supervise.hidden !== true && supervise.group === "Run a manager" && supervise.summary === twin?.summary, supervise?.summary);
+  const fields = supervise && twin ? [...new Set([...Object.keys(supervise), ...Object.keys(twin)])].filter((key) => !["name", "hidden", "group"].includes(key)) : [];
+  check("supervise declares and runs what __daemon-manager does", supervise !== undefined && twin !== undefined
+    && fields.every((key) => (supervise as unknown as Record<string, unknown>)[key] === (twin as unknown as Record<string, unknown>)[key]));
 }
 
 // ---- Each registered entry prints it when its pre-cut line runs --------------------------------
@@ -181,6 +192,15 @@ try {
       count(publicRun.stderr, warning) === 1 && !twinRun.stderr.includes("is deprecated and will be removed"), { publicRun: publicRun.stderr.slice(-800), twinRun: twinRun.stderr.slice(-800) });
     check(`the ${mode} twin's stderr is the entry's without the warning`,
       comparable(publicRun.stderr, warning) === comparable(twinRun.stderr, warning), { publicRun: publicRun.stderr.slice(-800), twinRun: twinRun.stderr.slice(-800) });
+  }
+  // `supervise` and the manager `up` launches refuse the same line the same way, and neither warns.
+  {
+    const argv = ["--space", SPACE, "--server", SERVER];
+    const [publicRun, twinRun] = [await runLine(["supervise", ...argv]), await runLine(["__daemon-manager", ...argv])];
+    check("supervise refuses a space it neither hosts nor registers as __daemon-manager does, and neither warns",
+      !publicRun.stopped && publicRun.status !== 0 && publicRun.status === twinRun.status && publicRun.stdout === twinRun.stdout
+        && !`${publicRun.stderr}${twinRun.stderr}`.includes("is deprecated") && comparable(publicRun.stderr, "is deprecated") === comparable(twinRun.stderr, "is deprecated"),
+      { publicRun: publicRun.stderr.slice(-800), twinRun: twinRun.stderr.slice(-800) });
   }
   // Without --server the intake credential goes only to the broker its space is registered at, and
   // this sandbox registers none, so the intake refuses before it dials.

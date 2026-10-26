@@ -14,7 +14,7 @@ import { c, hang } from "./ui.js";
  *  self-register on import and the dev runner (tsx) doesn't guarantee entry-import evaluation
  *  order, so the daemon surface could otherwise print above Setup. Groups not listed here
  *  (e.g. an extension's custom group) follow, in first-registered order. */
-const GROUP_ORDER = ["Setup", "Mesh", "Messaging", "Agents", "Observe", "Extensions", "Manager"];
+const GROUP_ORDER = ["Setup", "Mesh", "Messaging", "Agents", "Run a manager", "Observe", "Extensions", "Manager"];
 
 /** The title line, built on each call so `--no-color` read after import still applies. */
 const title = (): string => `${c.bold("cotal")} - lateral agent coordination over NATS`;
