@@ -195,6 +195,9 @@ import { natsServerLabel, resolveNatsServer, type NatsServer } from "../lib/nats
 import { cotalPath, cotalRoot, homeHoldsStack, linkedCotalRefusal } from "../lib/paths.js";
 import { detachedNext, renderDetachedSummary } from "../lib/up-report.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
+import { seedBeforeLaunch, seedMoveNote } from "../seed/launch.js";
+import { seedDir } from "../seed/paths.js";
+import { seedStoreMoved } from "../seed/reconcile.js";
 import { upSystemdSupervisionWarning } from "../lib/systemd-supervision.js";
 import { deliveryStoppedByDown, deliveryUp, ensureControlPlane, ensureDelivery, stopDelivery } from "../lib/delivery-proc.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
@@ -780,9 +783,31 @@ function releaseForegroundHold(root: string): void {
  *  launcher, refresh and restore alike. It never changes the run's mode. Internal callers of
  *  {@link up} print nothing. */
 export async function upCommand(args: ParsedArgs): Promise<void> {
-  await up(args);
+  try {
+    await up(args);
+    // A run that started no process, such as one that found its stack running, still reconciles.
+    await seedBeforeLaunch();
+  } catch (error) {
+    throw seedMovedFailure(error);
+  }
   const warning = upSystemdSupervisionWarning(args.values);
   if (warning) console.error(c.yellow(warning));
+}
+
+/** A failure after this run moved the connector seed store says so, instead of claiming that nothing
+ *  was written: an older cotal refuses the store from then on. */
+function seedMovedFailure(error: unknown): unknown {
+  const moved = seedStoreMoved();
+  if (!moved || !(error instanceof Error)) return error;
+  const note = seedMoveNote();
+  if (note === undefined) return error;
+  const message = `${error.message.replace(/; nothing was (?:started or )?written$/, "")}; ${note}`;
+  if (!isCommandFailure(error)) {
+    error.message = message;
+    return error;
+  }
+  const changed = { kind: "seed-store", path: seedDir(), ...(moved.from === undefined ? {} : { from: moved.from }), to: moved.to };
+  return new CommandFailure(error.outcome, error.code, message, { remedy: error.remedy, native: error.native, target: error.target, changed: [...(error.changed ?? []), changed], cause: error.cause, selfContained: error.selfContained });
 }
 
 /** `inheritedLock` is the root maintenance lock a recovery re-entry hands down (see the re-entry
@@ -2075,6 +2100,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   ];
   const natsServer = await resolveNatsServer();
   const bin = natsServer.path;
+  await seedBeforeLaunch();
 
   console.log(
     c.dim(
@@ -3973,6 +3999,7 @@ export async function startMeshDetached(
   opts: DetachOpts,
 ): Promise<{ server: string; pid: number; executable: string; controlPlane: boolean; authService: boolean; deliveryResponderBound: boolean | null; delivery: boolean; manager: boolean }> {
   const { server, space, useAuth, storeDir, seedFile, transport, setup, args, bin, source, version } = await prepareBrokerStart(opts);
+  await seedBeforeLaunch();
   const logPath = cotalPath("nats.log");
   const fd = openBrokerLog(logPath);
   const listenerStartedAt = new Date().toISOString();

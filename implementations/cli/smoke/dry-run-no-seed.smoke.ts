@@ -21,6 +21,7 @@
  * surface loads, so a module hook proves the surface never loads for it.
  * `app-identity`, the plumbing the Claude connector's local server execs per connection, passes the
  * gate the same way: it must not seed the store under a running connector.
+ * `up` seeds only when it first starts a process, so a refused `up` writes nothing there either.
  *
  * Exits non-zero the moment a dry run writes, so the defect cannot ride green through CI.
  * Every `down` call is anchored to a throwaway sandbox root/COTAL_HOME/XDG_CONFIG_HOME and passed
@@ -128,11 +129,11 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
 
 // ── 3. `agent-bearer` gets past a newer-generation stamp to its own refusal (#1857) ───────────────
 // The helper is exec'd by a spawned seat on every bearer refresh. Before the skip, a stamp newer
-// than the invoking binary refused the BOOT (`this cotal X is older than the seed store's
-// generation Y`) before the token file was read, and the seat died at its token's expiry. With the
-// skip, the refusal must be the helper's own argument validation — reached here without --actor,
-// so no exchange and no token file is ever touched — and the staged stamp must still be exactly
-// what was staged (nothing rewrote it).
+// than the invoking binary refused the BOOT (`the connector seed store <path> is at generation Y,
+// and this cotal X does not move it back to an older one`) before the token file was read, and the
+// seat died at its token's expiry. With the skip, the refusal must be the helper's own argument
+// validation — reached here without --actor, so no exchange and no token file is ever touched —
+// and the staged stamp must still be exactly what was staged (nothing rewrote it).
 {
   const cfg = mkdtempSync(join(tmpdir(), "cotal-dryrun-noseed-"));
   const sandboxRoot = mkdtempSync(join(tmpdir(), "cotal-dryrun-noseed-root-"));
@@ -149,7 +150,7 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
   const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   check(
     "a newer-generation stamp does not gate `agent-bearer`: its own usage refusal answers",
-    /usage: cotal agent-bearer/.test(out) && !/older than the seed store/.test(out),
+    /usage: cotal agent-bearer/.test(out) && !/does not move it back to an older one/.test(out),
     { status: r.status, out: out.slice(0, 400) },
   );
   check(
@@ -249,13 +250,59 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
   const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   check(
     "a newer-generation stamp does not gate `completion script bash`: completion stub emitted with exit 0",
-    r.status === 0 && /complete -F _cotal_complete cotal/.test(out) && !/older than the seed store/.test(out),
+    r.status === 0 && /complete -F _cotal_complete cotal/.test(out) && !/does not move it back to an older one/.test(out),
     { status: r.status, out: out.slice(0, 400) },
   );
   check(
     "the staged newer-generation stamp is untouched by `completion script bash`",
     readFileSync(join(seedDir, "stamp.json"), "utf8") === stagedStamp,
     readFileSync(join(seedDir, "stamp.json"), "utf8").slice(0, 200),
+  );
+}
+
+// ── 6. a refused `up` leaves the seed store as it was ─────────────────────────────────────────────
+// `up` seeds only when it first starts a process. A refusal from its own body used to come after the
+// boot-gate seed had moved the operator-global store to this version, so an older `cotal` then
+// refused that store as a downgrade. The writes are asserted by the shared `cotal()` helper above.
+{
+  const dir = mkdtempSync(join(tmpdir(), "cotal-dryrun-noseed-channels-"));
+  cleanup.push(dir);
+  writeFileSync(join(dir, "channels.json"), "{not json");
+  const r = cotal(["up", "--no-manager", "--channels", join(dir, "channels.json")]);
+  const out = `${r.stdout}${r.stderr}`;
+  check(
+    "`up` with a channels file that is not JSON is still refused",
+    r.status === 1 && /the channels file .* is not valid JSON/.test(out),
+    { status: r.status, out: out.slice(0, 400) },
+  );
+}
+
+// ── 7. `up` still refuses a newer seed store before it writes anything ───────────────────────────
+// Deferring the seed must not let an older `up` write its root first: the downgrade check stays at
+// the boot gate, and it names the store to restore.
+{
+  const cfg = mkdtempSync(join(tmpdir(), "cotal-dryrun-noseed-"));
+  const sandboxRoot = mkdtempSync(join(tmpdir(), "cotal-dryrun-noseed-root-"));
+  cleanup.push(cfg, sandboxRoot);
+  const seedDir = join(cfg, "cotal", "seed");
+  mkdirSync(seedDir, { recursive: true });
+  const stagedStamp = `${JSON.stringify({ generation: "99.0.0", writtenBy: "/usr/local/bin/cotal", writtenAt: "2026-09-01T00:00:00.000Z" })}\n`;
+  writeFileSync(join(seedDir, "stamp.json"), stagedStamp);
+  const r = spawnSync(
+    "node",
+    [BIN, "up", "--no-manager"],
+    { cwd: sandboxRoot, env: { ...HOST_ENV, COTAL_HOME: join(sandboxRoot, "home"), XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" }, encoding: "utf8" },
+  );
+  const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  check(
+    "`up` refuses a newer seed store, naming the store to restore",
+    r.status === 1 && out.includes(`the connector seed store ${seedDir} is at generation 99.0.0`) && /from a backup taken before the store moved to 99\.0\.0/.test(out),
+    { status: r.status, out: out.slice(0, 400) },
+  );
+  check(
+    "`up` refused by a newer seed store wrote nothing",
+    readFileSync(join(seedDir, "stamp.json"), "utf8") === stagedStamp && readdirSync(sandboxRoot).length === 0 && readdirSync(join(cfg, "cotal")).join(",") === "seed",
+    { root: readdirSync(sandboxRoot), config: readdirSync(join(cfg, "cotal")) },
   );
 }
 

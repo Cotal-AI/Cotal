@@ -17,6 +17,7 @@ import {
 import { c } from "../ui.js";
 import { stopLocalProcess } from "./local-process-stop.js";
 import { listManagerSeatsForSpare, printLegacyManagerSpareUncertainty, printSparedAgents, type SpareSeatRow } from "./teardown-spare.js";
+import { seedBeforeLaunch } from "../seed/launch.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -314,6 +315,7 @@ export async function ensureManager(
   const state = managerLiveness(probe, readCommand, space);
   if (state === "alive") return { running: true, started: false };
   assertManagerRecordReplaceable(probe, readCommand, space); // refuses on unknown / unattributable, reports foreign
+  await seedBeforeLaunch();
   const pid = startManagerDetached(o);
   await awaitManagerUp(space, identityRecord(pid));
   return { running: true, started: true, pid };
