@@ -249,7 +249,7 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
   const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   check(
     "a newer-generation stamp does not gate `completion script bash`: completion stub emitted with exit 0",
-    r.status === 0 && /complete -o default -F _cotal_complete cotal/.test(out) && !/older than the seed store/.test(out),
+    r.status === 0 && /complete -F _cotal_complete cotal/.test(out) && !/older than the seed store/.test(out),
     { status: r.status, out: out.slice(0, 400) },
   );
   check(
