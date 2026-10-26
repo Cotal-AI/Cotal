@@ -8,9 +8,11 @@
  * first: one that does not validate refuses `SCHEMA_INVALID` with its problem, and a valid one refuses
  * `UNSUPPORTED`, naming only `--json` to omit. In a folder whose records name no
  * space, as after `space forget`, `whoami` and `spawn --dry-run` keep exit 0 under the held default's
- * heading, say it was assumed, and name the folder and that space in their target. In a folder
- * prepared for a space other than the selection, `status`, bare `cotal` and `help` lead with that
- * folder's space, and `history clear` names the space it targets.
+ * heading, say it was assumed, and name the folder and that space in their target. A folder's space
+ * is the target of the commands run there only while it RUNS: a space prepared there and never
+ * started, and one whose registration survives a stack that no `cotal down` stopped, leave the
+ * selection the target, and the run names what the folder holds and the `cotal up` that starts it.
+ * `space show`, which is about the folder, still shows what it holds.
  *
  * Needs `nats-server` on PATH. Linux and macOS run the terminal cells under a pty, Windows under ConPTY.
  *
@@ -137,7 +139,9 @@ const QUESTION = "Which one?";
   const selected = terminal(["who"]);
   check("a selection on a terminal is the target, with no question", await until(() => selected.s.code !== undefined) && !selected.s.text().includes(QUESTION) && /\bin alpha\b/.test(selected.s.text()), { code: selected.s.code, out: selected.s.text().slice(-600) });
 
-  // In beta's own root beta is the target, and its heading says the selection applies outside it.
+  // In beta's own root beta is REGISTERED and its broker answers, so it is the target there, and its
+  // heading says the selection applies outside it. A folder's space captures the commands run there
+  // only while it runs; the prepared and stopped arms are below.
   const inBeta = run(["who", "--json"], join(home, "beta"));
   check("in another space's root that folder's space is the target, with no warning",
     envelope(inBeta)?.target?.space === "beta" && envelope(inBeta)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") && !/^! /m.test(inBeta.stderr), shown(inBeta));
@@ -148,14 +152,18 @@ const QUESTION = "Which one?";
   const away = run(["who"]);
   check("control: the selection is the target in its own root and from a folder with no project, with no note",
     [inAlpha, away].every((r) => /\bin alpha\b/.test(r.stdout + r.stderr) && !/this folder's space/.test(r.stdout + r.stderr)), [inAlpha, away].map(shown));
-  // A folder prepared for its own space and not started yet refuses there, under the same note.
+  // A folder prepared for its own space and not started yet does NOT capture a command there: the
+  // selection is the target, and the heading says what the folder holds and the `up` that starts it.
   const deltaPrepared = join(home, "delta");
   mkdirSync(deltaPrepared);
   const prepared = run(["space", "create", "delta"], deltaPrepared);
   const unstarted = run(["who"], deltaPrepared);
-  check("a refusal in a folder prepared for another space keeps the note under its heading",
-    prepared.status === 0 && unstarted.status === 2 && /TARGET_UNAVAILABLE/.test(unstarted.stderr) &&
-      /^Mesh: delta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(unstarted.stderr), { prepared: shown(prepared), unstarted: shown(unstarted) });
+  check("in a folder prepared for another space the selection is the target, with what the folder holds under the heading",
+    prepared.status === 0 && /\bin alpha\b/.test(unstarted.stdout + unstarted.stderr) &&
+      /^Mesh: alpha\n {2}this folder holds the prepared space "delta"; start it with cotal up$/m.test(unstarted.stdout + unstarted.stderr), { prepared: shown(prepared), unstarted: shown(unstarted) });
+  const unstartedPs = run(["ps", "--json"], deltaPrepared);
+  check("ps there targets the selection too, not the space the folder prepared",
+    envelope(unstartedPs)?.target?.space === "alpha", shown(unstartedPs));
   run(["space", "forget", "delta"], deltaPrepared);
   // A root with several spaces, none of them selected, keeps the selection and warns first.
   recordMesh({ space: "gamma", server: B, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString() });
@@ -166,48 +174,65 @@ const QUESTION = "Which one?";
     envelope(inShared)?.target?.space === "alpha" && warned?.message === NOTE && warned.target?.space === "alpha" && warned.target.folderSpaces?.slice().sort().join() === "beta,gamma" &&
       inShared.stderr.includes(`! ${NOTE}`), shown(inShared));
   removeMesh("gamma");
-  // A space prepared in a folder is that folder's space before its first `up` too, so a command there
-  // targets it, with the note, and nothing lands in the selection unannounced.
+  // A space prepared in a folder is not the target of a command there before its first `up`: the
+  // selection is, and the run says what the folder holds. `up`, `down` and `space show` are about
+  // the folder itself and still name it.
   const delta = join(home, "delta");
   mkdirSync(join(delta, ".cotal"), { recursive: true });
   recordPreparedSpace({ space: "delta", root: delta, ts: new Date(0).toISOString() });
+  const HELD = `this folder holds the prepared space "delta"; start it with cotal up`;
   const inDelta = run(["who", "--json"], delta), inDeltaText = run(["who"], delta);
-  // The refusal is the prepared space's own: it is not started yet, and its next step is there.
-  check("in a prepared space's folder, before its first up, that space is the target and the refusal is its own",
-    envelope(inDelta)?.target?.space === "delta" && envelope(inDelta)?.error?.code === "TARGET_UNAVAILABLE" && envelope(inDelta)?.error?.remedy?.includes(delta) === true &&
+  check("in a prepared space's folder, before its first up, the selection is the target and nothing names the prepared space as one",
+    envelope(inDelta)?.target?.space === "alpha" && inDelta.status === 0 &&
       envelope(inDelta)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") === true &&
-      !/^! this targets/m.test(inDelta.stderr) && /^Mesh: delta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(inDeltaText.stderr) && !/alpha/.test(inDeltaText.stdout), { json: shown(inDelta), text: shown(inDeltaText) });
-  // The listing, `space show` and `use` there name it as the target too.
+      !/^! this targets/m.test(inDelta.stderr) && new RegExp(`^Mesh: alpha\n {2}${HELD}$`, "m").test(inDeltaText.stdout + inDeltaText.stderr) &&
+      /\bin alpha\b/.test(inDeltaText.stdout), { json: shown(inDelta), text: shown(inDeltaText) });
+  // The listing and `use` name no folder space there, because none is the target; `space show`, which
+  // is about the folder, still shows what it holds and says the selection applies until it runs.
   const listed = run(["space", "--json"], delta), listedText = run(["space"], delta), shownSpace = run(["space", "show"], delta), used = run(["use", "--json"], delta), usedText = run(["use"], delta);
-  check("in that folder space marks it as this folder's, and space show and use name it as the target there",
-    envelope(listed)?.result?.folder === "delta" && /^ {2}delta \(this folder's\) /m.test(listedText.stdout) &&
-      /^Mesh: delta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(shownSpace.stdout) && /^space: +delta$/m.test(shownSpace.stdout) &&
-      envelope(used)?.result?.current === "alpha" && envelope(used)?.result?.folder === "delta" && usedText.stdout.includes(`commands in this folder target its space "delta"; the selection applies outside it`),
+  check("in that folder the listing and use name no folder space, and space show names what it holds",
+    envelope(listed)?.result?.folder === null && !/^ {2}delta \(this folder's\) /m.test(listedText.stdout) &&
+      /^Mesh: delta\n {2}this folder's prepared space; commands here target the selected space "alpha" until it runs$/m.test(shownSpace.stdout) && /^space: +delta$/m.test(shownSpace.stdout) &&
+      envelope(used)?.result?.current === "alpha" && envelope(used)?.result?.folder === null && !usedText.stdout.includes(`commands in this folder target its space "delta"`),
     { listed: shown(listed), listedText: shown(listedText), shownSpace: shown(shownSpace), used: shown(used), usedText: shown(usedText) });
-  // status, the entry screen and history clear's wording follow the same rule there.
+  // status reports the selection there, with what this folder holds and its `up` under the heading.
   const statusHere = run(["status", "--json"], delta), statusHereText = run(["status"], delta);
-  check("in that folder status reports delta, prepared, under its heading and as this folder's space",
-    envelope(statusHere)?.target?.space === "delta" && envelope(statusHere)?.result?.meshes?.folder === "delta" && envelope(statusHere)?.result?.meshes?.current === "alpha" &&
-      /^Mesh: delta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(statusHereText.stdout) &&
-      /^This folder's space\n {2}○ "delta" is prepared but not started$/m.test(statusHereText.stdout) && !/^Selected space/m.test(statusHereText.stdout),
+  check("in that folder status reports the selection under its heading, and names the prepared space and its up under it",
+    envelope(statusHere)?.target?.space === "alpha" && envelope(statusHere)?.result?.meshes?.folder === null && envelope(statusHere)?.result?.meshes?.current === "alpha" &&
+      new RegExp(`^Mesh: alpha\n {2}${HELD}$`, "m").test(statusHereText.stdout) &&
+      /^Selected space {2}→ alpha$/m.test(statusHereText.stdout) && !/^This folder's space$/m.test(statusHereText.stdout),
     { json: envelope(statusHere)?.target, text: statusHereText.stdout.slice(0, 1600) });
-  // A selection that is only prepared itself is named apart, as the space that applies outside the folder.
+  // A selection that is only prepared itself is still the target there, and refuses as its own.
   const epsilon = join(home, "epsilon");
   mkdirSync(join(epsilon, ".cotal"), { recursive: true });
   recordPreparedSpace({ space: "epsilon", root: epsilon, ts: new Date(0).toISOString() });
   setCurrent("epsilon");
   const preparedSelection = run(["status"], delta);
-  check("with a prepared selection, status names it as applying outside this folder, and delta as this folder's space",
-    /^ {2}Selected space 'epsilon' is prepared, not started; it applies outside this folder$/m.test(preparedSelection.stdout) && /^This folder's space\n {2}○ "delta" is prepared but not started$/m.test(preparedSelection.stdout),
+  check("with a prepared selection, status reports that selection, not the space this folder holds",
+    /^ {2}Selected space 'epsilon' is prepared, not started$/m.test(preparedSelection.stdout) && new RegExp(`^Mesh: epsilon\n {2}${HELD}$`, "m").test(preparedSelection.stdout) &&
+      !/"delta" is prepared but not started/.test(preparedSelection.stdout),
     preparedSelection.stdout.slice(0, 1600));
   setCurrent("alpha");
   removePreparedSpace("epsilon");
   const entry = run([], delta), entryHelp = run(["help"], delta), entryAway = run([]);
-  check("in that folder bare cotal and help lead with delta and its own up, and say the selection applies outside it",
-    [entry, entryHelp].every((r) => r.status === 0 && r.stdout.startsWith("delta · prepared here · ") && r.stdout.includes(`this folder's space; the selected space "alpha" applies outside it`) && /^Start here\n {2}cotal up +Start this space$/m.test(r.stdout) && !/^alpha · /m.test(r.stdout)),
+  check("in that folder bare cotal and help lead with the selection, name what the folder holds, and offer its up",
+    [entry, entryHelp].every((r) => r.status === 0 && /^alpha · /m.test(r.stdout) && r.stdout.includes(`this folder holds the prepared space "delta"`) &&
+      /^Start here\n {2}cotal up +Start this folder's space$/m.test(r.stdout) && !/^delta · /m.test(r.stdout)),
     [entry, entryHelp].map(shown));
   check("control: away from any project bare cotal leads with the selection, with no note",
     entryAway.status === 0 && entryAway.stdout.startsWith("alpha · ") && !entryAway.stdout.includes("this folder's space"), shown(entryAway));
+  // The stopped arm: the folder's space stays REGISTERED, as a stack ended without `cotal down`
+  // leaves it, and its broker does not answer. It is not the target either.
+  const zetaRoot = join(home, "zeta");
+  mkdirSync(join(zetaRoot, ".cotal"), { recursive: true });
+  recordMesh({ space: "zeta", server: "nats://127.0.0.1:1", root: zetaRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  const STOPPED = `this folder holds the stopped space "zeta"; restart it with cotal up`;
+  const inStopped = run(["who", "--json"], zetaRoot), inStoppedText = run(["who"], zetaRoot), stoppedPs = run(["ps", "--json"], zetaRoot);
+  check("a registered folder space whose broker does not answer is not the target: the selection is",
+    envelope(inStopped)?.target?.space === "alpha" && inStopped.status === 0 && envelope(stoppedPs)?.target?.space === "alpha" &&
+      new RegExp(`^Mesh: alpha\n {2}${STOPPED}$`, "m").test(inStoppedText.stdout + inStoppedText.stderr),
+    { json: shown(inStopped), text: shown(inStoppedText), ps: shown(stoppedPs) });
+  removeMesh("zeta");
   const clearChannel = run(["history", "clear", "general"], delta);
   check("history clear with a channel refuses naming the space it targets, not the selected space",
     clearChannel.status === 1 && clearChannel.stderr.includes("history clear takes no channel; it clears all retained channel history in the space it targets") && !/in the selected space/.test(clearChannel.stderr),

@@ -43,7 +43,7 @@ type Envelope = {
     kind: string;
     machine: { nats: string; natsServer: { path: string; version: string | null } | null; natsProblem: string | null };
     folder: { auth: { state: string }; personas: { root: string; default: string; error: string | null }; processes: { name: string; state: string }[] | null };
-    meshes: { current: string | null; unreadable: { file: string; error: string }[]; items: Mesh[] };
+    meshes: { current: string | null; folder?: string | null; unreadable: { file: string; error: string }[]; items: Mesh[] };
     selected: { resolved: boolean; code?: string; space?: string; server?: string | null; connection?: string };
     maintenance?: { root: string; space: string | null; state: string; attemptId: string | null; next: string | null } | null;
     store?: { state: string; at?: string; cause?: string; path?: string | null };
@@ -59,9 +59,9 @@ function sandbox() {
   const home = mkdtempSync(join(tmpdir(), "cotal-status-report-"));
   roots.push(home);
   mkdirSync(join(home, ".cotal"));
-  const run = (args: string[], extraEnv: Record<string, string> = {}) => {
+  const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) => {
     const r = spawnSync(process.execPath, [BIN, ...args], {
-      cwd: home,
+      cwd,
       env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
       encoding: "utf8",
       timeout: 120_000,
@@ -492,6 +492,67 @@ if (process.platform !== "win32") {
   const refusal = JSON.parse(up.stdout || "{}") as { outcome?: string; error?: { code?: string; message?: string; remedy?: string } };
   check("up refuses it DEPENDENCY_UNAVAILABLE, exit 2, naming its path and version", up.status === 2 && refusal.outcome === "refused" && refusal.error?.code === "DEPENDENCY_UNAVAILABLE" && named.test(refusal.error.message ?? "") && /take it off PATH so cotal uses its bundled nats-server/.test(refusal.error.remedy ?? ""), { status: up.status, error: up.error?.message, stdout: (up.stdout ?? "").slice(0, 900), stderr: (up.stderr ?? "").slice(0, 600) });
   check("and no broker answers at its address", !(await new Promise<boolean>((done) => { const socket = connect(port, "127.0.0.1"); socket.once("connect", () => { socket.destroy(); done(true); }); socket.once("error", () => done(false)); })), port);
+}
+
+// ── a folder's space is the target here only while it runs ───────────────────────────────────────
+// Both arms, in the folder that holds the space: a running registration is the target and says the
+// selection applies outside it; a prepared or stopped one is not, and the report names the selection
+// with what this folder holds under it.
+{
+  const greeter = spawn(process.execPath, ["-e", `const s = require("node:net").createServer((c) => { c.on("error", () => {}); c.end('INFO {"server_id":"folder","version":"2.12.12","proto":1,"max_payload":1048576}\\r\\n'); }); s.listen(0, "127.0.0.1", () => console.log(s.address().port));`], { stdio: ["ignore", "pipe", "inherit"] });
+  try {
+    const [answered] = (await once(greeter.stdout!, "data")) as [Buffer];
+    const live = `nats://127.0.0.1:${answered.toString().trim()}`;
+    const closed = `nats://127.0.0.1:${await freePort()}`;
+    /** A sandbox whose working folder holds `held` and whose selection is another space. */
+    const folderRig = async (hold: (project: string, run: ReturnType<typeof sandbox>["run"]) => void) => {
+      const { home, run } = sandbox();
+      const project = join(home, "project"), elsewhere = join(home, "elsewhere");
+      mkdirSync(join(project, ".cotal"), { recursive: true });
+      mkdirSync(elsewhere);
+      hold(project, run);
+      check("rig: the selection is registered elsewhere", run(["meshes", "add", "sel", "--server", closed, "--mode", "open", "--root", elsewhere, "--force"]).status === 0);
+      check("rig: it is selected", run(["use", "sel"]).status === 0);
+      return { run: (args: string[]) => run(args, {}, project) };
+    };
+
+    const running = await folderRig((project, run) => {
+      check("rig: this folder's space is registered at a broker that answers",
+        run(["meshes", "add", "held", "--server", live, "--mode", "open", "--root", project, "--force"]).status === 0);
+    });
+    const runningText = running.run(["status", "--plain"]);
+    const runningJson = running.run(["status", "--json"]);
+    check("a running folder space is the target, and the heading says the selection applies outside it",
+      runningJson.envelope?.target.space === "held" && runningJson.envelope.result?.meshes.current === "sel" &&
+        /^Mesh: held\n {2}this folder's space; the selected space "sel" applies outside it$/m.test(runningText.stdout), shown(runningText));
+
+    const stopped = await folderRig((project, run) => {
+      check("rig: this folder's space is registered at a broker that does not answer",
+        run(["meshes", "add", "held", "--server", closed, "--mode", "open", "--root", project, "--force"]).status === 0);
+    });
+    const stoppedText = stopped.run(["status", "--plain"]);
+    const stoppedJson = stopped.run(["status", "--json"]);
+    check("a stopped folder space is not the target: the selection is, with what this folder holds under it",
+      stoppedJson.envelope?.target.space === "sel" &&
+        /^Mesh: sel\n {2}this folder holds the stopped space "held"; restart it with cotal up$/m.test(stoppedText.stdout) &&
+        !/this folder's space/.test(stoppedText.stdout), shown(stoppedText));
+
+    const prepared = await folderRig((project, run) => {
+      const created = run(["space", "create", "held", "--root", project]);
+      check("rig: this folder holds a prepared space", created.status === 0, shown(created));
+    });
+    const preparedText = prepared.run(["status", "--plain"]);
+    const preparedJson = prepared.run(["status", "--json"]);
+    check("a prepared folder space is not the target either, and its up is named under the selection",
+      preparedJson.envelope?.target.space === "sel" && preparedJson.envelope.result?.meshes.folder === null &&
+        /^Mesh: sel\n {2}this folder holds the prepared space "held"; start it with cotal up$/m.test(preparedText.stdout), shown(preparedText));
+  } finally {
+    if (greeter.exitCode === null && greeter.signalCode === null) {
+      const exited = once(greeter, "exit");
+      greeter.kill();
+      await exited;
+    }
+  }
 }
 
 

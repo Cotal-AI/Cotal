@@ -44,6 +44,8 @@ import {
   extensionsDir,
   findCotalRoot,
   folderSpaceOverSelection,
+  meshesForRoot,
+  resolveReadsLiveness,
   MIN_FILE_STORE,
   stoppedStack,
   unsettledStackOperation,
@@ -184,13 +186,29 @@ class UnregisteredRoot {
   constructor(readonly root: string, readonly namesNoSpace: boolean) {}
 }
 
-function resolveSelected(cwd: string, values: FlagValues<typeof statusFlags>): Selected {
+function resolveSelected(cwd: string, values: FlagValues<typeof statusFlags>, offline: readonly string[]): Selected {
   try {
-    const target = resolveMeshTarget(cwd, { server: values.server, space: values.space });
+    const target = resolveMeshTarget(cwd, { server: values.server, space: values.space, offline });
     return target.source === "local-space" ? { ok: false, error: new UnregisteredRoot(target.root, target.namesNoSpace === true) } : { ok: true, target };
   } catch (e) {
     return { ok: false, error: e };
   }
+}
+
+/** The spaces this folder has registered whose broker does not answer. A folder's space is the
+ *  target of a command run there only while it runs, so the brokers THIS FOLDER records are the ones
+ *  dialed before the target resolves; no other recorded broker is dialed unless `--all` asks for it.
+ *  A catalog-owned registration is registry preparation rather than broker discovery and is never
+ *  probed, here or by the liveness sweep. A registry this cannot read is reported by `readMeshes`. */
+async function folderSpacesOffline(cwd: string, values: FlagValues<typeof statusFlags>): Promise<string[]> {
+  if (values.space !== undefined || values.server !== undefined) return [];
+  let entries: readonly MeshEntry[];
+  try {
+    if (!resolveReadsLiveness(cwd)) return [];
+    entries = meshesForRoot(findCotalRoot(cwd)).filter((m) => m.origin !== "catalog");
+  } catch { return []; }
+  const probed = await Promise.all(entries.map(async (m) => ((await isReachable(m.server, m.tlsRequired ? { tls: true } : {})) ? undefined : m.space)));
+  return probed.filter((space): space is string => space !== undefined);
 }
 
 /** What a persona catalog holds: whether its `default` passes the loader spawn uses, and how many of
@@ -398,7 +416,7 @@ export async function status(args: ParsedArgs): Promise<void> {
     });
   const cwd = process.cwd();
   const root = findCotalRoot(cwd);
-  const selected = resolveSelected(cwd, values);
+  const selected = resolveSelected(cwd, values, await folderSpacesOffline(cwd, values));
   const gaps = new Gaps();
   const hints: string[] = [];
   // A folder this account cannot read hides everything in it, so that is the one gap reported for it.
