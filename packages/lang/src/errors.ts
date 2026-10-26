@@ -421,6 +421,12 @@ export class EngineUnavailable extends Error {
   }
 }
 
+/** The string name off a foreign throw, or the generic error name when it has none. */
+export function nameOf(v: unknown): string {
+  const name = (v as { name?: unknown } | null | undefined)?.name;
+  return typeof name === "string" ? name : "Error";
+}
+
 /** The message off anything a foreign body throws, read defensively: other people's code may throw a primitive. */
 export function messageOf(v: unknown): string {
   if (v instanceof Error) return v.message;

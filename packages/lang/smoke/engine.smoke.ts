@@ -2730,6 +2730,64 @@ let n = 1;
     ok("a cut key is refused on the normal worker execution route", wrongRoute instanceof Error && wrongRoute.message.includes("inspection route"));
   }
 
+  // Foreign throws keep the same name and message on every worker route.
+  {
+    const runId = "foreign-throw";
+    const pins = resolvePins({ runId }, 0, ENGINE_LANGUAGE_VERSION);
+    const cases = [
+      { thrown: '"probe-x"', name: "Error", message: "probe-x" },
+      { thrown: "null", name: "Error", message: "null" },
+      { thrown: "undefined", name: "Error", message: "undefined" },
+      { thrown: "42", name: "Error", message: "42" },
+      { thrown: '{ name: 7, message: false }', name: "Error", message: "[object Object]" },
+      { thrown: '{ message: "probe-x" }', name: "Error", message: "probe-x" },
+      { thrown: '{ name: "ProbeError", message: "probe-x" }', name: "ProbeError", message: "probe-x" },
+      { thrown: '{ name: "", message: "" }', name: "", message: "" },
+    ];
+    for (const c of cases) {
+      const source = `throw ${c.thrown};`;
+      const module = transform(source).module;
+      for (const route of ["module", "bridged", "inspection"] as const) {
+        const result = await runInWorker(
+          { source, module, runId, handler: route === "module" ? { module: SIM_HANDLER, config: {} } : route,
+            ...(route === "inspection" ? { pins } : {}) },
+          { entry: WORKER_ENTRY,
+            ...(route === "bridged" ? { bridge: { handler: new SimHandler({}), store: { append: async () => {} } } } : {}) },
+        ).done;
+        ok(`${route} preserves the foreign throw ${c.thrown}`,
+          !result.ok && result.class === "error" && result.name === c.name && result.message === c.message, result);
+        if (route === "inspection") {
+          const exit = result.inspection?.exit;
+          ok(`inspection exit agrees for ${c.thrown}`,
+            exit?.kind === "error" && exit.name === c.name && exit.message === c.message, exit);
+        }
+      }
+    }
+
+    const source = 'await sleep("1s", { name: "nap" });';
+    const frontier = await runInWorker(
+      { source, module: transform(source).module, runId, handler: "inspection", pins },
+      { entry: WORKER_ENTRY },
+    ).done;
+    ok("inspection preserves its own Error instance",
+      !frontier.ok && frontier.name === "InspectionStopped"
+        && frontier.message === "inspection reached frontier at /sleep:nap#0"
+        && frontier.inspection?.exit?.kind === "frontier", frontier);
+
+    for (const thrown of [new TypeError("probe-x"), { name: "ProbeError", message: "probe-x" }, "probe-x", null]) {
+      class ThrowingHandler extends SimHandler {
+        override async sleep(): Promise<null> { throw thrown; }
+      }
+      const result = await runInWorker(
+        { source, module: transform(source).module, runId, handler: "bridged" },
+        { entry: WORKER_ENTRY, bridge: { handler: new ThrowingHandler({}), store: { append: async () => {} } } },
+      ).done;
+      ok(`the bridge preserves a handler failure ${String(thrown)}`,
+        !result.ok && result.class === "effect" && result.name === "EffectError" && result.code === "L4000"
+          && result.message === (thrown === null ? "null" : "probe-x"), result);
+    }
+  }
+
   // ---- crossing 2: LOG LINES, OUT. A log line is DATA on this engine, and the rule is held once, in
   // the engine's own log sink (section 20b grades it in-process), so no transport ever sees code -
   // which is what makes this a language refusal here rather than a structured-clone failure naming a
