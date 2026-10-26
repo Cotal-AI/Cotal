@@ -321,7 +321,8 @@ export interface EndpointOptions {
    *  construction); every fetched bearer MUST carry that same principal or the endpoint fails loud.
    *  A fetch failure is emitted as one "warning" event per run of failures and retried on a jittered,
    *  capped backoff — the connection stays up until its current JWT expires, so a dead auth service
-   *  surfaces loudly without instantly dropping the mesh.
+   *  surfaces loudly without instantly dropping the mesh. A failure that carries a numeric
+   *  `retryAfterSeconds` is retried when those seconds have passed instead, not before.
    *  Node rethrows unhandled "error" events, so a retry notice must not use that channel (#891).
    *  Mutually exclusive with `creds`/`token`/`user`/`pass`; requires `sentinelCreds`. */
   bearer?: string | (() => Promise<string>);
@@ -1159,7 +1160,10 @@ export class CotalEndpoint extends EventEmitter {
       if (initial) throw e;
       if (this.bearerRenewalFailures === 0)
         this.emitRecoverable(new Error(`bearer refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying with backoff; this connection dies at its current token's expiry if the auth service stays down`));
-      const delay = jitteredBackoffMs(this.bearerRenewalFailures++, CotalEndpoint.BEARER_RETRY_MS, CotalEndpoint.BEARER_RETRY_CAP_MS);
+      // A wait the source named is kept as named: never retried inside it, nor stretched by the backoff.
+      const named = retryAfterMs(e);
+      const delay = named > 0 ? named : jitteredBackoffMs(this.bearerRenewalFailures, CotalEndpoint.BEARER_RETRY_MS, CotalEndpoint.BEARER_RETRY_CAP_MS);
+      this.bearerRenewalFailures++;
       const timer = setTimeout(() => void this.renewBearerOnTimer(), delay);
       timer.unref?.();
       this.armBearerTimer(() => clearTimeout(timer));
@@ -2089,12 +2093,13 @@ export class CotalEndpoint extends EventEmitter {
   private static readonly RETRY_BACKOFF_CAP_MS = 60_000;
 
   /** The wait before the next rebuild attempt: {@link retryMs}, doubling per consecutive failure up
-   *  to {@link RETRY_BACKOFF_CAP_MS}. The FIRST retry still waits exactly retryMs, so a transient
-   *  drop recovers as fast as it always did; only a failure that repeats gets paced. */
+   *  to {@link RETRY_BACKOFF_CAP_MS}, then a random half of it taken off. A transient drop still
+   *  recovers within retryMs, and endpoints refused together, as a broker restart or an auth limit
+   *  refuses a host's agents, spread their retries instead of arriving at the callout at once. */
   private nextRetryDelayMs(): number {
     const delay = Math.min(this.retryMs * 2 ** this.retryAttempt, CotalEndpoint.RETRY_BACKOFF_CAP_MS);
     this.retryAttempt++;
-    return delay;
+    return Math.round(delay / 2 + Math.random() * (delay / 2));
   }
 
   /** Rebuild with backoff until it sticks or we're stopped. Interruptible: a manual
@@ -2111,11 +2116,16 @@ export class CotalEndpoint extends EventEmitter {
           this.retryAttempt = 0; // reconnected — the next drop starts from retryMs again
           return; // success — re-armed; the supervisor re-triggers on the next terminal close
         } catch (e) {
-          if (!this.stopped && !(e instanceof RepeatedRefusal)) this.emitRecoverable(e as Error);
+          const delay = this.nextRetryDelayMs();
+          // The broker never says why the auth callout refused a bearer, so a user-mode refusal is
+          // named as one, with where the reason is, and paced like any other failure.
+          if (!this.stopped && !(e instanceof RepeatedRefusal))
+            this.emitRecoverable(this.userMode && isAuthRejection(e)
+              ? new Error(`the broker refused this endpoint's bearer for ${this.owner}.${this.actor} - retrying in ${Math.ceil(delay / 1000)}s; the space's auth service logs why`, { cause: e })
+              : e as Error);
           // A warning listener may stop the endpoint. A backoff armed after that holds the process
           // open for the whole delay, because the stop has already kicked the backoff it saw.
           if (this.stopped) return;
-          const delay = this.nextRetryDelayMs();
           await new Promise<void>((resolve) => {
             this.backoffResolve = resolve;
             this.backoffTimer = setTimeout(resolve, delay);
@@ -8085,6 +8095,13 @@ function tcpDialable(server: string, timeoutMs: number): Promise<boolean> {
  *  up. The same errors {@link isReachable} reads as up after its own authenticated connect. */
 export function isAuthRejection(e: unknown): boolean {
   return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError;
+}
+
+/** The wait a credential source asked for with a numeric `retryAfterSeconds` on its error, in
+ *  milliseconds, or 0. */
+function retryAfterMs(e: unknown): number {
+  const seconds = (e as { retryAfterSeconds?: unknown } | undefined)?.retryAfterSeconds;
+  return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 0;
 }
 
 /** Whether a NATS server is *running* at `servers`. With NO creds this is a SILENT plaintext

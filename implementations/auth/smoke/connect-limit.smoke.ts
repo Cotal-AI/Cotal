@@ -1,5 +1,5 @@
 /**
- * Connect limits (SPEC 13.1): the callout's per-actor, per-owner and per-host token buckets, the
+ * Connect limits (SPEC §10): the callout's per-actor, per-owner and per-host token buckets, the
  * signed `RATE_LIMITED` denial it journals, and the exchange's typed 429, against a REAL
  * operator-mode nats-server.
  *
@@ -12,6 +12,10 @@
  *   L3  the shipped auth service started in this process with small limits: once the callout has
  *       limited an actor, its human exchange and its managed-agent exchange answer 429 with
  *       `{code, retryAfterSeconds, error}` and `Retry-After`, while another actor still mints.
+ *   L4  the clients: the 429 becomes a `rate-limited` failure with its seconds, the bearer command's
+ *       `retry-after` line rides its error, an endpoint whose bearer the broker refuses says so and
+ *       retries inside its first backoff step, and a bearer source's `retryAfterSeconds` is waited out
+ *       by the refresh timer and by a rebuild inside the wait.
  *
  * Run: pnpm smoke:connect-limit:auth  (needs nats-server on PATH)
  */
@@ -22,12 +26,14 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SignJWT, exportJWK, generateKeyPair, type CryptoKey } from "jose";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
+import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity, runAgentBearer, setupSpaceStreams } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import {
   ConnectLimiter, ConnectRateLimited, USER_TOKEN_VER, calloutPermissions, deriveOwnerForIdpSubject, deriveOwnerToken, grantActor,
   grantManagedActor, loadCalloutAuth, loadOwnerSecret, newActorToken, startAuthCallout, startAuthService, type AuthServiceHandle,
 } from "../src/index.js";
+import { credentialFailure } from "@cotal-ai/workspace";
+import { exchangeRateLimit } from "../src/response-json.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 
 const { check, finish } = createSuite();
@@ -52,10 +58,10 @@ console.log("L1) the limiter on an injected clock");
   const r = refusal(() => lim.take(a, t0));
   check("an actor's burst is its per-minute limit, and the next connect is refused", r?.code === "RATE_LIMITED", r);
   check("the refusal waits one refill: 60s / 3 = 20s", r?.retryAfterSeconds === 20, r?.retryAfterSeconds);
-  check("the refusal names the actor and the owner", r?.message === "actor a of owner u_owner is over its limit of 3 connects a minute", r?.message);
+  check("the refusal names the actor and the owner, and its limit is the actor's", r?.message === "actor a of owner u_owner is over its limit of 3 connects a minute" && r.limit === "actor", r);
   check("refusals spend nothing: the owner still has 2 of 5 for another actor", refusal(() => { lim.take(b, t0); lim.take(b, t0); }) === undefined);
   const o = refusal(() => lim.take(b, t0));
-  check("the owner's limit holds across its actors and names both", o?.message === "owner u_owner is over its limit of 5 connects a minute (actor b)", o?.message);
+  check("the owner's limit holds across its actors and names both, and its limit is the owner's", o?.message === "owner u_owner is over its limit of 5 connects a minute (actor b)" && o.limit === "owner", o);
   check("a bucket refills at its rate: one connect for the actor after 20s", refusal(() => lim.check(a, t0 + 20_000)) === undefined);
   check("the longer wait wins when both buckets are short", refusal(() => lim.check(a, t0 + 5_000))?.retryAfterSeconds === 15);
   const lim2 = new ConnectLimiter({ actorPerMinute: 1 });
@@ -64,7 +70,7 @@ console.log("L1) the limiter on an injected clock");
   check("check spends nothing", refusal(() => lim2.take({ owner: "u_x", actor: "c" }, t0)) === undefined);
   lim.take({ host: "10.0.0.1" }, t0); lim.take({ host: "10.0.0.1" }, t0);
   const h = refusal(() => lim.take({ host: "10.0.0.1" }, t0));
-  check("a host's bucket refuses a bearer that does not verify", h?.message === "host 10.0.0.1 is over its limit of 2 connects a minute with a bearer that does not verify", h?.message);
+  check("a host's bucket refuses a bearer that does not verify", h?.message === "host 10.0.0.1 is over its limit of 2 connects a minute with a bearer that does not verify" && h.limit === "host", h);
   check("another host has its own bucket", refusal(() => lim.take({ host: "10.0.0.2" }, t0)) === undefined);
   check("the defaults are 60, 600 and 60 a minute", JSON.stringify(new ConnectLimiter().limits) === JSON.stringify({ actorPerMinute: 60, ownerPerMinute: 600, hostPerMinute: 60 }));
   let bad: unknown;
@@ -91,6 +97,8 @@ try {
       return { ok: false, msg: (e as Error).message, ms: Date.now() - t };
     }
   };
+
+  await setupSpaceStreams({ servers: fx.servers, space: a.space, creds: await mintCreds(a.auth, newIdentity(), "provisioner") });
 
   // ---- L2: the callout with counting hooks --------------------------------------------------------
   console.log("L2) the callout charges each connect before any ledger or issuance work");
@@ -157,6 +165,69 @@ try {
   await dial(forged);
   check("a bearer that does not verify is refused for its signature, then charged to its client host",
     hostDenials === 2 && /^RATE_LIMITED retry-after \d+s: host 127\.0\.0\.1 is over its limit of 2 connects a minute with a bearer that does not verify$/.test(lastDenial().reason), { hostDenials, last: lastDenial() });
+
+  // ---- L4: the clients ------------------------------------------------------------------------------
+  console.log("L4) the clients wait out a rate limit and name a refused bearer");
+  const typed = exchangeRateLimit(429, { code: "RATE_LIMITED", retryAfterSeconds: 7, limit: "actor", error: "actor a of owner u_x is over its limit of 60 connects a minute - retry in 7s" }, "a");
+  check("the exchange's 429 is a rate limit with its sentence, seconds and bucket",
+    typed?.message.endsWith("retry in 7s") === true && typed.retryAfterSeconds === 7 && typed.limit === "actor", typed);
+  check("an actor's limit says only that actor is limited",
+    typed?.remedy === `only actor "a" is limited, not the account's other actors`, typed?.remedy);
+  const ownerTyped = exchangeRateLimit(429, { code: "RATE_LIMITED", retryAfterSeconds: 1, limit: "owner", error: "owner u_x is over its limit of 600 connects a minute (actor a) - retry in 1s" }, "a");
+  check("an owner's limit says the whole account is limited",
+    ownerTyped?.remedy === "the account is limited, so every one of its actors is" && ownerTyped.limit === "owner", ownerTyped);
+  check("a 429 without the typed body or bucket, or another status, is not read as a rate limit",
+    exchangeRateLimit(429, { error: "too many refused exchanges" }, "a") === undefined && exchangeRateLimit(429, { code: "RATE_LIMITED", retryAfterSeconds: 7 }, "a") === undefined &&
+    exchangeRateLimit(401, { code: "RATE_LIMITED", retryAfterSeconds: 7, limit: "actor" }, "a") === undefined);
+  const failure = credentialFailure("rate-limited", typed!.message, typed!.remedy, { retryAfterSeconds: 7, limit: "actor" }) as Error & { code?: unknown; retryAfterSeconds?: unknown; rateLimit?: unknown };
+  check("the provider's rate-limited failure carries the seconds where an endpoint reads them, and the bucket",
+    failure.code === "rate-limited" && failure.retryAfterSeconds === 7 && JSON.stringify(failure.rateLimit) === JSON.stringify({ retryAfterSeconds: 7, limit: "actor" }), failure);
+  const sentence = "agent-bearer: actor seat of owner u_x is over its limit of 60 connects a minute - retry in 7s";
+  const ran = await runAgentBearer([process.execPath, "-e", `process.stdout.write("retry-after 7\\n"); process.stderr.write(${JSON.stringify(sentence)}); process.exit(2)`])
+    .then(() => undefined, (e: Error & { retryAfterSeconds?: unknown }) => e);
+  check("the bearer command's retry-after line rides its error beside its one sentence", ran?.message === sentence && ran.retryAfterSeconds === 7, ran);
+
+  const epOwner = ownerOf("endpoint-human");
+  const endpointOf = (owner: string, actor: string, source: () => Promise<string>) => new CotalEndpoint({
+    space: a.space, servers: fx.servers, sentinelCreds: a.sentinelCreds, bearer: source,
+    card: { owner, actor, name: actor, kind: "agent" }, channels: ["general"],
+    registerPresence: false, watchPresence: false, watchChannels: false, consume: false,
+  });
+  const refusedEp = endpointOf(epOwner, "ep", () => sign(epOwner, "ep", privateKey as CryptoKey));
+  const warnings: Array<{ at: number; msg: string }> = [];
+  refusedEp.on("warning", (e: Error) => warnings.push({ at: Date.now(), msg: e.message }));
+  refusedEp.on("error", () => {});
+  await refusedEp.start();
+  const epBearer = await sign(epOwner, "ep", privateKey as CryptoKey);
+  await dial(epBearer); await dial(epBearer); // the actor's other two connects this minute
+  const kicked = Date.now();
+  await refusedEp.reconnect().catch(() => {});
+  const refusedLine = new RegExp(`^the broker refused this endpoint's bearer for ${epOwner}\\.ep - retrying in (\\d+)s; the space's auth service logs why$`);
+  for (let i = 0; i < 100 && !warnings.some((w) => refusedLine.test(w.msg)); i++) await new Promise((r) => setTimeout(r, 100));
+  const said = warnings.find((w) => refusedLine.test(w.msg));
+  check("an endpoint whose bearer the broker refuses says so, and where the reason is", said !== undefined, warnings);
+  const firstWait = Number(refusedLine.exec(said?.msg ?? "")?.[1]);
+  check("its first retry waits a random point in the upper half of the 3s step", firstWait >= 2 && firstWait <= 3, { firstWait, after: (said?.at ?? 0) - kicked });
+  await refusedEp.stop();
+
+  const calls: number[] = [];
+  const pacedOwner = ownerOf("endpoint-paced");
+  const pacedEp = endpointOf(pacedOwner, "rf", async () => {
+    calls.push(Date.now());
+    if (calls.length === 2) throw Object.assign(new Error("actor rf is over its limit of 3 connects a minute - retry in 7s"), { retryAfterSeconds: 7 });
+    return sign(pacedOwner, "rf", privateKey as CryptoKey, now() + 10); // past its renewal window at once, so renewed at the 5s floor
+  });
+  pacedEp.on("warning", () => {});
+  pacedEp.on("error", () => {});
+  await pacedEp.start();
+  for (let i = 0; i < 100 && calls.length < 2; i++) await new Promise((r) => setTimeout(r, 100));
+  const rebuilt = await pacedEp.reconnect().then(() => true, () => false);
+  check("a rebuild inside that wait dials on the held bearer without asking the source", calls.length === 2 && rebuilt, { calls: calls.length, rebuilt });
+  for (let i = 0; i < 400 && calls.length < 3; i++) await new Promise((r) => setTimeout(r, 100));
+  const gap = (calls[2] ?? Infinity) - (calls[1] ?? 0);
+  check("a bearer source's retryAfterSeconds is kept exactly: asked again after 7s, not on the 2.5-5s backoff", calls.length === 3 && gap >= 7_000 && gap < 9_000, { calls: calls.length, gap });
+  await pacedEp.stop();
+
   await calloutNc.close();
   calloutNc = undefined;
 
@@ -173,7 +244,6 @@ try {
   const secret = newActorToken();
   grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, owner: human, actor: "seat", scope: [], allowSubscribe: ["general"], allowPublish: ["general"],
     parent: `${human}.cli`, tokenHash: secret.tokenHash, lifecycleUid: mintLifecycleUid() });
-  await setupSpaceStreams({ servers: fx.servers, space: a.space, creds: await mintCreds(a.auth, newIdentity(), "provisioner") });
   const serviceJournal: string[] = [];
   console.error = (...args: unknown[]) => { serviceJournal.push(args.map(String).join(" ")); };
   service = await startAuthService({
@@ -197,7 +267,7 @@ try {
   check("the service journals each limited connect with its owner and actor",
     denials(serviceJournal).filter((d) => d.owner === human && /^RATE_LIMITED retry-after \d+s: actor (loop|seat) of owner /.test(d.reason)).length === 2, serviceJournal.slice(-4));
   const human2 = await exchange({ idpToken: await proof(), actor: "loop" });
-  check("the human exchange for the limited actor answers 429 RATE_LIMITED", human2.status === 429 && human2.body.code === "RATE_LIMITED", human2);
+  check("the human exchange for the limited actor answers 429 RATE_LIMITED naming the actor's limit", human2.status === 429 && human2.body.code === "RATE_LIMITED" && human2.body.limit === "actor", human2);
   const secs = human2.body.retryAfterSeconds;
   check("its retryAfterSeconds is a whole number of seconds, sent again as Retry-After", Number.isSafeInteger(secs) && (secs as number) >= 1 && (secs as number) <= 30 && human2.retryAfter === String(secs), human2);
   check("its error is one sentence naming the actor, the owner, the limit and the wait",

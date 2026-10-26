@@ -1011,10 +1011,11 @@ whose signature verifies to the principal it names even after it expires, and pe
 bearer that does not verify. A callout that refuses a connect for a limit MUST answer with a signed
 denial whose reason starts with `RATE_LIMITED retry-after <n>s`, and MUST do so before it reads the
 ledger or records an issuance. While an actor or its owner is limited, an exchange for that actor
-MUST answer 429 with the body `{code: "RATE_LIMITED", retryAfterSeconds, error}`, where
-`retryAfterSeconds` is a positive integer, and a `Retry-After` header carrying the same number. It
-MUST NOT count that answer against a refused-exchange budget. A client that receives it SHOULD NOT
-exchange or connect as that actor again until those seconds have passed.
+MUST answer 429 with the body `{code: "RATE_LIMITED", retryAfterSeconds, limit, error}`, where
+`retryAfterSeconds` is a positive integer and `limit` is `"actor"` or `"owner"` for the bucket that
+ran out, and a `Retry-After` header carrying the same number. It MUST NOT count that answer against
+a refused-exchange budget. A client that receives it SHOULD NOT exchange or connect as that actor
+again until those seconds have passed.
 
 **User-mode chat sessions.** The auth service is a minting authority for chat sessions only
 (§13.1). A signed-in human opens one with a fresh IdP proof and the SHA-256 of a holder secret the

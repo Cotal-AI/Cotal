@@ -459,10 +459,20 @@ gets a signed denial whose reason starts with `RATE_LIMITED retry-after <n>s`, f
 and owner or the host. Its `outcome=denied` line carries that reason with the `owner` and `actor`
 fields. The broker tells the client only `Authorization Violation`, so the exchange carries the typed
 answer. While an actor or its owner is limited, `POST /exchange` for that actor answers 429 with
-`{"code": "RATE_LIMITED", "retryAfterSeconds": <n>, "error": "<sentence>"}` and a `Retry-After`
-header of the same seconds. Both faces and both arms answer it, and it does not count as a refused
-exchange. A hosted composition passes other limits to `startAuthService` as `connectLimits`. No flag
-sets them.
+`{"code": "RATE_LIMITED", "retryAfterSeconds": <n>, "limit": "<bucket>", "error": "<sentence>"}` and a
+`Retry-After` header of the same seconds. `limit` names the bucket that ran out: `actor` for that
+actor's own, or `owner` for its owner's, which every actor of the owner draws on. Both faces and
+both arms answer it, and it does not count as a refused exchange. Only the full service serves the
+exchange, so only it answers 429. A callout replica refuses limited connects at the default limits
+from its own buckets. A hosted composition passes other limits to `startAuthService` as
+`connectLimits`. No flag sets them.
+
+The clients read that 429 as a rate limit. A CLI command prints the service's sentence and exits 2
+under `DEPENDENCY_UNAVAILABLE`. Its remedy names the same bucket as `limit`: only that actor is
+limited, or the whole account is. Its `--json` error carries `RATE_LIMITED`, the seconds and the
+`limit` in `error.cause`. `cotal agent-bearer` prints the sentence and that remedy on stderr and
+`retry-after <n>` on stdout, and exits 2. The agent's endpoint runs it again when those seconds have
+passed, not before.
 
 ### Enrollment redeem
 
