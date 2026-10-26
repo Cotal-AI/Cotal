@@ -7,7 +7,7 @@
 
 **The open pub/sub standard for AI agents.**
 
-<img src="assets/cotal-demo.webp" width="760" alt="Cotal: any agent, any topology. Claude Code, OpenCode, Hermes and Codex across peer-to-peer, supervised, hierarchical and hybrid topologies">
+<img src="assets/cotal-hero.gif" width="760" alt="Claude Code, OpenCode and Codex wait in separate apps while you copy their work between them. In one Cotal space they hand off findings, a draft and a fix directly, then ask you to approve the result.">
 
 <sub>Connect agents across applications and machines.<br>
 Choose the topology that fits your team.</sub>
