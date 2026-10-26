@@ -46,17 +46,21 @@ export async function invokeUserManager(
   let service: ResolvedService;
   const onAbort = () => { void nc?.close(); };
   const resolve = (signal = opts.signal, deadlineMs = opts.deadlineMs ?? 10_000) => resolveService(nc!, config.space, endpoint, caller, { instanceId, deadlineMs, signal });
-  const connect = async (signal = opts.signal) => {
+  const connect = async (signal = opts.signal, deadline = Date.now() + (opts.deadlineMs ?? 10_000)) => {
     const token = await bearer(signal);
     ({ caller, instanceId } = managerCallerBinding(token, {
       space: config.space, owner: user.owner, actor: user.actor, lifecycleUid: config.lifecycleUid!, instanceId: config.managerInstanceId,
     }));
     const connectOpts = standaloneConnectOpts({ bearer: token, sentinelCreds: user.sentinelCreds, tls: config.tls });
+    signal?.throwIfAborted();
+    const left = deadline - Date.now();
+    if (left <= 0) throw new EpEnvelopeError("deadline-exceeded",
+      "the deadline passed before the manager was connected; the manager request WAS NOT RUN", undefined, "not-executed");
     nc = await dialerFor(config.servers)({
       servers: config.servers,
       ...connectOpts,
       maxReconnectAttempts: 0,
-      timeout: Math.min(opts.deadlineMs ?? 10_000, 2_000),
+      timeout: left,
     });
     // An in-flight dial has no connection handle to close yet. A late result never publishes, and
     // it is closed here because a follow that stopped or reached its deadline has already returned.
@@ -74,7 +78,7 @@ export async function invokeUserManager(
   // The describe spends what is left of the follow's deadline, so a silent manager reports itself.
   // With nothing left it would report a silence it had no time to observe.
   const prepare = async (signal: AbortSignal, deadline: number) => {
-    await connect(signal);
+    await connect(signal, deadline);
     const left = deadline - Date.now();
     if (left <= 0) throw new EpEnvelopeError("deadline-exceeded",
       "the deadline passed before the manager was resolved; the manager request WAS NOT RUN", undefined, "not-executed");
