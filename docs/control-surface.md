@@ -74,7 +74,9 @@ or zero-valued fallback.
 The manager's `resolve-cwd` command is in the `manager.spawn` capability class. It accepts an
 absolute path on that manager's host and returns its canonical directory plus the host name. It
 refuses a relative, missing or non-directory path with `failed-precondition`; it creates nothing.
-`spawn` applies the same check at admission, before any credentials or durables are minted.
+`spawn` applies the same check at admission, before any credentials or durables are minted. It is
+minted beside `spawn` in the operator instruments, which are the caller on a static mesh, and in a
+`spawn` holder's `manager-caller` view. The standing agent `spawn` capability does not carry it.
 A runtime that delegates seats outside the manager's host cannot use a host cwd. Its manager
 refuses `resolve-cwd` with `failed-precondition` before any filesystem lookup, with the same
 execution-mode refusal for every path. It returns no host name or canonical path.

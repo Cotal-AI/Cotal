@@ -847,6 +847,25 @@ export async function refuseWithoutLiveManager(space: string, server: string, au
   }
 }
 
+/** The host one manager instance reports in its own `status`, the name `cotal ps` prints as its
+ *  reported host, or undefined when it does not answer or names no well-formed host. Presence
+ *  carries no instance id off a user-auth mesh, so this read is where a pinned manager's host comes
+ *  from there. The view is the caller's own and is not kept.
+ *
+ *  It takes the ordinary control deadline, NOT {@link REPORTED_HOST_BUDGET_MS}. That budget belongs
+ *  to the census above, where a host name is display metadata and a slow instance is listed without
+ *  one. Here the answer decides whether a launch stops to ask the operator a question, so a read
+ *  that gives up early does not lose a column, it asks about a manager that is on this host.
+ *  Measured: under heavy load the 2s budget expired and the question came back. */
+export async function reportedManagerHost(space: string, server: string, auth: ControlAuth, instanceId: string): Promise<string | undefined> {
+  let reply: ManagerReply;
+  try {
+    reply = await askManager(space, server, "managerStatus", undefined, auth, "owner", undefined, { instanceId });
+  } catch { return undefined; }
+  const host = reply.ok ? (reply.data as { host?: unknown } | undefined)?.host : undefined;
+  return typeof host === "string" && HOST_NAME.test(host) ? host : undefined;
+}
+
 /** A pinned instance the space's registry does not list has nothing behind it to answer, so the
  *  command is refused before it waits out the reply deadline, naming the managers that are running.
  *  A registry this side cannot read leaves the request to settle it. */

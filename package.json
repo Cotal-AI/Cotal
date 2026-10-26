@@ -729,6 +729,7 @@
     "smoke:service-preparation-refusal": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/service-preparation-refusal.smoke.ts",
     "smoke:prompt-input-end": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/prompt-input-end.smoke.ts",
     "smoke:manager-folder": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/manager-folder.smoke.ts",
+    "smoke:spawn-folder:live": "tsx implementations/cli/smoke/spawn-folder-live.smoke.ts",
     "smoke:up-usage-refusal": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/up-usage-refusal.smoke.ts",
     "smoke:leading-output-flags": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/leading-output-flags.smoke.ts",
     "smoke:telemetry": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/telemetry.smoke.ts",

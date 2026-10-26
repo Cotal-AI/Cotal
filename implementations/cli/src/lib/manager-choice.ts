@@ -1,7 +1,7 @@
 import type { Readable, Writable } from "node:stream";
 import { BASELINE_LIFECYCLE_ENDPOINT, invokeCommand, remoteManagerActors, resolveService, type Presence } from "@cotal-ai/core";
 import { CommandFailure, DEFAULT_MANAGER_NAME, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, terminalWidth } from "@cotal-ai/workspace";
-import { askManager, liveManagerIds, onInstance, onInstanceId, resolveControlTarget } from "./control.js";
+import { askManager, liveManagerIds, onInstance, onInstanceId, reportedManagerHost, resolveControlTarget, type ControlAuth } from "./control.js";
 import { openEndpointConnection } from "./endpoint-client.js";
 import { shellWord } from "./endpoint-errors.js";
 import { displayCmd } from "./self-exec.js";
@@ -330,14 +330,23 @@ let pick: ManagerSelection | undefined;
 /** The manager that `instanceId` names, as this terminal picked it or as your live managers'
  *  presence shows it, with the `--on` value that picks it. Presence is read with the roster's
  *  read-only view, so no manager credential is acquired. Off a user-auth mesh, whose presence does
- *  not carry instance ids, or for a manager presence does not show, its host is unknown. */
-export async function managerSelection(values: { on?: unknown; space?: unknown; server?: unknown }, instanceId: string): Promise<ManagerSelection> {
+ *  not carry instance ids, and for a manager presence does not show, `target` asks that manager for
+ *  its own host, the one `cotal ps` prints as its reported host. Without a target, or for a manager
+ *  that does not answer, its host is unknown. */
+export async function managerSelection(
+  values: { on?: unknown; space?: unknown; server?: unknown },
+  instanceId: string,
+  target?: { space: string; server: string; auth: ControlAuth },
+): Promise<ManagerSelection> {
   if (pick?.manager.instanceId === instanceId) return pick;
   const flags = targetFlags(values);
   let mode: string | undefined;
   try { mode = resolveMeshTarget(process.cwd(), flags).mode; } catch { /* not a registered mesh: presence names no instance */ }
-  const manager = mode === "user" ? (await yourLiveManagers(flags)).find((m) => m.instanceId === instanceId) : undefined;
-  return { manager: manager ?? candidateOf(instanceId, undefined), selector: String(values.on ?? instanceId) };
+  const shown = mode === "user" ? (await yourLiveManagers(flags)).find((m) => m.instanceId === instanceId) : undefined;
+  const manager = shown ?? candidateOf(instanceId, undefined);
+  if (manager.host !== null || target === undefined) return { manager, selector: String(values.on ?? instanceId) };
+  const host = await reportedManagerHost(target.space, target.server, target.auth, instanceId);
+  return { manager: { ...manager, host: host ?? null }, selector: String(values.on ?? instanceId) };
 }
 
 /** A folder a manager resolved on its host with `resolve-cwd`, or its reason for refusing the path. */
@@ -348,6 +357,11 @@ function withCwd(argv: readonly string[], folder: string): string[] {
   const end = argv.indexOf("--");
   return end === -1 ? [...argv, "-C", folder] : [...argv.slice(0, end), "-C", folder, ...argv.slice(end)];
 }
+
+/** `argv` again with the `-C` and `--on` that send `folder` with the launch and ask nothing: what
+ *  the folder question's receipt offers, and the way past a check that could not be made. */
+export const rerunWithCwd = (argv: readonly string[], folder: string, selector: string): string =>
+  rerunOn(withCwd(argv, folder), selector);
 
 /** What a launch without `-C` uses, as the folder question and its receipt name it. */
 const MANAGER_WORKSPACE = "Manager's workspace (default)";
@@ -392,7 +406,7 @@ export async function askManagerFolder(
     const folder = checked?.cwd;
     output.write(`${renderReport({ sections: [{ title: "Folder chosen", blocks: [
       { kind: "fields", rows: [["Folder", folder ?? MANAGER_WORKSPACE], ["Host", selection.manager.host ?? "not reported"]] },
-      ...(folder === undefined ? [] : [{ kind: "lines" as const, lines: [{ text: `To choose it without this question: ${rerunOn(withCwd(argv, folder), selection.selector)}`, tone: "hint" as const }] }]),
+      ...(folder === undefined ? [] : [{ kind: "lines" as const, lines: [{ text: `To choose it without this question: ${rerunWithCwd(argv, folder, selection.selector)}`, tone: "hint" as const }] }]),
     ] }] }, "rich", terminalWidth(output as { isTTY?: boolean; columns?: number }))}\n`);
     return folder;
   }

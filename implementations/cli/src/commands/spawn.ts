@@ -108,7 +108,7 @@ import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positio
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
 import { askManager, describeUnanswered, failIfNotOk, liveManagerIds, managerRailGone, onInstance, refuseUnregisteredManager, refuseWithoutLiveManager, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
-import { askManagerFolder, askSpawnPlace, managerPin, managerSelection, managersWithPersona, rerunOn, type FolderCheck } from "../lib/manager-choice.js";
+import { askManagerFolder, askSpawnPlace, managerPin, managerSelection, managersWithPersona, rerunOn, rerunWithCwd, type FolderCheck } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
@@ -577,6 +577,13 @@ export function managedLaunchView(r: ManagedLaunchResult): Report {
   ] };
 }
 
+/** The auth mode of the mesh `flags` name, or undefined when they name no registered mesh, which
+ *  the launch's own resolve then reports. */
+function meshMode(flags: { space?: string; server?: string }): string | undefined {
+  try { return resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server }).mode; }
+  catch { return undefined; }
+}
+
 /** Shared managed launch. The manager resolves its persona and returns real readiness before
  *  any view opens. Detach changes terminal attachment, not the launch or caller authority. */
 export async function launchManagedPersona(
@@ -597,26 +604,29 @@ export async function launchManagedPersona(
   const flags = { space: values.space, server: values.server, creds: values.creds };
   const seatIntent = Boolean(process.env.COTAL_NAME || process.env.COTAL_ID || process.env.COTAL_LIFECYCLE_UID || process.env.COTAL_ACCEPTED_TOKEN);
   if (seatIntent && values.creds !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a managed seat's child launch uses that seat's own caller, not a --creds override");
-  // On a terminal, a pinned manager that is not known to run on this host is asked which of its
-  // folders the agent works in, unless -C names one. The question holds no manager credential: a
-  // typed folder is checked under a view of that manager acquired after it is answered, and the
-  // launch acquires its own below.
   let cwd = values.cwd;
-  // On a user-auth mesh, a launch with no --on goes to the manager the exchange picks, your only
-  // live one. On a terminal that pick is read once, its view dropped, and the launch is pinned to it,
-  // so the folder question asks about the manager that runs the agent. If that manager is gone by
-  // the time the launch is sent, the launch is refused and goes to no other manager.
-  if (cwd === undefined && on === undefined && !seatIntent && values.creds === undefined && canPrompt()) {
-    let mode: string | undefined;
-    try { mode = resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server }).mode; } catch { /* not a registered mesh */ }
-    if (mode === "user") on = (await resolveControlTarget(flags, "control-caller-privileged", undefined, { onRefusal: "throw" })).auth.managerInstanceId;
-  }
-  if (cwd === undefined && on !== undefined && !seatIntent && canPrompt()) {
-    const selection = await managerSelection(values, on);
-    if (selection.manager.host !== hostname()) {
-      const folder = await askManagerFolder(selection, process.argv.slice(2), (path) => checkFolder(flags, on, path));
-      if (folder === null) process.exit(0);
-      cwd = folder;
+  // On a terminal, a pinned manager that is not known to run on this host is asked which of its
+  // folders the agent works in, unless -C names one. One resolve, dropped again here, answers
+  // everything that question needs: that the mesh runs and the pin names a manager that is running,
+  // which manager an unpinned launch on a user-auth mesh goes to (the exchange picks your only live
+  // one, and the launch is pinned to it so the question asks about the manager that runs the
+  // agent), and the host that manager reports. So an unknown --on or a stopped mesh is refused
+  // before anything is asked, and the question still holds no manager credential: a typed folder is
+  // checked under a view of that manager acquired after it is answered, and the launch acquires its
+  // own below. A manager that has stopped by the time the launch is sent is refused there and goes
+  // to no other manager.
+  if (cwd === undefined && !seatIntent && canPrompt() && (on !== undefined || (values.creds === undefined && meshMode(flags) === "user"))) {
+    const probe = await resolveControlTarget(flags, "control-caller-privileged", on, { onRefusal: "throw" });
+    const pin = on ?? probe.auth.managerInstanceId;
+    if (pin !== undefined) {
+      if (!probe.auth.bearer) await refuseUnregisteredManager(probe.space, probe.server, probe.auth, pin);
+      on = pin;
+      const selection = await managerSelection(values, pin, probe);
+      if (selection.manager.host !== hostname()) {
+        const folder = await askManagerFolder(selection, process.argv.slice(2), (path) => checkFolder(flags, pin, path));
+        if (folder === null) process.exit(0);
+        cwd = folder;
+      }
     }
   }
   let seat: Awaited<ReturnType<typeof resolveSeatControlTarget>>;
@@ -845,17 +855,21 @@ async function reportAlreadyRunning(running: AgentAlreadyRunning, values: { deta
 }
 
 /** Whether the manager `on` pins can launch an agent in `path`, answered by its `resolve-cwd` over
- *  a view of that manager acquired for this check alone. A path it cannot use is its refusal; a
- *  check it does not answer refuses the launch. */
+ *  a view of that manager acquired for this check alone. A path it cannot use is its refusal, which
+ *  the question shows and asks again. A check it does not answer refuses the launch: the reason
+ *  rides the structured cause rather than the sentence, because a responder's own words there are
+ *  an internal subject and a spec reference, and the way past it is `-C <dir>`, which sends the
+ *  folder with the launch and asks nothing. */
 async function checkFolder(flags: ConnectFlags, on: string, path: string): Promise<FolderCheck> {
   const t = await resolveControlTarget(flags, "control-caller-privileged", on, { onRefusal: "throw" });
   const reply = await askManager(t.space, t.server, "resolveCwd", { cwd: path }, t.auth, "owner", undefined, { instanceId: on });
   const cwd = reply.ok ? (reply.data as { cwd?: unknown } | undefined)?.cwd : undefined;
   if (typeof cwd === "string") return { cwd };
   if (!reply.ok && reply.code === "failed-precondition" && reply.error) return { refusal: oneLine(reply.error) };
-  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `manager instance ${on} did not check the folder ${JSON.stringify(path)}${reply.error ? ` (${oneLine(reply.error)})` : ""}, so nothing was launched`, {
+  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the folder ${JSON.stringify(path)} could not be checked with manager instance ${on}, so nothing was launched`, {
     target: { space: t.space, managerInstanceId: on },
-    remedy: "cotal ps shows which managers answer; run the spawn again",
+    ...(reply.error ? { native: { ...(reply.code ? { code: reply.code } : {}), detail: { reason: oneLine(reply.error) } } } : {}),
+    remedy: `send the folder with the launch instead of answering the question: ${rerunWithCwd(process.argv.slice(2), path, on)}`,
   });
 }
 
