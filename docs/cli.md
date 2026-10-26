@@ -329,7 +329,7 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Mesh | [`up`](#up) | Start a local mesh (nats-server + JetStream), or boot a whole manifest with `-f` |
 | Mesh | [`down`](#down) | Stop the whole stack, selected registered components, or a manifest deploy |
 | Mesh | [`backup`](#backups) | Create an offline full-space or registry-only artifact from a preserved cut |
-| Mesh | [`clean`](#clean) | Configurable cleanup: purge history (live), or wipe the local store / identity (stopped) |
+| Mesh | [`clean`](#clean) | Legacy, hidden from `cotal help`: purge history or wipe a stopped store; `reset`, `history clear` and `backup cleanup-fallback` replace it |
 | Mesh | [`reset`](#reset) | Preview or reset one stopped local store or space identity |
 | Mesh | [`meshes`](#mesh-registry) | Legacy, hidden from `cotal help`: list, register and drop meshes; `space`, `space add` and `space forget` replace it |
 | Mesh | [`space`](#selecting-a-space) | List the spaces this machine can reach, or show one in full |
@@ -337,8 +337,8 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Mesh | [`status`](#mesh-registry) | Read-only diagnostics for setup, processes, and the selected mesh |
 | Mesh | [`doctor`](#doctor) | Credential-health diagnosis and repair (`doctor auth`) |
 | Mesh | [`use`](#selecting-a-space) | Select the space commands target when none is named, or show the selection |
-| Mesh | [`join`](#join) | Join a space as your own presence (interactive) |
-| Mesh | [`topology`](#manifest-deploys) | Validate and view a mesh manifest's access graph (read-only) |
+| Mesh | [`join`](#join) | Legacy, hidden from `cotal help`: join a space as your own presence; `chat` replaces it |
+| Mesh | [`topology`](#manifest-deploys) | Legacy, hidden from `cotal help`: view a manifest's access graph; `team check --graph` replaces it |
 | Messaging | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
 | Messaging | [`chat`](#chat) | Open a live session under its own identity: terminal view, `--plain` lines, or `--stdio` for programs |
 | Messaging | [`channel`](#channel) | Read channel metadata and observed members, or change a channel's settings |
@@ -356,13 +356,13 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Agents | [`persona`](#persona) | List, show, edit, create, or remove local personas |
 | Agents | [`personas`](#persona) | Legacy, hidden from `cotal help`: the earlier persona parser; `persona` replaces it |
 | Run a manager | [`supervise`](#supervise) | Run a manager in this terminal for the selected space; see [Start a manager for a hosted space](#start-a-manager-for-a-hosted-space) |
-| Observe | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
+| Observe | [`endpoints`](#endpoints) | Legacy, hidden from `cotal help`: list every endpoint in the live roster; `who --all` replaces it |
 | Observe | [`who`](#who) | The live roster of the selected space, and whether a manager runs each seat |
 | Observe | [`whoami`](#whoami) | The identity this CLI acts under, and what it may read, post and do |
-| Observe | [`describe`](#endpoint-control) | Read a native endpoint's authorized, digest-verified command contracts |
-| Observe | [`invoke`](#endpoint-control) | Invoke one native command by name, with schema validation and an attributed result receipt |
+| Observe | [`describe`](#endpoint-control) | Legacy, hidden from `cotal help`: read a native endpoint's contracts; `endpoint describe` replaces it |
+| Observe | [`invoke`](#endpoint-control) | Legacy, hidden from `cotal help`: invoke one native command; `endpoint invoke` replaces it |
 | Observe | [`watch`](#watch) | Follow authorized activity without starting, stopping or attaching agents |
-| Observe | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
+| Observe | [`console`](#console) | Legacy, hidden from `cotal help`: the protocol TUI; `watch` replaces it |
 | Manager | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
 | Manager | [`reconcile-gate`](#reconcile-gate) | Hidden from `cotal help`, which lists `manager reconcile`: unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
 | Manager | [`deregister-instance`](#endpoint-deregister) | Hidden from `cotal help`: the old spelling of `endpoint deregister`, which refuses and names it |
@@ -376,7 +376,7 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Manager | [`daemon`](#daemon) | Linux: serve the local machine daemon's control endpoint, read its status, sign it in, check and request its own registration with a space |
 | Services | [`service`](#service) | Save, start, stop and inspect owned local services, from a preset or a definition file |
 | Identity | [`mint`](#auth-mint) | Moved: credential minting is `cotal auth mint` |
-| Identity | [`actor`](#actor) | Manage a user-auth space's actor ledger (grant / revoke / list) |
+| Identity | [`actor`](#actor) | Legacy, hidden from `cotal help`: the actor ledger; `auth grants`, `auth grant` and `auth revoke` replace it |
 | Identity | [`service-endpoint`](#service-endpoint) | Decide and inspect service endpoint registrations on the space's auth service |
 | Identity | [`login`](#login) | Sign in to a per-user-auth mesh's IdP (once per machine) |
 | Identity | [`logout`](#login) | Revoke the IdP session and clear the cached login |

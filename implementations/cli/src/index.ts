@@ -302,6 +302,7 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "clean",
+    hidden: true,
     group: "Mesh",
     summary:
       "configurable cleanup - history/store/all, plus explicit committed-restore fallback cleanup",
@@ -432,6 +433,7 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "join",
+    hidden: true,
     group: "Mesh",
     summary: "join a space (interactive) - --space <s> --name <n> [--role <r>]",
     flags: [
@@ -480,6 +482,7 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "topology",
+    hidden: true,
     group: "Mesh",
     summary: "validate + view a mesh manifest's access graph (read-only)",
     positionals: "<view>",
@@ -763,6 +766,7 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "endpoints",
+    hidden: true,
     group: "Observe",
     summary: "read authorized live presence, including agents and infrastructure",
     flags: endpointsFlags,
@@ -799,6 +803,7 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "describe",
+    hidden: true,
     group: "Observe",
     summary: "read a native endpoint's authorized, digest-verified command contracts",
     usage: "cotal describe <endpoint>  [--space <s>] [--server <url>]",
@@ -813,6 +818,7 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "invoke",
+    hidden: true,
     group: "Observe",
     summary: "invoke a native command with schema validation and attributed result receipts",
     usage: "cotal invoke <endpoint> <command>  [--args '<json>'] [--name <agent> | --self] [--admin]",
@@ -841,6 +847,7 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "console",
+    hidden: true,
     group: "Observe",
     summary: "live protocol view for a space - lazygit-style TUI, or a line stream on --plain",
     flags: [...targetFlags, { name: "plain", type: "boolean", description: "line stream instead of the TUI" }],

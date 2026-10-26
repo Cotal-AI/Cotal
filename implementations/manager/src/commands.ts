@@ -930,7 +930,7 @@ const managerCommands: Command[] = [
     hidden: true,
     group: "Manager",
     summary:
-      "run a manager - [--runtime <name>] (default pty; extension runtimes are explicit-only) [--space <s>] [--server <url>] [--console-port <n>] [--max-sessions <n>] [--seat-cap <n|unlimited>] [--name <name>] [--roster <file>] [--launch <spec>] [--resume-attempt <id>]",
+      "run a manager for a space in this terminal; the default runtime is pty",
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space to supervise (default: env COTAL_SPACE, else this folder's space, else the one `cotal use` selected)" },
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh; env COTAL_SERVER when unset)" },
