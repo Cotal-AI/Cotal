@@ -918,6 +918,70 @@ async function completionOut(positionals: string[]): Promise<string> {
   }
 }
 
+// --- update --self from a folder whose prepared space never started, and from a folder that holds
+// two remote registrations: neither names a manager here, so neither refuses the software update.
+// Reproduced on a published 0.105.0 (2026-10-26): `cotal setup --configure-only`, then a bare
+// `cotal update --self` in that folder refused with `"<space>" is prepared but not started - start it
+// with cotal up`; two Cloud spaces registered with `space add --from` from one folder, nothing
+// selected, refused with `multiple meshes running: a (/f), b (/f)` and read neither.
+{
+  const { readManagerContinuity } = await import("../src/commands/update.js");
+  const { recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace } = await import("@cotal-ai/workspace");
+  const realHome = process.env.COTAL_HOME, cwd = process.cwd();
+  const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "cotal-update-prepared-")));
+  process.env.COTAL_HOME = join(sandbox, "home");
+  const capture = async (run: () => Promise<"none" | "legacy">) => {
+    let out = "";
+    const realLog = console.log;
+    console.log = (s?: unknown) => void (out += `${s}\n`);
+    try { return { verdict: await run(), out }; } finally { console.log = realLog; }
+  };
+  try {
+    // A folder whose space was prepared and never started: no broker, no journal, no manager.
+    const prepared = join(sandbox, "prepared");
+    mkdirSync(join(prepared, ".cotal", "agents"), { recursive: true });
+    recordPreparedSpace({ space: "drafted", root: prepared, ts: new Date(0).toISOString() });
+    process.chdir(prepared);
+    const inFolder = await capture(() => readManagerContinuity({}));
+    assert.equal(inFolder.verdict, "none", "a prepared space that never started holds no custody, so the update proceeds");
+    assert.ok(inFolder.out.includes(`drafted: prepared in ${prepared}, not started; no manager running`), "the skip names the prepared space and its folder");
+    assert.ok(!inFolder.out.includes("manager-caller"), "the skip reaches no exchange");
+    const named = await capture(() => readManagerContinuity({ space: "drafted" }));
+    assert.equal(named.verdict, "none", "the same prepared space named with --space holds no custody either");
+    process.chdir(cwd);
+
+    // Two remote user meshes registered from one folder: each is read by name and skipped.
+    const shared = join(sandbox, "shared");
+    mkdirSync(join(shared, ".cotal"), { recursive: true });
+    for (const space of ["cloud_a", "cloud_b"]) {
+      recordMesh({
+        space, server: "nats://127.0.0.1:9", mode: "user", origin: "catalog", catalogOwner: "owner-key", root: shared, tlsRequired: false,
+        userAuth: {
+          provider: "cotal", remote: true,
+          idp: { url: "http://127.0.0.1:9/idp", issuer: "http://127.0.0.1:9/idp", audience: "cotal-mesh" },
+          endpoints: { url: "http://127.0.0.1:9/" },
+          sentinelCredsPath: join(shared, "sentinel.creds"),
+        },
+        ts: new Date().toISOString(),
+      });
+    }
+    process.chdir(shared);
+    const pair = await capture(() => reportRunningManagers({}, readManagerContinuity));
+    assert.equal(pair.verdict, "none", "two remote registrations in one folder name no manager here, so the update proceeds");
+    for (const space of ["cloud_a", "cloud_b"])
+      assert.ok(pair.out.includes(`${space}: this mesh's manager runs elsewhere; no custody on this machine`), `${space} is read by name and skipped`);
+    assert.ok(pair.out.includes("2 meshes running; reading each manager's continuity"), "the folder's two registrations are enumerated, not refused");
+    console.log("  ✓ update --self skips a never-started prepared space and reads a folder's two remote registrations by name");
+  } finally {
+    process.chdir(cwd);
+    removePreparedSpace("drafted");
+    for (const space of ["cloud_a", "cloud_b"]) removeMesh(space);
+    if (realHome === undefined) delete process.env.COTAL_HOME;
+    else process.env.COTAL_HOME = realHome;
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+}
+
 // --- #1620: update observes the running manager BEFORE it rewrites the global seed store ----------
 // `rt.reconcile()` is `runSeed({force: true})` — it rewrites the operator-global seed store,
 // manifest and npm prefix. Running it before the continuity check meant an `update --self` against
