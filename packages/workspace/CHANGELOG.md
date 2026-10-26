@@ -1,5 +1,16 @@
 # @cotal-ai/workspace
 
+## 0.105.0
+
+### Minor Changes
+
+- c49bced: Omit `path` from absent process records, including missing files and empty pidfile husks. Narrow `ProcessRecord` by `state` before reading its evidence fields. Non-absent records keep the path that was read, including pre-upgrade spellings.
+
+### Patch Changes
+
+- Updated dependencies [6e16f06]
+  - @cotal-ai/core@0.105.0
+
 ## 0.104.2
 
 ### Patch Changes

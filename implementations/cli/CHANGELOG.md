@@ -1,5 +1,30 @@
 # @cotal-ai/cli
 
+## 0.105.0
+
+### Minor Changes
+
+- c49bced: Omit `path` from absent process records, including missing files and empty pidfile husks. Narrow `ProcessRecord` by `state` before reading its evidence fields. Non-absent records keep the path that was read, including pre-upgrade spellings.
+- 7b6fa0b: `cotal watch` refuses a target it cannot open the way the other reads of that space do.
+  
+  In a stopped project it ended on one line with exit 1, no mesh heading and no next step, while `history`, `channel` and `chat` in the same folder refused the same target with the full report and exit 2. It now refuses under the refusal's own code with that report, and `--json` carries that code, message and next step in the stream's `error` record instead of a generic sentence under `OPERATION_FAILED`.
+
+### Patch Changes
+
+- 8958031: `cotal help` no longer lists eight more legacy commands, and completion no longer offers them: `join` (`chat` replaces it), `endpoints` (`who --all`), `describe` and `invoke` (`endpoint describe` and `endpoint invoke`), `console` (`watch`), `topology` (`team check --graph`), `clean` (`reset`, `history clear` and `backup cleanup-fallback`) and `actor` (`auth grants`, `auth grant` and `auth revoke`). Each still runs and keeps its own help page. The `supervise` entry's one-line summary no longer repeats its flag list; `cotal help supervise` lists the flags.
+- 7b6fa0b: `cotal up` in a running project, its subfolders included, says that the space already runs there.
+  
+  A start naming another address with `--server` or `--host` refused as though the name belonged to another folder, and offered to start a separate space in the folder that is already that space's project. It now names the address the space runs at, the bare `cotal up` that reaches it, and the `cotal down` in its root. A refresh that finds the mesh already running reports it like any other start: the `Mesh:` heading first, then its line, and a Next that names the launch and the stop. It used to print one line with neither.
+- 7b6fa0b: `cotal up` keeps the mode a stopped project last ran in, whatever address the restart names.
+  
+  `--server` and `--host` name where the broker listens, not whether it authenticates, but the mode was read off the same condition as the address. A project started with `--open`, stopped, and restarted with the address it already ran on came back with auth required and a delivery daemon, and the receipt said nothing about the change. The address still follows the flags, the recorded mode is inherited whenever the start names no mode of its own, and the receipt says the mode it started in. A `--open` or `--user-auth` flag still starts the mode it names.
+  
+  A `--server nats://` address on a root whose recorded policy serves TLS refuses `USAGE_INVALID` before anything starts, naming `.cotal/broker-policy.json` and the `tls://` address to pass. It used to start a TLS broker, register it under an address no client can dial, and print `TLS: serving <subject> at nats://<address>` over it.
+- Updated dependencies [c49bced]
+- Updated dependencies [6e16f06]
+  - @cotal-ai/workspace@0.105.0
+  - @cotal-ai/core@0.105.0
+
 ## 0.104.2
 
 ### Patch Changes
