@@ -1,5 +1,13 @@
 # @cotal-ai/cli
 
+## 0.106.1
+
+### Patch Changes
+
+- fb43711: `cotal update` verifies each installed built-in connector and the web dashboard against the payload the binary ships, byte for byte, and reinstalls only the ones that differ, instead of reinstalling all seven on every run. `cotal ext seed --force` still reinstalls unconditionally.
+- @cotal-ai/core@0.106.1
+  - @cotal-ai/workspace@0.106.1
+
 ## 0.106.0
 
 ### Minor Changes
