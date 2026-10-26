@@ -601,8 +601,11 @@ async function completionOut(positionals: string[]): Promise<string> {
   for (const name of ["to", "channel", "role"]) assert.ok(send.flags?.some((flag) => flag.name === name), `send declares the ${name} destination flag`);
   assert.ok(!flaggedSend.includes("spawn\t"), "flagged send does not fall back to top-level commands");
 
+  const flaggedPersona = await completionOut(["persona", "--space", "demo", ""]);
+  assert.ok(/^show$/mu.test(flaggedPersona), "flags before persona subcommands are ignored");
+  // The legacy `personas` is hidden, so completion offers nothing for it.
   const flaggedPersonas = await completionOut(["personas", "--space", "demo", ""]);
-  assert.ok(flaggedPersonas.includes("show\tprint a persona's card"), "flags before personas subcommands are ignored");
+  assert.ok(!/^show/mu.test(flaggedPersonas), "the hidden legacy personas command completes nothing");
 
   const exactUp = await completionOut(["up"]);
   assert.ok(exactUp.includes("--space"), "exact flag-only commands offer their flags");
