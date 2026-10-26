@@ -21,7 +21,8 @@ import { maintenanceStackView, readStackJournal } from "./stack-journal.js";
 
 export const brokerPreset: ServicePreset = {
   kind: "service-preset", name: "broker", adapter: "nats-broker", timeoutMs: 30000,
-  summary: "local nats-server child for an explicitly prepared root and configuration",
+  summary: "the space's nats-server, from a configuration `cotal up` prepared",
+  defaults: { root: { space: "root" }, server: { space: "server" } },
 };
 
 const CONFIG_LIMIT = 1024 * 1024;

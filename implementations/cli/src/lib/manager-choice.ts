@@ -93,7 +93,7 @@ export class ManagerPinUnmatched extends CommandFailure {
       : `--on ${selector} is not the name, host or instance id of a live manager of yours`, {
       target: { on: selector },
       native: { detail: { managers } },
-      remedy: managers.length ? "rerun it with --on naming one of the managers listed" : "start a manager with cotal supervise, then rerun it",
+      remedy: managers.length ? "rerun it with --on naming one of the managers listed" : "start a manager with cotal manager start, then rerun it",
     });
   }
 }

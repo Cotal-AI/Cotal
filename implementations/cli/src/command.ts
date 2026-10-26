@@ -60,6 +60,7 @@ import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printCommandHelp, printHelpPath, printEntry } from "./help.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { servicePresetCommand } from "./lib/service-presets.js";
+import { managerServiceCommand } from "./commands/manager-service.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
 import { metadataPositionals } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
@@ -598,13 +599,20 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   let cmd = findCommand(commands, word);
   let rest = ownWords(cmd, words, leadingGlobals);
   const wantsHelp = asksForHelp(rest);
-  if (cmd?.name === "service") {
-    try { cmd = servicePresetCommand(cmd, rest); }
-    catch (error) {
+  // A service invocation takes its preset's flags, and `manager <verb>` is `service <verb> manager`.
+  // Both are read again after the seed below re-resolves the command.
+  const serviceSurface = (found: Command | undefined, words: string[]): { cmd: Command | undefined; rest: string[] } => {
+    if (found?.name !== "service" && found?.name !== "manager") return { cmd: found, rest: words };
+    try {
+      if (found.name === "service") return { cmd: servicePresetCommand(found, words), rest: words };
+      const lifecycle = managerServiceCommand(found, words);
+      return lifecycle ? { cmd: lifecycle.cmd, rest: lifecycle.argv } : { cmd: found, rest: words };
+    } catch (error) {
       const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
-      failureExit(cmd, failure, asksForJson(cmd, rest), rest.includes("--plain"));
+      return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"));
     }
-  }
+  };
+  ({ cmd, rest } = serviceSurface(cmd, rest));
   // The usage telemetry hook is armed as soon as the command is known, so a usage refusal below
   // counts too, and before anything runs, so the one-time notice precedes the command's output.
   const arm = (): void => {
@@ -655,7 +663,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       commands = surface();
       cmd = findCommand(commands, word);
       if (!cmd) usageExit(unknownCommandMessage(commands, word));
-      rest = ownWords(cmd, words, leadingGlobals);
+      ({ cmd, rest } = serviceSurface(cmd, ownWords(cmd, words, leadingGlobals)));
       arm();
     }
   }

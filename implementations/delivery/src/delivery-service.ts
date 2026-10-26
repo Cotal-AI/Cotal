@@ -1,11 +1,12 @@
 import { isAbsolute } from "node:path";
 import type { Command, ParsedArgs } from "@cotal-ai/core";
-import { colorEnabled, CommandFailure, DELIVERY_PROCESS, localProcessPath, observeServiceStartup, protectedCredentialReference, publishServiceStartup, readPidfile, readProcessRecord, resolveNativeServiceTarget, serviceOperationId, serviceStartupPath, validateServiceStartupPath, type LocalProcess, type ServicePreset } from "@cotal-ai/workspace";
+import { colorEnabled, CommandFailure, DELIVERY_CREDS_KIND, DELIVERY_PROCESS, localProcessPath, observeServiceStartup, protectedCredentialReference, publishServiceStartup, readPidfile, readProcessRecord, resolveNativeServiceTarget, serviceOperationId, serviceStartupPath, validateServiceStartupPath, type LocalProcess, type ServicePreset } from "@cotal-ai/workspace";
 import { runDelivery } from "./delivery.js";
 
 export const deliveryPreset: ServicePreset = {
   kind: "service-preset", name: "delivery", adapter: "delivery", timeoutMs: 40000,
-  summary: "native delivery daemon using the selected broker root and its existing scoped credential",
+  summary: "the delivery daemon of an authenticated space, with the credential `cotal up` keeps for it",
+  defaults: { root: { space: "root" }, creds: { space: "material", kind: DELIVERY_CREDS_KIND } },
 };
 
 export const deliveryService: LocalProcess = {

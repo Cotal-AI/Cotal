@@ -10,7 +10,8 @@ import { execEndpointDeclaration, readExecEndpoint } from "./definition.js";
 
 export const execEndpointPreset: ServicePreset = {
   kind: "service-preset", name: "exec-endpoint", adapter: "exec-endpoint-service", timeoutMs: 60_000,
-  summary: "registered static-auth endpoint backed by one no-shell JSON handler process per call",
+  summary: "your own endpoint on a static-auth space: one handler program run per call, without a shell",
+  defaults: { root: { space: "root" } },
 };
 
 function assertEarlierLaunchesSettled(context: ServiceAdapterContext): void {

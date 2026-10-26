@@ -708,7 +708,7 @@ async function psFromPresence(v: FlagValues<typeof psFlags>, presentation: Retur
 
 /** What gets `space` a manager that answers. On the root whose `cotal up` started the space, as `ps`
  *  refuses for a static stack: waiting for the `up` that is starting its manager, ending the stack
- *  manager that does not answer, or bare `cotal up`. Anywhere else, `cotal supervise`. */
+ *  manager that does not answer, or bare `cotal up`. Anywhere else, `cotal manager start`. */
 function startManagerNext(root: string | undefined, space: string, named: boolean): { command: string; description: string } {
   const at = named ? ` --space ${space}` : "";
   if (root !== undefined && stackManagerStarting(root, space)) return { command: `cotal ps${at}`, description: "List again once cotal up reports the manager started" };
@@ -716,7 +716,7 @@ function startManagerNext(root: string | undefined, space: string, named: boolea
   if (pid !== undefined) return { command: `kill -KILL ${pid}`, description: "End the stack manager that does not answer; bare cotal up then starts it again" };
   const entry = findMesh(space);
   if (root !== undefined && (stackManagerAbsent(root, space) || (entry?.origin === "up" && entry.root === root))) return { command: "cotal up", description: "Start the stack's manager" };
-  return { command: `cotal supervise${at}`, description: "Start a manager for this space" };
+  return { command: `cotal manager start${at}`, description: "Start a manager for this space" };
 }
 
 /** A named-agent detail uses the same authorized census as ps, never an invented process view. */
@@ -947,7 +947,7 @@ export class NoManagerAnswered extends CommandFailure {
   constructor(cause: CommandFailure) {
     super("refused", "TARGET_UNAVAILABLE", "none of your managers in this space answered", {
       target: cause.target,
-      remedy: "start a manager for this space with cotal supervise",
+      remedy: "start a manager for this space with cotal manager start",
       ...(cause.native ? { native: cause.native } : {}),
       cause,
     });

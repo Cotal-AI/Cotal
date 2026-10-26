@@ -84,6 +84,16 @@ export function importServiceDefinition(path: string, space: string): ServiceDef
   return validateServiceDefinition(pinnedExecutable(value), space);
 }
 
+/** A process definition from `service add --exec`: the program, its arguments and the folder it
+ *  runs in, ready once its process runs. A bare program name is pinned to the file PATH finds now,
+ *  as an imported definition's is, and a relative path to the absolute path it names in `cwd`. */
+export function execServiceDefinition(words: readonly string[], cwd: string, space: string): ServiceDefinitionInput {
+  const [program, ...args] = words;
+  const executable = bareName(program!) ? program! : resolve(cwd, program!);
+  const value: ServiceDefinitionInput = { schemaVersion: 1, space, launch: { type: "process", executable, args, cwd }, readiness: { type: "process", timeoutMs: 10000 } };
+  return validateServiceDefinition(pinnedExecutable(validateServiceDefinition(value, space, false)), space);
+}
+
 /** A bare executable name is looked up on this PATH once, as the definition is saved, and saved as
  *  the absolute path found, so a later start runs the same file whatever its own PATH is. A PATH
  *  with a relative or empty entry refuses, as a unit install does, since that entry would resolve
