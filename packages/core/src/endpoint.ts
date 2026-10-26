@@ -33,6 +33,7 @@ import {
 } from "./liveness.js";
 import { processRuntime } from "./process-runtime.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
+import { armRenewal, renewalDeadlineMs, jitteredBackoffMs } from "./renewal.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { withDeadline } from "./deadline.js";
 import { inspectCredHealth } from "./provision.js";
@@ -312,12 +313,15 @@ export interface EndpointOptions {
    *  A STRING is a one-shot bearer for connection-lifetime ≤ bearer-lifetime callers (the CLI): the
    *  owner+actor PRINCIPAL is derived from it (`sub`, `act.actor`), and the connection dies at the
    *  bearer-bound JWT expiry. A FUNCTION is a bearer source for long-lived endpoints (spawned agents):
-   *  the endpoint fetches before the first connect, re-fetches ahead of each expiry and on rebuilds, and
-   *  every (re)connect attempt presents the freshest token — so reconnects outlive any single bearer.
+   *  the endpoint fetches before the first connect, renews at a random point between 50% and 80% of
+   *  each token's lifetime (then swaps the connection onto it with a controlled reconnect) and on
+   *  rebuilds, and every (re)connect attempt presents the freshest unexpired token — so reconnects
+   *  outlive any single bearer, and none presents an expired one.
    *  A source requires explicit `card.owner` + `card.actor` (there is no bearer to derive them from at
    *  construction); every fetched bearer MUST carry that same principal or the endpoint fails loud.
-   *  A fetch failure is emitted as a "warning" event and retried — the connection stays up until its
-   *  current JWT expires, so a dead auth service surfaces loudly without instantly dropping the mesh.
+   *  A fetch failure is emitted as one "warning" event per run of failures and retried on a jittered,
+   *  capped backoff — the connection stays up until its current JWT expires, so a dead auth service
+   *  surfaces loudly without instantly dropping the mesh.
    *  Node rethrows unhandled "error" events, so a retry notice must not use that channel (#891).
    *  Mutually exclusive with `creds`/`token`/`user`/`pass`; requires `sentinelCreds`. */
   bearer?: string | (() => Promise<string>);
@@ -562,7 +566,15 @@ export class CotalEndpoint extends EventEmitter {
   private readonly bearerSource?: () => Promise<string>;
   /** The freshest bearer — what every (re)connect attempt presents. */
   private currentBearer?: string;
-  private bearerTimer?: NodeJS.Timeout;
+  /** Cancels the armed bearer renewal or retry. */
+  private cancelBearerRenewal?: () => void;
+  /** Consecutive failed bearer renewals: the retry's step, and whether this run of failures has
+   *  already been surfaced. */
+  private bearerRenewalFailures = 0;
+  /** Whether the expired-bearer refusal has been surfaced for this outage. */
+  private bearerRefusalSurfaced = false;
+  /** When the held bearer was adopted: its lifetime's start when it carries no `iat`. */
+  private bearerAdoptedAtMs = 0;
   /** Arms against the credential authenticated on the current wire. nats-core 3.4.0 discards the
    *  promise returned by its async transport-close continuation; if that continuation enters the
    *  reconnect dial loop with an expired JWT, its terminal auth error becomes an unhandled rejection.
@@ -1078,11 +1090,12 @@ export class CotalEndpoint extends EventEmitter {
     this.superviseConnection();
   }
 
-  /** How far ahead of the current bearer's `exp` a refresh fires, and how soon a FAILED refresh
-   *  retries. The margin must clear a reconnect window (nats.js retries use the sync token getter,
-   *  so whatever `currentBearer` holds is what every attempt presents). */
-  private static readonly BEARER_REFRESH_MARGIN_MS = 60_000;
-  private static readonly BEARER_RETRY_MS = 15_000;
+  /** The floor on a bearer renewal's delay. A token whose whole lifetime sits under it is renewed at
+   *  this cadence (`expiry-renewal` mints 5s bearers). */
+  private static readonly BEARER_MIN_RENEWAL_MS = 5_000;
+  /** A failed bearer renewal retries after about this long, doubling per failure up to the cap. */
+  private static readonly BEARER_RETRY_MS = 5_000;
+  private static readonly BEARER_RETRY_CAP_MS = 60_000;
 
   /**
    * A condition the endpoint is already surviving. Node rethrows `error` when no listener is
@@ -1093,10 +1106,11 @@ export class CotalEndpoint extends EventEmitter {
     this.emit("warning", err);
   }
 
-  /** Fetch a fresh bearer from the source, pin its principal to ours, arm the next refresh. On a
+  /** Fetch a fresh bearer from the source, pin its principal to ours, arm the next renewal. On a
    *  fetch/principal failure: THROWS when `initial` (start() must fail loud before first connect);
-   *  otherwise emits "warning" and retries — the live connection keeps working until its current JWT
-   *  expiry, so a dead auth service is loud without instantly dropping the mesh. */
+   *  otherwise retries on a jittered, capped backoff, and warns once for the whole run of failures —
+   *  the live connection keeps working until its current JWT expiry, so a dead auth service is
+   *  loud without instantly dropping the mesh, and without a line per attempt. */
   private async refreshBearer(initial = false): Promise<void> {
     try {
       const bearer = await this.bearerSource!();
@@ -1119,11 +1133,10 @@ export class CotalEndpoint extends EventEmitter {
         // {@link presentableCreds} (#1572).
         if (expiryMs <= Date.now())
           throw new Error("the bearer source returned a token that has already expired - nothing adopted");
-        // THE SAME BYTES BACK AGAIN from a source whose token cannot carry the next cycle: the
-        // delay it arms is non-positive, `armBearerRefresh` floors that to 5s, and the next read
-        // returns that same token - a 5s loop against the auth service for the rest of its life,
-        // with BEARER_RETRY_MS bypassed because the fetch did not FAIL. It succeeded and returned
-        // nothing new (#1561).
+        // THE SAME BYTES BACK AGAIN from a source whose token is already past its renewal window:
+        // the renewal it arms is floored to 5s, and the next read returns that same token - a 5s
+        // loop against the auth service for the rest of its life, with the retry backoff bypassed
+        // because the fetch did not FAIL. It succeeded and returned nothing new (#1561).
         //
         // The test is byte identity, not expiry, and not advancement. `exp` carries one second of
         // resolution, so a key rotation re-signing the same claims under a new key - and a healthy
@@ -1131,28 +1144,57 @@ export class CotalEndpoint extends EventEmitter {
         // `exp` has not moved. That is genuinely re-issued material, which an advancement test
         // refuses and this one adopts. It is the question the creds path asks with
         // `credsFingerprint`: did the source re-issue ANYTHING (#1572).
-        if (bearer === held && expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS <= 0)
+        if (bearer === held && Date.now() >= bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))
           throw new Error("the bearer source re-served the token already held and it cannot carry another cycle (the auth service has not issued a fresh one) - nothing adopted");
       }
+      if (bearer !== held) this.bearerAdoptedAtMs = Date.now();
       this.currentBearer = bearer;
-      // A non-positive delay is NOT clamped to BEARER_RETRY_MS. A deployment whose whole token TTL
-      // sits inside the margin is legitimate - `expiry-renewal` mints 5s bearers against the 60s
-      // margin - and for it the 5s floor IS the renewal cadence. Backing that source off to 15s
-      // leaves a 5s token dead for two thirds of every cycle. What made #1561 a pointless loop was
-      // the source returning nothing new, which is refused above, not the cadence itself.
-      this.armBearerRefresh(expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS);
+      this.bearerRenewalFailures = 0;
+      // The renewal point is drawn from the middle of the token's lifetime, spaced from this
+      // process's other renewals in the space: a fixed margin before `exp` kept every endpoint
+      // issued in one second renewing, and rebinding through the callout, in one second for life.
+      const { issuedAtMs, expiresAtMs } = bearerLifetimeMs(bearer, this.bearerAdoptedAtMs);
+      this.armBearerTimer(armRenewal(this.space, issuedAtMs, expiresAtMs, () => void this.renewBearerOnTimer(), CotalEndpoint.BEARER_MIN_RENEWAL_MS));
     } catch (e) {
       if (initial) throw e;
-      this.emitRecoverable(new Error(`bearer refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current token's expiry if the auth service stays down`));
-      this.armBearerRefresh(CotalEndpoint.BEARER_RETRY_MS);
+      if (this.bearerRenewalFailures === 0)
+        this.emitRecoverable(new Error(`bearer refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying with backoff; this connection dies at its current token's expiry if the auth service stays down`));
+      const delay = jitteredBackoffMs(this.bearerRenewalFailures++, CotalEndpoint.BEARER_RETRY_MS, CotalEndpoint.BEARER_RETRY_CAP_MS);
+      const timer = setTimeout(() => void this.renewBearerOnTimer(), delay);
+      timer.unref?.();
+      this.armBearerTimer(() => clearTimeout(timer));
     }
   }
 
-  private armBearerRefresh(delayMs: number): void {
-    if (this.stopped) return;
-    clearTimeout(this.bearerTimer);
-    this.bearerTimer = setTimeout(() => void this.refreshBearer(), Math.max(5_000, delayMs));
-    this.bearerTimer.unref?.();
+  private armBearerTimer(cancel: () => void): void {
+    this.cancelBearerRenewal?.();
+    this.cancelBearerRenewal = cancel;
+    if (this.stopped) cancel();
+  }
+
+  /** The timed renewal. A new token moves the live connection onto itself at once, through the
+   *  same controlled reconnect the creds path uses, so the broker never has to expire a connection
+   *  this endpoint could renew. With no live connection, it ends the rebuild loop's wait instead:
+   *  that loop refuses to dial an expired token and leaves the retries to this timer. */
+  private async renewBearerOnTimer(): Promise<void> {
+    const held = this.currentBearer;
+    await this.refreshBearer();
+    if (this.stopped || this.currentBearer === held) return;
+    if (this.nc && !this.nc.isClosed()) await this.swapConnectionOntoFreshCreds();
+    else this.kickBackoff();
+  }
+
+  /** The cached bearer, checked: every (re)connect attempt reads it, the reconnects nats.js runs
+   *  on its own included, so none presents an expired token, which the callout could only deny
+   *  after a full round trip. The bearer counterpart of {@link credsForWire}. */
+  private bearerForWire(): string {
+    const bearer = this.currentBearer;
+    if (bearer !== undefined && bearerExpiryMs(bearer) > Date.now()) return bearer;
+    throw new Error(
+      this.bearerSource
+        ? "this endpoint's user bearer has expired and renewal through the auth exchange is failing - not presenting the expired token to the broker; retrying with backoff"
+        : "this endpoint's user bearer has expired and it holds no bearer source to renew it - re-authenticate and rebuild the endpoint (construct it with a bearer FUNCTION for standing renewal)",
+    );
   }
 
   /** How soon a FAILED creds refresh retries. Successful refreshes schedule by lifetime fraction
@@ -1284,11 +1326,11 @@ export class CotalEndpoint extends EventEmitter {
     return { iat, exp };
   }
 
-  /** Swap the live connection onto the freshest cached cred with a controlled `nc.reconnect()`
-   *  (nats.js re-evaluates the creds getter per attempt). Swapping now, instead of waiting for the
-   *  broker to close the connection at `exp`, means the wire never carries a near-dead JWT and the
-   *  operator never sees a spurious "authentication expired". After the reconnect succeeds, re-arm
-   *  the expiry fence for the credential now authenticated on the wire. */
+  /** Swap the live connection onto the freshest cached cred or bearer with a controlled
+   *  `nc.reconnect()` (nats.js re-evaluates the authenticator per attempt). Swapping now, instead of
+   *  waiting for the broker to close the connection at `exp`, means the wire never carries a
+   *  near-dead JWT and the operator never sees a spurious "authentication expired". After the
+   *  reconnect succeeds, re-arm the expiry fence for the credential now authenticated on the wire. */
   private async swapConnectionOntoFreshCreds(): Promise<void> {
     const nc = this.nc;
     if (nc && !this.stopped) {
@@ -1520,13 +1562,13 @@ export class CotalEndpoint extends EventEmitter {
 
   private async bindConnection(): Promise<void> {
     this.clearConnectionScoped();
-    // Bearer-source endpoints fetch before the FIRST connect, and re-fetch on a rebuild whose
-    // cached token is already inside the refresh margin (a rebuild after a long outage would
-    // otherwise present a dead bearer for its first attempts).
+    // Bearer-source endpoints fetch before the FIRST connect, and renew first on a rebuild whose
+    // cached token is past its renewal window (a rebuild after a long outage would otherwise
+    // present a dead bearer). While renewals are failing, their retry timer owns the source: a
+    // fetch here too would add one call to the exchange per rebuild attempt.
     if (this.bearerSource) {
-      const stale = !this.currentBearer ||
-        bearerExpiryMs(this.currentBearer) - Date.now() < CotalEndpoint.BEARER_REFRESH_MARGIN_MS;
-      if (stale) await this.refreshBearer(!this.currentBearer);
+      if (!this.currentBearer) await this.refreshBearer(true);
+      else if (this.bearerRenewalFailures === 0 && Date.now() >= bearerRenewalDeadlineMs(this.currentBearer, this.bearerAdoptedAtMs)) await this.refreshBearer();
     }
     // Creds-source endpoints likewise fetch before the FIRST connect, and re-fetch on a rebuild
     // whose cached cred is expired or inside its renewal window.
@@ -1539,15 +1581,21 @@ export class CotalEndpoint extends EventEmitter {
     // instantly drop a still-live mesh), which used to leave the connect below presenting an
     // EXPIRED bearer: a guaranteed denial that still costs a full auth-callout round trip, repeated
     // by the reestablish loop at a flat rate for as long as the process lives. Refuse here instead.
-    // The loop's capped backoff paces the retries and re-enters this method, so a renewal that
-    // starts working reconnects on its own; an endpoint with no bearer source cannot renew at all,
-    // and says so.
-    if (this.userMode && this.currentBearer && bearerExpiryMs(this.currentBearer) <= Date.now())
-      throw new Error(
-        this.bearerSource
-          ? "this endpoint's user bearer has expired and renewal through the auth exchange is failing - not presenting the expired token to the broker; retrying with backoff"
-          : "this endpoint's user bearer has expired and it holds no bearer source to renew it - re-authenticate and rebuild the endpoint (construct it with a bearer FUNCTION for standing renewal)",
-      );
+    // The loop's capped backoff paces the retries and re-enters this method, and a renewal that
+    // starts working ends its wait; an endpoint with no bearer source cannot renew at all, and says
+    // so. The refusal is surfaced once per outage: the loop retries a repeat without a notice.
+    if (this.userMode) {
+      try {
+        this.bearerForWire();
+        this.bearerRefusalSurfaced = false;
+      } catch (e) {
+        if (!this.bearerRefusalSurfaced) {
+          this.bearerRefusalSurfaced = true;
+          throw e;
+        }
+        throw new RepeatedRefusal((e as Error).message);
+      }
+    }
     // The CREDS refusal is NOT repeated here. It lives on the supply itself ({@link credsForWire}),
     // which the authenticator below re-reads per attempt, so it covers this dial AND the reconnects
     // nats.js runs on its own. Raising it early here too would only duplicate it on the one path
@@ -1571,8 +1619,9 @@ export class CotalEndpoint extends EventEmitter {
       ...(this.transportPingIntervalMs === undefined ? {} : { pingInterval: this.transportPingIntervalMs }),
       ...(this.transportMaxPingOut === undefined ? {} : { maxPingOut: this.transportMaxPingOut }),
       ...(this.transportConnectTimeoutMs === undefined ? {} : { timeout: this.transportConnectTimeoutMs }),
-      // The bearer rides a GETTER: nats.js re-evaluates the token authenticator per (re)connect
-      // attempt, so internal reconnects present whatever refreshBearer last fetched.
+      // The bearer rides the CHECKED getter: nats.js re-evaluates the token authenticator per
+      // (re)connect attempt, so internal reconnects present whatever refreshBearer last fetched,
+      // and refuse a token that has expired since, as the creds getter does.
       // Creds ALWAYS ride the CHECKED getter, renewed or static, so every attempt — including the
       // reconnects nats.js performs on its own (the one the broker forces at JWT `exp`, and a dial
       // loop from an earlier drop that crosses `exp` mid-retry) — re-reads a credential that has
@@ -1582,7 +1631,7 @@ export class CotalEndpoint extends EventEmitter {
       // and dialed ANONYMOUSLY, so the broker answered `Authorization Violation` and the real fault
       // (an empty credential) was never named. Routing it into the checked getter fails it loud
       // instead. Anonymous access stays reachable the only way it should be: by passing no creds.
-      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined, bearer: this.userMode ? () => this.currentBearer! : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
+      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined, bearer: this.userMode ? () => this.bearerForWire() : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
     });
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including the reconnects the library performs on its own here.
@@ -2055,7 +2104,7 @@ export class CotalEndpoint extends EventEmitter {
           this.retryAttempt = 0; // reconnected — the next drop starts from retryMs again
           return; // success — re-armed; the supervisor re-triggers on the next terminal close
         } catch (e) {
-          if (!this.stopped) this.emitRecoverable(e as Error);
+          if (!this.stopped && !(e instanceof RepeatedRefusal)) this.emitRecoverable(e as Error);
           // A warning listener may stop the endpoint. A backoff armed after that holds the process
           // open for the whole delay, because the stop has already kicked the backoff it saw.
           if (this.stopped) return;
@@ -2119,7 +2168,7 @@ export class CotalEndpoint extends EventEmitter {
     this.kickBackoff();
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
-    if (this.bearerTimer) clearTimeout(this.bearerTimer);
+    this.cancelBearerRenewal?.();
     if (this.credsTimer) clearTimeout(this.credsTimer);
     if (this.authExpiryReconnectTimer) clearTimeout(this.authExpiryReconnectTimer);
     for (const watch of this.membershipFeedWatches) {
@@ -7762,17 +7811,34 @@ function authOpts(a: AuthOpts) {
 /** The bearer's `exp` as epoch ms — what the refresh schedule keys on. A bearer without a numeric
  *  `exp` is structurally unusable for a refreshing endpoint (fail-loud, like the principal decode). */
 function bearerExpiryMs(bearer: string): number {
+  return bearerLifetimeMs(bearer, 0).expiresAtMs;
+}
+
+/** The bearer's lifetime as epoch ms: `iat` to `exp`, starting at `adoptedAtMs` when it carries no
+ *  `iat`. */
+function bearerLifetimeMs(bearer: string, adoptedAtMs: number): { issuedAtMs: number; expiresAtMs: number } {
   const payload = bearer.split(".")[1];
   if (!payload) throw new Error("user-mode bearer is not a JWT (no payload segment)");
-  let claims: { exp?: unknown };
+  let claims: { exp?: unknown; iat?: unknown };
   try {
     claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
   } catch {
     throw new Error("user-mode bearer payload is not valid base64url JSON");
   }
   if (typeof claims.exp !== "number") throw new Error("user-mode bearer is missing a numeric exp claim");
-  return claims.exp * 1000;
+  const expiresAtMs = claims.exp * 1000;
+  return { issuedAtMs: Math.min(typeof claims.iat === "number" ? claims.iat * 1000 : adoptedAtMs, expiresAtMs), expiresAtMs };
 }
+
+/** Past this point a held bearer is overdue: its renewal should already have replaced it. */
+function bearerRenewalDeadlineMs(bearer: string, adoptedAtMs: number): number {
+  const { issuedAtMs, expiresAtMs } = bearerLifetimeMs(bearer, adoptedAtMs);
+  return renewalDeadlineMs(issuedAtMs, expiresAtMs);
+}
+
+/** A refusal already surfaced once for this outage. The rebuild loop retries it without a notice,
+ *  so an endpoint that cannot renew shows one status line rather than one per attempt. */
+class RepeatedRefusal extends Error {}
 
 /** Decode the owner+actor PRINCIPAL from a user bearer WITHOUT verifying it — the client trusts its own
  *  bearer only to build its subjects; the broker's minted grant (from the callout, which DOES verify the

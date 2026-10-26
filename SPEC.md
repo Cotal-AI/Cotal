@@ -4464,7 +4464,8 @@ Get, its own reply rail, and its own `_INBOX_<connId>.>`. It holds no other comm
 or scatter route, no other store read, no KV write, and no signer. The read observes the current
 assignment on every call, refuses any other instance, and refuses an instance whose gate names
 another principal. The reader renews as the other self-minted authority connections do: a
-short-lived user JWT re-minted in process at half-life and presented on reconnect.
+short-lived user JWT re-minted in process at a random point between 50% and 80% of its lifetime,
+after which the connection reconnects onto it.
 
 **The ownership matrix (normative).** Every profile × resource × transition is classified
 **mediated** or **direct**, in an independently reviewed matrix from which grants are
