@@ -1,5 +1,11 @@
 # @cotal-ai/lang
 
+## 0.104.1
+
+### Patch Changes
+
+- c6021e5: Share dispatch-failure settlement between `waitUntil` observations and ordinary effects, preserving refusal, cancellation, error details and journal rejection handling without a second recorder.
+
 ## 0.104.0
 
 ### Patch Changes
