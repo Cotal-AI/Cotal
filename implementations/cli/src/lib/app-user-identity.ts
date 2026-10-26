@@ -208,6 +208,19 @@ async function provisionOnSpace(
   mkSecretDir(root);
   privateDir(root);
   const dir = join(root, hash(`${target.space}\0${session}`));
+  if (existsSync(join(dir, RECORD))) {
+    const previous = read(dir);
+    const changed = previous.label !== name || canonicalJson(previous.selection ?? null) !== canonicalJson(selection ?? null);
+    // Replacing an unissued request needs no approval of the unwanted name or permissions. Resolve
+    // the old request through its authority first: if approval raced us, retire that exact identity.
+    // The outer session lock keeps a watcher from recreating the old request during replacement.
+    if (changed && previous.state === "creating" && previous.remote && !previous.remote.material &&
+        previous.session === session && previous.trust === trust(target)) {
+      if (previous.consumer.pid !== process.ppid && !consumerGone(previous.consumer))
+        throw new Error("this native conversation still has a live inbox consumer; its pending request was not replaced");
+      await retireUserApp(dir);
+    }
+  }
   // A reconnect first finishes the previous explicit departure. Only a confirmed terminal
   // retirement can release this session key for a new request and a new secret.
   if (existsSync(join(dir, RECORD)) && read(dir).state === "retiring") {

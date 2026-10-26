@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/core",
   "description": "The Cotal protocol: endpoint, subjects, message types, the NATS client layer, and the extension contracts.",
-  "version": "0.104.2",
+  "version": "0.106.1",
   "license": "Apache-2.0",
   "keywords": [
     "cotal",
@@ -74,6 +74,7 @@
     "build": "tsc -p tsconfig.json",
     "test": "tsx smoke/native-nkey-signing.smoke.ts && tsx smoke/resolve.smoke.ts && tsx smoke/registry-aliases.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/space-auth.smoke.ts && pnpm smoke:schema-own-properties && pnpm smoke:schema-own-properties-controls",
     "smoke:backup": "tsx smoke/backup.smoke.ts",
+    "smoke:seat-idle-load": "tsx smoke/seat-idle-load.smoke.ts",
     "smoke:backup:live": "tsx smoke/backup-live.smoke.ts",
     "prepublishOnly": "pnpm run build",
     "smoke:schema-own-properties": "node smoke/schema-own-properties.public.mjs --gate partial",

@@ -34,7 +34,6 @@ import {
   type Presence,
   type PresenceCondition,
   type PresenceStatus,
-  type PresenceView,
   type TransportState,
   type AttentionMode,
   type ChannelMode,
@@ -603,6 +602,9 @@ export class MeshAgent extends EventEmitter {
       ackWaitMs: config.ackWaitMs, // undefined → endpoint default (60s); shortened in tests to observe redelivery
       channels: config.subscribe, // the endpoint's live filter = the active read set
       channelModes: Object.fromEntries(this.channelModes), // seed presence so file defaults are visible at boot
+      // A seat reads the roster when it acts (readRoster) instead of watching it: a watch delivers
+      // every member's heartbeat to every member, K² per heartbeat in a space of K (SPEC §6).
+      watchPresence: false,
       card: {
         id: config.id,
         name: config.name,
@@ -2001,42 +2003,35 @@ export class MeshAgent extends EventEmitter {
   /** Throw if any name isn't a peer we've observed. Validates against the FULL roster
    *  (incl. self — your own name is a valid participant; resolvePeer's self-filter would
    *  wrongly reject it), case-insensitively. Send is all-or-nothing: one unknown @name aborts
-   *  the whole broadcast (fail-loud on typos). Caveat: only catches peers THIS client has seen
-   *  — an offline peer lingers in the roster, but one never observed (or not yet filled in
-   *  after connect) throws. See docs/architecture.md.
+   *  the whole broadcast (fail-loud on typos). Caveat: only catches peers THIS client has read
+   *  — an offline peer lingers in the roster, but one no read has seen throws. See
+   *  docs/architecture.md.
    *
-   *  #1229: the roster can only support an ABSENCE verdict while `presenceView()` is `current`.
-   *  `clearConnectionScoped()` empties it on every reconnect and the watch refills entry by
-   *  entry, so a refusal under an unsafe view would reject a mention of a live peer. A name
-   * already in the roster is accepted in every state; an absent name under `unpopulated`
-   *  waits once for the initial snapshot and re-reads; a still-unverifiable name refuses with
-   *  the observer's own condition (never "no such peer") and the send does not go out. */
+   *  #1229: only a read that succeeded supports an ABSENCE verdict. A name already in the roster
+   *  is accepted whatever the read did; an absent name under a failed read refuses with the read's
+   *  own error (never "no such peer") and the send does not go out. */
   private async assertKnownMentions(mentions: string[]): Promise<void> {
-    const names = () => new Set(this.ep.getRoster().map((p) => p.card.name.toLowerCase()));
-    const view = this.ep.presenceView();
-    if (view.state === "unpopulated") {
-      const unknown = mentions.filter((m) => !names().has(m));
-      if (unknown.length) await this.ep.waitForPresenceSnapshot();
-    }
-    const after = this.ep.presenceView();
-    const unknown = mentions.filter((m) => !names().has(m));
+    const { roster, failure } = await this.readRoster();
+    const names = new Set(roster.map((p) => p.card.name.toLowerCase()));
+    const unknown = mentions.filter((m) => !names.has(m));
     if (!unknown.length) return;
-    if (after.state === "current")
+    if (!failure)
       throw new Error(
         `unknown mention${unknown.length > 1 ? "s" : ""}: ${unknown.map((u) => `@${u}`).join(", ")} — no such peer observed in space "${this.config.space}"`,
       );
     throw this.cannotVerify(
       `mention${unknown.length > 1 ? "s" : ""} ${unknown.map((u) => `@${u}`).join(", ")}`,
-      after,
+      failure,
       "The send was not published.",
     );
   }
 
   /** The mention guard and `dm` refuse an unverifiable name through this one sentence, so the two
-   *  refusals cannot explain one view state differently. */
-  private cannotVerify(subject: string, view: Exclude<PresenceView, { state: "current" }>, outcome: string): Error {
+   *  refusals cannot explain one failed read differently. */
+  private cannotVerify(subject: string, failure: Error, outcome: string): Error {
     return new Error(
-      `cannot verify ${subject} in space "${this.config.space}": ${presenceViewCondition(view)}, so absence is not a verdict — the peer may be present but unobserved. ${outcome}`,
+      `cannot verify ${subject} in space "${this.config.space}": ${presenceReadCondition(failure)}, so absence is not a verdict — the peer may be present but unread. ${outcome}`,
+      { cause: failure },
     );
   }
 
@@ -2046,35 +2041,34 @@ export class MeshAgent extends EventEmitter {
   ): Promise<{
     msg: CotalMessage;
     ack: { seq: number; duplicate: boolean };
-    /** Live roster rows holding `role`, ourselves included; absent when the presence view was not
-     *  current, since only a current view can say that no holder exists (#1229). */
+    /** Live roster rows holding `role`, ourselves included; absent when the roster read failed,
+     *  since only a read that succeeded can say that no holder exists (#1229). */
     holdersAtSend?: number;
   }> {
     // Refuse the address before recording a question it could never carry, as `dm` resolves its peer first.
     assertValidRole(role);
     await this.requireConnected();
     // Like a DM's recipient status, the only holder count we can truthfully attribute is the roster
-    // snapshot taken right before the publish. Our own task consumer competes for our own request,
+    // read right before the publish. Our own task consumer competes for our own request,
     // so we count when we hold the role.
-    const holdersAtSend =
-      this.ep.presenceView().state === "current"
-        ? this.ep.getRoster().filter((p) => p.card.role === role && p.status !== "offline").length
-        : undefined;
+    const { roster, failure } = await this.readRoster();
+    const holdersAtSend = failure ? undefined : roster.filter((p) => p.card.role === role && p.status !== "offline").length;
     const { stamp, own } = this.stamp();
     this.recordQuestion(own, { role });
     const { msg, ack } = await this.ep.anycastAttributed(role, text, stamp);
     return { msg, ack, holdersAtSend };
   }
 
-  /** Resolve a peer by instance id (exact) or display name. Deterministic and fail-loud: returns
+  /** Resolve a peer by instance id (exact) or display name against the roster of the last
+   *  {@link readRoster}. Deterministic and fail-loud: returns
    *  one peer, `undefined` if none match, or throws `AmbiguousPeerError` on a same-name collision —
    *  it never silently picks. See `resolvePeer` in @cotal-ai/core. */
   resolvePeer(target: string): Presence | undefined {
     return resolvePeerInRoster(this.ep.getRoster(), target, { selfId: this.id });
   }
 
-  /** #384: a peer that sent us a DM or anycast and has no roster row, by its exact id or, while the
-   *  presence view is current, by a display name only one such sender carried. A one-shot
+  /** #384: a peer that sent us a DM or anycast and has no roster row, by its exact id or, when the
+   *  roster read succeeded, by a display name only one such sender carried. A one-shot
    *  `cotal send` never registers presence, so without this a reply to it could not be addressed. */
   private heldSender(target: string, byName: boolean, peer?: Presence): { id: string; name: string } | undefined {
     const name = this.senders.get(target);
@@ -2095,7 +2089,7 @@ export class MeshAgent extends EventEmitter {
     return match && match[0] !== peer?.card.id ? { id: match[0], name: match[1] } : undefined;
   }
 
-  /** Why a DM target resolved to no one, under a current presence view. A target that names this
+  /** Why a DM target resolved to no one, under a roster read that succeeded. A target that names this
    *  session says so, since the roster leaves it out of DM resolution. Present names that start with
    *  the target are listed for the caller to choose from; none of them is ever picked. */
   private noPeer(target: string): string {
@@ -2129,28 +2123,19 @@ export class MeshAgent extends EventEmitter {
     await this.requireConnected();
     // #384: a sender's exact id is as unambiguous as a roster id, so it is never read as a roster
     // display name; a peer that took that id as its name would otherwise receive the reply.
-    const resolve = () =>
-      this.senders.has(target) ? this.ep.getRoster().find((p) => p.card.id === target) : this.resolvePeer(target);
-    // #1229: a miss is only a real "no peer" while the view is current. Under `unpopulated`
-    // the roster may be a reconnect refill in progress, so wait once for the snapshot and
-    // re-resolve; a still-unverifiable target refuses naming the observer's condition (never
-    // "no peer"), and the DM does not go out.
-    const view = this.ep.presenceView();
-    let peer = resolve();
-    if (!peer && view.state === "unpopulated") {
-      await this.ep.waitForPresenceSnapshot();
-      peer = resolve();
-    }
+    // #1229: a miss is only a real "no peer" when the roster read succeeded; under a failed read the
+    // target refuses naming the read's error (never "no peer"), and the DM does not go out.
+    const { roster, failure } = await this.readRoster();
+    const peer = this.senders.has(target) ? roster.find((p) => p.card.id === target) : this.resolvePeer(target);
     // #384: a target with no roster row may still be a peer that messaged us (its id is
     // authenticated), which a one-shot `cotal send` always is. The DM goes to that identity and the
     // space's DM stream keeps it, instead of refusing a reply nothing could ever deliver.
     const held = peer?.card.id === target
       ? undefined
-      : this.heldSender(target, this.ep.presenceView().state === "current", peer);
+      : this.heldSender(target, !failure, peer);
     if (!peer && !held) {
-      const after = this.ep.presenceView();
-      if (after.state === "current") throw new Error(this.noPeer(target));
-      throw this.cannotVerify(`peer "${target}"`, after, "The DM was not sent.");
+      if (!failure) throw new Error(this.noPeer(target));
+      throw this.cannotVerify(`peer "${target}"`, failure, "The DM was not sent.");
     }
     // The only status we can truthfully attribute is the roster snapshot taken right before the
     // publish: recipient state can change the instant after, and the ack never tells us either way.
@@ -2782,15 +2767,17 @@ export class MeshAgent extends EventEmitter {
 
   // ---- presence ------------------------------------------------------------
 
-  /** The full roster, including ourselves. */
-  roster(): Presence[] {
-    return this.ep.getRoster();
-  }
-
-  /** Trust state of this observer's presence watch (`CotalEndpoint.presenceView()`): the roster
-   *  above can only support an absence verdict while this is `current` (#1229). */
-  presenceView(): PresenceView {
-    return this.ep.presenceView();
+  /** The full roster, including ourselves, read from the broker now: a seat holds no presence watch
+   *  (SPEC §6). Every roster surface reads through here (cotal_roster, the orientation card, the
+   *  @mention guard, DM resolution and the anycast holder count), and calls made while a read is
+   *  in flight share it. A failed read returns the roster of the last read that succeeded with
+   *  the failure beside it: a name it holds is still a peer, but an absence is no verdict (#1229). */
+  async readRoster(): Promise<RosterRead> {
+    try {
+      return { roster: await this.ep.readPresence() };
+    } catch (e) {
+      return { roster: this.ep.getRoster(), failure: e as Error };
+    }
   }
 
   /** Our last self-reported presence status. */
@@ -3185,13 +3172,17 @@ export class MeshAgent extends EventEmitter {
   }
 }
 
-/** Why a presence view that is not `current` cannot support an absence verdict (#1229). The roster,
- *  the orientation card and the mention and DM refusals all print this clause, so none of them can
- *  word one view state differently. */
-export function presenceViewCondition(view: Exclude<PresenceView, { state: "current" }>): string {
-  return view.state === "stale"
-    ? `the presence watch has been silent since ${new Date(view.staleSince).toISOString()}`
-    : "the presence watch has not completed its initial snapshot";
+/** One {@link MeshAgent.readRoster}: the roster, and why it is last-known when the read failed. */
+export interface RosterRead {
+  roster: Presence[];
+  failure?: Error;
+}
+
+/** Why a roster whose read failed cannot support an absence verdict (#1229). The roster, the
+ *  orientation card and the mention and DM refusals all print this clause, so none of them can word
+ *  one failure differently. */
+export function presenceReadCondition(failure: Error): string {
+  return `the presence read failed (${failure.message})`;
 }
 
 /** Names already known that differ from `channel` by one insertion, deletion, or substitution. */

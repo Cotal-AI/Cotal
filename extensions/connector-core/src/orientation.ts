@@ -10,7 +10,7 @@
  * it (the text the model reads). A future MCP resource can JSON-stringify the object directly.
  */
 import { parsePrincipalKey, peerLabel, type AttentionMode, type PresenceStatus } from "@cotal-ai/core";
-import { presenceViewCondition, type MeshAgent } from "./agent.js";
+import { presenceReadCondition, type MeshAgent, type RosterRead } from "./agent.js";
 import { isAuthed, type AgentConfig } from "./config.js";
 import { DOCS_VERSION } from "./docs.js";
 
@@ -122,37 +122,33 @@ const honestStatus = (status: PresenceStatus): string =>
 
 /** Whether this observer's roster can be trusted, and why not. `cotal_roster` and this card both
  *  print `detail`, so the two surfaces cannot explain one condition differently. A stuck writer
- *  takes precedence over the view's own state (#1356); otherwise an `unpopulated` or `stale`
- *  view (#1229) keeps the roster from being complete or current. */
-export function presenceLiveness(agent: MeshAgent): Orientation["presence"] {
+ *  takes precedence over the read (#1356); otherwise a failed read (#1229) keeps the roster
+ *  last-known. */
+export function presenceLiveness(agent: MeshAgent, read: RosterRead): Orientation["presence"] {
   const writeFailure = agent.transportConnected ? agent.presenceWriteFailure : undefined;
   if (writeFailure?.stuck)
     return {
       live: false,
       detail: `bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms, so the roster is last-known until a write succeeds or the broker store is repaired`,
     };
-  const view = agent.presenceView();
-  if (view.state === "unpopulated")
+  if (read.failure)
     return {
       live: false,
-      detail: `${presenceViewCondition(view)}, so the roster may be partial and a missing name is not an absence verdict`,
-    };
-  if (view.state === "stale")
-    return {
-      live: false,
-      detail: `${presenceViewCondition(view)}, so the roster is last-known`,
+      detail: `${presenceReadCondition(read.failure)}, so the roster is last-known and a missing name is not an absence verdict`,
     };
   return { live: true };
 }
 
 /** Assemble the card. `visibleTools` is the already-gated tool list the connector exposes (pass the
  *  result of `cotalToolSpecs(config)` mapped to name/title) — the orientation tool itself is dropped.
- *  Pure: `generatedAt` is supplied by the caller so it's testable and deterministic. */
+ *  Pure: `generatedAt` and the roster `read` ({@link MeshAgent.readRoster}) are supplied by the
+ *  caller so it's testable and deterministic. */
 export function buildOrientation(
   agent: MeshAgent,
   config: AgentConfig,
   visibleTools: OrientationTool[],
   generatedAt: number,
+  read: RosterRead,
 ): Orientation {
   const core: OrientationTool[] = [];
   const more: OrientationTool[] = [];
@@ -161,7 +157,7 @@ export function buildOrientation(
     (CORE_TOOLS.has(t.name) ? core : more).push(t);
   }
 
-  const peers = agent.roster().filter((p) => p.card.id !== agent.id);
+  const peers = read.roster.filter((p) => p.card.id !== agent.id);
   const shown = peers
     .slice(0, 8)
     .map((p) => `${peerLabel(p.card)} (${honestStatus(p.status)})`);
@@ -201,7 +197,7 @@ export function buildOrientation(
     capabilities: config.capabilities ?? [],
     tools: { core, more },
     peers: { present: peers.length, summary },
-    presence: presenceLiveness(agent),
+    presence: presenceLiveness(agent, read),
     status: agent.status,
     attention: agent.attention,
     unread: { total: agent.inboxCount() },

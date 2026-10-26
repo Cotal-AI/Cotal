@@ -182,7 +182,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     authority.addMesh({ space: projectSpace, server: servers, root, owner, userAuth, sentinelCreds, exchange: `http://127.0.0.1:${publicPort}/exchange`,
       local: { stateDir, provisioner: projectProvisioner, auth, servers } });
     authority.addMesh({ space: explicitSpace, server: explicitServers, root: otherRoot, owner: explicitOwner, userAuth: explicitUserAuth, sentinelCreds: explicitSentinel,
-      exchange: `http://127.0.0.1:${explicitPublic}/exchange`, local: { stateDir: explicitState, provisioner: explicitProvisioner, auth: explicitAuth, servers: explicitServers } });
+      exchange: `http://127.0.0.1:${explicitPublic}/exchange`, selection: true, local: { stateDir: explicitState, provisioner: explicitProvisioner, auth: explicitAuth, servers: explicitServers } });
     setCurrent(projectSpace);
     const session = "connect-space-session";
     sessions.set(session, join(home, `${session}.jsonl`));
@@ -205,6 +205,28 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     const same = await g.call("cotal_connect", { name: "ada", context: session, space: explicitSpace });
     check("retrying the same space replays that request and does not open the project mesh",
       pendingOf(same.text)?.requestId === explicitAsk!.requestId && authority.counts.posts === 2 && record(session, projectSpace) === undefined, same.text);
+    const renamed = await g.call("cotal_connect", { name: "claude", context: session, space: explicitSpace });
+    const renamedAsk = pendingOf(renamed.text);
+    check("a pending request can change its name without approving the unwanted name",
+      !renamed.error && renamedAsk && renamedAsk.requestId !== explicitAsk!.requestId && authority.counts.issues === 0, renamed.text);
+    const changedPermissions = await g.call("cotal_connect", { name: "claude", context: session, space: explicitSpace,
+      channels: [{ channel: "team.demo", access: "read-post" }] });
+    const permissionAsk = pendingOf(changedPermissions.text);
+    const permissionRow = [...authority.requests.values()].find((row) => row.requestId === permissionAsk?.requestId);
+    check("pending permission changes get a fresh approval without issuing the previous request",
+      !changedPermissions.error && permissionAsk?.requestId !== renamedAsk!.requestId &&
+      permissionRow?.proposed?.channels[0]?.channel === "team.demo" && authority.counts.issues === 0, changedPermissions.text);
+    const staleResume = await g.call("cotal_connect", { name: "claude", context: session, space: explicitSpace,
+      approval_id: explicitRow!.approval.id });
+    check("the superseded approval handle cannot resume the replacement", staleResume.error && /approval_id/.test(staleResume.text), staleResume.text);
+    // The person approves while the native request is still locally pending. Replacement must
+    // recover and retire that exact issued lifecycle before creating a new request.
+    authority.decide(permissionAsk!.requestId, { approve: permissionRow!.proposed! });
+    const restored = await g.call("cotal_connect", { name: "ada", context: session, space: explicitSpace });
+    explicitAsk = pendingOf(restored.text);
+    check("changing the pending name back creates another fresh approval", !restored.error && explicitAsk && explicitAsk.requestId !== renamedAsk!.requestId, restored.text);
+    check("approval racing replacement retires the old lifecycle before the new approval",
+      permissionRow!.phase === "terminal" && authority.counts.issues === 1 && authority.counts.deletes === 1 && record(session, explicitSpace)?.state === "creating");
     const firstRequest = explicitAsk!.requestId;
     const switched = await g.call("cotal_connect", { name: "ada", context: session, space: projectSpace });
     check("switching a pending target retires its saved request before creating the new one",
@@ -222,7 +244,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
       record(session, projectSpace) === undefined && record(session, explicitSpace)?.state === "ready", hijack.text);
     const again = await g.call("cotal_connect", { name: "ada", context: session, space: explicitSpace });
     check("the same live target is refused until disconnect and issues no second identity", again.error && /already has a connection/.test(again.text) &&
-      authority.counts.issues === 1, again.text);
+      authority.counts.issues === 2, again.text);
     const otherHost = await gateway([session]);
     const otherAttempt = await otherHost.call("cotal_connect", { name: "ada", context: session, space: projectSpace });
     check("a second host cannot open the same native session on another space while its consumer lives",

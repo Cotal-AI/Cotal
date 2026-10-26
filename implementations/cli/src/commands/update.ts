@@ -35,6 +35,7 @@ import {
   resolveMeshTarget,
   type ControlTarget,
   type MeshTarget,
+  type MeshTargetErrorDetails,
 } from "@cotal-ai/workspace";
 import { refreshOwnedCompletions } from "../lib/completion-install.js";
 import { legacyManagerReport } from "../lib/legacy-manager-report.js";
@@ -98,7 +99,7 @@ const runtime: UpdateRuntime = {
   version: cliVersion,
   refreshConnectors: refreshConnectorInstalls,
   reconcile: async () => {
-    await runSeed({ force: true });
+    await runSeed({ verify: true });
     const completion = refreshOwnedCompletions();
     if (completion.changed.length || completion.preserved.length) process.stdout.write(`${renderReport({ sections: [
       { title: "Owned shell completion", blocks: [
@@ -334,6 +335,15 @@ export async function isStoppedLocalMesh(target: MeshTarget): Promise<boolean> {
   return assertEndpointUnreachable(target.server).then(() => true, () => false);
 }
 
+/** Whether a `not-started` refusal names a prepared space whose root exists and whose stack never
+ *  launched a member: not one that is stopped or unsettled (its journal names members a manager may
+ *  still hold), not a root whose stack runs under another Cotal home, and not a root whose journal
+ *  or account names a space this home never prepared. */
+function preparedNeverStarted(d: MeshTargetErrorDetails): boolean {
+  return typeof d.space === "string" && typeof d.root === "string" && d.rootMissing !== true &&
+    d.stopped === undefined && d.unsettled === undefined && d.home === undefined && d.stackSpace === undefined;
+}
+
 /** The refusal sentence this command prints. A {@link MeshTargetError} arrives RAW here — the
  *  control resolver rethrows the codes it does not absorb before the connect helper can wrap them —
  *  so its `message` is the resolver's bare, command-agnostic text, with none of the recovery copy
@@ -404,7 +414,18 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
       offline = space ? [] : (await pruneStaleMeshes(server)).offline;
       peek = resolveMeshTarget(process.cwd(), { server, space, offline });
     } catch (e) {
-      if (!isWorkspaceTargetError(e) || (e.code !== "unknown-space" && e.code !== "no-meshes")) throw e;
+      if (!isWorkspaceTargetError(e)) throw e;
+      // A space prepared here that never started (`cotal setup --configure-only`, `space create`)
+      // has no broker, no stack journal and no manager: a supervisor serves a started stack, and
+      // this one never launched a member, so there is nothing this update could interrupt. Run from
+      // its folder, or with it selected or named, the resolver refuses it as not started before
+      // dialing anything, which is the right answer for a command that needs a mesh and the wrong
+      // one for a software update, which needs only to know that no manager here holds custody.
+      if (e.code === "not-started" && preparedNeverStarted(e.details)) {
+        console.log(c.dim(`  ${e.details.space}: prepared in ${e.details.root}, not started; no manager running`));
+        return "none";
+      }
+      if (e.code !== "unknown-space" && e.code !== "no-meshes") throw e;
     }
     if (peek?.mode === "user" && peek.userAuth?.remote === true) {
       console.log(c.dim(`  ${peek.space}: this mesh's manager runs elsewhere; no custody on this machine`));

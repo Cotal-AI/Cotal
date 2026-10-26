@@ -265,7 +265,12 @@ launcher artifacts are self-contained and do not resolve those mutable links lat
 
 **Reconcile policy** (generation = the `cotal-ai` version): a never-seeded built-in is seeded; a
 still-installed one WE seeded (`source: "seeded"`) is refreshed only when the version bumps (semver
-compare) or under `--force`; an operator-managed official entry (a manual `ext add` at a chosen
+compare) or under `--force`; `cotal update` runs the verify mode instead of `--force`: a seeded entry
+at the running generation is compared byte for byte with the shipped payload and the seed-store copy
+(`seed/verify.ts`), the prefix tree is compared with its lock once (an optional entry whose `os`,
+`cpu` or `libc` list leaves this host out under npm's own `checkPlatform` rule, negations and `any`
+included, is absent by design, not missing), and a built-in is reinstalled only when something
+differs, so a current install pays no reinstall; an operator-managed official entry (a manual `ext add` at a chosen
 version, no seeded marker) is left untouched on upgrade; a deliberately-removed one stays removed. The
 `ever-seeded` **authority** (`seed/authority.json`, mirrored to a monotonic `.bak`) is the sole arbiter
 of removed-vs-never-seeded and is unioned with its backup on read, so a truncated authority never

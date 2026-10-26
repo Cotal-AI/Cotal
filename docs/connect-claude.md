@@ -316,11 +316,14 @@ the plugin uses the mesh a bare `cotal spawn` from the session's directory would
 [the CLI's selection rules](cli.md#selecting-a-space). Do not rename `.cotal` directories or add
 `COTAL_SPACE` to choose a personal conversation's target.
 
-A connected conversation must call `cotal_disconnect` before choosing another space. If its request
-is still awaiting approval, choosing another space first finishes recovery and retirement of the
-previous request, then asks for a new approval. An unconfirmed retirement blocks the switch and keeps
-the old recovery record. A second host cannot open the same native session on another mesh while
-its original consumer is still alive.
+A connected conversation must call `cotal_disconnect` before choosing another name, space or grant.
+Before it connects, you can change a pending name or permissions by calling `cotal_connect` with the
+new values and no `approval_id`. You do not need to approve the unwanted request or start another
+conversation. The old watcher stops, the saved request is recovered and retired, and the replacement
+gets a fresh approval. Changing the space follows the same cleanup rule. If approval raced the
+change, its issued identity is retired before the replacement is requested; its grant is never
+reused. An unconfirmed retirement blocks the switch and keeps the old recovery record. A second
+host cannot replace a request while its original consumer is still alive.
 
 The hosted HTTPS connector chooses its space during browser authorization. Its OAuth grant is
 bound to that space; a native `space` argument cannot retarget a hosted grant.
@@ -347,7 +350,7 @@ request, and the server holds it, unclaimed and unconnected, for the conversatio
 reaches only the native session that asked, through its wake reader, as one fixed line: approved
 (naming the `approval_id` to finish with), denied, or expired. Nothing else is written that way, and
 the native module admits no other shape. A session that ends before claiming an approved identity
-has it retired exactly; a request still pending when the session ends stays saved, and the CLI
+has it retired; a request still pending when the session ends stays saved, and the CLI
 finishes it before that conversation's next request. An `approval_id` that is not this
 conversation's own pending request is refused before any request is sent. Desktop chat has no
 native reader, so there the person asks Claude to retry.

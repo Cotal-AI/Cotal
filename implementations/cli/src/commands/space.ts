@@ -6,6 +6,7 @@ import {
   findMesh,
   findPreparedSpace,
   folderSpace,
+  folderSpaceHeld,
   folderSpaceOverSelection,
   getCurrent,
   isMeshRegistryError,
@@ -13,6 +14,7 @@ import {
   loadMeshes,
   loadPreparedSpaces,
   noteFolderSpace,
+  noteFolderSpaceShown,
   plainFlag,
   preparedLifecycle,
   presentationOf,
@@ -163,10 +165,19 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
   if (sub === "show") {
     if (rest.length > 1) throw usage("usage: cotal space show [<name>]");
     const current = getCurrent() ?? null;
-    // Without a name it shows the space a command without --space targets here.
-    // With no name it shows what a command without `--space` targets: this folder's space, selected or not.
-    const folder = rest[0] === undefined ? folderSpace(process.cwd()) : undefined;
-    if (folder !== undefined && current !== null && folder !== current) noteFolderSpace(folder, current);
+    // With no name it is about this folder: the space it has registered, or the one it holds
+    // prepared or stopped, which `show` names even though every other command here targets the
+    // selection. Then the selection.
+    const registered = rest[0] === undefined ? folderSpace(process.cwd()) : undefined;
+    // A folder whose only trace of its space is its own stack journal records no space to show, so
+    // `show` falls through to the selection there; the journal's own refusals name that space.
+    const held = rest[0] === undefined && registered === undefined ? folderSpaceHeld(process.cwd()) : undefined;
+    const recorded = held !== undefined && (findMesh(held.space) ?? findPreparedSpace(held.space)) !== undefined ? held : undefined;
+    const folder = registered ?? recorded?.space;
+    if (current !== null && folder !== undefined && folder !== current) {
+      if (recorded) noteFolderSpaceShown(recorded.space, recorded.state, current);
+      else noteFolderSpace(folder, current);
+    }
     const name = rest[0] ?? folder ?? current;
     if (name === null)
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no space is selected", { remedy: "name one with `cotal space show <name>`, or select one with `cotal use <name>`" });
