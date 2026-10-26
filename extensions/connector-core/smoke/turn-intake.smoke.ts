@@ -1,7 +1,8 @@
 /**
  * THE SEAT SIDE OF THE TURN RELAY, at the MeshAgent.
  *
- * The relay is pull-shaped: the seat polls `turn-pending` under its own self reach, surfaces the
+ * The seat pulls `turn-pending` under its own self reach when its manager's turn notice arrives
+ * (SPEC 14.3), when it arms, and after a reconnect, surfaces the
  * payload into host context, and yields — explicitly through `yieldTurn`, or implicitly when the
  * host turn ends (the working→idle presence transition every adapter funnels through
  * `setStatus`). The load-bearing properties, one block each:
@@ -9,17 +10,17 @@
  *   1. A pull that finds fresh turns buffers them, asks for ONE wake, and counts them as
  *      directed-strength in `pendingWake` — and the surface is TWO-PHASE: `peekPendingTurns` is
  *      pure (a lost frame costs nothing) and only `commitSurfacedTurns` arms anything.
- *   2. The poll is the reconciler: a turn gone from `turn-pending` was settled elsewhere
+ *   2. The pull is the reconciler: a turn gone from `turn-pending` was settled elsewhere
  *      (deadline, another yield path) and is dropped, never yielded into.
  *   3. The working→idle boundary yields `done` for every SURFACED turn — ending the host turn IS
- *      the done signal — and re-polls immediately.
+ *      the done signal — and sends no pull of its own: the manager's notice brings the next turn.
  *   4. An UNSURFACED turn never auto-yields: a payload the model never saw is not "done".
  *   5. `yieldTurn` targets the oldest surfaced turn, validates a handoff's addressee, and a
  *      manager-refused yield leaves the entry for the reconciler instead of dropping it locally.
  *
  * Blocks 1–9 swap the endpoint for a scripted stub (the `manager-invoke-verdict` pattern);
  * block 10 connects to an owned throwaway nats-server to verify that only a manager-launched seat
- * (`COTAL_MANAGER_INSTANCE`) arms the poll. Run: pnpm smoke:turn-intake
+ * (`COTAL_MANAGER_INSTANCE`) arms the relay. Run: pnpm smoke:turn-intake
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -43,7 +44,7 @@ import { pickFreePort } from "./_free-port.js";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
 import * as connectorCoreRoot from "../src/index.js";
 import { MeshAgent } from "../src/agent.js";
-import { TURN_POLL_MS } from "../src/turn-poll.js";
+import { TURN_PULL_RETRY_MS } from "../src/turn-poll.js";
 import { configFromEnv, type AgentConfig } from "../src/config.js";
 import { launchEnv } from "../src/launch.js";
 
@@ -78,6 +79,8 @@ const rig = () => {
     failStatusWrite: false,
     /** What the endpoint refuses the next pull with (undefined = it serves). */
     pullRefusal: undefined as string | undefined,
+    /** Whether the scripted manager says it sends turn notices; one from before them does not. */
+    notices: true,
   };
   (a as unknown as { ep: unknown }).ep = {
     principal: { owner: "local", actor: "seat" },
@@ -91,7 +94,7 @@ const rig = () => {
       invokes.push({ command, args, opts });
       if (command === "turn-pending") {
         if (state.pullRefusal !== undefined) return { reply: { ok: false, error: { message: state.pullRefusal } } };
-        return { reply: { ok: true, data: { turns: [...state.pending] } } };
+        return { reply: { ok: true, data: { turns: [...state.pending], ...(state.notices ? { notices: true } : {}) } } };
       }
       if (command === "turn-yield") {
         state.yields.push(args as Record<string, unknown>);
@@ -149,7 +152,7 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
 
 // ── 3) the working→idle boundary IS the done signal ───────────────────────────────────────────
 {
-  console.log("3 — ending the host turn auto-yields done for every surfaced turn, then re-polls");
+  console.log("3 — ending the host turn auto-yields done for every surfaced turn and sends no pull of its own");
   const { a, state, poll, invokes } = rig();
   state.pending = [row("g3", "work")];
   await poll();
@@ -163,7 +166,7 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
   check("the yield rides the seat's own self reach",
     (invokes.find((i) => i.command === "turn-yield")?.opts as { target?: { mode?: string } })?.target?.mode === "self",
     JSON.stringify(invokes.find((i) => i.command === "turn-yield")?.opts));
-  check("the boundary re-polls immediately", invokes.slice(invokesBefore).some((i) => i.command === "turn-pending"));
+  check("the boundary sends no pull: the manager's notice for the yield brings the next turn", !invokes.slice(invokesBefore).some((i) => i.command === "turn-pending"));
   check("waiting is not a boundary: a blocked seat yields nothing", await (async () => {
     state.pending = [row("g3b", "more")];
     await poll();
@@ -346,7 +349,26 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
   check("the same reason after a good pull is a new outage and is said", lines.length === 4, lines);
 }
 
-// ── 10) throwaway broker: only a manager-launched seat (COTAL_MANAGER_INSTANCE) polls a manager ──
+// ── a manager from before turn notices still reaches its seat ──────────────────────────────────
+{
+  console.log("9b — a launching manager that sends no turn notices is pulled on a timer, said once");
+  const { a, state, poll } = rig();
+  const lines: string[] = [];
+  (a as unknown as { log(m: string): void }).log = (m: string) => { lines.push(m); };
+  const timer = () => (a as unknown as { legacyTurnPoll?: unknown }).legacyTurnPoll;
+  await poll();
+  check("a manager that says it sends notices arms no timed pull", timer() === undefined && lines.length === 0, lines);
+  state.notices = false;
+  await poll();
+  await poll();
+  check("an answer without notices arms one timed pull and says so once",
+    timer() !== undefined && lines.length === 1 && lines[0]!.includes("sends no turn notices") && lines[0]!.includes(`every ${TURN_PULL_RETRY_MS}ms`), lines);
+  state.notices = true;
+  await poll();
+  check("an answer with notices again stops the timed pull", timer() === undefined, lines);
+}
+
+// ── 10) throwaway broker: only a manager-launched seat (COTAL_MANAGER_INSTANCE) pulls from a manager ──
 {
   console.log("10 — throwaway broker: an unpinned session never polls a manager; a manager-launched or delegated seat polls on cadence");
   const port = await pickFreePort();
@@ -370,7 +392,7 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
   const realClearInterval = globalThis.clearInterval;
   const pollTimers = new Map<object, { cb: () => void; active: boolean }>();
   globalThis.setInterval = ((cb: (...args: unknown[]) => void, ms?: number, ...rest: unknown[]) => {
-    if (ms === TURN_POLL_MS) {
+    if (ms === TURN_PULL_RETRY_MS) {
       const handle = { unref() { return handle; } };
       pollTimers.set(handle, { cb: () => cb(), active: true });
       return handle as unknown as ReturnType<typeof setInterval>;
@@ -537,8 +559,8 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
     await pinnedAgent.stop();
     pinnedAgent = undefined;
     check(
-      "T2: a session with COTAL_MANAGER_INSTANCE polls on its cadence (4 invokes across 3 intervals and a turn boundary) with --manager-instance <id>",
-      pinnedCalls.length === 4 &&
+      "T2: a session with COTAL_MANAGER_INSTANCE pulls once when it arms, and not across 3 intervals or a turn boundary, with --manager-instance <id>",
+      pinnedCalls.length === 1 &&
         pinnedCalls.every((argv) => (
           argv.length === 3 &&
           argv[0] === "--manager-call" &&
@@ -551,17 +573,17 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
       "T2: a manager-launched seat whose manager does not answer reports no responder answered once across its polls",
       pinnedTroubleLines.length === 1 &&
         pinnedTroubleLines[0]!.includes("no responder answered") &&
-        pinnedTroubleLines[0]!.includes(`retrying every ${TURN_POLL_MS}ms`),
+        pinnedTroubleLines[0]!.includes("the seat pulls again on its next turn notice or reconnect"),
       { lines: pinnedTroubleLines },
     );
 
-    // N3: TURN_POLL_MS is exported from turn-poll.ts and is not exposed on @cotal-ai/connector-core root
+    // N3: TURN_PULL_RETRY_MS is exported from turn-poll.ts and is not exposed on @cotal-ai/connector-core root
     check(
-      "N3: TURN_POLL_MS is exported from turn-poll.ts (15000) and is not exported from @cotal-ai/connector-core package root",
-      TURN_POLL_MS === 15_000 &&
-        !("TURN_POLL_MS" in connectorCoreRoot) &&
-        (connectorCoreRoot as Record<string, unknown>).TURN_POLL_MS === undefined,
-      { TURN_POLL_MS, rootHasProp: "TURN_POLL_MS" in connectorCoreRoot },
+      "N3: TURN_PULL_RETRY_MS is exported from turn-poll.ts (15000) and is not exported from @cotal-ai/connector-core package root",
+      TURN_PULL_RETRY_MS === 15_000 &&
+        !("TURN_PULL_RETRY_MS" in connectorCoreRoot) &&
+        (connectorCoreRoot as Record<string, unknown>).TURN_PULL_RETRY_MS === undefined,
+      { TURN_PULL_RETRY_MS, rootHasProp: "TURN_PULL_RETRY_MS" in connectorCoreRoot },
     );
 
     // N1b + R3a + R3b + R3c + N1a + T3 + N2: full delegated and local launch chains
@@ -1304,10 +1326,10 @@ process.exit(0);
     await delegatedAgent.stop();
     delegatedAgent = undefined;
     check(
-      "T3: delegatedSeatCommand sets COTAL_MANAGER_INSTANCE in env and the resulting seat polls (4 invokes across 3 intervals and a turn boundary) with --manager-instance <id>",
+      "T3: delegatedSeatCommand sets COTAL_MANAGER_INSTANCE in env and the resulting seat pulls once when it arms (1 invoke across 3 intervals and a turn boundary) with --manager-instance <id>",
       delegated?.env.COTAL_MANAGER_INSTANCE === delegatedInstanceId &&
         delegatedCfg.managerInstanceId === delegatedInstanceId &&
-        delegatedCalls.length === 4 &&
+        delegatedCalls.length === 1 &&
         delegatedCalls.every((argv) => (
           argv.length === 3 &&
           argv[0] === "--manager-call" &&
@@ -1422,7 +1444,7 @@ await spawn(
   }
 }
 
-const EXPECTED_CELLS = 49;
+const EXPECTED_CELLS = 52;
 const ran = pass + fail;
 console.log(`\nturn-intake.smoke: ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

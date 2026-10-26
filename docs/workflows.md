@@ -685,10 +685,13 @@ row is the only witness and the lapse stands. The asking stops at the wait's tim
 and at a turn's deadline, yield or cancellation, which then decide. A wait that begins
 after the death resolves once that holds, and a timeout resolves null on one absolute deadline a
 resumed run re-attaches to.
-`turn` wakes one seat for one host turn through the manager as a pull-shaped relay: the run
+`turn` wakes one seat for one host turn through the manager: the run
 submits the turn under the step's own identity, the manager holds it as a goal pinned to the
 seat's incarnation, and the seat pulls it under its own reach ahead of its next host turn, so
-nothing is pushed into a session mid-thought. The payload the seat reads names the run and the
+nothing is pushed into a session mid-thought. The manager sends the seat a turn notice whenever
+its pending turns change, and repeats it every 5 seconds until the seat pulls a new turn. The seat
+pulls when a notice arrives, when it first connects, and after a reconnect while it holds a turn,
+so an idle seat sends no requests ([SPEC §14.3](../SPEC.md#143-the-run-record)). The payload the seat reads names the run and the
 step and carries the rendered run context, plus any pending notices addressed to it, which the
 turn consumes. The seat yields through `cotal_yield` (`done`, `blocked`, or `handoff` with an
 addressee), and ending its host turn yields `done` for every turn it was shown. A `handoff` names

@@ -419,7 +419,12 @@ delivers, the other only wakes:
   handled, so its own redelivery was silently acked on arrival.
   A hook whose handler throws still returns an empty reply so the session is never blocked, and
   that reply carries nothing, so it commits nothing: the batch it had started to surface stays
-  un-acked and goes out on a later frame. The seat also drops any `turn-pending` row that breaks
+  un-acked and goes out on a later frame. A manager-launched seat pulls its run turns
+  (`turn-pending`) when its manager's turn notice arrives, when it connects, and after a reconnect
+  while it holds a turn. The manager repeats a notice until the seat pulls the new turn, so an idle
+  seat sends nothing. A pull that fails because the manager is down or unanswered is
+  retried once every 15 seconds until one succeeds; a refusal is logged and not retried. The seat
+  also drops any `turn-pending` row that breaks
   the manager contract, such as one with no integer deadline, and says so once in its log. A reply
   with no `turns` array changes nothing: the seat keeps the turns it already holds.
   This errs toward **at-least-once**: if a reply lands but its confirmation does not, the batch is
