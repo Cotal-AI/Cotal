@@ -1,5 +1,19 @@
 # @cotal-ai/manager
 
+## 0.107.0
+
+### Minor Changes
+
+- 0ae11a6: One manager can host seats on different terminal runtimes at the same time.
+  
+  `cotal spawn --runtime <name>` with `-d` or `--on`, `cotal_spawn` with `runtime`, and a workflow `spawn(persona, { runtime })`, choose the runtime of that one seat. A seat that names none keeps the runtime the manager was started with. An unknown or unreachable runtime, and `auto`, refuses the launch and starts nothing. Stopping, attaching, and recovery follow the runtime recorded for that seat, so a later seat does not move one that is already running.
+
+### Patch Changes
+
+- @cotal-ai/core@0.107.0
+  - @cotal-ai/seat@0.107.0
+  - @cotal-ai/workspace@0.107.0
+
 ## 0.106.1
 
 ### Patch Changes

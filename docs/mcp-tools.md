@@ -262,7 +262,7 @@ Ask the manager to start a new peer endpoint in your space. It joins the mesh as
 | `cwd` | string | no | Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace. A directory that does not exist on the serving manager's host is refused before launch, with the host named; in a multi-manager space pin the manager with instance. |
 | `prompt` | string | no | Optional kickoff message auto-submitted as the new peer's first turn. Pass it when the peer should begin work immediately; omitted means no first model turn is submitted. |
 | `events` | boolean | no | Event planes are on by default for connectors that publish one. Pass false to opt out; true only restates the default. |
-| `runtime` | string | no | Optional terminal runtime for this one seat (`pty`, or an installed extension such as `tmux`). Omitted, the serving manager uses its own. An unknown or unreachable runtime, and `auto`, refuse the launch and start nothing. |
+| `runtime` | string | no | Optional terminal runtime for this one seat (pty, or an installed extension such as tmux). Omitted, the serving manager uses its own. An unknown or unreachable runtime, and auto, refuse the launch and start nothing. |
 
 ## `cotal_feedback`
 
