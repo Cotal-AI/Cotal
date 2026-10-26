@@ -53,6 +53,10 @@ tiles strip, and toggleable lenses:
 | arrows / `h` `l` | move focus; select a row for its detail card |
 | `?` · `b` · `q` | help · back to overview · quit |
 
+Press Enter on a selected agent or message to open its detail card. On a short terminal,
+the card is clipped at the bottom rather than squeezing its rows together. Enlarge the
+terminal to see the rest, or press any key to close the card.
+
 **Operator control.** Watching stays read-only, but the console can also drive the
 [manager](architecture.md#manager-supervision). The observer endpoint never carries
 control: each action is one call through the same per-action path `cotal stop`, `cotal ps`, and

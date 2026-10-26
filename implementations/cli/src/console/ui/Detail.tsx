@@ -196,19 +196,25 @@ export function Detail({
       paddingX={2}
       paddingY={1}
       flexDirection="column"
+      overflowY="hidden"
     >
-      <Text bold color="cyan">
-        {title}
-      </Text>
-      <Box marginTop={1} flexDirection="column">
-        {target.kind === "message" ? (
-          <MessageDetail entry={target.entry} width={width - 4} />
-        ) : (
-          <AgentDetail agent={target.agent} feed={feed} width={width - 4} managed={managed?.get(target.agent.card.id)} />
-        )}
-      </Box>
-      <Box marginTop={1}>
-        <Text dimColor>press any key to close</Text>
+      {/* Keep the whole card at its natural height and clip its tail on short terminals. */}
+      <Box flexDirection="column" flexShrink={0}>
+        <Box flexShrink={0}>
+          <Text bold color="cyan">
+            {title}
+          </Text>
+        </Box>
+        <Box marginTop={1} flexDirection="column" flexShrink={0}>
+          {target.kind === "message" ? (
+            <MessageDetail entry={target.entry} width={width - 4} />
+          ) : (
+            <AgentDetail agent={target.agent} feed={feed} width={width - 4} managed={managed?.get(target.agent.card.id)} />
+          )}
+        </Box>
+        <Box marginTop={1}>
+          <Text dimColor>press any key to close</Text>
+        </Box>
       </Box>
     </Box>
   );

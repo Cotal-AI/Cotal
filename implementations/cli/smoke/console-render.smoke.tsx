@@ -19,6 +19,7 @@ import { PassThrough, Writable } from "node:stream";
 import { peerLabel, type AgentCard, type CotalEndpoint, type Presence } from "@cotal-ai/core";
 import { App } from "../src/console/app.js";
 import { StatusBar } from "../src/console/ui/StatusBar.js";
+import { Detail, type DetailTarget } from "../src/console/ui/Detail.js";
 import { Topo, type TopoVariant } from "../src/console/ui/topo/Topo.js";
 import { MEMBERSHIP_STALE_MS } from "../src/console/ui/topo/model.js";
 import type { FeedEntry, MembershipView } from "../src/view/mesh-view.js";
@@ -48,11 +49,11 @@ async function waitForFrame(frames: string[], marker: string, timeoutMs: number)
 }
 
 /** Mount one element, let Ink paint, return the painted text with CSI stripped. */
-async function paint(el: React.ReactElement, cols = 200): Promise<string> {
+async function paint(el: React.ReactElement, cols = 200, rows = 40): Promise<string> {
   let buf = "";
   const sink = new Writable({ write(c, _e, cb) { buf += String(c); cb(); } }) as unknown as NodeJS.WriteStream;
   sink.columns = cols;
-  sink.rows = 40;
+  sink.rows = rows;
   const app = render(el, { stdout: sink, patchConsole: false });
   await wait(120);
   app.unmount();
@@ -284,6 +285,57 @@ console.log("6. every topology lens labels a peer as the roster does");
     check(`the ${lens} prints each peer's shared label after its status dot`,
       labels.every((l) => out.includes("○ " + l)), out.slice(0, 800));
     check(`...and never the bracketed role`, !out.includes("ops]x[y"), out.slice(0, 800));
+  }
+}
+
+console.log("7. short detail overlays clip the tail without squeezing any rows");
+{
+  const now = Date.now();
+  const agent: Presence = {
+    card: { id: "local.probe", name: "probe-seat", kind: "agent", role: "reviewer" },
+    status: "waiting", activity: "checking the detail overlay", ts: now - 86_400_000,
+  };
+  const entry: FeedEntry = {
+    id: "detail-message", ts: now, from: agent.card, delivery: "multicast", channel: "general",
+    text: Array.from({ length: 12 }, (_, i) => `body line ${i + 1}`).join("\n"),
+  };
+  const targets: [string, DetailTarget][] = [
+    ["agent", { kind: "agent", agent }],
+    ["agent with skills and traffic", { kind: "agent", agent: {
+      ...agent, card: { ...agent.card, description: "A reviewer", tags: ["console"],
+        meta: { connector: "claude", model: "test-model" },
+        skills: Array.from({ length: 4 }, (_, i) => ({ id: `skill-${i}`, name: `Skill ${i}`, description: "Reviews a console" })),
+      },
+    } }],
+    ["message", { kind: "message", entry }],
+  ];
+  for (const [name, target] of targets) {
+    const feed = name === "agent with skills and traffic" ? [entry] : [];
+    const draw = async (height: number) => {
+      const lines = (await paint(
+        <Detail target={target} feed={feed} width={160} height={height} />, 160, height,
+      )).trimEnd().split("\n");
+      // Ink may emit a final full frame on unmount when the card fills the terminal.
+      return lines.slice(lines.findLastIndex((line) => line.startsWith("╭")));
+    };
+    const tall = await draw(40);
+    check(`${name}: the tall card shows its footer`, tall.some((l) => l.includes("press any key to close")), tall);
+    if (target.kind === "agent") {
+      check(`${name}: the tall card keeps identity and status on separate ordered rows`,
+        ["name:", "role:", "kind:", "status:", "activity:"].every((field, i) => tall[4 + i]?.includes(field)), tall);
+      const traffic = tall.findIndex((l) => l.includes("recent traffic ("));
+      check(`${name}: recent traffic has its own row below the heading`,
+        traffic >= 0 && tall[traffic + 1]?.includes(feed.length ? "body line 1" : "(none seen yet)"), tall);
+    } else {
+      check("message: the tall card shows every body line", tall.some((l) => l.includes("body line 12")), tall);
+    }
+    for (const height of [6, 10, 14]) {
+      const short = await draw(height);
+      check(`${name}: ${height} rows preserve the tall card's visible prefix`,
+        short.slice(0, height - 1).join("\n") === tall.slice(0, height - 1).join("\n"), short);
+      check(`${name}: ${height} rows clip at the bottom border`,
+        short.length === height && short[height - 1]?.startsWith("╰") === true, short);
+    }
   }
 }
 
