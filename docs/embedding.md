@@ -240,8 +240,8 @@ absent. The reported path is kept byte for byte, whitespace included; an empty s
 
 | symbol | package | purpose |
 |---|---|---|
-| `runAuthService(args, store?)` | `@cotal-ai/auth` | boot the auth-service daemon; `store` injects the secret material. |
-| `runDelivery(args, store?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred. |
+| `runAuthService(args, store?, options?)` | `@cotal-ai/auth` | boot the auth-service daemon; `store` injects the secret material, and `options` takes the daemon lifecycle hooks or [`interactiveManagerSelection`](#interactive-manager-primary). |
+| `runDelivery(args, store?, onStarted?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred, and `onStarted` receives a `status()`/`close()` handle once it serves. |
 | `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, the per-start `cap`, `readiness`, `drain`, and idempotent `close`. `close` rejects when the context did not release its plane claim: the claim row was no longer its own, or the release write failed. The row then stays held, and the next start reclaims it through the liveness oracle. With the optional `publicFace` input it also serves the public exchange face and carries `publicUrl`. The optional `calloutLimits` input sets the auth callout's deadline, concurrency and slow-line limits ([callout deadlines](identity-and-auth.md#callout-deadlines)). With the optional `platformControl` input the handle also has `platformControlAuthority`, the in-process platform control door, `platformControlReadiness`, its read-only readiness read, `observeManagerGate`, the manager gate read a host composing the delegated user intent decisions passes them, and `activateManagedLifecycle`, the activation that host runs at a delegated launch's pinned lifecycle UID. With `platformControl.host` it also has `registerHostIncarnation`, which registers the host process's own endpoint instance and returns the incarnation a delegated execution pins, `observeHostGate`, the read of that endpoint's issuance gate, and `awaitHostFence`, which resolves once a later registration or barrier fences an incarnation. `runAuthService` remains the CLI entry. |
 | `PlatformControlAuthorityRequest`, `PlatformControlInnerRequest`, `PlatformControlAuthorityResult`, `PlatformControlAssignment` *(types)* | `@cotal-ai/core` | the closed envelope, its inner request union, its result and the backend's assignment row for `platformControlAuthority`. `platformControlOwner` in `@cotal-ai/auth` derives the `p_` owner the door issues under. |
 | `startDeliveryService(inputs)` | `@cotal-ai/delivery` | start one account-scoped delivery instance and return a `HostedServiceHandle` with `readiness`, `drain`, and idempotent `close`. `close` rejects when its lease release does not commit or cannot be confirmed, or when another holder's lease row is still there after it. The process runner remains the CLI entry. |
@@ -588,7 +588,8 @@ embedding's backend obtains the bearer from the stock exchange with the person's
 bearer's space, principal, lifecycle and instance are checked before anything is dialled, and the
 describe is pinned to that instance. The view carries only the commands the person's ledger scope
 grants. `spawn`, for example, carries `spawn`, `despawn`, `inspect`, the persona commands and
-`goal-result`, while operator reads such as `status` and `models` come only with `admin`; the broker
+`goal-result`, plus the launch reads `status`, `models` and `resolve-cwd` on that one instance,
+while operator reads such as `ps` and `slots` come only with `admin`; the broker
 refuses a command the view does not carry. The connection never reconnects on its own; `reopen`
 acquires again and re-checks every pin.
 
@@ -633,7 +634,7 @@ distinct schema root, the input `generateBrowserContracts` from
 out because they are not schemas; the generator recomputes every digest and refuses a mismatch.
 The namespace includes closed standing/run renewal, admission, maintenance, enrollment,
 retirement and goal-index scan helpers. `publicIdentities(state)` returns the `identities` record every request
-carries: the five public ids, in the order the host echoes them. `remoteRunHosting` builds the four `runHosting` callbacks from the registration
+carries: the five public ids, in the order the host echoes them. `remoteManagerClient.remoteRunHosting` builds the four `runHosting` callbacks from the registration
 and the transport you supply for the host's run admission, run attempt and authority requests, so
 your manager sends the run requests the stock manager sends. The namespace provides no signer or
 new grant. The host still owns authenticated issuance, current registration and activated-run
@@ -693,7 +694,7 @@ emitted again as an `error`.
 
 ### auth-service
 
-`runAuthService(args, store?)` reads its provisioned long-lived secret kinds (service keys, callout
+`runAuthService(args, store?, options?)` reads its provisioned long-lived secret kinds (service keys, callout
 account, issuer keys, owner secret) through the injected `SecretStore`; a host provisions those into
 the store first. It is a **signer and identity authority**, not a scoped daemon: at runtime it holds
 the data-account and callout-account signing seeds, the issuer's private JWKs, and the
@@ -720,7 +721,7 @@ await runAuthService(
 
 ### delivery
 
-`runDelivery(args, store?)` runs from a **pre-minted scoped `delivery` cred** and never loads the
+`runDelivery(args, store?, onStarted?)` runs from a **pre-minted scoped `delivery` cred** and never loads the
 signer. Provide the cred either through the injected store (under
 `deliveryCredsKey(space, { injected: true })`) or with a
 `--creds` file; the two are mutually exclusive. The daemon re-fetches the cred from the store at 75%
@@ -1179,7 +1180,7 @@ low-level operator primitives. Handle them as account-authority material:
 
 ## Hosted composition gaps
 
-The primitives above are present as exports, but three capabilities are **not** cleanly composable
+The primitives above are present as exports, but four capabilities are **not** cleanly composable
 from the public contract today. Each is tied to work in flight; a host either waits for the seam or
 scopes the capability out. None is a wire concern.
 
@@ -1259,7 +1260,7 @@ ledger row. It verifies the current manager registration proof, space, account a
 no owner or attribution from the body.
 
 `AuthAuthorityPlane.revokeManagerRun` implements the operation. `AuthProvider.requestRemoteRunRevoke`
-transports it, and `remoteRunHosting` supplies `RunHostingContext.revokeRun` for a signerless
+transports it, and `remoteManagerClient.remoteRunHosting` supplies `RunHostingContext.revokeRun` for a signerless
 manager. The callback returns the stored `RunRevocation`, including on repeats. A host composing
 its own remote authority must supply that callback to revoke. No signer reaches the participant.
 CLI and MCP revoke verbs are a follow-up described in the [run-start design](design/user-auth-run-start.md).
@@ -1479,8 +1480,9 @@ another account, a bearer from another issuer, space, subject or key, one that n
 witness or no serve duty, a closure set or artifact that is not the embedded one, and a closure
 that does not read at its digest. `authorizeTrustedServeSnapshot` stays the host's.
 
-For a serving connection, `serviceEndpointRenewal({ store, dir, witness })` returns that loop as a
-bearer function: pass its `bearer` as `EndpointOptions.bearer` and its `sentinelCreds` with it. The
+For a serving connection, the auth provider's `serviceEndpointRenewal({ store, dir, witness })` hook
+returns that loop as a bearer function. It is an `AuthProvider` method, not a package export. Pass
+its `bearer` as `EndpointOptions.bearer` and its `sentinelCreds` with it. The
 first pull activates on the signed-in login and every later pull renews on the stored renewal proof.
 If that proof has expired, as after a machine was off for more than a day, the next pull replays the
 same activate request on the signed-in login, which mints again while the root and the approval stand.
