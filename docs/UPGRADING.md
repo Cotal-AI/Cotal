@@ -1228,6 +1228,8 @@ that many seconds. Both kinds of token are now refused.
 Remove `clockToleranceSec` from each call and each `IdpConfig`. A host whose clock is more than 5
 seconds off the issuer's needs its time synchronized.
 
+<a id="auth-context-closure-in-0710-unreleased"></a>
+
 ## Auth context closure in 0.72.0
 
 Existing deployments need no credential migration or restart for these additive APIs. Embedded
@@ -1249,6 +1251,8 @@ credentials or evicts connections. Zero rows prove absence only with a complete 
 single-server proof. An embedded endpoint's trusted composition can retain transport custody
 through `EndpointOptions.onConnection`.
 
+<a id="unreleased"></a>
+
 ## Event plane of an owned spawn in 0.72.1
 
 On a per-user-auth mesh, a spawn-scoped caller can arm the event plane of a child under its own
@@ -1257,6 +1261,8 @@ plane. Upgrade the manager to pick up the admission change. No credential or sta
 needed. Cross-owner arming still requires `admin`, and the child's own-channel rule and ledger
 envelope are unchanged. A silent non-owner caller in a space without the policy still has the
 plane disarmed, with a notice if provisioning succeeds.
+
+<a id="hosted-auth-plane-identity-in-the-store-unreleased"></a>
 
 ## Hosted auth plane identity in the store in 0.76.0
 
