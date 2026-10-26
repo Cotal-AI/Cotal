@@ -1,5 +1,14 @@
 # @cotal-ai/manager
 
+## 0.103.0
+
+### Patch Changes
+
+- c13edb9: Preserve responder error codes and details through manager spawn, launch and non-action refusal replies.
+- @cotal-ai/core@0.103.0
+  - @cotal-ai/seat@0.103.0
+  - @cotal-ai/workspace@0.103.0
+
 ## 0.102.0
 
 ### Patch Changes
