@@ -54,7 +54,8 @@ import {
   setCommandSurface,
   setInstalledExtensionsEnabled,
 } from "./ext-loader.js";
-import { reconcileSeededConnectors } from "./seed/reconcile.js";
+import { deferredSeedRefusal, reconcileSeededConnectors } from "./seed/reconcile.js";
+import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printCommandHelp, printHelpPath, printEntry } from "./help.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
@@ -637,17 +638,26 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // an extension stub resolves against the manifest the seed left.
   const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");
   if (opts.extensions && !controlOnlyManager && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd)) {
+    // `up` meets the seed's refusals here but seeds only when it first starts a process, so a refusal
+    // in its own body leaves the operator-global store as it found it.
+    const deferred = cmd?.name === "up";
     try {
-      await reconcileSeededConnectors();
+      if (deferred) {
+        const refusal = deferredSeedRefusal();
+        if (refusal) throw refusal;
+        deferSeedToLaunch();
+      } else await reconcileSeededConnectors();
     } catch (e) {
       stderrLine("✗ ", (e as Error).message, c.red);
       process.exit(1);
     }
-    commands = surface();
-    cmd = findCommand(commands, word);
-    if (!cmd) usageExit(unknownCommandMessage(commands, word));
-    rest = ownWords(cmd, words, leadingGlobals);
-    arm();
+    if (!deferred) {
+      commands = surface();
+      cmd = findCommand(commands, word);
+      if (!cmd) usageExit(unknownCommandMessage(commands, word));
+      rest = ownWords(cmd, words, leadingGlobals);
+      arm();
+    }
   }
   // An extension stub materializes before parsing: verify the version pin, import the package
   // (self-registers), and parse with the LIVE specs — the cache never drives run's input.

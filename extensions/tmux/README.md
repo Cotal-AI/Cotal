@@ -32,6 +32,10 @@ import.
   without it is refused before any window opens. Looking up tabs by
   label throws when tmux cannot be queried.
 
+Session-name and pane-capture failures name the read operation, include tmux's error text and
+retain the failed call as `cause`. A failed capture returns no screen only when the pane's exit
+is confirmed. A failed exit probe still throws.
+
 ## Usage
 
 ```bash

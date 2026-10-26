@@ -641,7 +641,11 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
 per-agent ACLs. It runs in the background by default and records the mesh so `cotal spawn` from
 any directory can find it; `--detach` explicitly names the same mode. `--foreground` keeps the
-native stack in this terminal. A contradictory mode pair refuses before setup or seed work. In a
+native stack in this terminal. A contradictory mode pair refuses before setup or seed work. `up`
+seeds the [built-in connectors](#built-in-connectors-are-seeded-extensions) only when it first starts
+a process, or when `up -f` checks the connectors its manifest's agents use, so a refusal before then
+leaves the operator-global seed store as it was. When a start fails after that seed moved the store to this version, the failure
+says so and names the store. In a
 folder whose only `.cotal` above it is the machine's home one, such as a new folder in your home
 folder, a bare `up` makes the folder's own `.cotal` and starts the stack there, as it does in a folder
 with no `.cotal` above it, and a run refused before it writes there removes that `.cotal` again.
@@ -884,7 +888,9 @@ task readiness. A prepared root never starts the legacy launcher: an option the 
 no route for, such as `--tls-cert` or a `tls://` `--server`, refuses `UNSUPPORTED`, exit 2, before anything starts, as it
 does on a root whose stack the controller already owns. `--rotate-sys` on a first start refuses the
 same way, because a first start mints the space's `$SYS` creds. The refusal names each option, and
-names `cotal up -f <cotal.yaml>` when the manifest route takes them all.
+names `cotal up -f <cotal.yaml>` when the manifest route takes them all. A stopped root that the
+legacy launcher started and that has no stack journal keeps that launcher for such an option: one
+its `up` registered with no prepared record, or a user-auth root that holds its user-auth state.
 `--json` returns one
 stack receipt and `--plain` returns a line-oriented report. Partial startup keeps confirmed members
 and reports them; unknown operations are retained and never retried automatically. A failure while
@@ -6615,7 +6621,8 @@ dashboard (`@cotal-ai/web`, providing `service-preset:web`) is the seventh built
 same path.
 
 `cotal ext seed` is the maintenance entry for that seeding (it runs automatically before the first
-command of each boot that is not a read, so you rarely call it). A read, such as `status`, `ps`,
+command of each boot that is not a read, so you rarely call it; `cotal up` runs it when it first
+starts a process). A read, such as `status`, `ps`,
 bare `use`, `ext list` or `docs`, installs and refreshes nothing. An installed extension's `reads` declaration is
 cached when it is added. A bare read and a read subcommand skip that seed prelude; a subcommand
 without the declaration still seeds. After an upgrade, a read that would load a
@@ -6640,12 +6647,13 @@ commit timestamp, and `seed/stamp.json`. That writer and timestamp are kept in t
 older CLI refusal can say which executable wrote the generation it will not overwrite and when.
 Legacy generation-only stamps remain readable; their refusal simply has no writer provenance to add.
 
-An older `cotal` refuses a seed store written by a newer version. When it can verify a sufficient
-`cotal` executable on PATH or at the installer's `~/.local/bin/cotal` location, the refusal names
-that absolute path so a reduced service PATH does not select the older binary again. Otherwise it
-keeps the generic newer-version instruction. Every maintenance mode, including `--force` and
-`--reset`, refuses to replace a newer shared generation. Run the newer executable instead.
-Same-generation force remains supported. Reset still repairs corrupt state and resurrects
+An older `cotal` refuses a seed store written by a newer version. The refusal names the store's
+`seed` folder and the `extensions` folder beside it, and says to restore both from a backup taken
+before the store moved to the newer generation; the two versions are context. When it can verify a
+sufficient `cotal` executable on PATH or at the installer's `~/.local/bin/cotal` location, the
+refusal also names that absolute path, which uses the store as it is, so a reduced service PATH
+does not select the older binary again. Every maintenance mode, including `--force` and `--reset`,
+refuses to replace a newer shared generation. Same-generation force remains supported. Reset still repairs corrupt state and resurrects
 removed connectors. Older released executables may still allow a backward rebuild; do not use
 their force advice to recover from selecting the wrong installation.
 
