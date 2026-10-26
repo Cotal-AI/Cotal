@@ -201,15 +201,16 @@ cotal ps --space research-team        # finds research-team's broker via the reg
 
 ## Roster files
 
-A manager service with a roster boots every agent the roster lists each time it starts:
+A manager with a roster boots every agent the roster lists each time it starts:
 
 ```bash
-cotal service add manager --preset manager --root <dir> --runtime pty --roster <file>
-cotal service start manager --foreground
+cotal manager start --roster <file> --foreground
 ```
 
-`--root` and `--roster` take absolute paths. Without `--foreground` the manager runs in the
-background. `cotal supervise --roster <file>` boots the same list. A roster declares
+`--roster` takes an absolute path. The manager keeps it, so a later `cotal manager start` boots the
+same list; naming another roster while the manager runs refuses until `cotal manager stop`. Without
+`--foreground` the manager runs in the background. The deprecated `cotal supervise --roster <file>`
+boots the same list. A roster declares
 no channels: each agent's access comes from its persona file. Each entry starts one agent the way
 `cotal spawn --detach` does.
 
