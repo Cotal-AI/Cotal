@@ -416,11 +416,13 @@ not pass a callout's reason to the client. The broker logs the reason after
 Each answered request writes one line to the auth service's standard error:
 
 ```
-auth callout: level=info outcome=minted req=<user nkey> cid=<broker client id> owner=<owner> actor=<actor> queue_ms=0 verify_ms=1 ledger_ms=2 policy_ms=0 sign_ms=1 total_ms=4
+auth callout: level=info outcome=minted space=<space> req=<user nkey> cid=<broker client id> owner=<owner> actor=<actor> queue_ms=0 verify_ms=1 ledger_ms=2 policy_ms=0 sign_ms=1 total_ms=4
 ```
 
 `outcome` is `minted`, `denied`, `timeout` when the deadline passed, or `shed` when admission
-refused the request. `req` is the user key the broker generated for this connect. `cid` is the broker's client id,
+refused the request. `space` is the space the connect was for, which a process serving several
+spaces needs and a process serving one still writes, so operators parse one format. `req` is the
+user key the broker generated for this connect. `cid` is the broker's client id,
 which the broker's own log lines carry as `cid:<n>`. `queue_ms` is the time spent waiting for a slot. `verify_ms` covers the request and bearer checks, `ledger_ms` the actor
 check and the issuance record, `policy_ms` the permission build, and `sign_ms` signing the user JWT
 and the response. A `denied` line adds `reason="<message>"`, a `timeout` line adds `at=<step>` for
@@ -443,6 +445,16 @@ renders it again and passes it to the auth service again. Without it the broker 
 does not start callout replicas, so start each one with the same `--auth-timeout <seconds>` as the
 broker config.
 
+A replica serves one space. `cotal auth-service --callout-only --spaces <manifest>` instead serves
+every space a manifest names from one process, one callout lane each, which is how a host runs one
+callout process rather than one per space. A lane holds its own connections, its own connect limits
+and its own signing keys, so one space's key never signs another space's response and one space
+losing its store connection leaves the other lanes answering. The broker decides which lane sees a
+request: a lane's callout connection authenticates as its space's auth account, and a NATS account
+is a disjoint subject namespace, so another space's request cannot be delivered on it. See
+[`auth-service`](cli.md#server-daemons) for the manifest and how a space is added or removed while
+the process runs.
+
 ### Connect limits
 
 The auth service limits how often each principal may connect, so one client stuck in a reconnect
@@ -452,8 +464,10 @@ refills at that rate. The defaults are 60 connects a minute per actor and 600 pe
 whose signature verifies is charged to its actor and its owner, even after it expires. A bearer that
 does not verify is charged to the client host the broker reports, at 60 a minute. A connect passes
 only when every bucket it draws on has one left, and a refused connect spends nothing. Each auth
-service process keeps its own buckets, callout replicas included, so a space served by several
-processes allows up to that many times each limit. A replica limits at the defaults.
+service process keeps its own buckets for each space it serves, callout replicas included, so a
+space served by several processes allows up to that many times each limit. A process serving
+several spaces keeps a separate set per space, so one space never spends another's allowance. A
+replica limits at the defaults.
 
 The callout checks the limits before it reads the ledger or records an issuance. A limited connect
 gets a signed denial whose reason starts with `RATE_LIMITED retry-after <n>s`, followed by the actor

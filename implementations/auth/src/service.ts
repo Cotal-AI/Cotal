@@ -74,6 +74,7 @@ import { makePlatformControlAuthority, makePlatformControlReadiness, requireMana
 import { OwnedConnections, type AuthConnectionState, type AuthServiceClosed } from "./owned-connections.js";
 import { makePlatformSupervisorAuthority, makePlatformSupervisorEnd, platformSupervisorEnded, requirePlatformSupervisorAdmin, type PlatformSupervisorInput, type PlatformSupervisorAuthorityRequest } from "./platform-supervisor.js";
 import { calloutLimits, type AuthCalloutLimits } from "./callout.js";
+import { runCalloutHost } from "./callout-host.js";
 import { runAuthCalloutReplica } from "./callout-replica.js";
 import { calloutAuthority, managerGateReads, serveCallout, type CalloutAuthority } from "./callout-authority.js";
 import { ConnectLimiter, ConnectRateLimited, type ConnectLimits } from "./connect-limit.js";
@@ -2152,13 +2153,22 @@ async function resumeOpenOperations(reg: LifecycleRegistry, evictPrincipal: Evic
 /** Pure native daemon input validation, shared with its explicit service launch plan. */
 export function authServiceConfiguration(args: ParsedArgs) {
   const v = args.values as Values;
-  const space = v.space;
-  if (!space) throw new Error("auth-service: --space is required");
-  const server = v.server;
-  if (!server) throw new Error("auth-service: --server is required (the broker this callout serves)");
   // A callout replica serves no HTTP and hosts no service endpoint, so a flag for either is a
   // config error rather than a silently ignored option.
   const calloutOnly = v["callout-only"] !== undefined;
+  // `--spaces` names a manifest of spaces one callout process serves, one lane each. It stands in
+  // for `--space` rather than defaulting beside it, so neither mode is ever entered by omission.
+  const spaces = v.spaces;
+  if (spaces !== undefined) {
+    if (!calloutOnly) throw new Error("auth-service: --spaces serves several spaces from one callout process - it requires --callout-only");
+    if (v.space !== undefined) throw new Error("auth-service: --space and --spaces are alternatives - name one space or a manifest of spaces, not both");
+    if (spaces.trim() === "") throw new Error("auth-service: --spaces needs the path of a space manifest");
+  } else if (!v.space) {
+    throw new Error(`auth-service: --space is required${calloutOnly ? " (or --spaces <manifest> to serve several spaces from this one process)" : ""}`);
+  }
+  const space = v.space ?? "";
+  const server = v.server;
+  if (!server) throw new Error("auth-service: --server is required (the broker this callout serves)");
   if (calloutOnly) {
     const http = ["port", "exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url", "service-endpoints"]
       .filter((name) => v[name] !== undefined);
@@ -2199,7 +2209,7 @@ export function authServiceConfiguration(args: ParsedArgs) {
   const limits: AuthCalloutLimits | undefined = authTimeout === undefined ? undefined : { authTimeoutMs: authTimeout * 1000 };
   if (limits !== undefined) calloutLimits(limits);
 
-  return { space, server, port, publicFace, serviceEndpoints, calloutOnly, calloutLimits: limits };
+  return { space, spaces, server, port, publicFace, serviceEndpoints, calloutOnly, calloutLimits: limits };
 }
 
 /** Trusted local embedding hooks. They carry no prepared key material or loopback capability. */
@@ -2225,11 +2235,12 @@ export interface AuthDaemonLifecycle extends AuthServiceRuntimeOptions {
 export async function runAuthService(args: ParsedArgs, store?: SecretStore, options: AuthServiceRuntimeOptions | AuthDaemonLifecycle = {}): Promise<void> {
   const interactiveManagerSelection = runtimeSelection(options);
   const lifecycle = "root" in options ? options : undefined;
-  const { space, server, port, publicFace, serviceEndpoints, calloutOnly, calloutLimits: limits } = authServiceConfiguration(args);
+  const { space, spaces, server, port, publicFace, serviceEndpoints, calloutOnly, calloutLimits: limits } = authServiceConfiguration(args);
   // The provider's space-scoped state dir for NON-SEAM material (ledger, IdP pin, discovery). The
   // layout fact is workspace-owned (userAuthStateDir); this daemon never touches `.cotal/auth/auth.json`.
   const root = lifecycle?.root ?? findCotalRoot();
   // A replica never reads or writes the space's one discovery file: that file names the primary.
+  if (spaces !== undefined) return runCalloutHost({ manifest: spaces, server, root, ...(limits !== undefined ? { limits } : {}) }, store);
   if (calloutOnly) return runAuthCalloutReplica({ space, server, root, ...(limits !== undefined ? { limits } : {}) }, store);
   const dir = userAuthStateDir(root, space);
   const secrets = store ?? workspaceSecretStore(root);

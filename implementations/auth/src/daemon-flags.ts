@@ -14,9 +14,16 @@ export const authServiceFlags = [
   { name: "auth-timeout", type: "string", value: "<seconds>", description: "the broker's authorization timeout in whole seconds, which the callout answers inside (default: 2, nats-server's default)" },
 ] as const satisfies readonly FlagSpec[];
 
-/** The replica flag. Only the daemon entry takes it: the native service preset runs the one primary
- *  that the space's `auth-service.json` names. */
+/** The replica flags. Only the daemon entry takes them: the native service preset runs the one
+ *  primary that the space's `auth-service.json` names. */
 export const authCalloutOnlyFlag = {
   name: "callout-only", type: "boolean",
   description: "answer only the auth callout, as one more member of its queue group (no HTTP listener, no auth-service.json); for a space whose auth service already runs",
+} as const satisfies FlagSpec;
+
+/** The multi-space manifest. With `--callout-only` it replaces `--space`: the process holds one
+ *  callout lane per space the manifest names, all on the one `--server`. */
+export const authSpacesFlag = {
+  name: "spaces", type: "string", value: "<manifest>",
+  description: "with --callout-only: serve every space in this JSON manifest from one process, one callout lane each (replaces --space)",
 } as const satisfies FlagSpec;
