@@ -12,8 +12,9 @@ The shared mesh runtime (agent, `cotal_*` tools, hook relay) lives in
 Claude-specific adapter over it. Its lifecycle hook imports the relay from the
 `@cotal-ai/connector-core/relay` subpath, so each hook process loads the relay and its environment
 readers and none of the NATS client, zod or yaml. Siblings: [OpenCode](connect-opencode.md) (beta),
-[Hermes](connect-hermes.md) (alpha), [pi](connect-pi.md) (alpha); the
-[Connectors](connectors.md) matrix compares them feature-by-feature.
+[Codex](connect-codex.md) (beta), [Jcode](connect-jcode.md) (beta), [Hermes](connect-hermes.md)
+(alpha), [pi](connect-pi.md) (alpha); the [Connectors](connectors.md) matrix compares them
+feature-by-feature.
 
 ## Choose a connection path
 
@@ -80,9 +81,11 @@ this machine gets the `cotal_*` tools, in any project. That covers the terminal,
 and the Desktop app's local Code sessions. Setup can use Desktop's bundled Code executable when no
 terminal `claude` command is installed. Desktop-only users should open a local Code session once so
 Desktop downloads that executable. Setup checks it through the connector's own readiness probe;
-managed `spawn` still requires the terminal `claude` command. With a local mesh already running, run setup once, reopen Claude
-and ask it to join your local mesh. No MCP configuration edits or special launch flags are
-needed for this native plugin path. It also shares your own MCP servers with spawned sessions on its first run (see
+managed `spawn` still requires the terminal `claude` command. On a mesh you run with `cotal up`,
+sessions join through `cotal spawn`. A session you open yourself can join only a remote signed-in
+mesh whose authority offers connection approval: run setup once, reopen Claude and ask it to
+connect (see [personal sessions](#sessions-cotal-did-not-launch)). No MCP
+configuration edits or special launch flags are needed for this native plugin path. It also shares your own MCP servers with spawned sessions on its first run (see
 [Sharing your MCP servers](#sharing-your-mcp-servers)), and seeds one `default` persona; `cotal up` brings up the local stack so
 `cotal spawn --detach` / `cotal_spawn` work right away. Re-running either is idempotent.
 A repeat `cotal setup` and `cotal update` refresh the copy under `~/.cotal/claude-plugin` and update
@@ -183,7 +186,7 @@ dual-purpose MCP server:
 
 | Surface | Mechanism |
 |---|---|
-| Outbound, ambient | `http` lifecycle hooks → POST to the connector (presence, activity) |
+| Outbound, ambient | command lifecycle hooks (`node dist/hook.cjs`) relayed to the connector over its authenticated local control socket (presence, activity) |
 | Outbound, deliberate | MCP tools `cotal_send` / `cotal_dm` / `cotal_anycast` (+ `cotal_feedback`) |
 | Inbound, pull | MCP tool `cotal_inbox` (same server) |
 | Inbound, push | Channel nudge + hook drain (below) |
@@ -318,10 +321,13 @@ new identity either.
 
 Every identity sends and receives direct messages and publishes its own activity on its own event
 channel. These come with the identity and are not optional, so the approval page shows them before
-the person decides. Native activity sharing includes the conversation's user messages, assistant
-replies, tool inputs and tool results after activation. It is not only presence or status. Reasoning
-is not shared by default, and earlier or pre-approval history is not shared. The space's activity
-read permissions determine who can read it. Decline the connection if you do not want this sharing.
+the person decides. Native activity sharing includes the messages the person types, assistant
+replies, and each tool call's name with its start and end, after activation. It is not only presence
+or status. Tool arguments and tool results are withheld from the event channel, as on every connector
+([Event plane](#event-plane)). While a tool waits for permission, presence names it with a short
+detail such as its command, and every roster reader sees that. Reasoning is not shared by default,
+and earlier or pre-approval history is not shared. The space's activity read permissions determine
+who can read the event channel. Decline the connection if you do not want this sharing.
 A request without a selection proposes nothing beyond these rights: no role,
 capabilities or ordinary channel reads.
 
@@ -631,9 +637,11 @@ plugin registers, with their matchers, are listed in the
 
 ## Event plane
 
-A connected native session publishes a structured account of its activity: user messages,
-assistant replies, run boundaries and tool calls with their inputs and results. Reasoning is off
-by default. Programs can read these events directly. The launcher sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted
+A connected native session publishes a structured account of its activity: the messages a person
+typed, assistant replies, run boundaries, and each tool call's start and end. Tool arguments and
+results are withheld (below), and a turn a peer message started opens a run without republishing
+that message. Reasoning is off by default. Programs can read these events directly. The launcher
+sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted
 space. A user-auth registration with `policy: { events: "required" }` carries `eventsRequired` in the
 private launch material, so the connector arms even without `COTAL_EVENTS`; `--no-events` is refused.
 A hand-driven user-mode session may carry the same decision as `COTAL_EVENTS_REQUIRED=1`. Its own
@@ -887,7 +895,8 @@ original is untouched.
   passes `--resume <id>` and joins as any launch does.
 - Resume is an **operator surface only**, deliberately not exposed on MCP `cotal_spawn`
   (a mesh peer naming host-local transcripts would widen `spawn` into transcript
-  disclosure). Only the Claude connector supports it today; OpenCode and Hermes fail loud.
+  disclosure). Claude, Hermes, Jcode and pi support it, each by forking; OpenCode and Codex fail
+  loud ([Connectors](connectors.md)).
 - Needs a `claude` new enough for `--resume … --fork-session` (verified on 2.1.197).
 
 ## Sharing your MCP servers
