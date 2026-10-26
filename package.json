@@ -791,6 +791,7 @@
     "smoke:join-session-lost:live": "tsx implementations/cli/smoke/join-session-lost-live.smoke.ts",
     "smoke:app-identity:live": "tsx implementations/cli/smoke/app-identity-live.smoke.ts",
     "smoke:conversation-selection-live": "tsx implementations/cli/smoke/conversation-selection-live.smoke.ts",
+    "smoke:connect-space:live": "tsx implementations/auth/smoke/connect-space.smoke.ts",
     "smoke:conversation-approval-live": "tsx implementations/cli/smoke/conversation-approval-live.smoke.ts",
     "smoke:claude-local:live": "tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
     "smoke:claude-desktop-config": "tsx extensions/connector-claude-code/smoke/desktop-config.smoke.ts",

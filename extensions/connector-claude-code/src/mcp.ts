@@ -46,7 +46,10 @@ import { openWakeFeed } from "./wake-feed.js";
 
 /** What a plain session's local server tells the model ahead of the gateway's own steps. */
 const LOCAL =
-  "This is the Cotal server on this computer. It joins the person's local Cotal mesh. If a hosted " +
+  "This is the Cotal server on this computer. It can join this computer's registered meshes, including signed-in remote spaces. " +
+  "When the person names a mesh, pass it as space to cotal_connect. Omit space only to use the CLI's default target. " +
+  "Do not move .cotal directories or change environment variables to select a conversation's mesh. " +
+  "Disconnect an existing connection before choosing another space. If a hosted " +
   "Cotal connector is also available, use this one unless the person asks for the hosted one: a " +
   "conversation uses one Cotal path. ";
 
@@ -87,6 +90,7 @@ async function serveLocal(desktop: boolean): Promise<void> {
   const served = await serveGatewayStdio(host, {
     source: "claude-local",
     connectContext: !desktop,
+    space: !desktop,
     // A signed-in Code conversation asks for its own grant and calls with it; see the host.
     ...(desktop ? {} : { tools: NATIVE_GATEWAY_TOOLS, selection: true }),
     ...(feed

@@ -73,6 +73,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
   let opening: Promise<unknown> = Promise.resolve();
   let reaping: Promise<void> | undefined;
   let reapAgain = false;
+  let reapSpace: string | undefined;
   const plumbing = (args: string[]): Promise<Reply> => new Promise((resolve, reject) => {
     const cotal = o.cotal();
     execFile(cotal[0]!, [...cotal.slice(1), "app-identity", ...args], { cwd: o.cwd, env: o.env, timeout: PLUMBING_MS }, (_error, stdout, stderr) => {
@@ -91,14 +92,14 @@ export function createAppHost(o: AppHostOptions): AppHost {
   };
   // Retiring other conversations' dead identities runs after a connection and never delays one. A
   // request made while a run is in flight starts one more run when it ends.
-  const reap = (): void => {
-    if (reaping) { reapAgain = true; return; }
-    reaping = plumbing(["reap"]).then(() => {}, () => {}).finally(() => {
+  const reap = (space?: string): void => {
+    if (reaping) { reapAgain = true; reapSpace = space; return; }
+    reaping = plumbing(["reap", ...(space === undefined ? [] : ["--space", space])]).then(() => {}, () => {}).finally(() => {
       reaping = undefined;
-      if (reapAgain) { reapAgain = false; reap(); }
+      if (reapAgain) { reapAgain = false; const next = reapSpace; reapSpace = undefined; reap(next); }
     });
   };
-  const open = async (name: string, context?: string, selection?: ConversationSelection): Promise<GatewayConnection> => {
+  const open = async (name: string, context?: string, selection?: ConversationSelection, space?: string): Promise<GatewayConnection> => {
     const binding = context ? bindings.get(context) : undefined;
     if (context && !binding) throw new Error("the native conversation has not bound its lifecycle and transcript; no identity was requested");
     const prior = context ? [...held].find(([, h]) => h.session === context) : undefined;
@@ -111,7 +112,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
       catch (error) { throw new Error(`this conversation's previous identity cleanup is not finished: ${reason(error)}. Call cotal_connect again to retry it`); }
       pending.delete(context!);
     }
-    const reply = await plumbing(["provision", "--require-approval", "--name", name, ...(binding ? ["--session", binding.session, "--events"] : []),
+    const reply = await plumbing(["provision", "--require-approval", "--name", name, ...(space === undefined ? [] : ["--space", space]), ...(binding ? ["--session", binding.session, "--events"] : []),
       ...(selection ? ["--selection", JSON.stringify(selection)] : [])]);
     if (!reply.ok) {
       if (reply.pending) throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed });
@@ -144,7 +145,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
       const conn: GatewayConnection = { id: randomUUID(), agent, config, ...(reply.grant ? { tools: grantedTools(reply.grant) } : {}) };
       held.set(conn.id, { conn, dir, session: binding?.session, hooks, plane });
       if (binding && hooks) await hooks.handle(agent, binding.event);
-      if (config.userAuth) reap();
+      if (config.userAuth) reap(config.space);
       return conn;
     } catch (error) {
       plane?.stop();
@@ -176,8 +177,8 @@ export function createAppHost(o: AppHostOptions): AppHost {
   };
   return {
     account: () => "local",
-    open(_account, name, context, selection) {
-      const next = opening.then(() => open(name, context, selection));
+    open(_account, name, context, selection, _approvalId, space) {
+      const next = opening.then(() => open(name, context, selection, space));
       opening = next.catch(() => {});
       return next;
     },

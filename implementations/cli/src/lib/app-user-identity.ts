@@ -159,6 +159,31 @@ export async function provisionUserApp(
   target: MeshTarget, name: string, session: string | undefined, events: boolean, selection?: ConversationSelection,
 ): Promise<UserAppConnection | { pending: ConversationPending }> {
   if (!session || !/^[A-Za-z0-9_-]{1,128}$/.test(session)) throw new Error(await noNativeSession(target));
+  const root = identityRoot();
+  mkSecretDir(root);
+  privateDir(root);
+  // Space-specific records remain the recovery authority. Serialize across spaces as well so two
+  // hosts cannot open different identities for the same native conversation at the same time.
+  const sessionLock = acquireLock(join(root, `session-${hash(session)}.lock`), { waitMs: 0 });
+  try {
+    for (const entry of readdirSync(root)) {
+      const dir = join(root, entry);
+      if (!isUserAppDir(dir) || !existsSync(join(dir, RECORD))) continue;
+      const previous = read(dir);
+      if (previous.session !== session || previous.space === target.space) continue;
+      if (previous.consumer.pid !== process.ppid && !consumerGone(previous.consumer))
+        throw new Error("this native conversation still has a live consumer on another space; disconnect it before choosing another");
+      // A pending request or a dead consumer must finish its exact retirement before a new target
+      // receives a request. Failure keeps the old record and sends nothing to the new authority.
+      await retireUserApp(dir);
+    }
+    return await provisionOnSpace(target, name, session, events, selection);
+  } finally { sessionLock.release(); }
+}
+
+async function provisionOnSpace(
+  target: MeshTarget, name: string, session: string, events: boolean, selection?: ConversationSelection,
+): Promise<UserAppConnection | { pending: ConversationPending }> {
   const store = workspaceSecretStore(target.root);
   const infra = target.userAuth?.remote === true ? undefined : await getSpaceAuth(store, target.space);
   const authority = infra ? undefined : await discoverConversationAuthority(target);
