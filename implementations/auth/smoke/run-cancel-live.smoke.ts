@@ -118,7 +118,7 @@ const cli = grantActor(account.stateDir, { owner, actor: "cli", scope: ["admin",
 const operator = grantActor(account.stateDir, { owner, actor: "operator", scope: ["run"], allowSubscribe: [">"], allowPublish: [">"] });
 const idpToken = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: "cancel-idp" }).setSubject("cancel-human").setIssuer(origin).setAudience(origin).setIssuedAt().setExpirationTime("10m").sign(privateKey);
 const runtime: RuntimeProvider = { kind: "runtime", name: "cancel-fixture", available: () => true, create: () => ({
-  kind: "cancel-fixture", spawn: () => { throw new Error("this fixture starts no agent processes"); },
+  kind: "cancel-fixture", streamsTerminal: false, spawn: () => { throw new Error("this fixture starts no agent processes"); },
 }) };
 registry.register(runtime);
 const state = remote.loadOrCreateRemoteManagerIdentity(join(fx.dir, "manager-identity"), account.space);

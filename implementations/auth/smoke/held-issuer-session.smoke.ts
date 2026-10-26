@@ -63,7 +63,7 @@ const idpToken = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: "
 
 const connector: Connector = { kind: "connector", name: "held-fixture", requires: [], buildLaunch: () => ({ command: "fixture", args: [] }) };
 const runtime: RuntimeProvider = { kind: "runtime", name: "held-fixture", available: () => true, create: () => ({
-  kind: "held-fixture", spawn: (): AgentHandle => { throw new Error("this suite spawns no agent"); },
+  kind: "held-fixture", streamsTerminal: false, spawn: (): AgentHandle => { throw new Error("this suite spawns no agent"); },
 }) };
 registry.register(connector, runtime);
 

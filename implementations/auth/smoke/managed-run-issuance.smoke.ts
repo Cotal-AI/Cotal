@@ -92,7 +92,7 @@ const connector: Connector = { kind: "connector", name: "u1-fixture", requires: 
   launches.set(opts.name, opts); return { command: "fixture", args: [] };
 } };
 const runtime: RuntimeProvider = { kind: "runtime", name: "u1-fixture", available: () => true, create: () => ({
-  kind: "u1-fixture", spawn: (name): AgentHandle => {
+  kind: "u1-fixture", streamsTerminal: false, spawn: (name): AgentHandle => {
     const opts = launches.get(name)!;
     const closed = { value: false };
     void (async () => {

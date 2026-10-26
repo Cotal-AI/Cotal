@@ -29,6 +29,7 @@ const CONFIRM_CALL = { timeoutMs: 1_000 };
  */
 export class TmuxRuntime implements Runtime {
   readonly kind = "tmux" as const;
+  readonly streamsTerminal = false;
 
   constructor(private readonly session: string) {}
 

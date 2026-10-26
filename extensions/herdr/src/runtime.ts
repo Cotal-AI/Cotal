@@ -101,6 +101,7 @@ function cleanupLauncher(launcher: PrivateLauncher): void {
  */
 export class HerdrRuntime implements Runtime {
   readonly kind = "herdr" as const;
+  readonly streamsTerminal = false;
 
   constructor(private readonly session: string) {}
 

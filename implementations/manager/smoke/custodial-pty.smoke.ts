@@ -36,7 +36,7 @@ const file = (path: string): string => {
 };
 
 {
-  const unsupported: Runtime = { kind: "fixture", spawn: () => { throw new Error("unused"); } };
+  const unsupported: Runtime = { kind: "fixture", streamsTerminal: false, spawn: () => { throw new Error("unused"); } };
   let threw = "";
   try {
     requireRuntimeAdopt(unsupported, { kind: "fixture", id: "opaque" });

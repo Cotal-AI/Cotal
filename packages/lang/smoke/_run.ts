@@ -13,6 +13,7 @@ const FILES = [
   "scopes",
   "sim",
   "interpret",
+  "dispatch-failure",
   "fuel",
   "dryrun",
   "examples",

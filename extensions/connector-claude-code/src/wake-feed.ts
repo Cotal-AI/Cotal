@@ -8,6 +8,8 @@
  * Each server's own pid completes its socket's name, so a restarted or second server never takes
  * another's.
  */
+import { approvalFrame } from "./approval-notice.js";
+import type { ApprovalNotice } from "./app-host.js";
 import { lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -68,6 +70,8 @@ export function nativeSocketPath(feed: string): string {
 export interface WakeFeed {
   /** Write one bounded preview + `id` to every monitor reading the feed. False when none is. */
   send(id: string, preview: RenderedInboxPreview, session?: string): boolean;
+  /** Tell the monitors of one native session what the person decided about its pending request. */
+  notifyApproval(session: string, notice: ApprovalNotice): boolean;
   supportsInline(session: string): boolean;
   inlinePending(session: string): boolean;
   fitsInline(id: string, session: string, payload: InlineDeliveryPayload): boolean;
@@ -163,6 +167,18 @@ export async function openWakeFeed(claudePid: number): Promise<WakeFeed> {
       let sent = false;
       for (const [s, owner] of readers) {
         if (session !== undefined && owner.session !== session) continue;
+        s.write(`${frame}\n`);
+        sent = true;
+      }
+      return sent;
+    },
+    notifyApproval(session, notice) {
+      if (!WAKE_ID.test(session)) throw new Error(`not a native session: ${JSON.stringify(session)}`);
+      if (!approvalFrame({ approval: notice })) throw new Error("not an approval notice");
+      const frame = JSON.stringify({ approval: notice });
+      let sent = false;
+      for (const [s, owner] of readers) {
+        if (owner.session !== session) continue;
         s.write(`${frame}\n`);
         sent = true;
       }

@@ -37,6 +37,8 @@ import { managerPin, noLiveManager, rosterOf, severalLive, type ManagerCandidate
 import { openTransient } from "../lib/transient.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
+import { displayCmd } from "../lib/self-exec.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
 import { connectorHarnesses } from "../lib/status.js";
 
@@ -1058,6 +1060,11 @@ export type AttachRefusal = "denied" | "gone" | "transient";
  *  remains intact for operator commands while reconnect can act on the one fact it needs. */
 const STATIC_SLOT_OBSERVATION_DETAIL = "ai.cotal.manager.static-slot-observation";
 
+/** The manager's marker for an attach refused because the seat's runtime opens no terminal stream.
+ *  Same arrangement as the detail above: the manager owns the shape and its guidance wording, and
+ *  the CLI keys only on the namespaced discriminator. */
+const RUNTIME_NO_TERMINAL_DETAIL = "ai.cotal.manager.runtime-no-terminal";
+
 /**
  * Classify a refusal on the manager's structured error, never on its wording. The wording is
  * operator copy and changes; the code and namespaced detail are the contract. Getting this wrong in
@@ -1072,6 +1079,10 @@ export function attachRefusal(
 ): AttachRefusal {
   if (code === "permission-denied") return "denied";
   if (code === "not-found") return "gone";
+  // `unimplemented` is the manager saying this runtime does not do attach at all - a seat on an
+  // external terminal multiplexer or IDE, or a control instance that spawns nothing. Asking again
+  // cannot change it, so a reconnecting attach must stop rather than retry it forever.
+  if (code === "unimplemented") return "denied";
   if (code === "failed-precondition" && details?.some((detail) => detail.kind === STATIC_SLOT_OBSERVATION_DETAIL)) return "gone";
   return "transient";
 }
@@ -1177,6 +1188,16 @@ async function establishAttachSession(
   if (first) console.error(renderReport({ sections: [{ title: "Attach", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Agent", v.name], ["Manager", on ?? t.auth.managerInstanceId ?? "native selection"]] }] }] }, "rich", terminalWidth(process.stderr)));
   const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on, expectedTarget: v.expectedTarget });
   if (!reply.ok) {
+    // The one refusal no attach can work around: this seat's runtime streams no terminal. It is
+    // said once, with the runtime's own guidance for watching the agent where it really runs, and
+    // the Next names what does reach the seat - never "inspect and reattach", which cannot succeed
+    // here and is the advice this refusal exists to replace.
+    if (first && reply.details?.some((detail) => detail.kind === RUNTIME_NO_TERMINAL_DETAIL))
+      throw new CommandFailure("refused", "UNSUPPORTED", reply.error ? oneLine(reply.error) : "the seat's runtime streams no terminal, so there is none to attach", {
+        target: { space: t.space, agent: v.name, managerInstanceId: reply.managerInstanceId ?? on ?? null },
+        native: { code: reply.code, outcome: reply.nativeOutcome },
+        remedy: `nothing was attached and the agent was not touched; follow the runtime's own guidance above, or reach the seat over the mesh with ${displayCmd()} send -t ${shellWord(v.name)} "<message>" and ${displayCmd()} watch --space ${shellWord(t.space)}`,
+      });
     if (first && (reply.preSubmitRefusal || reply.nativeOutcome === "not-executed"))
       throw managerFailure(reply, "terminal attach", { space: t.space, agent: v.name, managerInstanceId: reply.managerInstanceId ?? on ?? null });
     return { ok: false, kind: attachRefusal(reply.code, reply.details), message: reply.error ?? "error", fromManager: true };

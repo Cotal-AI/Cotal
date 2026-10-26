@@ -89,8 +89,9 @@ export interface AgentHandle {
    *  connector's `[cotal-<name>]` or `[cotal-<name>/<part>]` prefix, for a backend that reads the
    *  child's output; absent when there is neither. */
   exitInfo?(): { code?: number; signal?: number; diagnostic?: string } | undefined;
-  /** Open a live attach. Throws on backends that can't stream (e.g. tmux/cmux, which
-   *  you attach to natively). */
+  /** Open a live attach. Throws on a backend that cannot stream, which is every backend whose
+   *  runtime declares {@link Runtime.streamsTerminal} false: the throw carries that backend's own
+   *  guidance for watching the agent where it actually runs. */
   attach(): AttachSession;
 }
 
@@ -98,6 +99,17 @@ export interface AgentHandle {
  *  can delegate to an external terminal or process surface. */
 export interface Runtime {
   readonly kind: RuntimeKind;
+  /**
+   * Whether a handle this runtime creates can open a live {@link AttachSession}. A backend that
+   * owns the child's pseudo-terminal streams it; a backend that attaches to a process it does not
+   * own holds no stream for it, and its {@link AgentHandle.attach} throws its own guidance instead.
+   *
+   * REQUIRED, and a backend that streams nothing says so rather than leaving a caller to find out
+   * by catching the throw: the manager reports this to its callers, so a foreground `cotal spawn`
+   * on such a runtime launches the seat without attempting an attach that cannot open, and
+   * `cotal attach` refuses by name. Omitting it on a streaming backend would silence that terminal.
+   */
+  readonly streamsTerminal: boolean;
   /** True only when every handle this runtime creates can release manager-local custody without
    * stopping the underlying agent. Absent is false for PTY runtimes and irrelevant for runtimes
    * that hold no process-owning PTY master. */

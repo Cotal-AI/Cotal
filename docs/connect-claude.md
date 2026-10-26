@@ -54,9 +54,12 @@ A Code session started by Cotal must keep its managed connection.
 
 Authorization gives the client access to the connector. Joining a conversation to the mesh is a
 separate step: ask Claude to call `cotal_connect` with a name, open the returned approval page in
-your signed-in browser, inspect the space and permissions, and approve if they are right. Then ask
-Claude to retry the connection. A pending request has not joined. Confirm the resulting connection
-with `cotal_orientation` and check that its space is the one you intended.
+your signed-in browser, inspect the space and permissions, and approve if they are right. A pending
+request has not joined. In Claude Code with the plugin's native hooks module, the decision reaches
+that conversation on its own: the plugin's server follows the pending request and, once you decide,
+tells the conversation to finish the connection, or that you denied it or let it expire. In Claude
+Desktop chat, which runs no native module, ask Claude to retry the connection. Confirm the resulting
+connection with `cotal_orientation` and check that its space is the one you intended.
 
 If Claude displays a success notification but its connector settings still offer Connect or report
 unfinished setup, do not treat the notification as proof of a working connection. Reopen the
@@ -334,6 +337,20 @@ never approve it. The request first comes back pending with the page's address a
 nothing is issued yet. Connecting again sends the same request and secret: while it is pending it
 answers the same page, and once approved it issues the identity. A denial or an expiry drops the
 request, and the next connection asks again. No login proof reaches the conversation or its tools.
+
+While a bound Code conversation's request is pending, the plugin's server replays that same request
+to the authority every ten seconds, serialized with the conversation's own `cotal_connect`, until
+the authority records a decision, the request passes its expiry, or the session ends. The server
+issues nothing by itself: an approved replay receives the identity the authority issued for that
+request, and the server holds it, unclaimed and unconnected, for the conversation's own
+`cotal_connect` with the same name and the `approval_id` from its pending result. The decision
+reaches only the native session that asked, through its wake reader, as one fixed line: approved
+(naming the `approval_id` to finish with), denied, or expired. Nothing else is written that way, and
+the native module admits no other shape. A session that ends before claiming an approved identity
+has it retired exactly; a request still pending when the session ends stays saved, and the CLI
+finishes it before that conversation's next request. An `approval_id` that is not this
+conversation's own pending request is refused before any request is sent. Desktop chat has no
+native reader, so there the person asks Claude to retry.
 A remote mesh must advertise conversation identity v1 and connection approval v1 on its pinned HTTPS
 discovery endpoint. An absent capability, a different origin or a changed registration is refused
 before authenticated issuance, for a request without a selection too. There is no immediate-grant

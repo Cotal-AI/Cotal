@@ -94,6 +94,12 @@ bounded decision record, not prose.
   to the last one, so a bridged simulation settles a race the same way, also when the dry run's
   recorder wraps the simulator.
 
+`waitUntil` observations and ordinary effects use the same dispatch-failure recorder. A handler
+refusal records `refused` and holds the run for a capable host. Cancellation records `cancelled`.
+Other handler failures record their language code, or `L4000` when none is supplied, with their
+message, recordable detail and stack when available. A journal append rejection during dispatch
+leaves the entry pending and exits without recording a handler failure.
+
 Full rules, with every code: [`spec/cotal-lang.md`](../spec/cotal-lang.md).
 
 ## Continuing a run
