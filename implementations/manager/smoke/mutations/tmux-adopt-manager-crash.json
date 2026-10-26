@@ -22,7 +22,7 @@
     {
       "name": "an unsupervised tmux seat writes no record",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    const adoptable = a.handle.reference !== undefined && typeof this.requiredRuntime.adopt === \"function\";",
+      "find": "    const adoptable = a.handle.reference !== undefined && typeof runtime.adopt === \"function\";",
       "replace": "    const adoptable = false;",
       "expectRed": "the first manager spawns two tmux seats and records both",
       "cell": "the first manager spawns two tmux seats and records both"
