@@ -63,6 +63,8 @@ export function judgeSeats(census: Pick<SeatCensus, "items" | "target" | "partia
   runs: (p: Pick<Presence, "lifecycleUid">) => boolean | null;
   warnings: OutputWarning[];
   labels: OutputWarning[];
+  /** On a user-auth mesh, the Next that names your managers that did not answer. */
+  remedy?: string;
 } {
   const uids = new Set(census.items.map((row) => (row as { lifecycleUid?: unknown }).lifecycleUid).filter((uid): uid is string => typeof uid === "string"));
   const everyManager = census.target.scope === "all-managers" && !census.partial;
@@ -74,6 +76,7 @@ export function judgeSeats(census: Pick<SeatCensus, "items" | "target" | "partia
     runs: (p) => (p.lifecycleUid !== undefined && uids.has(p.lifecycleUid) ? true : everyManager ? false : null),
     warnings: [...census.warnings],
     labels,
+    ...(census.target.scope === "your-managers" && census.partial?.remedy ? { remedy: census.partial.remedy } : {}),
   };
 }
 
@@ -123,6 +126,7 @@ export async function who(args: ParsedArgs): Promise<void> {
   // Whether a manager runs a seat is the managers' answer, matched on the seat's incarnation. With no
   // manager on the roster none can be running one, so nothing is asked.
   let managers: WhoResult["managers"] = "none-present";
+  let remedy: string | undefined;
   let runs = (_p: Presence): boolean | null => false;
   if (roster.some(isManager) && v.creds !== undefined) {
     // A credential passed with --creds carries no endpoint-caller triple, and this command cannot
@@ -138,6 +142,7 @@ export async function who(args: ParsedArgs): Promise<void> {
       runs = judged.runs;
       warnings.push(...judged.warnings);
       labels.push(...judged.labels);
+      remedy = judged.remedy;
     } catch (e) {
       if (!isCommandFailure(e) && !isConnectRefusal(e)) throw e;
       const failure = isConnectRefusal(e) ? e.failure() : e;
@@ -186,7 +191,7 @@ export async function who(args: ParsedArgs): Promise<void> {
       result,
       completeness: unread ? "partial" : "complete",
       warnings: [...warnings, ...labels],
-      ...(unread ? { partial: { message: `who could not read ${unread === 1 ? "one part" : `${unread} parts`} of what it reports; the warnings name ${unread === 1 ? "it" : "each"}` } } : {}),
+      ...(unread ? { partial: { message: `who could not read ${unread === 1 ? "one part" : `${unread} parts`} of what it reports; the warnings name ${unread === 1 ? "it" : "each"}`, ...(remedy ? { remedy } : {}) } } : {}),
     },
     (r) => whoView(r, space, Boolean(v.all), (name) => (counts.get(name.toLowerCase()) ?? 0) > 1, roster),
   );

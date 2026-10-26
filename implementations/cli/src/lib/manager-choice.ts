@@ -11,6 +11,13 @@ import { openTransient } from "./transient.js";
  *  managers are live: their count, the owner and the instance ids. */
 const SEVERAL_LIVE = /(\d+) live remote manager candidates for owner (\S+) \(([^)]*)\)/;
 
+/** The exchange's refusal of an unpinned manager-caller selection when it counts none of the caller's
+ *  managers live: each one it registered has stopped, or none was registered. */
+const NONE_LIVE = /remote manager for owner \S+ is unavailable \(\d+ gates?, none live\)|manager-caller selection found no manager candidate for owner /;
+
+/** Whether `failure` refused an unpinned manager selection because none of your managers is live. */
+export const noLiveManager = (failure: CommandFailure): boolean => failure.code === "PERMISSION_DENIED" && NONE_LIVE.test(failure.message);
+
 /** One live manager a refused selection could have chosen, with what presence says about it. */
 export interface ManagerCandidate {
   /** The manager's name, or `<host>/<runtime>` for one started without a name. */
@@ -216,7 +223,7 @@ const reruns = (managers: readonly ManagerCandidate[], argv: readonly string[]):
 /** The managers an unpinned manager selection refused to choose between, with what the roster
  *  says about each, or undefined when `failure` is not that refusal. A roster that cannot be read
  *  leaves the instance ids. */
-async function severalLive(failure: CommandFailure, readRoster: () => Promise<readonly Presence[]>): Promise<ManagerCandidate[] | undefined> {
+export async function severalLive(failure: CommandFailure, readRoster: () => Promise<readonly Presence[]>): Promise<ManagerCandidate[] | undefined> {
   const found = failure.code === "PERMISSION_DENIED" ? SEVERAL_LIVE.exec(failure.message) : null;
   if (!found) return undefined;
   const owner = found[2]!;
