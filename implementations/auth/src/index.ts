@@ -5,8 +5,10 @@ export { parsePlatformSupervisorAuthorityRequest, type PlatformSupervisorAssignm
 export type { PlatformControlAssignment } from "@cotal-ai/core";
 export {
   AUTH_CALLOUT_SUBJECT,
+  CALLOUT_TIMEOUT_REASON,
   createCalloutAuth,
   startAuthCallout,
+  type AuthCalloutLimits,
   type CalloutAuth,
   type CalloutProvisionInput,
   type CalloutConnection,

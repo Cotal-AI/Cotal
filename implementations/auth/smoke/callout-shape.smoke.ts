@@ -9,10 +9,10 @@
  * request DOES reach a response (control). Also asserts xkey-mandatory startup.
  * Run: pnpm smoke:callout-shape
  */
-import { Algorithms, encode } from "@nats-io/jwt";
+import { Algorithms, decode, encode } from "@nats-io/jwt";
 import { SignJWT, generateKeyPair } from "jose";
 import { createAccount, createCurve, createServer, createUser } from "@nats-io/nkeys";
-import { AUTH_CALLOUT_SUBJECT, createCalloutAuth, startAuthCallout, USER_TOKEN_VER, type StartAuthCalloutOpts } from "../src/index.js";
+import { AUTH_CALLOUT_SUBJECT, CALLOUT_TIMEOUT_REASON, createCalloutAuth, startAuthCallout, USER_TOKEN_VER, type StartAuthCalloutOpts } from "../src/index.js";
 import { createSpaceAuth } from "@cotal-ai/core";
 
 let pass = 0, fail = 0;
@@ -168,7 +168,7 @@ void bounded.done.then(() => { settled = true; }, () => { settled = true; });
 try {
   await Promise.race([atCapacity.promise, new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("callout capacity was not reached")), 5000))]);
   await new Promise<void>((resolve) => setImmediate(resolve));
-  check("at most 32 authorization hooks run together", entered === 32 && peak === 32 && yielded === 33);
+  check("at most 32 authorization hooks run together while every request is read on arrival", entered === 32 && peak === 32 && yielded === 40);
   firstRelease.resolve();
   await Promise.race([atTail.promise, new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("callout tail was not reached")), 5000))]);
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -197,6 +197,87 @@ await failureEntered.promise;
 await new Promise<void>((resolve) => setImmediate(resolve));
 failureRelease.resolve();
 check("a worker failure during the final drain is not reported as success", await failureResult === failure);
+
+// ---- limits ----
+const badLimits = [{ authTimeoutMs: 499 }, { authTimeoutMs: 1500.5 }, { maxInFlight: 0 }, { slowMs: 0 }];
+check("startup refuses out-of-range callout limits", badLimits.every((limits) => {
+  try { startAuthCallout({ subscribe: async function* () {} }, { ...options, limits }); return false; } catch { return true; }
+}));
+
+// ---- deadlines: a signed timeout denial at the deadline, and at once when admission sheds ----
+interface Tracked {
+  data: Uint8Array;
+  headers: { get(k: string): string | undefined };
+  answers: number;
+  sentAt?: number;
+  answeredAt?: number;
+  reply?: Uint8Array;
+  respond(d: Uint8Array): void;
+}
+const tracked = async (actor: string): Promise<Tracked> => {
+  const t = Math.floor(Date.now() / 1000);
+  const bearer = await new SignJWT({ scope: [], ver: USER_TOKEN_VER, act: { owner, actor } })
+    .setProtectedHeader({ alg: "EdDSA" }).setSubject(owner).setAudience("shape").setIssuer("https://auth.test")
+    .setIssuedAt(t).setNotBefore(t).setExpirationTime(t + 300).sign(privateKey);
+  const m: Tracked = {
+    data: await sealedRequest({ token: bearer }),
+    headers: { get: (k) => (k === "Nats-Server-Xkey" ? serverXkey : undefined) },
+    answers: 0,
+    respond(d) { m.answers++; m.answeredAt ??= performance.now(); m.reply ??= d; },
+  };
+  return m;
+};
+const replyOf = (m: Tracked) => {
+  const opened = m.reply && serverCurve.open(m.reply, calloutXkeyPub);
+  return opened ? (decode(new TextDecoder().decode(opened)) as { nats: { jwt?: string; error?: string } }).nats : undefined;
+};
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const deadlineLog: string[] = [];
+const heldRelease = deferred(), heldEntered = deferred();
+let heldRecorded = false, heldMinted = false;
+const warm = await tracked("warm"), held = await tracked("held");
+const queued = await tracked("queued"), queuedNext = await tracked("queued_next"), shed = await tracked("shed");
+// One request at a time with a 1050 ms budget. While the held request keeps the slot, two requests
+// arriving together both queue; one arriving after the oldest has waited past 525 ms is shed.
+const deadlines = startAuthCallout({ async *subscribe() {
+  yield warm;
+  while (!warm.answers) await sleep(5);
+  yield held;
+  await heldEntered.promise;
+  queued.sentAt = performance.now();
+  yield queued;
+  queuedNext.sentAt = performance.now();
+  yield queuedNext;
+  await sleep(650);
+  shed.sentAt = performance.now();
+  yield shed;
+} }, {
+  ...options,
+  limits: { authTimeoutMs: 1300, maxInFlight: 1 },
+  async authorizeActor(t) {
+    if (t.act.actor === "held") { heldEntered.resolve(); await heldRelease.promise; }
+  },
+  recordIssuance: async ({ token }) => { if (token.act.actor === "held") heldRecorded = true; },
+  onMint: (info) => { if (info.principal.endsWith(".held")) heldMinted = true; },
+  log: (line) => deadlineLog.push(line),
+});
+try {
+  for (let i = 0; i < 500 && !(held.answers && queued.answers && queuedNext.answers && shed.answers); i++) await sleep(10);
+} finally { heldRelease.resolve(); }
+await deadlines.done;
+const lineOf = (actor: string) => deadlineLog.filter((line) => line.includes(`actor=${actor} `));
+check("admission refuses at once, with the signed timeout denial, while the oldest queued request has waited past half the budget",
+  shed.answers === 1 && shed.answeredAt! - shed.sentAt! < 300 && replyOf(shed)?.error === CALLOUT_TIMEOUT_REASON &&
+  deadlineLog.some((line) => /^auth callout: level=warn outcome=shed .* waited_ms=\d+ ahead=3$/.test(line) && Number(/waited_ms=(\d+)/.exec(line)![1]) > 525));
+check("requests still waiting for a slot at their deadline get the signed timeout denial, however many queue together",
+  [queued, queuedNext].every((m) => m.answers === 1 && m.answeredAt! - m.sentAt! >= 1000 && replyOf(m)?.error === CALLOUT_TIMEOUT_REASON) &&
+  deadlineLog.filter((line) => /^auth callout: level=warn outcome=timeout .* at=queue$/.test(line)).length === 2);
+check("a request whose ledger hook outlives the deadline gets the timeout denial and its work stops there",
+  held.answers === 1 && replyOf(held)?.error === CALLOUT_TIMEOUT_REASON && !heldRecorded && !heldMinted &&
+  lineOf("held").length === 1 && /^auth callout: level=warn outcome=timeout .* at=ledger$/.test(lineOf("held")[0]));
+check("each answered request writes one callout line",
+  replyOf(warm)?.jwt !== undefined && lineOf("warm").length === 1 &&
+  deadlineLog.filter((line) => line.startsWith("auth callout: level=")).length === 5);
 
 console.log(`\ncallout-shape smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

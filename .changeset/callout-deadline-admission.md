@@ -1,0 +1,7 @@
+---
+"@cotal-ai/auth": patch
+---
+
+The auth callout now answers every authenticated request before the broker's `authorization { timeout }`, instead of leaving a slow one unanswered until nats-server refuses it with no reason in either log. Each request's deadline is the broker timeout less 250 ms, counted from its arrival. A request still unanswered then gets a signed denial with the reason `timeout: the auth callout could not answer inside the broker's authorization timeout`, which nats-server logs, and its work stops at its next step. While the oldest request still waiting for a slot has waited more than half that budget, a new request gets the same denial at once instead of joining a queue that is not draining in time. Requests start oldest first, at most `maxInFlight` at a time.
+
+Each answered request writes one `auth callout: level=… outcome=…` line with the request's per-connect user key, broker client id, owner, actor, outcome and the milliseconds spent queued and in verify, ledger, policy and sign. The line logs at warn over 500 ms and for a timeout or a shed request. `startAuthCallout` takes `limits: { authTimeoutMs, maxInFlight, slowMs }` (defaults 2000, 32 and 500), and `startAuthService` takes the same as `calloutLimits`; set `authTimeoutMs` to the broker's timeout. The connect-load harness counts refusals that carried a callout reason in the broker log apart from those that did not.

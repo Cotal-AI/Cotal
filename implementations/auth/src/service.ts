@@ -73,7 +73,7 @@ import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
 import { makePlatformControlAuthority, makePlatformControlReadiness, requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 import { OwnedConnections, type AuthConnectionState, type AuthServiceClosed } from "./owned-connections.js";
 import { makePlatformSupervisorAuthority, makePlatformSupervisorEnd, platformSupervisorEnded, requirePlatformSupervisorAdmin, type PlatformSupervisorInput, type PlatformSupervisorAuthorityRequest } from "./platform-supervisor.js";
-import { startAuthCallout } from "./callout.js";
+import { calloutLimits, startAuthCallout, type AuthCalloutLimits } from "./callout.js";
 import { createIdpBridge, verifyIdpToken, verifyToolResultHumanProof, type IdpBridge } from "./idp.js";
 import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, validateUserToken, type UserTokenSession, type UserTokenView, type ValidatedUserToken } from "./token.js";
 import { grantCoordinates, verifySessionRedemption } from "./session-redemption.js";
@@ -2515,6 +2515,9 @@ export async function startAuthService(inputs: HostedContextInputs & {
   toolResultConsents?: ToolResultConsentSignerOptions;
   /** Default off. Forwarded unchanged to {@link openAuthAuthorityPlane}. No CLI flag sets it. */
   serviceEndpoints?: OpenAuthAuthorityPlaneOptions["serviceEndpoints"];
+  /** This context's callout limits. `authTimeoutMs` must match the broker's `authorization
+   *  { timeout }`. Absent: every default. No CLI flag sets it. */
+  calloutLimits?: AuthCalloutLimits;
 }): Promise<AuthServiceHandle> {
   if (!inputs.context?.accountPublicKey || !inputs.context.lifecycleUid || !inputs.space || !inputs.servers || !inputs.stateDir)
     throw new Error("auth-service: hosted context needs an account, lifecycle, space, server and stateDir");
@@ -2539,6 +2542,7 @@ export async function startAuthService(inputs: HostedContextInputs & {
   }
   const badFace = inputs.publicFace && checkPublicFace(inputs.publicFace);
   if (badFace) throw new Error(badFace);
+  if (inputs.calloutLimits !== undefined) calloutLimits(inputs.calloutLimits);
   const started = await startAuthContext({
     space: inputs.space,
     server: inputs.servers,
@@ -2555,6 +2559,7 @@ export async function startAuthService(inputs: HostedContextInputs & {
     ...(inputs.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: inputs.standingRenewableTtlSeconds } : {}),
     ...(inputs.toolResultConsents !== undefined ? { toolResultConsents: inputs.toolResultConsents } : {}),
     ...(inputs.serviceEndpoints !== undefined ? { serviceEndpoints: inputs.serviceEndpoints } : {}),
+    ...(inputs.calloutLimits !== undefined ? { calloutLimits: inputs.calloutLimits } : {}),
   });
   return { ...started.handle, readiness: (): HostedServiceState => ({ ...started.status(), context: inputs.context }) };
 }
@@ -2583,6 +2588,7 @@ interface AuthContextOptions extends AuthServiceRuntimeOptions {
   platformSupervisor?: PlatformSupervisorInput;
   standingRenewableTtlSeconds?: number;
   serviceEndpoints?: OpenAuthAuthorityPlaneOptions["serviceEndpoints"];
+  calloutLimits?: AuthCalloutLimits;
 }
 
 async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<AuthServiceHandle, "readiness">; status(): AuthContextStatus; ended: Promise<AuthContextEnd> }> {
@@ -2666,6 +2672,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       // principal from the grant ledger.
       permissionsFor: calloutPermissions(chatAwareAclResolver(dir, ledgerAclResolver(dir)), plane.authorizeManagerCaller, plane.verifySession, plane.issueUserCaller, plane.resolveEndpointCaller),
       log: (l) => console.error(l),
+      ...(o.calloutLimits !== undefined ? { limits: o.calloutLimits } : {}),
     });
     // The subscription must be ON the broker before readiness is signaled — an `up` that recorded a
     // usable user mesh while the SUB was still in flight would intermittently deny first connects.
