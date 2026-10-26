@@ -31,6 +31,7 @@ import {
   brokerAddressForDisplay, brokerUrlCredentialRefusal, brokerUrlHasUserinfo, CommandFailure, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
   ConfirmationRequired, findMesh, folderSpace, getCurrent, type MeshEntry, type SeatCap,
+  deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY,
 } from "@cotal-ai/workspace";
 import { Manager, rejectionText } from "./manager.js";
 import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, managerServiceStopRequested, type ManagerServiceChild } from "./service-child.js";
@@ -1027,15 +1028,27 @@ for (const mode of maintenance) for (const flag of mode.command.flags ?? []) {
   maintenanceFlags.set(flag.name, { ...flag, description: shared ? flag.description : `${mode.name}: ${flag.description ?? ""}` });
 }
 
+/** The manager's lifecycle, which the CLI runs as `service <verb> manager` before this group parses. */
+const lifecycle = [
+  { name: "start", summary: "start the manager for this folder's or the selected space; pty runtime and its registered broker by default", usage: "cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--foreground|--dry-run] [--space <s>]" },
+  { name: "stop", summary: "stop it; its agents follow the runtime's default unless --with-agents", usage: "cotal manager stop [--with-agents] [--yes|--dry-run] [--space <s>]" },
+  { name: "restart", summary: "stop it, then start it again", usage: "cotal manager restart [--with-agents] [--yes|--dry-run] [--space <s>]" },
+  { name: "status", summary: "show whether it runs, and its process and endpoint", usage: "cotal manager status [--space <s>]" },
+  { name: "logs", summary: "read what it logged", usage: "cotal manager logs [--tail <n>] [--follow] [--space <s>]" },
+  { name: "install", summary: "start it at login with a systemd user unit", usage: "cotal manager install [--dry-run] [--space <s>]" },
+  { name: "uninstall", summary: "remove that unit", usage: "cotal manager uninstall [--yes|--dry-run] [--space <s>]" },
+] as const;
+
 function managerInvocation(args: ParsedArgs): { command: Command; args: ParsedArgs } | undefined {
   const parsed = parseCommandArgs(managerGroup, [...args.raw]);
   const mode = parsed.positionals[0];
   if (mode === undefined) {
-    if (Object.keys(parsed.values).some((key) => !["json", "plain"].includes(key))) throw new CommandFailure("refused", "USAGE_INVALID", "choose manager reconcile or manager seats before its options");
+    if (Object.keys(parsed.values).some((key) => !["json", "plain"].includes(key))) throw new CommandFailure("refused", "USAGE_INVALID", "choose a manager command, such as manager start, before its options");
     return undefined;
   }
+  if (lifecycle.some((item) => item.name === mode)) throw new CommandFailure("refused", "UNSUPPORTED", `manager ${mode} runs through the cotal CLI's service controller, which this composition does not include`, { remedy: `cotal service ${mode} manager` });
   const child = maintenance.find((item) => item.name === mode);
-  if (!child) throw new CommandFailure("refused", "USAGE_INVALID", "manager takes reconcile or seats");
+  if (!child) throw new CommandFailure("refused", "USAGE_INVALID", `manager takes ${[...lifecycle, ...maintenance].map((item) => item.name).join(", ")}`);
   const index = parsed.positionalIndices?.[0];
   if (index === undefined) throw new Error("the manager subcommand has no parsed argument index");
   const words = args.raw.filter((_, position) => position !== index);
@@ -1046,27 +1059,32 @@ const managerGroup: Command = {
   kind: "command",
   name: "manager",
   aliases: ["mgr"],
-  group: "Manager",
-  summary: "inspect retained local seats or repair an owned manager gate",
-  usage: "cotal manager [reconcile [--yes|--dry-run] | seats [--drain [--yes|--dry-run]]] [--json|--plain]",
-  positionals: "[reconcile | seats]",
+  group: "Services",
+  summary: "start, stop and check the manager that runs your agents",
+  usage: "cotal manager [start | stop | restart | status | logs | install | uninstall | reconcile | seats] [options]",
+  positionals: "[start | stop | restart | status | logs | install | uninstall | reconcile | seats]",
   outputs: ["json", "plain"],
   flags: [...maintenanceFlags.values()],
-  subcommands: maintenance.map((mode) => ({ name: mode.name, summary: mode.summary, flagNames: mode.command.flags?.map((flag) => flag.name), outputs: mode.command.outputs, usage: mode.name === "seats" ? "cotal manager seats [--drain [--yes|--dry-run]] [--json|--plain]" : "cotal manager reconcile [--space <space>] [--server <url>] [--instance <id>] [--yes|--dry-run] [--json|--plain]" })),
+  subcommands: [
+    ...lifecycle.map((mode) => ({ name: mode.name, summary: mode.summary, usage: mode.usage, flagNames: ["json", "plain"], outputs: mode.name === "logs" ? ["json", "ndjson", "plain"] as const : ["json", "plain"] as const })),
+    ...maintenance.map((mode) => ({ name: mode.name, summary: mode.summary, flagNames: mode.command.flags?.map((flag) => flag.name), outputs: mode.command.outputs, usage: mode.name === "seats" ? "cotal manager seats [--drain [--yes|--dry-run]] [--json|--plain]" : "cotal manager reconcile [--space <space>] [--server <url>] [--instance <id>] [--yes|--dry-run] [--json|--plain]" })),
+  ],
   reads: true,
   prepareMeshTarget: false,
   validate: (args) => { presentationOf(args.values); const invocation = managerInvocation(args); return invocation?.command.validate?.(invocation.args); },
   async run(args) {
     const invocation = managerInvocation(args);
     if (invocation) return invocation.command.run(invocation.args);
-    writeResult(presentationOf(args.values), { command: "manager", target: null, result: { kind: "manager-maintenance-commands", operations: maintenance.map(({ name, summary }) => ({ name, summary })), managerStarted: false } }, (): Report => ({ sections: [
-      { title: "Manager maintenance", blocks: [{ kind: "commands", items: maintenance.map((mode) => ({ command: `cotal mgr ${mode.name}`, description: mode.summary })) }] },
-      { blocks: [{ kind: "lines", lines: [{ text: "These commands start no manager. Repair and drain default to cancellation; scripted maintenance requires --yes. Preview the scope with --dry-run.", tone: "hint" }] }] },
+    writeResult(presentationOf(args.values), { command: "manager", target: null, result: { kind: "manager-maintenance-commands", lifecycle: lifecycle.map(({ name, summary }) => ({ name, summary })), operations: maintenance.map(({ name, summary }) => ({ name, summary })), managerStarted: false } }, (): Report => ({ sections: [
+      { title: "Manager", blocks: [{ kind: "commands", items: lifecycle.map((mode) => ({ command: `cotal manager ${mode.name}`, description: mode.summary })) }] },
+      { title: "Maintenance", blocks: [{ kind: "commands", items: maintenance.map((mode) => ({ command: `cotal manager ${mode.name}`, description: mode.summary })) }] },
+      { blocks: [{ kind: "lines", lines: [{ text: "Bare manager starts nothing. cotal manager start is cotal service start manager; cotal service lists it with the other services.", tone: "hint" }] }] },
     ] }));
   },
 };
 
 const daemonManager = managerCommands.find((command) => command.name === "__daemon-manager")!;
-/** The manager `up` launches, under its own name and listed in help. */
-const supervise: Command = { ...daemonManager, name: "supervise", hidden: false, group: "Run a manager" };
+/** The manager's daemon entry, kept for the units, scripts and containers that run it: hidden, with
+ *  its parser and foreground run unchanged, and a warning naming `cotal manager start` each run. */
+const supervise: Command = { ...deprecatedDaemonEntry(DEPRECATED_MANAGER_ENTRY, daemonManager), hidden: true };
 registry.register(...managerCommands.map((command) => command.name === "seats" || command.name === "reconcile-gate" ? { ...command, hidden: true } : command), supervise, managerGroup, endpointDeregisterAction);

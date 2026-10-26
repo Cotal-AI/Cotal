@@ -193,7 +193,7 @@ const PUBLIC_PEER_BUCKETS_MAX = 1024; // bounded LRU of per-peer failure buckets
 const PUBLIC_SELECTION_FAILED_PER_MIN = 30; // per-principal-class selection-refusal window (rolling minute)
 const PUBLIC_SELECTION_BUCKETS_MAX = 1024; // bounded LRU of per-principal-class selection-refusal buckets
 const PUBLIC_UNPINNED_SELECTION_THROTTLED_REASON =
-  "too many manager-caller selection refusals - name a manager instance (--on <id> or --manager-instance <id>) or start one with `cotal supervise`, then wait a minute and retry";
+  "too many manager-caller selection refusals - name a manager instance (--on <id> or --manager-instance <id>) or start one with `cotal manager start`, then wait a minute and retry";
 const PUBLIC_PINNED_SELECTION_THROTTLED_REASON =
   "too many pinned manager-caller selection refusals - check that the pinned manager instance is live and registered to you, then wait a minute and retry";
 const PUBLIC_MAX_IN_FLIGHT = 64; // global concurrent-admission cap on the public listener
@@ -233,7 +233,7 @@ class ManagerSelectionRefusal extends Error {}
  *  not proof the instance answers now; a describe pinned to the instance proves that. */
 export interface ManagerInstanceRecord {
   instanceId: string;
-  /** `remote` is an owner-registered Manager (`cotal supervise`); `local` is this host's own. */
+  /** `remote` is an owner-registered Manager (`cotal manager start`); `local` is this host's own. */
   placement: "remote" | "local";
   state: "candidate" | "unknown" | "not open" | "not this owner's" | "not registered";
 }
@@ -986,7 +986,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     if (remoteLive.length > 1)
       throw new ManagerSelectionRefusal(`manager-caller selection found ${remoteLive.length} live remote manager candidates for owner ${owner} (${remoteLive.join(", ")}); exactly one is required, so ${MANAGER_PIN_REMEDY[caller ?? "wire"]}`);
     if (remoteInstances.length > 0)
-      throw new ManagerSelectionRefusal(`the remote manager for owner ${owner} is unavailable (${remoteInstances.length} gate${remoteInstances.length === 1 ? "" : "s"}, none live); start one with \`cotal supervise\` and retry, as this call is never routed to the local manager`);
+      throw new ManagerSelectionRefusal(`the remote manager for owner ${owner} is unavailable (${remoteInstances.length} gate${remoteInstances.length === 1 ? "" : "s"}, none live); start one with \`cotal manager start\` and retry, as this call is never routed to the local manager`);
     if (localCandidate !== undefined) return localCandidate;
     throw new ManagerSelectionRefusal(`manager-caller selection found no manager candidate for owner ${owner}`);
   };

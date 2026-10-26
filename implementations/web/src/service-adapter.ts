@@ -23,7 +23,8 @@ function target(root: string, space: string, server?: string) {
 
 export const webServicePreset: ServicePreset = {
   kind: "service-preset", name: "web", adapter: "web-service", timeoutMs: 40000,
-  summary: "explicit read-only dashboard with a protected credential file and private browser bootstrap",
+  summary: "the read-only web dashboard, with a credential file you give it",
+  defaults: { root: { space: "root" }, "read-only": { value: true } },
 };
 
 export const webService: LocalProcess = {

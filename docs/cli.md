@@ -356,7 +356,6 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Agents | [`input`](#input) | Type one line into a managed agent's terminal without attaching |
 | Agents | [`persona`](#persona) | List, show, edit, create, or remove local personas |
 | Agents | [`personas`](#persona) | Legacy, hidden from `cotal help`: the earlier persona parser; `persona` replaces it |
-| Run a manager | [`supervise`](#supervise) | Run a manager in this terminal for the selected space; see [Start a manager for a hosted space](#start-a-manager-for-a-hosted-space) |
 | Observe | [`endpoints`](#endpoints) | Legacy, hidden from `cotal help`: list every endpoint in the live roster; `who --all` replaces it |
 | Observe | [`who`](#who) | The live roster of the selected space, and whether a manager runs each seat |
 | Observe | [`whoami`](#whoami) | The identity this CLI acts under, and what it may read, post and do |
@@ -368,14 +367,15 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Manager | [`reconcile-gate`](#reconcile-gate) | Hidden from `cotal help`, which lists `manager reconcile`: unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
 | Manager | [`deregister-instance`](#endpoint-deregister) | Hidden from `cotal help`: the old spelling of `endpoint deregister`, which refuses and names it |
 | Manager | [`seats`](#seats) | Hidden from `cotal help`, which lists `manager seats`: list the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
-| Manager | [`manager`](#manager-maintenance) | Inspect retained local seats or repair an owned manager gate |
+| Manager | [`supervise`](#supervise) | Deprecated and hidden from `cotal help`: run a manager in this terminal; use `cotal manager start` |
 | Manager | [`feedback-intake`](#server-daemons) | Deprecated and hidden from `cotal help`: run a feedback intake server; use the `feedback-intake` service preset |
 | Manager | [`deliver`](#deliver) | Deprecated and hidden from `cotal help`: run the delivery daemon; use the `delivery` service preset |
 | Manager | [`run`](#run) | Operate durable workflow runs: start, resume, list, inspect, answer a checkpoint, check an edited program with migrate |
 | Manager | [`agent-bearer`](#plumbing) | Hidden from `cotal help`: plumbing that prints a fresh bearer for a spawned user-auth agent; you never run it directly |
 | Manager | [`auth-service`](#server-daemons) | Deprecated and hidden from `cotal help`: run a user-auth space's auth service by hand; use the `auth-service` service preset |
 | Manager | [`daemon`](#daemon) | Linux: serve the local machine daemon's control endpoint, read its status, sign it in, check and request its own registration with a space |
-| Services | [`service`](#service) | Save, start, stop and inspect owned local services, from a preset or a definition file |
+| Services | [`service`](#service) | Run Cotal's built-in services and your own programs: list, add, start, stop, status, logs |
+| Services | [`manager`](#manager) | Start, stop and check the manager that runs your agents, and its maintenance |
 | Identity | [`mint`](#auth-mint) | Moved: credential minting is `cotal auth mint` |
 | Identity | [`actor`](#actor) | Legacy, hidden from `cotal help`: the actor ledger; `auth grants`, `auth grant` and `auth revoke` replace it |
 | Identity | [`service-endpoint`](#service-endpoint) | Decide and inspect service endpoint registrations on the space's auth service |
@@ -706,7 +706,7 @@ than keeping or stopping it. Stop a controller stack's manager first with
 `cotal service stop stack-manager --space <s> --yes`. A legacy stack has no command that stops only
 its manager: `cotal down` stops the whole stack, then `cotal up --no-manager --space <s>` starts it
 broker-only. For a split topology with a manager, wait for `.cotal/manager.<spaceKey>.log` to contain `✓ manager up`, then stop that manager the same way on that
-host and run [`supervise`](#supervise) against the remote broker; see
+host and run [`manager start`](#manager) against the remote broker; see
 [Run a mesh](run-a-mesh.md). `cotal up --detach` prints `✓ running in the background:` with
 `manager` listed (pidfile liveness, not a teardown boundary); with `--no-manager` the line lists
 only what actually started. Its receipt begins with `Mesh: <space>` and ends with a Next that names
@@ -4367,7 +4367,7 @@ Restarting it with the current cotal shows its host. Its Next gives your command
 for each, using the name, `<host>/<runtime>` or runtime when that picks the manager out, and the
 instance id otherwise. The code stays
 `PERMISSION_DENIED` and the exit 2. `who --all` lists the same managers at any time. By default, when every manager you registered has
-exited, the refusal says to start one with [`supervise`](#supervise); the command is not sent to the local manager.
+exited, the refusal says to start one with [`manager start`](#manager); the command is not sent to the local manager.
 
 `ps` and `status <agent>` do not refuse: they read each of your live managers, as the user-auth
 mode below describes. On a terminal, `spawn -d`, `stop`, `attach`, `input`, `models` and `persona`
@@ -4719,21 +4719,71 @@ name no persona can have with the codes `persona show` uses. Only its explicit `
 connects to the mesh.
 That overlay heads the list with the mesh it read and marks each persona `running` or `not running`.
 
+## manager
+
+```bash
+cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--foreground|--dry-run] [--space <s>]
+cotal manager stop [--with-agents] [--yes|--dry-run] [--space <s>]
+cotal manager restart [--with-agents] [--yes|--dry-run] [--space <s>]
+cotal manager status [--space <s>]
+cotal manager logs [--tail <n>] [--follow] [--space <s>]
+cotal manager install [--dry-run] [--space <s>]
+cotal manager uninstall [--yes|--dry-run] [--space <s>]
+cotal manager reconcile ...
+cotal manager seats [--drain]
+```
+
+The manager starts and keeps your agents running. `cotal up` starts one with the rest of the stack;
+`cotal manager start` starts one on its own, for this folder's space or the one `cotal use`
+selected, with the `pty` runtime and the broker the space is registered at. Nothing has to be added
+first, and no other service is started for it. `mgr` is an alias.
+
+`cotal manager <verb>` is `cotal service <verb> manager`: every [`service`](#service) rule applies,
+and its flags and the manager preset's options (`--runtime`, `--roster`, `--name`, `--server`,
+`--console-port`, `--console-host`, `--ws-port`, `--max-sessions`) are taken on the line. The first
+start saves the space's `manager` service from the preset's defaults and says so on stderr; `cotal
+service show manager` reads it. A start that names another `--runtime` or other option for a
+stopped manager saves it again with that option, and says so. A running one refuses
+`LIFECYCLE_BLOCKED` and names `cotal manager stop` first.
+
+The manager these verbs act on is the space's one manager service: `manager` when `cotal manager
+start` saved it, or `stack-manager` when `cotal up` did. Stderr names the saved service when it is
+not `manager`. So after `cotal up`, `cotal manager status` and `cotal manager stop` act on the
+stack's manager, and `cotal manager start` reports it running and starts no second one. Two saved
+manager services in one space refuse `TARGET_AMBIGUOUS`, naming each with its `cotal service`
+command. A manager that `cotal up` or `cotal supervise` started without a saved service is reported
+by `start` and `status` with its PID, and starts nothing beside it. `stop` and the other verbs refuse
+it, because no saved service owns it; it stops with its stack through `cotal down`, or where
+`cotal supervise` runs it.
+
+`--foreground` keeps the manager in this terminal until Ctrl-C, which stops it through its native
+stop. A unit or container you write that runs a manager uses `cotal manager start --foreground`.
+`cotal manager install` refuses `UNSUPPORTED` in this release, whether or not a manager was started,
+because a Cotal-written unit runs only a direct-process service. It names the `ExecStart=` line for
+a unit of your own instead.
+
+`manager start` and `manager restart` run the first-run connector seed, as `cotal supervise` does,
+so a fresh machine or container has its connectors before the manager boots; `status`, `logs`,
+`stop` and the maintenance verbs install nothing.
+
+`reconcile` and `seats` are the [manager maintenance](#manager-maintenance) commands. Bare
+`cotal manager` lists every verb and starts nothing.
+
 ## Start a manager for a hosted space
 
 A hosted space runs its broker elsewhere, so nothing on your machine starts a manager for it. Start
-one in a terminal:
+one:
 
 ```bash
-cotal supervise --space <space> --runtime <orca|tmux|pty>
+cotal manager start --space <space> --runtime <orca|tmux|pty>
 ```
 
 It needs you signed in to the space (`cotal login`) and the space registered on this machine
-(`cotal meshes add`). With the space selected by `cotal use <space>`, a bare `cotal supervise` is
-enough: it uses the `pty` runtime, which every platform has built in. `orca` and `tmux` need their
-extension first, such as `cotal ext add @cotal-ai/orca`. The manager prints `✓ manager up` and runs
-until Ctrl-C. `cotal ps` then lists it with the agents it runs, and `cotal spawn -d <persona>`
-launches an agent through it.
+(`cotal meshes add`). With the space selected by `cotal use <space>`, a bare `cotal manager start`
+is enough: it uses the `pty` runtime, which every platform has built in. `orca` and `tmux` need
+their extension first, such as `cotal ext add @cotal-ai/orca`. The command returns once the manager
+answers; `--foreground` keeps it in this terminal instead. `cotal ps` then lists it with the agents
+it runs, and `cotal spawn -d <persona>` launches an agent through it.
 
 ## supervise
 
@@ -4741,8 +4791,14 @@ launches an agent through it.
 cotal supervise [--execution runtime|none] [--runtime <name>] [--space <s>] [--server <url>] [--name <name>] [--spawn <names>]
 ```
 
-`supervise` runs a manager in this terminal until Ctrl-C. Help lists it under Run a manager. The
-manager that `cotal up` starts runs the same code through a hidden entry. Without `--space` it
+`supervise` runs a manager in this terminal until Ctrl-C. It is deprecated, hidden from help and
+completion, and removed in `1.0.0`, with the other [deprecated daemon
+entries](UPGRADING.md#deprecated-daemon-entries): every run prints one stderr line naming
+`cotal manager start`, and `cotal manager start --foreground` for a terminal or a unit. A run given
+`--execution`, `--spawn`, `--seat-cap` or a resume flag, which `manager start` does not take yet,
+says to keep `supervise` for that run instead. It keeps its flags and its run for existing units,
+scripts and containers. The manager that `cotal up` starts
+runs the same code through a hidden entry. Without `--space` it
 supervises the space other commands target here: `COTAL_SPACE`, else the space this folder hosts
 or is registered for, else the one `cotal use` selected. A space it did not get from `--space`,
 `COTAL_SPACE` or a folder that hosts it keeps its manager records in the folder that space is
@@ -5047,9 +5103,10 @@ credentials. The registration contract is unchanged.
 ```bash
 cotal service [--space <s>] [--json|--plain]
 cotal service show <name>
+cotal service add <name> --exec "<command>" [--cwd <dir>]
 cotal service add <name> --preset <preset> <preset-options>
 cotal service add <name> --file <definition.json>
-cotal service start <name> [--instance <id>|--new-instance] [--foreground|--dry-run]
+cotal service start <name> [<preset-options>] [--instance <id>|--new-instance] [--foreground|--dry-run]
 cotal service stop <name> [--instance <id>] [--with-agents] [--yes|--dry-run]
 cotal service restart <name> [--instance <id>] [--with-agents] [--yes|--dry-run]
 cotal service status <name> [--instance <id>]
@@ -5064,6 +5121,8 @@ cotal service remove <name> [--instance <id>] [--yes]
 | Flag | Meaning |
 |---|---|
 | `-s, --space <s>` | The space whose services to use, resolved as in [Selecting a space](#selecting-a-space). A space that is prepared but not started can be named |
+| `--exec <command>` | add: your own program and its arguments, quoted as in a shell but run without one |
+| `-C, --cwd <dir>` | add `--exec`: the folder it runs in (default: this folder) |
 | `--preset <name>` | add: save a declared preset. Its options become flags of `add` |
 | `-f, --file <definition.json>` | add: import a version-1 definition file |
 | `--instance <full-id>` | Select one instance by its full ID, not a prefix |
@@ -5076,8 +5135,17 @@ cotal service remove <name> [--instance <id>] [--yes]
 | `--follow` | logs: keep reading |
 
 A service is a saved definition in one space plus the instances started from it. Bare `service`
-lists the definitions, their instances and the installed presets. Nothing starts a dependency for
-you: starting the manager does not start its broker. `--json` writes one envelope for every form,
+lists every service you can name here with its state and the one command that moves it on: the
+built-in services (the presets), whether started or not, and the ones you added. Nothing starts a
+dependency for you: starting the manager does not start its broker.
+
+A built-in service needs no `add`. `cotal service start <preset>` saves a definition of that name
+from the preset's defaults and starts it; stderr says what it saved. A preset that needs something
+only you can give, such as the `web` dashboard's credential file or the intake's keys, refuses with
+those flags named, and takes them on the start line: `cotal service start web --creds <file>`. A
+start refused before anything launched forgets the definition it saved. A preset name acts on the
+space's one service built on that preset, so after `cotal up` the name `delivery` reaches
+`stack-delivery`. The manager has its own [`manager`](#manager) commands. `--json` writes one envelope for every form,
 and `logs --follow --json` writes one record per line. `logs` refuses a log file this account
 cannot read with `PERMISSION_DENIED` (exit 2), naming the file and `chmod u+rw`, quoted when a
 shell would split the path. The failed read changes no permissions or service state. With `--follow`
@@ -5085,14 +5153,32 @@ the refusal is the stream's `error` record, which carries that step as `remedy`,
 
 ### Adding a service
 
+Your own program is one line:
+
+```bash
+cotal service add reviews --exec "node /srv/reviews/server.mjs --port 8080"
+cotal service start reviews
+```
+
+`--exec` splits its text into the program and its arguments as a shell quotes words, but runs no
+shell. Single and double quotes and backslashes work as in a terminal. A pipe, a redirection, a
+`;` or `&`, a variable, a glob or a `~` outside quotes refuses `USAGE_INVALID` (exit 1), because it
+would not mean here what it means in a terminal; for those, run a shell yourself with
+`--exec "sh -c '<command line>'"`. A bare program name is looked up on `PATH` as `add` saves it, and
+a relative path is saved as the absolute path it names in `--cwd`, which defaults to the folder you
+run `add` in. The service is ready once its process runs. `--file` keeps the full definition shape
+below, for readiness over HTTP, environment references or a credential file.
+
 The presets built into the CLI are `auth-service`, `broker`, `delivery`, `exec-endpoint`,
 `feedback-intake` and `manager`. The `linear` and `web` presets come with the `@cotal-ai/linear`
 and `@cotal-ai/web` extensions, which `cotal ext add <package>` installs. Bare `service` lists the
 presets this machine has, and a name it does not have is refused as `DEPENDENCY_UNAVAILABLE`.
 
-`cotal service add <name> --preset <preset> --help` lists a preset's options. A required option is
-marked `(required)`, and an option that takes a path shows `<dir>` or `<file>`. A missing required
-option is refused with each one named.
+`cotal service add <name> --preset <preset> --help` lists a preset's options. An option the preset
+fills itself shows `(default: ...)`, such as the space's root for `--root` and `pty` for the
+manager's `--runtime`. A required option with no default is marked `(required)`, and an option that
+takes a path shows `<dir>` or `<file>`. A missing required option is refused with each one named,
+and the refusal prints the command line with them.
 
 A preset's options describe the service and never choose its space. `add` saves into the space
 `--space` names, or else the selected space or the folder's, as other commands resolve it.
@@ -5210,7 +5296,10 @@ which removes them with the space.
 
 `install` writes an owned systemd user unit for a saved direct-process definition with no
 `envRefs` or `credentialRef`, and enables it without starting it. It is Linux only. `uninstall`
-removes that unit. A preset is not installed as a unit in this release, the manager included.
+removes that unit. A preset is not installed as a unit in this release, the manager included:
+`install` of one refuses `UNSUPPORTED`, allocates nothing, and for a preset that runs in the
+foreground names the `ExecStart=` line, `cotal service start <name> --foreground`, for a unit of
+your own.
 
 The sections [Local service definitions](#local-service-definitions),
 [Service presets](#service-presets) and
@@ -7297,8 +7386,9 @@ scripts; help and completion omit them. Each entry's own help
 marks it deprecated, with its removal release and the preset that replaces it. Each accepts its existing flags and
 prints a warning on every run naming its service preset and the release that removes it. The
 delivery daemon and auth service that `cotal up` starts run the same code through hidden entries
-and print no warning. New setups use `cotal service add <name> --preset <preset>`; see
-[deprecated daemon entries](UPGRADING.md#deprecated-daemon-entries).
+and print no warning. New setups use `cotal service start <preset>`; see
+[deprecated daemon entries](UPGRADING.md#deprecated-daemon-entries). [`supervise`](#supervise), the
+manager's entry, is deprecated the same way and names `cotal manager start`.
 
 ```bash
 cotal deliver --space <s> [--server <url>] [--creds <file>] [--root <dir>]
@@ -8318,8 +8408,11 @@ Options that collide with service/global flags require the file form. No preset 
 provider code imported by help, completion, a guided question or definition creation.
 
 A provider registers a `service-preset` alongside its `local-process` adapter. Preset metadata
-contains its name, adapter, summary and readiness deadline. It does not duplicate option schemas,
-contain executable factories or supply credentials. Cached preset and adapter declarations share
+contains its name, adapter, summary, readiness deadline and option defaults. It does not duplicate
+option schemas, contain executable factories or supply credentials. A default is a literal value or
+a fact of the selected space: its registered root, its registered broker, or a private file of the
+space under the root's `.cotal`, such as the delivery credential `cotal up` keeps there. A file
+default that does not exist refuses, naming the flag that replaces it; no other file is chosen. Cached preset and adapter declarations share
 one package-metadata fingerprint receipt. A changed selected declaration refuses during dispatch.
 Path annotations require absolute physical files/directories, or owned private files, without
 reading their contents during definition validation.
@@ -8368,8 +8461,9 @@ The top-level `feedback-intake` entry is deprecated: it keeps its flags for exis
 warns on every run.
 
 `delivery` uses the selected registered broker root and an existing protected delivery credential
-from that root's native store. Supply `--root` and `--creds`; `--server` may repeat the recorded
-broker but cannot replace it. Open targets refuse. The native daemon still checks its store,
+from that root's native store. `--root` defaults to the space's root and `--creds` to the delivery
+credential `cotal up` keeps for the space; `--server` may repeat the recorded broker but cannot
+replace it. Open targets refuse. The native daemon still checks its store,
 account scan and singleton shard lease. No manager, broker or installer is started implicitly.
 A live, foreign or unresolved delivery record refuses rather than being adopted. When a member of
 the space's controller stack runs it, as `stack-delivery` does while the stack runs, the refusal

@@ -60,6 +60,7 @@ import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printCommandHelp, printHelpPath, printEntry } from "./help.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { servicePresetCommand } from "./lib/service-presets.js";
+import { managerServiceCommand } from "./commands/manager-service.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
 import { metadataPositionals } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
@@ -237,13 +238,14 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   if (name === "team" && (sub === "deploy" || sub === "remove")) return true; // existing native manager/channel operations never install local connectors
   // `backup restore` is excluded: it starts the restored stack and resumes its seats through `up
   // --restore`, so it reconciles connectors under the same rules as that startup. Other modes stay offline.
-  if (name === "reset" || name === "down" || name === "doctor" || name === "feedback" || (name === "backup" && sub !== "restore") || name === "mint" || name === "manager" || name === "channel" || name === "stop" || name === "input" || name === "auth" || name === "endpoint" || name === "service" || name === "daemon") return true; // native maintenance and channel policy never install connector packages
+  if (name === "reset" || name === "down" || name === "doctor" || name === "feedback" || (name === "backup" && sub !== "restore") || name === "mint" || (name === "manager" && sub !== "start" && sub !== "restart") || name === "channel" || name === "stop" || name === "input" || name === "auth" || name === "endpoint" || name === "service" || name === "daemon") return true; // native maintenance and channel policy never install connector packages
   if (name === "run" && (sub === "turns" || sub === "yield")) return true; // self-only relay does not repair the operator installation
   if (name === "update") return true; // update owns one explicit reconcile; never auto-refresh then force-refresh
   // The seed is skipped for an INTERNAL CHILD re-exec — the `up`/`spawn` that spawns the delivery
   // daemon / manager / auth service sets COTAL_SKIP_CONNECTOR_SEED=1 in their env AFTER it reconciled,
   // so the child doesn't redo the seed on boot. A USER running the same public command directly (e.g.
-  // `cotal supervise --roster`, the agent supervisor + container entrypoint) still seeds on first run.
+  // `cotal supervise --roster`, the agent supervisor + container entrypoint, or `cotal manager start`,
+  // which replaces it) still seeds on first run.
   if (process.env.COTAL_SKIP_CONNECTOR_SEED === "1") return true;
   if (name === "ext" && sub === "seed") return true; // the explicit maintenance command self-reconciles
   if (name === "ext" && sub === "add" && isAuthenticSeedChild()) return true; // a seed child must not recurse
@@ -598,13 +600,20 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   let cmd = findCommand(commands, word);
   let rest = ownWords(cmd, words, leadingGlobals);
   const wantsHelp = asksForHelp(rest);
-  if (cmd?.name === "service") {
-    try { cmd = servicePresetCommand(cmd, rest); }
-    catch (error) {
+  // A service invocation takes its preset's flags, and `manager <verb>` is `service <verb> manager`.
+  // Both are read again after the seed below re-resolves the command.
+  const serviceSurface = (found: Command | undefined, words: string[]): { cmd: Command | undefined; rest: string[] } => {
+    if (found?.name !== "service" && found?.name !== "manager") return { cmd: found, rest: words };
+    try {
+      if (found.name === "service") return { cmd: servicePresetCommand(found, words), rest: words };
+      const lifecycle = managerServiceCommand(found, words);
+      return lifecycle ? { cmd: lifecycle.cmd, rest: lifecycle.argv } : { cmd: found, rest: words };
+    } catch (error) {
       const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
-      failureExit(cmd, failure, asksForJson(cmd, rest), rest.includes("--plain"));
+      return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"));
     }
-  }
+  };
+  ({ cmd, rest } = serviceSurface(cmd, rest));
   // The usage telemetry hook is armed as soon as the command is known, so a usage refusal below
   // counts too, and before anything runs, so the one-time notice precedes the command's output.
   const arm = (): void => {
@@ -655,7 +664,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       commands = surface();
       cmd = findCommand(commands, word);
       if (!cmd) usageExit(unknownCommandMessage(commands, word));
-      rest = ownWords(cmd, words, leadingGlobals);
+      ({ cmd, rest } = serviceSurface(cmd, ownWords(cmd, words, leadingGlobals)));
       arm();
     }
   }

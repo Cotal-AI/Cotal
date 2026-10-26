@@ -34,6 +34,38 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Starting the manager by name after 0.105.0
+
+`cotal manager start` starts the manager for this folder's or the selected space, with the pty
+runtime and the broker the space is registered with. `manager stop`, `status`, `logs` and
+`restart` act on it. Nothing has to be added first: the first start saves a service definition
+named `manager` from the manager preset's defaults. `cotal manager start` after `cotal up` reports
+the manager `up` started and starts no second one.
+
+`cotal service` lists every built-in service, started or not, and `cotal service start <preset>`
+starts one from its defaults. A preset that needs a file the space does not keep, such as the
+feedback form's tester keys, refuses and names the flag. `cotal service add <name> --exec
+"<command>"` adds a program of your own without a definition file.
+
+### What changes for a running deployment
+
+`supervise` is deprecated again, see [deprecated daemon entries](#deprecated-daemon-entries). It
+keeps its flags and behavior and prints one line on stderr. `cotal manager install` is not
+supported yet and refuses. A unit you write yourself runs `cotal manager start --foreground --space
+<space>`; a unit that runs `supervise` keeps working.
+
+`--execution`, `--spawn`, `--seat-cap` and the resume flags have no `manager start` form yet. A
+`supervise` run that names one says so instead of naming `manager start`; keep `supervise` for it.
+
+### Before the upgrade
+
+- Nothing has to change before the upgrade. A unit, script or container that runs `supervise`
+  keeps working and prints the deprecation line.
+- A script that read the `presets` array of `cotal service --json` still finds it. The new
+  `services` array lists each saved and built-in service with its state.
+- A definition a preset-name start saved is an ordinary preset definition, so an earlier release
+  lists, starts and stops it after a downgrade.
+
 ## Service definitions record their root after 0.100.2
 
 `cotal service add` now saves each definition with the root of the space it is added in. A
@@ -485,7 +517,7 @@ section says what each one does after the upgrade and what to change before it.
 | `run journal`, `run migrate`, `run ps` | `run show`, `run check`, `run` |
 | `deliver pending <name>` | `pending <agent>` |
 | `web` | `service add <name> --preset web`, then `service start <name>` |
-| `deliver`, `auth-service`, `feedback-intake`, and `supervise` until 0.101.3 | Their service presets, under [deprecated daemon entries](#deprecated-daemon-entries) |
+| `deliver`, `auth-service`, `feedback-intake`, and `supervise` until 0.101.3 and again after 0.105.0 | Their service presets and `cotal manager start`, under [deprecated daemon entries](#deprecated-daemon-entries) |
 
 The sections on this page for each command family give the details of its change.
 
@@ -531,31 +563,39 @@ terminal again; see [Spawn in this terminal after 0.100.0](#spawn-in-this-termin
 
 ### Deprecated daemon entries
 
-`deliver`, `auth-service` and `feedback-intake` stay accepted with their existing flags for every
-caller: units Cotal installed, units and scripts you wrote, and container commands. They are
-deprecated and are removed in `1.0.0`, one release for all three. Help and completion no longer
-list them. Each run prints one line on stderr naming its replacement and that release.
+`deliver`, `auth-service`, `feedback-intake` and `supervise` stay accepted with their existing
+flags for every caller: units Cotal installed, units and scripts you wrote, and container commands.
+They are deprecated and are removed in `1.0.0`, one release for all four. Help and completion no
+longer list them. Each run prints one line on stderr naming its replacement and that release.
 Stdout, behavior and exit codes are unchanged, so no unit restarts in a loop because of the
 upgrade. `deliver pending` warns the same way and names `cotal pending <agent>`.
 
 | Entry | Replacement |
 |---|---|
-| `deliver` | `cotal service add <name> --preset delivery` |
-| `auth-service` | `cotal service add <name> --preset auth-service` |
-| `feedback-intake` | `cotal service add <name> --preset feedback-intake` |
+| `deliver` | `cotal service start delivery`, or `cotal service add <name> --preset delivery` |
+| `auth-service` | `cotal service start auth-service`, or `cotal service add <name> --preset auth-service` |
+| `feedback-intake` | `cotal service start feedback-intake`, or `cotal service add <name> --preset feedback-intake` |
+| `supervise` | `cotal manager start`, or `cotal manager start --foreground` in a unit or container |
 
-`cotal service add <name> --preset <preset> --help` lists the options a preset takes, and
-`cotal service start <name>` starts it. The delivery daemon and auth service that `up` starts
-itself do not warn, so the line in a log always comes from a unit, script or container you can
-change.
+`cotal service start <preset>` starts the built-in service from its defaults and refuses naming any
+option it needs that has none; `cotal service add <name> --preset <preset> --help` lists every
+option. The delivery daemon, auth service and manager that `up` starts itself do not warn, so the
+line in a log always comes from a unit, script or container you can change.
 
-`supervise` was deprecated with them in 0.91.0. From 0.101.3 it is no longer deprecated: it keeps
-its flags, prints no warning, is not removed in `1.0.0`, and help lists it under Run a manager.
+`supervise` was deprecated with them in 0.91.0, was not deprecated from 0.101.3, and is deprecated
+again after 0.105.0, now with `cotal manager start` as its replacement. `manager start` has no
+`--execution`, `--spawn`, `--seat-cap` or resume flags yet; a `supervise` run that names one prints
+that instead of the replacement, and those callers keep `supervise` until `manager start` has them.
+`cotal manager start` uses a registered space, so a container that ran `supervise --server <url>`
+runs `cotal space add <space> --server <url> --root <dir>` first.
 
 ### Owned units
 
 A manager unit that an earlier `cotal service install` wrote keeps calling `supervise`. After the
-upgrade it starts the new binary. This release does not rewrite that unit.
+upgrade it starts the new binary and prints the deprecation line. This release does not rewrite
+that unit, and `cotal manager install` refuses until a Cotal-written unit can run the manager. A
+unit you write yourself runs `cotal manager start --foreground --space <space>` with
+`KillMode=mixed`.
 
 A unit that this release's `cotal service install <name>` writes runs the hidden `__service-unit`
 entry, which an earlier binary does not have. Before you downgrade, stop it with
@@ -565,8 +605,9 @@ downgrade, install the unit again with the earlier binary's `service install`.
 ### Containers
 
 The `solo` service in `deploy/docker/compose.yaml` runs `spawn scout --foreground`. The team
-service runs `supervise` with `--roster`, and the image's default command runs bare `supervise`.
-An image you already built carries its own CLI and is unaffected until you rebuild it.
+service runs `supervise` with `--roster`, and the image's default command runs bare `supervise`;
+both print the deprecation line. An image you already built carries its own CLI and is unaffected
+until you rebuild it.
 
 ### Before the upgrade
 
@@ -574,7 +615,7 @@ An image you already built carries its own CLI and is unaffected until you rebui
   `cotal up`.
 - Add `--foreground` to every container command or script that runs `cotal spawn <name>` directly.
 - Move units and scripts that call `deliver`, `auth-service` or `feedback-intake` to their service
-  presets before `1.0.0`.
+  presets, and those that call `supervise` to `cotal manager start`, before `1.0.0`.
 - Before a downgrade, stop and uninstall every unit this release's `service install` wrote.
 
 ## Team commands in 0.91.0

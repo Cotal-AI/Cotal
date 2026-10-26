@@ -11,7 +11,7 @@
  *    (idempotent, same stable opId).
  * C. the RAIL-TIME serve-grant re-check (P2 item 3 3b-3, registration-record-derived): a SUPERSEDED
  *    manager instance (old serve epoch, a deposed predecessor after a restart) is refused with the
- *    full-no-op copy (`cotal supervise` NEXT, and the target provably unchanged); an ABSENT serve
+ *    full-no-op copy (`cotal manager start` NEXT, and the target provably unchanged); an ABSENT serve
  *    registration refuses fail-closed; a STALE uid
  *    refuses naming the current incarnation; the generic client's reply binds to the DERIVED
  *    subject with no caller-settable reply-to (the confused-deputy boundary is structural).
@@ -248,15 +248,15 @@ try {
   // shared holder principal matched); the gate-currency check is what closes it.
   await putGate(MGR_INST, SERVE_EPOCH + 1); // current serve grant is now epoch 2
   const r2 = await request(MGR, { owner: OWNER, actor: "w2", lifecycleUid: uid2 }, { opId: op2, serveEpoch: SERVE_EPOCH }); // predecessor declares epoch 1
-  check("a SUPERSEDED manager instance (old epoch) is refused as a full no-op (names SUPERSEDED + the epochs + cotal supervise)",
-    r2 !== "no-reply" && r2.ok === false && (r2.error ?? "").includes("SUPERSEDED") && (r2.error ?? "").includes("FULL no-op") && (r2.error ?? "").includes("cotal supervise"), r2);
+  check("a SUPERSEDED manager instance (old epoch) is refused as a full no-op (names SUPERSEDED + the epochs + cotal manager start)",
+    r2 !== "no-reply" && r2.ok === false && (r2.error ?? "").includes("SUPERSEDED") && (r2.error ?? "").includes("FULL no-op") && (r2.error ?? "").includes("cotal manager start"), r2);
   check("the refused target is provably UNCHANGED (the full-no-op statement is true)",
     (await readLifecycleHeadForOperation(wreg, OWNER, "w2"))?.mapping.state === "active");
   // ABSENT registration: the requester names an instance with NO serve gate (never registered). A real
   // gate is never DELETED (a DEL is corruption, SPEC 13.12), so absence is an unregistered instanceId.
   const r3 = await request(MGR, { owner: OWNER, actor: "w2", lifecycleUid: uid2 }, { opId: op2, serveInstanceId: mintLifecycleUid() });
   check("an ABSENT serve registration refuses fail-closed (no manager instance holds; supervise NEXT)",
-    r3 !== "no-reply" && r3.ok === false && (r3.error ?? "").includes("no manager instance currently holds") && (r3.error ?? "").includes("cotal supervise"), r3);
+    r3 !== "no-reply" && r3.ok === false && (r3.error ?? "").includes("no manager instance currently holds") && (r3.error ?? "").includes("cotal manager start"), r3);
   await putGate(MGR_INST, SERVE_EPOCH); // restore the current gate at the default epoch (the superseded test bumped it) for the stale-uid test below
   // Stale uid: the trigger names a previous incarnation.
   const staleUid2 = mintLifecycleUid();

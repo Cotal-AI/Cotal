@@ -686,8 +686,15 @@
   "cli:logout--local": "current:logout --local",
   "cli:logout--plain": "current:logout --plain",
   "cli:manager": "current:manager",
+  "cli:manager install": "current:manager install",
+  "cli:manager logs": "current:manager logs",
   "cli:manager reconcile": "current:manager reconcile",
+  "cli:manager restart": "current:manager restart",
   "cli:manager seats": "current:manager seats",
+  "cli:manager start": "current:manager start",
+  "cli:manager status": "current:manager status",
+  "cli:manager stop": "current:manager stop",
+  "cli:manager uninstall": "current:manager uninstall",
   "cli:manager--drain": "current:manager seats --drain",
   "cli:manager--dry-run": [
    "current:manager reconcile --dry-run",
@@ -915,6 +922,7 @@
   "cli:service status": "current:service status",
   "cli:service stop": "current:service stop",
   "cli:service uninstall": "current:service uninstall",
+  "cli:service--cwd": "current:service add --cwd",
   "cli:service--dry-run": [
    "current:service start --dry-run",
    "current:service stop --dry-run",
@@ -922,6 +930,7 @@
    "current:service install --dry-run",
    "current:service uninstall --dry-run"
   ],
+  "cli:service--exec": "current:service add --exec",
   "cli:service--file": "current:service add --file",
   "cli:service--follow": "current:service logs --follow",
   "cli:service--foreground": "current:service start --foreground",

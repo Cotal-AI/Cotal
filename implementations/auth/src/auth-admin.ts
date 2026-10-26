@@ -39,7 +39,7 @@
  *
  * UX (the piece-3 faces): every refusal is WHAT/WHY/NEXT in operator vocabulary — each authz
  * refusal states the despawn was a FULL NO-OP (the target is unchanged and still running,
- * nothing was applied) with `cotal supervise` → retry as the NEXT; the vocabulary bridge
+ * nothing was applied) with `cotal manager start` → retry as the NEXT; the vocabulary bridge
  * ("despawn started this agent's retirement") lives at the CLI surface that renders these.
  *
  * SEAL COMPOSITION (critic's three checks): the listener holds NO scanner/plane authority — the
@@ -249,7 +249,7 @@ export async function openAuthAdminListener(opts: {
         throw new EpEnvelopeError("unavailable", `the retirement request cannot be authorized right now: the manager serve-issuance gate could not be read (${e instanceof Error ? e.message : String(e)}). Nothing was applied - the agent is unchanged. NEXT: check the broker and retry the despawn.`);
       }
       if (serveGate === null || serveGate.state === "retired")
-        throw new EpEnvelopeError("failed-precondition", `no manager instance currently holds a serve registration for "${space}" (instance ${args.serveInstanceId} is ${serveGate === null ? "unregistered" : "retired"}), so nothing may retire agents. The despawn was a FULL no-op - the agent is unchanged and still running. NEXT: start or recover the manager (\`cotal supervise\`), then retry the despawn.`);
+        throw new EpEnvelopeError("failed-precondition", `no manager instance currently holds a serve registration for "${space}" (instance ${args.serveInstanceId} is ${serveGate === null ? "unregistered" : "retired"}), so nothing may retire agents. The despawn was a FULL no-op - the agent is unchanged and still running. NEXT: start or recover the manager (\`cotal manager start\`), then retry the despawn.`);
       // THE PRINCIPAL CROSS-CHECK (#350). The two serve coordinates above only SELECTED this row;
       // they do not authorize. The row must belong to the SUBJECT-derived caller principal — which
       // the broker enforced when it admitted the publish. Without this, naming any currently
@@ -263,7 +263,7 @@ export async function openAuthAdminListener(opts: {
       if (serveGate.principal !== requester)
         throw new EpEnvelopeError("permission-denied", `the retirement request was REFUSED: the serve registration named (${args.serveEndpoint}/${args.serveInstanceId}) belongs to ${serveGate.principal}, not to the requesting principal ${requester}. A caller may only be authorized by its OWN serve registration. The despawn was a FULL no-op - the agent is unchanged and still running. NEXT: name your OWN principal's serve registration (any current instance of ${requester} will do), or call as the principal that owns this one.`);
       if (serveGate.processEpoch !== args.serveEpoch)
-        throw new EpEnvelopeError("expired", `the requesting manager instance ${args.serveInstanceId} was SUPERSEDED (it registered at epoch ${args.serveEpoch}, the current serve grant is epoch ${serveGate.processEpoch}), so this despawn was REFUSED as a FULL no-op - the agent is unchanged and still running, nothing was torn down. NEXT: recover the manager (\`cotal supervise\`), then retry the despawn under the current serving instance.`);
+        throw new EpEnvelopeError("expired", `the requesting manager instance ${args.serveInstanceId} was SUPERSEDED (it registered at epoch ${args.serveEpoch}, the current serve grant is epoch ${serveGate.processEpoch}), so this despawn was REFUSED as a FULL no-op - the agent is unchanged and still running, nothing was torn down. NEXT: recover the manager (\`cotal manager start\`), then retry the despawn under the current serving instance.`);
 
       // IDEMPOTENCE (the four-outcome table, in operator vocabulary).
       const head = await readLifecycleHeadForOperation(opts.reg, target.owner, target.actor);

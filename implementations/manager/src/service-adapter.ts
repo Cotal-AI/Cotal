@@ -18,7 +18,8 @@ import { managerServiceReadiness, observeManagerService } from "./service-observ
 
 export const managerPreset: ServicePreset = {
   kind: "service-preset", name: "manager", adapter: "manager-service", timeoutMs: 60000,
-  summary: "native manager with selected-root custody; caller-attributed agent impact, or the child's local receipt on an open space",
+  summary: "the manager that starts and keeps your agents running in this space",
+  defaults: { root: { space: "root" }, runtime: { value: "pty" } },
 };
 
 /** Journal states in which a controller attempt starts or relaunches its manager. */
