@@ -101,15 +101,18 @@ cotal up --detach --host 0.0.0.0 --space main --no-manager
 
 # manager host (registered remote mesh, same space)
 cotal space add main --server nats://broker.example:4222 --root ~/meshes/main
-cotal supervise --space main --server nats://broker.example:4222
+cotal manager start --space main
 ```
 
-Wait for `✓ manager up` in `.cotal/manager.<spaceKey>.log` on the manager host before spawning
-agents. On a broker host started without `--no-manager`, `cotal up --detach` prints `✓ running in
+`cotal manager start` dials the broker the registration names and returns once the manager
+serves, with `Readiness observation: endpoint-serving`; `cotal manager logs --space main` reads its
+log and `cotal manager stop --space main` stops it. On a broker host started without
+`--no-manager`, `cotal up` starts the manager itself. Wait for `✓ manager up` in
+`.cotal/manager.<spaceKey>.log` there before spawning agents: `cotal up --detach` prints `✓ running in
 the background:` with `manager` listed once the manager pidfile is live; stop that local manager
 only after the `✓ manager up` line. A host started WITH `--no-manager` never runs one, so neither
 the wait nor the stop applies there. That detach stdout is not a safe teardown boundary: it is
-pidfile liveness, not `✓ manager up`. `✓ manager up` is supervise's post-start line after
+pidfile liveness, not `✓ manager up`. `✓ manager up` is the manager's post-start line after
 `await mgr.start()`. Stopping the manager after only the detach line can still default-terminate
 the child during registration after it has taken the governance slot. Stopping before that
 post-start log line can leave the endpoint governance slot held until the holder's gate
@@ -368,7 +371,7 @@ host platform that keeps these writers in its own storage intercepts both reques
 instead. Copying host secrets or actor-ledger files to a participant is not supported. Foreground
 spawning and operator-local hosted managers use their existing paths.
 
-The remote manager that `cotal supervise` starts can host workflow runs through its host: the host
+The remote manager that `cotal manager start` starts can host workflow runs through its host: the host
 admits each run and signs only the run's own driver, mediator and operator credentials. A logged-in
 user's `cotal run start` against it is admitted: the auth callout issues the user's manager
 connection, and the host binds each run to the owner who registered the manager. The run spawns
@@ -378,7 +381,7 @@ host's own manager refuses user-auth runs by name.
 [User-auth run start](design/user-auth-run-start.md)
 records the path.
 
-The registry entry decides the broker URL `supervise` dials, so a mesh published over `wss://` is
+The registry entry decides the broker URL the manager dials, so a mesh published over `wss://` is
 dialed as a websocket. The manager-authority registration it runs first also takes its TLS
 requirement from that entry, so the prepare credential is not exchanged over a plaintext
 connection the record did not describe. `cotal meshes add` records both.
@@ -391,7 +394,7 @@ requests terminal retirement. Deleting DM or delivery consumers is not retiremen
 a resumable lifecycle's frontier or pending state. The alias remains held until the terminal barrier
 confirms. Restore service and renew successfully before asking it to recover an agent. See
 [Identity & auth](identity-and-auth.md#remote-manager-authority) and the [CLI
-reference](cli.md#supervise).
+reference](cli.md#manager).
 
 ## Spawning agents
 
@@ -523,11 +526,11 @@ without a terminal nothing prompts.
 the mode is inferred from what that folder holds.
 
 The instance identities of the manager and the user-auth service are not part of that folder.
-Each root keeps its own in `.cotal/space.<hex>/`, so `cotal supervise` or `cotal up --user-auth` in
+Each root keeps its own in `.cotal/space.<hex>/`, so `cotal manager start` or `cotal up --user-auth` in
 the root you copied the folder to starts an instance of its own. A root last run by an older Cotal
 still holds them in `.cotal/auth`, as `manager-instance.<hex>.json`, `manager-siblings.<hex>.json`
 and `space.<hex>/.cotal/auth/auth-instance.<hex>.json`. Delete those files from a copy of such a
-folder before the first `cotal supervise` or `cotal up` there. On the root itself, the first start
+folder before the first `cotal manager start` or `cotal up` there. On the root itself, the first start
 moves each record to `.cotal/space.<hex>/`. It refuses and keeps both entries when either place
 holds a symlink or anything else that is not a regular file, or when the two places hold different
 records.
@@ -726,7 +729,7 @@ binds the exact op, gate revision, and holder set. Use `cotal reconcile-gate` wh
 wait-timeout: the facts were always in the manager log; they now reach the spawn caller too.
 
 Give reconciliation a **quiet manager**. Suspend systemd restart policies, watchdogs, health-check
-restart loops, and any other automation that can start or kill `cotal supervise` while boot healing or
+restart loops, and any other automation that can start or kill the manager while boot healing or
 `cotal reconcile-gate` is running. Leave one recovery attempt in control until it finishes.
 Restarting the manager during the walk interrupts the current authority window. Durable progress makes
 that interruption resumable, but a quiet manager is still the fastest and safest incident procedure.
