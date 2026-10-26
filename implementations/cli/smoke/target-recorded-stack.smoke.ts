@@ -344,6 +344,31 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
   check(`${command} names the address its last start configured and the bare up`, (r.envelope?.error?.message ?? "").includes("last ran at nats://127.0.0.1:24712") && r.envelope?.error?.remedy === `start it again with \`cotal up\` in ${legacy}`, r.envelope?.error);
   check(`${command} in a stopped legacy root names no default broker address`, noDefault(r), shown(r));
 }
+// `watch` refuses that target like every other read. It used to end on one red line with exit 1,
+// with no mesh heading and no next step, because it took the exiting connect helper while `history`,
+// `channel` and `chat` in the same folder threw theirs and got the classified report. Asserted
+// against `history` in the same root, so the two cannot drift apart again.
+{
+  // `history` is the sibling read whose answer this one must equal, so its refusal is the
+  // expectation rather than a copy of the sentence, which the two could drift apart from.
+  const read = run(["history", "--json"], legacy);
+  const expected = read.envelope?.error;
+  const watched = run(["watch"], legacy);
+  check("the sibling read refuses this target under a classified code", read.status === 2 && expected?.code !== undefined && expected.message !== undefined && expected.remedy !== undefined, shown(read));
+  check("watch in a stopped legacy root refuses with that same code, message and next step, exit 2",
+    refusedWith(watched, expected?.code ?? "", expected?.message ?? "", expected?.remedy ?? ""), shown(watched));
+  // Byte-identical to the sibling's own report, so whatever that report carries in a given root —
+  // its mesh heading where a space resolved, its fields, its Next — this one carries too.
+  const readText = run(["history"], legacy);
+  check("watch's report is the one history prints in that root, to the byte",
+    watched.status === readText.status && watched.stderr === readText.stderr && watched.stdout === readText.stdout, { watch: shown(watched), history: shown(readText) });
+  // The stream form carries the same code and next step, in place of the generic observer sentence.
+  const streamed = run(["watch", "--json"], legacy);
+  const records = streamed.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type: string; data: { code?: string; message?: string; remedy?: string } });
+  check("watch --json reports that refusal in its error record, under its own code, ahead of end",
+    streamed.status === 2 && records[0]?.type === "error" && records[0].data.code === expected?.code && records[0].data.message === expected?.message && records[0].data.remedy === expected?.remedy && records[1]?.type === "end", shown(streamed));
+}
+
 // Another space selected does not change that: the root's own stopped stack is the target, so a
 // command there never reaches the selection.
 {

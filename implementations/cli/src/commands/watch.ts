@@ -1,8 +1,8 @@
 import { writeSync } from "node:fs";
 import { CotalEndpoint, chatWildcard, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { colorEnabled, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, recordOperationSpace, streamRecord, writeStreamRecord, userViewAuth, targetFlags } from "@cotal-ai/workspace";
+import { colorEnabled, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, isConnectRefusal, jsonFlag, plainFlag, presentationOf, recordOperationSpace, streamRecord, writeStreamRecord, userViewAuth, targetFlags } from "@cotal-ai/workspace";
 import { completingFlagValue } from "../lib/completion.js";
-import { connectOrExit, connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
+import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
 import { watchViews, type WatchFilter } from "../watch-data.js";
 export type { WatchFilter } from "../watch-data.js";
 
@@ -34,13 +34,17 @@ export async function watch(args: ParsedArgs): Promise<void> {
   try { await watchSession(args, resolved); }
   catch (error) {
     if (!args.values.json) throw error;
-    // A refusal says why in its own words, as the plain form does. Any other failure keeps the
-    // generic sentence, because its message is not written for an operator.
+    // A refusal says why in its own words, as the plain form does. A target that is not running or
+    // will not admit this caller is refused as a ConnectRefusal, which carries the same classified
+    // failure a CommandFailure does, so it is read through `failure()` rather than falling into the
+    // generic sentence below under OPERATION_FAILED. Any other failure keeps that sentence, because
+    // its message is not written for an operator.
+    const failure = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure() : undefined;
     const target = { requestedSpace: args.values.space ?? null, ...(resolved.space === undefined ? {} : { space: resolved.space }) };
-    const reason = isCommandFailure(error) ? { message: error.message, ...(error.remedy === undefined ? {} : { remedy: error.remedy }) } : { message: "The observer could not establish its authorized view; this is not an empty successful snapshot." };
-    writeStreamRecord(streamRecord("watch", "error", target, { code: isCommandFailure(error) ? error.code : "OPERATION_FAILED", ...reason }));
+    const reason = failure ? { message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) } : { message: "The observer could not establish its authorized view; this is not an empty successful snapshot." };
+    writeStreamRecord(streamRecord("watch", "error", target, { code: failure ? failure.code : "OPERATION_FAILED", ...reason }));
     writeStreamRecord(streamRecord("watch", "end", target, { reason: "setup-failed" }));
-    process.exitCode = isCommandFailure(error) ? exitCode(error.outcome, error.code) : 5;
+    process.exitCode = failure ? exitCode(failure.outcome, failure.code) : 5;
   }
 }
 
@@ -48,7 +52,11 @@ async function watchSession(args: ParsedArgs, resolved: { space?: string }): Pro
   const values = args.values as FlagValues<typeof watchFlags>;
   const filter = (values.view === "feed" ? "activity" : values.view ?? "activity") as WatchFilter;
   const interactive = !values.json && !values.plain && !inputDisabledByFlag() && process.stdout.isTTY && process.stdin.isTTY;
-  const connection = values.json ? await connectOrThrow(values, "admin") : await connectOrExit(values, "admin");
+  // connectOrThrow on BOTH paths. `connectOrExit` ends the process on one red line, so `watch` in a
+  // stopped project answered with no mesh heading, no Next and exit 1, while `history`, `channel`
+  // and `chat` in that same folder refused with the full block and exit 2 off the same refusal.
+  // `watch` declares a structured output, so the kernel renders a thrown refusal under its own code.
+  const connection = await connectOrThrow(values, "admin");
   resolved.space = connection.space;
   recordOperationSpace(connection.space);
   if (filter === "dms" && (connection.bearer || connection.creds)) throw new CommandFailure("refused", "UNSUPPORTED", "this observer is narrowed to channel traffic in authenticated spaces; no broader credential or private conversation was substituted");

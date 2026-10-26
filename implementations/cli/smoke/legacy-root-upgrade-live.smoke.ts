@@ -14,7 +14,8 @@
  *     no space, as an earlier release rendered, its fresh team summary names it. A later plain open
  *     start of another space there names that one, and the next plain `up` starts it.
  *  4. Open legacy root started with `up --open --space`. After `down` its plain `up` starts it again
- *     as that space, at its own address, and starts no `main`.
+ *     as that space, at its own address, and starts no `main`, and so does a restart that names that
+ *     address with `--server`, which says the mode it started in.
  *
  * Sandboxes COTAL_HOME and both project roots. Run: pnpm smoke:legacy-root-upgrade:live
  */
@@ -168,8 +169,16 @@ try {
     const again = cli(root, "up", "--no-manager");
     check("plain up starts that space again, open, at its own address, and starts no main",
       again.status === 0 && findMesh(space)?.server === server && findMesh(space)?.mode === "open" && findMesh("main") === undefined && again.stdout.includes(`Mesh: ${space}`), shown(again));
+    check("down stops it again", cli(root, "down").status === 0);
+    // NAMING THE ADDRESS DOES NOT CHANGE THE MODE. `--server` says where the broker listens, not
+    // whether it authenticates, and reading the two off one condition brought this root back in
+    // static auth, with a delivery daemon and no line about it, whenever a restart pinned the
+    // address it already ran on.
+    const pinned = cli(root, "up", "--server", server, "--no-manager");
+    check("a restart naming the address it already ran on starts it open again, and says the mode it started in",
+      pinned.status === 0 && findMesh(space)?.mode === "open" && pinned.stdout.includes("starting this folder's stopped stack in the mode it last ran: open"), shown(pinned));
     const last = cli(root, "down");
-    check("down stops it again", last.status === 0, shown(last));
+    check("down stops the restarted open root", last.status === 0, shown(last));
   }
 } finally {
   for (const root of roots) if (anchors.has(root) && !existsSync(join(root, ".cotal", "stack-controller.json"))) cli(root, "down");
