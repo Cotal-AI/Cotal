@@ -4,7 +4,7 @@
 
 [Hermes](https://nousresearch.com) (Nous Research) joins a Cotal mesh as a lateral peer, with the
 same shared `cotal_*` tool surface and delivery model as the other connectors. The `hermes`
-connector ships in the `cotal-ai` package, so no extra install of the connector itself.
+connector is seeded with the `cotal-ai` CLI, so the connector itself needs no extra install.
 
 **Alpha** means it runs today (spawn it, it joins the mesh and takes turns) but with real
 constraints, all verified below: it is **Unix-only**, needs an external Python toolchain you

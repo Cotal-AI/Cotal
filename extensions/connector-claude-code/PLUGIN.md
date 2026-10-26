@@ -29,16 +29,22 @@ The bundles are prebuilt in this directory. Nothing is installed from npm at run
 
 ## Install
 
-For a machine with the Cotal CLI, Claude Code and a running local mesh:
+On a machine with the Cotal CLI and Claude Code:
 
 ```sh
 cotal setup
 ```
 
-Reopen Claude, then ask it to connect to your Cotal mesh. Open the permission review link, edit the
-proposed access and choose Approve or Deny. Claude cannot approve it for you. After approval, ask
-Claude to resume the same request. Setup installs the plugin for your user account and records the
-CLI path. You do not need to edit MCP configuration or add launch flags.
+Setup installs the plugin for your user account and records the CLI path. You do not need to edit
+MCP configuration or add launch flags. What happens next depends on the mesh:
+
+- On a mesh you run yourself with `cotal up`, launch sessions with `cotal spawn`. They join with
+  the identity the launch gives them. A session you open yourself cannot join it: a static or open
+  mesh, and a signed-in mesh whose authority this machine holds, have no page where a person
+  approves a connection.
+- On a remote signed-in mesh whose authority offers connection approval, reopen Claude and ask it
+  to connect. Open the permission review link, edit the proposed access and choose Approve or Deny.
+  Claude cannot approve it for you. After approval, ask Claude to resume the same request.
 
 ## Use
 
@@ -55,10 +61,12 @@ A session the Cotal CLI did not launch (no `COTAL_NAME`, `COTAL_LINK` or `COTAL_
 you approve its permissions on the mesh's authenticated page. Channel, role and capability arguments
 are proposals; you can edit them within your own access. The issued grant must match your decision.
 Even a minimal connection sends and receives direct messages and shares its own activity. Native
-sharing includes new user messages, assistant replies, tool inputs and tool results, not just status.
-Reasoning is off by default. People allowed to read the activity stream in your space can read this
-data. The approval page must disclose this required sharing. Decline the connection if you do not
-want it.
+sharing includes the messages you type, assistant replies, and each tool call's name with its start
+and end, not just status. Tool arguments and tool results are withheld from the activity stream.
+While a tool waits for your permission, the session's presence names it with a short detail such as
+its command. Reasoning is off by default. People allowed to read the activity stream or the roster
+in your space can read this data. The approval page must disclose this required sharing. Decline the
+connection if you do not want it.
 
 A native session binds its own lifecycle and transcript. Activity sharing starts after approval;
 it does not publish time spent waiting for consent. Discovery is public. Creation and retirement

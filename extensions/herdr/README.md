@@ -8,18 +8,18 @@ without depending on this package.
 **Tier:** `extensions/`. Peer-depends [`@cotal-ai/core`](../../packages/core); self-registers on
 import.
 
-**Requires herdr >= 0.8.0** (`brew install herdr`, or see [herdr.dev](https://herdr.dev/)). This is
-a hard floor, not a preference: 0.7.x exposed `agent start --cwd -- <argv>` and `agent send`, both of
-which 0.8.0 removed, and there is no shared subset. `available()` reads the version rather than
-merely probing that the binary runs, so an older herdr reports the runtime as unavailable instead of
-advertising it as ready and then failing every spawn.
+Requires herdr 0.8.0 or later (`brew install herdr`, or see [herdr.dev](https://herdr.dev/)). 0.7.x
+exposed `agent start --cwd -- <argv>` and `agent send`, both of which 0.8.0 removed, and the two
+lines share no usable subset. `available()` reads the version rather than only probing that the
+binary runs, so an older herdr reports the runtime as unavailable instead of advertising it as ready
+and then failing every spawn.
 
 ## What it does
 
-**`Runtime` (`herdr`)** — each agent gets its own pane in a DEDICATED named Herdr session
-(`cotal-<space>`, its own server and socket — never your default Herdr session, so no Cotal
-operation can touch unrelated panes). The session server is started headless on first spawn and
-owns the panes, so agents keep running when the manager's terminal goes away; watch them with
+The `herdr` `Runtime` gives each agent its own pane in a dedicated named Herdr session,
+`cotal-<space>`, with its own server and socket. It never uses your default Herdr session, so no
+Cotal operation can touch unrelated panes. The session server is started headless on first spawn
+and owns the panes, so agents keep running when the manager's terminal goes away; watch them with
 `herdr session attach cotal-<space>`.
 
 By default every agent gets its own workspace and name-labeled tab; set `COTAL_HERDR_LAYOUT=split`
@@ -28,32 +28,32 @@ stop types `/exit` then closes the pane; hard stop closes immediately.
 
 ## How a spawn works
 
-herdr 0.8.0 has no "create a pane running this command" primitive — `agent start` attaches a
+herdr 0.8.0 has no "create a pane running this command" primitive. `agent start` attaches a
 *recognized agent kind* to an existing pane, `pane split` needs a pane to split from, and a fresh
 headless server has no workspace, tab, or pane at all. So a spawn is:
 
-1. `workspace create --cwd <cwd> --label <name> --no-focus` — one call yielding a workspace, a tab,
-   and a root pane, with the working directory honoured. This is also what makes the
-   one-tab-per-agent layout free rather than a follow-up move.
-2. `tab rename <tab_id> <name>` — `--label` names the *workspace*; the tab strip is what an operator
-   actually reads, and it would otherwise show a bare number.
-3. `pane run <pane_id> "exec <command>"` — the `exec` is load-bearing. A plain `pane run` leaves the
-   pane's shell alive after the command exits, so the pane would outlive the agent and an exit could
-   never be proven. `exec` replaces the shell, so herdr closes the pane exactly when the agent exits.
+1. `workspace create --cwd <cwd> --label <name> --no-focus`: one call yielding a workspace, a tab,
+   and a root pane, with the working directory honoured. This also gives the one-tab-per-agent
+   layout without a follow-up move.
+2. `tab rename <tab_id> <name>`: `--label` names the *workspace*, and the tab strip, which is what
+   an operator reads, would otherwise show a bare number.
+3. `pane run <pane_id> "exec <command>"`. A plain `pane run` leaves the pane's shell alive after the
+   command exits, so the pane would outlive the agent and an exit could never be proven. `exec`
+   replaces the shell, so herdr closes the pane when the agent exits.
 4. Poll `pane process-info` until the process actually appears, bounded. `pane run` types into a
    shell, so a successful call proves the keystrokes were delivered, not that anything started; if
    the process never appears the half-built workspace is torn down and the spawn throws.
 
 Lifecycle is keyed off Herdr's globally-unique `terminal_id`; the workspace-scoped public `pane_id`
 (which changes when a pane is moved) is re-resolved before every pane-scoped call, off the
-session-wide pane inventory. Exit waits poll that inventory and fail closed on provider errors — a
+session-wide pane inventory. Exit waits poll that inventory and fail closed on provider errors: a
 failed inventory throws rather than reporting a false exit.
 
 ## Secrets
 
 Connector env (identity, credentials, control token) rides an owner-only (`0600`) launcher script in
-a private `0700` directory; herdr only ever sees `node <script>`, and the script removes its own
-directory as soon as it has loaded.
+a private `0700` directory. herdr only sees the node executable and the script path, and the script
+removes its own directory as soon as it has loaded.
 
 **Do not "simplify" this to herdr's native `--env KEY=VALUE`.** It is available on both
 `workspace create` and `tab create`, and it puts the value straight into the pane's scrollback,
@@ -84,7 +84,7 @@ import "@cotal-ai/herdr"; // self-registers; no other setup needed
 ## Testing
 
 `pnpm smoke:herdr` runs the suite against a real herdr server in isolated named sessions. It skips
-with a loud notice when herdr is absent or too old — and CI installs herdr so that skip never
+with a loud notice when herdr is absent or too old, and CI installs herdr so that skip never
 silently stands in for a pass.
 
 ## Differences from `@cotal-ai/tmux`
@@ -92,7 +92,7 @@ silently stands in for a pass.
 Same shape (native-watch, no PTY streaming; a shared per-space session), but panes live in a Herdr
 session whose server also tracks pane status natively, and the runtime is pane-based rather than
 window-based. A failed server start is detected early via POSIX `ps` where present; without it
-(Windows, a ps-less container) death is never assumed — the same failure surfaces at the bounded
+(Windows, a ps-less container) death is never assumed, and the same failure surfaces at the bounded
 startup window, with the server's own stderr either way.
 
 See [docs/architecture.md](../../docs/architecture.md) (*Manager supervision*) and the
