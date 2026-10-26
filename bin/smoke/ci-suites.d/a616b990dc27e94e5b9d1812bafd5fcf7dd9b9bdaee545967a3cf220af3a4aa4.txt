@@ -1,0 +1,3 @@
+# One auth callout process serving several spaces: a space's requests reach only its own lane and
+# a connection minted by one lane binds into that space's data account, never another's.
+smoke:callout-multi-tenant:auth

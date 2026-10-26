@@ -29,6 +29,7 @@
     "smoke:chat-session-row": "tsx smoke/chat-session-row.smoke.ts",
     "smoke:callout-load": "tsx smoke/callout-load.smoke.ts",
     "smoke:callout-replica": "tsx smoke/callout-replica.smoke.ts",
+    "smoke:callout-multi-tenant": "tsx smoke/callout-multi-tenant.smoke.ts",
     "prepublishOnly": "pnpm run build",
     "smoke:service-custody": "tsx smoke/service-custody.smoke.ts",
     "smoke:service-custody-writer": "tsx smoke/service-custody-writer.smoke.ts",

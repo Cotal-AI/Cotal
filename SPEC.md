@@ -915,7 +915,11 @@ Authenticated onboarding has two bindings. **Out-of-band credential minting** pr
 credential ahead of connect (the static path). **Auth-callout onboarding** validates a user bearer at
 connect time and mints the scoped data-account JWT then (user mode, §2/§10): the client presents a
 deny-all sentinel credential plus its bearer, the callout derives the owner+actor principal and grants,
-and re-binds the connection into the data account. The owner-token *derivation* (how a bearer maps to
+and re-binds the connection into the data account. A space's callout requests are served inside that
+space's dedicated auth account, so a responder holds one subscription per auth account it serves. One
+process MAY serve several spaces, holding one such subscription and one set of signing keys per
+space; a response for a space MUST be signed only with that space's keys, and a bearer MUST be
+validated only against the issuer and audience of the space whose request it arrived on. The owner-token *derivation* (how a bearer maps to
 an owner token) is a pluggable identity adapter (any OIDC/IdP via a thin bridge), not fixed by this
 contract; the callout *mechanism* and the resulting grants are. From v0.4 every minted connection also carries its **lifecycle UID** (§13.1): the manager
 mints it for managed agents at provision, and the callout/exchange attaches it as a claim at
@@ -1008,7 +1012,8 @@ bearer's expiry, and with it the connection's, is bounded by the proof's.
 
 **Connect limits.** The auth service MAY limit connects per actor and per owner, charging a bearer
 whose signature verifies to the principal it names even after it expires, and per client host for a
-bearer that does not verify. A callout that refuses a connect for a limit MUST answer with a signed
+bearer that does not verify. Buckets are per space: a process serving several spaces MUST keep a
+separate set for each, so a connect to one space never spends another space's allowance. A callout that refuses a connect for a limit MUST answer with a signed
 denial whose reason starts with `RATE_LIMITED retry-after <n>s`, and MUST do so before it reads the
 ledger or records an issuance. While an actor or its owner is limited, an exchange for that actor
 MUST answer 429 with the body `{code: "RATE_LIMITED", retryAfterSeconds, limit, error}`, where
@@ -6567,8 +6572,10 @@ single-function profiles, each granting only the verbs its function needs and no
   and accepted stores plus one auth-store liveness read. A lifecycle terminal's retirement and every
   issuance other than the one below mint it per window, one-shot. An auth service, and each
   callout-only replica on its own, MAY hold one `issuer` session per account, space and
-  authority-plane lifetime for the user-auth issuance its callout performs. That session is private
-  to its host and never shared across accounts. Its credential keeps the profile's five-minute
+  authority-plane lifetime for the user-auth issuance its callout performs. A callout-only replica
+  is one space's membership of that space's callout queue group, and one process MAY hold several,
+  one session each. That session is private to its host and never shared across accounts or
+  spaces. Its credential keeps the profile's five-minute
   expiry and is replaced with freshly minted credentials before it expires. Its connection never
   reconnects: it is closed and drained on a fence, a shutdown or a loss, and the next issuance dials
   a new one. Each issuance on it makes its own source, gate and accepted-row reads and its own
@@ -6646,6 +6653,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 | Date | Revision |
 | --- | --- |
 | 2026-10-26 | **An operator instrument reads its pinned manager's `resolve-cwd` (§13.2, Appendix B), additive.** The folder question a managed launch asks had no caller that could make its check on a static mesh: `resolve-cwd` was carried by a `spawn` holder's `manager-caller` view and by no operator instrument, so every folder typed at that question was refused at the broker. Both instrument tiers now carry it on the instance their mint pins, beside the `spawn` row of the same `manager.spawn` capability class. The standing agent `spawn` set is unchanged, and no class, scatter or other-instance row is added. |
+| 2026-10-26 | **One callout process MAY serve several spaces (§10, Appendix B), additive.** A space's callout requests are served inside that space's dedicated auth account, so a responder holds one subscription per auth account it serves. One process may hold one subscription and one set of signing keys per space it serves. A response for a space must be signed only with that space's keys, and a bearer must be validated only against the issuer and audience of the space whose request it arrived on. Connect-limit buckets are per space, so a connect to one space never spends another's allowance. A callout-only replica is one space's membership of its queue group, and one process may hold several, one `issuer` session each. |
 | 2026-10-26 | **A held `issuer` session for user-auth issuance (§13.9, §13.15).** An auth service, and each callout-only replica on its own, may hold one `issuer` session per account, space and authority-plane lifetime for the user-auth issuance its callout performs, in place of one session per connect. It keeps the five-minute expiry and is replaced before it expires. It never reconnects, and it is closed and drained on a fence, a shutdown or a loss. Each issuance still makes its own reads and writes, and a write in flight at a loss is never sent again. Retirement at a lifecycle terminal and every other issuance window stay one-shot. The `issuer` principal is no longer one-shot only. |
 | 2026-10-26 | **Spawn readiness for a launch that waits for the operator (§13.6 item 6), additive.** A spawn whose agent application waits for the operator before its session joins, such as at a session picker, succeeds once its process runs, and its result's `waitingFor` names the screen. An `uncertain` result MAY carry `details[].kind = ai.cotal.goal.entity-running` when the owner saw the entity still running at the deadline. A reader that does not read `waitingFor` sees such a launch succeed before its session joins. |
 | 2026-10-23 | **A revoked run takes no answer (§14.8).** An answer to an open checkpoint or ask of a revoked run, or of a run whose marker cannot be read, is refused before anything is filed. The leader-served marker read before the answer record orders the answer against the revocation. |
