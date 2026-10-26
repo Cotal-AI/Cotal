@@ -66,9 +66,15 @@ process.emitWarning = ((warning: unknown, ...rest: unknown[]) => {
   if (warning !== "The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.") emitWarning(warning, ...rest);
 }) as typeof process.emitWarning;
 
-// The notice holds until the command begins, or until the command's own notice takes it over. An
-// internal entry, such as a stack member or shell completion, keeps Node's default signal exit.
-// Every word before the command word is a flag.
-const commandWord = process.argv.slice(2).find((word) => !word.startsWith("-"));
-if (!commandWord?.startsWith("__")) (await import("./startup-interrupt.js")).holdStartupInterrupt();
-await import("./run.js");
+// A spawned seat execs `cotal agent-bearer` for every bearer, so it runs from its own module before
+// the rest of the CLI loads: loading the whole command surface was most of each bearer's cost. A
+// command line that does not parse goes on to the full CLI, which refuses it with the command's help.
+const bearerDone = process.argv[2] === "agent-bearer" && await (await import("@cotal-ai/auth/agent-bearer")).runAgentBearerEntry(process.argv.slice(3));
+if (!bearerDone) {
+  // The notice holds until the command begins, or until the command's own notice takes it over. An
+  // internal entry, such as a stack member or shell completion, keeps Node's default signal exit.
+  // Every word before the command word is a flag.
+  const commandWord = process.argv.slice(2).find((word) => !word.startsWith("-"));
+  if (!commandWord?.startsWith("__")) (await import("./startup-interrupt.js")).holdStartupInterrupt();
+  await import("./run.js");
+}

@@ -15,6 +15,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./liveness": {
+      "types": "./dist/liveness.d.ts",
+      "import": "./dist/liveness.js"
     }
   },
   "scripts": {

@@ -17,7 +17,8 @@
  * The same gate must not capture `agent-bearer` either: it is the machine-facing helper a spawned
  * seat execs on EVERY bearer refresh (read one 0600 token file, exchange, print, exit), so a
  * newer-generation stamp must not refuse it (#1857) and a matching one must not make a credential
- * exchange seed the operator-global store.
+ * exchange seed the operator-global store. It runs from its own module, before the CLI's command
+ * surface loads, so a module hook proves the surface never loads for it.
  * `app-identity`, the plumbing the Claude connector's local server execs per connection, passes the
  * gate the same way: it must not seed the store under a running connector.
  *
@@ -32,6 +33,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const REPO = join(import.meta.dirname, "..", "..", "..");
@@ -180,6 +182,41 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
     "a credential exchange reaches the helper body (past the gate)",
     /agent-bearer: the pinned exchange did not answer/.test(out),
     { status: r.status, out: out.slice(0, 400) },
+  );
+}
+
+// ── 4c. `agent-bearer` loads only its own module ─────────────────────────────────────────────────
+// A seat execs it for every bearer, and loading the CLI's whole command surface cost several hundred
+// milliseconds each time. A module hook logs every module the run loads: the helper body must run
+// with no module of that surface in the log. A command line it cannot parse still goes to the full
+// CLI, whose refusal carries the command's help.
+{
+  const dir = mkdtempSync(join(tmpdir(), "cotal-bearer-loads-"));
+  cleanup.push(dir);
+  const log = join(dir, "loaded.txt");
+  writeFileSync(join(dir, "hooks.mjs"), `import { appendFileSync } from "node:fs";\nexport async function load(url, context, next) { appendFileSync(${JSON.stringify(log)}, url + "\\n"); return next(url, context); }\n`);
+  writeFileSync(join(dir, "register.mjs"), `import { register } from "node:module";\nregister(${JSON.stringify(pathToFileURL(join(dir, "hooks.mjs")).href)});\n`);
+  const bearer = (args: string[]) => spawnSync("node", ["--import", pathToFileURL(join(dir, "register.mjs")).href, BIN, "agent-bearer", ...args], {
+    cwd: dir, env: { ...HOST_ENV, COTAL_HOME: join(dir, "home"), XDG_CONFIG_HOME: join(dir, "config") }, encoding: "utf8",
+  });
+  const r = bearer(["--exchange-url", "http://127.0.0.1:9/", "--space", "s", "--owner", "u_x", "--actor", "a", "--token-file", "/dev/null"]);
+  const loaded = existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
+  const surface = ["/bin/dist/run.js", "/core/dist/index.js", "/workspace/dist/index.js", "/auth/dist/index.js", "/auth/dist/commands.js"];
+  check(
+    "`agent-bearer` runs its body from its own module",
+    /agent-bearer: the pinned exchange did not answer/.test(`${r.stdout}${r.stderr}`) && loaded.some((url) => url.endsWith("/auth/dist/agent-bearer.js")),
+    { status: r.status, out: `${r.stdout}${r.stderr}`.slice(0, 400), loaded: loaded.length },
+  );
+  check(
+    "`agent-bearer` loads no module of the CLI's command surface",
+    !loaded.some((url) => surface.some((tail) => url.endsWith(tail))),
+    loaded.filter((url) => surface.some((tail) => url.endsWith(tail))),
+  );
+  const refused = bearer(["--bogus"]);
+  check(
+    "a command line it cannot parse gets the full CLI's refusal with the command's help",
+    refused.status !== 0 && /Unknown option '--bogus'/.test(refused.stderr) && /cotal agent-bearer/.test(refused.stderr),
+    { status: refused.status, stderr: refused.stderr.slice(0, 400) },
   );
 }
 

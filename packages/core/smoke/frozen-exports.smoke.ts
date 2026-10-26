@@ -103,6 +103,9 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
 // "./peer-label" is the peer label its frame rendering prints, for the same reason.
 // "./secret-fs" is the secret-file writers the Claude native binding hook imports, again without
 // the barrel; it maps to an entry naming the barrel's writers, never the module and its test seam.
+// "./command", "./loopback" and "./subjects" are the argument parser, the loopback-literal check and
+// the lifecycle-token check `cotal agent-bearer` runs with, because a seat execs it for every bearer
+// and loading the barrel was most of its cost.
 // "./browser-control" and "./browser-validators-build" are the Node-free browser describe/invoke
 // entry and its build-time validator generator; their callers never load the barrel, so their
 // entry functions live only there.)
@@ -114,6 +117,9 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
     ["./launch-material", { module: "launch-material", additions: [] }],
     ["./peer-label", { module: "peer-label", additions: [] }],
     ["./secret-fs", { module: "secret-fs-entry", additions: [] }],
+    ["./command", { module: "command", additions: [] }],
+    ["./loopback", { module: "loopback", additions: [] }],
+    ["./subjects", { module: "subjects", additions: [] }],
     ["./browser-control", { module: "browser-control", additions: ["browserServiceSurface", "openBrowserEndpointCaller", "openBrowserManagerCaller", "verifyGoalResultFact"] }],
     ["./browser-validators-build", { module: "browser-validators-build", additions: ["generateBrowserContracts"] }],
   ]);

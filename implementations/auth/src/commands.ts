@@ -1,4 +1,5 @@
 import { readAuthResponseJson } from "./response-json.js";
+import { agentBearerCommand } from "./agent-bearer.js";
 import { authCalloutOnlyFlag, authServiceFlags } from "./daemon-flags.js";
 import { serviceEndpointHostCall, type ServiceEndpointValues } from "./service-host-client.js";
 /**
@@ -8,10 +9,9 @@ import { serviceEndpointHostCall, type ServiceEndpointValues } from "./service-h
  * (`~/.cotal`, `COTAL_HOME`-overridable) — per human, per machine, NOT per checkout: you are
  * logged in as YOU across every repo on this box.
  */
-import { readFileSync } from "node:fs";
 import * as prompts from "@clack/prompts";
-import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, isLoopbackLiteral, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, writePrivateRecord, type Command, type FlagSpec, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
-import { CommandFailure, STORE_CONTENTS, storeContentsText, credentialMintFlags, validateCredentialMintArguments, validateCredentialRevokeArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, boundedValue, SHOWN_VALUE_MAX, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type AgentAuthHealth, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
+import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type FlagSpec, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
+import { CommandFailure, STORE_CONTENTS, storeContentsText, credentialMintFlags, validateCredentialMintArguments, validateCredentialRevokeArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, boundedValue, SHOWN_VALUE_MAX, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
   deleteIdpSpaceCatalog,
@@ -485,122 +485,6 @@ async function runActor(args: ParsedArgs, target: AuthTarget, command: "auth" | 
   }, () => new CommandFailure(mutationAttempted ? "unknown" : "failed", mutationAttempted ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", mutationAttempted ? "the grant operation did not return a confirmed complete result; lifecycle retirement or a ledger update may have occurred; nothing was retried" : "the local grant authority or records could not be read", { target: { space, ...(actor ? { actor } : {}) }, remedy: "read the authoritative grant ledger before another mutation" }));
 }
 
-/** Record one `agent-bearer` attempt in the manager-composed health file, 0o600 and never through a
- *  symlink ({@link writePrivateRecord}). */
-export function writeAgentAuthHealth(path: string, state: "ok" | "failed", reason?: string): void {
-  writePrivateRecord(path, JSON.stringify({ state, at: new Date().toISOString(), ...(reason ? { reason } : {}) } satisfies AgentAuthHealth));
-}
-
-/** `cotal agent-bearer` — the ONE thing a spawned user-mode agent execs to refresh its auth: read
- *  its spawn-time secret from the 0600 token file, exchange it at the space's auth service (agent
- *  grant type), print the fresh bearer to STDOUT, exit. Machine-facing: stdout carries the bearer
- *  and NOTHING else; every failure is a stderr sentence + exit 1 (the endpoint surfaces it as a
- *  loud "error" event and retries). The secret rides a file, never argv (ps-visible) or env. */
-async function runAgentBearer(args: ParsedArgs): Promise<void> {
-  const v = args.values as {
-    dir?: string; space?: string; owner?: string; actor?: string;
-    "token-file"?: string; "health-file"?: string; "exchange-url"?: string;
-    "manager-call"?: boolean; "manager-instance"?: string;
-  };
-  const { dir, space, owner, actor } = v;
-  const tokenFile = v["token-file"];
-  if (!space || !owner || !actor || !tokenFile || (!dir && !v["exchange-url"]))
-    throw new Error("usage: cotal agent-bearer [--dir <state-dir> | --exchange-url <https://base>] --space <s> --owner <u_…> --actor <a> --token-file <path> [--health-file <path>]");
-  // Every attempt's outcome lands in the manager-composed health file (core's AgentAuthHealth) —
-  // the `ps` window into a detached agent's bearer life. Best-effort: health reporting must never
-  // turn a successful exchange into a failure.
-  const managerCall = v["manager-call"] === true;
-  if (v["manager-instance"] !== undefined && !managerCall)
-    throw new Error("agent-bearer: --manager-instance requires --manager-call");
-  const managerInstance = v["manager-instance"] === undefined
-    ? undefined
-    : assertLifecycleToken(v["manager-instance"], "manager instance");
-  const health = (state: "ok" | "failed", reason?: string) => {
-    if (managerCall) return;
-    const path = v["health-file"];
-    if (!path) return;
-    try {
-      writeAgentAuthHealth(path, state, reason);
-    } catch { /* the exchange outcome still stands */ }
-  };
-  try {
-    let actorToken: string;
-    try {
-      actorToken = readFileSync(tokenFile, "utf8").trim();
-    } catch (e) {
-      throw new Error(`agent-bearer: can't read the actor token file at ${tokenFile} (${e instanceof Error ? e.message : String(e)}) - respawn this agent to re-provision it`);
-    }
-    const remote = v["exchange-url"];
-    let exchangeUrl: string;
-    let headers: Record<string, string> = { "content-type": "application/json" };
-    if (remote) {
-      let u: URL;
-      try { u = new URL(remote); }
-      catch { throw new Error(`agent-bearer: --exchange-url is not a URL (got ${JSON.stringify(remote)})`); }
-      // Match the remote-registration and enrollment transport rule: HTTPS, except a loopback HTTP
-      // literal where the actor token never leaves this machine. Names such as localhost get no
-      // exception because name resolution chooses where the credential goes.
-      if (u.protocol !== "https:" && !(u.protocol === "http:" && isLoopbackLiteral(u.hostname)))
-        throw new Error(`agent-bearer: --exchange-url must be https://, except for a loopback HTTP literal (got ${u.protocol}//) - the actor token must never cross plaintext off this machine`);
-      u.pathname = `${u.pathname.replace(/\/$/, "")}/exchange`;
-      u.search = "";
-      u.hash = "";
-      exchangeUrl = u.toString();
-    } else {
-      const info = loadAuthServiceInfo(dir!);
-      // Proof required: only `alive` counts as running. The old two-state probe called EPERM dead, so
-      // a service running as ANOTHER USER produced "not running - restart it with `cotal up`" about a
-      // service that was up the whole time; the contract resolves EPERM to alive and fixes exactly
-      // that. `unknown` still refuses, because telling an operator to talk to an endpoint whose
-      // liveness cannot be established is worse than telling them to restart.
-      const svc = info === undefined ? "absent" : probeLiveness(info.pid);
-      if (svc === "unknown")
-        throw new Error(
-          `agent-bearer: the user-auth service for space "${space}" records pid ${info!.pid}, whose liveness cannot be determined - the kernel answered neither "running" nor "no such process" (a seccomp filter or LSM policy does this inside some sandboxes). Refusing rather than reporting it down: verify with \`ps -p ${info!.pid}\` before restarting anything.`,
-        );
-      if (svc !== "alive" || info === undefined)
-        throw new Error(`agent-bearer: the user-auth service for space "${space}" is not running - restart it with \`cotal up\``);
-      exchangeUrl = `${info.url}/exchange`;
-      headers = { ...headers, authorization: `Bearer ${info.cap}` };
-    }
-    let res: Response;
-    try {
-      res = await fetch(exchangeUrl, {
-        method: "POST",
-        headers,
-        redirect: "manual",
-        body: JSON.stringify({
-          owner,
-          actor,
-          actorToken,
-          ...(managerCall ? { view: "manager-caller", ...(managerInstance !== undefined ? { managerInstanceId: managerInstance } : {}) } : {}),
-        }),
-        signal: AbortSignal.timeout(15_000),
-      });
-    } catch (e) {
-      throw new Error(
-        remote
-          ? `agent-bearer: the pinned exchange did not answer at ${exchangeUrl} (${e instanceof Error ? e.message : String(e)})`
-          : `agent-bearer: the user-auth service did not answer at ${exchangeUrl.replace(/\/exchange$/, "")} (${e instanceof Error ? e.message : String(e)}) - restart it with \`cotal up\``,
-      );
-    }
-    if (res.status >= 300 && res.status < 400)
-      throw new Error(`agent-bearer: the pinned exchange answered ${res.status} with redirect Location ${JSON.stringify(res.headers.get("location") ?? "")} - redirects are refused so an HTTPS pin cannot walk the actor token onto plaintext or another host`);
-    if (!res.ok) {
-      const body = (await readAuthResponseJson(res, `agent-bearer: the exchange at ${exchangeUrl}`)) as { error?: string };
-      throw new Error(`agent-bearer: exchange refused: ${body.error ?? `HTTP ${res.status}`}`);
-    }
-    const out = (await readAuthResponseJson(res, `agent-bearer: the exchange at ${exchangeUrl}`)) as { token?: string };
-    if (typeof out.token !== "string" || !out.token)
-      throw new Error("agent-bearer: the auth service's exchange returned no token - its build may be stale; restart it with `cotal up`");
-    health("ok");
-    process.stdout.write(`${out.token}\n`);
-  } catch (e) {
-    health("failed", e instanceof Error ? e.message : String(e));
-    throw e;
-  }
-}
-
 const authCommands: Command[] = [
   {
     kind: "command",
@@ -647,27 +531,7 @@ const authCommands: Command[] = [
       return runActor(args, localAuthTarget(args.values as { space?: string }), "actor");
     },
   },
-  {
-    kind: "command",
-    name: "agent-bearer",
-    // Spawned agents exec it; people never run it, so help leaves it out.
-    hidden: true,
-    group: "Manager",
-    summary: "print one fresh agent bearer for a spawned user-mode agent (machine-facing; exec'd by agent endpoints)",
-    usage: "cotal agent-bearer [--dir <state-dir> | --exchange-url <https://base>] --space <s> --owner <u_…> --actor <a> --token-file <path>",
-    flags: [
-      { name: "dir", type: "string", value: "<state-dir>", description: "local arm: the space's user-auth state dir" },
-      { name: "exchange-url", type: "string", value: "<https://base>", description: "remote arm: pinned public exchange base URL (HTTPS required; no local capability)" },
-      { name: "space", type: "string", value: "<s>", description: "the space the bearer is scoped to" },
-      { name: "owner", type: "string", value: "<u_…>", description: "the agent's owner token" },
-      { name: "actor", type: "string", value: "<a>", description: "the agent's actor token" },
-      { name: "token-file", type: "string", value: "<path>", description: "0600 file holding the spawn-time agent secret" },
-      { name: "health-file", type: "string", value: "<path>", description: "write each attempt's outcome here (read by the manager's ps)" },
-      { name: "manager-call", type: "boolean", description: "mint a token bound to one manager instance" },
-      { name: "manager-instance", type: "string", value: "<id>", description: "select the manager instance for --manager-call" },
-    ],
-    run: (args) => legibly(() => runAgentBearer(args)),
-  },
+  agentBearerCommand,
   {
     kind: "command",
     name: "service-endpoint",
