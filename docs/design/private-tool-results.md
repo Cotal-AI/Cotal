@@ -9,8 +9,8 @@ prerequisite 2 is not met. The `manager-managed-agent-tool-result-serving` reque
 stock `dispatchManagerAuthorityRequest` does not serve it, and `queueFrontier`, the serving handlers
 and the browser caller do not exist. On 26 October 2026, after 0.103.4, main also gained a bounded
 connector-side journal, `extensions/connector-core/src/tool-result-journal.ts` (#4838), which keeps
-the section 5 and 6 entry rules. It is not in a release, and nothing calls it yet: the emitter does
-not capture into it. No component serves private tool results. Acceptance does not enable it: every owner in section 9 must land
+the section 5 and 6 entry rules. That change adds storage without wiring a caller: the emitter
+does not capture into it. No component serves private tool results. Acceptance does not enable it: every owner in section 9 must land
 and qualify their part, and section 11's activation gates remain binding.
 [Embedding](../embedding.md#private-tool-results) lists the shipped exports.
 

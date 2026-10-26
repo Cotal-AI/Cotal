@@ -521,6 +521,10 @@ The run's wire footprint is [SPEC §14](../SPEC.md#14-workflow-runs-v05):
 | the admission | `admission.v1.<endpoint>.<runId>` in `cotal_admission_<space>` | the caller the run was admitted for, its channel ceiling and its provenance; written once before the driver starts, and the store refuses a second write on the key |
 | a revocation | `revoked.v1.<endpoint>.<runId>` in the same store | who revoked the run and why; create-only, idempotent, permanent at the broker, read by every host before its next channel effect |
 
+The implementation writes the `program` record, and SPEC §14 refers to it, but the
+record-kind table in SPEC §13.7 does not list it. That table omission remains a
+specification gap; the table above describes the implemented storage layout.
+
 The driver writes `journalHigh` at activation and again after each journal append, before the
 program acts on the entry. A successor whose replay ends below it refuses the run with
 `RunJournalTailTruncated`. That holds for records appended since the last activation too.

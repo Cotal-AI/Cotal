@@ -1,6 +1,6 @@
 # One callout process for every space on a host
 
-Status: implemented in 0.103.0 by #4819. `openCalloutLane` is in
+Status: implemented by #4819 and included in published version 0.103.1. `openCalloutLane` is in
 `implementations/auth/src/callout-lane.ts`, `runCalloutHost` and the manifest parser are in
 `implementations/auth/src/callout-host.ts`, and `cotal auth-service --callout-only --spaces
 <manifest>` is documented under [server daemons](../cli.md#server-daemons). SPEC §10 and Appendix B

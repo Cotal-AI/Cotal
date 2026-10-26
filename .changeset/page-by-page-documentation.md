@@ -13,6 +13,8 @@
 "@cotal-ai/herdr": patch
 "@cotal-ai/linear": patch
 "@cotal-ai/manager": patch
+"@cotal-ai/lang": patch
+"@cotal-ai/runtime": patch
 "@cotal-ai/seat": patch
 "@cotal-ai/tmux": patch
 "@cotal-ai/workspace": patch
