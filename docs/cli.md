@@ -1211,6 +1211,9 @@ When the broker or manager of a static-auth stack that `up` started in a folder 
 stays. `cotal status` in that folder shows the row as `stale pidfile` and puts `cotal up` first under
 Next, which starts it again on the recorded address and store. `up` does not record `--runtime`, so
 pass it again when the manager ran on one.
+While such a stopped folder's broker store remains, Next also names the step for a stale store:
+`cotal reset store <space>` when that reset reaches this folder's store, and `cotal clean store --force`
+when no registration lets a reset reach it, as after `down` in a legacy root started under another name.
 
 The generated `.cotal/auth/server.conf` is written on a real broker boot and is not an
 operator-owned config. `--host` changes that file only when nats is actually started. A unit

@@ -35,6 +35,8 @@
  * those use is held by a loopback listener that never answers NATS, so a regression still cannot
  * start a broker there. On Linux, two cells hold one by a client connection's local end instead,
  * open and then in TIME-WAIT, with nothing listening, and need the refusal to say which.
+ * A refusal that names the whole fix, such as a nats:// address where the root's recorded policy or
+ * --tls-cert serves TLS, prints no help after it. Those cells need `openssl` on PATH.
  *
  * Run: pnpm smoke:up-usage-refusal
  */
@@ -305,6 +307,32 @@ const holder = createServer((socket) => socket.on("error", () => {}));
 const held = await new Promise<number>((resolve) => holder.listen(0, "127.0.0.1", () => resolve((holder.address() as AddressInfo).port)));
 const started = (root: string) => existsSync(join(root, ".cotal", "nats.pid"));
 try {
+  // A refusal that names the address to pass is the whole fix, so no help follows it and scrolls the
+  // fix away: a nats:// address where the root's recorded policy or --tls-cert serves TLS, and a
+  // tls:// address with no TLS to serve.
+  {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-tls-")));
+    roots.push(root);
+    mkdirSync(join(root, ".cotal"));
+    const [cert, key] = [join(root, "c.pem"), join(root, "k.pem")];
+    const minted = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "2", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], { encoding: "utf8" });
+    check("openssl mints the certificate the TLS refusals are given", minted.status === 0 && existsSync(cert), { status: minted.status, stderr: minted.stderr?.slice(0, 400) });
+    const policyFile = join(root, ".cotal", "broker-policy.json");
+    const policy = JSON.stringify({ version: 1, transport: { kind: "tls-required", certFile: cert, keyFile: key } });
+    writeFileSync(policyFile, policy);
+    const plainRoot = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-plain-")));
+    roots.push(plainRoot);
+    mkdirSync(join(plainRoot, ".cotal"));
+    for (const { label, args, cwd, message, remedy } of [
+      { label: "a nats:// --server in a root whose recorded policy serves TLS", args: ["--server", `nats://127.0.0.1:${held}`], cwd: root, message: `this root serves the broker over TLS (${policyFile}), so --server must be a tls:// address`, remedy: `pass --server tls://127.0.0.1:${held}` },
+      { label: "a nats:// --server with --tls-cert", args: ["--server", `nats://127.0.0.1:${held}`, "--tls-cert", cert, "--tls-key", key], cwd: plainRoot, message: "--tls-cert serves the broker over TLS, so --server must be a tls:// address", remedy: `pass --server tls://127.0.0.1:${held}` },
+      { label: "a tls:// --server with no TLS configured", args: ["--server", `tls://127.0.0.1:${held}`], cwd: plainRoot, message: "--server names a tls:// address, but no TLS certificate and key are configured", remedy: "serve TLS with --tls-cert <cert.pem> --tls-key <key.pem>, or use a nats:// address" },
+    ]) {
+      const r = run(["up", ...args], cwd);
+      check(`up refuses ${label} with its fix and no help, exit 1`, r.status === 1 && r.stdout === "" && r.stderr.includes(message) && r.stderr.includes(remedy) && !/Usage|Options/.test(r.stderr), shown(r));
+    }
+    check("the refusals leave the recorded policy as it was and start no broker", readFileSync(policyFile, "utf8") === policy && !started(root) && !started(plainRoot), readdirSync(join(root, ".cotal")));
+  }
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-read-")));
     roots.push(root);
