@@ -331,6 +331,9 @@ importers:
       '@ag-ui/core':
         specifier: 0.0.57
         version: 0.0.57
+      '@cotal-ai/auth':
+        specifier: workspace:*
+        version: link:../../implementations/auth
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -343,6 +346,9 @@ importers:
       '@nats-io/transport-node':
         specifier: ^3.4.0
         version: 3.4.0
+      jose:
+        specifier: ^6.2.3
+        version: 6.2.3
 
   extensions/connector-hermes:
     devDependencies:

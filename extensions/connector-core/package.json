@@ -44,6 +44,8 @@
     "@cotal-ai/core": ">=0.1.0"
   },
   "devDependencies": {
+    "@cotal-ai/auth": "workspace:*",
+    "jose": "^6.2.3",
     "@cotal-ai/smoke-kit": "workspace:*",
     "@ag-ui/core": "0.0.57",
     "@cotal-ai/core": "workspace:*",
