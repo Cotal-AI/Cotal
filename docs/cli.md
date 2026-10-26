@@ -6051,8 +6051,9 @@ resource subscriptions or logging, are listed under `unsupported`.
 Bare `linear` and `linear account` show their scoped operations without opening an account or
 contacting the upstream. Account add/show, inventory and the native call/resource/prompt forms
 support shared rich/plain reports and version-1 JSON envelopes. Scoped help and completion use
-the same operation/flag declarations as validation. Extra operands and wrong-mode flags refuse
-before account access. Positional values are bounded to 8192 characters without terminal controls.
+the same operation/flag declarations as validation, and each operation's help shows its own usage
+line. Extra operands and wrong-mode flags refuse before account access; a flag the operation does
+not take is named, with the flags it does take and its usage. Positional values are bounded to 8192 characters without terminal controls.
 Piped tokens are bounded to 1 MiB of strict UTF-8; their contents and argument parse errors are
 not echoed. Account reports describe recorded configuration or a native save acknowledgement,
 not current access to Linear. An account name with no record refuses with `TARGET_NOT_FOUND` and
@@ -6075,7 +6076,9 @@ external authorization may already have changed.
 
 OAuth login keeps the native human authorization flow, so it offers plain output but not JSON
 and refuses when input is disabled. The existing foreground `serve` route keeps its native authority and human output; it does not
-accept finite-output flags. The existing `caller` route
+accept finite-output flags, and `--json` or `--plain` there refuses as a usage error (exit 1) that
+says so. Its refusals carry their identifiers in the text report instead, such as the proposal to
+approve on a user-auth mesh. The existing `caller` route
 keeps its native static issuer but supports shared JSON/plain private-file receipts. Its output
 must be outside managed state in an existing protected physical parent. An existing destination
 refuses before provisioning. Publication is create-only under the cooperative output lock, and
@@ -6129,7 +6132,16 @@ surfaces through live native resolution. Targeted/journaled/action issuance and 
 adapters are not supported.
 
 On a user-auth mesh, `serve` uses the registered auth provider's service authority. The owner must
-approve the original service proposal and the operator must bind its endpoint name. Repeat the
+approve the original service proposal and the operator must bind its endpoint name. Until then
+`serve` refuses with `PERMISSION_DENIED` (exit 2), and its Next line names the proposal and the
+command that approves it:
+
+```bash
+cotal service-endpoint approve <proposalId> --caller-ceiling linear.mcp --space <space>
+```
+
+The `linear.mcp` ceiling covers the five Linear commands, so callers can be granted them later; an
+approval without it has an empty ceiling and no caller can be granted. Repeat the
 same command after approval. Its instance, registration body and request identities are retained;
 a changed account, target or embedded contract refuses instead of replacing them. The shared
 renewal source activates and renews the access bearer. The service verifies the signed bearer and
