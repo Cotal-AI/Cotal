@@ -88,17 +88,17 @@ runs a launch only with `--detach` (`-d`), which returns once the agent joins, o
   agent-provisioning endpoint the mesh advertises. A mesh that advertises none refuses it and names
   `-d` among the remedies.
 
-## Space selection inside a project folder after 0.100.2
+## Selected space inside project folders
 
-A command run without `--space` inside a project folder whose root has one registered or prepared
-space now targets that space, even when another space is selected. The note under its `Mesh:`
-heading says the selection applies outside the folder. Everywhere else the selection is the target,
-as before. Nothing on a running mesh changes.
+The space selected with `cotal use <name>` now wins in every directory. A project's own or ancestor
+`.cotal/` cannot override it, including when that folder's mesh is prepared or stopped. Explicit
+`--space` and `--server` keep their precedence. An unavailable or missing selected space refuses;
+it does not send the command to the folder's mesh instead.
 
-- A script that runs in one space's folder and means the selected space names it with `--space`.
-- `SELECTION_NOT_FOLDER_SPACE` is reported only in a folder whose root has several spaces, none of
-  them the selection.
-- `cotal up` says when it selects the space it started.
+This replaces the folder-first behavior introduced in 0.100.2. Scripts that intend the folder's
+space must name it with `--space <name>`, or clear the saved selection with `cotal use --clear`.
+Use `cotal space show` to inspect the default target before acting. No configuration directories,
+credentials or running processes need to be moved.
 
 ## Bare down beside a running service after 0.100.2
 

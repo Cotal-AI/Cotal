@@ -45,9 +45,8 @@ connectors after an old executable rebuilt them, run the verified newer absolute
 `ext seed`, without `--force`.
 
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
-the space a command run here targets, the one registered or prepared in the current folder, else
-the selected space, and lists common commands. When that folder's space is not the selection, it
-adds that the selected space applies outside the folder. It points a prepared space to the `cotal up` that starts it, with
+the space a command run here targets, the selected space, else the one registered or prepared in
+the current folder, and lists common commands. It points a prepared space to the `cotal up` that starts it, with
 `--root <dir>` when the space is prepared in another folder and `<dir>` quoted when a shell would
 split it, and a machine with no space to `cotal setup`. With spaces on the machine but none selected
 or in this folder, it names `cotal use <name>` and `cotal space` instead. Every command generates its own help, usage, and shell completion from its declared
@@ -2582,14 +2581,12 @@ cotal use [<space> | --clear] [--json|--plain]
 ```
 
 `space` lists the spaces this machine can reach: each one's broker state, server, mode, origin
-(`started here`, `registered` or `discovered`) and root, with the selected one marked. Inside a
-project whose root has one registered or prepared space other than the selection, that space is
-marked as this folder's, since a command without `--space` targets it there. It probes
+(`started here`, `registered` or `discovered`) and root, with the selected one marked. The selected
+space remains the default target inside other projects too. It probes
 each broker that this machine started or that was registered by hand, and reports one that does not
 answer as `unreachable`; its registration stays. A discovered space is never dialed by a listing and
 reads `not checked`. `space show [<name>]` shows one space in full and probes only that broker.
-With no name it shows the space a command without `--space` targets: this folder's space as above,
-else the selected one. Neither writes anything. A registry record that cannot be
+With no name it shows the selected space, else this folder's space. Neither writes anything. A registry record that cannot be
 read refuses both with `SCHEMA_INVALID`, exit 1, naming its file.
 
 `--json` writes one document. `space` gives `current` (the selected space or null),
@@ -2847,16 +2844,15 @@ broker restart brings the history back. To drop
 the space instead, run `cotal down --yes` in its root, then `space forget`. On a legacy root, run
 `cotal down`, then `cotal up` to start it again with empty streams.
 
-`use <space>` selects the space commands target when none is named, outside another space's
-project folder. It changes only the selection:
+`use <space>` selects the space commands target when none is named, from every directory.
+A project or ancestor `.cotal/` cannot override it. It changes only the selection:
 it starts nothing and does not check the broker, so a stopped or prepared space can be selected and
 the command that targets it reports that. Selecting the selected space again is a `no-op`. A name that is not
 registered or prepared is refused with `TARGET_NOT_FOUND`, exit 2, naming the known spaces, and the
 selection stays. That refusal has no `Mesh:` heading, and its remedy names `cotal use --clear` only
 while a space is selected. Bare `use` reports
-the selection. Inside a project whose root has one registered or prepared space other than the
-selection, `use` also says that commands in the folder target that space, and `--json` gives it as
-`folder`. A selection that names a space no longer registered is reported with a
+the selection, which applies inside project folders too. A selection that names a space no longer
+registered is reported with a
 `SELECTION_NOT_REGISTERED` warning by `use` and `space`, and stays until `use` changes it.
 `use --clear` removes the selection, so a command targets its folder's space again. Its receipt
 names the space that was selected, and `--json` gives `current: null` with that `previous`. With
@@ -2867,14 +2863,11 @@ operation, such as `cotal down, completed`, and names `cotal up` in its root. It
 `result.selection`, with `current`, the space selected after the start, and `changed`, which is true
 when this `up` selected its own space because no space was selected.
 
-A command run without `--space` targets the selection. When the selected space's broker is down it
-refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
-it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh. Inside a project whose root has one
-registered or prepared space other than the selection, the command targets that space, as it does
-with nothing selected, and the note under its `Mesh:` heading, a refusal's included, says the
-selection applies outside the folder. Inside a project whose root has several spaces, none of them
-the selection, the command targets the selection. Before it acts, it warns on stderr and in its JSON
-`warnings` with `SELECTION_NOT_FOLDER_SPACE`, naming the folder's spaces and `--space <space>`.
+A command run without an explicit target uses the selection in every folder. When the selected
+space's broker is down it refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a
+space no longer registered it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh.
+A project's prepared, stopped or running space does not override the selection. Name another space
+with `--space <name>` for one command, or use `cotal use --clear` to return to folder-based targeting.
 An empty `--space` value, such as `--space "$S"` with `S` unset, is refused with `USAGE_INVALID`,
 exit 1, by every command that takes `--space`, before anything is read or written. It never falls
 back to the selection.
@@ -2934,8 +2927,8 @@ in `error.remedy`, apart from `error.message`, and names the space and root it c
 
 `--creds <file>` presents that credential to `--server`. Without `--server`, it goes to the broker
 its space is registered at and keeps that registration's TLS requirement. The space is `--space`,
-else the selected space, else the space of the project the command runs in, else `main`. Inside a
-project whose root has one space other than the selection, it is that space. A command never picks the only running space for a credential. A space not registered here is refused with
+else the selected space, else the space of the project the command runs in, else `main`.
+A command never picks the only running space for a credential. A space not registered here is refused with
 `TARGET_NOT_FOUND`, exit 2, before anything is dialed. The refusal says whether it is the selected
 space, this folder's space or the default space, and a space other than the default is also under
 `target`. The default address is never assumed for a credential.
@@ -3237,11 +3230,9 @@ AG-UI runs, regardless of who drives their input. Required events do not turn te
 into agent runs or copy channel and DM text into an event stream. This launch policy is not an
 additional broker authorization boundary. The broker still enforces each endpoint's grants.
 
-The selection `cotal use` sets applies from every directory except another space's project folder,
-where the command targets that folder's space. There `status` reports that space under its `Mesh:`
-heading and a `This folder's space` section, also while it is prepared or stopped, and says the
-selected space applies outside the folder. `--json` names it in `target.space` and in
-`meshes.folder`, which `cotal space --json` gives as `folder`. `status` is a read-only report in this order: this machine
+The selection `cotal use` sets applies from every directory. A folder's prepared or stopped space
+does not replace it. `status --json` names the resolved target in `target.space`.
+`status` is a read-only report in this order: this machine
 (the installed `cotal-ai` version, NATS and each named integration), the installed extensions and
 their versions, this folder's `.cotal/`, the recorded meshes, the selected mesh (its connection, the
 delivery responder, its channels and membership feed), then the hints. It lists no roster; `cotal ps`
@@ -6533,7 +6524,7 @@ harness. A `--link` supplies the where and the auth in one value. See
 
 A `--token` or `--creds` goes to `--server`, or else to the broker the space is registered at,
 keeping that registration's TLS requirement. With no `--space`, that is the selected space, else
-this folder's, and inside a project whose root has one space other than the selection, that space.
+this folder's space.
 A space not registered here is refused before anything is dialed. The default address is never
 assumed for a credential.
 
