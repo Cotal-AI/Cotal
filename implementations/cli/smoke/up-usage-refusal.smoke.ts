@@ -7,7 +7,8 @@
  *
  * The same holds where `up` would otherwise start something it cannot stand behind. A prepared root
  * given an option the controller stack has no route for refuses UNSUPPORTED instead of starting the
- * legacy launcher. A broker address another program holds refuses CONFLICT instead of launching a
+ * legacy launcher, while a stopped root that launcher registered with no prepared record keeps it for
+ * that option. A broker address another program holds refuses CONFLICT instead of launching a
  * broker that exits on its bind. `up -f` on a root that holds a controller stack refuses CONFLICT
  * instead of starting a manifest stack beside it. An empty `--store-dir`, which used to open the
  * default store, and one that starts with a `~` no shell expanded, which made a folder named `~`,
@@ -333,6 +334,22 @@ try {
   const bareTls = run(["up", "--server", `tls://127.0.0.1:${held}`, "--json"], prepared);
   check("…and a tls:// address alone refuses that way, not by asking for --tls-cert", bareTls.status === 2 && bareTls.envelope?.error?.code === "UNSUPPORTED" && /no route for --server tls:\/\//.test(bareTls.envelope.error.message ?? "") && tlsRoute.test(bareTls.envelope.error.remedy ?? ""), shown(bareTls));
   check("…without starting the legacy launcher or the controller stack", !started(prepared) && !existsSync(join(prepared, ".cotal", "stack-controller.json")), readdirSync(join(prepared, ".cotal")));
+  // A root the legacy launcher started keeps it for such an option: its `up` registered the space in
+  // user mode with no prepared record, as a stack stopped without `down` leaves it. Under --json that
+  // launcher refuses before it starts anything, so the message tells the two routes apart.
+  {
+    const legacy = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-legacy-")));
+    roots.push(legacy);
+    mkdirSync(join(legacy, ".cotal"), { mode: 0o700 });
+    const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+    process.env.COTAL_HOME = join(home, ".cotal");
+    recordMesh({ space: "legacyface", server: `nats://127.0.0.1:${held}`, root: legacy, mode: "user", origin: "up", ts: new Date().toISOString() });
+    const face = run(["up", "--space", "legacyface", "--user-auth", "--idp", "https://idp.example.test/api/auth", "--server", `nats://127.0.0.1:${held}`, "--exchange-public-port", String(await freePort()), "--exchange-public-url", "https://mesh.example.test", "--json"], legacy);
+    removeMesh("legacyface");
+    delete process.env.COTAL_HOME;
+    check("a stopped root the legacy launcher registered with no prepared record keeps that launcher for the public face, not UNSUPPORTED for a prepared root",
+      face.status === 2 && face.envelope?.error?.code === "UNSUPPORTED" && /retained native launcher, which has no structured or plain receipt/.test(face.envelope.error.message ?? "") && !started(legacy) && !existsSync(join(legacy, ".cotal", "stack-controller.json")), shown(face));
+  }
 
   const bind = run(["up", "--server", `nats://127.0.0.1:${held}`], unprepared);
   check("the legacy route refuses a held address CONFLICT, exit 2, naming the address, and launches nothing",
