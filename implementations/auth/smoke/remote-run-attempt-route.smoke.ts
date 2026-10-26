@@ -283,8 +283,8 @@ try {
     },
   });
   c("stale or jumped attempt coordinates refuse with conflict message",
-    staleRes.status === 403 && String(staleRes.body.error).includes("next recorded epoch") &&
-    jumpedRes.status === 403 && String(jumpedRes.body.error).includes("next recorded epoch"),
+    staleRes.status === 409 && String(staleRes.body.error).includes("next recorded epoch") &&
+    jumpedRes.status === 409 && String(jumpedRes.body.error).includes("next recorded epoch"),
     { staleRes, jumpedRes });
 
   // 7. Terminal run gets no new attempt
@@ -444,7 +444,7 @@ try {
     attempt: { runId: first, takeoverId: "t".repeat(16), epoch: 2, fencingToken: 2, driverId: newIdentity().id, mediatorId: newIdentity().id },
   });
   c("stale process epoch refuses",
-    staleEpochRes.status === 403 && String(staleEpochRes.body.error).includes("stale"), staleEpochRes);
+    staleEpochRes.status === 409 && String(staleEpochRes.body.error).includes("stale"), staleEpochRes);
 
   // 13. Stale or bad registration proof refuses (403)
   const badProofRes = await postHttp({
