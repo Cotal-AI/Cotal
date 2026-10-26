@@ -225,7 +225,9 @@ try {
   check("a rebuild inside that wait dials on the held bearer without asking the source", calls.length === 2 && rebuilt, { calls: calls.length, rebuilt });
   for (let i = 0; i < 400 && calls.length < 3; i++) await new Promise((r) => setTimeout(r, 100));
   const gap = (calls[2] ?? Infinity) - (calls[1] ?? 0);
-  check("a bearer source's retryAfterSeconds is kept exactly: asked again after 7s, not on the 2.5-5s backoff", calls.length === 3 && gap >= 7_000 && gap < 9_000, { calls: calls.length, gap });
+  // Its tokens are born past their renewal window, so the rebuild after the third call may renew at
+  // once: the cell grades the gap the wait set, not how many calls followed it.
+  check("a bearer source's retryAfterSeconds is kept exactly: asked again after 7s, not on the 2.5-5s backoff", calls.length >= 3 && gap >= 7_000 && gap < 9_000, { calls: calls.length, gap });
   await pacedEp.stop();
 
   await calloutNc.close();
