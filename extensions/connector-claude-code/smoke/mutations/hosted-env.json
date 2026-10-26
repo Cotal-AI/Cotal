@@ -91,8 +91,8 @@
     {
       "name": "manager-caller bearer bypasses the scoped executor",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        const bearer = (signal?: AbortSignal) => this.execBearerCmd([\n          ...bearerCmd,\n          \"--manager-call\",\n          ...(managerInstanceId ? [\"--manager-instance\", managerInstanceId] : []),\n        ], signal)",
-      "replace": "        const bearer = (signal?: AbortSignal) => runAgentBearer([\n          ...bearerCmd,\n          \"--manager-call\",\n          ...(managerInstanceId ? [\"--manager-instance\", managerInstanceId] : []),\n        ], { signal })",
+      "find": "        const bearer = (signal?: AbortSignal) => this.managerCallBearer(bearerArgv, signal).catch((e: unknown) => {",
+      "replace": "        const bearer = (signal?: AbortSignal) => runAgentBearer(bearerArgv, { signal }).catch((e: unknown) => {",
       "command": "pnpm smoke:user-manager-transport",
       "expectRed": "✗ actual MeshAgent.spawn over real wire to real Manager succeeded"
     },

@@ -15,8 +15,8 @@
     {
       "name": "every pending turn on a seat is served at once",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      .slice(0, 1)\n",
-      "replace": "",
+      "find": "      .sort((x, y) => x.acceptedAt - y.acceptedAt)\n      .slice(0, 1);",
+      "replace": "      .sort((x, y) => x.acceptedAt - y.acceptedAt);",
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "the seat is shown exactly one of them",
       "cell": "the seat is shown exactly one of them",
