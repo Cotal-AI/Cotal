@@ -257,7 +257,7 @@ Content type: `application/json`.
 
 `POST /manager-service-authority`
 
-Fresh JSON idpToken derives the owner; request.actor is checked against its current interactive ledger grant. Native request kinds and phase-specific results are not a stable cloud API. Manager lifecycle prepare/activate/renew/retire, enrollment, retirement preparation, retained validation, goal-index scan, admin authorization and run operations dispatch to their native contracts. Stock runtime-create/runtime-status and delegated intent kinds require host interception; the HTTP wrapper currently reports those refusals as 403 (not 501). Missing IdP proof is 400; failed proof, native parser/authority/unsupported failures are 403, or 429 when throttled. Origin is refused. Credential verification and native dispatch failures share the public peer refusal budget.
+Fresh JSON idpToken derives the owner; request.actor is checked against its current interactive ledger grant. Native request kinds and phase-specific results are not a stable cloud API. Manager lifecycle prepare/activate/renew/retire, enrollment, retirement preparation, retained validation, goal-index scan, admin authorization and run operations dispatch to their native contracts. Stock runtime-create/runtime-status and delegated intent kinds require host interception; the HTTP wrapper currently reports those refusals as 403 (not 501). Missing IdP proof is 400; a native conflict, such as a name another lifecycle holds or a stale serve epoch, is 409; failed proof, native parser/authority/unsupported failures are 403. A 403 or 409 refusal is 429 instead when the peer is throttled. Origin is refused. Credential verification and native dispatch failures share the public peer refusal budget.
 
 ### Parameters
 
@@ -317,6 +317,18 @@ Content type: `application/json`.
 ```
 
 #### HTTP 405
+
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 409
 
 JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
 
@@ -601,7 +613,7 @@ Content type: `application/json`.
 
 `POST /service-endpoint-authority`
 
-Only enabled with service endpoints; otherwise 404 before all guards. Fresh JSON proof is verified by kind, never by a loopback capability. Account/space mismatch yields a native denied result. Protocol denials echo coordinates and state=denied: 401 unauthenticated/proof-mismatch; 409 conflict or registration/proposal state; 422 bad-request, closure-invalid, unsupported-runtime or unsupported; 429 resource-exhausted/rate-limited; other authority denials 403. Native envelope/parser errors are plain 400 errors. revoke and describe-view are currently unsupported (422). Transport, 5xx or unknown effects never justify changing the mutation identity. Origin is refused.
+Only enabled with service endpoints; otherwise 404 before all guards. Fresh JSON proof is verified by kind, never by a loopback capability. Account/space mismatch yields a native denied result. Protocol denials echo coordinates and state=denied: 401 unauthenticated/proof-mismatch; 409 conflict or registration/proposal state; 422 bad-request, closure-invalid, unsupported-runtime or unsupported; 429 resource-exhausted/rate-limited; other authority denials 403. Native envelope/parser errors are plain 400 errors. revoke and describe-view are currently unsupported (422). Transport, 5xx or unknown effects never justify changing the mutation identity. Origin is refused. registered, credential, ready and status answer 200; approval-required and pending answer 202.
 
 ### Parameters
 
@@ -627,6 +639,18 @@ Content type: `application/json`.
 #### HTTP 200
 
 Successful response.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/ServiceResult"
+}
+```
+
+#### HTTP 202
+
+Native approval-required or pending result with echoed coordinates; replay the same request after approval.
 
 Content type: `application/json`.
 
