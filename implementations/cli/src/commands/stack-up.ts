@@ -257,7 +257,8 @@ export function requestedStackMode(values: ParsedArgs["values"]): StackMode | un
 
 /** A root takes the controller route when it already has a stack journal, or when it is a fresh,
  *  prepared root with nothing legacy, maintenance or team-owned retained under it. On either, an
- *  input the controller has no route for refuses `UNSUPPORTED`. A recorded stack that launched a
+ *  input the controller has no route for refuses `UNSUPPORTED`; a root the retained launcher
+ *  already started keeps that launcher for such an input. A recorded stack that launched a
  *  member keeps its auth mode. A static-auth request needs an `up`
  *  registration in auth mode or none. An `--open` request needs an open registration or none, and
  *  a root that holds no broker account. A prepared user-auth root uses the same controller with
@@ -292,9 +293,14 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   if (registered && !preparedHere && keepsRegistration(registered)) return false;
   if (readMaintenanceJournal(canonical)) return false;
   if (existsSync(join(canonical, ".cotal", "nats.pid")) || liveMeshProcesses(canonical, space).length) return false;
-  // A prepared root never falls through to the legacy launcher, so an option the controller stack
-  // has no route for refuses here as it does on a root whose stack the controller owns.
-  if (unsupported.length) throw controllerUnsupported(canonical, unsupported, true);
+  if (unsupported.length) {
+    // A root the retained launcher already started, registered by it with no prepared record here or
+    // holding the user-auth state it wrote, keeps that launcher for an option only it takes.
+    if (!preparedHere || wanted === "user" && hasUserAuthState(canonical, space, { readOnly: true })) return false;
+    // A fresh prepared root never falls through to the legacy launcher, so an option the controller
+    // stack has no route for refuses here as it does on a root whose stack the controller owns.
+    throw controllerUnsupported(canonical, unsupported, true);
+  }
   return true;
 }
 

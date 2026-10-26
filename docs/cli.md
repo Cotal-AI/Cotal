@@ -884,7 +884,9 @@ task readiness. A prepared root never starts the legacy launcher: an option the 
 no route for, such as `--tls-cert` or a `tls://` `--server`, refuses `UNSUPPORTED`, exit 2, before anything starts, as it
 does on a root whose stack the controller already owns. `--rotate-sys` on a first start refuses the
 same way, because a first start mints the space's `$SYS` creds. The refusal names each option, and
-names `cotal up -f <cotal.yaml>` when the manifest route takes them all.
+names `cotal up -f <cotal.yaml>` when the manifest route takes them all. A stopped root that the
+legacy launcher started and that has no stack journal keeps that launcher for such an option: one
+its `up` registered with no prepared record, or a user-auth root that holds its user-auth state.
 `--json` returns one
 stack receipt and `--plain` returns a line-oriented report. Partial startup keeps confirmed members
 and reports them; unknown operations are retained and never retried automatically. A failure while
