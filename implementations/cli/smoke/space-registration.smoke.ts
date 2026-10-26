@@ -818,6 +818,22 @@ if (process.platform === "linux") {
     check("the machine's own Cotal home is refused as a control directory that holds this machine's records",
       refused(machine, 2, "CONFLICT") && machine.env?.error?.message === `${process.env.COTAL_HOME} is the control directory ${process.env.COTAL_HOME}, which holds this machine's own records, so it cannot be a project folder; nothing was written` &&
         machine.env.error.remedy === "create the space in a project folder with --root <dir>" && !existsSync(join(process.env.COTAL_HOME!, ".cotal")), shown(machine));
+    // A home COTAL_HOME redirects is a folder the operator chose and may hold project folders beside
+    // its records, as the hosted layout does with its space root at $COTAL_HOME/cotal. Only the home
+    // itself and its record entries are control paths there.
+    const redirected = join(outer, "cloud");
+    mkdirSync(join(redirected, "meshes", "hosted"), { recursive: true, mode: 0o700 });
+    mkdirSync(join(redirected, "cotal"), { mode: 0o700 });
+    const underRedirected = (root: string) => run(["space", "create", "hosted", "--root", root, "--json"], { COTAL_HOME: redirected }, outer);
+    const projectInHome = await underRedirected(join(redirected, "cotal"));
+    check("a project folder beside a redirected home's records is a project of its own",
+      projectInHome.status === 0 && existsSync(join(redirected, "cotal", ".cotal")) && !existsSync(join(redirected, ".cotal")), { status: projectInHome.status, stdout: projectInHome.stdout.slice(0, 400), stderr: projectInHome.stderr.slice(0, 400) });
+    const recordInHome = await underRedirected(join(redirected, "meshes", "hosted"));
+    check("a folder inside a redirected home's record entry is still refused as the home's control directory",
+      recordInHome.status === 2 && recordInHome.stdout.includes(`${join(redirected, "meshes", "hosted")} is in the control directory ${redirected}, which holds this machine's own records`) && !existsSync(join(redirected, "meshes", "hosted", ".cotal")), { status: recordInHome.status, stdout: recordInHome.stdout.slice(0, 400) });
+    const homeItself = await underRedirected(redirected);
+    check("a redirected home itself is still refused as a control directory",
+      homeItself.status === 2 && homeItself.stdout.includes(`${redirected} is the control directory ${redirected}`) && !existsSync(join(redirected, ".cotal")), { status: homeItself.status, stdout: homeItself.stdout.slice(0, 400) });
     // A .cotal an earlier release made in the control directory is not started either.
     mkdirSync(join(control, ".cotal"), { mode: 0o700 });
     const upInside = await json(["up", "--server", DEAD, "--no-manager"], control);

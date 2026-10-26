@@ -19,6 +19,17 @@ export function homeCotalDir(): string {
   return userCotalDir();
 }
 
+/** The entries the Cotal home holds directly: this machine's own records. The default home holds
+ *  nothing else. A home `COTAL_HOME` redirects is a folder the operator chose, and may hold project
+ *  folders beside these entries (the hosted layout keeps its space root at `$COTAL_HOME/cotal`), so a
+ *  control-directory check under a redirected home covers these entries, not every child. Every
+ *  `join(homeCotalDir(), "<entry>")` in shipped source names one of these; `smoke:home-record-entries`
+ *  checks that. */
+export const homeRecordEntries: ReadonlySet<string> = new Set([
+  "agent-skills.json", "app-identities", "catalog", "current-mesh", "idp-sessions.json", "linear",
+  "meshes", "onboarded.json", "prepared", "service-launchd", "services",
+]);
+
 /** The OS user's own Cotal directory, which `COTAL_HOME` never redirects: POSIX `~/.cotal`, Windows
  *  `%LOCALAPPDATA%\Cotal`. Telemetry keeps its settings here, so every workspace one person runs
  *  under their own account shares one install id. */

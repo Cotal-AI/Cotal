@@ -2,7 +2,7 @@ import { CommandFailure } from "./output.js";
 import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, dirname, resolve, sep } from "node:path";
-import { homeCotalDir } from "./cotal-home.js";
+import { homeCotalDir, homeRecordEntries, userCotalDir } from "./cotal-home.js";
 import {
   composeSpaceAuth,
   jwtIssuedAt,
@@ -354,10 +354,16 @@ export function rootPathProblem(root: string): string | undefined {
   return `the folder path ${oneLine(root)} contains ${name}, and a project path may hold neither control characters nor bidirectional formatting marks`;
 }
 
-/** The control directory `path` is or lies in: a root's `.cotal`, or the machine home's. */
+/** The control directory `path` is or lies in: a root's `.cotal`, or the Cotal home. The default home
+ *  holds records only, so every path under it lies in it. A home `COTAL_HOME` redirects may hold
+ *  project folders beside its records, so under it only the home itself and its record entries
+ *  ({@link homeRecordEntries}) count. */
 export function controlDirectory(path: string): string | undefined {
   const home = resolve(homeCotalDir());
-  if (path === home || path.startsWith(`${home}${sep}`)) return home;
+  if (path === home) return home;
+  if (path.startsWith(`${home}${sep}`)) {
+    if (home === resolve(userCotalDir()) || homeRecordEntries.has(path.slice(home.length + 1).split(sep)[0]!)) return home;
+  }
   const parts = path.split(sep), at = parts.indexOf(".cotal");
   return at === -1 ? undefined : parts.slice(0, at + 1).join(sep);
 }
