@@ -1,5 +1,25 @@
 # @cotal-ai/connector-core
 
+## 0.101.7
+
+### Patch Changes
+
+- ae43b58: A long-lived connection now renews its bearer at a random point between half and four fifths of the
+  bearer's lifetime and moves the live connection onto the new one, so the broker no longer closes it
+  for an expired bearer. Connections in one process and space renew at least a second apart, so seats
+  that started together no longer rebind through the auth callout in the same second. A reconnect
+  never presents an expired bearer. While renewal fails, the endpoint retries on a growing, randomized
+  wait of up to a minute and reports the failure once. The auth service's own connections renew the
+  same way, and its connect-credential reader proves a replacement on a new connection before it
+  switches to it, so a renewal no longer denies connects while the reader rebinds.
+- ae43b58: The auth service no longer exits when a native-key issuance cleanup pass fails because the store did
+  not answer, as happened when one of its connections reconnected under load. The pass is retried on a
+  growing wait and logged once, and the service keeps serving. Evidence that does not parse still
+  stops the service.
+- 0e7d42e: `cotal up` with an option only the legacy launcher takes, such as `--exchange-public-port`, starts a stopped root that launcher already started again on that launcher. This applies to a root with no stack journal whose `up` registered the space with no prepared record, or a user-auth root that holds its user-auth state. Before, such a root was refused `UNSUPPORTED` as if it were a fresh prepared root ("this root is prepared for a controller-owned stack"), so a hosted user-auth deployment that had run on 0.100 could not start. A fresh prepared root still refuses those options.
+- 9bc17b2: Allow manager control connections to use the caller’s remaining preparation deadline instead of timing out after two seconds. Preserve cancellation and refuse an expired preparation before opening the connection.
+- acc1ce4: `cotal up` without `--user-auth` on a stopped root whose space has user-auth state, `--open` included, now refuses as `CONFLICT`, exit 2, before anything is written, and the Next line says to add `--user-auth`. Before, a plain `up` refused only after it had opened the store and claimed the space, and reported the refusal as "Outcome unconfirmed" (`OPERATION_UNKNOWN`, exit 3), as did `up --open`.
+
 ## 0.101.6
 
 ### Patch Changes
