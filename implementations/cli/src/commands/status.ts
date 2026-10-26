@@ -111,6 +111,7 @@ import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, 
 import { brokerStoreWrite, storeFull, storeWriteRepair, type StoreWriteObservation } from "../lib/broker-store-health.js";
 import { chatStreamGone, stackState } from "../lib/space-streams.js";
 import { pidfileState, type PidfileState } from "./down.js";
+import { selectResetTarget } from "./reset-store-apply.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { readPersonas, type PersonaEntry } from "../lib/personas.js";
@@ -895,7 +896,12 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   let maintained = false;
   try { maintained = readMaintenanceJournal(root) !== undefined; } catch { maintained = true; }
   // Its next step is the unusable journal's, which every stack command refuses until it is fixed.
-  if (storedState && !maintained && !unusable) hints.push(`if the stored JetStream state is stale: ${cmd} clean store --force, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
+  if (storedState && !maintained && !unusable) {
+    const resetSpace = storeResetSpace(root, space);
+    hints.push(resetSpace !== undefined
+      ? `if the stored JetStream state is stale: ${cmd} reset store ${resetSpace}, then \`up\` with your usual flags`
+      : `if the stored JetStream state is stale: ${cmd} clean store --force, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
+  }
   // A stack started with --no-manager can still have a manager: a `manager` preset service run here.
   let managerService: StatusResult["folder"]["managerService"] = null;
   if (noManager && journal) try {
@@ -952,6 +958,16 @@ function personaCatalog(root: string, gaps: Gaps): PersonaCatalog {
     demo: ["david", "sven", "me"].filter((name) => byName.get(name)?.def !== undefined).length,
     error: null,
   };
+}
+
+/** The one space whose `reset store <space>` selects this root's store: the folder's own, or one this
+ *  machine registered here, which a stopped folder no longer resolves to. A legacy root whose down
+ *  removed that registration has none, and the reset's refusal names clean instead. */
+function storeResetSpace(root: string, space: string): string | undefined {
+  let names: string[];
+  try { names = [...new Set([space, ...meshesForRoot(root).map((mesh) => mesh.space)])]; } catch { return undefined; }
+  const reached = names.filter((name) => { try { return sameDir(selectResetTarget(name, "reset store").root, root); } catch { return false; } });
+  return reached.length === 1 ? reached[0] : undefined;
 }
 
 /** Do two catalog paths denote the SAME directory? `canonicalRoot` (realpath, `resolve` fallback

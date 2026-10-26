@@ -4,7 +4,9 @@
  * the hints last and no roster, only the selected registration checked unless `--all` asks for each,
  * a part it cannot read named on its row and reported partial (exit 4) rather than complete, and the
  * usage refusals, and the nats-server it would run named, with one on PATH below the broker floor
- * refused by `up` before any broker starts. Broker-free: every registration points at a closed port. The live rows are in
+ * refused by `up` before any broker starts. A stopped root whose broker kept a store names
+ * `reset store <space>` under Next where that reset reaches it, and clean where it cannot.
+ * Broker-free: every registration points at a closed port. The live rows are in
  * `smoke:delivery-responder-visibility`, `smoke:component-health`, `smoke:ps-user-mode` and
  * `smoke:up-tls-routes`.
  *
@@ -621,6 +623,31 @@ if (process.platform !== "win32") {
       await exited;
     }
   }
+}
+
+// ── a stopped root whose broker kept a store names the reset that reaches it ─────────────────────
+// Next named the legacy `clean store --force` for a stale store. `reset store <space>` replaces it
+// where it selects this root's store; a root whose down removed that registration has no reset
+// target, and its reset refusal names clean, so status keeps naming clean there.
+{
+  const { home, run } = sandbox();
+  const parent = mkdtempSync(join(tmpdir(), "cotal-status-stale-"));
+  roots.push(parent);
+  const [registered, unregistered] = ["stalereg", "staleunreg"].map((name) => join(parent, name));
+  for (const root of [registered, unregistered]) mkdirSync(join(root, ".cotal", "nats"), { recursive: true });
+  const previousHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = join(home, ".cotal-home");
+  try { recordMesh({ space: "stalereg", server: `nats://127.0.0.1:${await freePort()}`, root: registered, mode: "open", origin: "up", ts: new Date().toISOString() }); }
+  finally { if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome; }
+  const staleHints = (root: string) => (run(["status", "--json"], {}, root).envelope?.result?.hints ?? []).filter((hint) => hint.startsWith("if the stored JetStream state is stale:"));
+  const reg = staleHints(registered);
+  check("a registered stopped root names reset store with the space registered there", reg.length === 1 && / reset store stalereg, then `up` with your usual flags$/.test(reg[0]!) && !reg[0]!.includes("clean"), reg);
+  const preview = run(["reset", "store", "stalereg", "--dry-run", "--json"], {}, registered);
+  check("…and that reset reaches the store as printed", preview.status === 0 && preview.envelope?.outcome === "ok", shown(preview));
+  const unreg = staleHints(unregistered);
+  check("a root with no registration a reset selects keeps clean store --force", unreg.length === 1 && / clean store --force, then `up` with your usual flags \(`clean all` also resets identity\)$/.test(unreg[0]!), unreg);
+  const refused = run(["reset", "store", "staleunreg", "--dry-run", "--json"], {}, unregistered);
+  check("…because reset refuses that root TARGET_NOT_FOUND", refused.status === 2 && refused.envelope?.error?.code === "TARGET_NOT_FOUND", shown(refused));
 }
 
 
