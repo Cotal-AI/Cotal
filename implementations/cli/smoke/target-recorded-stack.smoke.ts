@@ -16,6 +16,9 @@
  * not start it, and status and whoami name the same step. With the space
  * prepared at the old path, up, down, whoami and status there all name moving back, or forgetting and
  * adopting, and up says to move aside first any folders found at the old path.
+ * With another space selected, none of those folders captures the command: a folder's space is the
+ * target there only while it runs, so the selection is, and `status` names what the folder holds and
+ * the `cotal up` that starts it where the folder records a space name.
  * `space create` in a copy refuses; where the folder its journal names holds no journal, as for a
  * copy from another machine, the refusal and status name `space create --adopt`, which rewrites the
  * journal to name the copy and its store, and prepares the space there. A folder renamed from a path
@@ -106,6 +109,32 @@ check("status names no default broker address", noDefault(status), shown(status)
 
 const components = run(["status", "--components"]);
 check("status --components refuses the target and probes no default broker", /target\s+refused · not-started/.test(components.stdout) && noDefault(components), shown(components));
+
+// ── with a space selected, this folder's stopped stack does not take its place ───────────────────
+// A folder's space captures the commands run there only while it runs. This root's stack is stopped,
+// so every command but the ones about the folder itself targets the selection, and the run says what
+// this folder holds and the `cotal up` that starts it. With nothing selected the refusals above stand.
+{
+  const other = realpathSync(mkdtempSync(join(home, "selected-")));
+  check("rig: another space is registered elsewhere and selected",
+    run(["meshes", "add", "sel07", "--server", "nats://127.0.0.1:24712", "--mode", "open", "--root", other, "--force"], other).status === 0 &&
+      run(["use", "sel07"], other).status === 0);
+  const HELD = `this folder holds the stopped space "la07"; restart it with cotal up`;
+  for (const command of ["whoami", "ps", "who", "endpoints"]) {
+    const r = run([command, "--json"]);
+    check(`${command} there targets the selection, not this folder's stopped space`, r.envelope?.target?.space === "sel07" && !(r.envelope?.error?.message ?? "").includes("24711"), shown(r));
+  }
+  const selectedStatus = run(["status", "--json"]), selectedText = run(["status"]);
+  check("status there reports the selection, with this folder's stopped space and its up under the heading",
+    selectedStatus.envelope?.target?.space === "sel07" && selectedText.stdout.includes(`Mesh: sel07\n  ${HELD}`), shown(selectedText));
+  check("status names no default broker address there either", noDefault(selectedStatus) && noDefault(selectedText), shown(selectedStatus));
+  // `space show` is about the folder, but this root records no space it can show: `la07` lives only
+  // in its stack journal, which `up`, `down` and the refusals above name. So it shows the selection.
+  const shownSpace = run(["space", "show"]);
+  check("space show there shows the selection, since this folder's space is recorded only in its journal",
+    shownSpace.status === 0 && /^ {2}space: +sel07 \(selected\)$/m.test(shownSpace.stdout) && !/la07/.test(shownSpace.stdout), shown(shownSpace));
+  check("rig: the selection is cleared again", run(["use", "--clear"], other).status === 0);
+}
 
 // A journal cut short or emptied names its path. No space is recorded at this root, so there are no
 // saved definitions, and the way out is to remove it and run `cotal up`.
@@ -369,8 +398,9 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
     streamed.status === 2 && records[0]?.type === "error" && records[0].data.code === expected?.code && records[0].data.message === expected?.message && records[0].data.remedy === expected?.remedy && records[1]?.type === "end", shown(streamed));
 }
 
-// Another space selected does not change that: the root's own stopped stack is the target, so a
-// command there never reaches the selection.
+// With another space selected the stopped stack does not capture the command: a folder's space is
+// the target there only while it runs, so the selection is, and nothing reaches the legacy address.
+// `status` names what this folder holds and the `cotal up` that starts it.
 {
   const elsewhere = realpathSync(mkdtempSync(join(home, "selected-")));
   const record = join(home, ".cotal", "meshes", `space.${Buffer.from("sel").toString("hex")}.json`);
@@ -379,9 +409,14 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
   writeFileSync(join(home, ".cotal", "current-mesh"), "sel\n", { mode: 0o600 });
   for (const command of ["ps", "who", "send"]) {
     const r = run(command === "send" ? ["send", "-c", "general", "probe", "--json"] : [command, "--json"], legacy);
-    check(`${command} in a stopped legacy root with another space selected refuses as not started, naming its last address`,
-      r.status === 2 && r.envelope?.error?.code === "TARGET_UNAVAILABLE" && (r.envelope.error.message ?? "").includes("last ran at nats://127.0.0.1:24712") && !JSON.stringify(r.envelope).includes("24713"), shown(r));
+    check(`${command} in a stopped legacy root with another space selected targets the selection, not the stopped stack`,
+      r.envelope?.target?.space === "sel" && !(r.envelope?.error?.message ?? "").includes("24712"), shown(r));
   }
+  // This root rendered an OPEN broker configuration, which records no space name, so there is no
+  // space to name under the heading: the folder's own `up` and `down` name its address instead.
+  const legacyStatus = run(["status"], legacy);
+  check("status there reports the selection, and names no space for a folder whose stopped stack records none",
+    /^Mesh: sel$/m.test(legacyStatus.stdout) && !/this folder holds/.test(legacyStatus.stdout) && noDefault(legacyStatus), shown(legacyStatus));
   rmSync(record);
   rmSync(join(home, ".cotal", "current-mesh"));
   rmSync(elsewhere, { recursive: true, force: true });

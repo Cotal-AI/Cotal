@@ -515,9 +515,9 @@ try {
   check("the display name is not a registry key", findMesh("Shared project") === undefined && findMesh(SPACE)?.catalogName === "Shared project", findMesh(SPACE));
   check("the discovered entry resolves through the ordinary synchronous target path", targetFromEntry(findMesh(SPACE)!, original.server, "registry").mode === "user");
   const discoveredPs = await cotal(["ps", "--space", SPACE], 20_000);
-  const discoveredStatus = await cotal(["status", "--space", SPACE], 20_000);
+  const discoveredStatus = await cotal(["status", "--wide", "--space", SPACE], 20_000);
   check("ps succeeds against the discovered space with no meshes add", discoveredPs.status === 0, discoveredPs.out.slice(-300));
-  check("status resolves the discovered space and names it a saved catalog entry",
+  check("status resolves the discovered space and names it a saved catalog entry in the full report",
     discoveredStatus.status === 0 && new RegExp(`^ +→ ${SPACE} .*· saved catalog entry$`, "m").test(discoveredStatus.out), discoveredStatus.out.slice(-600));
   // #1832: a discovered user-mode space's user-auth material is the REGISTRY ENTRY (origin
   // "catalog", userAuth.remote + pins + sentinel file), not a local provisioning, so the login
