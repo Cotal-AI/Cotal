@@ -7379,6 +7379,11 @@ the channel tap. Opening this view never launches, stops or attaches an agent. I
 of the stream closes it, as `| head` does, the observer stops at its next line, so on a quiet mesh it
 runs until a message arrives or Ctrl-C ends it with exit 130.
 
+A target this observer cannot open, such as a stopped project's space, is refused before any view
+exists, under the refusal's own code and exit 2, as `history`, `channel` and `chat` refuse it in that
+folder. The terminal gets the refusal's report, with the mesh it resolved and its next step;
+`--json` gets that code, message and next step in the stream's `error` record, ahead of its `end`.
+
 ## Named agent status
 
 `cotal status <agent>` reads the authorized manager census and separates Identity,
