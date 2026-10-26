@@ -144,9 +144,10 @@ old-manager preflight → **delivery daemon** (auth mode only) → **manager**, 
 ([`lib/delivery-proc.ts`](../implementations/cli/src/lib/delivery-proc.ts)). The preflight reads
 the manager record once and judges that one process: it stops a live manager whose
 `manager.<key>.delivery-aware` marker does not hold its pid, and leaves one whose marker does or
-that exited while the preflight looked. The stop signals only that pid. A manager that replaced the
-record in the meantime is left running, and the delivery daemon's own check judges it. The detached
-processes, all stopped by `cotal down`:
+that exited while the preflight looked. The stop signals only that pid. If the judged record
+changes or disappears before the stop, cutover refuses to start the daemon and preserves any
+successor's records. Retry after the manager restart completes. A successor's marker does not
+prove the predecessor released Plane 3. The detached processes, all stopped by `cotal down`:
 
 With no explicit `--server`, `cotal up` auto-selects a free local port when the default broker
 address is already held by another root or an unrecorded broker; an explicit `--server` remains
