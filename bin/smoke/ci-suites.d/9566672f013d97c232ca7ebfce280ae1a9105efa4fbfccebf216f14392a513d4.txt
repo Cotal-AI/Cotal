@@ -1,0 +1,3 @@
+# §13.19.2 capture-frontier placement: an unplaced frontier grants nothing, a superseded consent
+# generation commits nothing, and records before P stay ineligible however fast the tool ran.
+smoke:tool-result-frontier
