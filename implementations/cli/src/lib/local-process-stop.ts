@@ -27,9 +27,6 @@ export interface StopLocalProcessOptions {
    * confirmed stop. It undoes what `beforeSignal` published: done after the reservation is released,
    * the undo could remove what the next stop to take the reservation published. */
   afterFailedSignal?: () => void;
-  /** Whether a live process's command line is this component's. Consulted only for a record with no
-   *  identity pin, where the command line is the only evidence of what the pid now runs. */
-  owns?: (command: string) => boolean;
   /** The pid the caller decided to stop. A record naming another pid was published by a successor
    *  after that decision, so the stop leaves it untouched and returns false. */
   pid?: number;
@@ -141,16 +138,6 @@ export async function stopLocalProcess(
     // every extension component, so all of them share one identity rule.
     const identity = verifyIdentityPin(pidPath);
     if (identity.kind === "mismatch") throw identityRefusal(component.label, pidPath, identity.record, identity.liveToken);
-    if (identity.kind === "legacy" && options.owns) {
-      // A readable command that is not this component's means the record outlived its process and
-      // the pid was reused. Signalling it would kill an unrelated process; the stale record goes.
-      const cmd = readProcessCommand(pid);
-      if (cmd.kind === "command" && !options.owns(cmd.command)) {
-        console.error(`! ${component.label} pid ${pid} is alive but is running \`${cmd.command}\`, which is not the ${component.label} - not signalling it; removing the stale record instead.`);
-        stopped = true;
-        return true;
-      }
-    }
     if (identity.kind === "legacy") {
       if (cooperative) throw new Error(`${component.label} has no creation identity for cooperative shutdown; stop it with its original supervisor`);
       console.error(identityLegacyWarning(component.label, pidPath));
@@ -207,8 +194,8 @@ export async function stopLocalProcess(
     console.log(c.green(`✓ stopped ${component.label} (pid ${pid})`));
     return true;
   } finally {
-    // Remove the pidfile ONLY when we confirmed a clean stop: `stopped` is set exclusively on an
-    // ESRCH-proven death (already-gone, or a confirmed exit). Every other exit from the try above is
+    // Remove the pidfile only after confirmed death or affirmative attribution to another program.
+    // Neither case leaves this component running behind its record. Every other exit above is
     // a throw that must PRESERVE the record - an unattributable pidfile, a process we could not
     // signal, or a death we could not confirm (`unknown`). The old `|| !isAlive(pid)` clause treated
     // `unknown` as gone and deleted a live process's record; it is gone.

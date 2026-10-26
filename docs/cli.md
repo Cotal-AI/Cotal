@@ -1692,8 +1692,12 @@ spare capability only after every component has stopped, so a refused stop keeps
 so a recorded pid alone is not a durable target identity. `up` and the dashboard's native child record each
 process's creation identity in a sibling `<pidfile>.identity` pin, which holds the pid and the
 process start reported by the OS. Every stop path, including `down` for the broker, web and
-extension components, and the manager, delivery and auth-service stops, applies the same rule. A pin
-that names a different start means the pid was reused, so teardown refuses and preserves it. A
+extension components, and the manager, delivery and auth-service stops, applies the same rule.
+Before checking the pin, a built-in component with a command-attribution predicate clears a record
+whose live command belongs to another program, without signalling that process. The manager and
+delivery daemon both use this check, including for pinned records. An unreadable command proves
+nothing, so teardown continues to the identity check. If that check finds a pin naming a different
+start, the pid was reused, so teardown refuses and preserves the record. A
 controller stack's bare `down` signals no such record, so it removes it, as described above. A torn
 or unreadable pin also refuses. On macOS, the reader calls `sysctl` through a bundled Node-API
 binding for x64 or arm64 and records the process start in microseconds. A macOS pin that an earlier
