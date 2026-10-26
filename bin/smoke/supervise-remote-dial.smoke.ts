@@ -564,6 +564,13 @@ try {
   ok("J: who --all shows that manager by its name, partial only for a registration that does not answer",
     who.code === (others.length ? 4 : 0) && who.out.includes("manager j-one"), { code: who.code, out: who.out.slice(-900), err: who.err.slice(-600) });
 
+  // The Next names each of your managers that did not answer by instance id, in ps and in who, so the
+  // registration a manager left behind can be told apart from the managers that answer.
+  const remedyOf = (out: string): string => { try { return (JSON.parse(out) as { error?: { remedy?: string } }).error?.remedy ?? ""; } catch { return ""; } };
+  ok("J: ps names each manager that did not answer in its Next", others.length > 0 && others.every((id) => remedyOf(psJson.out).includes(id)) && !twoIds.some((id) => remedyOf(psJson.out).includes(id)), remedyOf(psJson.out));
+  const whoJson = await caller("who", "--all", "--space", space, "--json");
+  ok("J: who names them in its Next too", whoJson.code === 4 && others.every((id) => remedyOf(whoJson.out).includes(id)), remedyOf(whoJson.out));
+
   // A launch needs one manager, so a detached spawn with no `--on` refuses among several live ones.
   // The refusal lists each by name with the host its presence reports, and its Next runs the caller's
   // own command again with `--on` for each. On a terminal it asks instead, most recent first.

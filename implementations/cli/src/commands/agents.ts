@@ -903,16 +903,25 @@ function seatCensus(target: SeatCensus["target"], slots: readonly ScatterInstanc
     items.push(...rows);
   }
   const unread = managers.filter((m) => m.state !== "answered").length;
+  const silent = managers.filter((m) => m.state === "silent").map((m) => m.instanceId);
   const kind = command === "slots" ? "slots" : "seats";
   const partial = unread
     ? {
         message: `Incomplete manager census: ${unread} of ${managers.length} instances did not return ${kind}. Rows above are partial, not a complete list.`,
         remedy: mismatches.length
           ? `Managers in this space serve different ps contracts. ${mismatches.join("; ")}. Align the manager versions and retry.`
-          : "retry, or read one manager with `cotal ps --on <instance>`",
+          : target.scope === "your-managers" && silent.length
+            ? silentManagersNext(silent)
+            : "retry, or read one manager with `cotal ps --on <instance>`",
       }
     : undefined;
   return { target, items, managers, warnings, rowsOf, mode, ...(partial ? { partial } : {}) };
+}
+
+/** The Next for your managers that did not answer on a user-auth mesh, each by instance id. */
+function silentManagersNext(instanceIds: readonly string[]): string {
+  const one = instanceIds.length === 1;
+  return `${one ? "manager" : "managers"} ${instanceIds.join(", ")} did not answer. If ${one ? "it is" : "one is"} still running, retry; a manager that ended without a clean stop stays registered under its instance id`;
 }
 
 /** A manager read that failed, as the classified failure. For a user-mode manager view that the

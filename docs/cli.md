@@ -3779,7 +3779,8 @@ every seat `null` with a `MANAGERS_DENIED` warning. So does a credential passed 
 carries no caller the managers accept from this command, so they are not asked. These two warnings
 say how far the identity's
 grant reaches; the roster itself was read in full, so they do not make the run partial. A manager
-that does not answer leaves every unmatched seat `null` with a warning.
+that does not answer leaves every unmatched seat `null` with a warning. In a user-auth space the
+Next names those managers, as `ps` does.
 
 A part `who` could not read makes the run `partial` (exit 4): a roster snapshot that did not finish
 (`ROSTER_INCOMPLETE`), a roster that has gone stale (`ROSTER_STALE`), an error on the roster watch
@@ -4306,8 +4307,9 @@ concludes nothing.
   several live, `ps` asks nothing: it reads each manager the exchange counts live through its own
   one-instance view, one after another, and lists each under its own `manager <id>` header, as the
   class scatter does. A manager that does not answer is listed as silent and makes the read
-  `partial` (exit 4). Managers of other owners are not asked, so completeness across the space is
-  not claimed. `status <agent>` and `who` read your managers the same way.
+  `partial` (exit 4), and the Next names each one by instance id: a manager that ended without a
+  clean stop stays registered under its id. Managers of other owners are not asked, so completeness
+  across the space is not claimed. `status <agent>` and `who` read your managers the same way.
   When none of your managers answers, or none is live, `ps` lists your agents as presence shows
   them, read-only, with their state, application and host, and exits 0. It says that no manager
   answered, and its Next starts one: bare `cotal up` on the root of the space's own stack, as for a
