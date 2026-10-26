@@ -4,8 +4,8 @@
 
 `cotal` is the operator command line for the reference implementation: bring a mesh up, mint
 identities, launch agents, watch what they do, and tear it all down. It is a thin client over the
-wire contract: the normative subjects and schemas live in the [SPEC](../SPEC.md); this page is
-lookup material for the commands, not a walkthrough; if you are new, start with
+wire contract, whose normative subjects and schemas live in the [SPEC](../SPEC.md). This page is
+lookup material for the commands. If you are new, start with
 [Getting started](getting-started.md).
 
 For the other integration interfaces, see the [API reference](api-reference.md). For a
@@ -154,11 +154,11 @@ from its own candidates or file hint, without inserting other option names.
 
 Commands come from the surfaces the binary composes: the base mesh CLI, the manager and the
 delivery daemon, plus any operator-installed extensions. Hidden entries such as the deprecated
-`supervise` and `deliver` are not completed.
+`deliver` and `auth-service` are not completed.
 `cotal ext add <npm-package>` installs any registry providers a package contributes: commands,
-runtimes, and local process lifecycle descriptors. The `web` dashboard and optional manager
-runtimes ship this way. A `@cotal-ai/*` package named without a version installs this cotal's
-version, as `setup` and `update` do; a version or tag you name is installed as given.
+runtimes, service presets and local process lifecycle descriptors. The `web` dashboard and
+optional manager runtimes ship this way. A `@cotal-ai/*` package named without a version installs
+this cotal's version, as `setup` and `update` do; a version or tag you name is installed as given.
 
 ## Structured output
 
@@ -364,9 +364,9 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Observe | [`watch`](#watch) | Follow authorized activity without starting, stopping or attaching agents |
 | Observe | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
 | Manager | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
-| Manager | [`reconcile-gate`](#reconcile-gate) | Unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
+| Manager | [`reconcile-gate`](#reconcile-gate) | Hidden from `cotal help`, which lists `manager reconcile`: unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
 | Manager | [`deregister-instance`](#endpoint-deregister) | Hidden from `cotal help`: the old spelling of `endpoint deregister`, which refuses and names it |
-| Manager | [`seats`](#seats) | List the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
+| Manager | [`seats`](#seats) | Hidden from `cotal help`, which lists `manager seats`: list the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
 | Manager | [`manager`](#manager-maintenance) | Inspect retained local seats or repair an owned manager gate |
 | Manager | [`feedback-intake`](#server-daemons) | Deprecated and hidden from `cotal help`: run a feedback intake server; use the `feedback-intake` service preset |
 | Manager | [`deliver`](#deliver) | Deprecated and hidden from `cotal help`: run the delivery daemon; use the `delivery` service preset |
@@ -532,8 +532,9 @@ did not change. A third-party adapter's instances stay pinned to the package ver
 them.
 
 Without `--self`, `update` keeps the installed first-party surfaces coherent with the running
-binary: it force-reconciles the four built-in connectors, brings what a connector installed in its
-harness to this release (the `cotal` plugin copy Claude Code sessions load, and its Claude Desktop entry), then reinstalls other `@cotal-ai/*`
+binary: it force-reconciles the six built-in connectors and the web dashboard, brings what a
+connector installed in its harness to this release (the `cotal` plugin copy Claude Code sessions
+load, and its Claude Desktop entry), then reinstalls other `@cotal-ai/*`
 operator extensions at the binary's exact version. Each extension runs in an isolated child, so one
 failure cannot poison later replays. It then checks npm; a newer binary is an informational notice
 with `cotal update --self` as the next command, not an automatic install.
@@ -4684,7 +4685,7 @@ registered at, so a start from any folder is the same manager, with the same ins
 | `--space <s>` | `COTAL_SPACE`, this folder's space, or the `cotal use` selection | Space to supervise. On a root that hosts several spaces, name one of them here |
 | `--server <url>` | hosting mesh, or matching registered mesh | Broker URL. A registered mesh supplies it when omitted; a different explicit value is refused before anything is dialed. |
 | `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
-| `--execution runtime|none` | `runtime` | NONE is a genuine hosting user-auth control instance with no Runtime, connector inspection, workload or terminal execution |
+| `--execution <runtime\|none>` | `runtime` | `none` starts a control instance for a hosting user-auth root, with no runtime, connector inspection, workload or terminal execution |
 | `--console-port <n>` | none | Protocol-console port |
 | `--console-host <host>` | loopback | Bind host for the console endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets the browser console reach this manager from another machine. `cotal attach` does not use this face: it redeems a mesh session grant over the broker |
 | `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair keeps it |
@@ -4694,9 +4695,10 @@ registered at, so a start from any folder is the same manager, with the same ins
 | `--launch <spec>` | none | Resolved manifest launch spec (from `up -f` / `team boot`) |
 | `--spawn <names>` | none | Comma-separated personas to pre-spawn at startup |
 
-`--ws-port`, `--resume-attempt` and `--resume-commit-token` are passed by `cotal up` when it starts
-the manager, for the console session client and for resuming preserved seats. They are not for
-direct use.
+`--ws-port`, `--resume-attempt`, `--resume-commit-file` and `--resume-commit-sha256` are passed by
+`cotal up` when it starts the manager, for the console session client and for resuming preserved
+seats. They are not for direct use. `--resume-commit-token` is the deprecated argv form of the
+resume commit, still accepted for older callers (see [Backups](#backups)).
 
 The manager is the agent supervisor and control plane: it answers `spawn --detach`, `stop`, `ps`,
 `attach`, and the `cotal_*` manager tools. `cotal up --detach` starts one for you; run `supervise`
@@ -5208,7 +5210,7 @@ repair, because the reopened gate is already past the slot's generation.
 | `not-frozen` / `no-gate` | The gate is open, or there is no gate at that coordinate | Nothing to repair: check `--endpoint` / `--instance` |
 | `wrong-op-kind` | Frozen under a takeover or retirement, not a registration | Out of scope for this command; it will not reinterpret another operation's intent |
 | `eviction-unverified` | The holder looked gone but eviction could not be verified | The gate is left frozen, unchanged. Investigate the broker before retrying |
-| `raced` | A newer manager moved the gate mid-repair | Re-run `cotal doctor` and look again |
+| `raced` | A newer manager moved the gate mid-repair, and nothing was reopened | Run the command again, which reads the gate afresh |
 
 When the daemon gives no verdict, the refusal also reads the delivery lease (`lease.0`) and names
 what is blocking the rail:
@@ -5316,12 +5318,16 @@ package. There is no silent fallback to `pty`.
 ## seats
 
 ```bash
-cotal seats [--drain]
+cotal manager seats [--drain [--yes|--dry-run]] [--json|--plain]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--drain` | off | Retire every seat whose agent has exited. A seat whose agent still runs is kept |
+
+`cotal seats` is the older spelling, hidden from `cotal help`, and runs the same command. A drain
+asks first on a terminal and needs `--yes` in a script, as [Manager maintenance](#manager-maintenance)
+describes.
 
 The pty runtime used to start a detached custodian process for every Linux seat. It now spawns
 in-process, but custodians that an earlier manager started keep running, and one whose agent has
@@ -5344,7 +5350,7 @@ refused the same way, because no record can be tied to this boot.
 That refusal and an unreadable record signal nothing. A refusal from the reap itself can come after the drain already
 sent `SIGKILL` to the custodian. Its detail names the pid or process group the reap could not prove
 gone, so check those processes before you retry. The command exits non-zero when any record is
-refused. It is Linux-only and throws on other platforms.
+refused. It is Linux-only, and on other platforms it refuses `UNSUPPORTED`.
 
 ## send
 
@@ -5735,7 +5741,7 @@ root's default `.cotal/channels.json` would undo at the next start warns that it
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Target mesh |
 | `--replay` / `--no-replay` | none | `set`/`defaults`: replay history to new joiners, or not. They take no value: `--replay off` is refused with the flag to use |
 | `--window <duration>` | none | `set`/`defaults`: replay window, for example `24h` |
-| `--delivery <live|durable>` | none | `set`/`defaults`: choose the live-only or durable-backstop delivery class; history retention is separate. Shell completion offers both values |
+| `--delivery <live\|durable>` | none | `set`/`defaults`: choose the live-only or durable-backstop delivery class; history retention is separate. Shell completion offers both values |
 | `--desc <text>` | none | `set`: channel description |
 | `--instructions <text>` | none | `set`: instructions shown to joiners |
 | `--purge` | off | `remove`: also delete the channel's retained history |
@@ -6630,7 +6636,7 @@ Operator-installed extensions: `add` installs an npm package into a cotal-owned 
 every registry provider it contributes. Commands appear in help, completion, and dispatch; runtime
 providers are lazy-loaded by commands such as `supervise`; local process providers participate in
 `status` and selective `down`. `remove` and `list` manage them. The `@cotal-ai/web` dashboard is the
-canonical command/process example. Installed packages and their location are described in
+canonical service preset and local-process example. Installed packages and their location are described in
 [config](config.md). When a package needs an export its linked `@cotal-ai/*` peer does not have,
 `add` rolls back and names which install is behind, as a later load of an installed one does.
 
@@ -7201,8 +7207,9 @@ records the path. The guide is [workflows](workflows.md).
 
 ## Server daemons
 
-Two long-lived infra roles ship with the CLI. They are not part of everyday operation; the delivery
-daemon comes up automatically with `cotal up --detach` in auth mode.
+Three long-lived infrastructure roles ship with the CLI: the delivery daemon, the auth service and
+the feedback intake. They are not part of everyday operation. The delivery daemon comes up
+automatically with `cotal up --detach` in auth mode.
 
 `deliver`, `auth-service` and `feedback-intake` are deprecated entries kept for existing units and
 scripts; help and completion omit them. Each entry's own help
