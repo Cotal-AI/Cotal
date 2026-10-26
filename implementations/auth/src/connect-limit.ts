@@ -22,11 +22,14 @@ export const DEFAULT_CONNECT_LIMITS: ConnectLimits = { actorPerMinute: 60, owner
 /** Who a connect is charged to: the principal a verified signature names, or the client host. */
 export type ConnectSource = { readonly owner: string; readonly actor: string } | { readonly host: string };
 
+/** The bucket that ran out: the actor's own, its owner's across all its actors, or a client host's. */
+export type ConnectLimitKind = "actor" | "owner" | "host";
+
 /** A connect the limits refuse, as the callout's denial and the exchange's 429 both carry it. Its
- *  message names the bucket that ran out and, for an owner's, the actor connecting. */
+ *  `limit` and its message name the bucket that ran out and, for an owner's, the actor connecting. */
 export class ConnectRateLimited extends Error {
   readonly code = "RATE_LIMITED";
-  constructor(readonly retryAfterSeconds: number, message: string) {
+  constructor(readonly retryAfterSeconds: number, readonly limit: ConnectLimitKind, message: string) {
     super(message);
   }
 }
@@ -62,13 +65,13 @@ export class ConnectLimiter {
     const over = (subject: string, perMinute: number) => `${subject} is over its limit of ${perMinute} connects a minute`;
     if ("host" in source) {
       const perMinute = this.limits.hostPerMinute;
-      return [{ key: `host:${source.host}`, perMinute, refusal: `${over(`host ${source.host}`, perMinute)} with a bearer that does not verify` }];
+      return [{ key: `host:${source.host}`, limit: "host", perMinute, refusal: `${over(`host ${source.host}`, perMinute)} with a bearer that does not verify` }];
     }
     const { owner, actor } = source;
     const { actorPerMinute, ownerPerMinute } = this.limits;
     return [
-      { key: `actor:${owner}.${actor}`, perMinute: actorPerMinute, refusal: over(`actor ${actor} of owner ${owner}`, actorPerMinute) },
-      { key: `owner:${owner}`, perMinute: ownerPerMinute, refusal: `${over(`owner ${owner}`, ownerPerMinute)} (actor ${actor})` },
+      { key: `actor:${owner}.${actor}`, limit: "actor", perMinute: actorPerMinute, refusal: over(`actor ${actor} of owner ${owner}`, actorPerMinute) },
+      { key: `owner:${owner}`, limit: "owner", perMinute: ownerPerMinute, refusal: `${over(`owner ${owner}`, ownerPerMinute)} (actor ${actor})` },
     ];
   }
 
@@ -79,7 +82,7 @@ export class ConnectLimiter {
       const level = this.level(d.key, d.perMinute, now);
       if (level >= 1) continue;
       const retryAfterSeconds = Math.max(1, Math.ceil(((1 - level) * 60) / d.perMinute));
-      if (refused === undefined || retryAfterSeconds > refused.retryAfterSeconds) refused = new ConnectRateLimited(retryAfterSeconds, d.refusal);
+      if (refused === undefined || retryAfterSeconds > refused.retryAfterSeconds) refused = new ConnectRateLimited(retryAfterSeconds, d.limit, d.refusal);
     }
     if (refused !== undefined) throw refused;
   }
@@ -101,6 +104,7 @@ export class ConnectLimiter {
 
 interface Draw {
   readonly key: string;
+  readonly limit: ConnectLimitKind;
   readonly perMinute: number;
   readonly refusal: string;
 }

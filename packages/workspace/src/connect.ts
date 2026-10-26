@@ -249,7 +249,7 @@ export async function userViewAuthOrThrow(conn: Connection, view: string, opts: 
     return await userViewAuth(conn, view, opts);
   } catch (e) {
     const code = (e as { code?: unknown } | undefined)?.code;
-    if (code !== "refused" && code !== "signed-out" && code !== "unavailable") throw e;
+    if (code !== "refused" && code !== "signed-out" && code !== "unavailable" && code !== "rate-limited") throw e;
     throw credentialRefusal(e, code === "signed-out" ? "permanent" : "transient");
   }
 }
@@ -427,23 +427,37 @@ export function preflightCode(failure: PreflightFailure): RefusalCode {
 }
 
 /** Why a user-auth provider could not issue credentials, when it says: no sign-in session
- *  (`signed-out`), its service did not answer (`unavailable`), or it answered and refused this actor
- *  (`refused`). A provider sets it as the thrown error's `code`; anything else is unclassified. */
-export type CredentialFailure = "signed-out" | "unavailable" | "refused";
+ *  (`signed-out`), its service did not answer (`unavailable`), it answered and refused this actor
+ *  (`refused`), or it is limiting how often this actor connects (`rate-limited`). A provider sets it
+ *  as the thrown error's `code`; anything else is unclassified. */
+export type CredentialFailure = "signed-out" | "unavailable" | "refused" | "rate-limited";
 
-/** An error a user-auth provider throws, carrying its {@link CredentialFailure} and, when the
- *  provider can name the next step apart from the reason, its remedy. */
-export function credentialFailure(code: CredentialFailure, message: string, remedy?: string): Error {
-  return Object.assign(new Error(message), { code }, remedy === undefined ? {} : { remedy });
+/** The wait a `rate-limited` failure asks for, and which bucket ran out: the one actor's or its
+ *  owner's, across all of that owner's actors. */
+export interface RateLimit {
+  readonly retryAfterSeconds: number;
+  readonly limit: "actor" | "owner";
 }
 
-/** A provider failure as a refusal: its message, and its remedy apart when it named one. */
+/** An error a user-auth provider throws, carrying its {@link CredentialFailure} and, when the
+ *  provider can name the next step apart from the reason, its remedy. A `rate-limited` failure also
+ *  carries its {@link RateLimit}, with `retryAfterSeconds` on the error itself, which a caller that
+ *  exchanges again waits out first. */
+export function credentialFailure(code: CredentialFailure, message: string, remedy?: string, rateLimit?: RateLimit): Error {
+  return Object.assign(new Error(message), { code }, remedy === undefined ? {} : { remedy }, rateLimit === undefined ? {} : { retryAfterSeconds: rateLimit.retryAfterSeconds, rateLimit });
+}
+
+/** A provider failure as a refusal: its message, and its remedy apart when it named one. A rate
+ *  limit keeps its seconds and bucket in the native detail, so a structured caller knows when to try
+ *  again and whether its other actors can. */
 function credentialRefusal(e: unknown, kind: ConnectRefusalKind): ConnectRefusal {
   const message = e instanceof Error ? e.message : String(e);
   const remedy = (e as { remedy?: unknown } | undefined)?.remedy;
+  const rateLimit = (e as { rateLimit?: RateLimit } | undefined)?.rateLimit;
+  const native = rateLimit !== undefined ? { native: { code: "RATE_LIMITED", detail: { ...rateLimit } } } : {};
   return typeof remedy === "string"
-    ? new ConnectRefusal(`✗ ${message} - ${remedy}`, undefined, { cause: e, kind, code: credentialCode(e), parts: { message, remedy } })
-    : new ConnectRefusal(`✗ ${message}`, undefined, { cause: e, kind, code: credentialCode(e) });
+    ? new ConnectRefusal(`✗ ${message} - ${remedy}`, undefined, { cause: e, kind, code: credentialCode(e), parts: { message, remedy }, ...native })
+    : new ConnectRefusal(`✗ ${message}`, undefined, { cause: e, kind, code: credentialCode(e), ...native });
 }
 
 /** The provider's own sentence when it answered and refused this actor, such as the scope an elevated
@@ -457,8 +471,8 @@ function credentialCode(e: unknown): RefusalCode {
   const code = (e as { code?: unknown } | undefined)?.code;
   if (code === "signed-out") return "AUTH_REQUIRED";
   if (code === "refused") return "PERMISSION_DENIED";
-  // A provider that cannot issue credentials for a reason it does not name is still a dependency
-  // the command could not use; it is not reported as a sign-in the operator could fix.
+  // A rate limit, or a provider that cannot issue credentials for a reason it does not name, is a
+  // dependency the command could not use; it is not reported as a sign-in the operator could fix.
   return "DEPENDENCY_UNAVAILABLE";
 }
 
@@ -790,7 +804,8 @@ async function userConnectOrThrow(target: MeshTarget): Promise<Connection> {
   try {
     return await userConnect(target);
   } catch (e) {
-    const kind = (e as { code?: unknown } | undefined)?.code === "unavailable" ? "transient" : "permanent";
+    const code = (e as { code?: unknown } | undefined)?.code;
+    const kind = code === "unavailable" || code === "rate-limited" ? "transient" : "permanent";
     throw credentialRefusal(e, kind);
   }
 }

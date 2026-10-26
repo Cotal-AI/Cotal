@@ -9,7 +9,7 @@ import { writePrivateRecord } from "@cotal-ai/core/secret-fs";
 import { assertLifecycleToken } from "@cotal-ai/core/subjects";
 import type { AgentAuthHealth } from "@cotal-ai/workspace";
 import { probeLiveness } from "@cotal-ai/workspace/liveness";
-import { readAuthResponseJson } from "./response-json.js";
+import { exchangeRateLimit, readAuthResponseJson } from "./response-json.js";
 import { loadAuthServiceInfo } from "./store-file.js";
 
 /** Record one `agent-bearer` attempt in the manager-composed health file, 0o600 and never through a
@@ -22,7 +22,9 @@ export function writeAgentAuthHealth(path: string, state: "ok" | "failed", reaso
  *  its spawn-time secret from the 0600 token file, exchange it at the space's auth service (agent
  *  grant type), print the fresh bearer to STDOUT, exit. Machine-facing: stdout carries the bearer
  *  and NOTHING else; every failure is a stderr sentence + exit 1 (the endpoint surfaces it as a
- *  loud "error" event and retries). The secret rides a file, never argv (ps-visible) or env. */
+ *  loud "error" event and retries). A rate-limited exchange is the one exception: stdout carries
+ *  `retry-after <seconds>`, the exit is 2, and the endpoint waits that long before it runs this
+ *  again. The secret rides a file, never argv (ps-visible) or env. */
 async function runAgentBearer(args: ParsedArgs): Promise<void> {
   const v = args.values as {
     dir?: string; space?: string; owner?: string; actor?: string;
@@ -115,6 +117,12 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
       throw new Error(`agent-bearer: the pinned exchange answered ${res.status} with redirect Location ${JSON.stringify(res.headers.get("location") ?? "")} - redirects are refused so an HTTPS pin cannot walk the actor token onto plaintext or another host`);
     if (!res.ok) {
       const body = (await readAuthResponseJson(res, `agent-bearer: the exchange at ${exchangeUrl}`)) as { error?: string };
+      const limited = exchangeRateLimit(res.status, body, actor);
+      if (limited) {
+        // The endpoint that runs this reads the wait here and does not run it again before then.
+        process.stdout.write(`retry-after ${limited.retryAfterSeconds}\n`);
+        throw Object.assign(new Error(`agent-bearer: ${limited.message}; ${limited.remedy}`), { exitCode: 2 });
+      }
       throw new Error(`agent-bearer: exchange refused: ${body.error ?? `HTTP ${res.status}`}`);
     }
     const out = (await readAuthResponseJson(res, `agent-bearer: the exchange at ${exchangeUrl}`)) as { token?: string };
@@ -148,13 +156,15 @@ export const agentBearerCommand: Command = {
     { name: "manager-call", type: "boolean", description: "mint a token bound to one manager instance" },
     { name: "manager-instance", type: "string", value: "<id>", description: "select the manager instance for --manager-call" },
   ],
-  // Every failure is one stderr sentence and exit 1, never a stack: the seat surfaces the sentence.
+  // Every failure is one stderr sentence, never a stack: the seat surfaces the sentence. It exits 1,
+  // or 2 for a rate limit.
   run: async (args) => {
     try {
       await runAgentBearer(args);
     } catch (e) {
       console.error(e instanceof Error ? e.message : String(e));
-      process.exit(1);
+      const exitCode = (e as { exitCode?: unknown } | undefined)?.exitCode;
+      process.exit(typeof exitCode === "number" ? exitCode : 1);
     }
   },
 };

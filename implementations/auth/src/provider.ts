@@ -1,4 +1,4 @@
-import { readAuthResponseJson } from "./response-json.js";
+import { exchangeRateLimit, readAuthResponseJson, type ExchangeRateLimit } from "./response-json.js";
 /**
  * The core `auth-provider` extension — how a composition root gets user-mode auth WITHOUT importing
  * this package from the CLI (`bin/cotal.ts` imports `@cotal-ai/auth`; `@cotal-ai/cli` resolves the
@@ -267,6 +267,8 @@ export const cotalAuthProvider: AuthProvider = {
     }
     if (!res.ok) {
       const body = (await readAuthResponseJson(res, `the auth service's exchange at ${info.url}/exchange`)) as { error?: string };
+      const limited = exchangeRateLimit(res.status, body, actor);
+      if (limited) throw rateLimitedFailure(limited);
       // A refused exchange is an authenticated denial with the reason (an ungranted actor names
       // the grant command); surface it verbatim — the service's copy is already operator-exact.
       throw credentialFailure(
@@ -877,6 +879,11 @@ function serviceClientTarget(store: SecretStore, dir: string, space: string): {
   return { base: info.url, idpUrl: idp.url, readSentinel: () => store.get(authClientSentinelKey(space)) };
 }
 
+/** The exchange's rate limit as a `rate-limited` credential failure, carrying its wait and bucket. */
+function rateLimitedFailure(limited: ExchangeRateLimit): Error {
+  return credentialFailure("rate-limited", limited.message, limited.remedy, { retryAfterSeconds: limited.retryAfterSeconds, limit: limited.limit });
+}
+
 /** The `/exchange` body both client arms send. It names each coordinate rather than spreading the
  *  request because the service also reads `owner`, `actorToken` and `ttlSec` from this body, and a
  *  wider object passed as the request must not reach them. */
@@ -931,6 +938,8 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{
   }
   if (!res.ok) {
     const body = (await readAuthResponseJson(res, `the exchange at ${exchangeUrl}`)) as { error?: string };
+    const limited = exchangeRateLimit(res.status, body, actor);
+    if (limited) throw rateLimitedFailure(limited);
     // A refused exchange is an authenticated denial with the reason; surface it verbatim - the
     // service's copy is already operator-exact (god-view, history-purge, deployer, and
     // manager-service stay loopback-only, and that refusal names the face). But the PUBLIC face

@@ -650,6 +650,15 @@ a guaranteed denial that still costs a full auth-callout round trip. It refuses 
 re-authenticates and rebuilds it. Retry notices use `warning` rather than `error` because Node
 rethrows an unhandled `error` event and would kill a host the endpoint is still trying to recover.
 
+When the broker refuses a bearer at connect, the `warning` says the broker refused this endpoint's
+bearer and that the auth service logs why, because nats-server passes the client no reason. The
+endpoint then retries on its capped backoff. Each wait is a random point in the upper half of its
+step, so endpoints refused together, after a broker restart or by an auth limit, do not retry
+together. A bearer source that throws an error with a numeric `retryAfterSeconds` is called again
+when those seconds have passed, not before, and a reconnect inside that wait dials on the bearer it
+holds. The auth provider's rate-limited exchange throws that way, and `agentBearerCommand` prints
+`retry-after <seconds>` for it.
+
 Pass a **function** for anything that outlives one bearer. That is a renewal source: it is called
 ahead of each expiry and again whenever a reconnect finds the cached bearer dead, and it requires
 explicit `card.owner` and `card.actor`. The first-party surfaces already do this

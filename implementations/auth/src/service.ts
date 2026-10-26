@@ -3602,10 +3602,10 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
 }
 
 /** An authenticated exchange whose actor the connect limits refuse. It is not probing, so it spends
- *  no refused-exchange budget; it answers 429 with the typed body and `Retry-After` (SPEC 13.1). */
+ *  no refused-exchange budget; it answers 429 with the typed body and `Retry-After` (SPEC §10). */
 function sendRateLimited(res: ServerResponse, e: ConnectRateLimited): void {
   console.error(`auth-service: refused an exchange: ${e.code} retry-after ${e.retryAfterSeconds}s: ${e.message}`);
-  send(res, 429, { code: e.code, retryAfterSeconds: e.retryAfterSeconds, error: `${e.message} - retry in ${e.retryAfterSeconds}s` }, { "retry-after": String(e.retryAfterSeconds) });
+  send(res, 429, { code: e.code, retryAfterSeconds: e.retryAfterSeconds, limit: e.limit, error: `${e.message} - retry in ${e.retryAfterSeconds}s` }, { "retry-after": String(e.retryAfterSeconds) });
 }
 
 /** Each chat-session route's CLOSED body: an unknown or missing field refuses before any read. */

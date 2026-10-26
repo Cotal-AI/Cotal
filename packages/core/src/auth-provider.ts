@@ -522,7 +522,9 @@ export interface AuthProvider extends Extension {
    * bearer to stdout and exits (flags: `--dir <state-dir> --space <space> --owner <o> --actor <a>
    * --token-file <path>`). A long-lived agent endpoint execs it per refresh — the exchange
    * protocol, discovery, and secret handling stay entirely behind the provider; the agent-side
-   * runtime only runs an argv and reads a line. */
+   * runtime only runs an argv and reads a line. When the exchange limits the agent for a while, the
+   * command prints `retry-after <seconds>` on stdout instead and exits non-zero, and the endpoint runs
+   * it again when those seconds have passed, not before. */
   readonly agentBearerCommand: string;
 }
 
@@ -530,10 +532,12 @@ export interface AuthProvider extends Extension {
  *  an operator sentence on stderr for every failure it handles, and that sentence is the error.
  *  Empty stderr means the child never reached its handler, and Node's `Command failed` message
  *  would repeat the whole argv, with its exchange URL, principal and file paths, while hiding
- *  whether the child timed out, was killed or exited. */
-export function bearerCommandFailure(err: ExecFileException, stderr: string, timeoutMs: number): Error {
+ *  whether the child timed out, was killed or exited. A `retry-after <seconds>` line on stdout rides
+ *  the error as `retryAfterSeconds`. */
+export function bearerCommandFailure(err: ExecFileException, stderr: string, timeoutMs: number, stdout = ""): Error {
   const said = stderr.trim();
-  if (said) return new Error(said);
+  const retryAfter = /^retry-after (\d+)$/.exec(stdout.trim());
+  if (said) return Object.assign(new Error(said), retryAfter ? { retryAfterSeconds: Number(retryAfter[1]) } : {});
   // execFile marks an exit error `killed` only when its own timeout killed the child.
   if (err.killed) return new Error(`the bearer command timed out after ${timeoutMs}ms`);
   if (err.signal) return new Error(`the bearer command was killed by ${err.signal}`);
@@ -555,7 +559,7 @@ export function runAgentBearer(
       argv[0],
       argv.slice(1),
       { timeout: timeoutMs, maxBuffer: 64 * 1024, env: opts.env, signal: opts.signal },
-      (err, stdout, stderr) => err ? reject(bearerCommandFailure(err, stderr, timeoutMs)) : resolve(stdout.trim()),
+      (err, stdout, stderr) => err ? reject(bearerCommandFailure(err, stderr, timeoutMs, stdout)) : resolve(stdout.trim()),
     );
   });
 }
