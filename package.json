@@ -401,6 +401,7 @@
     "smoke:run-answer-rejection": "tsx implementations/manager/smoke/run-answer-rejection.smoke.ts",
     "smoke:managed-agent-runtime-client": "tsx implementations/manager/smoke/remote-managed-agent-runtime-client.smoke.ts",
     "smoke:remote-isolated-renewal": "for target in serve goalWriter executor; do F_ISOLATED_TARGET=$target tsx implementations/manager/smoke/remote-isolated-renewal.smoke.ts || exit 1; done",
+    "smoke:retirement-copy": "tsx implementations/manager/smoke/retirement-copy.smoke.ts",
     "smoke:hosted-retirement-order": "tsx implementations/manager/smoke/hosted-retirement-order.smoke.ts",
     "probe:hosted-retirement-stock-supervise": "tsx implementations/manager/smoke/hosted-retirement-stock-supervise.acceptance.ts",
     "smoke:core-boundary": "tsx packages/core/smoke/core-boundary.smoke.ts",

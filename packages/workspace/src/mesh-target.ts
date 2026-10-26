@@ -557,6 +557,27 @@ export function retainedLegacyBroker(root: string): { server: string; open: bool
   return server ? { server, open: true } : undefined;
 }
 
+/** Where `space` runs when this machine registered it for a folder that is not `root`, which is how
+ *  a legacy root that holds its records reads after the folder was copied, after another folder took
+ *  the name over, or after this folder was moved and its recorded path went with it. The legacy
+ *  launcher writes no stack journal, so {@link stackElsewhereRemedy}'s journal rules cannot answer
+ *  here and the registration is the only record that names the folder the stack runs from. The step
+ *  is that folder, or the way back when it no longer exists. Undefined when the space is registered
+ *  here, nowhere, or by hand for a broker this machine does not start, leaving an ordinary stopped
+ *  root its own `cotal up`. */
+export function legacyStackElsewhere(root: string, space: string): { recordedRoot: string; remedy: string } | undefined {
+  // A registry this cannot read cannot say the space runs elsewhere, so the root keeps the sentence
+  // it had, as {@link stackRootElsewhere} does for the same reason.
+  let entry: MeshEntry | undefined;
+  try { entry = findMesh(space); } catch { return undefined; }
+  if (!entry || entry.origin !== "up") return undefined;
+  const recordedRoot = canonicalRoot(entry.root);
+  if (recordedRoot === canonicalRoot(root)) return undefined;
+  // The recorded folder still being there means the stack runs from it, so the step is to use it.
+  // Gone means this folder was moved out of it, and only moving back makes that path exist again.
+  return { recordedRoot, remedy: existsSync(recordedRoot) ? `use the stack from ${recordedRoot}, where "${space}" is registered` : movedRootRemedy(recordedRoot) };
+}
+
 /** The spaces registered or prepared for the project root `cwd` is in, none outside a project. */
 function folderSpaces(cwd: string, meshes: readonly MeshEntry[]): { root: string; spaces: string[] } | undefined {
   const root = findCotalRoot(cwd);
@@ -788,7 +809,11 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     const retained = retainedLegacyBroker(root);
     if (retained) {
       const named = retained.open ? undefined : soleSpaceOf(authDir(root));
-      throw new MeshTargetError("not-started", `the mesh${named === undefined ? "" : ` "${named}"`} in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, ...(named === undefined ? {} : { stackSpace: named }) });
+      // A root whose space this machine registered for ANOTHER folder is not a root whose own stack
+      // is merely stopped: the stack runs from that folder, so `cotal up` here would refuse the name
+      // or take it over rather than start what the caller asked for. Name that folder instead.
+      const elsewhere = named === undefined ? undefined : legacyStackElsewhere(root, named);
+      throw new MeshTargetError("not-started", `the mesh${named === undefined ? "" : ` "${named}"`} in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, ...(named === undefined ? {} : { stackSpace: named }), ...(elsewhere === undefined ? {} : { recordedRoot: elsewhere.recordedRoot, stackRemedy: elsewhere.remedy }) });
     }
     // No record for this root (migration, or our broker went down and the entry was just pruned).
     // Before guessing DEFAULT_SERVER, refuse if a DIFFERENT mesh is recorded there — otherwise the

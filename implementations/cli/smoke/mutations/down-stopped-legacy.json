@@ -25,7 +25,7 @@
     {
       "name": "--json stays refused on a stopped legacy root",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": " && !(bareStop(args.values) && stoppedLegacyStack())) throw",
+      "find": " && !(bareStop(args.values) && (stoppedLegacyStack() || recordsElsewhere(canonicalRoot(cotalRoot()), \"stop\")))) throw",
       "replace": ") throw",
       "expectRed": "--json reports the same no-op",
       "cell": "--json reports the same no-op",

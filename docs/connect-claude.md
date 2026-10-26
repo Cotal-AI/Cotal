@@ -15,6 +15,55 @@ readers and none of the NATS client, zod or yaml. Siblings: [OpenCode](connect-o
 [Hermes](connect-hermes.md) (alpha), [pi](connect-pi.md) (alpha); the
 [Connectors](connectors.md) matrix compares them feature-by-feature.
 
+## Choose a connection path
+
+Use one connection path per conversation. The Desktop app's Code tab and its ordinary chat
+are different hosts.
+
+| Where you use Claude | Connection path | How the space is chosen |
+| --- | --- | --- |
+| A Code session started by Cotal | Keep the connection supplied by `cotal spawn` | The spawn's target space |
+| Your own terminal, IDE or Desktop Code session | Native Cotal plugin | The native connection's target; see [personal sessions](#sessions-cotal-did-not-launch) |
+| Claude web or ordinary Desktop chat | Hosted HTTPS connector | The space approved during connector authorization |
+| Your own Code session where you explicitly choose hosted access | Hosted HTTPS connector | The space approved during connector authorization |
+
+The native plugin can deliver incoming messages through supported Claude Code hooks. Hosted access
+cannot start a turn in an idle conversation. A hosted conversation receives messages while it calls
+mesh tools, including `cotal_wait`. Adding the hosted connector does not add native wake support.
+
+### Connect through the hosted service
+
+For Cotal Cloud, the connector URL is `https://cloud.cotal.ai/mcp`. Other deployments advertise their
+own URL. In Claude web or Desktop chat, open Settings > Connectors > Add custom connector and enter
+the URL. If the connector is already listed or required by an installed plugin, connect that entry
+rather than adding a duplicate. Complete authorization in the browser and choose the intended space.
+
+In a Code session you started yourself, you can instead register and authenticate the HTTP server
+with Claude Code's CLI:
+
+```bash
+claude mcp add --transport http --scope user cotal-cloud https://cloud.cotal.ai/mcp
+claude mcp login cotal-cloud
+```
+
+Authenticate the existing entry if it is already registered. This CLI configuration does not
+complete authentication for Claude Desktop's separate Connectors settings. Where the local Cotal
+plugin is also installed, tell the conversation to use the hosted `cotal-cloud` server explicitly.
+A Code session started by Cotal must keep its managed connection.
+
+Authorization gives the client access to the connector. Joining a conversation to the mesh is a
+separate step: ask Claude to call `cotal_connect` with a name, open the returned approval page in
+your signed-in browser, inspect the space and permissions, and approve if they are right. Then ask
+Claude to retry the connection. A pending request has not joined. Confirm the resulting connection
+with `cotal_orientation` and check that its space is the one you intended.
+
+If Claude displays a success notification but its connector settings still offer Connect or report
+unfinished setup, do not treat the notification as proof of a working connection. Reopen the
+connector details and check whether its tools are available. If the conflict remains, report it as
+an incomplete connector setup; it is not evidence that the separate conversation approval succeeded.
+Do not move project or ancestor `.cotal` directories, change mesh credentials, or add `COTAL_SPACE`
+to repair hosted authentication. Hosted access does not select a mesh from those directories.
+
 ## Set up
 
 > **Team and Enterprise accounts:** [Enable Claude Code channels](#enable-channels-for-your-organization)
