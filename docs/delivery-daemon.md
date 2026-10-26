@@ -201,7 +201,9 @@ check only ever downgrades on proof.
 
 The daemon also hosts the space's **checkpoint timer writer** ([SPEC §13.9](../SPEC.md#139-authority-boundary)):
 the standing pump that turns workflow `.schedule` requests into armed broker schedules, on its own
-connection under the same delivery credential. Without a running writer no workflow pause on the
+connection under the same delivery credential. That connection presents the credential the daemon
+holds now and reconnects onto each renewed one the daemon adopts, so the broker never closes it for
+an expired credential and it never dials with one. Without a running writer no workflow pause on the
 space ever expires. The writer restarts itself with backoff and logs while it is down; a fault
 there never takes delivery down.
 

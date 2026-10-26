@@ -151,7 +151,9 @@ export interface ClearSpaceHistoryResult {
  *  pair (a view bearer + the deny-all sentinel creds) — exactly what the endpoint's user mode
  *  presents. Never both. Empty = open mode. */
 export interface StandaloneAuth {
-  creds?: string;
+  /** A creds file, or a getter nats.js reads on every connect and reconnect attempt, so a
+   *  long-lived connection presents its owner's current credential instead of the one it dialed with. */
+  creds?: string | (() => string);
   bearer?: string;
   sentinelCreds?: string;
   /** Whether this connection must REQUIRE TLS rather than merely tolerate it.
@@ -213,13 +215,15 @@ export function standaloneConnectOpts(auth: StandaloneAuth): Record<string, unkn
       ...tlsOpt,
     };
   }
-  return auth.creds
-    ? {
-        authenticator: credsAuthenticator(new TextEncoder().encode(auth.creds)),
-        inboxPrefix: `_INBOX_${idFromCreds(auth.creds)}`,
-        ...tlsOpt,
-      }
-    : { ...tlsOpt };
+  const creds = auth.creds;
+  if (!creds) return { ...tlsOpt };
+  return {
+    authenticator: typeof creds === "function"
+      ? (nonce?: string) => credsAuthenticator(new TextEncoder().encode(creds()))(nonce)
+      : credsAuthenticator(new TextEncoder().encode(creds)),
+    inboxPrefix: `_INBOX_${idFromCreds(typeof creds === "function" ? creds() : creds)}`,
+    ...tlsOpt,
+  };
 }
 
 /** Native message-stream creation fields shared by bootstrap and schema planning. */
