@@ -516,7 +516,10 @@ The service's own broker connections renew their credentials before they expire,
 point between half and four fifths of each credential's lifetime and at least a second apart
 within a space. Each reconnects onto its new credential at a moment with no request in flight.
 The connect-credential reader opens a new connection instead, proves its stores on it, and only
-then switches to it, so a renewal never denies a connect.
+then switches to it, so a renewal never denies a connect. The service also removes expired
+native-key issuance evidence on a timer. A pass that fails because the store did not answer, as can
+happen while a connection reconnects under load, is retried with growing waits and logged once, and
+the service keeps serving. Evidence that does not parse stops the service and refuses its next start.
 
 Ctrl-C on a foreground `up`, and a broker that exits under it, stop the service with the same stop
 bare `cotal down` uses for it. It holds the reservation `down` takes, so the auth stop of a
