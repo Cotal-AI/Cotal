@@ -12,7 +12,9 @@
  * is the target of the commands run there only while it RUNS: a space prepared there and never
  * started, and one whose registration survives a stack that no `cotal down` stopped, leave the
  * selection the target, and the run names what the folder holds and the `cotal up` that starts it.
- * `space show`, which is about the folder, still shows what it holds.
+ * `space show`, which is about the folder, still shows what it holds, and calls a registered space
+ * whose broker does not answer stopped. `spawn -d --dry-run` there previews the space `spawn -d`
+ * launches on, and bare `cotal`, which reads no broker, says the folder's space applies while it runs.
  *
  * Needs `nats-server` on PATH. Linux and macOS run the terminal cells under a pty, Windows under ConPTY.
  *
@@ -232,6 +234,18 @@ const QUESTION = "Which one?";
     envelope(inStopped)?.target?.space === "alpha" && inStopped.status === 0 && envelope(stoppedPs)?.target?.space === "alpha" &&
       new RegExp(`^Mesh: alpha\n {2}${STOPPED}$`, "m").test(inStoppedText.stdout + inStoppedText.stderr),
     { json: shown(inStopped), text: shown(inStoppedText), ps: shown(stoppedPs) });
+  // The preview reads the liveness the launch reads, so both name the selection.
+  const stoppedPreview = run(["spawn", "default", "-d", "--dry-run", "--json"], zetaRoot), stoppedLaunch = run(["spawn", "default", "-d", "--json"], zetaRoot);
+  check("spawn -d --dry-run there previews the space spawn -d launches on: the selection, not the stopped folder space",
+    stoppedPreview.status === 0 && envelope(stoppedPreview)?.target?.space === "alpha" && envelope(stoppedLaunch)?.target?.space === "alpha", { preview: shown(stoppedPreview), launch: shown(stoppedLaunch) });
+  // `space show` reads the folder's broker, so it says the space is stopped and the selection is the
+  // target until it runs; the entry screen reads no broker, so it says when the folder's space applies.
+  const shownStopped = run(["space", "show"], zetaRoot), shownRunning = run(["space", "show"], join(home, "beta")), entryStopped = run([], zetaRoot);
+  check("space show there calls zeta this folder's stopped space, and in a running folder space's root this folder's space",
+    /^Mesh: zeta\n {2}this folder's stopped space; commands here target the selected space "alpha" until it runs$/m.test(shownStopped.stdout) &&
+      /^Mesh: beta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(shownRunning.stdout), { stopped: shown(shownStopped), running: shown(shownRunning) });
+  check("bare cotal there says this folder's space applies while it runs and the selection otherwise",
+    entryStopped.status === 0 && entryStopped.stdout.includes(`this folder's space while it runs; the selected space "alpha" applies outside it and while it is stopped`), shown(entryStopped));
   removeMesh("zeta");
   const clearChannel = run(["history", "clear", "general"], delta);
   check("history clear with a channel refuses naming the space it targets, not the selected space",

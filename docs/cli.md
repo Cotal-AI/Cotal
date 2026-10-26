@@ -45,10 +45,12 @@ connectors after an old executable rebuilt them, run the verified newer absolute
 `ext seed`, without `--force`.
 
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
-the space a command run here targets, this folder's running space, else the selected space, and
-lists common commands. When that folder's space is not the selection, it adds that the selected space
-applies outside the folder, and when the folder holds a space that is not running it names what it
-holds. It points a prepared space to the `cotal up` that starts it, with
+the space this folder has registered, else the selected space, else, with nothing selected, the space
+this folder prepared, and lists common commands. It reads no
+broker, so when that folder's space is not the selection, it adds that the folder's space applies
+while it runs and the selected space applies outside the folder and while it is stopped. When the
+folder holds a space that is prepared, or whose stack is stopped with no registration, it names what
+it holds. It points a prepared space to the `cotal up` that starts it, with
 `--root <dir>` when the space is prepared in another folder and `<dir>` quoted when a shell would
 split it, and a machine with no space to `cotal setup`. With spaces on the machine but none selected
 or in this folder, it names `cotal use <name>` and `cotal space` instead. Every command generates its own help, usage, and shell completion from its declared
@@ -2906,7 +2908,8 @@ included, says the selection applies outside the folder. A space `cotal space cr
 and no `cotal up` started, and one whose stack there is stopped, is the target of the commands about
 the folder itself only: `cotal up`, `cotal down`, `cotal space show` and the folder part of
 `cotal status`. Every other command run there targets the selection, and the note under its `Mesh:`
-heading says what this folder holds and the `cotal up` that starts it. A folder that holds
+heading says what this folder holds and the `cotal up` that starts it. `cotal space show` there calls a
+registered folder space whose broker does not answer this folder's stopped space. A folder that holds
 the records of a stack that runs from another folder or under another Cotal home, as a copy, a moved
 folder or one whose space name a later `up` took over, is not released to the selection: commands
 there refuse `TARGET_UNAVAILABLE` and name that folder or home, as they do with nothing selected.
@@ -8749,7 +8752,9 @@ execution reads its local file. A supported Mesh-manifest shape returns a schema
 the literal `cotal team deploy <file>` remedy, before agent allocation.
 
 `spawn --dry-run` never refreshes the catalog, repairs stale registrations, imports connector code,
-connects to the broker, redeems enrollment, provisions or allocates an agent. The managed preview
+signs in to the broker, redeems enrollment, provisions or allocates an agent. Where the launch reads
+whether the recorded brokers answer to choose its space, as in a folder whose registered space may
+be stopped, the preview reads the same without signing in, so it names the space the launch uses. The managed preview
 shows the request and exits 0 with `completeness` `not-checked`, because the manager resolves the
 persona, harness and working directory on its own host at launch. It does not substitute the
 caller's files. With `--foreground`, the preview resolves the local persona, harness precedence and
