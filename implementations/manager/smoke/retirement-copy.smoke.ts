@@ -14,7 +14,7 @@ import {
   contractStoreContext, createEndpointStreams, createSpaceAuth, endpointRegistrationBarrier,
   epAuthBucket, isReachable, managedRetirementOpId, mintCreds, mintLifecycleUid, newIdentity,
   openRecordsBucket, principalKey, provisionEndpointGateOpen, publishContractArtifact,
-  registerServingInstance, remoteManagerActors, registry, serveEndpoint, CotalEndpoint, resolveService,
+  registerServingInstance, remoteManagerActors, registry, serveEndpoint, CotalEndpoint, resolveService, type Connector,
 } from "@cotal-ai/core";
 import { Manager, type ManagerOptions } from "@cotal-ai/manager";
 import { authClusterArtifacts, authCommandDefs, authContractArtifactValues } from "../../auth/src/auth-service-contract.js";
@@ -31,8 +31,9 @@ mkdirSync(process.env.HOME, { recursive: true });
 const workspaceRoot = join(root, "workspace");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 writeFileSync(join(workspaceRoot, ".cotal", "agents", "worker.md"), "---\nname: worker\n---\n");
-registry.register({ kind: "connector", name: "retirement-copy", requires: ["node"],
-  buildLaunch: () => { throw new Error("fixture launch refused after provisioning"); } });
+const connector: Connector = { kind: "connector", name: "retirement-copy", requires: ["node"],
+  buildLaunch: () => { throw new Error("fixture launch refused after provisioning"); } };
+registry.register(connector);
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const space = "retirement-copy";
@@ -93,7 +94,7 @@ try {
     return { retired: true, lifecycleUid: uid, opId: args.opId, evictedPrincipals: [] };
   } }), { public: true }, { resolveTarget: (target) => {
     const lifecycleUid = mappings.get(`${target.owner}.${target.actor}`);
-    return lifecycleUid === undefined ? undefined : { lifecycleUid };
+    return lifecycleUid === undefined ? undefined : { lifecycleUid, mappingRevision: 1 };
   } });
   await nc.flush();
   await resolveService(nc, space, AUTH_ENDPOINT, { owner, actor: "fixture", uid: mintLifecycleUid() }, { deadlineMs: 3000 });
@@ -233,10 +234,13 @@ try {
   console.log(`retirement-copy: ${passed} passed, ${failed} failed; retained fixture ${root}`);
 } finally {
   console.error = originalError;
-  await endpoint?.stop();
-  await serving?.stop();
-  await nc?.close();
-  await killAndAwaitExit(broker);
-  releaseBroker();
+  try { await endpoint?.stop(); }
+  finally {
+    try { await serving?.stop(); }
+    finally {
+      try { await nc?.close(); }
+      finally { await killAndAwaitExit(broker); releaseBroker(); }
+    }
+  }
 }
 process.exitCode = failed ? 1 : 0;
