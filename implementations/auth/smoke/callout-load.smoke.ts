@@ -35,8 +35,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { SignJWT, generateKeyPair, type CryptoKey } from "jose";
-import { createSpaceAuth, isReachable, serverConfig, mintLifecycleUid } from "@cotal-ai/core";
+import { SignJWT, exportJWK, generateKeyPair, importJWK, type CryptoKey, type JWK } from "jose";
+import { createSpaceAuth, chatSubject, isReachable, serverConfig, mintLifecycleUid } from "@cotal-ai/core";
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, USER_TOKEN_VER, type StartAuthCalloutOpts } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -54,7 +54,10 @@ interface ChildResult {
   byReason: Record<string, number>;
   latencies: number[];
   /** Request/reply round-trips completed by a `hold` child, and their latencies. */
+  /** hold: messages published into the space. */
   msgs?: number;
+  /** hold: message deliveries the broker actually made (fan-out, so >= msgs). */
+  received?: number;
   msgLatencies?: number[];
   cpuMs: number;
   /** The pacing window alone. Offered rate must not be divided by the drain that follows it. */
@@ -75,13 +78,18 @@ interface ChildJob {
   pollMs?: number;
   /** hold: how many connections stay resident, then drive request/reply for `seconds`. */
   endpoints?: number;
-  /** hold: the subject the resident responder answers on. */
-  subject?: string;
-  /** hold: in-flight requests per resident endpoint while measuring message throughput. */
-  inflight?: number;
+  /** hold: the channel-wildcard subject every resident subscribes (`chat.*.*.<channel>`). */
+  subSubject?: string;
+  /** hold: per-bearer publish subjects (`chat.<owner>.<actor>.<channel>`), aligned with `bearers`. */
+  pubSubjects?: string[];
 }
 
 const RESULT_PREFIX = "RESULT ";
+/** Keep every Nth delivery latency, and never more than this many, so one run's result stays a
+ *  document the parent can parse. Percentiles over a systematic sample of a steady stream are
+ *  the same percentiles. */
+const DELIVERY_SAMPLE = 64;
+const MAX_LATENCY_SAMPLES = 50_000;
 const enc = (s: string) => new TextEncoder().encode(s);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -149,6 +157,7 @@ async function runChild(): Promise<void> {
   };
 
   let msgs = 0;
+  let received = 0;
   const msgLatencies: number[] = [];
   const phase0 = performance.now();
 
@@ -179,31 +188,46 @@ async function runChild(): Promise<void> {
     }
     await Promise.all(seatLoops);
   } else {
-    // hold: bring up resident endpoints, then measure request/reply throughput between them.
+    // hold: bring up resident endpoints, then measure chat throughput across the space.
+    // An agent's grant is channel-shaped: it may publish ONLY its own
+    // `cotal.<space>.chat.<owner>.<actor>.<channel>` and subscribe the channel wildcard
+    // `cotal.<space>.chat.*.*.<channel>`. So every resident both publishes as itself and receives
+    // every other resident's post, which is what "messages per second per space" means here:
+    // `published` is what the space ingests, `received` is what the broker actually delivers.
     for (let i = 0; i < job.endpoints!; i++) await once(job.bearers[i % job.bearers.length], true);
-    const live = held.filter(Boolean);
+    const live: Array<{ nc: NatsConnection; pub: string }> = [];
+    for (let i = 0; i < held.length; i++) live.push({ nc: held[i], pub: job.pubSubjects![i % job.pubSubjects!.length] });
     if (live.length) {
-      // Half the residents answer, half ask: a round-trip is one publish plus one reply, which is
-      // what "messages per second per space" has to count.
-      const half = Math.max(1, Math.floor(live.length / 2));
-      for (let i = 0; i < half; i++) {
-        const nc = live[i];
-        void (async () => { for await (const m of nc.subscribe(job.subject!, { queue: "load" })) m.respond(m.data); })().catch(() => {});
-      }
-      await Promise.all(live.slice(0, half).map((nc) => nc.flush()));
-      const askers = live.slice(half);
-      const until = performance.now() + job.seconds! * 1000;
-      const payload = enc("x".repeat(128));
-      await Promise.all(askers.map(async (nc) => {
-        const lanes = Array.from({ length: job.inflight ?? 4 }, async () => {
-          while (performance.now() < until) {
-            const t0 = performance.now();
-            try { await nc.request(job.subject!, payload, { timeout: 5000 }); msgs++; msgLatencies.push(performance.now() - t0); }
-            catch { /* a dropped round-trip is simply not counted */ }
+      for (const { nc } of live) {
+        void (async () => {
+          for await (const m of nc.subscribe(job.subSubject!)) {
+            received++;
+            // The publisher stamped its own clock into the payload, and every resident lives in
+            // this one process, so the delta is a real delivery latency, not a clock comparison.
+            // Every delivery is one sample, and the fan-out makes that millions per run. Take every
+            // DELIVERY_SAMPLE-th across the whole run (systematic, so percentiles stay unbiased)
+            // and stop at a cap the result can actually carry.
+            if (received % DELIVERY_SAMPLE === 0 && msgLatencies.length < MAX_LATENCY_SAMPLES) {
+              const sent = Number(new TextDecoder().decode(m.data).slice(0, 16));
+              if (Number.isFinite(sent)) msgLatencies.push(performance.now() - sent);
+            }
           }
-        });
-        await Promise.all(lanes);
+        })().catch(() => {});
+      }
+      await Promise.all(live.map(({ nc }) => nc.flush()));
+      const until = performance.now() + job.seconds! * 1000;
+      const filler = "x".repeat(112);
+      await Promise.all(live.map(async ({ nc, pub }) => {
+        // Publish in bounded batches and flush: an unflushed loop would measure how fast this
+        // process can fill a buffer, not how fast the broker moves messages.
+        while (performance.now() < until) {
+          for (let i = 0; i < 64; i++) { nc.publish(pub, enc(performance.now().toFixed(3).padStart(16, "0") + filler)); msgs++; }
+          await nc.flush();
+        }
       }));
+      // Let the last flushed batch land before the subscriptions are torn down.
+      const settle = performance.now() + 500;
+      while (performance.now() < settle) await wait(50);
     }
   }
 
@@ -221,14 +245,48 @@ async function runChild(): Promise<void> {
     ok: attempts.filter((a) => a.ok).length,
     byReason,
     latencies: attempts.filter((a) => a.ok).map((a) => a.ms),
-    msgs, msgLatencies,
+    msgs, received, msgLatencies,
     cpuMs: (cpu.user + cpu.system) / 1000,
     loadMs,
   };
-  process.stdout.write(RESULT_PREFIX + JSON.stringify(out) + "\n");
+  // Writing to a PIPE and exiting drops whatever is still buffered, so the parent would parse a
+  // truncated document. Wait for the write to drain before returning.
+  await new Promise<void>((r) => { process.stdout.write(RESULT_PREFIX + JSON.stringify(out) + "\n", () => r()); });
 }
 
 if (process.argv[2] === "load") { await runChild(); process.exit(0); }
+
+/** One extra auth-callout service process. It joins the same `cotal-auth-callout` queue group as
+ *  the in-process one, so the broker shares connect requests across every running service. */
+interface CalloutJob {
+  servers: string; space: string; iss: string; idpJwk: JWK; uid: string;
+  calloutCreds: string; xkeySeed: string;
+  authAccount: { pub: string; signingSeed: string };
+  dataAccount: { pub: string; signingSeed: string };
+}
+async function runCalloutChild(): Promise<void> {
+  const chunks: Buffer[] = [];
+  for await (const c of process.stdin) chunks.push(c as Buffer);
+  const job = JSON.parse(Buffer.concat(chunks).toString("utf8")) as CalloutJob;
+  const { startAuthCallout } = await import("../src/callout.js");
+  const key = await importJWK(job.idpJwk, "EdDSA");
+  const nc = await connect({ servers: job.servers, authenticator: credsAuthenticator(enc(job.calloutCreds)) });
+  startAuthCallout(nc as never, {
+    xkeySeed: job.xkeySeed,
+    authAccount: job.authAccount,
+    dataAccount: job.dataAccount,
+    space: job.space,
+    token: { key: key as never, issuer: job.iss },
+    recordIssuance: async () => {},
+    authorizeActor: () => {},
+    permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"], lifecycleUid: job.uid, scope: [] })),
+    log: () => {},
+  });
+  await nc.flush();
+  process.stdout.write("READY\n");
+  await new Promise<void>(() => {}); // serve until the parent kills us
+}
+if (process.argv[2] === "callout") { await runCalloutChild(); }
 
 // ---------------------------------------------------------------------------------------------
 // orchestrator
@@ -262,9 +320,14 @@ const ENDPOINTS = num("endpoints", "100");
 const STALL_MS = num("stall-ms", "4000");
 const USERS = num("users", "64");
 const LOAD_PROCS = Math.max(1, Math.min(4, num("load-procs", "4")));
+/** How many auth-callout service PROCESSES to run behind the queue group. The service is
+ *  single-threaded, so this is the only way its throughput crosses one core. */
+const CALLOUTS = Math.max(1, num("callouts", "1"));
 const CONNECT_TIMEOUT_MS = num("connect-timeout-ms", "10000");
 const AUTH_TIMEOUT = flag("auth-timeout", ""); // empty: emit no `authorization` block at all
 const NATS_BIN = process.env.NATS_SERVER_BIN ?? "nats-server";
+/** The one channel the msgrate scenario grants and exchanges on. */
+const CHANNEL = "general";
 
 const REPO = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", cwd: import.meta.dirname }).trim();
 const SHA = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", cwd: REPO }).trim();
@@ -390,6 +453,9 @@ const calloutLog: string[] = [];
 
 let calloutNc: NatsConnection | undefined;
 const children: ChildProcess[] = [];
+/** The extra auth-callout service processes (`--callouts`), kept so their CPU can be read from
+ *  /proc before they are killed. */
+const calloutChildren: ChildProcess[] = [];
 
 /** Run one load child. Its job (which carries credentials) goes over stdin, never argv. */
 const runLoad = (job: ChildJob): Promise<ChildResult> =>
@@ -406,7 +472,11 @@ const runLoad = (job: ChildJob): Promise<ChildResult> =>
     child.on("exit", (code) => {
       const line = out.split("\n").find((l) => l.startsWith(RESULT_PREFIX));
       if (!line) return reject(new Error(`load child exited ${code} with no result`));
-      const r = JSON.parse(line.slice(RESULT_PREFIX.length)) as ChildResult;
+      let r: ChildResult;
+      try { r = JSON.parse(line.slice(RESULT_PREFIX.length)) as ChildResult; }
+      catch (e) {
+        return reject(new Error(`load child exited ${code} with an unparseable result (${line.length} bytes, likely truncated): ${e instanceof Error ? e.message : String(e)}`));
+      }
       (r as ChildResult & { pid: number }).pid = child.pid!;
       resolve(r);
     });
@@ -419,6 +489,7 @@ const merge = (rs: ChildResult[]): ChildResult => ({
   byReason: rs.reduce<Record<string, number>>((a, r) => { for (const [k, v] of Object.entries(r.byReason)) a[k] = (a[k] ?? 0) + v; return a; }, {}),
   latencies: rs.flatMap((r) => r.latencies),
   msgs: rs.reduce((a, r) => a + (r.msgs ?? 0), 0),
+  received: rs.reduce((a, r) => a + (r.received ?? 0), 0),
   msgLatencies: rs.flatMap((r) => r.msgLatencies ?? []),
   cpuMs: rs.reduce((a, r) => a + r.cpuMs, 0),
   loadMs: Math.max(...rs.map((r) => r.loadMs)),
@@ -449,6 +520,30 @@ try {
     log: (l) => { if (calloutLog.length < 200) calloutLog.push(l); },
   });
   await calloutNc.flush();
+
+  if (CALLOUTS > 1 && ARM !== "main")
+    throw new Error("callout-load: --callouts > 1 is supported only on --arm main (the question is about the deployed service)");
+  const idpJwk = await exportJWK(publicKey);
+  for (let i = 1; i < CALLOUTS; i++) {
+    const child = spawn(process.execPath, [...process.execArgv, import.meta.filename, "callout"], {
+      stdio: ["pipe", "pipe", "inherit"],
+      env: { ...process.env, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off" },
+    });
+    calloutChildren.push(child);
+    const ready = new Promise<void>((resolve, reject) => {
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (d: string) => { if (d.includes("READY")) resolve(); });
+      child.on("exit", (c) => reject(new Error(`callout service child exited ${c} before serving`)));
+      setTimeout(() => reject(new Error("callout service child did not report READY in 30s")), 30_000).unref();
+    });
+    child.stdin.end(JSON.stringify({
+      servers: SERVERS, space, iss: ISS, idpJwk, uid: UID,
+      calloutCreds: callout.calloutCreds, xkeySeed: callout.xkey.seed,
+      authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
+      dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+    } satisfies CalloutJob));
+    await ready;
+  }
 
   // N valid user credentials, minted once up front so bearer minting is never on the measured path
   // and the IdP's own signing cost cannot be mistaken for callout cost.
@@ -500,7 +595,12 @@ try {
     result = merge(await load);
     note = `${RATE}/s for ${SECONDS}s, auth ledger stalled ${STALL_MS}ms starting at t=${((SECONDS * 1000) / 3 / 1000).toFixed(1)}s`;
   } else if (SCENARIO === "msgrate") {
-    result = await runLoad({ mode: "hold", servers: SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, endpoints: ENDPOINTS, seconds: SECONDS, subject: "general", inflight: 4 });
+    result = await runLoad({
+      mode: "hold", servers: SERVERS, sentinelCreds: callout.sentinelCreds, bearers,
+      connectTimeoutMs: CONNECT_TIMEOUT_MS, endpoints: ENDPOINTS, seconds: SECONDS,
+      subSubject: chatSubject(space, "*", "*", CHANNEL),
+      pubSubjects: bearers.map((_, i) => chatSubject(space, OWNER, `agent_${i}`, CHANNEL)),
+    });
     note = `${ENDPOINTS} resident endpoints, request/reply for ${SECONDS}s`;
   } else {
     throw new Error(`callout-load: unknown --scenario ${SCENARIO} (steady|burst|idle-seats|expired-bearer|ledger-stall|msgrate)`);
@@ -510,13 +610,17 @@ try {
   const loadS = result.loadMs / 1000;
   const selfCpu = process.cpuUsage(selfCpu0);
   const brokerCpuMs = procCpuMs(srv.pid!) - brokerCpu0;
-  const authCpuMs = (selfCpu.user + selfCpu.system) / 1000;
+  // Every callout process is the auth service, so the total is this process plus the children.
+  // Their start baseline is 0: each was spawned for this run and does nothing else.
+  const authCpuMs = (selfCpu.user + selfCpu.system) / 1000
+    + calloutChildren.reduce((a, c) => a + (c.pid ? procCpuMs(c.pid) : 0), 0);
   const v1 = await varz();
 
   row("git sha", SHA);
   row("nats-server", `${serverVersion} (${NATS_BIN})`);
   row("scenario", `${SCENARIO} — ${note}`);
   row("arm", ARM === "main" ? "main (native Ed25519 signer, maxInFlight 32)" : `stock ${STOCK_REF} (pure-JS signer, serial)`);
+  row("auth callout processes", CALLOUTS);
   row("auth timeout block", AUTH_TIMEOUT ? `authorization { timeout: ${AUTH_TIMEOUT} }` : "(none emitted)");
   row("duration (s)", elapsedS);
   rows.push(["", ""]);
@@ -537,13 +641,16 @@ try {
   row("connect latency p99 (ms)", n2(pct(result.latencies, 99)));
   if (SCENARIO === "msgrate") {
     rows.push(["", ""]);
-    row("round-trips completed", result.msgs ?? 0);
-    row("messages/s (req+reply = 2)", ((result.msgs ?? 0) * 2) / elapsedS);
-    row("round-trip p50 (ms)", n2(pct(result.msgLatencies ?? [], 50)));
-    row("round-trip p99 (ms)", n2(pct(result.msgLatencies ?? [], 99)));
+    row("resident endpoints up", result.ok);
+    row("messages published", result.msgs ?? 0);
+    row("message deliveries (fan-out)", result.received ?? 0);
+    row("publishes/s into the space", (result.msgs ?? 0) / loadS);
+    row("deliveries/s out of the broker", (result.received ?? 0) / loadS);
+    row("delivery latency p50 (ms)", n2(pct(result.msgLatencies ?? [], 50)));
+    row("delivery latency p99 (ms)", n2(pct(result.msgLatencies ?? [], 99)));
   }
   rows.push(["", ""]);
-  row("auth service CPU (cores)", authCpuMs / 1000 / elapsedS);
+  row("auth service CPU (cores, all processes)", authCpuMs / 1000 / elapsedS);
   row("broker CPU (cores)", brokerCpuMs / 1000 / elapsedS);
   row("load generators CPU (cores)", result.cpuMs / 1000 / elapsedS);
   row("auth service CPU per callout (ms)", served ? authCpuMs / served : NaN);
@@ -572,7 +679,7 @@ try {
   console.error("  ✗ callout-load threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
 } finally {
-  for (const c of children) { try { c.kill("SIGKILL"); } catch { /* already gone */ } }
+  for (const c of [...children, ...calloutChildren]) { try { c.kill("SIGKILL"); } catch { /* already gone */ } }
   try { await calloutNc?.close(); } catch { /* closing a dead conn is not a result */ }
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
