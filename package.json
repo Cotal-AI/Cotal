@@ -978,6 +978,7 @@
     "smoke:cli-pty": "tsx implementations/cli/smoke/cli-pty.smoke.ts",
     "smoke:console-participant": "tsx implementations/cli/smoke/console-participant.smoke.ts",
     "smoke:console-attach": "tsx implementations/cli/smoke/console-attach.smoke.ts",
+    "smoke:console-cursor": "tsx implementations/cli/smoke/console-cursor.smoke.tsx",
     "smoke:console-render": "tsx implementations/cli/smoke/console-render.smoke.tsx",
     "smoke:console-managed-rows": "tsx implementations/cli/smoke/console-managed-rows.smoke.ts",
     "smoke:console-status-row": "tsx implementations/cli/smoke/console-status-row.smoke.ts",

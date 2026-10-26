@@ -4,6 +4,7 @@ import type { MeshSnapshot } from "../../view/mesh-view.js";
 import { COMMANDS } from "../commands.js";
 import { Modal } from "./Modal.js";
 import type { PsReply } from "../control.js";
+import { useListCursor } from "./useListCursor.js";
 
 const CAP = 6; // suggestion rows; the palette is a fixed CAP+1 rows tall so the layout doesn't jump
 
@@ -110,9 +111,8 @@ export function CommandPalette({
     return () => { alive = false; };
   }, [active, needsManaged, canControl, readManaged]);
   const { items, tokenStart, matchLen, mode, hint } = suggest(query, snapshot, managed);
-  const [sel, setSel] = useState(0);
+  const { index: selClamped, up, down, first } = useListCursor(items.length);
   const [choosingTarget, setChoosingTarget] = useState(false);
-  const selClamped = Math.min(sel, Math.max(0, items.length - 1));
 
   useInput(
     (input, key) => {
@@ -123,14 +123,14 @@ export function CommandPalette({
           if (selected.control && !canControl || selected.write && !canWrite) return;
           if (selected.value === "spawn") return onNewAgent();
           const command = COMMANDS.find((item) => item.name === selected.value);
-          if (command?.usage) { setChoosingTarget(true); onChange(`${selected.value} `); setSel(0); return; }
+          if (command?.usage) { setChoosingTarget(true); onChange(`${selected.value} `); first(); return; }
           return onRun(selected.value);
         }
         if (mode === "target" && choosingTarget && selected) {
           const line = query.slice(0, tokenStart) + selected.value;
           setChoosingTarget(false);
           if (selected.run) return onRun(line);
-          onChange(line + " "); setSel(0); return;
+          onChange(line + " "); first(); return;
         }
         if (mode === "target" && !query.slice(tokenStart)) return;
         return onRun(query);
@@ -141,21 +141,21 @@ export function CommandPalette({
           if (s.value === "spawn") { if (canControl) onNewAgent(); return; }
           setChoosingTarget(mode === "command");
           onChange(query.slice(0, tokenStart) + s.value + " ");
-          setSel(0);
+          first();
         }
         return;
       }
       if (key.upArrow || key.downArrow) {
         if (mode === "target") setChoosingTarget(true);
-        setSel((v) => key.upArrow ? Math.max(0, v - 1) : Math.min(items.length - 1, v + 1));
+        if (key.upArrow) up(); else down();
         return;
       }
       if (key.backspace || key.delete) {
-        setSel(0);
+        first();
         return onChange(query.slice(0, -1));
       }
       if (input && !key.ctrl && !key.meta) {
-        setSel(0);
+        first();
         onChange(query + input);
       }
     },

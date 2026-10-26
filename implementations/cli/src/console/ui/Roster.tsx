@@ -1,9 +1,10 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
 import { peerLabel, presenceText, type Presence } from "@cotal-ai/core";
 import { progressSignal } from "@cotal-ai/workspace";
 import { activityAge, presenceFacts } from "../../ui.js";
 import { agentColor, STATUS, ago, windowAround, wrapFacts, type FactRow } from "./theme.js";
+import { useListCursor } from "./useListCursor.js";
 
 function progressText(p: Presence): string {
   if (p.card.kind !== "agent" || p.status !== "working") return ago(p.ts);
@@ -129,13 +130,12 @@ export function Roster({
   const q = query.trim().toLowerCase();
   const filt = (l: Presence[]) => (q ? l.filter((p) => matches(p, q)) : l);
   const list = [...filt(agents), ...filt(endpoints)];
-  const [sel, setSel] = useState(0);
-  const selClamped = Math.min(sel, Math.max(0, list.length - 1));
+  const { index: selClamped, up, down } = useListCursor(list.length);
 
   useInput(
     (input, key) => {
-      if (key.upArrow || input === "k") setSel((v) => Math.max(0, v - 1));
-      else if (key.downArrow || input === "j") setSel((v) => Math.min(Math.max(0, list.length - 1), v + 1));
+      if (key.upArrow || input === "k") up();
+      else if (key.downArrow || input === "j") down();
       else if (input === "D" && onKill && list[selClamped]?.card.kind === "agent")
         onKill(list[selClamped]);
       else if (input === "a" && onAttach && list[selClamped]?.card.kind === "agent")
