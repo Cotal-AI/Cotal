@@ -15,8 +15,13 @@
  * `backup create` included, which crashed with Node's stack trace. Help there says the folder no
  * longer exists.
  *
- * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME. Nothing is
- * started or deleted.
+ * A usage that declares several forms, one per line, as `linear` does, shows each form on its own
+ * lines; help printed them joined by an escaped `\u000a`. A flag a `linear` operation does not take
+ * is refused naming it and that operation's flags and usage, without the help: `serve --json` says
+ * serve has no --json or --plain output.
+ *
+ * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, with the
+ * built `@cotal-ai/linear` extension imported for its cells. Nothing is started or deleted.
  *
  * Run: pnpm smoke:usage-format
  */
@@ -24,6 +29,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { createSuite } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -51,6 +57,20 @@ const usageShape = (r: ReturnType<typeof run>, message: RegExp) =>
 
 const parser = run(["status", "--bogus"]);
 check("control: a parser usage error has the documented shape", usageShape(parser, /Unknown option '--bogus'/), shown(parser));
+
+// The linear extension declares one usage form per line.
+const LINEAR = join(import.meta.dirname, "..", "..", "linear", "dist", "index.js");
+const linear = (args: string[]) => {
+  const r = spawnSync(process.execPath, ["--import", pathToFileURL(LINEAR).href, BIN, "linear", ...args], { cwd: neutral, env, encoding: "utf8", timeout: 120_000 });
+  return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+};
+const linearHelp = linear(["--help"]);
+check("a usage of several forms shows each form on its own lines, with no escaped newline", linearHelp.status === 0 && !linearHelp.stdout.includes("\\u000a")
+  && ["cotal linear account add <name>", "cotal linear account login <name> --mode <write|readonly>", "cotal linear serve <account> --endpoint <reverse-dns-name> [--space <s>] [--server <url>]"].every((form) => linearHelp.stdout.includes(`\n  ${form}`)), shown(linearHelp));
+const serveJson = linear(["serve", "work", "--endpoint", "com.example.linear", "--json"]);
+check("linear serve --json is refused naming the flag, that serve has no --json or --plain output, and its own flags and usage, without the help",
+  serveJson.status === 1 && serveJson.stdout === "" && serveJson.stderr.startsWith("✗ --json does not belong to linear serve, a foreground service that reports as text and has no --json or --plain output")
+  && serveJson.stderr.includes("drop --json; linear serve takes --endpoint, --space, --server: cotal linear serve <account> --endpoint <reverse-dns-name> [--space <s>] [--server <url>]") && !/Usage|Options/.test(serveJson.stderr), shown(serveJson));
 
 // A refusal points the way the command reads its words: a word that starts with "-" goes after
 // --, an option value that starts with "-" is written --name=value, a short option takes its value

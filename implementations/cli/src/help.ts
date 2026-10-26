@@ -245,8 +245,9 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
   const usage = sub ? sub.usage ?? `cotal ${path}` : commandUsage(cmd);
   const sections: Section[] = [
     { title: `cotal ${path}`, blocks: [{ kind: "lines", lines: [selected.summary] }] },
-    // A titled section indents its lines two columns, so the usage is fitted to what is left.
-    { title: "Usage", blocks: [{ kind: "lines", lines: usageLines(usageTokens(usage), width - 2).map((text) => ({ text, tone: "command" as const })) }] },
+    // A titled section indents its lines two columns, so the usage is fitted to what is left. A usage
+    // that declares several forms, one per line, shows each form on its own lines.
+    { title: "Usage", blocks: [{ kind: "lines", lines: usage.split("\n").flatMap((form) => usageLines(usageTokens(form), width - 2)).map((text) => ({ text, tone: "command" as const })) }] },
   ];
   if (selected.aliases?.length) sections.push({ title: "Shorthands", blocks: [{ kind: "lines", lines: [{ text: selected.aliases.map((alias) => `cotal ${sub ? `${cmd.name} ${sub.name.split(" ").slice(0, -1).map((word) => word + " ").join("")}` : ""}${alias}`).join(" · "), tone: "command" }] }] });
   const subs = (sub ? sub.subcommands ?? [] : cmd.subcommands ?? []).filter((item) => !item.hidden);
