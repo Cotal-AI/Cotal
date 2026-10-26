@@ -481,7 +481,10 @@ const SEAMS: Seam[] = [
   // the space-teardown-live one included, dial a loopback broker their suite starts without TLS,
   // and each states `tls: false`. 320/243 -> 321/244: the manager-call dial deadline (9bc17b222) adds
   // one smoke-side connection in connector-core/smoke/manager-connect-deadline, which states `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 321, untypecheckedSites: 244 },
+  // 321/244 -> 328/251: turn notices add three setup connections in connector-core/smoke/idle-seat-connects
+  // and four in connector-core/smoke/turn-notice; each dials a loopback broker its suite starts and
+  // states `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 328, untypecheckedSites: 251 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
