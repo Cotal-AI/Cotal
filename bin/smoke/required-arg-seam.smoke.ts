@@ -185,8 +185,8 @@
  * run a build carries files a fresh clone does not. `node_modules`, `dist`, `build` and friends are
  * skipped, but a generated bundle landing outside those names is not: the Hermes sidecar at
  * `extensions/connector-hermes/plugin/cotal/_sidecar/` is gitignored build output and IS walked.
- * The bundle adds one outside-smoke call: a clean checkout has 320/243 and a built checkout has
- * 321/243. Packing `cotal-ai` (or `pnpm --dir bin seeded-connectors`) copies the same bundle to
+ * The bundle adds one outside-smoke call: a clean checkout has 321/244 and a built checkout has
+ * 322/244. Packing `cotal-ai` (or `pnpm --dir bin seeded-connectors`) copies the same bundle to
  * `bin/seeded-connectors/hermes/`, which is gitignored too and adds one more. Each copy has its own
  * one-site pin, required whenever that artifact exists. An EXACT count otherwise
  * turns this divergence into a red that
@@ -479,8 +479,9 @@ const SEAMS: Seam[] = [
   // one seat connection in manager/smoke/manager-service-ops, and refusing an unadmitted run revoke
   // (5961162f9) adds one run-admitter read in runtime/smoke/run-command. All six smoke-side calls,
   // the space-teardown-live one included, dial a loopback broker their suite starts without TLS,
-  // and each states `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 320, untypecheckedSites: 243 },
+  // and each states `tls: false`. 320/243 -> 321/244: the manager-call dial deadline (9bc17b222) adds
+  // one smoke-side connection in connector-core/smoke/manager-connect-deadline, which states `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 321, untypecheckedSites: 244 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
