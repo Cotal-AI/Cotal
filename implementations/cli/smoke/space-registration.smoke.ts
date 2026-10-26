@@ -1344,12 +1344,14 @@ if (process.platform === "linux") {
 
 // ── A space claim that refuses, on the controller and legacy routes ────────────────────────────────────
 {
-  // Recorded as ".", the root resolves the registration to itself and takes the controller route.
-  // Recorded as "../elsewhere", it does not, so the root takes the legacy route, which has no --json
-  // receipt. Each route gets its own root: a refused controller attempt leaves its stack journal.
+  // Prepared there and recorded as ".", the root resolves the registration to itself and takes the
+  // controller route. Recorded as "../elsewhere" with no prepared record, it does not, so the root
+  // takes the legacy route, which has no --json receipt. Each route gets its own root: a refused
+  // controller attempt leaves its stack journal.
   const server = `nats://127.0.0.1:${await freePort()}`;
   for (const [space, recorded, route] of [["relhere", ".", "controller"], ["relaway", "../elsewhere", "legacy"]] as const) {
     const claimRoot = projectRoot(`claim-${route}`);
+    if (route === "controller") await json(["space", "create", space], claimRoot);
     recordMesh({ space, server, root: recorded, mode: "auth", origin: "up", ts: new Date(0).toISOString() });
     const before = registryFiles();
     const args = ["up", "--detach", "--no-manager", "--space", space, "--server", server];
