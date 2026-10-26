@@ -98,7 +98,7 @@ const runtime: UpdateRuntime = {
   version: cliVersion,
   refreshConnectors: refreshConnectorInstalls,
   reconcile: async () => {
-    await runSeed({ force: true });
+    await runSeed({ verify: true });
     const completion = refreshOwnedCompletions();
     if (completion.changed.length || completion.preserved.length) process.stdout.write(`${renderReport({ sections: [
       { title: "Owned shell completion", blocks: [

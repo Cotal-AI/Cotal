@@ -532,10 +532,14 @@ did not change. A third-party adapter's instances stay pinned to the package ver
 them.
 
 Without `--self`, `update` keeps the installed first-party surfaces coherent with the running
-binary: it force-reconciles the six built-in connectors and the web dashboard, brings what a
+binary: it verifies each of the six built-in connectors and the web dashboard against the payload
+the binary ships, byte for byte, and reinstalls one that differs in any way (a missing, changed or
+extra file, a link where the installed copy should be, an entry at another version, or an
+extensions prefix whose lock no longer matches what is on disk), brings what a
 connector installed in its harness to this release (the `cotal` plugin copy Claude Code sessions
 load, and its Claude Desktop entry), then reinstalls other `@cotal-ai/*`
-operator extensions at the binary's exact version. Each extension runs in an isolated child, so one
+operator extensions at the binary's exact version. A built-in that passes is reported as verified;
+`cotal ext seed --force` remains the unconditional reinstall. Each extension runs in an isolated child, so one
 failure cannot poison later replays. It then checks npm; a newer binary is an informational notice
 with `cotal update --self` as the next command, not an automatic install.
 
