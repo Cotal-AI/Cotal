@@ -4,8 +4,10 @@ Status: implemented in 0.49.0. The `retire` operation of the remote manager-serv
 protocol, the `retirement-requester` profile and `managedRetirementOpId` live in
 `packages/core/src/remote-manager-authority.ts` and `packages/core/src/provision.ts`. The manager's
 `remoteAuthority.prepareAgentRetirement` and `remoteAuthority.mintRetirementRequester` callbacks are in
-`implementations/manager/src/manager.ts`. `pnpm smoke:manager-service-authority` and
-`pnpm smoke:hosted-retirement-order` cover the policy and ordering regressions listed below. The
+`implementations/manager/src/manager.ts`. `pnpm smoke:manager-service-authority` exercises the
+broker-free authority policy, and `pnpm smoke:hosted-retirement-order` checks the manager's release
+ordering and that an incomplete host release blocks the terminal request. This page does not claim
+that each regression listed below has its own cell. The
 hosted host's own release journal stays the host's to build. [Embedding](../embedding.md) describes
 the shipped contract. The rest of this page is the design as written.
 
