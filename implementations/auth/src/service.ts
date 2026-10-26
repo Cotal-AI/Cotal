@@ -65,7 +65,7 @@ import { resolve } from "node:path";
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
-import { VOID_SCHEMA, canonicalJson, CotalEndpoint, dialerFor, deprovisionAgent, singleDocumentClosure, dlvDurable, dlvStream, dmDurable, dmStream, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, epgateKey, isCasLoss, sameManagedGrantCustody, parseServiceRegistrationWitness, serviceWitnessDigest, SERVICE_ACCESS_TTL_SECONDS, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
+import { VOID_SCHEMA, CotalEndpoint, dialerFor, deprovisionAgent, singleDocumentClosure, dlvDurable, dlvStream, dmDurable, dmStream, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, epgateKey, isCasLoss, sameManagedGrantCustody, parseServiceRegistrationWitness, serviceWitnessDigest, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
@@ -74,13 +74,14 @@ import { makePlatformControlAuthority, makePlatformControlReadiness, requireMana
 import { OwnedConnections, type AuthConnectionState, type AuthServiceClosed } from "./owned-connections.js";
 import { makePlatformSupervisorAuthority, makePlatformSupervisorEnd, platformSupervisorEnded, requirePlatformSupervisorAdmin, type PlatformSupervisorInput, type PlatformSupervisorAuthorityRequest } from "./platform-supervisor.js";
 import { calloutLimits, startAuthCallout, type AuthCalloutLimits } from "./callout.js";
+import { runAuthCalloutReplica } from "./callout-replica.js";
+import { calloutAuthority, managerGateReads, type CalloutAuthority } from "./callout-authority.js";
 import { createIdpBridge, verifyIdpToken, verifyToolResultHumanProof, type IdpBridge } from "./idp.js";
-import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, validateUserToken, type UserTokenSession, type UserTokenView, type ValidatedUserToken } from "./token.js";
-import { grantCoordinates, verifySessionRedemption } from "./session-redemption.js";
+import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, validateUserToken, type UserTokenView, type ValidatedUserToken } from "./token.js";
+import { grantCoordinates } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
-import { calloutPermissions, type UserCallerIssuer, type EndpointCallerResolver } from "./permissions.js";
+import { calloutPermissions } from "./permissions.js";
 import { bootstrapServiceCallerPayload, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
-import { effectiveEndpointCaller } from "./service-caller-effective.js";
 import { handleRemoteRunCancel, parseRemoteRunCancelRequest, admitRemoteRun, handleRemoteRunSubmission, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
@@ -91,9 +92,8 @@ import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster, remoteManagerSurface, type ManagerCluster } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, servedRunCancelRequestSubject, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
 import { createNativeServiceCalloutAuthority, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
-import { authorizeConnectCredential } from "./connect-reader.js";
 import { chatAwareAclResolver, openChatSessionAuthority, type ChatAdmissionRequest, type ChatRetireRequest, type ChatRetireResult, type ChatSessionAdmitted } from "./chat-session-authority.js";
-import { makeNativeIssuanceRecorder, pruneNativeIssuance, type NativeIssuanceRecorder } from "./native-issuance.js";
+import { pruneNativeIssuance } from "./native-issuance.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { parseServiceHostRequest, type ServiceEndpointHost } from "./service-host-contract.js";
@@ -125,7 +125,6 @@ import {
   ledgerAclResolver,
   ledgerActorSourceIsLive,
   ledgerAuthorizeAgentExchange,
-  ledgerAuthorizeConnect,
   ledgerAuthorizeGrant,
   revokeManagedActorIf,
   withManagedGrantTransaction,
@@ -251,11 +250,7 @@ export interface ManagerInstanceCatalog {
  *  behind (a) the composed connect authorizer — the file-ledger arm PLUS the credential deny-new
  *  arm through the supervised, shape-proved reader — and (b) the exchange-time root-credential
  *  ensure both exchange arms stamp `act.credentialId` from. */
-export interface AuthAuthorityPlane {
-  authorizeConnect: (t: ValidatedUserToken) => Promise<void>;
-  /** The callout's required native-key issuance recorder (SPEC 13.1 `natkey.`): create-only, then
-   *  the same connect authority re-read before the minted JWT may leave. */
-  recordIssuance: NativeIssuanceRecorder;
+export interface AuthAuthorityPlane extends CalloutAuthority {
   recordToolResultConsent: ToolResultConsentRecorder;
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
   /** Admit one user-mode chat session for an owner the route derived from a verified IdP proof
@@ -272,19 +267,6 @@ export interface AuthAuthorityPlane {
   selectManagerInstance: (owner: string, requested?: string, caller?: ManagerCaller) => Promise<string>;
   /** The owner's Manager instances with the verdict selection reads; selection is built on it. */
   listManagerInstances: (owner: string) => Promise<ManagerInstanceCatalog>;
-  authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>;
-  /** The callout's issuance of an interactive user's `manager-caller` view (SPEC 13.15): one
-   *  issuer window that stages and releases evidence bound to the actor-ledger row and writes the
-   *  connection's accepted row, or renews the generation that row already names. */
-  issueUserCaller: UserCallerIssuer;
-  /** Fresh generic endpoint caller rights for the authenticated exact actor lifecycle. */
-  resolveEndpointCaller: EndpointCallerResolver;
-  /** #2312: may this principal hold this one session? Leader-reads the redeemed `session.<id>` row
-   *  and the serving manager gate; returns the session claim (expiry from the row) or throws. */
-  verifySession: (
-    principal: { owner: string; actor: string; lifecycleUid?: string },
-    claim: { endpoint: string; sessionId: string; epoch: number; grantSig?: string },
-  ) => Promise<UserTokenSession>;
   /** Retire one interactive lifecycle through the retirement barrier. A refusal raised before the
    *  barrier starts carries `outcome: "not-executed"` (SPEC 13.3); a failure inside the barrier
    *  carries none, because the retirement may have begun. */
@@ -783,21 +765,6 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   const authAdmin = await openAuthAdminListener({ onConnection, server, space, dataAccount, reg: barrierReg, retirement, barrierFlight: retirementFlights, instanceId: authServeInstanceId, epoch: authServeGrant.epoch, grant: authServeGrant, log });
   unwind.push(() => authAdmin.close());
   const recordToolResultConsent = makeToolResultConsentRecorder(registryStores(registry).authKv, () => refuseIfFenced(), space);
-  const fileArm = ledgerAuthorizeConnect(opts.dir);
-  // A chat principal (its alias is in the chat row space) is checked by the chat arm: its active
-  // row, its parent pin and its holder index. Every other principal by the grant-file arm.
-  const connectArm = async (t: ValidatedUserToken): Promise<void> => {
-    if (chat.isChatPrincipal(t.owner, t.act.actor)) await chat.authorizeConnect(t);
-    else fileArm(t);
-  };
-  // The callout's issuance evidence: create-only natkey row, then the connect authority re-read
-  // in the same stream before the minted JWT may leave. For a chat session this re-read is the
-  // post-sign fence: its own head and root credential, its parent pin and its holder index.
-  const recordIssuance = makeNativeIssuanceRecorder(registry, async (t) => {
-    refuseIfFenced();
-    await connectArm(t);
-    await authorizeConnectCredential(reader.current(), t, Date.now);
-  });
   // Expired evidence goes at boot (a failure refuses the open) and then on the plane's own timer;
   // a failed pass fences the plane like a scanner death, never a silently unbounded recorder.
   const pruneMs = opts.nativeIssuancePruneMs ?? 60_000;
@@ -911,14 +878,9 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   const recordsJsm = await jetstreamManager(remoteIssuer.nc);
   const authKv = await new Kvm(remoteIssuer.nc).open(epAuthBucket(space));
   const managerIssuanceGate = (instanceId: string) => serveIssuanceGateKv(authKv, space, { endpoint: "manager", instanceId });
-  const observeManagerGate = async (instanceId: string) => managerIssuanceGate(instanceId).observe();
-  const observeLegacyManagerGate = async (instanceId: string) => {
-    const gate = await observeManagerGate(instanceId);
-    if (gate?.authorityFamily === "environment-manager")
-      throw new EpEnvelopeError("permission-denied", `manager instance ${instanceId} belongs to the environment-manager authority family`);
-    return gate;
-  };
   const loadLocalManager = opts.localManager ?? (() => undefined);
+  const gateReads = managerGateReads({ space, authKv, recordsJsm, localManager: loadLocalManager });
+  const { observeManagerGate, observeLegacyManagerGate, managerGate } = gateReads;
   // Standing renewal and a served resume or answer read the manager surface from the REGISTERED
   // service spec at the gate's registration revision: spec (leader read) -> closure manifest -> root
   // document, each verified against its content digest. The request never selects the surface.
@@ -942,25 +904,6 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       if (document.urn === "ai.cotal.manager") return { digest: root, document, raw };
     }
     throw new EpEnvelopeError("failed-precondition", "the manager service spec registers no manager cluster");
-  };
-  const managerGate = async (owner: string, instanceId: string): Promise<"candidate" | "unknown" | "not open" | "not this owner's" | "not registered"> => {
-    const localManager = loadLocalManager();
-    const gate = await observeLegacyManagerGate(instanceId);
-    if (!gate) return "unknown";
-    if (gate.state !== "open") return "not open";
-    const remotePrincipal = `${owner}.${remoteManagerActors(instanceId).serve}`;
-    const local = localManager?.instanceId === instanceId && gate.principal === `local.${localManager.serveIdentity.id}`;
-    const remote = gate.principal === remotePrincipal;
-    if (!local && !remote) return "not this owner's";
-    const rec = await readSvcRecordLeader(recordsJsm, space, recordSpecKey(RECORD_KINDS.svc, ["manager", instanceId]));
-    if (!rec || "deleted" in rec) return "not registered";
-    const spec = parseServiceSpec(rec.value, { endpoint: "manager" });
-    if (spec.owner !== (local ? "local" : owner) || rec.revision !== gate.registrationRevision) return "not registered";
-    const statusRec = await readSvcRecordLeader(recordsJsm, space, recordStatusKey(RECORD_KINDS.svc, ["manager", instanceId]));
-    if (!statusRec || "deleted" in statusRec) return "not registered";
-    const status = parseServiceStatus(statusRec.value);
-    if (status.observedSpecRevision < rec.revision || status.epoch !== gate.processEpoch) return "not registered";
-    return "candidate";
   };
   const listManagerInstances = async (owner: string): Promise<ManagerInstanceCatalog> => {
     refuseIfFenced();
@@ -1134,28 +1077,13 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   const stopChatSweep = async (): Promise<void> => { clearTimeout(chatSweepTimer); await chatSweepFlight; };
   unwind.push(async () => { closing = true; await stopChatSweep(); });
   scheduleChatSweep();
+  const callout = calloutAuthority({
+    space, server, dir: opts.dir, dataAccount, registry, reader: () => reader.current(), chat, gate: gateReads, recordsJsm,
+    ...(verifyCallerPayload !== undefined ? { checkCallerPayload } : {}),
+    refuse: refuseIfFenced,
+  });
   return {
-    resolveEndpointCaller: async (t) => {
-      refuseIfFenced();
-      const grantee = { owner: t.owner, actor: t.act.actor, lifecycleUid: assertLifecycleToken(t.act.lifecycleUid ?? "", "caller lifecycleUid") };
-      const effective = await effectiveEndpointCaller(registry, dataAccount.pub, opts.dir, grantee);
-      if (effective.capabilities.length && !verifyCallerPayload)
-        throw new EpEnvelopeError("failed-precondition", "endpoint caller rights require actual host payload bootstrap");
-      if (effective.capabilities.length) await checkCallerPayload();
-      const image = canonicalJson(effective);
-      return { ...effective, ...(effective.expiresAt === undefined ? {} : { expiresAt: Math.min(effective.expiresAt, Math.floor(Date.now() / 1000) + SERVICE_ACCESS_TTL_SECONDS) }), recheck: async () => {
-        refuseIfFenced();
-        if (effective.capabilities.length) await checkCallerPayload();
-        refuseIfFenced();
-        const current = await effectiveEndpointCaller(registry, dataAccount.pub, opts.dir, grantee);
-        if (canonicalJson(current) !== image) throw new EpEnvelopeError("permission-denied", "endpoint caller authority changed before release");
-      } };
-    },
-    authorizeConnect: async (t) => {
-      refuseIfFenced();
-      await connectArm(t);
-      await authorizeConnectCredential(reader.current(), t, Date.now);
-    },
+    ...callout,
     openChatSession: async (args) => {
       refuseIfFenced();
       return chat.admit(args);
@@ -1168,10 +1096,6 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       refuseIfFenced();
       return chat.retire(args);
     },
-    recordIssuance: (i) => {
-      refuseIfFenced();
-      return recordIssuance(i);
-    },
     recordToolResultConsent,
     mintConnectCredential: (args) => {
       refuseIfFenced();
@@ -1179,57 +1103,6 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     },
     selectManagerInstance,
     listManagerInstances,
-    authorizeManagerCaller: async (owner, instanceId) => {
-      refuseIfFenced();
-      const verdict = await managerGate(owner, assertLifecycleToken(instanceId, "managerInstanceId"));
-      if (verdict !== "candidate") throw new Error(`manager instance ${instanceId} is ${verdict} at the permission mint`);
-    },
-    issueUserCaller: async ({ t, connId, mint }) => {
-      refuseIfFenced();
-      const owner = assertDerivedOwnerToken(t.owner);
-      const actor = t.act.actor;
-      const uid = assertLifecycleToken(t.act.lifecycleUid ?? "", "lifecycleUid");
-      const acceptedToken = connectionAcceptedToken(connId);
-      return withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, async (session) => {
-        // The row this connection's nonce names, read the way the client reads it.
-        const existing = await session.nc.request(acceptedReadGrant(space, acceptedToken), new Uint8Array(0), { timeout: 3000 });
-        const code = existing.headers?.code ?? 0;
-        const status = existing.headers?.get("Status") ?? "";
-        const missing = code === 404 || status.startsWith("404");
-        if (!missing && (code >= 400 || status !== ""))
-          throw new Error(`callout permissions: the accepted-row read for this connection failed (${code || status})`);
-        if (missing) {
-          const generation = mintGeneration();
-          const perms = mint({ generation, acceptedToken });
-          const ref = { space, owner, actor, uid, generation };
-          const prepared = await session.store.stage({
-            version: 1, ref, sources: [actorLedgerSource(space, owner, actor, uid)], permissions: importNativeSubjectPermissions(perms), expiresAt: t.exp,
-          });
-          await session.store.release(prepared, async () => {});
-          await writeAcceptedRow(session.accepted, acceptedToken, ref);
-          return perms;
-        }
-        const row = JSON.parse(new TextDecoder().decode(existing.data)) as { version?: unknown; ref?: IssuedAuthorityRef };
-        const ref = row.ref;
-        if (row.version !== 1 || ref === undefined || ref.space !== space || ref.owner !== owner || ref.actor !== actor || ref.uid !== uid)
-          throw new Error("callout permissions: this connection's accepted row names another issued reference; reconnect under a new nonce");
-        const perms = mint({ generation: ref.generation, acceptedToken });
-        await session.store.confirm(ref, importNativeSubjectPermissions(perms));
-        return perms;
-      });
-    },
-    verifySession: async (principal, claim) => {
-      refuseIfFenced();
-      return verifySessionRedemption({
-        jsm: recordsJsm,
-        space,
-        managerGate: async (owner, instanceId) => {
-          const verdict = await managerGate(owner, assertLifecycleToken(instanceId, "serving.instanceId"));
-          const gate = await observeLegacyManagerGate(instanceId);
-          return { verdict, ...(gate ? { processEpoch: gate.processEpoch } : {}) };
-        },
-      }, principal, claim);
-    },
     retireInteractiveLifecycle: async (args) => {
       // Everything before the barrier only reads, so a refusal there retired nothing.
       let owner: string, actor: string, lifecycleUid: string;
@@ -2250,6 +2123,15 @@ export function authServiceConfiguration(args: ParsedArgs) {
   if (!space) throw new Error("auth-service: --space is required");
   const server = v.server;
   if (!server) throw new Error("auth-service: --server is required (the broker this callout serves)");
+  // A callout replica serves no HTTP and hosts no service endpoint, so a flag for either is a
+  // config error rather than a silently ignored option.
+  const calloutOnly = v["callout-only"] !== undefined;
+  if (calloutOnly) {
+    const http = ["port", "exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url", "service-endpoints"]
+      .filter((name) => v[name] !== undefined);
+    if (http.length > 0)
+      throw new Error(`auth-service: --callout-only answers the callout alone and serves no HTTP or service endpoint - drop ${http.map((name) => `--${name}`).join(", ")}`);
+  }
   const port = v.port === undefined ? 0 : Number(v.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535)
     throw new Error(`auth-service: --port must be a port number, got "${v.port}"`);
@@ -2276,7 +2158,7 @@ export function authServiceConfiguration(args: ParsedArgs) {
   // discovery connection and no door, and the routes answer 404 as before.
   const serviceEndpoints = v["service-endpoints"] !== undefined;
 
-  return { space, server, port, publicFace, serviceEndpoints };
+  return { space, server, port, publicFace, serviceEndpoints, calloutOnly };
 }
 
 /** Trusted local embedding hooks. They carry no prepared key material or loopback capability. */
@@ -2302,10 +2184,12 @@ export interface AuthDaemonLifecycle extends AuthServiceRuntimeOptions {
 export async function runAuthService(args: ParsedArgs, store?: SecretStore, options: AuthServiceRuntimeOptions | AuthDaemonLifecycle = {}): Promise<void> {
   const interactiveManagerSelection = runtimeSelection(options);
   const lifecycle = "root" in options ? options : undefined;
-  const { space, server, port, publicFace, serviceEndpoints } = authServiceConfiguration(args);
+  const { space, server, port, publicFace, serviceEndpoints, calloutOnly } = authServiceConfiguration(args);
   // The provider's space-scoped state dir for NON-SEAM material (ledger, IdP pin, discovery). The
   // layout fact is workspace-owned (userAuthStateDir); this daemon never touches `.cotal/auth/auth.json`.
   const root = lifecycle?.root ?? findCotalRoot();
+  // A replica never reads or writes the space's one discovery file: that file names the primary.
+  if (calloutOnly) return runAuthCalloutReplica({ space, server, root }, store);
   const dir = userAuthStateDir(root, space);
   const secrets = store ?? workspaceSecretStore(root);
   // Scrub any stale discovery file FIRST — a dead prior daemon's entry must never satisfy a

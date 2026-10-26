@@ -12,3 +12,10 @@ export const authServiceFlags = [
   { name: "agent-provisioning-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the deployment's remote agent-provisioning endpoint the public bundle advertises (spawn POSTs it with the login bearer)" },
   { name: "service-endpoints", type: "boolean", description: "host service endpoints: the public /service-endpoint-authority door and the /service-endpoint-host route for owner decisions and operator name binding" },
 ] as const satisfies readonly FlagSpec[];
+
+/** The replica flag. Only the daemon entry takes it: the native service preset runs the one primary
+ *  that the space's `auth-service.json` names. */
+export const authCalloutOnlyFlag = {
+  name: "callout-only", type: "boolean",
+  description: "answer only the auth callout, as one more member of its queue group (no HTTP listener, no auth-service.json); for a space whose auth service already runs",
+} as const satisfies FlagSpec;

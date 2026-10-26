@@ -323,6 +323,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       // `--agent-provisioning-url` (2026-08): threaded from `up` like --advertised-server; both
       // inventories carry it.
       "agent-provisioning-url:string",
+      // `--callout-only` (2026-10): a callout replica in the space's queue group. The daemon entry and
+      // its twin take it; the native service child, which runs the one primary, does not.
+      "callout-only:boolean",
       "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
       "port:string", "server:string", "service-endpoints:boolean", "space:string",
     ],
@@ -330,7 +333,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   "__daemon-auth-service": {
     flags: [
-      "advertised-server:string", "agent-provisioning-url:string",
+      "advertised-server:string", "agent-provisioning-url:string", "callout-only:boolean",
       "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
       "port:string", "server:string", "service-endpoints:boolean", "space:string",
     ],

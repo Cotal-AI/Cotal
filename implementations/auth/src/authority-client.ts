@@ -158,6 +158,33 @@ export function remoteManagerIssuerGrants(space: string, connId: string): { publ
   };
 }
 
+/** The CALLOUT REPLICA's store credential: what a callout-only replica reads to answer
+ * a connect, and the one row each answer writes. Leader reads of the auth, records and sessions
+ * stores (`STREAM.INFO`, `STREAM.MSG.GET`), records `DIRECT.GET`, and `$KV` writes on auth `natkey.`
+ * alone (the create-only native-key issuance evidence). It holds no `STREAM.CREATE` or `UPDATE` and
+ * no gate, credential, source, lifecycle or uid write: a replica ensures no store, mints no
+ * credential and runs no barrier. */
+export function calloutReplicaGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const auth = `KV_${epAuthBucket(space)}`;
+  const records = `KV_${recordsBucket(space)}`;
+  const sessions = `KV_${sessionsBucket(space)}`;
+  return {
+    publish: [
+      "$JS.API.INFO",
+      `$JS.API.STREAM.INFO.${auth}`,
+      `$JS.API.STREAM.INFO.${records}`,
+      `$JS.API.STREAM.INFO.${sessions}`,
+      `$JS.API.STREAM.MSG.GET.${auth}`,
+      `$JS.API.STREAM.MSG.GET.${records}`,
+      `$JS.API.STREAM.MSG.GET.${sessions}`,
+      `$JS.API.DIRECT.GET.${records}`,
+      `$JS.API.DIRECT.GET.${records}.>`,
+      `$KV.${epAuthBucket(space)}.natkey.>`,
+    ],
+    subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`],
+  };
+}
+
 /** The PLATFORM READINESS reader (SPEC 13.9): `describe` and `status` of one manager instance on
  * its `inst` rail only, the contract-store read `resolveService` verifies the describe answer with,
  * and its own reply rail and inbox. No other command, instance, class route or store. */
