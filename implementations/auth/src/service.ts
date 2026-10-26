@@ -65,7 +65,7 @@ import { resolve } from "node:path";
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
-import { VOID_SCHEMA, CotalEndpoint, dialerFor, deprovisionAgent, singleDocumentClosure, dlvDurable, dlvStream, dmDurable, dmStream, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, epgateKey, isCasLoss, sameManagedGrantCustody, parseServiceRegistrationWitness, serviceWitnessDigest, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
+import { VOID_SCHEMA, CotalEndpoint, dialerFor, deprovisionAgent, singleDocumentClosure, dlvDurable, dlvStream, dmDurable, dmStream, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, holdIssuerSession, acceptedReadGrant, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, epgateKey, isCasLoss, sameManagedGrantCustody, parseServiceRegistrationWitness, serviceWitnessDigest, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
@@ -513,6 +513,9 @@ export interface OpenAuthAuthorityPlaneOptions extends AuthServiceRuntimeOptions
   localManager?: () => ManagerInstanceIdentity | undefined;
   /** Bounded trusted-host-only standing renewable credential TTL option for rehearsal (default 24h). */
   standingRenewableTtlSeconds?: number;
+  /** Bounded trusted-host-only TTL of the held issuer session's credential, 5..300 seconds (default
+   *  the `issuer` profile's five minutes). */
+  issuerSessionTtlSeconds?: number;
   /** How often expired native-issuance evidence is removed after the boot pass (default 60 s). */
   nativeIssuancePruneMs?: number;
   /** How often one bounded chat-session sweep pass runs (default 60 s). */
@@ -590,6 +593,13 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   if (!Number.isSafeInteger(standingTtl) || standingTtl < 5 || standingTtl > STANDING_RENEWABLE_TTL_SEC) {
     throw new Error(`standingRenewableTtlSeconds must be an integer between 5 and ${STANDING_RENEWABLE_TTL_SEC} seconds (got ${standingTtl})`);
   }
+  // The plane's held issuer session for connect-time issuance (SPEC 13.15). It dials nothing until
+  // the first issuance, and closes with the plane: on close, on a fence and on a failed open.
+  const issuer = holdIssuerSession({
+    servers: server, space, auth: dataAccountAuth(space, dataAccount), tls: false, name: `cotal:auth-issuer:${space}`,
+    ...(opts.issuerSessionTtlSeconds !== undefined ? { ttlSeconds: opts.issuerSessionTtlSeconds } : {}),
+  });
+  unwind.push(() => issuer.close());
   const writer = await openAuthorityClient({ onConnection, server, space, dataAccount, label: `cotal:auth-mint:${space}`, grants: (id) => authorityWriterGrants(space, id), log });
   unwind.push(() => writer.close());
   await ensureAuthorityStores(await jetstreamManager(writer.nc), new Kvm(writer.nc), space);
@@ -666,6 +676,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   let fatalReason: string | undefined;
   let fireFatal!: (reason: string) => void;
   const fenced = new Promise<string>((r) => { fireFatal = r; });
+  void fenced.then(() => issuer.close());
   const barrier = await openAuthorityClient({ onConnection, server, space, dataAccount, label: `cotal:auth-barrier:${space}`, grants: (id) => authorityBarrierGrants(space, id), log });
   unwind.push(() => barrier.close());
   // Unwound after both scanners close: held → released is valid only once neither scanner can act.
@@ -1099,7 +1110,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   unwind.push(async () => { closing = true; await stopChatSweep(); });
   scheduleChatSweep();
   const callout = calloutAuthority({
-    space, server, dir: opts.dir, dataAccount, registry, reader: () => reader.current(), chat, gate: gateReads, recordsJsm,
+    space, issuer, dir: opts.dir, dataAccount, registry, reader: () => reader.current(), chat, gate: gateReads, recordsJsm,
     ...(verifyCallerPayload !== undefined ? { checkCallerPayload } : {}),
     refuse: refuseIfFenced,
   });
@@ -2051,6 +2062,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       await serviceHost?.close();
       await closeEffects();
       await calloutWriter?.close();
+      await issuer.close();
       await discoveryClient?.close();
       const scannerFlight = closeScanners ??= (async () => {
         await authAdmin?.close();
@@ -2425,6 +2437,9 @@ export async function startAuthService(inputs: HostedContextInputs & {
   /** Trusted-host only. Forwarded unchanged to {@link openAuthAuthorityPlane}, which bounds it to
    *  5..86400 seconds. Absent: the 24h default. No CLI flag and no request field sets it. */
   standingRenewableTtlSeconds?: number;
+  /** Trusted-host only. Forwarded unchanged to {@link openAuthAuthorityPlane}, which bounds it to
+   *  5..300 seconds. Absent: the five-minute default. No CLI flag and no request field sets it. */
+  issuerSessionTtlSeconds?: number;
   /** Opt-in trusted-host consent signer, with seed material already in the private store. */
   toolResultConsents?: ToolResultConsentSignerOptions;
   /** Default off. Forwarded unchanged to {@link openAuthAuthorityPlane}. No CLI flag sets it. */
@@ -2474,6 +2489,7 @@ export async function startAuthService(inputs: HostedContextInputs & {
     ...(inputs.platformControl !== undefined ? { platformControl: inputs.platformControl } : {}),
     ...(inputs.platformSupervisor !== undefined ? { platformSupervisor: inputs.platformSupervisor } : {}),
     ...(inputs.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: inputs.standingRenewableTtlSeconds } : {}),
+    ...(inputs.issuerSessionTtlSeconds !== undefined ? { issuerSessionTtlSeconds: inputs.issuerSessionTtlSeconds } : {}),
     ...(inputs.toolResultConsents !== undefined ? { toolResultConsents: inputs.toolResultConsents } : {}),
     ...(inputs.serviceEndpoints !== undefined ? { serviceEndpoints: inputs.serviceEndpoints } : {}),
     ...(inputs.calloutLimits !== undefined ? { calloutLimits: inputs.calloutLimits } : {}),
@@ -2505,6 +2521,7 @@ interface AuthContextOptions extends AuthServiceRuntimeOptions {
   platformControl?: PlatformControlInput;
   platformSupervisor?: PlatformSupervisorInput;
   standingRenewableTtlSeconds?: number;
+  issuerSessionTtlSeconds?: number;
   serviceEndpoints?: OpenAuthAuthorityPlaneOptions["serviceEndpoints"];
   calloutLimits?: AuthCalloutLimits;
   connectLimits?: Partial<ConnectLimits>;
@@ -2553,6 +2570,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     ...(o.interactiveManagerSelection !== undefined ? { interactiveManagerSelection: o.interactiveManagerSelection } : {}),
     ...(o.runCancelLimits !== undefined ? { runCancelLimits: o.runCancelLimits } : {}),
     ...(o.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: o.standingRenewableTtlSeconds } : {}),
+    ...(o.issuerSessionTtlSeconds !== undefined ? { issuerSessionTtlSeconds: o.issuerSessionTtlSeconds } : {}),
     ...(o.serviceEndpoints !== undefined ? { serviceEndpoints: o.serviceEndpoints } : {}),
   }, onConnection);
   let nc: NatsConnection | undefined;

@@ -11,7 +11,7 @@
  */
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { dialerFor, EpEnvelopeError, isReachable, type SecretStore } from "@cotal-ai/core";
+import { dialerFor, EpEnvelopeError, holdIssuerSession, isReachable, type SecretStore } from "@cotal-ai/core";
 import { loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { calloutReplicaGrants, openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 import { calloutAuthority, managerGateReads, serveCallout } from "./callout-authority.js";
@@ -20,7 +20,7 @@ import { chatConnectAuthority } from "./chat-session-authority.js";
 import { authConnectReaderGrants, openConnectReader } from "./connect-reader.js";
 import { openLifecycleRegistry, registryStores } from "./lifecycle-registry.js";
 import { ADMISSION_KEY, parseServiceAdmissionRecord } from "./service-host-ops.js";
-import { loadCalloutAuth, loadIssuer, loadServiceKeys, spaceIssuer } from "./store.js";
+import { dataAccountAuth, loadCalloutAuth, loadIssuer, loadServiceKeys, spaceIssuer } from "./store.js";
 
 /** Run one callout replica for `space` until a signal or a lost connection ends it. `limits` are the
  *  full service's: the broker's timeout is one value for every member of the queue group. */
@@ -46,9 +46,12 @@ export async function runAuthCalloutReplica(args: { space: string; server: strin
   let lose: (what: string) => void = () => {};
   const clients: AuthorityClient[] = [];
   let calloutNc: NatsConnection | undefined;
+  // This replica's own held issuer session for user-caller issuance (SPEC 13.15).
+  const issuerSession = holdIssuerSession({ servers: server, space, auth: dataAccountAuth(space, dataAccount), tls: false, name: `cotal:auth-replica-issuer:${space}` });
   const closeAll = async (): Promise<void> => {
     // The callout connection goes first: from then on the queue group routes around this replica.
     await calloutNc?.close().catch(() => {});
+    await issuerSession.close();
     for (const c of clients) await c.close().catch(() => {});
   };
   try {
@@ -68,7 +71,7 @@ export async function runAuthCalloutReplica(args: { space: string; server: strin
     const reader = await openConnectReader(readerClient.nc, space);
     const recordsJsm = await jetstreamManager(stores.nc);
     const hooks = calloutAuthority({
-      space, server, dir, dataAccount, registry, reader: () => reader,
+      space, issuer: issuerSession, dir, dataAccount, registry, reader: () => reader,
       chat: chatConnectAuthority({ space, dir, registry, now: Date.now }),
       gate: managerGateReads({ space, authKv: registryStores(registry).authKv, recordsJsm, localManager: () => loadManagerInstanceIdentity(root, space) }),
       recordsJsm,

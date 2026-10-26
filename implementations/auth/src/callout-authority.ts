@@ -9,8 +9,8 @@ import type { KV } from "@nats-io/kv";
 import {
   acceptedReadGrant, actorLedgerSource, assertDerivedOwnerToken, assertLifecycleToken, canonicalJson, connectionAcceptedToken, EpEnvelopeError,
   importNativeSubjectPermissions, mintGeneration, parseServiceSpec, parseServiceStatus, readSvcRecordLeader, recordSpecKey, recordStatusKey,
-  RECORD_KINDS, remoteManagerActors, serveIssuanceGateKv, SERVICE_ACCESS_TTL_SECONDS, withIssuerSession, writeAcceptedRow,
-  type EpGateState, type IssuedAuthorityRef,
+  RECORD_KINDS, remoteManagerActors, serveIssuanceGateKv, SERVICE_ACCESS_TTL_SECONDS, writeAcceptedRow,
+  type EpGateState, type HeldIssuerSession, type IssuedAuthorityRef,
 } from "@cotal-ai/core";
 import type { ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { startAuthCallout, type AuthCalloutLimits, type CalloutAuth, type CalloutConnection } from "./callout.js";
@@ -25,7 +25,6 @@ import type { NativeServiceCalloutAuthority } from "./native-service-callout.js"
 import { calloutPermissions, type EndpointCallerResolver, type UserCallerIssuer } from "./permissions.js";
 import { effectiveEndpointCaller } from "./service-caller-effective.js";
 import { verifySessionRedemption } from "./session-redemption.js";
-import { dataAccountAuth } from "./store.js";
 import type { UserTokenSession, ValidatedUserToken } from "./token.js";
 
 export type ManagerGateVerdict = "candidate" | "unknown" | "not open" | "not this owner's" | "not registered";
@@ -85,9 +84,9 @@ export interface CalloutAuthority {
    *  the same connect authority re-read before the minted JWT may leave. */
   recordIssuance: NativeIssuanceRecorder;
   authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>;
-  /** The callout's issuance of an interactive user's `manager-caller` view (SPEC 13.15): one
-   *  issuer window that stages and releases evidence bound to the actor-ledger row and writes the
-   *  connection's accepted row, or renews the generation that row already names. */
+  /** The callout's issuance of an interactive user's `manager-caller` view (SPEC 13.15): on the
+   *  process's held issuer session, it stages and releases evidence bound to the actor-ledger row
+   *  and writes the connection's accepted row, or renews the generation that row already names. */
   issueUserCaller: UserCallerIssuer;
   /** Fresh generic endpoint caller rights for the authenticated exact actor lifecycle. */
   resolveEndpointCaller: EndpointCallerResolver;
@@ -101,8 +100,8 @@ export interface CalloutAuthority {
 
 export interface CalloutAuthorityDeps {
   space: string;
-  /** The broker a user-caller issuance dials its issuer session on. */
-  server: string;
+  /** The issuer session this process holds for user-caller issuance. Its owner closes it. */
+  issuer: HeldIssuerSession;
   /** The provider state dir holding the actor ledger. */
   dir: string;
   dataAccount: { pub: string; signingSeed: string };
@@ -121,7 +120,7 @@ export interface CalloutAuthorityDeps {
 }
 
 export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
-  const { space, server, dir, dataAccount, registry, chat, gate, refuse } = deps;
+  const { space, issuer, dir, dataAccount, registry, chat, gate, refuse } = deps;
   const fileArm = ledgerAuthorizeConnect(dir);
   // A chat principal (its alias is in the chat row space) is checked by the chat arm: its active
   // row, its parent pin and its holder index. Every other principal by the grant-file arm.
@@ -175,7 +174,7 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
       const actor = t.act.actor;
       const uid = assertLifecycleToken(t.act.lifecycleUid ?? "", "lifecycleUid");
       const acceptedToken = connectionAcceptedToken(connId);
-      return withIssuerSession({ servers: server, space, auth: dataAccountAuth(space, dataAccount), tls: false }, async (session) => {
+      return issuer.run(async (session) => {
         // The row this connection's nonce names, read the way the client reads it.
         const existing = await session.nc.request(acceptedReadGrant(space, acceptedToken), new Uint8Array(0), { timeout: 3000 });
         const code = existing.headers?.code ?? 0;
