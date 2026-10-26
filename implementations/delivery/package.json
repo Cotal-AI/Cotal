@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/delivery",
   "description": "Cotal delivery daemon: the server-side Plane-3 durable backstop (fan-out writer + trusted reader + membership/ACL authority), a scoped least-privilege NATS client co-located with the broker.",
-  "version": "0.105.0",
+  "version": "0.106.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -19,6 +19,7 @@
   },
   "scripts": {
     "test": "tsx smoke/delivery-store-boundary.smoke.ts",
+    "smoke:fanout-load": "tsx smoke/fanout-load.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
     "prepublishOnly": "pnpm run build"

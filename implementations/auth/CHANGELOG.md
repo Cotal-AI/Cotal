@@ -1,5 +1,25 @@
 # @cotal-ai/auth
 
+## 0.106.0
+
+### Patch Changes
+
+- Updated dependencies [dd1f8d6]
+- Updated dependencies [ba25fb6]
+- Updated dependencies [54a2996]
+  - @cotal-ai/workspace@0.106.0
+  - @cotal-ai/core@0.106.0
+  - @cotal-ai/lang@0.106.0
+
+## 0.105.1
+
+### Patch Changes
+
+- 2d269dd: Let a native Claude conversation replace an unwanted pending name or permission request without approving it first. Stop the superseded approval watcher, recover and retire any identity issued during the change, and require a fresh approval before the replacement connects.
+- @cotal-ai/core@0.105.1
+  - @cotal-ai/lang@0.105.1
+  - @cotal-ai/workspace@0.105.1
+
 ## 0.105.0
 
 ### Patch Changes

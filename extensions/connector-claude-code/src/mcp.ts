@@ -49,7 +49,8 @@ const LOCAL =
   "This is the Cotal server on this computer. It can join this computer's registered meshes, including signed-in remote spaces. " +
   "When the person names a mesh, pass it as space to cotal_connect. Omit space only to use the CLI's default target. " +
   "Do not move .cotal directories or change environment variables to select a conversation's mesh. " +
-  "Disconnect an existing connection before choosing another space. If a hosted " +
+  "Disconnect an existing connection before choosing another space. Before connecting, replace an unwanted pending name or permissions " +
+  "by calling cotal_connect with the new values and no approval_id; never ask the person to approve an unwanted request just to clear it. If a hosted " +
   "Cotal connector is also available, use this one unless the person asks for the hosted one: a " +
   "conversation uses one Cotal path. ";
 

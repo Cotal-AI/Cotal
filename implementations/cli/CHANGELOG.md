@@ -1,5 +1,54 @@
 # @cotal-ai/cli
 
+## 0.106.0
+
+### Minor Changes
+
+- dd1f8d6: A folder's space is the target of the commands run there only while it runs
+  
+  A space `cotal space create` prepared in a folder, and one whose stack there is stopped, used to
+  capture every command run in that folder, overriding the space `cotal use` selected. `cotal status`
+  in a project whose space had never started reported that space instead of the working selection, and
+  `cotal ps` in a checkout whose space is stopped asked about the stopped one.
+  
+  A folder's space now captures a command there only while it runs. A prepared or stopped folder space
+  is the target of the commands about the folder itself: `cotal up`, `cotal down`, `cotal space show`
+  and the folder part of `cotal status`. Every other command there targets the selection, and the line
+  under its `Mesh:` heading says what this folder holds and the `cotal up` that starts it. A running
+  folder space keeps its behaviour, including the note that the selection applies outside the folder.
+
+### Patch Changes
+
+- dd1f8d6: `cotal status` reports what is set up and what needs attention, not every known part
+  
+  This machine listed one row per known agent application whether or not it was set up, every
+  extension with the same version spelled out on each, and the broker executable's bundled path on a
+  healthy machine. Brokers grouped the spaces under their broker addresses and repeated `not checked`
+  on every row that status does not dial.
+  
+  This machine is now the version line, one Agent applications line naming what is set up with a count
+  of the others `cotal setup` adds, one Extensions line at the version they share, and the rows that
+  need attention: an application's own pieces when they are stale or failed, the broker executable when
+  it is missing or refused, the dashboard when its record cannot be read. Brokers becomes Spaces: the
+  space being reported first with its connection state, then one line per space with how it signs in,
+  one note that unselected spaces are not dialed, and one line per account whose space catalog could
+  not be refreshed, named by the account. `status --all` and the new `status --wide` report every row
+  in full. `--json` is unchanged apart from `meshes.catalogs[].account`, which the error line names.
+- 54a2996: `cotal update` and `cotal update --self` no longer refuse the software update over registrations that hold no manager on this machine. A space prepared here that never started (`cotal setup --configure-only`, `space create`), whether it is this folder's space, selected or named, is named and skipped like a stopped one instead of answering "is prepared but not started - start it with cotal up". A folder that holds several registrations, such as two remote spaces registered there with `space add --from`, is read one registration at a time, each by name, instead of refusing with "multiple meshes running" and reading none; the resolver's per-folder ambiguity now carries the space names for that.
+- Updated dependencies [dd1f8d6]
+- Updated dependencies [ba25fb6]
+- Updated dependencies [54a2996]
+  - @cotal-ai/workspace@0.106.0
+  - @cotal-ai/core@0.106.0
+
+## 0.105.1
+
+### Patch Changes
+
+- 2d269dd: Let a native Claude conversation replace an unwanted pending name or permission request without approving it first. Stop the superseded approval watcher, recover and retire any identity issued during the change, and require a fresh approval before the replacement connects.
+- @cotal-ai/core@0.105.1
+  - @cotal-ai/workspace@0.105.1
+
 ## 0.105.0
 
 ### Minor Changes
