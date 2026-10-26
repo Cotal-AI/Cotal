@@ -1,5 +1,16 @@
 # @cotal-ai/runtime
 
+## 0.104.0
+
+### Patch Changes
+
+- e0c4e6e: Correct the documentation page by page against the implementation, including CLI commands, connector delivery and activity sharing, authentication, observer surfaces, hosted composition, telemetry and historical design status. Refresh package guides and generated tool and HTTP references while preserving existing links and normative contracts.
+- Updated dependencies [e0c4e6e]
+- Updated dependencies [b7d4f22]
+  - @cotal-ai/core@0.104.0
+  - @cotal-ai/lang@0.104.0
+  - @cotal-ai/workspace@0.104.0
+
 ## 0.103.4
 
 ### Patch Changes
