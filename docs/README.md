@@ -12,6 +12,7 @@ JetStream.
 |---|---|
 | **Evaluating**: what is this? | [What is Cotal](what-is-cotal.md) |
 | **Running it**: agents on a mesh, on my machine | [Quickstart](getting-started.md) |
+| **Choosing a path**: personal sessions, hosted spaces, teams or services | [Choose a workflow](using-cotal.md) |
 | **Integrating**: scripts, services or agent tools | [API reference](api-reference.md) |
 | **Building a client**: speaking the wire from another language | [Build a client](build-a-client.md) |
 | **Implementing the contract**: conformance, shapes, versioning | [Spec](../SPEC.md), with [conformance](../SPEC.md#12-conformance), the [schema](../spec/cotal.schema.json), the [workflow language](../spec/cotal-lang.md), and the [change log](../SPEC.md#appendix-d-change-log) |
@@ -26,7 +27,7 @@ Task dispatch:
 
 | Task | Page | First command / tool |
 |---|---|---|
-| Install + start a local mesh, non-interactive | [Quickstart](getting-started.md) | `npx cotal-ai setup --destination local --harness claude --project . --space main --no-input && npx cotal-ai up --detach` |
+| Install + start a local mesh, non-interactive | [Quickstart](getting-started.md) | `npx cotal-ai setup --destination local --harness claude --project . --space main --no-input && npx cotal-ai up --root . --space main --detach` |
 | Put an agent on the mesh | [Quickstart](getting-started.md) | `cotal spawn` |
 | Message peers from inside a session | [MCP tool catalog](mcp-tools.md) | `cotal_send` · `cotal_dm` · `cotal_anycast` |
 | Spawn / define / list a teammate at runtime | [MCP tool catalog](mcp-tools.md) | `cotal_spawn` · `cotal_persona` · `cotal_personas` |
@@ -45,6 +46,7 @@ Task dispatch:
 |---|---|
 | [What is Cotal](what-is-cotal.md) | What is it, and what can it do? |
 | [Quickstart](getting-started.md) | How do I install it and get a running mesh? |
+| [Choose a workflow](using-cotal.md) | How do I connect a session, join a hosted space, deploy a team or integrate a service? |
 
 ## Guides
 
@@ -128,7 +130,7 @@ says at its top which parts have shipped.
 |---|---|
 | [Roadmap](roadmap.md) | What is deferred, and where each area is headed. |
 | [Release](release.md) | How we version and publish. |
-| [Substrate stability](stability.md) | What can I build a product on, and what will the v0.4 cut break? |
+| [Substrate stability](stability.md) | Which interfaces can I build on, and how do package and wire compatibility differ? |
 | [Setup internals](setup-internals.md) | How the `cotal setup` flow works. |
 | [Signer isolation](design/signer-isolation.md) | How the account signing seed moves off the manager uid. |
 | [Tasks endpoint](design/tasks-endpoint.md) | How a tasks provider joins a space as an ordinary endpoint. |

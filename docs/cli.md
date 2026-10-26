@@ -8,7 +8,22 @@ wire contract: the normative subjects and schemas live in the [SPEC](../SPEC.md)
 lookup material for the commands, not a walkthrough; if you are new, start with
 [Getting started](getting-started.md).
 
-For the other integration interfaces, see the [API reference](api-reference.md).
+For the other integration interfaces, see the [API reference](api-reference.md). For a
+walkthrough, use [Choose a workflow](using-cotal.md).
+
+## Find a command
+
+| Task | Sections |
+|---|---|
+| Install, prepare or upgrade | [setup](#setup), [update](#update), [completion](#completion) |
+| Select and operate a space | [Selecting a space](#selecting-a-space), [Mesh registry](#mesh-registry), [up](#up), [down](#down) |
+| Launch and manage agents | [spawn](#spawn), [Managed seats](#managed-seats), [persona](#persona), [models](#models) |
+| Message and inspect peers | [who](#who), [whoami](#whoami), [chat](#chat), [send](#send), [history](#history) |
+| Deploy a team | [Manifest deploys](#manifest-deploys) |
+| Operate services and integrations | [service](#service), [Endpoint control](#endpoint-control), [linear](#linear) |
+| Coordinate longer work | [run](#run) |
+| Observe and recover | [watch](#watch), [console](#console), [Backups](#backups), [doctor](#doctor) |
+| Script commands or manage usage reporting | [Structured output](#structured-output), [telemetry](#telemetry) |
 
 ## Running it
 

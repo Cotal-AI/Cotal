@@ -3,7 +3,8 @@
 > **Reference** (informative) · **For:** developers integrating with Cotal · **Normative:** [SPEC](../SPEC.md)
 
 Cotal exposes a wire protocol, TypeScript libraries, CLI commands and agent tools.
-Use this page to choose an interface and find its existing reference.
+Use this page to choose an interface and find its existing reference. For a task-oriented
+walkthrough, start with [Choose a workflow](using-cotal.md).
 
 ## Choose an interface
 

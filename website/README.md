@@ -84,6 +84,13 @@ function to page routes, keeping it off static assets) are picked up automatical
 Set `site` in `astro.config.mjs` to the production origin so `llms.txt` links and the
 sitemap are absolute.
 
+The repository's `Docs` GitHub Actions workflow owns publication. A docs-source push to
+`main` deploys production, an eligible pull request deploys a preview, and a published
+release deploys its version alias. A merge is not evidence of a live update: inspect the
+workflow's deploy result, then open the changed HTML page and its Markdown twin.
+If no run appears for an eligible change, check whether the workflow is enabled before
+investigating the page generator. Do not edit the generated Pages files separately.
+
 ## Not yet built: docs MCP server
 
 The top tier of agent-native — letting an agent query these docs as a *tool* rather

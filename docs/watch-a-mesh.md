@@ -280,8 +280,11 @@ can actually read.
 
 Every surface is a read-only observer; what it *sees* depends on its credential:
 
-- **console TUI** and **web** self-mint an **admin** god-view cred under auth, so both show the
-  whole space: chat, DMs, and anycast (`dmVisible: true`).
+- The **console TUI** uses an admin observation credential on a static-auth mesh when local
+  signing material is available. Its god-view includes chat, DMs and anycast (`dmVisible: true`).
+- The **web service** reads only through the protected credential supplied in its definition.
+  It mints no credential. An admin credential permits the wider view; a restricted credential
+  limits what the browser can see.
 - **`console --plain`** deliberately narrows to the chat subtree, so DMs and anycast stay
   confidential in a line log even under an admin cred.
 - An explicit **`--creds`** limits each surface to the credential's grants; a chat-only

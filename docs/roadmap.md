@@ -13,7 +13,14 @@ The core is running today: all three delivery modes over JetStream, presence and
 discovery, channel replay and durable delivery classes, JWT identity and per-agent ACLs on
 by default, a supervising manager with pluggable runtimes, connectors for Claude Code,
 OpenCode, Codex, Hermes, Jcode, and pi, the mesh manifest (`cotal.yaml`), and the console + web
-observers. The [Quickstart](getting-started.md) is the fastest proof.
+observers. It also includes durable Cotal Lang runs, discoverable service contracts,
+CLI structured output, an interactive console launch form and approval-based connections
+for personal Claude Code sessions on supported user-auth deployments.
+[Choose a workflow](using-cotal.md) links the supported paths and their limits.
+
+The stock Linear adapter supports static-auth serving and approved user-auth serving.
+A hosted installation still has to configure its authority, registration and caller grants.
+Source support does not establish that an integration is deployed in a particular space.
 
 ## Deferred work
 
@@ -61,8 +68,9 @@ The rule: **never merge trust roots.** The staged path, from
   a decision journal, competitive work pools, and leases/obligations
   ([SPEC §13](../SPEC.md#13-endpoint-control-surface-v04)); whether a lighter *advisory* intent
   record also belongs on the chat plane is still open.
-- **Collaboration patterns**: agents are declared today ([agent files](agent-files.md));
-  how a user declares the patterns *between* them (who delegates to whom) is open.
+- **Collaboration patterns**: [manifests](manifest.md) declare agents and channel access;
+  [Cotal Lang](workflows.md) expresses delegation, concurrency and human checkpoints.
+  A separate declarative notation for arbitrary social relationships between agents remains open.
 
 Watch the [changelog](../SPEC.md#11-versioning-and-extensibility) and releases for what
 lands; propose changes against the spec first ([change process](../SPEC.md#11-versioning-and-extensibility)).
