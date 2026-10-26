@@ -1447,15 +1447,21 @@ export function cotalToolSpecs(
           .boolean()
           .optional()
           .describe("Event planes are on by default for connectors that publish one. Pass false to opt out; true only restates the default."),
+        runtime: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe("Optional terminal runtime for this one seat (pty, or an installed extension such as tmux). Omitted, the serving manager uses its own. An unknown or unreachable runtime, and auto, refuse the launch and start nothing."),
         // NOTE: session `resume` is deliberately NOT exposed here. Forking a host-local `~/.claude`
         // transcript is an operator-local intent; letting a spawn-capable mesh PEER name a host
         // session id would expand `spawn` into host-transcript disclosure with no broker-enforced
         // boundary. Resume lives only on the operator CLI (`cotal spawn --resume`, foreground or
         // --detach); a peer-facing, capability-gated resume is deferred (see #159).
       },
-      async run(agent, _config, { name, instance, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events }: { name: string; instance?: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean }) {
+      async run(agent, _config, { name, instance, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime }: { name: string; instance?: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string }) {
         try {
-          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, instance });
+          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, instance });
           // An uncertain launch is still managed and may yet join. Reported as an error it reads as a
           // failed launch, and the caller's retry starts a second agent on the same work.
           const pending = reply.code === "uncertain";

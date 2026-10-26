@@ -39,7 +39,8 @@ duration is refused before the run starts (L2034).
 `permits` meter `turns` and `wallClock` on this host; `supervise` is `{ restarts, window? }`
 (default window `10m`) and restarts the process in place until that budget is spent.
 `events: false` starts a seat without an event plane, which a connector that publishes none
-(Hermes) needs.
+(Hermes) needs. `runtime` names the terminal runtime of this one seat. Omitted, the seat uses the
+serving manager's runtime.
 
 ## Results you branch on
 

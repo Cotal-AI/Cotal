@@ -397,7 +397,7 @@ journal recorded. `channel()` and `run()` are pure primitives: they build a valu
 
 | Primitive | Signature | Journal kind | Name |
 | --- | --- | --- | --- |
-| `spawn` | `spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events? }) -> AgentHandle` | `spawn` | `name`, else the persona |
+| `spawn` | `spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events?, runtime? }) -> AgentHandle` | `spawn` | `name`, else the persona |
 | `turn` | `turn(agent, { name, deadline? }) -> { status, to?, note?, at }` | `turn` | required |
 | `ask` | `ask(agent, { name, schema, deadline?, attempts? }) -> record` | `ask` | required |
 | `checkpoint` | `checkpoint(name, prompt, { schema?, timeout?, onExpiry?, to? }) -> { status, value?, by?, at, artifact? }` | `checkpoint` | required, positional |
@@ -461,7 +461,8 @@ Two rules in that table are deliberate. `deadline`, `timeout` and `attempts` **s
 asks a different question. And `onExpiry` is hashed **only** at `escalate`, because `fail` and
 `proceed` choose how to read a recorded expiry (a reapply that MUST replay clean) while `escalate`
 mints a second effect (a different question that MUST diverge). `permits`, `supervise`, `onFork`
-and `events` on `spawn` are policy over a result and are never hashed.
+and `events` on `spawn` are policy over a result and are never hashed. `runtime` is the same kind of
+policy: it names the terminal runtime of this one seat, and omitted leaves the serving manager's own.
 
 `cwd` and `placement` were added after runs were recorded without them, so a spawn that omits both
 hashes the six-key object it hashed before. Adding or removing `cwd` or `placement`, or changing the
@@ -474,7 +475,9 @@ keys in a placement record are not projected, and key order never matters (§4.4
   violation the handler reports as a catchable failure (L4001); `supervise` is a declarative
   restart policy; `onFork` is `"respawn"` (default) or `"adopt"` (§11.3); `events: false` starts the
   agent without an event plane, for a connector that publishes none, and omitted leaves the host's
-  default. Two agents MUST NOT share a worktree concurrently (L3022, L4008).
+  default; `runtime` names the terminal runtime of this one seat, and omitted leaves the serving
+  manager's own. A runtime the serving manager cannot resolve refuses the spawn and starts nothing.
+  Two agents MUST NOT share a worktree concurrently (L3022, L4008).
 - **`turn`** wakes an agent for one turn; it reads its own channels and speaks for itself. The
   result is its yield status: `done`, `blocked`, or `handoff` (with `to`), and `at`. The handler
   reports a handoff to an agent outside the run as L4005, one across worktrees as L4004, an elapsed

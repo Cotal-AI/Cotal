@@ -147,6 +147,7 @@ const SPAWN_INPUT = {
     name: { type: "string", minLength: 1 }, agent: { type: "string" }, role: { type: "string" },
     model: { type: "string" }, variant: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
+    runtime: { type: "string" },
     supervise: {
       type: "object", additionalProperties: false, required: ["restarts", "windowMs"],
       properties: { restarts: { type: "integer", minimum: 1 }, windowMs: { type: "integer", minimum: 1 } },
