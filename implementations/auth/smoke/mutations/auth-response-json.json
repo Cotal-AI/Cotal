@@ -62,7 +62,7 @@
     },
     {
       "name": "bearer CLI refusal fabricates an empty object for unreadable JSON",
-      "file": "implementations/auth/src/commands.ts",
+      "file": "implementations/auth/src/agent-bearer.ts",
       "find": "      const body = (await readAuthResponseJson(res, `agent-bearer: the exchange at ${exchangeUrl}`)) as { error?: string };",
       "replace": "      const body = (await res.json().catch(() => ({}))) as { error?: string };",
       "expectRed": "local bearer CLI reports unreadable JSON with face and status",
@@ -71,7 +71,7 @@
     },
     {
       "name": "bearer CLI success fabricates an empty object for unreadable JSON",
-      "file": "implementations/auth/src/commands.ts",
+      "file": "implementations/auth/src/agent-bearer.ts",
       "find": "    const out = (await readAuthResponseJson(res, `agent-bearer: the exchange at ${exchangeUrl}`)) as { token?: string };",
       "replace": "    const out = (await res.json().catch(() => ({}))) as { token?: string };",
       "expectRed": "local bearer CLI reports unreadable JSON with face and status",

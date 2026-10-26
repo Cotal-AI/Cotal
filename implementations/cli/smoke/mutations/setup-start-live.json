@@ -11,8 +11,8 @@
     {
       "name": "fresh implicit startup keeps the reserved default",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "        : await freshStackServer(requestedServer, values.host);",
-      "replace": "        : requestedServer;",
+      "find": "  return freshStackServer(host ? reconcileHostAndServer(host, undefined) : DEFAULT_SERVER, host);",
+      "replace": "  return host ? reconcileHostAndServer(host, undefined) : DEFAULT_SERVER;",
       "expectRed": "a fresh implicit startup avoids another registration's address",
       "cell": "a fresh implicit startup avoids another registration's address",
       "command": "pnpm --filter @cotal-ai/cli build >/dev/null && pnpm exec tsx implementations/cli/smoke/setup-start-live.smoke.ts --case=address",

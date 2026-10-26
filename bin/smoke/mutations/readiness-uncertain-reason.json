@@ -42,8 +42,8 @@
     {
       "name": "the manager drops the readiness detail it just built, so the terminal carries nothing to say",
       "file": "implementations/manager/src/manager.ts",
-      "find": "await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail } });",
-      "replace": "await hooks?.onOutcome?.({ kind: \"uncertain\" });",
+      "find": "await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });",
+      "replace": "await hooks?.onOutcome?.({ kind: \"uncertain\", data: { ...(readiness.running ? { running: true } : {}) } });",
       "expectRed": "carrying the MANAGER's diagnosis",
       "cell": "...carrying the MANAGER's diagnosis, not core's generic line",
       "note": "The defect exactly as shipped. The manager still CONSTRUCTS the detail (it rides the local return value, so `ps` and the logs keep it) and still settles the goal `uncertain` on time -- which is why the two sibling cells stay green under this mutation and only the wording cell reddens. That asymmetry is the whole finding: every signal an operator could check looked right except the one they were actually shown.",
