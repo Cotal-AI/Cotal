@@ -302,6 +302,21 @@ That listener still binds `127.0.0.1`; put a reverse proxy in front of it and te
 In-process TLS is deliberately not another deployment mode: it would duplicate certificate renewal
 and fork proxy-based deployments.
 
+**Callout replicas.** `cotal auth-service --callout-only --space <s> --server <url>` runs one more
+member of the space's callout queue group. The broker hands each connect to one member, so a
+replica keeps connects answered while the full auth service restarts or crashes, and adds capacity.
+A replica runs the same connect checks as the full service and holds nothing else: no HTTP
+listener, no `auth-service.json`, no plane claim, service registration, barrier, scanner or sweep,
+so it never competes with the full service for any of them. Its store connection reads
+the auth, records and sessions stores and creates each connect's issuance row; it creates no store,
+mints no credential and writes no gate. A replica reads the actor ledger in the space's state dir
+and the same secret entries the full service's callout reads, the bearer issuer key among them, so
+it runs only on a host trusted like the full service's. A replica that loses a store connection or
+the broker stops answering and exits non-zero, and the broker sends later connects to the other
+members; restart it with the unit that runs it. It refuses the HTTP flags and `--service-endpoints`.
+A replica cannot issue a service-endpoint connection, so it refuses to start in a space that admits
+service endpoints, one whose full service runs with `--service-endpoints`.
+
 The loopback face also serves four host-only doors, all capability-gated and never on the public
 face. Two retire a lifecycle: `/interactive-lifecycle/retire` (used by `cotal actor grant/revoke`)
 and `/managed-lifecycle/retire`, which finishes a managed agent's terminal retirement after its

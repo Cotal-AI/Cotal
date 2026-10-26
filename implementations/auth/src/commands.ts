@@ -1,5 +1,5 @@
 import { readAuthResponseJson } from "./response-json.js";
-import { authServiceFlags } from "./daemon-flags.js";
+import { authCalloutOnlyFlag, authServiceFlags } from "./daemon-flags.js";
 import { serviceEndpointHostCall, type ServiceEndpointValues } from "./service-host-client.js";
 /**
  * Self-registering `login` / `logout` commands (the delivery-daemon pattern): importing
@@ -609,8 +609,8 @@ const authCommands: Command[] = [
     name: "__daemon-auth-service",
     hidden: true,
     group: "Manager",
-    summary: "run the user-auth service daemon - NATS auth callout + token exchange/JWKS --space <s> --server <url> [--port <n>]",
-    flags: [...authServiceFlags],
+    summary: "run the user-auth service daemon - NATS auth callout + token exchange/JWKS --space <s> --server <url> [--port <n>] [--callout-only]",
+    flags: [...authServiceFlags, authCalloutOnlyFlag],
     prepareMeshTarget: false,
     run: (args) => legibly(() => runAuthService(args)),
   },
