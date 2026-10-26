@@ -7471,6 +7471,16 @@ placeholders beside the full identity fields. Without usable input/output termin
 `--on` launch refuses before allocation and names `-d` or a spawn in this terminal. A shell tool's
 inherited parent PTY is not enough.
 
+A launch whose agent application waits for you before it joins is ready once its process runs.
+Claude with `--opt resume=` and no session id opens its session picker, so the CLI says the agent
+is running on its manager and host and waiting for you at Claude's session picker. In a terminal it
+attaches to the agent at once, `-d` included; otherwise it prints the attach command. When the
+readiness window passes and the manager reports the agent's process still running, the CLI says
+the agent has not joined the mesh yet, attaches when the spawn was not detached, and otherwise
+prints the attach command. Both exit 0, and `--json` reports them as `managed-launch-running` with
+`waitingFor` naming the screen or null. The outcome stays unknown when the manager cannot say
+whether the process runs.
+
 A managed launch prints its `Managed launch` plan on stdout before its receipt, so
 `cotal spawn <persona> -d > out.txt` keeps both, and a refusal prints on stderr. With `--json`,
 stdout holds only the envelope and the plan stays on stderr. The manager that refuses a launch

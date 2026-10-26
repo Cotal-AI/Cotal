@@ -25,7 +25,7 @@ import {
   createEndpointStreams, openRecordsBucket, epeSubject, epfSubject,
   actionContext, bindGoal, classifyGoalReuse, resolveGoalSubmission, createGoal, readGoalSpec, readGoalStatus,
   transitionGoal, isLegalGoalTransition, projectGoalTerminal,
-  commitGoalResult, readGoalResult, requestGoalCancel, settleGoalUncertain, goalTombstone,
+  commitGoalResult, readGoalResult, requestGoalCancel, settleGoalUncertain, goalTombstone, GOAL_ENTITY_RUNNING_DETAIL_KIND,
   goalResultSubject, goalProgressTopic, goalRefOf,
   reconcileReceiptEmission, receiptStoreContext, readReceipt, publishReceipt, mintReceipt, publishFactCreateOnly,
   GOAL_TERMINAL_STATES, GOAL_TERMINAL_DETAIL_KIND,
@@ -325,6 +325,14 @@ try {
   await createGoal(ctx, ref("g3"), specOf("sha256:dd", { readinessDeadlineMs: 30_000 }));
   await commitGoalResult(ctx, { ref: ref("g3"), now: NOW + 29_000, cause: "complete", state: "succeeded" });
   c("a success that committed FIRST wins; the due settle observes it", (await settleGoalUncertain(ctx, { ref: ref("g3"), now: NOW + 30_001 })).fact.state === "succeeded");
+  await bindGoal(ctx, ref("g-run"), "sha256:ru");
+  await createGoal(ctx, ref("g-run"), specOf("sha256:ru", { readinessDeadlineMs: 30_000 }));
+  {
+    const ran = (await settleGoalUncertain(ctx, { ref: ref("g-run"), now: NOW + 30_000, reason: "still starting", running: true })).fact;
+    const data = ran.data as { reason?: unknown; details?: { kind?: unknown }[] } | undefined;
+    c("an owner that saw the entity running settles `uncertain` with its reason and the entity-running detail",
+      ran.state === "uncertain" && data?.reason === "still starting" && data.details?.[0]?.kind === GOAL_ENTITY_RUNNING_DETAIL_KIND);
+  }
 
   // ── the cached outcome completes the SAME authority chain: bind = spec = result ──
   {

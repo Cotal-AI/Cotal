@@ -826,6 +826,11 @@ original is untouched.
   `✗ exited on launch` carries Claude's last output and the seat's exit diagnostic, such as a
   startup confirmation that never appeared, and an uncertain launch (~30 s) is reported without
   tearing the agent down.
+- `--opt resume=` with no id passes a bare `--resume`, which opens Claude's session picker, and the
+  agent joins the mesh once you pick a session. A managed launch with it is ready once Claude runs:
+  the CLI says the agent is waiting for you at Claude's session picker, attaches you to it in a
+  terminal, `-d` included, or otherwise prints the attach command, and exits 0. `--opt resume=<id>`
+  passes `--resume <id>` and joins as any launch does.
 - Resume is an **operator surface only**, deliberately not exposed on MCP `cotal_spawn`
   (a mesh peer naming host-local transcripts would widen `spawn` into transcript
   disclosure). Only the Claude connector supports it today; OpenCode and Hermes fail loud.

@@ -33,6 +33,7 @@ import {
   resolveReadAcl,
   runAgentBearer,
   CotalEndpoint,
+  GOAL_ENTITY_RUNNING_DETAIL_KIND,
   acquireLock,
   inspectLock,
   localConsumerClaimPath,
@@ -703,6 +704,16 @@ export async function launchManagedPersona(
     return reportAlreadyRunning(e, values, t.space, t.server);
   }
   const target = { space: t.space, managerInstanceId: reply.managerInstanceId ?? on ?? null, managerEpoch: reply.managerEpoch ?? null, ...(reply.intent ? { requestId: reply.intent.requestId, requestedGoalId: reply.intent.requestedGoalId ?? null } : {}), ...(reply.request ? { acceptedGoalId: reply.request.goalId ?? null } : {}) };
+  // A launch whose process the manager reports running is starting: one that waits for the operator at
+  // a screen its harness names was ready once it ran, and one that did not join in time may still be
+  // coming up or sitting at a prompt. Either way the operator is sent to its terminal.
+  const started = reply.ok ? reply.data as { name?: unknown; id?: unknown; lifecycleUid?: unknown; waitingFor?: unknown } | undefined : undefined;
+  const running = !reply.ok && reply.code === "uncertain" && reply.details?.some((d) => d.kind === GOAL_ENTITY_RUNNING_DETAIL_KIND) === true;
+  const startedName = typeof started?.name === "string" ? started.name : reply.request?.allocation?.name;
+  if (!observer && reply.managerInstanceId && startedName && (typeof started?.waitingFor === "string" || running)) {
+    const expected = typeof started?.id === "string" && typeof started.lifecycleUid === "string" ? { id: started.id, lifecycleUid: started.lifecycleUid } : undefined;
+    return reportStarting({ name: startedName, managerInstanceId: reply.managerInstanceId, ...(typeof started?.waitingFor === "string" ? { waitingFor: started.waitingFor } : {}), ...(expected ? { expected } : {}) }, values, t.space, t.server, target);
+  }
   if (!reply.ok) {
     const refusal: Record<string, RefusalCode> = { "permission-denied": "PERMISSION_DENIED", "unauthenticated": "AUTH_REQUIRED", "not-found": "TARGET_NOT_FOUND", "unavailable": "TARGET_UNAVAILABLE", "bad-request": "SCHEMA_INVALID", "failed-precondition": "LIFECYCLE_BLOCKED", "already-exists": "CONFLICT", "conflict": "CONFLICT", "unimplemented": "UNSUPPORTED" };
     const code = reply.code === undefined ? undefined : refusal[reply.code];
@@ -769,6 +780,30 @@ function meshRelease(mesh: MeshTarget | undefined): ((lifecycleUid: string, agen
   const provider = resolveAuthProvider();
   if (!provider.releaseAgentLifecycle) return undefined;
   return (lifecycleUid, agent) => provider.releaseAgentLifecycle!({ url, idpUrl: ua.idp.url, lifecycleUid, actor: agent });
+}
+
+/** A managed launch whose process runs but has not joined the mesh: say where it runs and, when its
+ *  harness waits for the operator, at which screen. A terminal attaches to an operator screen at once,
+ *  even with -d, and to a starting agent only when the spawn was not detached; otherwise the attach
+ *  command is printed. */
+async function reportStarting(start: { name: string; managerInstanceId: string; waitingFor?: string; expected?: { id: string; lifecycleUid: string } }, values: FlagValues<typeof spawnFlags>, space: string, server: string, target: Record<string, unknown>): Promise<void> {
+  const selection = await managerSelection(values, start.managerInstanceId).catch(() => undefined);
+  const selector = selection?.selector ?? start.managerInstanceId, host = selection?.manager.host ?? null;
+  const attach = `${displayCmd()} attach ${shellWord(start.name)} --on ${shellWord(selector)}`;
+  const presentation = presentationOf(values);
+  const now = presentation !== "json" && canPrompt() && (start.waitingFor !== undefined || !values.detach);
+  const place = `on ${selector}${host && host !== selector ? ` (${host})` : ""}`;
+  writeResult(presentation, {
+    command: "spawn",
+    target,
+    result: { kind: "managed-launch-running", name: start.name, managerInstanceId: start.managerInstanceId, host, waitingFor: start.waitingFor ?? null, attach },
+  }, (r) => ({ sections: [{ title: r.waitingFor ? "Waiting for you" : "Agent starting", blocks: [{ kind: "lines", lines: [
+    r.waitingFor ? `${r.name} is running ${place} and waiting for you at ${r.waitingFor}.` : `${r.name} is running ${place} and has not joined the mesh yet; it may still be starting or waiting at a prompt.`,
+    { text: now ? "Attaching to it now." : `Attach to it: ${r.attach}`, tone: "hint" },
+  ] }] }] }));
+  if (!now) return;
+  const verdict = await attachSeat({ space, server, creds: values.creds, name: start.name, ...(start.expected ? { expectedTarget: start.expected } : {}) }, { on: start.managerInstanceId, reconnect: true, onRefusal: "throw" });
+  if (verdict.kind === "failed") stderrLine("! ", `${start.name} could not be attached: ${verdict.message}; attach to it with ${attach}`, c.yellow);
 }
 
 /** The agent a spawn asked for already runs, so nothing new is launched: say where it runs, then

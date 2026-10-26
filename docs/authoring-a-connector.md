@@ -28,7 +28,7 @@ const myConnector: Connector = {
   },
   // optional: setup, listModels, supportsModelVariant, supportsPrompt, supportsResume, resumeTranscript,
   // supportsSessionContinuation, supportsSessionReopen, supportsFreshStart, supportsToolListAnnounce,
-  // readinessTimeoutMs, launchHint, eventChannel, pluginRoot
+  // readinessTimeoutMs, launchHint, waitsForOperator, eventChannel, pluginRoot
 };
 
 registry.register(myConnector);          // registration runs on import, making the connector available
@@ -50,7 +50,10 @@ session publishes a structured event plane: it names the channel the manager gra
 publish rights on, so the grant and the subject the session publishes to come from one function
 rather than two that can drift. Event planes are on by default when this method exists. A connector
 that omits it refuses a launch unless the caller explicitly opts out with `--no-events` or
-`events: false`. See
+`events: false`. Implement `waitsForOperator(launchOptions)` only when some launch options make your
+harness wait for the operator before its session joins, such as a session picker: return the
+screen's name, and the manager reports that launch ready once its process runs instead of waiting
+for presence. See
 the `Connector` interface in
 [`packages/core/src/connector.ts`](../packages/core/src/connector.ts) and the OpenCode connector in
 [`extensions/connector-opencode/`](../extensions/connector-opencode/) for a complete worked example.

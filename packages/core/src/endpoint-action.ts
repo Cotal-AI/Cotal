@@ -1128,12 +1128,14 @@ export async function commitGoalResult(
   // guidance is the whole operational value of an `uncertain` terminal (#605): the generic line
   // below reads as a plain failure, which is exactly what teaches an operator to re-issue, and a
   // re-issue after a launch that actually succeeded mints a duplicate.
-  const suppliedReason = (data as { reason?: unknown } | undefined)?.reason;
+  // Its details say what it observed of the entity, such as GOAL_ENTITY_RUNNING_DETAIL_KIND.
+  const { reason: suppliedReason, details: suppliedDetails } = (data ?? {}) as { reason?: unknown; details?: unknown };
   return finish(await commitTerminalFact(ctx, snap, spec.value, "uncertain", {
     reason: typeof suppliedReason === "string" && suppliedReason.length > 0
       ? suppliedReason
       : "the success signal did not arrive within the readiness deadline",
     readinessDeadlineMs: spec.value.readinessDeadlineMs,
+    ...(Array.isArray(suppliedDetails) && suppliedDetails.length > 0 ? { details: suppliedDetails } : {}),
   }, now, committer));
 }
 
@@ -1193,15 +1195,21 @@ export async function requestGoalCancel(
 
 // ---- bounded readiness (§13.6 item 6) ----------------------------------------------------------
 
+/** The reverse-DNS detail kind on an `uncertain` readiness terminal whose owner observed the
+ *  action's entity still running at the deadline (§13.6 item 6): the action is still starting. */
+export const GOAL_ENTITY_RUNNING_DETAIL_KIND = "ai.cotal.goal.entity-running";
+
 /** Settle a goal `uncertain` at its persisted acceptance-relative readiness deadline (the
  *  `readiness` cause). The bound is read from the PERSISTED spec; a target-pinned goal is
  *  REACHABLE (readiness is the owner's deadline, not an executor completion, so no executor is
- *  required). A racing late success that committed first wins and this returns the winner. */
+ *  required). A racing late success that committed first wins and this returns the winner.
+ *  `running` attaches a {@link GOAL_ENTITY_RUNNING_DETAIL_KIND} detail. */
 export async function settleGoalUncertain(
   ctx: ActionContext,
-  args: { ref: GoalRef; now: number; committer?: { instanceId: string; epoch: number }; reason?: string },
+  args: { ref: GoalRef; now: number; committer?: { instanceId: string; epoch: number }; reason?: string; running?: boolean },
 ): Promise<{ won: boolean; fact: GoalResultFact; status: GoalStatusValue }> {
-  return commitGoalResult(ctx, { ref: args.ref, now: args.now, cause: "readiness", ...(args.reason !== undefined ? { data: { reason: args.reason } } : {}), ...(args.committer !== undefined ? { committer: args.committer } : {}) });
+  const data = { ...(args.reason !== undefined ? { reason: args.reason } : {}), ...(args.running ? { details: [{ kind: GOAL_ENTITY_RUNNING_DETAIL_KIND }] } : {}) };
+  return commitGoalResult(ctx, { ref: args.ref, now: args.now, cause: "readiness", ...(Object.keys(data).length ? { data } : {}), ...(args.committer !== undefined ? { committer: args.committer } : {}) });
 }
 
 // ---- the reconcile index (§13.6 crash recovery for the Model-B inline executor) ---------------
