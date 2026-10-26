@@ -1492,7 +1492,11 @@ says so with a `REGISTRATION_REBUILT` warning, as `--dry-run` does. It does that
 stack's broker is the launch the journal records at that root and address, and otherwise refuses
 `CONFLICT`, exit 2, before any member stops. A registration added by hand at another address or
 folder is not replaced: `down` refuses `CONFLICT` and names `cotal space forget <space>`, after
-which `down` stops the stack through its journal. A user-auth stack's registration is not rebuilt,
+which `down` stops the stack through its journal. While another registered space names this
+stack's exact broker address, bare `down` refuses `LIFECYCLE_BLOCKED`, exit 2, and stops nothing,
+because one listener answers for both registrations. It names each of those spaces with the
+`cotal space show <space>` that reads one, the `cotal space forget <space>` that takes it off this
+address once its own stack is stopped, and the `cotal down` to run again after that. A user-auth stack's registration is not rebuilt,
 so it refuses `UNSUPPORTED`. A stop that refuses or is cancelled before any member stops puts the
 registration back as it was.
 
