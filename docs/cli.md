@@ -7461,7 +7461,8 @@ not a second display-name guess. `--detach/-d` returns a finite JSON/plain-capab
 the same readiness result. While it waits, it prints the launch it asked for, with the space as a
 field, and one line that says the manager answers when it refuses the launch, or when the agent
 joins or exits, within about 30 seconds. The receipt or refusal that follows names the mesh in its
-`Mesh:` heading. The terminal receipt shows the full lifecycle, original request, accepted goal where reported,
+`Mesh:` heading. A launch the manager reports failed, such as an agent whose process exits at once,
+fails `OPERATION_FAILED`, exit 5, with the manager's reason. The terminal receipt shows the full lifecycle, original request, accepted goal where reported,
 role and model request separately from any provider acceptance claim. When the host granted the
 agent other read or post channels than it asked for, as a host that narrows a request to your grant
 does, the receipt adds a `Granted` line with the channels it got and the ones it asked for, and
