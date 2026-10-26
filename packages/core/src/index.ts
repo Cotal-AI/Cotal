@@ -1,5 +1,5 @@
 export * from "./types.js";
-export { nativeNkeySigner } from "./nkey-signer.js";
+export { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
 export * from "./advisory-lock.js";
 export * from "./local-consumer-custody.js";
 export * from "./subjects.js";

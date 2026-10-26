@@ -48,8 +48,11 @@ role's task queue). The manager hosts it today, but nothing is manager-special a
 privilege attaches to the signer, and a space can run without a manager.
 
 User-credential and auth-callout JWT signing uses Node's native Ed25519 implementation. NATS
-libraries still encode keys and JWTs and verify incoming JWTs. The signer produces the same
-signature bytes for the same key and payload; permissions, expiry and issuer checks are unchanged.
+libraries still encode keys and JWTs. The signer produces the same signature bytes for the same key
+and payload; permissions, expiry and issuer checks are unchanged. The auth callout also verifies
+the broker's signed request with Node's Ed25519 rather than the NATS library's JavaScript curve,
+which cost several milliseconds per connect. It makes the same checks: a NATS JWT header, a public
+nkey issuer with a valid checksum, and that issuer's signature.
 
 The temporary native provisioner can request `$SYS.REQ.USER.INFO` for its own connection.
 The broker's configured system account maps the service to that requester. The reply can bind
