@@ -2786,6 +2786,41 @@ let n = 1;
         !result.ok && result.class === "effect" && result.name === "EffectError" && result.code === "L4000"
           && result.message === (thrown === null ? "null" : "probe-x"), result);
     }
+
+    // Error.message is writable, so even an Error instance needs the runtime string guard.
+    for (const c of [
+      { message: 17, expected: "ForeignError: 17" },
+      { message: null, expected: "ForeignError: null" },
+      { message: undefined, expected: "ForeignError" },
+      { message: "", expected: "" },
+      { message: "probe-x", expected: "probe-x" },
+    ]) {
+      const label = String(c.message);
+      const factory = await runInWorker(
+        { source: "0;", module: transform("0;").module, runId,
+          handler: { module: new URL("./_throwing-handler.mjs", import.meta.url).href, config: { message: c.message } } },
+        { entry: WORKER_ENTRY },
+      ).done;
+      ok(`the worker stringifies a factory Error with message ${label}`,
+        !factory.ok && factory.class === "error" && factory.name === "ForeignError"
+          && typeof factory.message === "string" && factory.message === c.expected, factory);
+
+      class MutatedErrorHandler extends SimHandler {
+        override async sleep(): Promise<null> {
+          const error = new Error("original message");
+          error.name = "ForeignError";
+          Reflect.set(error, "message", c.message);
+          throw error;
+        }
+      }
+      const bridged = await runInWorker(
+        { source, module: transform(source).module, runId, handler: "bridged" },
+        { entry: WORKER_ENTRY, bridge: { handler: new MutatedErrorHandler({}), store: { append: async () => {} } } },
+      ).done;
+      ok(`the bridge stringifies a handler Error with message ${label}`,
+        !bridged.ok && bridged.class === "effect" && bridged.name === "EffectError" && bridged.code === "L4000"
+          && typeof bridged.message === "string" && bridged.message === c.expected, bridged);
+    }
   }
 
   // ---- crossing 2: LOG LINES, OUT. A log line is DATA on this engine, and the rule is held once, in

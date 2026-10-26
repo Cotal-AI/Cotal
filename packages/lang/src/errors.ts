@@ -429,7 +429,6 @@ export function nameOf(v: unknown): string {
 
 /** The message off anything a foreign body throws, read defensively: other people's code may throw a primitive. */
 export function messageOf(v: unknown): string {
-  if (v instanceof Error) return v.message;
   const m = (v as { message?: unknown } | null | undefined)?.message;
   return typeof m === "string" ? m : String(v);
 }

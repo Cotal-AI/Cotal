@@ -158,6 +158,7 @@ The recorded pins are preserved.
 
 Worker failures and inspection exits preserve a thrown value's string `name` and `message` fields.
 An absent or non-string name becomes `Error`; without a string message, the value is stringified.
+This includes an `Error` instance whose message property was changed to a non-string value.
 
 **Restore** brings a run back from a full backup (`cotal backup create`) of a static-auth or open
 mesh, which holds each run's journal, records and admission. A run that waited at a checkpoint or a
