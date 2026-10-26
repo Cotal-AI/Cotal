@@ -161,7 +161,8 @@ export const statusFlags = [
   serverFlag,
   { name: "on", type: "string", value: "<manager-instance>", description: "named agent: inspect one manager instance" },
   { name: "creds", type: "string", value: "<file>", description: "named agent: use an explicit connection credential" },
-  { name: "all", type: "boolean", description: "check every recorded mesh, not only the selected one" },
+  { name: "all", type: "boolean", description: "check every recorded mesh, not only the selected one, and report every row in full" },
+  { name: "wide", type: "boolean", description: "report every row in full: each known agent application, each extension, and the spaces under their broker addresses" },
   { name: "verbose", short: "v", type: "boolean", description: "include installation paths, local records and detailed diagnostics" },
   { name: "components", type: "boolean", description: "probe manager, delivery, web, and registered broker component health (exit: 0 serving, or the optional dashboard not installed; 1 absent; 2 present but not serving; 3 probe refused)" },
   jsonFlag,
@@ -311,7 +312,9 @@ export interface StatusResult {
       check: "reachable" | "unreachable" | "not-checked";
       catalog: { name: string | null; fetchedAt: string | null; error: string | null } | null;
     }[];
-    catalogs: { idp: string; state: string; error: string | null }[];
+    /** `account` is the IdP subject whose catalog this is, which its error line names instead of the
+     *  token URL. Older inputs may omit it. */
+    catalogs: { idp: string; account?: string; state: string; error: string | null }[];
   };
   selected: SelectedResult;
   /** Older serialized/read-view inputs may omit this observation; absence is never an empty inventory. */
@@ -468,7 +471,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       warnings: [...gaps.warnings, ...invalidValues, ...survivors],
       ...(parts ? { partial: { message: `status could not read ${parts === 1 ? "one part" : `${parts} parts`} of what it reports; the warnings name ${parts === 1 ? "it" : "each"}` } } : {}),
     },
-    (result) => statusView(result, Boolean(values.verbose)),
+    (result) => statusView(result, Boolean(values.verbose), Boolean(values.all) || Boolean(values.wide)),
   );
   if (values.components) await printComponentHealth(cwd, values);
 }
@@ -1115,7 +1118,7 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
     folder,
     unreadable,
     items,
-    catalogs: preparedCatalogDiagnostics().map((r) => ({ idp: r.account.idpUrl, state: r.state, error: r.state === "failed" ? (r.error ?? "refresh failed") : null })),
+    catalogs: preparedCatalogDiagnostics().map((r) => ({ idp: r.account.idpUrl, account: r.account.sub, state: r.state, error: r.state === "failed" ? (r.error ?? "refresh failed") : null })),
   };
 }
 
@@ -1585,21 +1588,71 @@ function stateCell(text: string, tone: Tone): Cell {
   return { text, tone, mark: tone === "hint" ? "○" : "●" };
 }
 
-function machineOverview(r: StatusResult): Section {
+/** The agent applications this machine has set up: those whose required executables are all on PATH,
+ *  and the ones that run in this process. The rest are what `cotal setup` adds. */
+function setUpApplications(m: StatusResult["machine"]): string[] {
+  return (m.connectors ?? []).filter((connector) => !connector.missing.length).map((connector) => connector.name);
+}
+
+/** The applications line: the names that are set up, and how many more `cotal setup` would add. */
+function applicationsCell(m: StatusResult["machine"]): Cell {
+  if (m.connectors === null) return stateCell("could not be read", "failed");
+  const setUp = setUpApplications(m), others = m.connectors.length - setUp.length;
+  if (!setUp.length) return stateCell(`not set up · ${displayCmd()} setup adds one`, "hint");
+  return stateCell(`${setUp.join(", ")}${others ? ` · ${others} more with ${displayCmd()} setup` : ""}`, "ok");
+}
+
+/** The extensions line: one count at the version they share, naming only those that differ from it.
+ *  The versions are the manifest pins, so a differing one is a skew an upgrade did not carry. */
+function extensionsCell(e: StatusResult["extensions"]): Cell | undefined {
+  if (e.items === null) return stateCell("manifest could not be read", "failed");
+  if (!e.items.length) return undefined;
+  const counts = new Map<string, number>();
+  for (const item of e.items) counts.set(item.version, (counts.get(item.version) ?? 0) + 1);
+  const shared = [...counts].sort((a, b) => b[1] - a[1])[0]![0];
+  const odd = e.items.filter((item) => item.version !== shared);
+  const text = `${e.items.length} extension${e.items.length === 1 ? "" : "s"} at ${shared}`;
+  return odd.length ? stateCell(`${text} · ${odd.map((item) => `${item.label} v${item.version}`).join(" · ")}`, "waiting") : text;
+}
+
+/**
+ * What this machine has set up, and what needs attention.
+ *
+ * A row in its good state says nothing a reader acts on, and a piece of an application this machine
+ * does not have is what `cotal setup` adds, which the applications line already counts. So an
+ * application's own rows (the Claude plugin, Desktop and skills) appear only for an application that
+ * IS set up, and only when they are not current; the broker executable appears when it is missing or
+ * refused; the dashboard, which is optional, appears when its record cannot be read. `--all` and
+ * `--wide` print every row, and `--verbose` adds the installation paths ({@link machineSection}).
+ *
+ * It used to print one row per known connector whether or not it was set up, every extension label
+ * with the same version spelled out on each, and the broker executable's full bundled path on a
+ * healthy machine: a block of text whose signal a reader had to hunt for.
+ */
+function machineOverview(r: StatusResult, wide: boolean): Section {
   const m = r.machine;
   const tones = { ok: "ok", warn: "waiting", error: "failed", off: "hint" } as const;
-  const rows: [string, Cell][] = m.integrations.map((item) => [item.name, stateCell(item.text, tones[item.state])]);
-  if (m.connectors === null) rows.push(["Agent applications", stateCell("could not be read", "failed")]);
-  else if (!m.connectors.length) rows.push(["Agent applications", stateCell("not set up", "hint")]);
-  for (const connector of m.connectors ?? []) {
-    if (m.integrations.some((item) => item.name.toLowerCase().includes(connector.name.toLowerCase()))) continue;
-    rows.push([connector.name, stateCell(connector.missing.length ? `${connector.missing.join(", ")} not on PATH` : connector.requires.length ? "available on PATH" : "in-process", connector.missing.length ? "waiting" : "ok")]);
-  }
-  rows.push(["Broker executable", stateCell(m.nats === "missing" ? "not installed" : brokerExecutable(m), m.nats === "missing" ? "waiting" : m.natsProblem ? "failed" : "ok")]);
-  rows.push(["Agent skills", skillsCell(m.skills)]);
-  rows.push(["Dashboard", stateCell(m.web.installed === null ? "installation could not be read" : m.web.installed ? "installed" : "not installed · optional", m.web.installed === null ? "failed" : m.web.installed ? "ok" : "hint")]);
-  if (r.extensions.items === null) rows.push(["Extensions", stateCell("manifest could not be read", "failed")]);
-  else if (r.extensions.items.length) rows.push(["Extensions", r.extensions.items.map((item) => `${item.label} v${item.version}`).join(" · ")]);
+  const setUp = setUpApplications(m);
+  // An application's rows carry its name: "Claude plugin" and "claude setup" are both claude's.
+  const ownedBySetUp = (label: string) => setUp.some((name) => label.toLowerCase().includes(name.toLowerCase()));
+  const rows: [string, Cell][] = wide
+    ? m.integrations.map((item) => [item.name, stateCell(item.text, tones[item.state])])
+    : m.integrations.filter((item) => item.state !== "ok" && ownedBySetUp(item.name)).map((item) => [item.name, stateCell(item.text, tones[item.state])]);
+  rows.unshift(["Agent applications", applicationsCell(m)]);
+  if (wide)
+    for (const connector of m.connectors ?? []) {
+      if (m.integrations.some((item) => item.name.toLowerCase().includes(connector.name.toLowerCase()))) continue;
+      rows.push([connector.name, stateCell(connector.missing.length ? `${connector.missing.join(", ")} not on PATH` : connector.requires.length ? "available on PATH" : "in-process", connector.missing.length ? "waiting" : "ok")]);
+    }
+  if (wide || m.nats === "missing" || m.natsProblem)
+    rows.push(["Broker executable", stateCell(m.nats === "missing" ? "not installed" : brokerExecutable(m), m.nats === "missing" ? "waiting" : m.natsProblem ? "failed" : "ok")]);
+  if (wide || (m.skills.state !== "current" && setUp.length)) rows.push(["Agent skills", skillsCell(m.skills)]);
+  if (wide || m.web.installed === null)
+    rows.push(["Dashboard", stateCell(m.web.installed === null ? "installation could not be read" : m.web.installed ? "installed" : "not installed · optional", m.web.installed === null ? "failed" : m.web.installed ? "ok" : "hint")]);
+  const extensions = wide
+    ? r.extensions.items === null ? stateCell("manifest could not be read", "failed") : r.extensions.items.length ? r.extensions.items.map((item) => `${item.label} v${item.version}`).join(" · ") : undefined
+    : extensionsCell(r.extensions);
+  if (extensions !== undefined) rows.push(["Extensions", extensions]);
   return {
     title: "This machine",
     blocks: [
@@ -1633,39 +1686,77 @@ function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
   return stateCell(`${states[s.connection] ?? s.connection.replaceAll("-", " ")}${s.staleRecord ? " · saved registration needs attention" : ""}`, "failed");
 }
 
-function brokerOverview(r: StatusResult): Section {
+/** How a space signs a connection in, and what else a reader acts on about it: a mode the record
+ *  states but no broker was seen to enforce says so, a TLS requirement is named, and an account
+ *  catalog that could not be refreshed is named on each of its spaces. The broker address is not
+ *  here: `cotal space show <name>` names it. */
+function signsInText(entry: StatusResult["meshes"]["items"][number], wide: boolean): string {
+  return [
+    `${entry.mode === "user" ? "user sign-in" : entry.mode === "auth" ? "static auth" : "open"}${entry.modeChecked ? "" : ", not checked"}`,
+    ...(wide ? [entry.origin === "catalog" ? "saved catalog entry" : entry.origin === "manual" ? "registered endpoint" : "local registration"] : []),
+    entry.tlsRequired ? "TLS required" : "",
+    entry.catalog?.error ? "catalog refresh failed" : "",
+  ].filter(Boolean).join(" · ");
+}
+
+/** The connection state of one row: the selected space's own dialed state when this row is the
+ *  address it dialed, else the row's own check. A row that was not dialed carries no state, and the
+ *  note under the table says so once instead of repeating it on every row. */
+function spaceStateCell(r: StatusResult, entry: StatusResult["meshes"]["items"][number]): Cell {
+  const selected = r.selected.resolved && entry.space === r.selected.space;
+  // The selected connection describes this row only when it dialed the row's address; under
+  // `--all` with a `--server` that names another, the row shows its own address's check.
+  if (selected && r.selected.resolved && entry.check !== "not-checked" && r.selected.server !== null && r.selected.server === entry.server) return connectionCell(r.selected);
+  if (entry.check === "not-checked") return "";
+  return stateCell(entry.check === "reachable" ? "reachable" : "unreachable", entry.check === "reachable" ? "ok" : "failed");
+}
+
+/**
+ * The spaces this machine knows: the selected one first with its connection state, then one line
+ * each for the others.
+ *
+ * Only the selected space is dialed, so the others carry no state and ONE note says so, rather than
+ * `not checked` repeated on every row; `--all` dials each and fills the column. The broker address
+ * is not a group title: it groups spaces by an address a reader does not act on here, and `cotal
+ * space show <name>` names it. `--all` and `--wide` keep the grouped report.
+ */
+function spacesOverview(r: StatusResult, wide: boolean): Section {
   const blocks: Section["blocks"][number][] = [];
-  const groups = new Map<string, StatusResult["meshes"]["items"]>();
-  for (const entry of r.meshes.items) {
-    const key = entry.server ?? `unavailable:${entry.space}`;
-    const group = groups.get(key);
-    if (group) group.push(entry);
-    else groups.set(key, [entry]);
-  }
-  if (!groups.size && !r.meshes.unreadable.length) blocks.push({ kind: "lines", lines: [cell("No spaces registered", "hint")] });
-  for (const entries of groups.values()) {
-    blocks.push({ kind: "lines", lines: [cell(entries[0]!.server ?? "Broker address unavailable", "title")] });
-    blocks.push({
-      kind: "table",
-      header: false,
-      columns: [{ key: "space", label: "Space" }, { key: "state", label: "Connection" }, { key: "detail", label: "Details" }],
-      rows: entries.map((entry) => {
-        const selected = r.selected.resolved && entry.space === r.selected.space;
-        const detail = [`${entry.mode === "user" ? "user sign-in" : entry.mode === "auth" ? "static auth" : "open"}${entry.modeChecked ? "" : ", not checked"}`, entry.origin === "catalog" ? "saved catalog entry" : entry.origin === "manual" ? "registered endpoint" : "local registration", entry.tlsRequired ? "TLS required" : "", entry.catalog?.error ? "catalog refresh failed" : ""].filter(Boolean).join(" · ");
-        // The selected connection describes this row only when it dialed the row's address; under
-        // `--all` with a `--server` that names another, the row shows its own address's check.
-        return {
-          space: selected ? cell(`→ ${entry.space}`, "selected") : entry.space,
-          state: selected && r.selected.resolved && entry.check !== "not-checked" && r.selected.server !== null && r.selected.server === entry.server ? connectionCell(r.selected) : entry.check === "not-checked" ? stateCell("not checked", "hint") : stateCell(entry.check === "reachable" ? "reachable" : "unreachable", entry.check === "reachable" ? "ok" : "failed"),
-          detail: cell(detail, "hint"),
-        };
-      }),
-    });
+  // The space this report is for: the target it resolved, else the selection it could not resolve.
+  const reported = r.selected.resolved ? r.selected.space : r.meshes.current;
+  const row = (entry: StatusResult["meshes"]["items"][number]) => ({
+    space: entry.space === reported ? cell(`→ ${entry.space}`, "selected") : entry.space,
+    state: spaceStateCell(r, entry),
+    detail: cell(signsInText(entry, wide), "hint"),
+  });
+  const columns = [{ key: "space", label: "Space" }, { key: "state", label: "Connection" }, { key: "detail", label: "Signs in" }];
+  if (!r.meshes.items.length && !r.meshes.unreadable.length) blocks.push({ kind: "lines", lines: [cell("No spaces registered", "hint")] });
+  else if (wide) {
+    const groups = new Map<string, StatusResult["meshes"]["items"]>();
+    for (const entry of r.meshes.items) {
+      const key = entry.server ?? `unavailable:${entry.space}`;
+      const group = groups.get(key);
+      if (group) group.push(entry);
+      else groups.set(key, [entry]);
+    }
+    for (const entries of groups.values()) {
+      blocks.push({ kind: "lines", lines: [cell(entries[0]!.server ?? "Broker address unavailable", "title")] });
+      blocks.push({ kind: "table", header: false, columns, rows: entries.map(row) });
+    }
+  } else {
+    // The space this report is for first, then the rest by name: the one a command here targets is
+    // the one a reader looks for.
+    const ordered = [...r.meshes.items].sort((a, b) =>
+      Number(b.space === reported) - Number(a.space === reported) || a.space.localeCompare(b.space));
+    blocks.push({ kind: "table", header: false, columns, rows: ordered.map(row) });
+    if (r.meshes.items.some((entry) => entry.check === "not-checked"))
+      blocks.push({ kind: "lines", lines: [cell(`Unselected spaces are not dialed · ${displayCmd()} status --all dials each`, "hint")] });
   }
   for (const unreadable of r.meshes.unreadable) blocks.push({ kind: "lines", lines: [stateCell(`Registration could not be read: ${unreadable.error}`, "failed")] });
-  for (const account of r.meshes.catalogs) if (account.error) blocks.push({ kind: "lines", lines: [stateCell(`Space catalog for ${account.idp}: ${account.error}`, "failed")] });
+  // One line per account, named by the account whose catalog failed rather than by its token URL.
+  for (const account of r.meshes.catalogs) if (account.error) blocks.push({ kind: "lines", lines: [stateCell(`Space catalog for ${account.account ?? account.idp} could not be refreshed: ${account.error}`, "failed")] });
   if (!r.meshes.currentRecorded) blocks.push({ kind: "lines", lines: [cell(`Selected space '${r.meshes.current}' is ${r.meshes.currentStopped ? "stopped" : r.meshes.currentPrepared ? "prepared, not started" : "not recorded"}${folderTargeted(r) ? "; it applies outside this folder" : ""}`, "waiting")] });
-  return { title: "Brokers", blocks };
+  return { title: "Spaces", blocks };
 }
 
 /** The unresolved selections that mean nothing runs or is selected here, rather than a failure. */
@@ -1937,13 +2028,14 @@ function maintenanceOverview(maintenance: StatusResult["maintenance"]): Section 
   ] };
 }
 
-/** The approved screen hierarchy; record-level diagnostics are opt-in. */
-export function statusView(r: StatusResult, verbose = false): Report {
+/** The approved screen hierarchy; record-level diagnostics are opt-in. `wide` reports every row in
+ *  full, as `--all` and `--wide` ask. */
+export function statusView(r: StatusResult, verbose = false, wide = false): Report {
   const selected = selectedOverview(r);
   const owned = ownedServicesOverview(r.services);
   const attempts = bootAttemptOverview(r.bootAttempts);
   const maintenance = maintenanceOverview(r.maintenance);
-  const sections = [machineOverview(r), brokerOverview(r), ...(selected ? [selected] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
+  const sections = [machineOverview(r, wide), spacesOverview(r, wide), ...(selected ? [selected] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
   if (verbose) sections.push(machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected, r.folder, stackDeliveryPid(r), r.store?.state === "full"));
   sections.push(nextActions(r));
   return { sections };

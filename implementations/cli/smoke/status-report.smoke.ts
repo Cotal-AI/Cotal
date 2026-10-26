@@ -13,7 +13,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { connect } from "node:net";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { createSuite, freePort } from "@cotal-ai/smoke-kit";
@@ -27,6 +27,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 const { check, finish } = createSuite();
+const VERSION = (JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "..", "bin", "package.json"), "utf8")) as { version: string }).version;
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const roots: string[] = [];
 process.on("exit", () => {
@@ -42,6 +43,7 @@ type Envelope = {
   result: {
     kind: string;
     machine: { nats: string; natsServer: { path: string; version: string | null } | null; natsProblem: string | null };
+    extensions?: { items: { label: string; version: string }[] | null };
     folder: { auth: { state: string }; personas: { root: string; default: string; error: string | null }; processes: { name: string; state: string }[] | null };
     meshes: { current: string | null; folder?: string | null; unreadable: { file: string; error: string }[]; items: Mesh[] };
     selected: { resolved: boolean; code?: string; space?: string; server?: string | null; connection?: string };
@@ -107,12 +109,12 @@ if (!brokerDisplayOnly) {
   check("--plain writes the same words with no ANSI and ASCII punctuation", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && !/[●○·…→↳—–]/.test(plain.stdout) && words(plain.stdout) === words(asPlain(rich.stdout)), shown(plain));
   check(
     "the sections keep the infrastructure order and end with the hints",
-    JSON.stringify(titles(plain.stdout)) === JSON.stringify(["This machine", "Brokers", "Selected space", "Next"]),
+    JSON.stringify(titles(plain.stdout)) === JSON.stringify(["This machine", "Spaces", "Selected space", "Next"]),
     titles(plain.stdout),
   );
   check(
     "--verbose adds the detail sections before Next",
-    verbose.status === 0 && JSON.stringify(titles(verbose.stdout)) === JSON.stringify(["This machine", "Brokers", "Selected space", "Machine", "Extensions", "This Folder", "Recorded Meshes", "Selected Mesh", "Next"]),
+    verbose.status === 0 && JSON.stringify(titles(verbose.stdout)) === JSON.stringify(["This machine", "Spaces", "Selected space", "Machine", "Extensions", "This Folder", "Recorded Meshes", "Selected Mesh", "Next"]),
     titles(verbose.stdout),
   );
   check("the report names no roster", !/roster/i.test(plain.stdout) && !/roster/i.test(verbose.stdout), plain.stdout);
@@ -214,7 +216,19 @@ if (!brokerDisplayOnly) {
     check(`control: ${label} gets no bare up`, !/(^|\s)cotal up(\s{2}|$)/m.test(next), next);
   check("control: a controller stack is not read from legacy pidfiles", !/(^|\s)cotal up(\s{2}|$)/m.test(legacyNext(["manager"], { controllerStack: true })), legacyNext(["manager"], { controllerStack: true }));
   const plain = run(["status", "--space", "alpha", "--plain"]);
-  check("the report says not checked for the other registration", /beta\s+not checked/.test(plain.stdout), plain.stdout);
+  const NOT_DIALED = "Unselected spaces are not dialed - cotal status --all dials each";
+  check("the other registration carries no connection state, and one note says why, once",
+    /^ {2}beta +open$/m.test(plain.stdout) && !/^ {2}\S+ +not checked/m.test(plain.stdout) &&
+      (plain.stdout.match(/are not dialed/g) ?? []).length === 1 && plain.stdout.includes(NOT_DIALED), plain.stdout);
+  check("the selected space is the first row, marked, with its own dialed state",
+    /^ {2}-> alpha +unreachable[^\n]* +open$/m.test(plain.stdout) &&
+      plain.stdout.indexOf("-> alpha") < plain.stdout.indexOf("beta "), plain.stdout);
+  const wide = run(["status", "--space", "alpha", "--plain", "--wide"]);
+  check("--wide groups the spaces under their broker addresses again and keeps their origin",
+    new RegExp(`^ {2}nats://127.0.0.1:${a}$`, "m").test(wide.stdout) && new RegExp(`^ {2}nats://127.0.0.1:${b}$`, "m").test(wide.stdout) &&
+      /^ {2}-> alpha +unreachable[^\n]* +open - registered endpoint$/m.test(wide.stdout) && !wide.stdout.includes(NOT_DIALED), shown(wide));
+  check("control: the default report has no broker address as a group title",
+    !new RegExp(`^ {2}nats://127.0.0.1:${a}$`, "m").test(plain.stdout), plain.stdout);
   const all = run(["status", "--space", "alpha", "--all", "--json"]);
   check("--all checks every registration", byName(all.envelope).alpha === "unreachable" && byName(all.envelope).beta === "unreachable", byName(all.envelope));
   check("--all is named in the target", all.envelope?.target.scope === "all" && all.envelope.target.space === "alpha", all.envelope?.target);
@@ -223,7 +237,8 @@ if (!brokerDisplayOnly) {
   const other = run(["status", "--space", "alpha", "--server", `nats://127.0.0.1:${await freePort()}`, "--json"]);
   check("a --server that names another address leaves the selected registration not checked", byName(other.envelope).alpha === "not-checked" && other.envelope?.result?.selected.connection === "unreachable", { items: byName(other.envelope), connection: other.envelope?.result?.selected.connection });
   const otherPlain = run(["status", "--space", "alpha", "--server", `nats://127.0.0.1:${await freePort()}`, "--plain"]);
-  check("…and the report says not checked for it", /alpha\s+not checked/.test(otherPlain.stdout), otherPlain.stdout);
+  check("…and its row carries no connection state, under the note that says what was dialed",
+    /^ {2}-> alpha +open$/m.test(otherPlain.stdout) && !/^ {2}\S+ +not checked/m.test(otherPlain.stdout) && otherPlain.stdout.includes("are not dialed"), otherPlain.stdout);
   const same = run(["status", "--space", "alpha", "--server", `nats://127.0.0.1:${a}`, "--json"]);
   check("control: a --server that names the recorded address checks it", byName(same.envelope).alpha === "unreachable", byName(same.envelope));
   // Under `--all` with a `--server` that names another address, the selected row shows its own
@@ -492,6 +507,59 @@ if (process.platform !== "win32") {
   const refusal = JSON.parse(up.stdout || "{}") as { outcome?: string; error?: { code?: string; message?: string; remedy?: string } };
   check("up refuses it DEPENDENCY_UNAVAILABLE, exit 2, naming its path and version", up.status === 2 && refusal.outcome === "refused" && refusal.error?.code === "DEPENDENCY_UNAVAILABLE" && named.test(refusal.error.message ?? "") && /take it off PATH so cotal uses its bundled nats-server/.test(refusal.error.remedy ?? ""), { status: up.status, error: up.error?.message, stdout: (up.stdout ?? "").slice(0, 900), stderr: (up.stderr ?? "").slice(0, 600) });
   check("and no broker answers at its address", !(await new Promise<boolean>((done) => { const socket = connect(port, "127.0.0.1"); socket.once("connect", () => { socket.destroy(); done(true); }); socket.once("error", () => done(false)); })), port);
+}
+
+// ── This machine shows what is set up and what needs attention ───────────────────────────────────
+{
+  const { home, run } = sandbox();
+  const bin = join(home, "apps");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "aa-bin"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  // `bb-bin` is deliberately absent, so bb is an application this machine has not set up.
+  const connector = (name: string, requires: string[]) => ({
+    pkg: `@rig/${name}`, version: VERSION, spec: `@rig/${name}@${VERSION}`,
+    provides: [{ kind: "connector", name }], commands: [],
+    // No setup provider, so no package is imported for its rows.
+    connectors: [{ name, requires, setup: null }],
+  });
+  const manifest = join(home, ".config", "cotal", "extensions");
+  mkdirSync(manifest, { recursive: true });
+  writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [
+    connector("aa", ["aa-bin"]), connector("bb", ["bb-bin"]),
+    { pkg: "@rig/one", version: VERSION, spec: `@rig/one@${VERSION}`, provides: [{ kind: "runtime", name: "one" }], commands: [] },
+    { pkg: "@rig/two", version: VERSION, spec: `@rig/two@${VERSION}`, provides: [{ kind: "runtime", name: "two" }], commands: [] },
+  ] }));
+  const onPath = { PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
+  const plain = run(["status", "--space", "nosuch", "--plain"], onPath);
+  const machine = plain.stdout.split("\n\n")[0] ?? "";
+  check("the applications line names what is set up and counts the rest behind cotal setup",
+    /^ {2}Agent applications: +aa - 1 more with cotal setup$/m.test(plain.stdout), shown(plain));
+  check("no row is printed per known application",
+    !/^ {2}aa: /m.test(plain.stdout) && !/^ {2}bb: /m.test(plain.stdout) && !/not on PATH/.test(plain.stdout), machine);
+  check("the extensions line is one count at the version they share",
+    new RegExp(`^ {2}Extensions: +4 extensions at ${VERSION.replaceAll(".", "\\.")}$`, "m").test(plain.stdout), machine);
+  check("a healthy broker executable and an absent optional dashboard print no row",
+    !/Broker executable/.test(plain.stdout) && !/Dashboard/.test(plain.stdout), machine);
+  const json = run(["status", "--space", "nosuch", "--json"], onPath);
+  const read = json.envelope?.result?.machine as { connectors?: { name: string; missing: string[] }[] } | undefined;
+  check("--json still carries every known application and its missing requirements",
+    json.status === 0 && (read?.connectors ?? []).map((c) => `${c.name}:${c.missing.join()}`).join(" ") === "aa: bb:bb-bin" &&
+      (json.envelope?.result?.extensions as { items?: unknown[] } | undefined)?.items?.length === 4, read);
+  const wide = run(["status", "--space", "nosuch", "--plain", "--wide"], onPath);
+  check("--wide prints the row per application and every extension label again",
+    /^ {2}aa: +available on PATH$/m.test(wide.stdout) && /^ {2}bb: +bb-bin not on PATH$/m.test(wide.stdout) &&
+      /^ {2}Extensions: +aa v/m.test(wide.stdout) && /Broker executable/.test(wide.stdout) && /Dashboard/.test(wide.stdout), shown(wide));
+  const all = run(["status", "--space", "nosuch", "--plain", "--all"], onPath);
+  check("--all reports the same rows in full", /^ {2}aa: +available on PATH$/m.test(all.stdout) && /Broker executable/.test(all.stdout), shown(all));
+  // A pin an upgrade did not carry is the one thing named, against the version the rest share.
+  writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [
+    connector("aa", ["aa-bin"]),
+    { pkg: "@rig/one", version: VERSION, spec: `@rig/one@${VERSION}`, provides: [{ kind: "runtime", name: "one" }], commands: [] },
+    { pkg: "@rig/old", version: "0.0.1", spec: "@rig/old@0.0.1", provides: [{ kind: "runtime", name: "old" }], commands: [] },
+  ] }));
+  const skewed = run(["status", "--space", "nosuch", "--plain"], onPath);
+  check("an extension at another version is the only one named",
+    new RegExp(`^ {2}Extensions: +3 extensions at ${VERSION.replaceAll(".", "\\.")} - old v0\\.0\\.1$`, "m").test(skewed.stdout), shown(skewed));
 }
 
 // ── a folder's space is the target here only while it runs ───────────────────────────────────────

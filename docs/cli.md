@@ -3018,12 +3018,32 @@ command by group. `cotal help --all`, the spelling from before help listed every
 same. A hidden command, such as a deprecated daemon entry, is left out and still runs. `cotal cfg` is the shorthand for `cotal config`. Its default view
 shows effective values and sources; `config --verbose` adds the storage path and revision.
 
-Status starts with This machine, groups registrations under Brokers, then shows the selected
-space, this folder's maintenance journal under Maintenance when it holds one (its state, attempt
-and next step; `maintenance` in JSON), unsettled fresh and additive attempts in this folder when present, owned
-service records and useful commands under Next. Connection state, local process state and service replies
-remain separate observations. Other registrations say Not checked unless `--all` reads them.
-Use `status --verbose` for installation paths, extension records and the detailed local diagnostics.
+Status starts with This machine, lists the spaces this machine knows under Spaces, then shows the
+selected space, this folder's maintenance journal under Maintenance when it holds one (its state,
+attempt and next step; `maintenance` in JSON), unsettled fresh and additive attempts in this folder
+when present, owned service records and useful commands under Next. Connection state, local process
+state and service replies remain separate observations.
+
+This machine shows what is set up and what needs attention. The version line is always there. Agent
+applications is one line: the applications whose required executables are on PATH, and a count of the
+others, which `cotal setup` adds. An application's own rows, such as the Claude plugin, Claude
+Desktop and Claude skills, appear for an application that is set up and only when they are not
+current. The broker executable appears when it is missing or when `up` refuses it. The dashboard
+appears when its record cannot be read. The extensions are one line, `11 extensions at 0.103.3`, and
+an extension at another version is the only one named.
+
+Spaces puts the space this report is for first, with its connection state, then one line per space:
+its name, its connection state and how it signs in. Only the space being reported is dialed, so the
+others carry no state and one note says that unselected spaces are not dialed and
+`cotal status --all` dials each. The broker address is
+not a group title here; `cotal space show <name>` names it. An account whose space catalog could not
+be refreshed is one line naming that account.
+
+`status --all` and `status --wide` report every row in full: one row per known application, every
+extension with its version, the spaces grouped under their broker addresses with their origin, and
+the broker executable and dashboard rows. `--all` also dials every recorded broker; `--wide` dials
+no more than the default report. Use `status --verbose` for installation paths, extension records and
+the detailed local diagnostics.
 The default report does not include the agent roster; use `ps` or `who`.
 The deployment-attempt section lists at most 100 fresh and 100 additive
 local IDs, their returned/unsettled state and unreadable paths, with full
@@ -3284,10 +3304,10 @@ including component facts. Saved addresses and connection inputs are unchanged. 
 cannot be displayed safely is `null` in JSON, `unavailable` in text, and names a
 `BROKER_ADDRESS_INVALID` warning with a partial result. Its broker component is refused.
 
-Only the selected mesh is checked. Its row in the recorded meshes dials its address with its
-recorded TLS requirement, and every other row reads `not checked`. When `--server` names another
-address, that address is the only broker dialed, and the selected mesh's row also reads
-`not checked`. `--all` checks every recorded mesh, including discovered ones, each with its own
+Only the selected mesh is checked. Its row under Spaces dials its address with its recorded TLS
+requirement, and every other row carries no connection state, under the note that says what was
+dialed. When `--server` names another address, that address is the only broker dialed, and the
+selected mesh's row carries no state either. In `--json` each of those rows is `not-checked`. `--all` checks every recorded mesh, including discovered ones, each with its own
 recorded TLS requirement. Each row then shows the check of its own address, the selected mesh's
 row included when `--server` names another.
 
@@ -3300,7 +3320,7 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `machine` | `version`, `install` (`kind` and `root`), `nats` (`path`, `bundled` or `missing`), `integrations` (each `{name, state, text}` a connector's setup reports), `connectors` (each `{name, requires, missing}`), `skills` (`state`: `current`, `not-installed`, `behind` or `unreadable`), and `web` (`installed`, `url` and the error of each when it could not be read) |
 | `extensions` | `root` and `items`, each `{package, label, version}` |
 | `folder` | `root`, `auth` (`state`: `space`, `spaces`, `none` or `unreadable`), `personas` (`root`, `default`: `valid`, `invalid`, `missing` or `unreadable`, `demo` and `error`), `launches` (whether a bare spawn launches from this folder's catalog; `null` when no mesh resolves), `processes` (each `{name, state, pid, detail}`, `state` one of `running`, `stopped`, `not-serving`, `unknown` or `unreadable`), `storedState`, `noManager` (whether this root's controller stack was started with `--no-manager`) and `managerService` (the service of the space, outside that stack, whose process runs this root's manager, as a `manager` preset started there does: its `definition` and `instanceId`, or null), `heldServices` (the services of the space, outside that stack, whose processes run this root's records, as `up` names them before it refuses: each `definition`, `instanceId`, `record` and `pid`; null when those records could not be read) |
-| `meshes` | `current`, `folder` (this folder's running registered space when a command there targets it, else null), `unreadable` (the registry directory, a record, the current-mesh pointer, or the prepared spaces folder or a record in it, that could not be read, or a pointer that is empty, each as `{file, error}`), `items` (each with `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`, `current` and `check`: `reachable`, `unreachable` or `not-checked`) and `catalogs` (each `{idp, state, error}`) |
+| `meshes` | `current`, `folder` (this folder's running registered space when a command there targets it, else null), `unreadable` (the registry directory, a record, the current-mesh pointer, or the prepared spaces folder or a record in it, that could not be read, or a pointer that is empty, each as `{file, error}`), `items` (each with `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`, `current` and `check`: `reachable`, `unreachable` or `not-checked`) and `catalogs` (each `{idp, account, state, error}`, where `account` is the IdP subject the error line names) |
 | `selected` | `{resolved: false, code, message}` when no mesh resolves, where `message` states why and `hints` carries the step (`code` is `registry-unreadable` when the registry directory or a record could not be read, and a `not-started` prepared space adds its `space` and `root`); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels`, `membershipFeed` and `spaceStreams`. `spaceStreams.state` is `present`, `absent` or `not-checked`; it is read for an auth or user space and an open space this machine started. When `absent`, `root` is this machine's stack of the space and `stack` is `running` or `stopped`, each `null` when unknown. `storedBytes` is what the space's account holds in the broker's JetStream file store, `null` when it was not read |
 | `services` | Selected-space local owned records: `space`, `state` (`read`, `partial` or `not-checked`), non-atomic `observedAt`, public definition/instance projections and explicit scope. An unreadable family is `null`; stored readiness is historical. Older serialized snapshots may omit this observation, which is not an empty inventory. |
 | `stackManager` | The selected space's running stack manager: `instanceId`, `pid` and `endpoint`, which is `answered`, `not-answering` or `unchecked`. Absent when no stack manager runs |

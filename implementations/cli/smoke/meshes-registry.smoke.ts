@@ -894,14 +894,16 @@ try {
   catalogCalls.length = 0;
   process.exitCode = undefined;
   await prepareCatalogCommand({ positionals: [], values: {}, raw: [] }, true);
-  // The default report names a failed account under Brokers; `--verbose` lists every account. A
-  // terminal-width wrap or a color code is not a different line.
+  // The default report names a failed account under Spaces, by the ACCOUNT whose catalog failed
+  // rather than by its token URL; `--verbose` lists every account with its IdP. A terminal-width
+  // wrap or a color code is not a different line.
   const flat = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+/g, " ");
   const diagnostic = await capture(() => status({ positionals: [], values: {}, raw: [] }));
   const detailed = await capture(() => status({ positionals: [], values: { verbose: true }, raw: [] }));
   check("status lists every catalog account including a dead sibling and exits zero",
     catalogCalls.length === 1 && catalogCalls[0] === undefined &&
-      flat(diagnostic.out).includes(flat(`Space catalog for ${deadIdp}: ${deadResult.error}`)) &&
+      flat(diagnostic.out).includes(flat(`Space catalog for dead-owner could not be refreshed: ${deadResult.error}`)) &&
+      !flat(diagnostic.out).includes(flat(`Space catalog for ${deadIdp}`)) &&
       flat(detailed.out).includes(flat(`${liveIdp}  not-modified`)) && flat(detailed.out).includes(flat(`${deadIdp}  failed: ${deadResult.error}`)) &&
       (process.exitCode === undefined || process.exitCode === 0),
     { catalogCalls, out: diagnostic.out, verbose: detailed.out, exitCode: process.exitCode });
