@@ -76,6 +76,7 @@ import { makePlatformSupervisorAuthority, makePlatformSupervisorEnd, platformSup
 import { calloutLimits, type AuthCalloutLimits } from "./callout.js";
 import { runAuthCalloutReplica } from "./callout-replica.js";
 import { calloutAuthority, managerGateReads, serveCallout, type CalloutAuthority } from "./callout-authority.js";
+import { ConnectLimiter, ConnectRateLimited, type ConnectLimits } from "./connect-limit.js";
 import { createIdpBridge, verifyIdpToken, verifyToolResultHumanProof, type IdpBridge } from "./idp.js";
 import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, validateUserToken, type UserTokenView, type ValidatedUserToken } from "./token.js";
 import { grantCoordinates } from "./session-redemption.js";
@@ -2431,6 +2432,9 @@ export async function startAuthService(inputs: HostedContextInputs & {
   /** This context's callout limits. `authTimeoutMs` must match the broker's `authorization
    *  { timeout }`. Absent: every default. No CLI flag sets it. */
   calloutLimits?: AuthCalloutLimits;
+  /** Trusted-host only: connects a minute per actor, per owner and per client host whose bearer
+   *  does not verify. Absent fields keep the defaults, 60, 600 and 60. No CLI flag sets it. */
+  connectLimits?: Partial<ConnectLimits>;
 }): Promise<AuthServiceHandle> {
   if (!inputs.context?.accountPublicKey || !inputs.context.lifecycleUid || !inputs.space || !inputs.servers || !inputs.stateDir)
     throw new Error("auth-service: hosted context needs an account, lifecycle, space, server and stateDir");
@@ -2473,6 +2477,7 @@ export async function startAuthService(inputs: HostedContextInputs & {
     ...(inputs.toolResultConsents !== undefined ? { toolResultConsents: inputs.toolResultConsents } : {}),
     ...(inputs.serviceEndpoints !== undefined ? { serviceEndpoints: inputs.serviceEndpoints } : {}),
     ...(inputs.calloutLimits !== undefined ? { calloutLimits: inputs.calloutLimits } : {}),
+    ...(inputs.connectLimits !== undefined ? { connectLimits: inputs.connectLimits } : {}),
   });
   return { ...started.handle, readiness: (): HostedServiceState => ({ ...started.status(), context: inputs.context }) };
 }
@@ -2502,6 +2507,7 @@ interface AuthContextOptions extends AuthServiceRuntimeOptions {
   standingRenewableTtlSeconds?: number;
   serviceEndpoints?: OpenAuthAuthorityPlaneOptions["serviceEndpoints"];
   calloutLimits?: AuthCalloutLimits;
+  connectLimits?: Partial<ConnectLimits>;
 }
 
 async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<AuthServiceHandle, "readiness">; status(): AuthContextStatus; ended: Promise<AuthContextEnd> }> {
@@ -2572,6 +2578,9 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     });
     onConnection(nc, `cotal:auth-service:${space}`);
     const serviceCallout = plane.serviceEndpointHost !== undefined ? serviceHostCalloutOf(plane.serviceEndpointHost) : undefined;
+    // One limiter for the callout and the exchange: an actor whose connects are refused is refused a
+    // fresh bearer too.
+    const connectLimiter = new ConnectLimiter(o.connectLimits);
     serveCallout(nc as never, {
       space,
       dir,
@@ -2580,6 +2589,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       issuer,
       hooks: plane,
       ...(serviceCallout !== undefined ? { serviceAuthority: serviceCallout } : {}),
+      connectLimiter,
       ...(o.calloutLimits !== undefined ? { limits: o.calloutLimits } : {}),
     });
     // The subscription must be ON the broker before readiness is signaled — an `up` that recorded a
@@ -2597,6 +2607,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       authorizeActor,
       mintConnectCredential: plane.mintConnectCredential,
       ...(idp.dmReaderAudience !== undefined ? { dmReaderAudience: idp.dmReaderAudience } : {}),
+      connectLimiter,
     });
     const cap = randomBytes(32).toString("hex"); // per-start exchange capability (rotates with the daemon)
     // Set once the public face binds. An enrolled child's bearer exchanges there without the
@@ -2610,6 +2621,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     });
     const serviceEngine = plane.serviceEndpointHost !== undefined ? serviceHostEngineOf(plane.serviceEndpointHost) : undefined;
     const ctx: HandlerCtx = {
+      connectLimiter,
       ...(issueToolResultConsent ? { issueToolResultConsent } : {}),
       ...(serviceEngine !== undefined ? { serviceAuthority: { space, accountPublicKey: keys.dataAccount.pub, engine: serviceEngine, material: issuer } } : {}),
       ...(plane.serviceEndpointHost !== undefined ? { serviceHost: plane.serviceEndpointHost } : {}),
@@ -2889,6 +2901,8 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
 type HumanHolder = Extract<ManagerAuthorityHolder, { scope: string[] }>;
 
 interface HandlerCtx {
+  /** The callout's connect limits, which the exchange checks before it mints. */
+  connectLimiter: ConnectLimiter;
   issueToolResultConsent?: (raw: unknown) => Promise<import("@cotal-ai/core").ToolResultConsent>;
   /** Present only with `serviceEndpoints`: the public service endpoint authority door. */
   serviceAuthority?: ServiceAuthorityDoor;
@@ -3486,6 +3500,7 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
       const grant = ledgerAuthorizeAgentExchange(ctx.dir, owner, actor, actorToken);
       if (typeof grant.lifecycleUid !== "string" || !grant.lifecycleUid)
         throw new Error(`actor "${actor}" has no lifecycleUid on its ledger row - respawn it (bearers are lifecycle-bound from v0.4)`);
+      ctx.connectLimiter.check({ owner, actor });
       let selectedManagerInstanceId: string | undefined;
       if (view === "manager-caller") {
         selectedManagerInstanceId = await selectExchangeManagerInstance(
@@ -3523,6 +3538,7 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
       return send(res, 200, { token, owner, exp });
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
+      if (e instanceof ConnectRateLimited) return sendRateLimited(res, e);
       console.error(`auth-service: refused an agent exchange: ${reason}`);
       if (e instanceof ManagerSelectionRefusal) return send(res, 401, { error: reason });
       policy.recordFailure(ctx, peer);
@@ -3575,6 +3591,7 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
     // A refused exchange (bad IdP token, ungranted actor, expired proof) is an AUTHENTICATED
     // denial with the reason — the client shows it to the operator verbatim.
     const reason = e instanceof Error ? e.message : String(e);
+    if (e instanceof ConnectRateLimited) return sendRateLimited(res, e);
     console.error(`auth-service: refused an exchange: ${reason}`);
     if (e instanceof ManagerSelectionRefusal) return send(res, 401, { error: reason });
     policy.recordFailure(ctx, peer);
@@ -3582,6 +3599,13 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
       return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
     return send(res, 401, { error: reason });
   }
+}
+
+/** An authenticated exchange whose actor the connect limits refuse. It is not probing, so it spends
+ *  no refused-exchange budget; it answers 429 with the typed body and `Retry-After` (SPEC 13.1). */
+function sendRateLimited(res: ServerResponse, e: ConnectRateLimited): void {
+  console.error(`auth-service: refused an exchange: ${e.code} retry-after ${e.retryAfterSeconds}s: ${e.message}`);
+  send(res, 429, { code: e.code, retryAfterSeconds: e.retryAfterSeconds, error: `${e.message} - retry in ${e.retryAfterSeconds}s` }, { "retry-after": String(e.retryAfterSeconds) });
 }
 
 /** Each chat-session route's CLOSED body: an unknown or missing field refuses before any read. */

@@ -1006,6 +1006,16 @@ those are the other `/exchange` forms, `/manager-instances`, `/manager-service-a
 chat-session routes, `/tool-result-human-proof/verify` and `/tool-result-consent/issue`. The
 bearer's expiry, and with it the connection's, is bounded by the proof's.
 
+**Connect limits.** The auth service MAY limit connects per actor and per owner, charging a bearer
+whose signature verifies to the principal it names even after it expires, and per client host for a
+bearer that does not verify. A callout that refuses a connect for a limit MUST answer with a signed
+denial whose reason starts with `RATE_LIMITED retry-after <n>s`, and MUST do so before it reads the
+ledger or records an issuance. While an actor or its owner is limited, an exchange for that actor
+MUST answer 429 with the body `{code: "RATE_LIMITED", retryAfterSeconds, error}`, where
+`retryAfterSeconds` is a positive integer, and a `Retry-After` header carrying the same number. It
+MUST NOT count that answer against a refused-exchange budget. A client that receives it SHOULD NOT
+exchange or connect as that actor again until those seconds have passed.
+
 **User-mode chat sessions.** The auth service is a minting authority for chat sessions only
 (§13.1). A signed-in human opens one with a fresh IdP proof and the SHA-256 of a holder secret the
 client keeps in memory. The service derives the owner, draws the actor `chat_<26 base32>` and a
