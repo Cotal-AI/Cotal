@@ -1,6 +1,6 @@
 import { createConnection } from "node:net";
 import { mintCreds, newIdentity, probeConnect, isReachable } from "@cotal-ai/core";
-import { loadMeshes } from "./mesh-registry.js";
+import { brokerAddressKey, loadMeshes } from "./mesh-registry.js";
 import type { MeshTarget } from "./mesh-target.js";
 import { stoppedLoopbackListener } from "./pid.js";
 
@@ -39,7 +39,13 @@ export type PreflightFailure =
   | "slow-link"
   /** The first dial timed out and the process holding the loopback listener is stopped, so the
    *  confirm budget is not spent on it. NEVER a prune signal: the broker is there, only paused. */
-  | "broker-stopped";
+  | "broker-stopped"
+  /** A broker answered at this record's address and refused the credentials, and another registered
+   *  space names that same address, so the broker answering is that space's. NEVER a prune signal:
+   *  the entry is not stale, its address is held, and deleting it is the destructive reading of a
+   *  recoverable conflict. It also leaves the folder with no record of its own space, after which
+   *  nothing there names the space its commands meant. Free the address or move this space. */
+  | "address-held";
 
 /** Pure decision tree — separated from I/O so the whole branch tree is unit-testable (it's the
  *  riskiest logic: a wrong branch prunes a LIVE registry entry). Only a registry-OWNED source
@@ -52,6 +58,7 @@ export function classifyPreflightFailure(
   reason: "auth-required" | "stale-auth" | "unreachable" | "timeout",
   hasAuth: boolean,
   inferred = false,
+  heldBy?: string,
 ): { prune: boolean; kind: PreflightFailure } {
   // A timeout is never a stale-entry signal, whatever the source: the dial ran out of its own
   // budget, which says nothing about whether the broker is actually gone (#851).
@@ -72,10 +79,23 @@ export function classifyPreflightFailure(
   // An `inferred` auth-required read no rejection, only an auth greeting and a reset handshake. Like
   // the tls-trust read in `preflightTarget`, that unauthenticated evidence names the failure but
   // never deletes a record.
+  // A broker IS answering here, and another registered space names this exact address, so the one
+  // that answered is that space's. The rejection then says whose broker holds the address, not that
+  // this record is stale, and the prune below would delete a sound record of a running space.
+  if (fromRegistry && heldBy !== undefined) return { prune: false, kind: "address-held" };
   if (fromRegistry && hasAuth) return { prune: !inferred, kind: "registry-creds-rejected" };
   if (fromRegistry) return { prune: !inferred, kind: "registry-open-now-auth" };
   if (hasAuth) return { prune: false, kind: "creds-rejected" };
   return { prune: false, kind: "open-wants-auth" };
+}
+
+/** The other registered space whose broker address is this target's, if one is recorded. Compared
+ *  by {@link brokerAddressKey}, so the two records name one listener however each spelled it. A row
+ *  with an address this cannot take apart is skipped: an unreadable address proves no conflict. */
+function addressHolder(target: MeshTarget): string | undefined {
+  const key = brokerAddressKey(target.server);
+  if (key === undefined) return undefined;
+  return loadMeshes().find((m) => m.space !== target.space && brokerAddressKey(m.server) === key)?.space;
 }
 
 /** Probe a resolved target and, on failure, classify it — WITHOUT touching the registry. Returns the
@@ -85,7 +105,7 @@ export function classifyPreflightFailure(
 export async function preflightTarget(
   target: MeshTarget,
   probeCreds?: string,
-): Promise<{ ok: true } | { ok: false; kind: PreflightFailure; prune: boolean; pid?: number }> {
+): Promise<{ ok: true } | { ok: false; kind: PreflightFailure; prune: boolean; pid?: number; heldBy?: string }> {
   // A user-mode target has no probe credential by design (its auth is a per-connect bearer) — a
   // credless probe would be DENIED by the callout and misclassified as a stale registry entry
   // (prune:true). Callers own the user connect; reaching here with one is a caller bug, fail loud.
@@ -150,8 +170,9 @@ export async function preflightTarget(
   }
 
   const inferred = probe.reason === "auth-required" && probe.inferred === true;
-  const { prune, kind } = classifyPreflightFailure(target.source, probe.reason, Boolean(target.auth), inferred);
-  return { ok: false, kind, prune };
+  const heldBy = probe.reason === "auth-required" ? addressHolder(target) : undefined;
+  const { prune, kind } = classifyPreflightFailure(target.source, probe.reason, Boolean(target.auth), inferred, heldBy);
+  return { ok: false, kind, prune, ...(kind === "address-held" && heldBy !== undefined ? { heldBy } : {}) };
 }
 
 /** Read the pre-auth NATS INFO greeting (plaintext, before any STARTTLS). Returns null if nothing

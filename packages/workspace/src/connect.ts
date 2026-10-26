@@ -423,6 +423,8 @@ export function preflightCode(failure: PreflightFailure): RefusalCode {
       return "PERMISSION_DENIED";
     case "tls-trust":
       return "DEPENDENCY_UNAVAILABLE";
+    case "address-held":
+      return "CONFLICT";
   }
 }
 
@@ -1008,7 +1010,7 @@ export async function preflightOrThrow(target: MeshTarget, probeCreds?: string, 
   // The message reports what ACTUALLY happened, so it never claims a removal that the registry refused.
   const pruned = !readOnly && r.prune && r.kind !== "unreachable" ? pruneMesh(target.space) : false;
   const kind = r.kind === "unreachable" || r.kind === "slow-link" || r.kind === "broker-stopped" ? "transient" : "permanent";
-  throw workspaceRefusal({ kind: "preflight", failure: r.kind, target, pruned, ...(r.pid === undefined ? {} : { pid: r.pid }) }, { kind, code: preflightCode(r.kind) });
+  throw workspaceRefusal({ kind: "preflight", failure: r.kind, target, pruned, ...(r.pid === undefined ? {} : { pid: r.pid }), ...(r.heldBy === undefined ? {} : { heldBy: r.heldBy }) }, { kind, code: preflightCode(r.kind) });
 }
 
 /** {@link preflightOrThrow} with the exiting disposition. */

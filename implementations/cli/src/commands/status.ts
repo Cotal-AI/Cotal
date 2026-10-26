@@ -1610,6 +1610,7 @@ function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
     "registry-open-now-auth": "authentication required",
     "creds-rejected": "credentials rejected",
     "registry-creds-rejected": "credentials rejected",
+    "address-held": "address held by another space",
   };
   return stateCell(`${states[s.connection] ?? s.connection.replaceAll("-", " ")}${s.staleRecord ? " · saved registration needs attention" : ""}`, "failed");
 }

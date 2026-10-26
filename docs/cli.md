@@ -3200,7 +3200,12 @@ stopped counts as running, as it does for `clean`. A hand-added record is remove
 mesh and so takes the record over (a `cotal up` for that space anywhere else refuses instead).
 Nothing that merely *infers* a record is stale from a dead broker touches it: an
 unreachable broker is listed `offline` and stays, whether `cotal up` or `cotal meshes add`
-wrote the record; a foreground `up` whose broker exits unexpectedly keeps its record the same way.
+wrote the record; a foreground `up` whose broker exits unexpectedly keeps its record the same way. A broker that answers at a record's address and refuses the connection is read the same way
+while another registered space names that address: the broker there is that space's, so the record
+is kept and the refusal is `CONFLICT`, exit 2, naming the space that holds the address, the
+`cotal space forget <space>` that frees it and the `cotal up --server <url>` that moves this one.
+`cotal status` shows that space as `address held`. Deleting the record would leave its folder
+naming no space, after which nothing there says which space its commands meant.
 A bare command does not treat that offline record as a running mesh;
 name it with `--space` to restart it. An operator command whose target is the selected space, or
 the space registered at its project's root, probes no other recorded broker. When it picks among

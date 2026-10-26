@@ -21,7 +21,7 @@ import { PREFLIGHT_CONFIRM_TIMEOUT_MS } from "./preflight.js";
  */
 export type WorkspaceError =
   | { kind: "target"; error: MeshTargetError }
-  | { kind: "preflight"; failure: PreflightFailure; target: MeshTarget; pruned: boolean; pid?: number }
+  | { kind: "preflight"; failure: PreflightFailure; target: MeshTarget; pruned: boolean; pid?: number; heldBy?: string }
   | { kind: "reachable"; reason: "auth-required" | "stale-auth" | "unreachable" | "timeout"; server: string; hasAuth: boolean };
 
 /** A workspace failure in two parts: what happened, and what to run next when there is something. */
@@ -39,7 +39,7 @@ export function workspaceErrorParts(e: WorkspaceError): WorkspaceErrorParts {
     case "target":
       return targetErrorParts(e.error);
     case "preflight":
-      return preflightFailureParts(e.failure, e.target, e.pruned, e.pid);
+      return preflightFailureParts(e.failure, e.target, e.pruned, e.pid, e.heldBy);
     case "reachable":
       return reachableParts(e.reason, e.server, e.hasAuth);
   }
@@ -121,7 +121,7 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
 const NOT_ANSWERING_REMEDY = "retry; if it keeps happening, check that the broker process is not stopped or overloaded and that the link to it is not too slow";
 
 /** "Is it live" failures on a registry-resolved target — the classified preflight sentence. */
-function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: boolean, pid?: number): WorkspaceErrorParts {
+function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: boolean, pid?: number, heldBy?: string): WorkspaceErrorParts {
   const server = brokerAddressForDisplay(t.server) ?? "an invalid broker address";
   switch (kind) {
     case "unreachable":
@@ -180,6 +180,16 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       return parts(
         `mesh "${t.space}" at ${server} is served by process ${pid}, which is stopped, so it accepts the connection and never answers; the registry entry was kept`,
         `resume it with kill -CONT ${pid}`,
+      );
+    case "address-held":
+      // Two registrations name one listener, so the broker that answered is the other space's and
+      // this record is sound. Say whose broker holds the address and keep the entry: deleting it
+      // would leave this folder with no record of the space its commands mean.
+      return parts(
+        `a broker at ${server} refused the connection for "${t.space}", and ${heldBy === undefined ? "another registered space names that address" : `"${heldBy}" is registered at that address`}, so the broker there is not this one's; the registry entry was kept`,
+        heldBy === undefined
+          ? `run \`cotal space\` to see which space holds that address, stop it in its own folder and \`cotal space forget\` it, then run \`cotal up\` in ${t.root}`
+          : `stop "${heldBy}" in its own folder and free the address with \`cotal space forget ${heldBy}\`, then run \`cotal up\` in ${t.root}; to keep both, start "${t.space}" at another address with \`cotal up --server nats://127.0.0.1:<port>\` there`,
       );
   }
 }
