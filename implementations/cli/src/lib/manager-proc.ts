@@ -356,8 +356,7 @@ export async function stopManager(
   let legacyManagerSpareUnverified = false;
   if (!withAgents) {
     const pin = verifyIdentityPin(PID_PATH(space));
-    if (pin.kind === "legacy") legacyManagerSpareUnverified = true;
-    else if (pin.kind === "match") spared = await listManagerSeatsForSpare(context);
+    if (pin.kind === "match") spared = await listManagerSeatsForSpare(context);
   }
   const found = await stopLocalProcess(MANAGER_PROCESS, context, {
     pid,
@@ -368,8 +367,10 @@ export async function stopManager(
         // the newer spare capability. Destructive down uses the helper's reduced-guarantee
         // pid + reservation-inode handoff. A present pin still takes the fully identity-bound
         // paths below, and a mismatching pin was already refused before this hook.
-        if (!withAgents)
+        if (!withAgents) {
+          legacyManagerSpareUnverified = true;
           console.error(c.dim("could not verify that this legacy manager can spare its managed agents; signalling it for upgrade compatibility"));
+        }
       }
       if (withAgents) armManagerShutdownIntent(context, attempt);
       else if (attempt.target.token !== undefined) spareSeats = assertManagerCanSpare(context, undefined, attempt.target);

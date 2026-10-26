@@ -19,6 +19,7 @@ let passed = 0;
 const kill = process.kill.bind(process);
 const logs: string[] = [];
 const errors: string[] = [];
+const signals: { pid: number; signal: NodeJS.Signals | number }[] = [];
 
 async function child(command: string, stopPath?: string): Promise<ChildProcess> {
   const cooperative = process.platform === "win32" && stopPath !== undefined;
@@ -40,6 +41,7 @@ async function child(command: string, stopPath?: string): Promise<ChildProcess> 
 async function cell(name: string, run: () => Promise<void>): Promise<void> {
   logs.length = 0;
   errors.length = 0;
+  signals.length = 0;
   try {
     await run();
     passed++;
@@ -74,6 +76,7 @@ try {
   mock.method(console, "error", (...values: unknown[]) => errors.push(values.map(String).join(" ")));
   mock.method(process, "kill", (pid: number, signal?: NodeJS.Signals | number) => {
     assert.ok([...children].some(owned => owned.pid === pid), "signals and probes must target an owned child");
+    if (signal !== undefined && signal !== 0) signals.push({ pid, signal });
     return kill(pid, signal);
   });
 
@@ -102,6 +105,51 @@ try {
 
   const foreign = await child("node unrelated-child");
   const foreignPid = foreign.pid!;
+  await cell("manager-default-foreign-legacy-clears-without-reaping-warning", async () => {
+    const path = record(MANAGER_PROCESS, foreignPid, "legacy");
+    assert.equal(await stopManager(space), true);
+    cleared(path);
+    assert.equal(workspace.probeLiveness(foreignPid), "alive");
+    assert.deepEqual(signals, [], "foreign cleanup must send no signal");
+    assert.deepEqual(logs, [], "foreign cleanup must not report a manager shutdown or agent reaping");
+    assert.equal(errors.length, 1);
+    assert.ok(errors[0]!.includes("not signalling it; removing the stale record instead"));
+  });
+  await cell("manager-default-legacy-successor-is-left-without-reaping-warning", async () => {
+    const path = record(MANAGER_PROCESS, foreignPid, "legacy");
+    assert.equal(await stopManager(space, { pid: foreignPid + 1 }), false);
+    assert.equal(readFileSync(path, "utf8"), String(foreignPid));
+    assert.deepEqual(signals, []);
+    assert.deepEqual(logs, []);
+    assert.deepEqual(errors, []);
+    workspace.removePidPair(path, String(foreignPid));
+  });
+  if (process.platform !== "win32") {
+    await cell("manager-default-owned-legacy-shutdown-keeps-reaping-warning", async () => {
+      const owned = await child("node supervise");
+      const path = record(MANAGER_PROCESS, owned.pid!, "legacy");
+      assert.equal(await stopManager(space), true);
+      cleared(path);
+      assert.equal(workspace.probeLiveness(owned.pid!), "dead");
+      assert.deepEqual(signals, [{ pid: owned.pid!, signal: "SIGTERM" }]);
+      assert.ok(errors.some(line => line.includes("signalling it for upgrade compatibility")));
+      assert.equal(logs.filter(line => line.includes("older destructive SIGTERM handler may have reaped managed agents")).length, 1);
+    });
+  }
+  await cell("manager-default-dead-legacy-clears-without-reaping-warning", async () => {
+    const dead = await child("node unrelated-child");
+    const path = record(MANAGER_PROCESS, dead.pid!, "legacy");
+    const exited = once(dead, "exit");
+    dead.kill("SIGTERM");
+    await exited;
+    observations.set(dead.pid!, { kind: "gone" });
+    signals.length = 0;
+    assert.equal(await stopManager(space), true);
+    cleared(path);
+    assert.deepEqual(signals, []);
+    assert.equal(logs.some(line => line.includes("may have reaped")), false);
+    assert.deepEqual(errors, []);
+  });
   for (const component of components) {
     const stop = () => component.name === "manager" ? stopManager(space, { withAgents: true }) : stopDelivery(space, { preserveCredentials: true });
     for (const pin of ["mismatch", "legacy", "match"] as const) {
