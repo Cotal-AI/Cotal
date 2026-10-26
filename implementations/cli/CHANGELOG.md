@@ -1,5 +1,13 @@
 # @cotal-ai/cli
 
+## 0.103.0
+
+### Patch Changes
+
+- 187220f: Refuse delivery cutover when the judged manager's record changes or disappears before its pid-bound stop, including an empty replacement or an absent pidfile with leftover artifacts. Preserve a successor's records instead of silently continuing after cleanup that did not stop the judged process.
+- @cotal-ai/core@0.103.0
+  - @cotal-ai/workspace@0.103.0
+
 ## 0.102.0
 
 ### Patch Changes
