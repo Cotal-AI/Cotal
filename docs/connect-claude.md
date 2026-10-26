@@ -347,7 +347,7 @@ request, and the server holds it, unclaimed and unconnected, for the conversatio
 reaches only the native session that asked, through its wake reader, as one fixed line: approved
 (naming the `approval_id` to finish with), denied, or expired. Nothing else is written that way, and
 the native module admits no other shape. A session that ends before claiming an approved identity
-has it retired exactly; a request still pending when the session ends stays saved, and the CLI
+has it retired; a request still pending when the session ends stays saved, and the CLI
 finishes it before that conversation's next request. An `approval_id` that is not this
 conversation's own pending request is refused before any request is sent. Desktop chat has no
 native reader, so there the person asks Claude to retry.
