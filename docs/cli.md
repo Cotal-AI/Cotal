@@ -3431,8 +3431,10 @@ asked again, with your text left to edit. The question holds no manager credenti
 checked under a view of that manager acquired after you answer, and the launch acquires its own. A
 `Folder chosen` receipt names the folder and the host, and for a typed folder it gives the command
 with the `--on` and `-C` that skip the questions. Cancelling does nothing and exits 0. `spawn -d`
-with no `--on`, which the exchange gives to your only live manager, does not ask, and neither does
-a command that cannot ask or one with `--json`.
+with no `--on`, which the exchange gives to your only live manager, asks about that manager too:
+the CLI reads which manager the exchange picked, keeps none of that view, and pins the launch to
+that manager. If it has stopped by the time you answer, the launch is refused and goes to no other
+manager. A command that cannot ask, or one with `--json`, does not ask.
 
 On a user-auth mesh that runs elsewhere, a spawn in this terminal provisions its agent with your
 login, through the agent-provisioning endpoint the mesh advertises. A mesh that advertises none is
