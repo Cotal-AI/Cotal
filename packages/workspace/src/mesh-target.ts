@@ -668,11 +668,16 @@ export function noteFolderSpaceShown(space: string, state: "prepared" | "stopped
 }
 
 /** Say under the run's `Mesh: <current>` heading that this folder holds a space that is not running,
- *  so the selection is the target here, and name the `cotal up` that starts it. A folder that holds
- *  none says nothing. */
+ *  so the selection is the target here, and name the `cotal up` that starts it. A refusal whose own
+ *  next step names `cotal up` leaves this one out, so it names one. An envelope carries the same note
+ *  as a `FOLDER_SPACE_NOT_RUNNING` warning, which stderr does not repeat. A folder that holds none
+ *  says nothing. */
 function noteFolderSpaceHeld(folder: { root: string; registered: readonly string[]; prepared?: string }, current: string): void {
   const held = heldSpace(folder);
-  if (held) recordOperationSpaceNote(current, `this folder holds the ${held.state} space "${held.space}"; ${held.state === "prepared" ? "start" : "restart"} it with cotal up`);
+  if (!held) return;
+  const text = `this folder holds the ${held.state} space "${held.space}"`, step = `${held.state === "prepared" ? "start" : "restart"} it with cotal up`;
+  recordOperationSpaceNote(current, text, step);
+  recordOperationWarning({ code: "FOLDER_SPACE_NOT_RUNNING", target: { space: held.space, state: held.state, root: folder.root, selected: current }, message: `${text}; ${step}` }, { echo: false });
 }
 
 /** The space a folder holds that is not running: the one it prepared, the one its stopped stack is

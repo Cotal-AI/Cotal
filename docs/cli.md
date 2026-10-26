@@ -2908,7 +2908,12 @@ included, says the selection applies outside the folder. A space `cotal space cr
 and no `cotal up` started, and one whose stack there is stopped, is the target of the commands about
 the folder itself only: `cotal up`, `cotal down`, `cotal space show` and the folder part of
 `cotal status`. Every other command run there targets the selection, and the note under its `Mesh:`
-heading says what this folder holds and the `cotal up` that starts it. `cotal space show` there calls a
+heading says what this folder holds and the `cotal up` that starts it. A refusal whose own next step
+names `cotal up`, as for a selection whose stack is stopped, leaves that `cotal up` out of the note,
+so it names one. `--json` carries the same note in
+`warnings` as `FOLDER_SPACE_NOT_RUNNING`, whose `target` names the folder's `space`, its `state`
+(`prepared` or `stopped`), its `root` and the `selected` space, and `cotal chat`, which prints no
+heading, names the selection it joins with that note on stderr. `cotal space show` there calls a
 registered folder space whose broker does not answer this folder's stopped space. A folder that holds
 the records of a stack that runs from another folder or under another Cotal home, as a copy, a moved
 folder or one whose space name a later `up` took over, is not released to the selection: commands

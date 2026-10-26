@@ -11,7 +11,8 @@
  * heading, say it was assumed, and name the folder and that space in their target. A folder's space
  * is the target of the commands run there only while it RUNS: a space prepared there and never
  * started, and one whose registration survives a stack that no `cotal down` stopped, leave the
- * selection the target, and the run names what the folder holds and the `cotal up` that starts it.
+ * selection the target, and the run names what the folder holds and the `cotal up` that starts it,
+ * its `--json` as a `FOLDER_SPACE_NOT_RUNNING` warning and `chat` beside the selection it joins.
  * `space show`, which is about the folder, still shows what it holds, and calls a registered space
  * whose broker does not answer stopped. `spawn -d --dry-run` there previews the space `spawn -d`
  * launches on, and bare `cotal`, which reads no broker, says the folder's space applies while it runs.
@@ -189,6 +190,17 @@ const QUESTION = "Which one?";
       envelope(inDelta)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") === true &&
       !/^! this targets/m.test(inDelta.stderr) && new RegExp(`^Mesh: alpha\n {2}${HELD}$`, "m").test(inDeltaText.stdout + inDeltaText.stderr) &&
       /\bin alpha\b/.test(inDeltaText.stdout), { json: shown(inDelta), text: shown(inDeltaText) });
+  // An envelope carries the same note as a warning, and chat, which prints no heading, names the
+  // selection it joins with that note. Away from any project neither says anything.
+  const deltaPs = run(["ps", "--json"], delta);
+  check("ps --json there carries that note as a FOLDER_SPACE_NOT_RUNNING warning naming the prepared space",
+    envelope(deltaPs)?.target?.space === "alpha" && envelope(deltaPs)?.warnings?.some((w: { code: string; message: string; target?: { space?: string; state?: string } }) =>
+      w.code === "FOLDER_SPACE_NOT_RUNNING" && w.message === HELD && w.target?.space === "delta" && w.target.state === "prepared") === true, shown(deltaPs));
+  const chatIn = (cwd: string) => spawnSync(TSX, [COTAL, "chat", "--stdio"], { cwd, env, input: "", encoding: "utf8", timeout: 120_000 });
+  const deltaChat = chatIn(delta), awayChat = chatIn(work);
+  check("chat --stdio there names the selection it joins and that note; away from any project it names neither",
+    deltaChat.status === 0 && deltaChat.stderr.includes(`cotal chat: this session joins the selected space "alpha"; ${HELD}\n`) &&
+      awayChat.status === 0 && !/this session joins|this folder holds/.test(awayChat.stderr), { here: shown(deltaChat), away: shown(awayChat) });
   // The listing and `use` name no folder space there, because none is the target; `space show`, which
   // is about the folder, still shows what it holds and says the selection applies until it runs.
   const listed = run(["space", "--json"], delta), listedText = run(["space"], delta), shownSpace = run(["space", "show"], delta), used = run(["use", "--json"], delta), usedText = run(["use"], delta);

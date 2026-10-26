@@ -18,7 +18,8 @@
  * adopting, and up says to move aside first any folders found at the old path.
  * With another space selected, a folder whose own stack is stopped does not capture the command: a
  * folder's space is the target there only while it runs, so the selection is, and `status` names what
- * the folder holds and the `cotal up` that starts it where the folder records a space name. A copy and
+ * the folder holds and the `cotal up` that starts it where the folder records a space name, as `--json`
+ * does in its warnings; a refusal with its own Next leaves that `cotal up` out of its heading. A copy and
  * a moved folder are not released to the selection: their reads still refuse and name the folder the
  * stack runs from, and bare `cotal` there offers no `cotal up` for it.
  * `space create` in a copy refuses; where the folder its journal names holds no journal, as for a
@@ -126,7 +127,25 @@ check("status --components refuses the target and probes no default broker", /ta
   for (const command of ["whoami", "ps", "who", "endpoints"]) {
     const r = run([command, "--json"]);
     check(`${command} there targets the selection, not this folder's stopped space`, r.envelope?.target?.space === "sel07" && !(r.envelope?.error?.message ?? "").includes("24711"), shown(r));
+    check(`${command} --json there carries what this folder holds as a FOLDER_SPACE_NOT_RUNNING warning`,
+      (r.envelope?.warnings ?? []).some((w) => w.code === "FOLDER_SPACE_NOT_RUNNING" && w.message === HELD), shown(r));
   }
+  // The selection's broker is down, so a read refuses. sel07 was added by hand, so its Next names no
+  // `cotal up` and the heading keeps this folder's. A selection an `up` started names `cotal up` in its
+  // own folder as its Next, so the heading leaves this folder's out. Either way the refusal names one.
+  const once = (r: ReturnType<typeof run>) => r.status === 2 && (r.stderr.match(/cotal up/g) ?? []).length === 1;
+  const manualRefusal = run(["who"]);
+  check("a refusal whose Next names no cotal up keeps this folder's under the heading, so it names one",
+    once(manualRefusal) && manualRefusal.stderr.includes(`Mesh: sel07\n  ${HELD}\n`), shown(manualRefusal));
+  const upRoot = realpathSync(mkdtempSync(join(home, "selected-up-")));
+  const upRecord = join(home, ".cotal", "meshes", `space.${Buffer.from("sel08").toString("hex")}.json`);
+  writeFileSync(upRecord, JSON.stringify({ space: "sel08", server: "nats://127.0.0.1:24712", root: upRoot, mode: "open", origin: "up", ts: new Date().toISOString() }) + "\n", { mode: 0o600 });
+  check("rig: sel08, started by an up, is selected", run(["use", "sel08"], upRoot).status === 0);
+  const upRefusal = run(["who"]);
+  check("rig: sel07 is selected again", run(["use", "sel07"], other).status === 0);
+  rmSync(upRecord);
+  check("a refusal whose Next names cotal up in the selection's folder leaves this folder's out of the heading, so it names one",
+    once(upRefusal) && upRefusal.stderr.includes(`Mesh: sel08\n  this folder holds the stopped space "la07"\n`) && upRefusal.stderr.includes("Next\n  run `cotal up` there to restart"), shown(upRefusal));
   const selectedStatus = run(["status", "--json"]), selectedText = run(["status"]);
   check("status there reports the selection, with this folder's stopped space and its up under the heading",
     selectedStatus.envelope?.target?.space === "sel07" && selectedText.stdout.includes(`Mesh: sel07\n  ${HELD}`), shown(selectedText));

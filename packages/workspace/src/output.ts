@@ -174,7 +174,7 @@ export function isCommandFailure(e: unknown): e is CommandFailure {
 /** The space one command run resolved, as {@link recordOperationSpace} set it, the note
  *  {@link recordOperationSpaceNote} recorded on how it was chosen, and the warnings
  *  {@link recordOperationWarning} recorded. `quiet` keeps those warnings off stderr. */
-export interface OperationScope { space?: string; spaceNote?: { space: string; text: string }; warnings?: OutputWarning[]; quiet?: boolean }
+export interface OperationScope { space?: string; spaceNote?: { space: string; text: string; step?: string }; warnings?: OutputWarning[]; quiet?: boolean }
 
 // Kept on a global key so two copies of this module share one scope, as the failure brand does.
 const operationScope = ((globalThis as { [key: symbol]: unknown })[Symbol.for("cotal.operationScope")] ??= new AsyncLocalStorage<OperationScope>()) as AsyncLocalStorage<OperationScope>;
@@ -194,27 +194,30 @@ export function recordOperationSpace(space: string): void {
 }
 
 /** Record how this command's operation chose `space`, for its `Mesh:` heading to show under the
- *  name. Outside {@link runOperation} it does nothing. */
-export function recordOperationSpaceNote(space: string, text: string): void {
+ *  name, with the `step` it names, which a refusal whose own next step names the same command leaves
+ *  out. Outside
+ *  {@link runOperation} it does nothing. */
+export function recordOperationSpaceNote(space: string, text: string, step?: string): void {
   const scope = operationScope.getStore();
-  if (scope) scope.spaceNote = { space, text };
+  if (scope) scope.spaceNote = { space, text, ...(step === undefined ? {} : { step }) };
 }
 
-/** The note this run recorded for `space`, if any. */
-export function operationSpaceNote(space: string): string | undefined {
+/** The note this run recorded for `space`, if any, with its step unless `step` is false. */
+export function operationSpaceNote(space: string, step = true): string | undefined {
   const note = operationScope.getStore()?.spaceNote;
-  return note?.space === space ? note.text : undefined;
+  if (note?.space !== space) return undefined;
+  return step && note.step !== undefined ? `${note.text}; ${note.step}` : note.text;
 }
 
 /** Record a warning about what this command's operation resolved. It is printed on stderr at once,
- *  before the command acts on it, unless the scope is quiet, and every envelope of the run carries it.
- *  A warning already recorded in this run is not repeated. Outside {@link runOperation} it does
- *  nothing. */
-export function recordOperationWarning(warning: OutputWarning): void {
+ *  before the command acts on it, unless the scope is quiet or `echo` is false, as for a note its
+ *  `Mesh:` heading already shows, and every envelope of the run carries it. A warning already
+ *  recorded in this run is not repeated. Outside {@link runOperation} it does nothing. */
+export function recordOperationWarning(warning: OutputWarning, { echo = true }: { echo?: boolean } = {}): void {
   const scope = operationScope.getStore();
   if (!scope || scope.warnings?.some((w) => w.code === warning.code && w.message === warning.message)) return;
   (scope.warnings ??= []).push(warning);
-  if (scope.quiet) return;
+  if (scope.quiet || !echo) return;
   // Wrapped to the terminal like the report it precedes, each continuation line under the text.
   const lines = wrapWords(warning.message, terminalWidth(process.stderr) - 2);
   process.stderr.write(`${lines.map((line, i) => `${i === 0 ? "!" : " "} ${line}`).join("\n")}\n`);
