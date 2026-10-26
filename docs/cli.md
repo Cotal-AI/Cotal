@@ -45,10 +45,12 @@ connectors after an old executable rebuilt them, run the verified newer absolute
 `ext seed`, without `--force`.
 
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
-the space a command run here targets, this folder's running space, else the selected space, and
-lists common commands. When that folder's space is not the selection, it adds that the selected space
-applies outside the folder, and when the folder holds a space that is not running it names what it
-holds. It points a prepared space to the `cotal up` that starts it, with
+the space this folder has registered, else the selected space, else, with nothing selected, the space
+this folder prepared, and lists common commands. It reads no
+broker, so when that folder's space is not the selection, it adds that the folder's space applies
+while it runs and the selected space applies outside the folder and while it is stopped. When the
+folder holds a space that is prepared, or whose stack is stopped with no registration, it names what
+it holds. It points a prepared space to the `cotal up` that starts it, with
 `--root <dir>` when the space is prepared in another folder and `<dir>` quoted when a shell would
 split it, and a machine with no space to `cotal setup`. With spaces on the machine but none selected
 or in this folder, it names `cotal use <name>` and `cotal space` instead. Every command generates its own help, usage, and shell completion from its declared
@@ -915,7 +917,8 @@ unstarted member. The failure target names that stage. Typed JetStream API error
 numeric code and status without copying the server's description or changing the unknown outcome.
 The journal records the absolute root it was written in, and the stack runs only from that folder.
 In a copy of a controller project, or after the folder is moved, commands that read the journal
-refuse `TARGET_UNAVAILABLE`, exit 2, and name the recorded folder, while `up` and `down` there
+refuse `TARGET_UNAVAILABLE`, exit 2, and name the recorded folder, with another space selected too,
+while `up` and `down` there
 refuse `CONFLICT`: a copy is told to use the stack from the original, and a moved folder to move
 back there first. A folder is moved when its recorded folder no longer holds the journal. A second Cotal home that reaches the original over a shared filesystem is
 told the same, and it can adopt the copy only after the original's stack is stopped there and that
@@ -949,7 +952,7 @@ another root says so and names that root, and in a linked folder it names the li
 A project the legacy launcher started writes no journal, so a copy of one, the folder a later `up`
 took its name over from, and one moved away from its recorded path are recognized from the
 registration instead. While this machine registers that space for another folder, reads there refuse
-`TARGET_UNAVAILABLE`, exit 2, and name that folder: the next step is to use the stack from it, or,
+`TARGET_UNAVAILABLE`, exit 2, and name that folder, with another space selected too: the next step is to use the stack from it, or,
 when it no longer exists, to move this folder back there first. A bare `down` there refuses
 `CONFLICT`, exit 2, and names the same step, because the folder holds the space's records and no
 stack of its own. A legacy root whose space this machine registers for no folder keeps its own
@@ -2881,9 +2884,11 @@ the command that targets it reports that. Selecting the selected space again is 
 registered or prepared is refused with `TARGET_NOT_FOUND`, exit 2, naming the known spaces, and the
 selection stays. That refusal has no `Mesh:` heading, and its remedy names `cotal use --clear` only
 while a space is selected. Bare `use` reports
-the selection. Inside a project whose root has one registered or prepared space other than the
-selection, `use` also says that commands in the folder target that space, and `--json` gives it as
-`folder`. A selection that names a space no longer registered is reported with a
+the selection. Inside a project whose root has one registered space other than the selection, `use`
+also says that commands in the folder target that space while it runs, and `--json` gives it as
+`folder`; `use` reads no broker, so it does not say whether that space runs. `cotal space` and
+`cotal status`, which read its broker, give `folder` and `meshes.folder` as null when it does not
+answer, and the listing does not mark it as this folder's. A selection that names a space no longer registered is reported with a
 `SELECTION_NOT_REGISTERED` warning by `use` and `space`, and stays until `use` changes it.
 `use --clear` removes the selection, so a command targets its folder's space again. Its receipt
 names the space that was selected, and `--json` gives `current: null` with that `previous`. With
@@ -2905,7 +2910,17 @@ included, says the selection applies outside the folder. A space `cotal space cr
 and no `cotal up` started, and one whose stack there is stopped, is the target of the commands about
 the folder itself only: `cotal up`, `cotal down`, `cotal space show` and the folder part of
 `cotal status`. Every other command run there targets the selection, and the note under its `Mesh:`
-heading says what this folder holds and the `cotal up` that starts it. Inside a project whose root
+heading says what this folder holds and the `cotal up` that starts it. A refusal whose own next step
+names `cotal up`, as for a selection whose stack is stopped, leaves that `cotal up` out of the note,
+so it names one. `--json` carries the same note in
+`warnings` as `FOLDER_SPACE_NOT_RUNNING`, whose `target` names the folder's `space`, its `state`
+(`prepared` or `stopped`), its `root` and the `selected` space, and `cotal chat`, which prints no
+heading, names the selection it joins with that note on stderr. `cotal space show` there calls a
+registered folder space whose broker does not answer this folder's stopped space. A folder that holds
+the records of a stack that runs from another folder or under another Cotal home, as a copy, a moved
+folder or one whose space name a later `up` took over, is not released to the selection: commands
+there refuse `TARGET_UNAVAILABLE` and name that folder or home, as they do with nothing selected.
+Inside a project whose root
 has several running spaces, none of them the selection, the command targets the selection. Before it
 acts, it warns on stderr and in its JSON `warnings` with `SELECTION_NOT_FOLDER_SPACE`, naming those
 spaces and `--space <space>`.
@@ -8744,7 +8759,9 @@ execution reads its local file. A supported Mesh-manifest shape returns a schema
 the literal `cotal team deploy <file>` remedy, before agent allocation.
 
 `spawn --dry-run` never refreshes the catalog, repairs stale registrations, imports connector code,
-connects to the broker, redeems enrollment, provisions or allocates an agent. The managed preview
+signs in to the broker, redeems enrollment, provisions or allocates an agent. Where the launch reads
+whether the recorded brokers answer to choose its space, as in a folder whose registered space may
+be stopped, the preview reads the same without signing in, so it names the space the launch uses. The managed preview
 shows the request and exits 0 with `completeness` `not-checked`, because the manager resolves the
 persona, harness and working directory on its own host at launch. It does not substitute the
 caller's files. With `--foreground`, the preview resolves the local persona, harness precedence and

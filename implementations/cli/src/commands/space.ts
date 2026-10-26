@@ -157,7 +157,7 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     const offline = new Set(sweep.offline);
     const items = loadMeshes().map((m) => row(m, current, m.origin === "catalog" ? "not-checked" : offline.has(m.space) ? "unreachable" : "reachable"));
     const prepared = loadPreparedSpaces().map((p) => preparedRow(p, current));
-    const folder = folderSpaceOverSelection(process.cwd(), current) ?? null;
+    const folder = folderSpaceOverSelection(process.cwd(), current, sweep.offline) ?? null;
     const result: SpacesResult = { kind: "spaces", current, currentRecorded: current === null || items.some((s) => s.current), folder, items, prepared };
     writeResult(presentation, { command: "space", target: null, result, warnings: selectionWarnings(result) }, spacesView);
     return;
@@ -174,10 +174,7 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     const held = rest[0] === undefined && registered === undefined ? folderSpaceHeld(process.cwd()) : undefined;
     const recorded = held !== undefined && (findMesh(held.space) ?? findPreparedSpace(held.space)) !== undefined ? held : undefined;
     const folder = registered ?? recorded?.space;
-    if (current !== null && folder !== undefined && folder !== current) {
-      if (recorded) noteFolderSpaceShown(recorded.space, recorded.state, current);
-      else noteFolderSpace(folder, current);
-    }
+    if (current !== null && recorded !== undefined && recorded.space !== current) noteFolderSpaceShown(recorded.space, recorded.state, current);
     const name = rest[0] ?? folder ?? current;
     if (name === null)
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no space is selected", { remedy: "name one with `cotal space show <name>`, or select one with `cotal use <name>`" });
@@ -191,6 +188,12 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
       return;
     }
     const check: Check = m.origin === "catalog" ? "not-checked" : (await brokerAnswers(m.server)) ? "reachable" : "unreachable";
+    // The space this folder registered is the target of the commands run here only while it runs,
+    // which its broker answering shows.
+    if (current !== null && registered !== undefined && registered !== current) {
+      if (check === "unreachable") noteFolderSpaceShown(registered, "stopped", current);
+      else noteFolderSpace(registered, current);
+    }
     writeResult(presentation, { command: "space", target: { space: m.space }, result: detail(m, current, check) }, spaceView);
     return;
   }

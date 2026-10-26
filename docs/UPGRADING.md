@@ -132,7 +132,10 @@ running mesh changes.
 - A script that runs in a folder whose space is prepared or stopped and means that space names it
   with `--space`, or starts it with `cotal up` first.
 - `meshes.folder` in `cotal status --json` and `folder` in `cotal space --json` are `null` in such
-  a folder; `target.space` names what the command targeted.
+  a folder; `target.space` names what the command targeted, and `warnings` carries a
+  `FOLDER_SPACE_NOT_RUNNING` entry naming the folder's space.
+- A copy of a project, a moved project folder and a folder whose space name a later `up` took over
+  still refuse `TARGET_UNAVAILABLE` and name the folder the stack runs from, as before 0.106.0.
 - `cotal status` reports what it found at a glance; `cotal status --wide` prints every row in full,
   and `cotal status --all` dials every space. `--json` is unchanged, with an optional
   `meshes.catalogs[].account`.

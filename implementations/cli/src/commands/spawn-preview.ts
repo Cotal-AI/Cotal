@@ -2,7 +2,7 @@ import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { agentFilePath, token, type AgentDef, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, presentationOf, resolveAgentType, resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts, writeResult, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { callerHarness, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import type { spawnFlags } from "./spawn.js";
@@ -25,7 +25,9 @@ function unknownHarness(harness: string | undefined, explicit: boolean, space: s
   }
 }
 
-/** An offline preview never probes a broker, materializes a connector or allocates an agent. */
+/** An offline preview never signs in to a broker, materializes a connector or allocates an agent. It
+ *  reads whether the recorded brokers answer only where the launch reads it to pick its space, so the
+ *  two name the same one. */
 export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> & { values: Values }): Promise<void> {
   const values = args.values;
   let root: string;
@@ -36,7 +38,11 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   // Where a missing persona was looked for. A space that is not started is a local root `up` starts.
   let site: PersonaSite;
   try {
-    const selected = resolveMeshTarget(process.cwd(), { space: values.space, server: values.server, readOnly: true });
+    // A space this folder registered is the target only while it runs, which the launch reads from
+    // the recorded brokers before it resolves. The preview reads the same, without signing in.
+    const flags = { space: values.space, server: values.server };
+    const offline = resolveReadsLiveness(process.cwd(), flags) ? (await pruneStaleMeshes(values.server)).offline : [];
+    const selected = resolveMeshTarget(process.cwd(), { ...flags, offline, readOnly: true });
     root = selected.root; space = selected.space; broker = brokerAddressForDisplay(selected.server) ?? null; targetMode = selected.mode; assumed = selected.namesNoSpace === true; site = selected;
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;

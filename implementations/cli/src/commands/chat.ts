@@ -9,7 +9,7 @@ import {
   oneLine, readChannelRegistry, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, connectTargetOrThrow, credsFlag, isConnectRefusal, plainFlag, preflightOrThrow, resolveTargetOrThrow, serverFlag, spaceFlag,
+  CommandFailure, connectTargetOrThrow, credsFlag, isConnectRefusal, operationWarnings, plainFlag, preflightOrThrow, resolveTargetOrThrow, serverFlag, spaceFlag,
   type MeshTarget,
 } from "@cotal-ai/workspace";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -218,6 +218,10 @@ export async function chat(args: ParsedArgs): Promise<void> {
   let session: AdmittedChatSession;
   try {
     ({ target, notice } = await prepareChat(args.values as Values, input.channel));
+    // A session has no `Mesh:` heading, so in a folder whose space is not running it names the
+    // selection it joins and the note the reads give under their heading.
+    const held = operationWarnings().find((w) => w.code === "FOLDER_SPACE_NOT_RUNNING");
+    if (held) notice = [`this session joins the selected space "${target.space}"; ${held.message}`, notice].filter(Boolean).join("; ");
     if (notice) process.stderr.write(`cotal chat: ${notice}\n`);
     const before = signals.caught();
     if (before !== undefined) {

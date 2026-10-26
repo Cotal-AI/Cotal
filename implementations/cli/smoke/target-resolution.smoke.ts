@@ -11,8 +11,11 @@
  * heading, say it was assumed, and name the folder and that space in their target. A folder's space
  * is the target of the commands run there only while it RUNS: a space prepared there and never
  * started, and one whose registration survives a stack that no `cotal down` stopped, leave the
- * selection the target, and the run names what the folder holds and the `cotal up` that starts it.
- * `space show`, which is about the folder, still shows what it holds.
+ * selection the target, and the run names what the folder holds and the `cotal up` that starts it,
+ * its `--json` as a `FOLDER_SPACE_NOT_RUNNING` warning and `chat` beside the selection it joins.
+ * `space show`, which is about the folder, still shows what it holds, and calls a registered space
+ * whose broker does not answer stopped. `spawn -d --dry-run` there previews the space `spawn -d`
+ * launches on, and bare `cotal`, which reads no broker, says the folder's space applies while it runs.
  *
  * Needs `nats-server` on PATH. Linux and macOS run the terminal cells under a pty, Windows under ConPTY.
  *
@@ -187,6 +190,17 @@ const QUESTION = "Which one?";
       envelope(inDelta)?.warnings?.every((w: { code: string }) => w.code !== "SELECTION_NOT_FOLDER_SPACE") === true &&
       !/^! this targets/m.test(inDelta.stderr) && new RegExp(`^Mesh: alpha\n {2}${HELD}$`, "m").test(inDeltaText.stdout + inDeltaText.stderr) &&
       /\bin alpha\b/.test(inDeltaText.stdout), { json: shown(inDelta), text: shown(inDeltaText) });
+  // An envelope carries the same note as a warning, and chat, which prints no heading, names the
+  // selection it joins with that note. Away from any project neither says anything.
+  const deltaPs = run(["ps", "--json"], delta);
+  check("ps --json there carries that note as a FOLDER_SPACE_NOT_RUNNING warning naming the prepared space",
+    envelope(deltaPs)?.target?.space === "alpha" && envelope(deltaPs)?.warnings?.some((w: { code: string; message: string; target?: { space?: string; state?: string } }) =>
+      w.code === "FOLDER_SPACE_NOT_RUNNING" && w.message === HELD && w.target?.space === "delta" && w.target.state === "prepared") === true, shown(deltaPs));
+  const chatIn = (cwd: string) => spawnSync(TSX, [COTAL, "chat", "--stdio"], { cwd, env, input: "", encoding: "utf8", timeout: 120_000 });
+  const deltaChat = chatIn(delta), awayChat = chatIn(work);
+  check("chat --stdio there names the selection it joins and that note; away from any project it names neither",
+    deltaChat.status === 0 && deltaChat.stderr.includes(`cotal chat: this session joins the selected space "alpha"; ${HELD}\n`) &&
+      awayChat.status === 0 && !/this session joins|this folder holds/.test(awayChat.stderr), { here: shown(deltaChat), away: shown(awayChat) });
   // The listing and `use` name no folder space there, because none is the target; `space show`, which
   // is about the folder, still shows what it holds and says the selection applies until it runs.
   const listed = run(["space", "--json"], delta), listedText = run(["space"], delta), shownSpace = run(["space", "show"], delta), used = run(["use", "--json"], delta), usedText = run(["use"], delta);
@@ -232,6 +246,27 @@ const QUESTION = "Which one?";
     envelope(inStopped)?.target?.space === "alpha" && inStopped.status === 0 && envelope(stoppedPs)?.target?.space === "alpha" &&
       new RegExp(`^Mesh: alpha\n {2}${STOPPED}$`, "m").test(inStoppedText.stdout + inStoppedText.stderr),
     { json: shown(inStopped), text: shown(inStoppedText), ps: shown(stoppedPs) });
+  // The preview reads the liveness the launch reads, so both name the selection.
+  const stoppedPreview = run(["spawn", "default", "-d", "--dry-run", "--json"], zetaRoot), stoppedLaunch = run(["spawn", "default", "-d", "--json"], zetaRoot);
+  check("spawn -d --dry-run there previews the space spawn -d launches on: the selection, not the stopped folder space",
+    stoppedPreview.status === 0 && envelope(stoppedPreview)?.target?.space === "alpha" && envelope(stoppedLaunch)?.target?.space === "alpha", { preview: shown(stoppedPreview), launch: shown(stoppedLaunch) });
+  // `space show` reads the folder's broker, so it says the space is stopped and the selection is the
+  // target until it runs; the entry screen reads no broker, so it says when the folder's space applies.
+  const shownStopped = run(["space", "show"], zetaRoot), shownRunning = run(["space", "show"], join(home, "beta")), entryStopped = run([], zetaRoot);
+  check("space show there calls zeta this folder's stopped space, and in a running folder space's root this folder's space",
+    /^Mesh: zeta\n {2}this folder's stopped space; commands here target the selected space "alpha" until it runs$/m.test(shownStopped.stdout) &&
+      /^Mesh: beta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(shownRunning.stdout), { stopped: shown(shownStopped), running: shown(shownRunning) });
+  check("bare cotal there says this folder's space applies while it runs and the selection otherwise",
+    entryStopped.status === 0 && entryStopped.stdout.includes(`this folder's space while it runs; the selected space "alpha" applies outside it and while it is stopped`), shown(entryStopped));
+  // status and the listing read the folder's broker, so a stopped one is not this folder's target
+  // there; in a running folder space's root it is. `use` reads no broker and says when it applies.
+  const statusStopped = run(["status", "--json"], zetaRoot), listStopped = run(["space", "--json"], zetaRoot), listStoppedText = run(["space"], zetaRoot), listRunning = run(["space", "--json"], join(home, "beta")), useStopped = run(["use"], zetaRoot);
+  check("status --json and space --json there give no folder space, the listing marks none, and in beta's root space --json gives beta",
+    envelope(statusStopped)?.target?.space === "alpha" && envelope(statusStopped)?.result?.meshes?.folder === null && envelope(listStopped)?.result?.folder === null &&
+      !/\(this folder's\)/.test(listStoppedText.stdout) && envelope(listRunning)?.result?.folder === "beta",
+    { status: envelope(statusStopped)?.result?.meshes?.folder, list: shown(listStopped), text: shown(listStoppedText), running: shown(listRunning) });
+  check("use there says commands target zeta while it runs and the selection while it is stopped",
+    useStopped.stdout.includes(`commands in this folder target its space "zeta" while it runs; the selection applies outside it and while it is stopped`), shown(useStopped));
   removeMesh("zeta");
   const clearChannel = run(["history", "clear", "general"], delta);
   check("history clear with a channel refuses naming the space it targets, not the selected space",
