@@ -1,6 +1,12 @@
 const WAKE = /^Cotal: a new message for connection_id ([A-Za-z0-9_-]{1,128})\. Read it with cotal_inbox\.$/;
 const PREVIEW = /^Cotal preview for connection_id ([A-Za-z0-9_-]{1,128}): (\{.*\})$/;
 const INLINE = /^Cotal: inline messages for connection_id ([A-Za-z0-9_-]{1,128})\.$/;
+// The person's decision on this conversation's pending cotal_connect, in the server's exact shapes
+// (src/approval-notice.ts). Names are JSON strings; nothing else about the line is free text.
+const QUOTED = '"((?:[^"\\\\\\x00-\\x1f]|\\\\.){1,512})"';
+const APPROVED = new RegExp(`^Cotal: the person approved connection ${QUOTED}\\. Finish it: call cotal_connect with name ${QUOTED} and approval_id "([a-z2-7]{26})"\\.$`);
+const DENIED = new RegExp(`^Cotal: the person denied connection ${QUOTED}\\. Nothing was connected\\. Do not ask again unless the person asks you to\\.$`);
+const EXPIRED = new RegExp(`^Cotal: the approval for connection ${QUOTED} expired before the person decided\\. Nothing was connected\\. Call cotal_connect with name ${QUOTED} again to ask again\\.$`);
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const offers = new Map();
 const retries = new Map();
@@ -16,6 +22,17 @@ let active = false;
 let reader;
 let readerSession;
 let nativeBinding;
+
+function approvalLine(line) {
+  const match = APPROVED.exec(line) || DENIED.exec(line) || EXPIRED.exec(line);
+  if (!match) return false;
+  try {
+    const name = JSON.parse(`"${match[1]}"`);
+    if (typeof name !== 'string' || !name || name.length > 128 || name !== name.trim() || /[\r\n]/.test(name)) return false;
+    const again = match[2];
+    return again === undefined || JSON.parse(`"${again}"`) === name;
+  } catch { return false; }
+}
 
 async function relayNative($, event) {
   if (await $.env.get('COTAL_NAME') || await $.env.get('COTAL_LINK') || await $.env.get('COTAL_AGENT_FILE')) return;
@@ -205,7 +222,7 @@ async function listen($) {
               void submit($);
             }
           } catch {}
-        } else if (WAKE.test(line)) {
+        } else if (WAKE.test(line) || approvalLine(line)) {
           pending.add(line);
           void submit($);
         }

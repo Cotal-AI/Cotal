@@ -7,6 +7,7 @@
 import { createConnection } from "node:net";
 import { hasIdentity } from "@cotal-ai/connector-core/relay";
 import { WAKE_ID, wakeSockets, nativeSocketPath } from "./wake-feed.js";
+import { approvalEvent, approvalFrame } from "./approval-notice.js";
 import { INLINE_FRAME_LIMIT, isNativeInlineFrame } from "./native-deliveries.js";
 import { bindPersonalSession, readPersonalBinding } from "./native-binding.js";
 import type { RenderedInboxPreview } from "@cotal-ai/connector-core";
@@ -103,6 +104,8 @@ function main(): void {
         try {
           if (line.length > INLINE_FRAME_LIMIT) continue;
           const frame = JSON.parse(line) as { id?: unknown; preview?: unknown };
+          const decided = approvalFrame(frame);
+          if (decided) { process.stdout.write(`${approvalEvent(decided)}\n`); continue; }
           if (isNativeInlineFrame(frame)) {
             if (frame.inline.session === session && frame.route === path)
               process.stdout.write(`Cotal inline delivery: ${JSON.stringify(frame)}\n`);
