@@ -157,8 +157,8 @@
     {
       "name": "A4 provision counts a down mesh as running",
       "file": "implementations/cli/src/commands/app-identity.ts",
-      "find": "  return resolveTargetOrThrow(space ? { space } : {});",
-      "replace": "  return resolveTargetOrThrow(space ? { space } : { offline: [] });",
+      "find": "  return resolveTargetOrThrow(space !== undefined ? { space } : {});",
+      "replace": "  return resolveTargetOrThrow(space !== undefined ? { space } : { offline: [] });",
       "expectRed": "a Desktop conversation started in that project joins the one running mesh",
       "cell": "a Desktop conversation started in that project joins the one running mesh",
       "command": "pnpm --filter @cotal-ai/cli build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
