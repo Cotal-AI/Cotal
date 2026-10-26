@@ -44,7 +44,7 @@ the manager `up` started and starts no second one.
 
 `cotal service` lists every built-in service, started or not, and `cotal service start <preset>`
 starts one from its defaults. A preset that needs a file the space does not keep, such as the
-auth service's credentials, refuses and names the flag. `cotal service add <name> --exec
+feedback form's tester keys, refuses and names the flag. `cotal service add <name> --exec
 "<command>"` adds a program of your own without a definition file.
 
 ### What changes for a running deployment

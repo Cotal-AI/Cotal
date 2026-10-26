@@ -4759,6 +4759,10 @@ stop. A unit or container you write that runs a manager uses `cotal manager star
 because a Cotal-written unit runs only a direct-process service. It names the `ExecStart=` line for
 a unit of your own instead.
 
+`manager start` and `manager restart` run the first-run connector seed, as `cotal supervise` does,
+so a fresh machine or container has its connectors before the manager boots; `status`, `logs`,
+`stop` and the maintenance verbs install nothing.
+
 `reconcile` and `seats` are the [manager maintenance](#manager-maintenance) commands. Bare
 `cotal manager` lists every verb and starts nothing.
 
