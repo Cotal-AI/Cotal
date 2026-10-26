@@ -130,6 +130,7 @@ export async function stopOldHostingManagerIfPresent(
   // The refusal quotes this record and never reads the file again: the manager removes its record on
   // exit and a start replaces it, so a second read can find it gone or holding other content.
   const record = managerRecordState(probe, undefined, space);
+  if (record.state === "absent") return;
   const verdict = oldHostingManagerVerdict(record, space, probe);
   // FIRST action, before any mint/write/start, so the refusal actually fences the daemon.
   if (verdict === "indeterminate") {
@@ -284,7 +285,7 @@ export async function ensureDelivery(
     // A row written again during the wait has a live holder, and that is refused.
     const previous = await credsStore().get(credsKey);
     if (previous !== undefined) {
-      const recorded = delivery.pid !== undefined ? ` (pid ${delivery.pid})` : "";
+      const recorded = delivery.state !== "absent" && delivery.pid !== undefined ? ` (pid ${delivery.pid})` : "";
       const waited = await awaitDeadDeliveryLease({
         servers: server,
         space,

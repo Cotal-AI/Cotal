@@ -408,6 +408,7 @@
     "smoke:core-boundary": "tsx packages/core/smoke/core-boundary.smoke.ts",
     "smoke:preflight": "tsx packages/workspace/smoke/preflight.smoke.ts",
     "smoke:pid-contract": "tsx packages/workspace/smoke/pid.smoke.ts",
+    "smoke:absent-process-record": "tsx implementations/cli/smoke/absent-process-record.smoke.ts",
     "smoke:pid-identity": "pnpm --filter @cotal-ai/workspace... build && tsx packages/workspace/smoke/pid-identity.smoke.ts",
     "smoke:service-host-record": "tsx implementations/cli/smoke/service-host-record.smoke.ts",
     "smoke:win32-custody": "pnpm --filter @cotal-ai/workspace... build && tsx packages/workspace/smoke/win32-custody.smoke.ts",
