@@ -7866,8 +7866,13 @@ the command exits 0 with the agent running. Its `Runtime` row reads `<runtime> Â
 stream`, its `View` row reads `not attached; the seat runs in the manager's <runtime> session`, and
 its Next gives `cotal watch` and `cotal send -t <name>` with one line saying `attach` is not
 available there. `--json` carries the same answer as `result.streamsTerminal`, beside the
-`result.runtime` that names the backend. A manager from before 0.104.0 reports neither, so a launch
-on one is attached as it always was and `streamsTerminal` is null. Without usable input/output terminals, an attaching
+`result.runtime` that names the backend. A manager from before 0.104.2 reports neither, so
+`streamsTerminal` is null and the launch asks for an attach. When that manager refuses it because
+the runtime streams no terminal, the launch ends there too, with one line that names the runtime,
+and exits 0. Such a manager does not mark that refusal, so the CLI accepts it only for a runtime
+whose provider, registered or installed with this CLI, declares no terminal. Any other failed
+attach is partial, exit 4, with the manager's reason as `Native detail` and a Next that gives
+`cotal ps` and `cotal attach` with the space and manager instance. Without usable input/output terminals, an attaching
 `--on` launch refuses before allocation and names `-d` or a spawn in this terminal. A shell tool's
 inherited parent PTY is not enough.
 
