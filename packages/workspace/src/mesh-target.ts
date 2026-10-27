@@ -4,7 +4,7 @@ import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, MEMBERSHIP_MAX_BYTES, pers
 import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootPathProblem, soleSpaceOf, stackJournalPath, stackJournalRoot, userAuthSpacesOnDisk } from "./auth-paths.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
 import { recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
-import { parsePid, probeLiveness, readPidfile } from "./pid.js";
+import { assertRecordIdentity, parsePid, probeLiveness, readPidfile, type ProcessIdentityRecord } from "./pid.js";
 import { findPreparedSpace, preparedSpaceAt } from "./prepared-spaces.js";
 import {
   canonicalRoot,
@@ -419,6 +419,29 @@ export function unsettledStackOperation(root: string, space: string): "up" | "do
   }
 }
 
+/** The space of `root`'s own stack when its journal records an `up` or `down` with no outcome
+ *  ({@link unsettledStackOperation}) while a member that operation attempted still runs, as an `up`
+ *  cut off before it registered the space leaves its broker. That stack runs in part, so the commands
+ *  run in its folder target it as they target a running one, and `status` there names the step that
+ *  finishes it. Undefined otherwise, and for a record this cannot read. */
+function unfinishedStackSpace(root: string): string | undefined {
+  try {
+    const path = stackJournalPath(root), file = lstatSync(path, { throwIfNoEntry: false });
+    if (file === undefined || !file.isFile() || file.size > 64 * 1024) return undefined;
+    const journal = JSON.parse(readFileSync(path, "utf8")) as { space?: unknown; members?: unknown } | null;
+    const space = journal?.space;
+    if (typeof space !== "string" || !Array.isArray(journal!.members) || unsettledStackOperation(root, space) === undefined) return undefined;
+    const attempted = new Set(journal!.members.flatMap((row) => {
+      const member = row as { definition?: unknown; state?: unknown } | null;
+      return typeof member?.definition === "string" && member.state !== "not-attempted" ? [member.definition] : [];
+    }));
+    const instances = new ProtectedRecordStore("services", space, (value) => value as { definition?: unknown; process?: ProcessIdentityRecord } | null, "instances");
+    return instances.list().some(({ record: { value } }) => typeof value?.definition === "string" && attempted.has(value.definition) && value.process !== undefined && assertRecordIdentity(value.process).kind === "match") ? space : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Whether `root`'s stack journal names member instances of which this Cotal home holds no record,
  *  while a manager or delivery record under the root fronts a live process: the stack runs under
  *  another `COTAL_HOME`, whose registration and service records this one cannot see. A journal that
@@ -665,7 +688,9 @@ function recordsRunElsewhere(folder: { root: string; registered: readonly string
  * the commands that are about the folder itself. Everything else run there targets the selection,
  * and the run says under its heading what this folder holds ({@link noteFolderSpaceHeld}). A folder
  * whose records are those of a stack that runs elsewhere ({@link recordsRunElsewhere}) is not released
- * to the selection: the command refuses and names where that stack runs.
+ * to the selection: the command refuses and names where that stack runs. Nor is one whose own stack
+ * is half started or half stopped ({@link unfinishedStackSpace}): it runs in part, so it is the
+ * target, as with nothing selected, and `status` there names the step that finishes it.
  *
  * It used to be enough to be registered OR prepared: a folder's prepared space captured every read
  * there, so `status` in a project whose space was never started reported that space rather than the
@@ -680,6 +705,11 @@ function selectionTargetsHere(cwd: string, current: string, meshes: readonly Mes
   const running = folder.registered.filter((space) => !offline.has(space));
   if (running.length === 0) {
     if (recordsRunElsewhere(folder)) return false;
+    const unfinished = unfinishedStackSpace(folder.root);
+    if (unfinished !== undefined) {
+      noteFolderSpace(unfinished, current);
+      return false;
+    }
     noteFolderSpaceHeld(folder, current);
     return true;
   }
@@ -779,11 +809,14 @@ export function folderSpaceStopped(cwd: string, current: string): { space: strin
 }
 
 /** The one space REGISTERED at the root of the project folder `cwd` is in, which a command without
- *  `--space` targets there while it runs. Undefined outside a project and where the root has none or
- *  several. A space prepared here and never started is not one: see {@link folderSpaceHeld}. */
+ *  `--space` targets there while it runs, or, with none registered, the space of the root's own half
+ *  started or half stopped stack ({@link unfinishedStackSpace}). Undefined outside a project and where
+ *  the root has none or several. A space prepared here and never started is not one: see
+ *  {@link folderSpaceHeld}. */
 export function folderSpace(cwd: string): string | undefined {
   const folder = folderSpaces(cwd, loadMeshes());
-  return folder?.registered.length === 1 ? folder.registered[0] : undefined;
+  if (!folder) return undefined;
+  return folder.registered.length === 1 ? folder.registered[0] : folder.registered.length === 0 ? unfinishedStackSpace(folder.root) : undefined;
 }
 
 /** The space a command without `--space` targets in the project folder `cwd` is in when that is not
@@ -867,10 +900,11 @@ export function resolveReadsLiveness(cwd: string, flags: ResolveFlags = {}): boo
  *     other than it, where step 4 applies. A space this folder prepared and never started, and one
  *     whose stack here is stopped, does not take the selection's place; a folder holding the records
  *     of a stack that runs from another folder or under another Cotal home refuses at step 4 and
- *     names where it runs ({@link recordsRunElsewhere}). The selection stays the target when its
- *     own broker is down, and a selection that names no registration refuses rather than reaching
- *     another mesh. Inside a project whose root has several running spaces, none of them the
- *     selection, the run warns first.
+ *     names where it runs ({@link recordsRunElsewhere}), and one whose own stack is half started or
+ *     half stopped is the target at step 4 ({@link unfinishedStackSpace}). The selection stays the
+ *     target when its own broker is down, and a selection that names no registration refuses rather
+ *     than reaching another mesh. Inside a project whose root has several running spaces, none of
+ *     them the selection, the run warns first.
  *  4. A genuine local project (`cwd` walks up to a real `.cotal/`).
  *  5. The registry's *running* meshes: 0 ⇒ error; 1 ⇒ use it; N ⇒ error naming
  *     each + its root. `flags.offline` (from a sweep) is excluded here; a named `--space` and
