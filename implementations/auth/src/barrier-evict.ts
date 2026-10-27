@@ -50,6 +50,22 @@ export function checkedEviction<T>(principal: string, data: unknown, failClosed:
   };
 }
 
+/** The one unverified result every barrier relies on to never authorize: nothing was kicked,
+ *  nothing was verified gone, and the note says why. Both evictors log it and return it through
+ *  this builder, so a change to the result or its log line cannot land in only one of them. */
+function failClosedWith(log: (line: string) => void): (principal: string, note: string) => EvictionResult {
+  return (principal, note) => {
+    log(`auth-barrier-evict: ${principal}: ${note}`);
+    return { principal, kicked: 0, remaining: 0, verifiedGone: false, scanComplete: false, note };
+  };
+}
+
+/** The note for a rail the evictor could not reach. A thrown connection error names the cause;
+ *  anything else is stringified. Eviction stays UNKNOWN either way. */
+function unreachableNote(e: unknown): string {
+  return `the delivery-admin rail is unreachable (${e instanceof Error ? e.message : String(e)}); eviction is UNKNOWN and the barrier fails closed`;
+}
+
 /**
  * Build the barrier executor's `evictPrincipal` capability over the delivery daemon's
  * `ctl.delivery-admin` rail. Per-call connection (an eviction is a rare, heavyweight barrier
@@ -62,10 +78,7 @@ export function makeDeliveryAdminEvictor(opts: {
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): EvictPrincipal {
-  const failClosed = (principal: string, note: string): EvictionResult => {
-    opts.log(`auth-barrier-evict: ${principal}: ${note}`);
-    return { principal, kicked: 0, remaining: 0, verifiedGone: false, scanComplete: false, note };
-  };
+  const failClosed = failClosedWith(opts.log);
   return async (principal: string): Promise<EvictionResult> => {
     try {
       return await withDeliveryAdminEndpoint(opts, "supervisor", "auth-barrier-evict", async (ep) => {
@@ -74,7 +87,7 @@ export function makeDeliveryAdminEvictor(opts: {
         return checkedEviction(principal, r.data, failClosed);
       });
     } catch (e) {
-      return failClosed(principal, `the delivery-admin rail is unreachable (${e instanceof Error ? e.message : String(e)}); eviction is UNKNOWN and the barrier fails closed`);
+      return failClosed(principal, unreachableNote(e));
     }
   };
 }
@@ -86,10 +99,7 @@ export function makeDeliveryAdminEvictor(opts: {
  * refusal, an unreachable rail or an unusable reply leaves every holder it covers unverified.
  */
 export function makeDeliveryAdminHolderEvictor(opts: Parameters<typeof makeDeliveryAdminEvictor>[0]): (holderPrincipals: readonly string[]) => Promise<EvictionResult[]> {
-  const failClosed = (principal: string, note: string): EvictionResult => {
-    opts.log(`auth-barrier-evict: ${principal}: ${note}`);
-    return { principal, kicked: 0, remaining: 0, verifiedGone: false, scanComplete: false, note };
-  };
+  const failClosed = failClosedWith(opts.log);
   return async (principals) => {
     const evictions: EvictionResult[] = [];
     try {
@@ -105,7 +115,7 @@ export function makeDeliveryAdminHolderEvictor(opts: Parameters<typeof makeDeliv
         }
       });
     } catch (e) {
-      const note = `the delivery-admin rail is unreachable (${e instanceof Error ? e.message : String(e)}); eviction is UNKNOWN and the barrier fails closed`;
+      const note = unreachableNote(e);
       for (const p of principals.slice(evictions.length)) evictions.push(failClosed(p, note));
     }
     return evictions;
