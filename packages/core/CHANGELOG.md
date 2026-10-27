@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.109.17
+
+### Patch Changes
+
+- dc382c0: Clarify that missing on-demand presence grants require upgrading the credential issuer before minting again. Newly minted credentials from an older issuer and reconnects with the same credentials still refuse the read.
+
 ## 0.109.16
 
 No changes in this release.
