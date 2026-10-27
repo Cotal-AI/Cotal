@@ -838,6 +838,7 @@
     "smoke:up-stack:live": "tsx bin/smoke/up-stack-live.smoke.ts",
     "smoke:stack-member-crash:live": "tsx implementations/cli/smoke/stack-member-crash-live.smoke.ts",
     "smoke:ext:live": "tsx bin/smoke/ext-live.smoke.ts",
+    "smoke:seat-runtime-ext:live": "tsx bin/smoke/seat-runtime-ext-live.smoke.ts",
     "smoke:dogfood:live": "tsx bin/smoke/dogfood-live.smoke.ts",
     "smoke:artifact-store": "tsx packages/core/smoke/artifact-store.smoke.ts",
     "smoke:artifact-store-no-reserve": "tsx packages/core/smoke/artifact-store-no-reserve.smoke.ts",

@@ -10,6 +10,7 @@ export * from "./cotal-config.js";
 export * from "./control-target.js";
 export * from "./default-agent.js";
 export * from "./official-connectors.js";
+export * from "./official-runtimes.js";
 export * from "./extensions.js";
 export * from "./materialize.js";
 export * from "./local-process.js";

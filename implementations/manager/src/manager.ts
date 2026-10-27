@@ -83,8 +83,8 @@ import {
   digestIdToken,
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -1757,6 +1757,21 @@ export class Manager {
   private get requiredRuntime(): Runtime {
     if (this.executionState.kind === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     return this.runtime;
+  }
+
+  /** Import the installed extension that provides a seat's runtime before {@link runtimeFor}
+   *  resolves it, as {@link resolveConnector} does for a connector. On the published binary the
+   *  manager process imports only its own runtime, so a seat that names another installed runtime
+   *  found nothing in the registry and was refused as unknown. The manifest is consulted first, so a
+   *  live `cotal ext remove` refuses the next launch even while an earlier import keeps the provider
+   *  registered; seats already on that runtime keep their cached backend. A library composition
+   *  resolves only what its root imported. The refusal names an official runtime's package. */
+  private async loadSeatRuntime(kind: string | undefined): Promise<void> {
+    const asked = kind?.trim();
+    if (!this.installedExtensions || this.executionState.kind === "none" || !asked || asked === "auto" || asked === "pty" || asked === this.runtime.kind) return;
+    if (!manifestExtensionNames("runtime").includes(asked)) throw new Error(runtimeInstallHint(asked));
+    if (registry.all<RuntimeProvider>("runtime").some((provider) => provider.name === asked)) return;
+    await materializeFromManifest<RuntimeProvider>({ kind: "runtime", name: asked }, { hint: (ref) => runtimeInstallHint(ref.name) });
   }
 
   /** The backend one seat launches, restarts, and is reaped through. An omitted or blank choice is
@@ -6116,14 +6131,15 @@ export class Manager {
     // Before the first await, so the grant, the launch, the retained form and the restart slot all read
     // the lists and the restart policy as admitted.
     opts = ownLists(opts);
+    if (opts.resolved) opts.resolved = ownLists(opts.resolved);
+    if (opts.supervise) opts.supervise = { restarts: opts.supervise.restarts, windowMs: opts.supervise.windowMs };
     let runtime: Runtime;
     try {
+      await this.loadSeatRuntime(opts.runtime);
       runtime = this.runtimeFor(opts.runtime);
     } catch (e) {
       return { ok: false, error: rejectionText(e) };
     }
-    if (opts.resolved) opts.resolved = ownLists(opts.resolved);
-    if (opts.supervise) opts.supervise = { restarts: opts.supervise.restarts, windowMs: opts.supervise.windowMs };
     if (opts.delegatedIntent) {
       if (!this.remoteAuthority?.executeDelegatedUserIntent)
         return { ok: false, error: `"${opts.name}" names a delegated user intent, and this manager has no host execution for one` };
@@ -7277,6 +7293,11 @@ export class Manager {
     try {
       if (entry.space !== this.space)
         return { ok: false, error: `retained agent ${entry.name} belongs to space "${entry.space}", not "${this.space}"` };
+      try {
+        await this.loadSeatRuntime(entry.launch.runtime);
+      } catch (e) {
+        return { ok: false, error: `retained agent ${entry.name} requires runtime "${entry.launch.runtime}", which this manager cannot resolve: ${rejectionText(e)}` };
+      }
       if (entry.launch.runtime !== this.runtimeFor(entry.launch.runtime).kind)
         return { ok: false, error: `retained agent ${entry.name} requires runtime "${entry.launch.runtime}", which this manager cannot resolve` };
       const nameErr = this.nameError(entry.name);
