@@ -51,10 +51,7 @@ function hasSession(session: string): boolean {
  *  to size it, and some tmux builds then treat its window as sizeless — so `split-window` fails
  *  with "size missing". Give it an explicit initial size; tmux resizes to the real client on attach. */
 export function ensureSession(session: string, cwd: string): void {
-  if (!hasSession(session))
-    execFileSync("tmux", ["-u", "new-session", "-d", "-s", session, "-x", "200", "-y", "50", "-c", cwd], {
-      stdio: "ignore",
-    });
+  if (!hasSession(session)) run("start session", ["new-session", "-d", "-s", session, "-x", "200", "-y", "50", "-c", cwd]);
 }
 
 /** True if a window named `name` exists in `session`. Name-based — fragile under renames; prefer
@@ -82,6 +79,21 @@ function noServer(err: unknown): boolean {
 function failureText(err: unknown): string {
   const e = err as { stderr?: unknown; message?: unknown };
   return `${String(e.stderr ?? "")} ${String(e.message ?? "")}`.trim();
+}
+
+/** Run a tmux command that prints nothing on success. A failure names the operation and keeps tmux's
+ *  report, with the original error as its cause. The timeout is killed with SIGKILL, because Node waits
+ *  for a timed-out child to exit. */
+function run(operation: string, args: string[], opts: { timeoutMs?: number } = {}): void {
+  try {
+    execFileSync("tmux", ["-u", ...args], {
+      stdio: ["ignore", "ignore", "pipe"],
+      timeout: opts.timeoutMs,
+      killSignal: "SIGKILL",
+    });
+  } catch (err) {
+    throw new Error(`tmux: couldn't ${operation}: ${failureText(err)}`, { cause: err });
+  }
 }
 
 /** The running tmux server's pid, or undefined when no server is running. */
@@ -277,7 +289,7 @@ export function splitWindow(
 
 /** Focus a window by target (`session:name` or window ID). */
 export function selectWindow(target: string): void {
-  execFileSync("tmux", ["-u", "select-window", "-t", target], { stdio: "ignore" });
+  run("select window", ["select-window", "-t", target]);
 }
 
 /** tmux arguments that run command `args` only on the server whose pid is `server`, when one is given.
@@ -401,15 +413,11 @@ export function privateLaunch(commandBody: string): { command: string; dir: stri
 /** Type literal text into a tmux target.
  *  `-l` bypasses tmux's key-name lookup; `--` guards against text starting with `-`. */
 export function send(text: string, target: string): void {
-  execFileSync("tmux", ["-u", "send-keys", "-l", "-t", target, "--", text], { stdio: "ignore" });
+  run("send text", ["send-keys", "-l", "-t", target, "--", text]);
 }
 
 /** Send a named key sequence (e.g. `"Enter"`, `"C-c"`) to a tmux target, on server `opts.server` only
  *  when given. `--` guards against key names starting with `-`. */
 export function sendKey(key: string, target: string, opts: { timeoutMs?: number; server?: string } = {}): void {
-  execFileSync("tmux", ["-u", ...onServer(opts.server, ["send-keys", "-t", target, "--", key])], {
-    stdio: "ignore",
-    timeout: opts.timeoutMs,
-    killSignal: "SIGKILL",
-  });
+  run("send key", onServer(opts.server, ["send-keys", "-t", target, "--", key]), { timeoutMs: opts.timeoutMs });
 }

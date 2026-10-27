@@ -15,7 +15,10 @@ if (process.platform === "win32") {
   writeFileSync(join(root, "tmux"), `#!/bin/sh
 [ "$1" = -u ] || exit 2
 shift
-printf '%s\\n' "$*" >> "$TMUX_DRIVER_CALLS"
+line=""
+sep=""
+for arg do line="$line$sep$arg"; sep=$(printf '\\037'); done
+printf '%s\\n' "$line" >> "$TMUX_DRIVER_CALLS"
 case "$1" in
   display-message)
     if [ "$3" = '#S' ]; then
@@ -34,6 +37,10 @@ case "$1" in
       dead|capture-dead) echo '%1 1';;
       *) echo '%1 0';;
     esac;;
+  new-session|select-window|send-keys|if-shell)
+    echo "probe: $1 refused" >&2; exit 1;;
+  has-session)
+    exit 1;;
   capture-pane)
     case "$TMUX_DRIVER_MODE" in
       capture-refused|capture-dead|missing|no-server|list-refused)
@@ -81,7 +88,7 @@ esac
     return {
       result: JSON.parse(child.stdout) as { returned?: string; error?: Failure },
       stderr: child.stderr,
-      calls: readFileSync(callsPath, "utf8").trim().split("\n").filter(Boolean),
+      calls: readFileSync(callsPath, "utf8").trim().split("\n").filter(Boolean).map((line) => line.split("\u001f").join(" ")),
     };
   }
 
@@ -130,6 +137,22 @@ esac
   });
   test("capturePane fails closed when the server probe fails", () => {
     failure("pid-refused", 'driver.capturePane("%1", "4242")', "read the server pid", "display-message -p #{pid}", "probe: pid refused");
+  });
+  test("ensureSession names the refused session and retains its cause", () => {
+    const got = failure("refused", 'driver.ensureSession("probe", "/tmp")', "start session", "new-session -d -s probe -x 200 -y 50 -c /tmp", "probe: new-session refused");
+    assert.deepEqual(got.calls, ["has-session -t probe", "new-session -d -s probe -x 200 -y 50 -c /tmp"]);
+  });
+  test("selectWindow names the refused window and retains its cause", () => {
+    const got = failure("refused", 'driver.selectWindow("@9")', "select window", "select-window -t @9", "probe: select-window refused");
+    assert.deepEqual(got.calls, ["select-window -t @9"]);
+  });
+  test("send names the refused pane and retains its cause", () => {
+    const got = failure("refused", 'driver.send("x", "%9")', "send text", "send-keys -l -t %9 -- x", "probe: send-keys refused");
+    assert.deepEqual(got.calls, ["send-keys -l -t %9 -- x"]);
+  });
+  test("sendKey names the refused pane and keeps its server guard", () => {
+    const got = failure("refused", 'driver.sendKey("Enter", "%9", { server: "4242", timeoutMs: 1000 })', "send key", "if-shell -F #{==:#{pid},4242} 'send-keys' '-t' '%9' '--' 'Enter'", "probe: if-shell refused");
+    assert.deepEqual(got.calls, ["if-shell -F #{==:#{pid},4242} 'send-keys' '-t' '%9' '--' 'Enter'"]);
   });
   console.log(`tmux driver read fixtures: ${root}`);
 }
