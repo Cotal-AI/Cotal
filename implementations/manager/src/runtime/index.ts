@@ -251,9 +251,15 @@ export function watchProvedExit(handle: AgentHandle, onExit: () => void, watchin
   } catch {
     return pollProvedExit(handle, onExit, watching, EXIT_POLL_MS);
   }
-  session.onExit(onExit);
-  // A child that exited before the subscription fires no event for it.
-  if (handle.status() === "exited") onExit();
+  // A backend may deliver an exit that already happened, either by an event or by leaving none,
+  // so the status is read once here too. `onExit` runs from either only while `watching` is true,
+  // and a delivery that finds it false drops the subscriber.
+  const unsubscribe = session.onExit(() => {
+    if (watching()) onExit();
+    else unsubscribe();
+  });
+  if (!watching()) unsubscribe();
+  else if (handle.status() === "exited") onExit();
   return true;
 }
 

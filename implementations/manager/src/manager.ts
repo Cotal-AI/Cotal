@@ -7838,11 +7838,12 @@ export class Manager {
 
   /** Subscribe to a managed agent's process-exit so a self-driven exit frees its slot and reaps
    *  its children (P4b/P4c). The watch is bound to the current handle: a restart swaps in a new one
-   *  and watches it, so a late exit proved for the old handle must not retire the row. */
+   *  and watches it, so a late exit proved for the old handle must not retire the row.
+   *  {@link watchProvedExit} drops that exit itself once `current` is false. */
   private watchExit(a: ManagedAgent): void {
     const handle = a.handle;
     const current = (): boolean => this.agents.get(a.name) === a && a.handle === handle;
-    const watched = watchProvedExit(handle, () => { if (current()) this.onAgentExit(a); }, current);
+    const watched = watchProvedExit(handle, () => this.onAgentExit(a), current);
     if (!watched)
       console.error(`! ${a.name}: runtime "${handle.kind}" cannot prove a child exit (AgentHandle.waitForExit is not implemented) - it stays managed after it exits, until it is stopped`);
   }

@@ -430,6 +430,7 @@
     "smoke:lifecycle-e2e": "tsx implementations/manager/smoke/lifecycle-e2e.smoke.ts",
     "smoke:orphan-seat-succession": "tsx implementations/manager/smoke/orphan-seat-succession.smoke.ts",
     "smoke:reap-absent-refusal": "tsx implementations/manager/smoke/reap-absent-refusal.smoke.ts",
+    "smoke:watch-proved-exit": "tsx implementations/manager/smoke/watch-proved-exit.smoke.ts",
     "smoke:lifecycle-inventory-concurrency": "tsx implementations/manager/smoke/lifecycle-inventory-concurrency.smoke.ts",
     "smoke:manager-mass-stop": "tsx implementations/manager/smoke/manager-mass-stop.smoke.ts",
     "smoke:orphan-seat-reap": "pnpm --filter @cotal-ai/seat build && tsx implementations/manager/smoke/orphan-seat-reap.smoke.ts",
