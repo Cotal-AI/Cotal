@@ -6376,11 +6376,13 @@ message or complete history. Recipient contents are not printed. The retained
 
 ```bash
 cotal deliver [--space <s>] [--server <url>] [--tls] [--creds <file>] [--root <dir>] [--shard <n>] [--shards <n>] [--dev-mint]
+cotal deliver --spaces <manifest> --server <url> [--tls] [--root <dir>]
 cotal deliver pending <name> [--limit <n>] [--durable <name>] [--json]
 ```
 
 With no positional, `cotal deliver` runs the delivery daemon (see
-[the delivery daemon](delivery-daemon.md)). `deliver pending <name>` never starts the daemon: it
+[the delivery daemon](delivery-daemon.md)). With `--spaces` it runs one delivery lane per space a
+manifest names, in one process; see [server daemons](#server-daemons). `deliver pending <name>` never starts the daemon: it
 is an operator-only read over one recipient's DM durable, for the moment after a send when the
 question is "what does the broker actually hold for them." It resolves `<name>` against a short
 presence watch (an `offline` card still counts, since the recipient may be dead, that is what
@@ -7501,6 +7503,7 @@ manager's entry, is deprecated the same way and names `cotal manager start`.
 
 ```bash
 cotal deliver --space <s> [--server <url>] [--creds <file>] [--root <dir>]
+cotal deliver --spaces <manifest> --server <url> [--root <dir>]
 cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy] [--advertised-server <url>] [--agent-provisioning-url <https://…>] [--auth-timeout <seconds>]
 cotal auth-service --space <s> --server <url> --callout-only [--auth-timeout <seconds>]
 cotal auth-service --server <url> --callout-only --spaces <manifest> [--auth-timeout <seconds>]
@@ -7561,7 +7564,34 @@ workspace root is refused outright); with no record for the space it falls back 
 The daemon serves the workspace root that `--root <dir>` names, which must hold `.cotal/`, or else
 the nearest `.cotal/` above its working directory. With neither, it refuses at start and names the
 directory it searched from, before it reads a credential or dials a broker.
-See the [delivery daemon](delivery-daemon.md). `feedback-intake` runs a self-hosted feedback server
+See the [delivery daemon](delivery-daemon.md).
+
+`deliver --spaces` serves several spaces from one delivery process, one lane each, and stands in for
+`--space`. It reads the same manifest file `auth-service --callout-only --spaces` reads, with the
+same refusals. Naming both `--space` and `--spaces` refuses, and so does `--spaces` without
+`--server`, because every lane dials that one broker. `--creds`, `--dev-mint`, `--shard`, `--shards`
+and `deliver pending` refuse with `--spaces`: each lane reads its own space's credential from the
+root, at the location `cotal up` writes it, and runs one shard. The root is `--root <dir>`, or the
+nearest `.cotal/` above the working directory, chosen once at start for every lane.
+
+A lane is the daemon `deliver --space` runs, with the same refusals, credential renewal, lease,
+broker watchdog, timer writer and membership feed, on its own connections. Its lines carry a
+`[<space>]` prefix. A lane writes no `.cotal/delivery.<key>.pid`, because that record is what
+`cotal down` signals for one space, and signalling the host would stop every space it serves. The
+host is stopped by its supervisor: on SIGTERM or SIGINT it closes every lane, releasing each lease,
+and exits 0, or exits after 10 seconds when a lane cannot finish.
+
+At startup the host serves every space in the manifest or none: one that cannot be served is an
+error naming that space, and no lane is left running, so a host started while a single-space daemon
+still holds a space's lease refuses. To move spaces from one process each onto a host, start the host
+on a manifest of spaces with no running daemon, then stop each remaining daemon and add its space.
+The host rereads the manifest when it changes on disk, on `SIGHUP`, and on a slow backstop interval,
+and opens or closes the difference. A lane that loses the broker, its credential or its lease closes
+on its own and the other lanes keep serving; the host reopens it, retrying every 5 seconds while it
+fails. `deliver --spaces` still prints the deprecation warning, which says to keep `cotal deliver`
+for `--spaces` because the `delivery` service preset has no form for it.
+
+`feedback-intake` runs a self-hosted feedback server
 at `POST /v1/feedback` (requires `--keys`, in the format the `feedback-intake` service preset
 describes, and a scoped `--creds`), announcing submissions into a space channel; flags
 include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and `--rate-limit`.

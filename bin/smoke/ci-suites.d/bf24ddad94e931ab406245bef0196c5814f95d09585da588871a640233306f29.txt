@@ -1,0 +1,4 @@
+# One delivery process serving several spaces: each lane acts only in its own space's account, a
+# lane's lease loss or removal leaves the others serving, and an outside re-sign of one lane's
+# credential is adopted by that lane alone.
+smoke:delivery-multi-space

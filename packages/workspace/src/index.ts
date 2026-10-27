@@ -46,6 +46,7 @@ export * from "./secret-store-fs.js";
 export * from "./hosted-runtime.js";
 export * from "./seat-checkpoint.js";
 export * from "./space.js";
+export * from "./space-host.js";
 export * from "./space-segmentation.js";
 export * from "./system-rotation.js";
 export * from "./telemetry.js";

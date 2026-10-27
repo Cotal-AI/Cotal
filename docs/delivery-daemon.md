@@ -68,6 +68,14 @@ credential** co-located with the broker: never an allow-all cred, and it never h
 signing key. One daemon serves a space (a single-flight lease guards against a second binding the
 same durables).
 
+One process can also serve every space on a host: `cotal deliver --spaces <manifest> --server <url>`
+holds one lane per space the manifest names ([server daemons](cli.md#server-daemons)). A lane is
+that space's daemon. It reads the space's own credential from the root, dials on its own
+connections, which authenticate into that space's account, and holds its own lease, broker
+watchdog, timer writer and membership feed, so a second daemon for the space is refused by the lease
+as before. A lane that loses the broker, its credential or its lease closes alone and the host
+reopens it; the other lanes keep serving.
+
 The manager needs this daemon while it starts. Its SecretStore challenge, its boot repair of a frozen
 registration gate, and the verified eviction a restart performs all go over the daemon's
 `ctl.delivery-admin` rail. Agents' durable join, leave and membership-list requests go over its
@@ -181,7 +189,9 @@ record whose pid now belongs to another program is cleared without a signal. If 
 while that stop is running, `up` waits for the stop to finish before it exits.
 
 The daemon **records itself** in `.cotal/delivery.<key>.pid`, whichever way it was started, and
-removes that record when it exits cleanly. The launcher is not the only route to a running daemon: a
+removes that record when it exits cleanly. A lane of `cotal deliver --spaces` is the exception: it
+writes no record, because the record is what `cotal down` signals for one space and the host serves
+several. The launcher is not the only route to a running daemon: a
 container entrypoint, a systemd unit, or `cotal deliver --space <space>` typed by hand all reach one
 too, and a record written only by the launcher goes stale the moment any of those restarts it.
 `cotal deliver` is a deprecated entry kept for existing units and scripts; new setups use the
