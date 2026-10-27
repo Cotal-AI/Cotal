@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.109.8
+
+### Patch Changes
+
+- c592eb8: Use one owner read per advisory-lock inspection, keeping the stale verdict and inode together through acquisition and serialized reclaim without changing the public inspection result.
+
 ## 0.109.7
 
 No changes in this release.
