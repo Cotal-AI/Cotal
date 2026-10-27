@@ -79,8 +79,10 @@ binds no consumer, applies the reader rules above and reads a record older than 
 as offline. Calls made while a read is in flight share it. A peer an earlier read saw that has left
 the bucket stays in the roster as offline. The manager, the delivery daemon, `cotal chat` and the
 dashboard keep their watches, because they act on liveness transitions. The read needs the agent
-grant `$JS.API.DIRECT.GET.KV_cotal_presence_<space>`, and a credential minted before that grant
-existed is refused with the grant named.
+grant `$JS.API.DIRECT.GET.KV_cotal_presence_<space>`. An older manager or auth service can mint
+credentials without it, including newly minted ones. Upgrade the issuer first, then mint new
+credentials and use them for the connection. Reconnecting with the same credential does not add a
+grant. A refused read remains an authorization failure, never an empty roster.
 
 `CotalEndpoint.presenceView()` reports whether a watching endpoint's roster can support an absence verdict.
 `current` is usable, `unpopulated` means the current watch has not completed its initial snapshot,

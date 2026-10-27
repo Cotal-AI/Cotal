@@ -133,6 +133,8 @@ try {
     let refusal = "";
     try { await sup.readPresence(); } catch (e) { refusal = (e as Error).message; }
     check("a credential without the read grant is refused with the grant named", refusal.includes(`$JS.API.DIRECT.GET.KV_${presenceBucket(space)}`), refusal);
+    check("the remedy requires upgrading the issuer before minting again, even for newly minted credentials",
+      refusal.includes("newly minted") && refusal.includes("upgrade the manager or auth service") && refusal.includes("reconnecting does not add the grant"), refusal);
     check("a refused read leaves the roster untouched", sup.getRoster().length === 0, sup.getRoster());
 
     const watcher = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "observer"), channels: [], consume: false, registerPresence: false, card: { name: "watcher", kind: "endpoint" } });
