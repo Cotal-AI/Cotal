@@ -125,7 +125,7 @@ import {
   publishContractArtifact,
   contractArtifactCanonicalBytes,
   standaloneConnectOpts,
-  rawDigest,
+  credentialIdOf,
   STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC,
   newArtifactSigner,
   RotatingSigner,
@@ -8569,8 +8569,9 @@ export class Manager {
    *  stays goal-writer-only (Q2 — disjoint from the serve credential); only the FAMILY membership
    *  is shared, so the registration barrier's existing enumerate+revoke+evict catches the
    *  goal-writer on takeover/retire with NO barrier code change. Used both at registration (the run
-   *  block's `authKv`) and at renewal (a fresh executor's), re-minting the SAME stable nkey with a
-   *  fresh bounded exp — each issuance writes a DISTINCT ledger row (per-JWT credentialId digest). */
+   *  block's `authKv`) and at renewal (a fresh executor's), re-minting the SAME stable nkey. Each
+   *  issuance is distinct because the goal-writer JWT carries a fresh random issuance tag, not
+   *  because its expiry second changed. */
   private async mintAndStageGoalWriter(authKv: KV): Promise<string> {
     const auth = this.auth!;
     const identity = this.goalWriterIdentity!;
@@ -8591,7 +8592,7 @@ export class Manager {
     // it a barrier mid-takeover (already past its enumeration) would let this credential land
     // ACTIVE in a family nothing revokes again.
     await commitSiblingIssuance(fence, observed, {
-      credentialId: rawDigest(creds).replace("sha256:", "sha256-"),
+      credentialId: credentialIdOf(creds),
       credentialKey: identity.id,
       holderPrincipal: principalKey(DEV_OWNER, identity.id).key,
       endpoint: MANAGER_ENDPOINT, lifecycleUid: iid, sourceChain: ["root"], state: "active", exp,
@@ -8704,8 +8705,8 @@ export class Manager {
    *  It therefore takes no epoch pin: §13.6 makes it the durable revocation authority that must
    *  outlive the serving endpoint, so scoping it to one serving epoch would defeat its purpose. The
    *  epoch lives where it belongs, on the per-session serving credentials, which are minted per
-   *  redemption into this same family. Re-minting the SAME nkey on renewal writes a DISTINCT ledger
-   *  row (per-JWT credentialId digest). */
+   *  redemption into this same family. Re-minting the SAME nkey on renewal writes a distinct ledger
+   *  row because the session-ledger JWT carries a fresh random issuance tag. */
   private async mintAndStageSessionLedger(authKv: KV): Promise<string> {
     const auth = this.auth!;
     const identity = this.sessionLedgerIdentity!;
@@ -8723,7 +8724,7 @@ export class Manager {
     // The §13.1 open-and-commit fence (see {@link mintAndStageGoalWriter}): stage + revision-pinned
     // commit against the gate this mint's grant was scoped from, releasing only on the win.
     await commitSiblingIssuance(fence, observed, {
-      credentialId: rawDigest(creds).replace("sha256:", "sha256-"),
+      credentialId: credentialIdOf(creds),
       credentialKey: identity.id,
       holderPrincipal: principalKey(DEV_OWNER, identity.id).key,
       endpoint: MANAGER_ENDPOINT, lifecycleUid: iid, sourceChain: ["root"], state: "active", exp,
@@ -8897,7 +8898,7 @@ export class Manager {
             epoch: grant.serving.epoch,
             exp: Math.floor(grant.exp / 1000),
           });
-          const id = rawDigest(creds).replace("sha256:", "sha256-");
+          const id = credentialIdOf(creds);
           this.sessionServingKeys.set(id, identity.id);
           return { id, creds, exp: grant.exp };
         }
@@ -8910,8 +8911,9 @@ export class Manager {
         const health = inspectCredHealth(creds);
         if (health.exp === undefined)
           throw new Error(`the session-serving credential for ${grant.sessionId} is unbounded; a per-session credential never outlives its session (SPEC 13.6)`);
-        this.sessionServingKeys.set(rawDigest(creds).replace("sha256:", "sha256-"), identity.id);
-        return { id: rawDigest(creds).replace("sha256:", "sha256-"), creds, exp: grant.exp };
+        const id = credentialIdOf(creds);
+        this.sessionServingKeys.set(id, identity.id);
+        return { id, creds, exp: grant.exp };
       },
       observeGate: async (_endpoint, instanceId) => {
         // Open mesh: nothing is minted and nothing is staged, so there is no gate to pin (see
@@ -10394,7 +10396,7 @@ export class Manager {
       );
       // The same credential id the issuance path derives, so a re-sent identical credential maps to
       // the same row.
-      const credentialId = rawDigest(creds).replace("sha256:", "sha256-");
+      const credentialId = credentialIdOf(creds);
       await this.withLifecycleExecutor(pin, async (t) => {
         await recordSlotCredential(t, DEV_OWNER, alias, lifecycleUid, credentialId);
         await appendStaticCredentialRow(t, { lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, identity.id).key, exp });

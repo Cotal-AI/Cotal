@@ -10,6 +10,7 @@
  * live with their executors; a second copy of either is the dual-encoder drift this module
  * exists to prevent.
  */
+import { rawDigest } from "./canonical.js";
 import { parseServiceConnectionBinding, parseServiceGateAuthority, type ServiceConnectionBinding, type ServiceGateAuthority } from "./service-gate.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { LIFECYCLE_HEAD, UID_RESERVATION, recordAtomicKey } from "./endpoint-records.js";
@@ -242,6 +243,15 @@ export function assertSourceChain(v: unknown, what: string): string[] {
     throw new EpEnvelopeError("failed-precondition", `${what} must be a non-empty sourceChain (SPEC 13.1: the FULL verified lineage, never absent)`);
   for (const m of v) parseSourceMember(m);
   return v as string[];
+}
+
+/** The ledger id of one issued credential: `sha256-<hex>` over the exact bytes the caller
+ *  staged (a formatted creds file, or a bare JWT where that is what the row records). The §13.7
+ *  artifact form is `sha256:<hex>`, but this id is a segment of a `cred.` / `epcred.` KV key and
+ *  that grammar has no `:`. The digest is what identifies the credential; the separator only
+ *  makes the id a legal key segment. A byte-identical retry maps to the same id. */
+export function credentialIdOf(credential: string): string {
+  return rawDigest(credential).replace("sha256:", "sha256-");
 }
 
 /** The agent-family ledger key `cred.<lifecycleUid>.<credentialId>`. */
