@@ -362,7 +362,7 @@ try {
   });
   let generation = "";
   await plane.issueUserCaller({
-    t: { owner: httpOwner, act: { actor: "cli", lifecycleUid: cliRow.lifecycleUid } } as never,
+    t: { owner: httpOwner, exp: Math.floor(Date.now() / 1000) + 300, act: { actor: "cli", lifecycleUid: cliRow.lifecycleUid } } as never,
     connId: mintLifecycleUid(),
     mint: (issued) => { generation = issued.generation; return { pub: { allow: [">"] }, sub: { allow: [">"] } }; },
   });
