@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import * as prompts from "../lib/prompts.js";
-import { assertValidChannel, assertValidRole, oneLine, personaDir, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { assertValidChannel, assertValidRole, commaList, oneLine, personaDir, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
   CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
@@ -150,7 +150,7 @@ async function createSource(name: string, path: string, values: Values): Promise
   if (!body.trim()) throw usage("persona body is empty");
   // Each entry passes the channel rules here, so a refusal names the flag and the entry rather than
   // the private draft the flags are written to.
-  const channels = (flag: string, text: string | undefined) => text?.split(",").map(value => value.trim()).filter(Boolean).map(channel => {
+  const channels = (flag: string, text: string | undefined) => commaList(text)?.map(channel => {
     try { return assertValidChannel(channel); }
     catch (error) {
       throw new CommandFailure("refused", "USAGE_INVALID", `${flag}: ${oneLine((error as Error).message)}`, channel.startsWith("#") ? { remedy: `name the channel without its #, as ${oneLine(channel.slice(1))}` } : {});

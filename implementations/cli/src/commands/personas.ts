@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import {
   agentFilePath,
   assertValidName,
+  commaList,
   loadAgentFile,
   oneLine,
   personaDir,
@@ -251,12 +252,13 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
   // The channels it reads are stated, never guessed: `--subscribe a,b` or `--subscribe ""` for an
   // agent that reads none. There is no default, because the two possible ones are both wrong - a
   // channel the author did not ask for, or an empty set indistinguishable from forgetting to say.
-  if (v.subscribe === undefined) {
+  const given = v.subscribe;
+  if (given === undefined) {
     console.error(c.red("--subscribe is required: name the channels this persona reads"));
     console.error(c.dim('e.g. --subscribe general   or   --subscribe "" for an agent reachable only by direct message'));
     process.exit(1);
   }
-  const subscribe = v.subscribe.split(",").map((s) => s.trim()).filter(Boolean);
+  const subscribe = commaList(given);
 
   const bytes = await serializePersona({ name, role: v.role, model: v.model, persona, subscribe });
   commitPersona(path, expected, bytes);

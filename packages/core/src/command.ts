@@ -222,6 +222,15 @@ export function parseCommandArgs(cmd: Command, argv: string[]): ParsedArgs {
   return { values: values as ParsedArgs["values"], positionals, raw: argv, positionalIndices: tokens.filter((token) => token.kind === "positional").map((token) => origin[token.index]!) };
 }
 
+/** A comma-list flag as its entries: trimmed, with blanks dropped. An absent flag stays
+ *  `undefined`, so the caller can tell "not given" from an explicit empty value, which is the
+ *  empty list. A value that is never absent, such as a required flag's string, splits the same way. */
+export function commaList(value: string): string[];
+export function commaList(value: string | undefined): string[] | undefined;
+export function commaList(value: string | undefined): string[] | undefined {
+  return value === undefined ? undefined : value.split(",").map((entry) => entry.trim()).filter(Boolean);
+}
+
 /** The command `word` names on a surface, by exact name or alias. A prefix never matches. */
 export function findCommand<C extends Command>(commands: readonly C[], word: string | undefined): C | undefined {
   if (word === undefined) return undefined;
