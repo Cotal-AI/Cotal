@@ -27,9 +27,12 @@ gh workflow run changesets.yml --ref main
 
 The workflow uses the maintained Changesets actions to select the release, pack its public packages
 and publish the packed artifacts directly to `latest` using the existing publishing authority.
-GitHub Actions pins the run to one commit. One publication runs at a time, including verification.
+GitHub Actions pins the run to one commit. One upload runs at a time. Direct-mode verification
+runs in the following job outside the publisher queue, so its wait does not hold later uploads.
 There is no separate qualification or promotion workflow. The optional staging mode below is off
-unless the repository variable `COTAL_STAGED_RELEASE` is set to `true`.
+unless the repository variable `COTAL_STAGED_RELEASE` is set to `true`. Selection freezes that mode
+as a job output for the artifact, verification and promotion. Later variable edits do not change
+the selected mode within a run.
 
 Native build jobs produce Cotal's native binaries: the seat binding on Linux x64 and arm64, and the
 workspace binding on Windows and macOS, each for x64 and arm64. The pack job assembles those
@@ -42,9 +45,9 @@ workflow so publication has the configured identity and the native binaries are 
 
 ## Verify the result
 
-The publish action reports the packages published and pushes one git tag per package. The publisher
-checks every exact package version, installs the fixed closure into an isolated prefix from npm,
-and runs the CLI. Default direct publishing updates `latest` during upload, before these checks.
+The publish action reports the packages published and pushes one git tag per package. Direct-mode
+verification then checks every exact package version, installs the fixed closure into an isolated
+prefix from npm, and runs the CLI in the following job. Default direct publishing updates `latest` during upload, before these checks.
 A verification failure stops the GitHub Release but cannot undo those tag updates.
 
 With staging enabled, the complete fixed group is validated and packed under `cotal-staged` using
@@ -62,8 +65,9 @@ An accepted upload and a successful install are separate observations. npm may t
 cached missing-package responses after an upload, and the large `cotal-ai` tarball has taken up to
 twenty minutes to become installable, so the install job waits up to twenty-five minutes for that
 install. The install check uses a fresh cache and `--prefer-online` to request metadata revalidation.
-That does not force npm's upstream caches to converge. The publisher keeps its queue through this
-check and any enabled promotion so an older delayed release cannot overwrite a newer release's tags.
+That does not force npm's upstream caches to converge. Only staged-mode verification keeps the
+publisher queue through installation and promotion, so an older delayed staged release cannot
+overwrite a newer release's tags. Direct-mode verification stays outside that queue.
 If an observation fails, inspect the registry and
 the published-package output before retrying. Never blindly repeat an upload whose outcome is unknown.
 

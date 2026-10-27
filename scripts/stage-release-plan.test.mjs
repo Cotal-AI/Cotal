@@ -12,6 +12,58 @@ import { releaseManifests, stageReleasePlan, STAGING_TAG } from "./stage-release
 
 const root = join(import.meta.dirname, "..");
 
+test("direct install verification stays outside publisher concurrency while staged verification stays inside", () => {
+  const workflow = YAML.parse(readFileSync(join(root, ".github/workflows/changesets.yml"), "utf8"));
+  const inside = workflow.jobs.publish.steps.find((step) => step.run?.includes("verify-release-installable.mjs"));
+  const outside = workflow.jobs["verify-install"].steps.find((step) => step.run?.includes("verify-release-installable.mjs"));
+  assert.equal(inside.if, "steps.publish.outputs.published == 'true' && needs.select.outputs.staged == 'true'", "direct installs must not hold the publish queue");
+  assert(outside, "direct install verification must run in the following job");
+  assert.equal(outside.if, "needs.publish.outputs.staged != 'true'");
+  assert.equal(outside.run, inside.run, "both modes use the same existing closure and install scripts");
+  assert.equal(workflow.jobs["verify-install"].concurrency, undefined);
+  const steps = workflow.jobs["verify-install"].steps;
+  assert(steps.indexOf(outside) < steps.findIndex((step) => step.name === "Cut the GitHub Release"));
+});
+
+test("one frozen select output governs artifact selection, verification and promotion despite later variable changes", () => {
+  const text = readFileSync(join(root, ".github/workflows/changesets.yml"), "utf8");
+  const workflow = YAML.parse(text);
+  assert.equal((text.match(/vars\.COTAL_STAGED_RELEASE/g) ?? []).length, 1, "mutable repo variable must only be read once");
+  const freeze = workflow.jobs.select.steps.find((step) => step.id === "release-mode");
+  assert(freeze, "select snapshots the mode before staging the artifact");
+  assert.equal(freeze.env.STAGED_RELEASE, "${{ vars.COTAL_STAGED_RELEASE == 'true' }}");
+  assert.equal(workflow.jobs.select.outputs.staged, "${{ steps.release-mode.outputs.staged }}");
+  assert.deepEqual(workflow.jobs.publish.needs, ["select", "pack"]);
+  assert.equal(workflow.jobs.publish.outputs.staged, "${{ needs.select.outputs.staged }}");
+  const stagedSelect = workflow.jobs.select.steps.filter((step) => step.if?.includes("steps.release-mode.outputs.staged"));
+  const stagedPublish = workflow.jobs.publish.steps.filter((step) => step.if?.includes("needs.select.outputs.staged"));
+  const directVerify = workflow.jobs["verify-install"].steps.find((step) => step.run?.includes("verify-release-installable.mjs"));
+  assert.equal(stagedSelect.length, 3);
+  assert.equal(stagedPublish.length, 3);
+  const runs = (condition, selected, later) => {
+    const values = { "steps.select.outputs.mode": "publish", "github.event_name": "workflow_dispatch", "steps.publish.outputs.published": "true", "steps.release-mode.outputs.staged": selected, "needs.select.outputs.staged": selected, "needs.publish.outputs.staged": selected, "vars.COTAL_STAGED_RELEASE": later };
+    const resolved = condition.replace(/\b(?:steps|needs|github|vars)\.[\w.-]+/g, (key) => {
+      assert(Object.hasOwn(values, key), `unknown workflow input: ${key}`);
+      return JSON.stringify(values[key]);
+    });
+    assert.match(resolved, /^[\s"'\w=!&-]+$/);
+    return Function(`return (${resolved})`)();
+  };
+  for (const selected of ["false", "true"]) for (const later of ["false", "true"]) {
+    for (const step of [...stagedSelect, ...stagedPublish]) assert.equal(runs(step.if, selected, later), selected === "true");
+    assert.equal(runs(directVerify.if, selected, later), selected !== "true");
+  }
+  const scratch = mkdtempSync(join(tmpdir(), "release-mode-snapshot-"));
+  try {
+    for (const selected of ["false", "true"]) {
+      const output = join(scratch, `output-${selected}`);
+      const result = spawnSync("bash", ["-e", "-c", freeze.run], { env: { PATH: process.env.PATH, GITHUB_OUTPUT: output, STAGED_RELEASE: selected }, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(readFileSync(output, "utf8"), `staged=${selected}\n`);
+    }
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
 test("unset, false and unrelated variables preserve the original plan and skip every staged step", () => {
   const workflow = YAML.parse(readFileSync(join(root, ".github/workflows/changesets.yml"), "utf8"));
   assert.equal(workflow.jobs.select.outputs.plan, "${{ steps.staged-plan.outputs.artifact-id || steps.select.outputs.publish-plan-artifact-id }}");
@@ -22,7 +74,7 @@ test("unset, false and unrelated variables preserve the original plan and skip e
   assert.equal(optional.length, 5);
   for (const value of [undefined, "", "false", "enabled", "true"]) {
     const enabled = optional.filter((step) => {
-      assert.match(step.if, /(?:^| && )vars\.COTAL_STAGED_RELEASE == 'true'$/);
+      assert.match(step.if, /(?:^| && )(?:steps\.release-mode|needs\.select)\.outputs\.staged == 'true'$/);
       return value === "true";
     });
     assert.equal(enabled.length, value === "true" ? 5 : 0);
@@ -46,7 +98,7 @@ test("workflow parses and every ID download flattens the artifact into its decla
   const promote = steps.findIndex((step) => step.name === "Promote verified packages to latest");
   assert(verify >= 0 && promote > verify);
   assert.match(steps[verify].run, /verify-release-installable\.mjs.*--closure/);
-  assert.equal(steps[promote].if, "steps.publish.outputs.published == 'true' && vars.COTAL_STAGED_RELEASE == 'true'");
+  assert.equal(steps[promote].if, "steps.publish.outputs.published == 'true' && needs.select.outputs.staged == 'true'");
   assert.equal(steps[promote]["continue-on-error"], undefined);
 });
 const entry = (name) => ({ kind: "publish", name, version: "1.2.3", access: "public", tag: "latest" });

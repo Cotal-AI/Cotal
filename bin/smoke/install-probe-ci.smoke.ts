@@ -82,7 +82,7 @@ check(
     !publishBody.includes("gh release create"),
   publishBody.slice(0, 200),
 );
-// The public release job follows successful, serialized verification and latest promotion.
+// The public release job follows direct verification or successful serialized staged promotion.
 // No announcement is cut by the upload action itself.
 const verifyBody = csJobs.get("verify-install") ?? "";
 check(
@@ -91,6 +91,8 @@ check(
     /^\s+needs: publish\s*$/m.test(verifyBody) &&
     /if: needs\.publish\.outputs\.published == 'true'/.test(verifyBody) &&
     /verify-release-installable\.mjs/.test(publishBody) &&
+    /verify-release-installable\.mjs/.test(verifyBody) &&
+    verifyBody.indexOf("verify-release-installable.mjs") < verifyBody.indexOf("gh release create") &&
     publishBody.indexOf("npm dist-tag add") > publishBody.indexOf("verify-release-installable.mjs") &&
     verifyBody.includes("gh release create"),
   "the install observation must follow publication and precede the Release",
@@ -110,9 +112,11 @@ check("the selected complete plan is staged before the maintained pack action", 
 check("packing retains public builds and native assembly without repeated seat TypeScript compilation", /pnpm --filter '!\.\/examples\/\*\*' -r build/.test(csJobs.get("pack") ?? "") && /@cotal-ai\/seat build:native/.test(csJobs.get("native") ?? ""));
 check("the publisher installs frozen root tooling and consumes packed bytes without rebuilding", /pnpm --filter cotal-monorepo install --frozen-lockfile --ignore-scripts/.test(publishBody) && /cache: true/.test(publishBody) && !/pnpm (?:-r )?build/.test(publishBody));
 
-check("direct publishing is default and staging requires explicit opt-in without settings-read authority", /steps\.staged-plan\.outputs\.artifact-id \|\| steps\.select\.outputs\.publish-plan-artifact-id/.test(csJobs.get("select") ?? "") && /if: steps\.publish\.outputs\.published == 'true' && vars\.COTAL_STAGED_RELEASE == 'true'/.test(publishBody) && !publishBody.includes("preflight-npm-publish.mjs"));
+check("direct publishing is default and staging requires explicit opt-in without settings-read authority", /steps\.staged-plan\.outputs\.artifact-id \|\| steps\.select\.outputs\.publish-plan-artifact-id/.test(csJobs.get("select") ?? "") && /if: steps\.publish\.outputs\.published == 'true' && needs\.select\.outputs\.staged == 'true'/.test(publishBody) && !publishBody.includes("preflight-npm-publish.mjs"));
 
-const EXPECTED = 11;
+check("direct verification runs outside the publisher queue and staging mode is frozen once", /if: needs\.publish\.outputs\.staged != 'true'/.test(verifyBody) && !/concurrency:/.test(verifyBody) && /published == 'true' && needs\.select\.outputs\.staged == 'true'/.test(publishBody) && (csText.match(/vars\.COTAL_STAGED_RELEASE/g) ?? []).length === 1 && /staged: \$\{\{ needs\.select\.outputs\.staged \}\}/.test(publishBody));
+
+const EXPECTED = 12;
 check(`every cell ran (${EXPECTED} before sentinel)`, pass + fail === EXPECTED, pass + fail);
 console.log(`\nINSTALL PROBE CI SMOKE ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
 console.log("SUITE COMPLETE");
