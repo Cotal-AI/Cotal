@@ -15,13 +15,16 @@ export function trustUrl(registryBase: any, name: any): string;
  * documented `claims` object). Other publishers on the same package are ignored. Empty
  * allowed-action lists on this
  * publisher are stage-only: npm's post-2026-09-03 default. HTTP 201 from the
- * OIDC exchange is not an input here.
+ * OIDC exchange is not an input here. requireDistTags also requires manageDistTags on the same
+ * direct-capable matching configuration.
  */
 export function classifyDirectPublishPermission(body: any, identity?: {
     repository: string;
     workflowFilename: string;
     environment: string;
-}): "refused:malformed-trust" | "refused:no-trusted-publisher" | "refused:no-github-publisher" | "createPackage" | "stage-only";
+}, { requireDistTags }?: {
+    requireDistTags?: boolean;
+}): "refused:malformed-trust" | "refused:no-trusted-publisher" | "refused:no-github-publisher" | "refused:manage-dist-tags" | "createPackage" | "stage-only";
 export function printPublishCensus(rows: any, log?: {
     (...data: any[]): void;
     (message?: any, ...optionalParams: any[]): void;
@@ -32,13 +35,14 @@ export function printPublishCensus(rows: any, log?: {
 /**
  * @returns {Promise<{ state: NpmPublishPreflightState, rows: any[] }>}
  */
-export function preflightNpmPublish({ fixedPackages, workspacePackages, registryBase, env, fetchImpl, tag, log, deadline, concurrency, }: {
+export function preflightNpmPublish({ fixedPackages, workspacePackages, registryBase, env, fetchImpl, tag, requireDistTags, log, deadline, concurrency, }: {
     fixedPackages: any;
     workspacePackages: any;
     registryBase?: string;
     env?: NodeJS.ProcessEnv;
     fetchImpl?: typeof fetch;
     tag?: string;
+    requireDistTags?: boolean;
     log?: {
         (...data: any[]): void;
         (message?: any, ...optionalParams: any[]): void;
@@ -52,12 +56,13 @@ export function preflightNpmPublish({ fixedPackages, workspacePackages, registry
 /**
  * @returns {Promise<{ state: NpmPublishPreflightState, rows: any[] }>}
  */
-export function preflightFromRepository({ root, registryBase, env, fetchImpl, tag, log, exec, deadline, concurrency, }?: {
+export function preflightFromRepository({ root, registryBase, env, fetchImpl, tag, requireDistTags, log, exec, deadline, concurrency, }?: {
     root?: string;
     registryBase?: string;
     env?: NodeJS.ProcessEnv;
     fetchImpl?: typeof fetch;
     tag?: string;
+    requireDistTags?: boolean;
     log?: {
         (...data: any[]): void;
         (message?: any, ...optionalParams: any[]): void;

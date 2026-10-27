@@ -82,21 +82,37 @@ check(
     !publishBody.includes("gh release create"),
   publishBody.slice(0, 200),
 );
-// The install check is a job of its own after publish, so it stays out of the publish queue, and
-// the one GitHub Release for the version is cut there only after the install check passed, so the
-// announcement never names a version the installer cannot yet resolve.
+// The public release job follows successful, serialized verification and latest promotion.
+// No announcement is cut by the upload action itself.
 const verifyBody = csJobs.get("verify-install") ?? "";
 check(
   "a successful publication is followed by a fresh install check, then the GitHub Release",
   /^\s+published: \$\{\{ steps\.publish\.outputs\.published \}\}\s*$/m.test(publishBody) &&
     /^\s+needs: publish\s*$/m.test(verifyBody) &&
     /if: needs\.publish\.outputs\.published == 'true'/.test(verifyBody) &&
-    /verify-release-installable\.mjs/.test(verifyBody) &&
-    verifyBody.indexOf("gh release create") > verifyBody.indexOf("verify-release-installable.mjs"),
+    /verify-release-installable\.mjs/.test(publishBody) &&
+    publishBody.indexOf("npm dist-tag add") > publishBody.indexOf("verify-release-installable.mjs") &&
+    verifyBody.includes("gh release create"),
   "the install observation must follow publication and precede the Release",
 );
 
-const EXPECTED = 6;
+const closureAt = publishBody.indexOf("verify-publish-closure.mjs");
+const installAt = publishBody.indexOf("verify-release-installable.mjs");
+const promoteAt = publishBody.indexOf("npm dist-tag add");
+check(
+  "latest promotion follows closure and real install verification inside the serialized publisher",
+  closureAt >= 0 && installAt > closureAt && promoteAt > installAt &&
+    /group:.*-publish/.test(publishBody) && !/continue-on-error: true|if:.*always\(/.test(publishBody),
+  { closureAt, installAt, promoteAt },
+);
+
+check("the selected complete plan is staged before the maintained pack action", /stage-release-plan\.mjs stage/.test(csJobs.get("select") ?? "") && /steps\.staged-plan\.outputs\.artifact-id/.test(csJobs.get("select") ?? "") && /publish-plan-artifact-id:.*needs\.select\.outputs\.plan/.test(csJobs.get("pack") ?? ""));
+check("packing retains public builds and native assembly without repeated seat TypeScript compilation", /pnpm --filter '!\.\/examples\/\*\*' -r build/.test(csJobs.get("pack") ?? "") && /@cotal-ai\/seat build:native/.test(csJobs.get("native") ?? ""));
+check("the publisher installs frozen root tooling and consumes packed bytes without rebuilding", /pnpm --filter cotal-monorepo install --frozen-lockfile --ignore-scripts/.test(publishBody) && /cache: true/.test(publishBody) && !/pnpm (?:-r )?build/.test(publishBody));
+
+check("missing or unreadable independent tag authority refuses before upload", publishBody.indexOf("preflight-npm-publish.mjs --require-dist-tags") >= 0 && publishBody.indexOf("preflight-npm-publish.mjs --require-dist-tags") < publishBody.indexOf("uses: changesets/action/publish@"));
+
+const EXPECTED = 11;
 check(`every cell ran (${EXPECTED} before sentinel)`, pass + fail === EXPECTED, pass + fail);
 console.log(`\nINSTALL PROBE CI SMOKE ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
 console.log("SUITE COMPLETE");
