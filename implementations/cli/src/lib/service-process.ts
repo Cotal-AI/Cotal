@@ -1089,11 +1089,16 @@ function lastLoggedLine(path: string, from: number): string | undefined {
   } catch { return undefined; } finally { closeSync(fd); }
 }
 
-/** One bounded raw log slice. File identity and byte offsets are local file facts, not global sequences.
- *  A log this account cannot read is refused as `readOwnedLogTail` refuses it. */
+/** {@link ownedLogSlice} of a service instance's log, or undefined when no instance store exists. */
 export function serviceLogSlice(space: string, id: string, position: { offset: number; dev: number; ino: number } | undefined, tail: number) {
   const path = serviceLogPath(space, id);
-  if (!path) return undefined;
+  return path ? ownedLogSlice(path, position, tail) : undefined;
+}
+
+/** One bounded raw slice of an owned private log file. File identity and byte offsets are local file
+ *  facts, not global sequences. A log this account cannot read is refused as `readOwnedLogTail`
+ *  refuses it. */
+export function ownedLogSlice(path: string, position: { offset: number; dev: number; ino: number } | undefined, tail: number) {
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) {

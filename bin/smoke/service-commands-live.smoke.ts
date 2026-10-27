@@ -4,17 +4,20 @@
  * `cotal manager start` with no flags saves the manager from its preset's defaults and starts it; a
  * second start starts nothing; `status` and `logs` read it; a start naming another runtime while it
  * runs refuses; `stop` stops it. A program of your own is added with one `service add --exec`, then
- * started, read and stopped by its name.
+ * started, read and stopped by its name. In a sandbox of its own, the manager a plain `cotal up`
+ * starts has no saved service: `manager logs` and `service logs stack-manager` read its log, a
+ * `--follow --json` writes one record per line and ends when `cotal down` stops it, and `manager stop`
+ * and `install` still refuse it.
  *
  * Linux only: the native manager child is Linux-only. Every directory is a sandbox this suite
  * removes; teardown stops what still runs, then `cotal down` stops the stack it started.
  *
  * Run: pnpm smoke:service-commands:live
  */
-import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const WT = join(import.meta.dirname, "..", "..");
@@ -33,11 +36,20 @@ const SERVER = `nats://127.0.0.1:${await freePort()}`;
 const env: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(env)) if (key.startsWith("COTAL_") || key === "INVOCATION_ID") delete env[key];
 Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", COLUMNS: "200" });
-function cotal(args: string[], timeout = 180_000) {
-  const options = { cwd: root, env, encoding: "utf8" as const, timeout };
-  assertSmokeSandboxDown(anchor, args, options);
+function cotal(args: string[], timeout = 180_000, at = { root, env, anchor }) {
+  const options = { cwd: at.root, env: at.env, encoding: "utf8" as const, timeout };
+  assertSmokeSandboxDown(at.anchor, args, options);
   return spawnSync(process.execPath, ["--import", TSX_LOADER, BIN, ...args], options);
 }
+// The plain `cotal up` stack, with its own root and HOME so nothing the first stack saved reaches it.
+const upHome = mkdtempSync(join(tmpdir(), "cotal-service-commands-live-uphome-"));
+const upRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}service-commands-uproot-`));
+const upXdg = join(upHome, "xdg");
+for (const dir of [join(upRoot, ".cotal"), join(upHome, ".cotal"), upXdg]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+const upAt = { root: upRoot, env: { ...env, HOME: upHome, USERPROFILE: upHome, COTAL_HOME: join(upHome, ".cotal"), XDG_CONFIG_HOME: upXdg }, anchor: recordSmokeSandbox({ root: upRoot, cotalHome: join(upHome, ".cotal"), xdgConfigHome: upXdg }) };
+const UP_SPACE = "servicecommandsup";
+const UP_SERVER = `nats://127.0.0.1:${await freePort()}`;
+const upCotal = (args: string[]) => cotal(args, 180_000, upAt);
 const out = (run: ReturnType<typeof cotal>) => `${run.stdout ?? ""}${run.stderr ?? ""}`;
 type Row = { name: string; preset: string | null; definition: string | null; state: string; needs: string[]; next: string };
 /** `cotal service --json`: the services rows and the saved definition names. */
@@ -53,6 +65,7 @@ const row = (rows: readonly Row[], name: string) => rows.find((entry) => entry.n
 let stackUp = false;
 let managerUp = false;
 let helloUp = false;
+let upStackUp = false;
 try {
   if (process.platform !== "linux") console.log("  - SKIP every cell: the native manager child is Linux-only");
   else {
@@ -113,10 +126,52 @@ try {
     check("cotal manager stop stops it", stop.status === 0 && !inventory().running.includes("manager"), out(stop));
     const after = row(inventory().services, "manager");
     check("  and the listing shows it stopped, with cotal manager start next", after?.state === "stopped" && after.next === "cotal manager start", after);
+
+    // ---- The manager a plain cotal up starts: logs reads it, stop and install still refuse -------
+    const plainUp = upCotal(["up", "--detach", "--open", "--space", UP_SPACE, "--server", UP_SERVER]);
+    upStackUp = plainUp.status === 0;
+    check("a plain cotal up starts a stack with its manager", upStackUp, out(plainUp));
+    const isManagerLog = (path = "") => dirname(path) === join(realpathSync(upRoot), ".cotal") && /^manager\.[0-9a-f]+\.log$/.test(basename(path));
+    let upLogs = upCotal(["manager", "logs"]);
+    for (let i = 0; i < 30 && !out(upLogs).includes("manager up"); i++) { await sleep(500); upLogs = upCotal(["manager", "logs"]); }
+    check("cotal manager logs reads the log of the manager up started, exit 0",
+      upLogs.status === 0 && out(upLogs).includes("Manager log tail") && out(upLogs).includes("manager up") && !out(upLogs).includes("UNSUPPORTED"), out(upLogs));
+    type LogsEnvelope = { outcome?: string; result?: { kind?: string; lines?: string[]; path?: string; recordedProcess?: { savedService?: boolean } } };
+    const envelope = (run: ReturnType<typeof cotal>): LogsEnvelope => { try { return JSON.parse(run.stdout) as LogsEnvelope; } catch { return {}; } };
+    const json = envelope(upCotal(["manager", "logs", "--json", "--tail", "5"]));
+    check("  and --json returns its records from <root>/.cotal/manager.<spaceKey>.log, with no saved service",
+      json.outcome === "ok" && json.result?.kind === "service-logs" && json.result.lines?.length === 5 && isManagerLog(json.result.path) && json.result.recordedProcess?.savedService === false, json);
+    const stackManager = envelope(upCotal(["service", "logs", "stack-manager", "--json", "--tail", "5"]));
+    check("  and cotal service logs stack-manager reads the same file", stackManager.outcome === "ok" && stackManager.result?.path === json.result?.path && stackManager.result?.lines?.length === 5, stackManager);
+    const refusedStop = envelope(upCotal(["manager", "stop", "--yes", "--json"])) as LogsEnvelope & { error?: { code?: string; remedy?: string } };
+    check("cotal manager stop still refuses it UNSUPPORTED with the stack advice",
+      refusedStop.outcome === "refused" && refusedStop.error?.code === "UNSUPPORTED" && refusedStop.error.remedy === "it stops with its stack through cotal down, or where cotal supervise runs it", refusedStop);
+    const refusedInstall = envelope(upCotal(["manager", "install", "--json"])) as LogsEnvelope & { error?: { code?: string } };
+    check("  and so does cotal manager install", refusedInstall.outcome === "refused" && refusedInstall.error?.code === "UNSUPPORTED", refusedInstall);
+
+    // A follow is a read-only view: it writes one JSON record per line and ends when down stops the manager.
+    const follow = spawn(process.execPath, ["--import", TSX_LOADER, BIN, "manager", "logs", "--follow", "--json", "--tail", "3"], { cwd: upRoot, env: upAt.env, stdio: ["ignore", "pipe", "pipe"] });
+    let followed = "";
+    follow.stdout.setEncoding("utf8").on("data", (chunk: string) => { followed += chunk; });
+    const followExit = new Promise<number | null>((resolve) => follow.on("exit", (code) => resolve(code)));
+    for (let i = 0; i < 60 && !followed.includes('"type":"event"'); i++) await sleep(250);
+    const down = upCotal(["down"]);
+    upStackUp = down.status !== 0;
+    check("cotal down stops the plain stack while the follow reads its manager's log", down.status === 0, out(down));
+    const code = await Promise.race([followExit, sleep(15_000).then(() => "timeout" as const)]);
+    if (code === "timeout") follow.kill("SIGINT");
+    const records = followed.split("\n").filter(Boolean).map((line) => { try { return JSON.parse(line) as { stream?: string; type?: string; data?: { reason?: string } }; } catch { return { type: `unparsed: ${line}` }; } });
+    check("cotal manager logs --follow --json writes one logs record per line: a snapshot, its events, then an end",
+      records.length >= 3 && records.every((row) => row.stream === "logs") && records[0]?.type === "snapshot" && records.some((row) => row.type === "event") && records.at(-1)?.type === "end", followed);
+    check("  and it ends with exit 0 once that manager's process is gone", code === 0 && records.at(-1)?.data?.reason === "original-process-no-longer-present", { code, last: records.at(-1) });
   }
 } catch (e) {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
 } finally {
+  if (upStackUp) {
+    const down = upCotal(["down"]);
+    check("teardown stops the plain stack", down.status === 0, out(down));
+  }
   if (stackUp) {
     if (helloUp) {
       const stop = cotal(["service", "stop", "hello", "--yes"]);
@@ -129,7 +184,7 @@ try {
     const down = cotal(["down"]);
     check("cotal down stops the sandboxed stack", down.status === 0, out(down));
   }
-  for (const dir of [home, root]) rmSync(dir, { recursive: true, force: true });
+  for (const dir of [home, root, upHome, upRoot]) rmSync(dir, { recursive: true, force: true });
   finish();
   process.exit(process.exitCode ?? 0);
 }

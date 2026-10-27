@@ -11,9 +11,11 @@ import { resolveServiceAdapter } from "../lib/service-adapters.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { definitionRootMatch, execServiceDefinition, importServiceDefinition, serviceDefinitionProjection, serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { serviceAction } from "./service-actions.js";
+import { followRecordedLog } from "./service-log-follow.js";
+import { managerLogPath } from "../lib/manager-proc.js";
 import { serviceInstanceId, serviceInstances, instanceProjection } from "../lib/service-instances.js";
 import { readLocalServiceAttempts } from "../lib/service-census.js";
-import { readinessAddressSurvivors, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecord, removeStoppedInstanceRecords } from "../lib/service-process.js";
+import { readOwnedLogTail, readinessAddressSurvivors, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecord, removeStoppedInstanceRecords } from "../lib/service-process.js";
 import { addedDefinitionStep, STACK_DEFINITION } from "../lib/stack-journal.js";
 import { localRecordName } from "../lib/protected-records.js";
 import { brokerServerProblem, brokerService } from "../lib/broker-service.js";
@@ -86,7 +88,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   const target = { space, executionHost: "this-machine" };
   if (["start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode)) {
     const resolved = resolvePresetService(space, root, suppliedName!, mode, args.values);
-    if (resolved?.recorded) return recordedPresetProcessReport(resolved, resolved.recorded, space, mode, presentation, commandName);
+    if (resolved?.recorded) return mode === "logs" && resolved.preset === "manager" ? recordedManagerLogs(resolved.requested, resolved.recorded, space, root, args.values, presentation, commandName) : recordedPresetProcessReport(resolved, resolved.recorded, space, mode, presentation, commandName);
     if (resolved) announcePresetTarget(resolved, space, presentation);
     if (resolved?.saved === null && mode === "start" && args.values["dry-run"] && !store.read(resolved.name)) return previewPresetStart(resolved, space, root, args, presentation, commandName);
     try { return await serviceAction(resolved ? { ...args, positionals: [mode, resolved.name] } : args, space, root, commandName, resolved); }
@@ -299,8 +301,9 @@ function announcePresetTarget(resolved: PresetServiceTarget, space: string, pres
 }
 
 /** A preset's process that `up` or a daemon entry started, recorded by PID alone. A start or a
- *  status reports it and starts nothing beside it; any other action refuses, since no saved service
- *  owns it, and names where it is stopped. */
+ *  status reports it and starts nothing beside it, and a manager's log is read by
+ *  {@link recordedManagerLogs}; any other action refuses, since no saved service owns it, and names
+ *  where it is stopped. */
 function recordedPresetProcessReport(resolved: PresetServiceTarget, recorded: { pid: number; label: string }, space: string, mode: string, presentation: ReturnType<typeof presentationOf>, commandName: string): void {
   const target = { space, name: resolved.requested, executionHost: "this-machine", pid: recorded.pid };
   const stop = "it stops with its stack through cotal down, or where cotal supervise runs it";
@@ -309,6 +312,20 @@ function recordedPresetProcessReport(resolved: PresetServiceTarget, recorded: { 
     { title: mode === "start" ? `The ${recorded.label} is already running; nothing was started` : `The ${recorded.label} is running`, blocks: [{ kind: "fields", rows: [["Space", space], ["PID", String(recorded.pid)], ["Started by", "cotal up or cotal supervise, not as a saved service"], ["Stop", stop]] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal status", description: "See it with the rest of this space" }, { command: "cotal ps", description: "List the agents it runs" }] }] },
   ] }));
+}
+
+/** The log `up` opened for the manager it started with no saved service, read as `service logs`
+ *  reads a service's. A read changes nothing, so it needs no control of the manager. */
+async function recordedManagerLogs(name: string, recorded: { pid: number; label: string }, space: string, root: string, values: ParsedArgs["values"], presentation: ReturnType<typeof presentationOf>, commandName: string): Promise<void> {
+  const target = { space, name, executionHost: "this-machine", pid: recorded.pid };
+  const path = managerLogPath(space, root), tail = values.tail === undefined ? 100 : Number(values.tail);
+  if (values.follow) return followRecordedLog(path, recorded.pid, target, presentation, tail);
+  const log = readOwnedLogTail(path, tail);
+  writeResult(presentation, { command: commandName, target, result: { kind: "service-logs", name, recordedProcess: { pid: recorded.pid, label: recorded.label, startedBy: "cotal up or cotal supervise", savedService: false }, ...log, encoding: "utf8-with-replacement", collection: "the manager's output, in the log cotal up opened for it" }, ...(log.omittedBytes && log.lines.length < tail ? { completeness: "partial" as const, partial: { message: "The 16 MiB bounded read holds fewer lines than the requested tail; earlier bytes were omitted." } } : {}) }, (result): Report => ({ sections: [{ title: "Manager log tail", blocks: [
+    { kind: "fields", rows: [["Space", space], ["PID", String(recorded.pid)], ["Started by", "cotal up or cotal supervise, not as a saved service"], ["Log", path]] },
+    { kind: "lines", lines: result.lines.length ? result.lines : ["No captured log lines in this bounded read."] },
+    { kind: "lines", lines: [{ text: "A manager that cotal supervise runs in a terminal writes there instead. Its output may contain secrets. This is a local authorized read, not a secret-redacted log or an upload.", tone: "hint" }] },
+  ] }] }));
 }
 
 /** A dry-run start of a preset no definition exists for yet: what the real start would save, from
