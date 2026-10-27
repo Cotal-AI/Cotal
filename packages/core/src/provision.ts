@@ -2480,8 +2480,9 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
 
 /** The ISSUER permission set (SPEC 13.15): value-writes on the evidence store (evidence, attempt,
  *  source index: create-only and CAS rows, keyed by generation) and on the accepted-row store
- *  (create-only, keyed by the client's token); the leader-served point read on the evidence
- *  store; and the ordered `keys()` walk a source retirement enumerates the reverse index with.
+ *  (create-only, keyed by the client's token); `STREAM.INFO` on both, the bind-time shape check;
+ *  the leader-served point read on the evidence store; and the ordered `keys()` walk a source
+ *  retirement enumerates the reverse index with.
  *  NAMED RESIDUAL (the contract's section 8): this profile holds a write and a raw read on ONE
  *  stream, the pairing no peer-held profile may hold, so it is never issuable to a peer. */
 function issuerPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
@@ -2495,6 +2496,7 @@ function issuerPermissions(space: string, pr: MintPrincipal): Record<string, unk
         // A user-auth connection's renewal finds the accepted row its nonce names (SPEC 13.15).
         `$JS.API.DIRECT.GET.KV_${acceptedBucket(space)}.$KV.${acceptedBucket(space)}.>`,
         `$JS.API.STREAM.INFO.${ISSUED}`,
+        `$JS.API.STREAM.INFO.KV_${acceptedBucket(space)}`,
         `$JS.API.STREAM.MSG.GET.${ISSUED}`,
         // Source liveness: the leader-served point read of a static incarnation's issuance gate on
         // the auth store (body-selected, stream-wide: the same named residual every records

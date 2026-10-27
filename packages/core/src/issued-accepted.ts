@@ -15,7 +15,8 @@ export function assertIssuedSpace(space: string): void {
 }
 
 /** The four caller coordinates plus the generation. `generation` is 32 lowercase hex characters
- *  of issuer-chosen entropy (at least 128 bits); it is an identifier, never a bearer secret. */
+ *  chosen by the issuer: its horizon in the first 8, then 96 bits of entropy (SPEC 13.15). It is
+ *  an identifier, never a bearer secret. */
 export interface IssuedAuthorityRef extends EpCaller {
   readonly space: string;
   readonly generation: string;

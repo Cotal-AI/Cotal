@@ -522,6 +522,7 @@
     "smoke:issued-space": "tsx packages/core/smoke/issued-space.smoke.ts",
     "smoke:issued-space:live": "tsx packages/core/smoke/issued-space-live.smoke.ts",
     "smoke:issued-retention:live": "tsx packages/core/smoke/issued-retention-live.smoke.ts",
+    "smoke:issued-store-binders": "tsx implementations/manager/smoke/issued-store-binders.smoke.ts",
     "smoke:failed-bind-cleanup": "tsx packages/core/smoke/failed-bind-cleanup.smoke.ts",
     "smoke:cas-publish": "tsx packages/core/smoke/cas-publish.smoke.ts",
     "smoke:cas-preflight-cluster": "tsx packages/core/smoke/cas-preflight-cluster.smoke.ts",

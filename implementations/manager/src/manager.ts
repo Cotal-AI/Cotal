@@ -52,9 +52,7 @@ import {
   mintCreds,
   mintGeneration,
   mintAcceptedToken,
-  openIssuedStore,
-  acceptedBucket,
-  issuedBucket,
+  bindIssuedStores,
   type IssuanceSeam,
   type IssuedStore,
   mintLifecycleUid,
@@ -8048,8 +8046,7 @@ export class Manager {
     const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
-      const store = openIssuedStore(await kvm.open(issuedBucket(this.space)), await jetstreamManager(nc), this.space);
-      return await fn({ store, accepted: await kvm.open(acceptedBucket(this.space)) });
+      return await fn(await bindIssuedStores(kvm, await jetstreamManager(nc), this.space));
     } finally {
       await nc.drain().catch(() => nc.close());
     }

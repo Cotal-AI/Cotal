@@ -413,6 +413,8 @@ const enc = new TextEncoder();
 const dec = new TextDecoder("utf-8", { fatal: true });
 const bytes = (value: unknown): Uint8Array => enc.encode(canonicalJson(value));
 
+/** The evidence store over an already bound KV. It checks no shape: issuers and resolvers bind
+ *  through {@link bindIssuedStores}. */
 export function openIssuedStore(kv: KV, jsm: JetStreamManager, space: string): IssuedStore {
   assertIssuedSpace(space);
   const bucket = issuedBucket(space);
@@ -646,6 +648,15 @@ export function assertIssuedStoreConfig(cfg: StreamConfig, space: string, bucket
     || !Array.isArray(cfg.subjects) || cfg.subjects.length !== 1 || cfg.subjects[0] !== `$KV.${bucket}.>`)
     throw new Error(`the issued-authority store ${bucket} has a drifted shape (allow_direct=${String(cfg.allow_direct)}); an authority store is never silently adopted - reprovision it (SPEC 13.15)`);
   assertStoreShape(cfg as unknown as Record<string, unknown>, shape, bucket, "SPEC 13.15");
+}
+
+/** Bind both issued-authority stores for an issuer or resolver. Each stream's shape is verified
+ *  first, so a store created before bounded retention, or a drifted one, is refused before
+ *  anything is read from it or written to it. */
+export async function bindIssuedStores(kvm: Kvm, jsm: JetStreamManager, space: string): Promise<{ store: IssuedStore; accepted: KV }> {
+  for (const { bucket } of issuedStoreDefinitions(space))
+    assertIssuedStoreConfig((await jsm.streams.info(`KV_${bucket}`)).config, space, bucket);
+  return { store: openIssuedStore(await kvm.open(issuedBucket(space)), jsm, space), accepted: await kvm.open(acceptedBucket(space)) };
 }
 
 // ---- the accepted row ----------------------------------------------------------------------------
