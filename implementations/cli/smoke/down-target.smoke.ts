@@ -325,8 +325,8 @@ try {
   setCurrent("teamA");
   const current = await rejection(run(["web"]));
   await sleep(200); // a SIGTERM sent before the refusal would have ended the child by now
-  check("current mesh: `down web` refuses TARGET_NOT_FOUND and names the web service preset",
-    current?.code === "TARGET_NOT_FOUND" && /cotal service add web --preset web/.test(current.remedy ?? ""), current?.message);
+  check("current mesh: `down web` refuses TARGET_NOT_FOUND and names the web extension and its start",
+    current?.code === "TARGET_NOT_FOUND" && current.remedy?.includes("cotal ext add @cotal-ai/web") === true && current.remedy.includes("cotal service start web --creds <file>"), current && { message: current.message, remedy: current.remedy });
   check("current mesh: the legacy dashboard is not signalled and keeps its web.pid", alive(meshA.child.pid!) && existsSync(meshA.pidPath));
   check("current mesh: the OTHER mesh's dashboard is untouched", alive(meshB.child.pid!) && existsSync(meshB.pidPath));
 

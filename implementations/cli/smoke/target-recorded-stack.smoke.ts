@@ -54,7 +54,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSuite } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -79,11 +79,19 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const anchors = new Map<string, SmokeSandboxAnchor>();
+/** Record `at`, which already holds its `.cotal`, as a root a down may run in. */
+const sandbox = (at: string) => anchors.set(at, recordSmokeSandbox({ root: at, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME }));
 const run = (args: string[], cwd = root) => {
   const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout ?? "") as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
+};
+/** `run` for a down, refused unless `cwd` was recorded as a sandbox root. */
+const runDown = (args: string[], cwd: string) => {
+  assertSmokeSandboxDown(anchors.get(cwd), args, { cwd, env });
+  return run(args, cwd);
 };
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 900), stderr: r.stderr.slice(0, 600) });
 /** Whether `r` is a refusal, exit 2, with this code, message and Next: from its envelope, or from the
@@ -185,7 +193,8 @@ check("status --components refuses the target and probes no default broker", /ta
   const cut = run(["up", "--json"]);
   check("up over a truncated journal refuses SCHEMA_INVALID, naming its path and saying to remove it", named(cut), shown(cut));
   writeFileSync(path, "");
-  const down = run(["down", "--yes", "--json"]);
+  sandbox(root);
+  const down = runDown(["down", "--yes", "--json"], root);
   check("down over an empty journal refuses the same way", named(down), shown(down));
   for (const space of ["la07", "other"]) {
     const create = run(["space", "create", space, "--json"]);
@@ -282,9 +291,10 @@ check("with empty folders at the old path it is still moved, and names the same 
 {
   check("rig: prepare la07 at its root again", run(["space", "create", "la07", "--json"]).status === 0);
   renameSync(root, moved);
+  sandbox(moved);
   const adopt = `or, to run it from this folder, forget it with cotal space forget la07, then run cotal space create la07 --adopt --root ${moved}`;
   const back = `move this folder back to ${root}, then run the command again there; ${adopt}`;
-  const routes = [run(["up", "--json"], moved), run(["down", "--yes", "--json"], moved), run(["whoami", "--json"], moved), run(["whoami", "--space", "la07", "--json"], moved)];
+  const routes = [run(["up", "--json"], moved), runDown(["down", "--yes", "--json"], moved), run(["whoami", "--json"], moved), run(["whoami", "--space", "la07", "--json"], moved)];
   const status = run(["status", "--space", "la07", "--json"], moved);
   mkdirSync(join(root, ".cotal", "nats", "jetstream"), { recursive: true });
   const recreated = run(["up", "--json"], moved);
@@ -550,7 +560,8 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
   const preview = run(["spawn", "--dry-run", "--json"], legacyAuth);
   check("spawn --dry-run there carries that sentence and the same next step, not only that no target resolved",
     preview.status === 2 && (preview.envelope?.error?.message ?? "").includes(`"lg01" is registered for ${holder}, not for this folder`) && preview.envelope?.error?.remedy === useHolder, shown(preview));
-  const stop = run(["down", "--yes", "--json"], legacyAuth);
+  sandbox(legacyAuth);
+  const stop = runDown(["down", "--yes", "--json"], legacyAuth);
   check("a bare down there refuses CONFLICT, says the folder holds records and no stack of its own, and names the same step",
     refusedWith(stop, "CONFLICT", `this folder holds the records of "lg01", which is registered for ${holder}, not for this folder, so there is no stack here to stop`, useHolder), shown(stop));
   // A bare up does not take the name over from the folder it is registered for, as down there does not
@@ -672,7 +683,8 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
     check(`${args.join(" ")} refuses SCHEMA_INVALID, exit 1, naming the record and the move that sets it aside`, named(r), shown(r));
   }
   // With no stack run here, down reads the space's records as a whole and names that service list as its step.
-  const down = run(["down", "--dry-run", "--json"], prepared);
+  sandbox(prepared);
+  const down = runDown(["down", "--dry-run", "--json"], prepared);
   check("down --dry-run refuses SCHEMA_INVALID, its cause naming the record", down.status === 1 && down.envelope?.error?.code === "SCHEMA_INVALID" && (down.envelope.error as { cause?: { detail?: string } }).cause?.detail === message && down.envelope.error.remedy === "inspect them with cotal service list --space sr", shown(down));
   const status = run(["status", "--json"], prepared);
   check("status is partial and warns about the record with its way out", status.status === 4 && status.envelope?.outcome === "partial" && (status.envelope.warnings ?? []).some((w) => w.code === "SERVICE_INSTANCES_UNAVAILABLE" && w.message === `${message}; ${remedy}`), shown(status));

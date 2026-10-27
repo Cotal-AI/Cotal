@@ -10,7 +10,7 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
-import { emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const wt = resolve(import.meta.dirname, "../../..");
 const cliEntry = join(wt, "bin/cotal.ts");
@@ -30,7 +30,7 @@ function portOpen(port: number): Promise<boolean> {
 
 const home = join(base, "home"), mesh = join(base, "mesh");
 for (const p of [home, mesh, join(mesh, ".cotal"), join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
-recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
+const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
 const port = await freePort(); assert.notEqual(port, 4222);
 const space = "foreground-running";
 const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
@@ -50,7 +50,10 @@ try {
   console.log("PASS foreground-up-running");
 } finally {
   try {
-    if (await portOpen(port)) logs.down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"]);
+    if (await portOpen(port)) {
+      assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
+      logs.down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"]);
+    }
   } finally {
     for (const [name, log] of Object.entries(logs)) writeFileSync(join(base, `${name}.json`), JSON.stringify(log), { mode: 0o600 });
   }

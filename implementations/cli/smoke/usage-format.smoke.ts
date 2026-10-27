@@ -30,7 +30,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createSuite } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -229,6 +229,9 @@ if (process.platform !== "win32") {
   // The shell enters a folder and removes it, so the CLI starts with a working folder that is gone.
   const fromRemoved = (args: string[]) => {
     const gone = mkdtempSync(join(home, "gone-"));
+    // The guard reads the folder's marker, which the shell must find gone, so it goes after the check.
+    assertSmokeSandboxDown(recordSmokeSandbox({ root: gone, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME }), args, { cwd: gone, env });
+    rmSync(join(gone, ".cotal"), { recursive: true });
     const r = spawnSync("/bin/sh", ["-c", 'cd "$1" && rmdir "$1" && shift && exec "$@"', "sh", gone, process.execPath, BIN, ...args], { cwd: neutral, env, encoding: "utf8", timeout: 120_000 });
     return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   };

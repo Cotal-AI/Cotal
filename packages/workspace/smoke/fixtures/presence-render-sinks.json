@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 708,
+    "total": 727,
     "honest-text": 37,
     "presence-only-glyph/count": 57,
     "command-ack": 11,
-    "non-render/control": 603
+    "non-render/control": 622
   },
   "renderers": [
     {
@@ -1038,7 +1038,7 @@
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "{compose ? (\n        <Prompt\n          label={composeLabel(compose)}\n          value={compose.value}\n          width={size.cols}\n          onChange={(v) => setCompose((c) => (c ? { ...c, value: v } : c))}\n          onSubmit={submitCompose}\n          onCancel={() => setCompose(null)}\n        />\n      ) : palette.active ? (\n        <CommandPalette\n          active={palette.active}\n          query={palette.query}\n          snapshot={mesh}\n          canWrite={!!canWrite}\n          canControl={!!canControl}\n          width={size.cols}\n          onChange={(q) => setPalette((p) => ({ ...p, query: q }))}\n          onRun={runPaletteLine}\n          onCancel={() => setPalette({ active: false, query: \"\" })}\n        />\n      ) : searchRow ? (\n        <Search\n          query={search.query}\n          active={search.active}\n          width={size.cols}\n          onChange={(q) => setSearch((s) => ({ ...s, query: q }))}\n          onSubmit={() => setSearch((s) => ({ ...s, active: false }))}\n          onCancel={() => setSearch({ active: false, query: \"\" })}\n        />\n      ) : null}",
+      "anchor": "{compose ? (\n        <Prompt\n          label={composeLabel(compose)}\n          value={compose.value}\n          width={size.cols}\n          onChange={(v) => setCompose((c) => (c ? { ...c, value: v } : c))}\n          onSubmit={submitCompose}\n          onCancel={() => setCompose(null)}\n        />\n      ) : searchRow ? (\n        <Search\n          query={search.query}\n          active={search.active}\n          width={size.cols}\n          onChange={(q) => setSearch((s) => ({ ...s, query: q }))}\n          onSubmit={() => setSearch((s) => ({ ...s, active: false }))}\n          onCancel={() => setSearch({ active: false, query: \"\" })}\n        />\n      ) : null}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -4063,23 +4063,9 @@
     {
       "path": "implementations/cli/src/commands/service-registry.ts",
       "kind": "status-token",
-      "anchor": ": \"not checked\"), tone: \"waiting\" }, added: row.rootMatch",
+      "anchor": "\" ? \"failed\" as const : \"waiting\" as const } })) }, { kin",
       "class": "non-render/control",
-      "rationale": "Service registry table: \"waiting\" is the color tone for an unchecked service readiness, not any peer's presence."
-    },
-    {
-      "path": "implementations/cli/src/commands/service-registry.ts",
-      "kind": "status-token",
-      "anchor": "ot not recorded\", tone: \"waiting\" } };\n      }) } : { kin",
-      "class": "non-render/control",
-      "rationale": "Service registry table: \"waiting\" is the color tone for a definition whose root is not recorded, not any peer's presence."
-    },
-    {
-      "path": "implementations/cli/src/commands/service-registry.ts",
-      "kind": "status-token",
-      "anchor": "ributable\" ? \"failed\" : \"waiting\" }, owner: \"not checked\"",
-      "class": "non-render/control",
-      "rationale": "Service registry component table: \"waiting\" is the color tone for a PID observation, not any peer's presence."
+      "rationale": "Service inventory PID table: \"waiting\" is the color tone for a recorded process observation, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/commands/service-set-stop.ts",
@@ -4126,7 +4112,7 @@
     {
       "path": "implementations/cli/src/commands/setup.ts",
       "kind": "status-token",
-      "anchor": "ome unconfirmed\", tone: \"waiting\" }] as [string, Cell]] :",
+      "anchor": "ome unconfirmed\", tone: \"waiting\" };\n  const rows: [strin",
       "class": "non-render/control",
       "rationale": "Setup startup row: \"waiting\" is the color tone for an unconfirmed local startup command, not presence."
     },
@@ -4294,13 +4280,6 @@
     {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "status-token",
-      "anchor": " . before starting it\", \"waiting\")]);\n  const auth = f.au",
-      "class": "non-render/control",
-      "rationale": "Status folder row: \"waiting\" is the color tone for the inherited-root warning, not a peer's presence."
-    },
-    {
-      "path": "implementations/cli/src/commands/status.ts",
-      "kind": "status-token",
       "anchor": "nes = { ok: \"ok\", warn: \"waiting\", error: \"failed\", off: ",
       "class": "non-render/control",
       "rationale": "Status machine overview: maps integration check states to color tones; \"waiting\" is a tone, not presence."
@@ -4308,7 +4287,7 @@
     {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "status-token",
-      "anchor": "nector.missing.length ? \"waiting\" : \"ok\")]);\n  }\n  rows.p",
+      "anchor": "nector.missing.length ? \"waiting\" : \"ok\")]);\n    }\n  if (",
       "class": "non-render/control",
       "rationale": "Status machine overview: \"waiting\" is the color tone for a connector whose binaries are not on PATH, not presence."
     },
@@ -5002,7 +4981,7 @@
     {
       "path": "implementations/cli/src/lib/manager-choice.ts",
       "kind": "status-token",
-      "anchor": "visor}` && p.status !== \"offline\")));\n}\n\n/**\n * The manag",
+      "anchor": "visor}` && p.status !== \"offline\")));\n}\n\n/** What a manag",
       "class": "non-render/control",
       "rationale": "Manager choice: skips an offline supervisor presence when reading a manager's host; the status is a filter predicate, not rendered."
     },
@@ -5124,6 +5103,160 @@
       "anchor": "tenant(mesh.space).root = mesh.root",
       "class": "non-render/control",
       "rationale": "Store tenancy: records which registered space uses this store folder; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{palette.active || newAgent ? <Box position=\"absolute\" width={size.cols} height={size.rows}\n        alignItems=\"center\" justifyContent=\"center\">\n        {newAgent ? <NewAgent space={ep.space} width={size.cols} height={size.rows}\n          applications={extensionNames(\"connector\")} defaultPersona={spawnPersona(undefined, [], { space: ep.space }).ref}\n          onLaunch={(input) => launchAgent({ ...controlCtx, space: ep.space }, input)}\n          onClose={() => setNewAgent(false)}\n          onBack={() => { setNewAgent(false); setPalette({ active: true, query: \"\" }); }} />\n          : <CommandPalette active query={palette.query} snapshot={mesh} canWrite={!!canWrite}\n            canControl={!!canControl} width={size.cols} readManaged={readPaletteAgents}\n            onChange={(query) => setPalette({ active: true, query })} onRun={runPaletteLine}\n            onNewAgent={() => { setPalette({ active: false, query: \"\" }); setNewAgent(true); }}\n            onCancel={() => setPalette({ active: false, query: \"\" })} />}\n      </Box> : null}",
+      "class": "non-render/control",
+      "rationale": "Console overlay wiring: shows the palette or spawn form and hands the mesh snapshot to the component; the component's own text is classified at its sinks."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{newAgent ? <NewAgent space={ep.space} width={size.cols} height={size.rows}\n          applications={extensionNames(\"connector\")} defaultPersona={spawnPersona(undefined, [], { space: ep.space }).ref}\n          onLaunch={(input) => launchAgent({ ...controlCtx, space: ep.space }, input)}\n          onClose={() => setNewAgent(false)}\n          onBack={() => { setNewAgent(false); setPalette({ active: true, query: \"\" }); }} />\n          : <CommandPalette active query={palette.query} snapshot={mesh} canWrite={!!canWrite}\n            canControl={!!canControl} width={size.cols} readManaged={readPaletteAgents}\n            onChange={(query) => setPalette({ active: true, query })} onRun={runPaletteLine}\n            onNewAgent={() => { setPalette({ active: false, query: \"\" }); setNewAgent(true); }}\n            onCancel={() => setPalette({ active: false, query: \"\" })} />}",
+      "class": "non-render/control",
+      "rationale": "Console overlay wiring: chooses the spawn form or the command palette and passes the mesh snapshot as a prop; no status text is rendered here."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "status-token",
+      "anchor": "eeds a manager.\", tone: \"waiting\" }] },\n      result.item",
+      "class": "non-render/control",
+      "rationale": "ps presence fallback: \"waiting\" is the color tone for the no-manager notice, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/service-registry.ts",
+      "kind": "status-token",
+      "anchor": "w.state === \"stopped\" ? \"waiting\" : \"failed\" }, next: { t",
+      "class": "non-render/control",
+      "rationale": "Service inventory table: \"waiting\" is the color tone for a service that is not started or stopped, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": "rsion}`).join(\" · \")}`, \"waiting\") : text;\n}\n\n/**\n * What",
+      "class": "non-render/control",
+      "rationale": "Status extensions row: \"waiting\" is the color tone for an extension version skew, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/manager-choice.ts",
+      "kind": "status-token",
+      "anchor": "== name && p.status !== \"offline\");\n}\n\n/** `argv` with `-",
+      "class": "non-render/control",
+      "rationale": "Manager choice: tests whether a live peer holds the name; the status is a filter predicate, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "meshRelease(mesh)",
+      "class": "non-render/control",
+      "rationale": "Spawn held-name release: passes the resolved mesh registry target to the release callback; `mesh` is a target, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "reportStarting({ name: startedName, managerInstanceId: reply.managerInstanceId, ...(typeof started?.waitingFor === \"string\" ? { waitingFor: started.waitingFor } : {}), ...(expected ? { expected } : {}) }, values, t.space, t.server, target)",
+      "class": "non-render/control",
+      "rationale": "Spawn start report: the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "indexed-map",
+      "anchor": "refusal[reply.code]",
+      "class": "non-render/control",
+      "rationale": "Spawn refusal mapping: looks up the CLI refusal code for the manager's reply code; not a status map."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "if (on !== undefined && describeUnanswered(reply))\n      throw new Comman",
+      "class": "non-render/control",
+      "rationale": "Spawn control flow: tests whether a pinned launch drew no answer; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "if (on === undefined && describeUnanswered(reply)) throw unansweredClassL",
+      "class": "non-render/control",
+      "rationale": "Spawn control flow: tests whether an unpinned launch drew no answer; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "seatCapFrom(reply)",
+      "class": "non-render/control",
+      "rationale": "Spawn refusal shaping: reads the seat-cap marker from the manager's reply; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "`nothing was launched; stop one of this owner's seats with cotal stop --name <name>, or ask the operator who runs that manager to restart it with a higher --seat-cap (it admits ${cap.cap} per owner)`",
+      "class": "non-render/control",
+      "rationale": "Spawn seat-cap remedy: names the cap the manager admits per owner; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "`no connector \"${absent}\" is installed on ${answered ? await managerNamed(seat ? undefined : flags, t, answered) : \"the manager\"}; nothing was launched`",
+      "class": "non-render/control",
+      "rationale": "Spawn refusal text: names the missing connector and the manager; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "managerNamed(seat ? undefined : flags, t, answered)",
+      "class": "non-render/control",
+      "rationale": "Spawn refusal shaping: names the manager that answered; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "`add it where that manager runs, such as ${extAddFor(absent)}, then restart that manager; it reads its agent applications when it starts`",
+      "class": "non-render/control",
+      "rationale": "Spawn refusal remedy: how to add the missing connector; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "extAddFor(absent)",
+      "class": "non-render/control",
+      "rationale": "Spawn refusal remedy: builds the ext add command for the missing connector; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "`nothing was launched; ${elsewhere.length === 1 ? \"this manager of yours has\" : \"these managers of yours have\"} ${ref === \"default\" ? \"a default persona\" : `persona \"${ref}\"`}: ${elsewhere.map((selector) => rerunOn(process.argv.slice(2), selector)).join(\" or \")}`",
+      "class": "non-render/control",
+      "rationale": "Spawn refusal remedy: names the managers that hold the persona; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "observer.ready(result, warnings)",
+      "class": "non-render/control",
+      "rationale": "Spawn composite readiness: hands the launch result to the observing command; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/up.ts",
+      "kind": "derived-output",
+      "anchor": "reserved.add(key)",
+      "class": "non-render/control",
+      "rationale": "Broker address choice: reserves each registered mesh's address; the loop variable is named mesh but holds a registry record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/held-name.ts",
+      "kind": "derived-output",
+      "anchor": "`\"${agent}\" is held by lifecycle ${held.lifecycleUid}, which is not running, and the mesh could not confirm its release (HTTP ${answered.status}${answered.reason ? `: ${answered.reason}` : \"\"})`",
+      "class": "non-render/control",
+      "rationale": "Held-name refusal text: answered.status is the HTTP status of the release request, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/service-custody-win32.ts",
+      "kind": "derived-output",
+      "anchor": "return status;",
+      "class": "non-render/control",
+      "rationale": "Service custody: returns the custodian's process status to the caller; not a peer's presence."
     }
   ]
 }

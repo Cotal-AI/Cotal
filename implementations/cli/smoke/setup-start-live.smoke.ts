@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createSuite } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 const ROOT = join(import.meta.dirname, "..", "..", "..");
 const BIN = join(ROOT, "bin", "dist", "cotal.js");
@@ -19,7 +19,9 @@ Object.assign(process.env, env);
 const { check, finish } = createSuite();
 interface Receipt { outcome: string; error?: { code: string; message: string }; result?: { server?: string; startup?: { state: string; failure?: { code: string; message?: string } } } }
 const unconfirmed = new Set<string>();
+const anchors = new Map<string, SmokeSandboxAnchor>();
 const run = (cwd: string, ...args: string[]) => {
+  assertSmokeSandboxDown(anchors.get(cwd), [...args, "--json"], { cwd, env });
   const r = spawnSync(process.execPath, [BIN, ...args, "--json"], { cwd, env, encoding: "utf8", timeout: 120_000 });
   let receipt: Receipt | undefined;
   try { receipt = JSON.parse(r.stdout) as Receipt; } catch { /* Printed below if the command failed. */ }
@@ -31,6 +33,7 @@ const project = (name: string) => {
   const path = join(home, name); mkdirSync(path, { mode: 0o700 });
   const r = run(path, "space", "create", name, "--root", path);
   check(`${name} is prepared through the CLI`, r.status === 0, shown(r));
+  anchors.set(path, recordSmokeSandbox({ root: path, cotalHome: env.COTAL_HOME!, xdgConfigHome: env.XDG_CONFIG_HOME! }));
   return path;
 };
 // This connector only admits setup's preparation. Refusal cases must stop at

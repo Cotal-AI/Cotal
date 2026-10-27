@@ -47,7 +47,7 @@ import { connect, createServer, type AddressInfo } from "node:net";
 import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createSuite, freePort } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -67,7 +67,11 @@ process.on("exit", () => { for (const dir of [home, folder, ...roots]) rmSync(di
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const anchors = new Map<string, SmokeSandboxAnchor>();
+/** Record `at`, which already holds its `.cotal`, as a root a down may run in. */
+const sandbox = (at: string) => anchors.set(at, recordSmokeSandbox({ root: at, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME }));
 const run = (args: string[], cwd = folder) => {
+  assertSmokeSandboxDown(anchors.get(cwd), args, { cwd, env });
   const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout ?? "") as Envelope; } catch { envelope = undefined; }
@@ -209,6 +213,7 @@ check("up in the home folder is one CONFLICT refusal, exit 2, naming a project f
 check("it wrote no persona, pidfile or store in the home's .cotal", !existsSync(join(home, ".cotal", "agents")) && !existsSync(join(home, ".cotal", "nats.pid")) && !existsSync(join(home, ".cotal", "nats")), existsSync(join(home, ".cotal")) ? readdirSync(join(home, ".cotal")) : []);
 // With no stack there and none started or registered on this machine, down and its preview say
 // there is nothing to stop or preview, and name `cotal up` in a project as status does.
+sandbox(home);
 const homeDown = run(["down", "--yes"], home);
 check("down --yes in a home with no stack is TARGET_NOT_FOUND, nothing to stop, and names `cotal up` in a project", homeDown.status === 2 && /there is no stack at this folder's root, and this machine has no stack started or registered, so there is nothing to stop/.test(homeDown.stderr) && homeDown.stderr.includes("run `cotal up` in a project"), shown(homeDown));
 const homePreview = run(["down", "--dry-run", "--json"], home);
@@ -470,7 +475,7 @@ try {
   recordMesh({ space: "main", server: `nats://127.0.0.1:${greeting}`, root: other, mode: "auth", origin: "up", ts: now });
   const inUse = run(["up", "--server", `nats://127.0.0.1:${await freePort()}`], legacy);
   // A regression that took the name over started a stack, which is stopped before the cell fails.
-  if (started(legacy)) run(["down", "--yes"], legacy);
+  if (started(legacy)) { sandbox(legacy); run(["down", "--yes"], legacy); }
   removeMesh("main");
   delete process.env.COTAL_HOME;
   greeter.kill();
@@ -491,7 +496,7 @@ try {
   const elsewhereAddress = `nats://127.0.0.1:${await freePort()}`;
   const ownProject = run(["up", "--server", elsewhereAddress], legacy);
   const subfolder = run(["up", "--server", elsewhereAddress], inner);
-  if (started(legacy)) run(["down", "--yes"], legacy);
+  if (started(legacy)) { sandbox(legacy); run(["down", "--yes"], legacy); }
   removeMesh("main");
   delete process.env.COTAL_HOME;
   greeterHere.kill();
