@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
-  createSpaceAuth, gateObserve, headCandidate, mintCreds, newIdentity, principalKey, rawDigest,
+  createSpaceAuth, gateObserve, headCandidate, mintCreds, newIdentity, principalKey, credentialIdOf,
   standaloneConnectOpts, registry, DEV_OWNER, setupSpaceStreams, recordsBucket, epAuthBucket,
   parseLedgerRow, credRowKey, type AgentHandle, type AttachSession,
   type Connector, type LaunchSpec, type Presence, type CredentialLedgerRow,
@@ -257,7 +257,7 @@ async function stageExpiringCredential(agent: Agent, transport: LifecycleStateTr
     lifecycleUid: agent.lifecycleUid,
     expiresAt: exp,
   });
-  const credentialId = rawDigest(creds).replace("sha256:", "sha256-");
+  const credentialId = credentialIdOf(creds);
   await recordSlotCredential(transport, DEV_OWNER, agent.name, agent.lifecycleUid, credentialId);
   await appendStaticCredentialRow(transport, {
     lifecycleUid: agent.lifecycleUid,

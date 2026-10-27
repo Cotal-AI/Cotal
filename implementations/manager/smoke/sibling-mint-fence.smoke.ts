@@ -40,7 +40,7 @@ import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
-  mintLifecycleUid, standaloneConnectOpts, principalKey, DEV_OWNER, rawDigest,
+  mintLifecycleUid, standaloneConnectOpts, principalKey, DEV_OWNER, credentialIdOf,
   epAuthBucket, epcredFamilyPrefix, epgateKey, parseEndpointGate,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
@@ -55,8 +55,6 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra !== undefined ? JSON.stringify(extra) : ""); }
 };
-
-const credId = (creds: string): string => rawDigest(creds).replace("sha256:", "sha256-");
 
 const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -184,7 +182,7 @@ try {
       // Cross a second boundary so a fresh mint would be a genuinely distinct JWT (iat granularity).
       await wait(1100);
       try { released = await mint(); } catch (e) { refused = (e as Error).message; }
-      check(`FROZEN the ${label} mint REFUSES against a frozen gate`, refused !== undefined && released === undefined, { refused, released: released ? credId(released) : undefined });
+      check(`FROZEN the ${label} mint REFUSES against a frozen gate`, refused !== undefined && released === undefined, { refused, released: released ? credentialIdOf(released) : undefined });
       const after = (await activeFor(principal)).map((r) => r.credentialId);
       check(`FROZEN the ${label} stages NO new active row into the deposed family`,
         after.length === before.length && after.every((id) => before.includes(id)),
@@ -211,13 +209,13 @@ try {
       let released: string | undefined;
       let refused: string | undefined;
       try { released = await mint(racing(authKv)); } catch (e) { refused = (e as Error).message; }
-      check(`MOVED the ${label} mint REFUSES when the gate moved under it`, refused !== undefined && released === undefined, { refused, released: released ? credId(released) : undefined });
+      check(`MOVED the ${label} mint REFUSES when the gate moved under it`, refused !== undefined && released === undefined, { refused, released: released ? credentialIdOf(released) : undefined });
       const after = await activeFor(principal);
       const fresh = after.filter((r) => !before.includes(r.credentialId));
       check(`MOVED the ${label} leaves NO active row behind (a staged row is revoked on the lost CAS)`,
         fresh.length === 0, { before, after: after.map((r) => r.credentialId) });
       if (released) {
-        const row = await rowFor(credId(released));
+        const row = await rowFor(credentialIdOf(released));
         check(`MOVED (diagnostic) the released ${label} row state`, row?.state === "revoked", row);
       }
     }
@@ -248,7 +246,7 @@ try {
       check(`SUPERSEDED (fixture) the gate really is OPEN again at a successor generation`,
         now.row.state === "open" && now.row.generation === gen0 + 1, { state: now.row.state, gen0, now: now.row.generation });
       check(`SUPERSEDED the ${label} mint REFUSES an open gate that is not the one it observed`,
-        refused !== undefined && released === undefined, { refused, released: released ? credId(released) : undefined });
+        refused !== undefined && released === undefined, { refused, released: released ? credentialIdOf(released) : undefined });
       const after = await activeFor(principal);
       const fresh = after.filter((r) => !before.includes(r.credentialId));
       check(`SUPERSEDED the ${label} lands NO row in the family the barrier already reconciled`,
@@ -289,8 +287,8 @@ try {
       const after = await activeFor(principal);
       const fresh = after.filter((r) => !before.includes(r.credentialId));
       check(`CONTENDED it releases EXACTLY ONE new active row (no double-stage across the retry)`,
-        fresh.length === 1 && released !== undefined && fresh[0].credentialId === credId(released),
-        { fresh: fresh.map((r) => r.credentialId), released: released ? credId(released) : undefined });
+        fresh.length === 1 && released !== undefined && fresh[0].credentialId === credentialIdOf(released),
+        { fresh: fresh.map((r) => r.credentialId), released: released ? credentialIdOf(released) : undefined });
     }
     await openGate();
   }

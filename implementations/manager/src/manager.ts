@@ -123,7 +123,7 @@ import {
   publishContractArtifact,
   contractArtifactCanonicalBytes,
   standaloneConnectOpts,
-  rawDigest,
+  credentialIdOf,
   STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC,
   STATIC_GENERATION_HORIZON_SEC,
   issuedHorizon,
@@ -8596,7 +8596,7 @@ export class Manager {
     // it a barrier mid-takeover (already past its enumeration) would let this credential land
     // ACTIVE in a family nothing revokes again.
     await commitSiblingIssuance(fence, observed, {
-      credentialId: rawDigest(creds).replace("sha256:", "sha256-"),
+      credentialId: credentialIdOf(creds),
       credentialKey: identity.id,
       holderPrincipal: principalKey(DEV_OWNER, identity.id).key,
       endpoint: MANAGER_ENDPOINT, lifecycleUid: iid, sourceChain: ["root"], state: "active", exp,
@@ -8728,7 +8728,7 @@ export class Manager {
     // The §13.1 open-and-commit fence (see {@link mintAndStageGoalWriter}): stage + revision-pinned
     // commit against the gate this mint's grant was scoped from, releasing only on the win.
     await commitSiblingIssuance(fence, observed, {
-      credentialId: rawDigest(creds).replace("sha256:", "sha256-"),
+      credentialId: credentialIdOf(creds),
       credentialKey: identity.id,
       holderPrincipal: principalKey(DEV_OWNER, identity.id).key,
       endpoint: MANAGER_ENDPOINT, lifecycleUid: iid, sourceChain: ["root"], state: "active", exp,
@@ -8902,7 +8902,7 @@ export class Manager {
             epoch: grant.serving.epoch,
             exp: Math.floor(grant.exp / 1000),
           });
-          const id = rawDigest(creds).replace("sha256:", "sha256-");
+          const id = credentialIdOf(creds);
           this.sessionServingKeys.set(id, identity.id);
           return { id, creds, exp: grant.exp };
         }
@@ -8915,8 +8915,9 @@ export class Manager {
         const health = inspectCredHealth(creds);
         if (health.exp === undefined)
           throw new Error(`the session-serving credential for ${grant.sessionId} is unbounded; a per-session credential never outlives its session (SPEC 13.6)`);
-        this.sessionServingKeys.set(rawDigest(creds).replace("sha256:", "sha256-"), identity.id);
-        return { id: rawDigest(creds).replace("sha256:", "sha256-"), creds, exp: grant.exp };
+        const id = credentialIdOf(creds);
+        this.sessionServingKeys.set(id, identity.id);
+        return { id, creds, exp: grant.exp };
       },
       observeGate: async (_endpoint, instanceId) => {
         // Open mesh: nothing is minted and nothing is staged, so there is no gate to pin (see
@@ -10399,7 +10400,7 @@ export class Manager {
       );
       // The same credential id the issuance path derives, so a re-sent identical credential maps to
       // the same row.
-      const credentialId = rawDigest(creds).replace("sha256:", "sha256-");
+      const credentialId = credentialIdOf(creds);
       await this.withLifecycleExecutor(pin, async (t) => {
         await recordSlotCredential(t, DEV_OWNER, alias, lifecycleUid, credentialId);
         await appendStaticCredentialRow(t, { lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, identity.id).key, exp });

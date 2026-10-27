@@ -28,7 +28,7 @@ import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
-  mintLifecycleUid, standaloneConnectOpts, principalKey, DEV_OWNER, rawDigest,
+  mintLifecycleUid, standaloneConnectOpts, principalKey, DEV_OWNER, credentialIdOf,
   epAuthBucket, epcredFamilyPrefix, sessionsBucket,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
@@ -43,8 +43,6 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra !== undefined ? JSON.stringify(extra) : ""); }
 };
-
-const credId = (creds: string): string => rawDigest(creds).replace("sha256:", "sha256-");
 
 const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -86,7 +84,7 @@ try {
   check("the session-ledger credential is minted + stashed (auth mode)", typeof M.sessionLedgerCreds === "string" && M.sessionLedgerCreds.length > 0);
 
   const swPrincipal = principalKey(DEV_OWNER, M.sessionLedgerIdentity!.id).key;
-  const gwId0 = credId(M.sessionLedgerCreds!);
+  const gwId0 = credentialIdOf(M.sessionLedgerCreds!);
 
   // Read the §13.1 revocation family over a scoped executor (the FAMILY + RENEWAL assertions).
   const execCreds = await mintCreds(auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: iid } });
@@ -118,7 +116,7 @@ try {
     // renewal is a half-TTL apart). Cross a second boundary so the fresh issuance is genuinely distinct.
     await wait(1100);
     const fresh = await M.mintAndStageSessionLedger(authKv);
-    const freshId = credId(fresh);
+    const freshId = credentialIdOf(fresh);
     check("RENEWAL a renewal tick re-mints the session-ledger cred (a fresh credId for the SAME nkey)", freshId !== gwId0, { gwId0, freshId });
     const rows = await familyRows();
     const swRows = rows.filter((r) => r.holderPrincipal === swPrincipal && r.state === "active");

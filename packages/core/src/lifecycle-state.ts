@@ -15,6 +15,7 @@ import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { LIFECYCLE_HEAD, UID_RESERVATION, recordAtomicKey } from "./endpoint-records.js";
 import { assertLifecycleToken, endpointNameOf, endpointToken } from "./endpoint-subjects.js";
 import { parsePrincipalKey, isPrincipalOwnerToken } from "./subjects.js";
+import { rawDigest } from "./canonical.js";
 
 const dec = new TextDecoder();
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -242,6 +243,14 @@ export function assertSourceChain(v: unknown, what: string): string[] {
     throw new EpEnvelopeError("failed-precondition", `${what} must be a non-empty sourceChain (SPEC 13.1: the FULL verified lineage, never absent)`);
   for (const m of v) parseSourceMember(m);
   return v as string[];
+}
+
+/** The key-safe id of one credential's exact bytes: `sha256-<hex>` over {@link rawDigest}.
+ *  The §13.7 artifact form is `sha256:<hex>`, and a KV key segment cannot carry `:`, so the ledger
+ *  id swaps that one separator and nothing else. Pass the bytes the caller hashes today: a formatted
+ *  creds file and a bare JWT are different inputs and stay different ids. */
+export function credentialIdOf(credential: string): string {
+  return `sha256-${rawDigest(credential).slice("sha256:".length)}`;
 }
 
 /** The agent-family ledger key `cred.<lifecycleUid>.<credentialId>`. */

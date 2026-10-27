@@ -103,8 +103,7 @@ import { runSubmissionKey } from "./run-submission.js";
 import { runDriverGrants, runMediatorGrants, runOperatorGrants, type RunDriverGrantArgs, type RunOperatorGrantArgs } from "./run-driver-grants.js";
 import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
-import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
-import { rawDigest } from "./canonical.js";
+import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey, credentialIdOf } from "./lifecycle-state.js";
 import { environmentManagerPermissions, isEnvironmentManagerProfile, type EnvironmentManagerGrantPin } from "./environment-manager-grants.js";
 import { credsClaims, isUserNkey, type Identity } from "./identity.js";
 import {
@@ -1018,7 +1017,7 @@ export async function mintCreds(
         `would exceed the broker's CONNECT line and the connect would hang silently (issue #375)`,
     );
   }
-  await releaseIssuance(auth.space, profile, pr, opts, perms, validDates.exp, rawDigest(creds).replace("sha256:", "sha256-"));
+  await releaseIssuance(auth.space, profile, pr, opts, perms, validDates.exp, credentialIdOf(creds));
   // §13.1 mint fence for the serve credential: the credential is BUILT, but released only when its
   // NORMATIVE ledger row (holderPrincipal/lifecycleUid/sourceChain/state/exp + the currency
   // coordinates) is durably staged and its revision-pinned CAS wins the instance's single issuance
@@ -1033,11 +1032,8 @@ export async function mintCreds(
       // has distinct bytes (fresh exp/iat), so it writes a DISTINCT ledger row and never overwrites
       // or resurrects a prior one. The create-only / idempotent-if-identical guarantee lives at the
       // finalize/stage seam (the SAME credential object staged twice), not the mint layer. The
-      // stable nkey rides separately as `credentialKey` for broker revocation. KEY-SAFE digest
-      // form (`sha256-<hex>`, never the §13.7 `sha256:` artifact form): the id becomes a segment
-      // of the durable `epcred.` KV key, whose grammar has no ":" — the digest property (a
-      // byte-identical retry maps to the SAME id) is what matters, not the separator.
-      credentialId: rawDigest(creds).replace("sha256:", "sha256-"),
+      // stable nkey rides separately as `credentialKey` for broker revocation.
+      credentialId: credentialIdOf(creds),
       credentialKey: identity.id,
       holderActor: pr.actor,
       // A serve credential is minted directly by the provisioner authority, so its §13.1 issuance
@@ -1138,7 +1134,7 @@ export async function mintPublicUserJwt(
   if (profile === "endpoint-serve") {
     if (!opts.serveIssuance) throw new Error("mintPublicUserJwt: endpoint-serve requires serveIssuance");
     await finalizeServeIssuance(opts.serveIssuance, opts.endpointServe!, {
-      credentialId: rawDigest(jwt).replace("sha256:", "sha256-"),
+      credentialId: credentialIdOf(jwt),
       credentialKey: publicId,
       holderActor: pr.actor,
       sourceChain: ["root"],
@@ -1177,7 +1173,7 @@ export async function mintServiceCalloutJwt(
     { signer: nativeNkeySigner(new TextEncoder().encode(auth.account.signingSeed)), exp: expiresAt });
   if (Buffer.byteLength(jwt, "utf8") > MAX_MINTED_JWT_BYTES)
     throw new Error("service callout mint exceeds the native JWT byte limit");
-  const credentialId = rawDigest(jwt).replace("sha256:", "sha256-");
+  const credentialId = credentialIdOf(jwt);
   await finalizeServeIssuance(gate, serve, { credentialId, credentialKey: connection.userNkey,
     serviceConnection: connection, holderActor: principal.actor, sourceChain: ["root"], exp: expiresAt });
   if (expiresAt <= Math.floor(Date.now() / 1000))
