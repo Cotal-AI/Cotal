@@ -1,5 +1,14 @@
 # @cotal-ai/runtime
 
+## 0.109.24
+
+### Patch Changes
+
+- Updated dependencies [0bffcb0]
+  - @cotal-ai/workspace@0.109.24
+  - @cotal-ai/core@0.109.24
+  - @cotal-ai/lang@0.109.24
+
 ## 0.109.23
 
 ### Patch Changes
