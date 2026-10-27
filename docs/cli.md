@@ -4868,7 +4868,10 @@ opened for it, `<root>/.cotal/manager.<spaceKey>.log`, and changes nothing. It t
 gone. After `cotal down` stops that manager, `logs` still reads the log it left: the text says the
 manager is stopped, with its PID while its record still names one, and names `cotal up` under Next,
 and `--json` carries `recordedProcess` with `state` set to `stopped`. With no such log, `logs`
-refuses `TARGET_NOT_FOUND`, naming the file and `cotal up`. `cotal service logs stack-manager` reads
+refuses `TARGET_NOT_FOUND` and names the file. If the folder's records show a manager ran there (a
+PID record that names a dead manager, or the instance identity a manager keeps once it starts), the
+refusal says the log is no longer there and names only `cotal up`. Otherwise it says no manager has
+been started and names `cotal up` or `cotal manager start`. `cotal service logs stack-manager` reads
 the same file when no `stack-manager` is saved. A
 manager that `cotal supervise` runs in a terminal writes to that terminal instead. `stop`, `install`
 and the other verbs refuse it while it runs, because no saved service owns it; it stops with its
