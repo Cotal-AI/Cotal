@@ -16,8 +16,9 @@
  *  4. `cotal ext remove` of the runtime while the manager runs refuses the NEXT seat that names
  *     it; the seat already on it is still listed and still stops through its cached backend.
  *
- * Sandboxes COTAL_HOME + XDG_CONFIG_HOME + a temp project root; tears down with `cotal down` and
- * its own child pids only. Needs `nats-server` and `npm` on PATH.
+ * Sandboxes COTAL_HOME + XDG_CONFIG_HOME + a temp project root; tears down through the binary's own
+ * `stop` and `down`, never by signalling a saved pid (a reused pid could be foreign work). Needs
+ * `nats-server` and `npm` on PATH.
  * Run: pnpm smoke:seat-runtime-ext:live
  */
 import { spawnSync } from "node:child_process";
@@ -128,7 +129,6 @@ registry.register({
 `;
 
 let up = false;
-let seatPid: number | undefined;
 try {
   const addRuntime = cli("ext", "add", fixture("cotal-ext-seat-runtime", RUNTIME));
   ok("the fixture runtime extension is added", addRuntime.status === 0 && /runtime:seat-fixture\b/.test(addRuntime.stdout), addRuntime.stdout + addRuntime.stderr.slice(-400));
@@ -163,7 +163,6 @@ try {
     onExt.status === 0 && extReply?.outcome === "ok" && extReply.result?.runtime === "seat-fixture" && extReply.result?.name === "extseat" && extReply.result?.streamsTerminal === false,
     { status: onExt.status, stdout: onExt.stdout, stderr: onExt.stderr });
   const spawned = JSON.parse(readFileSync(mark, "utf8")) as { pid: number; session: string; name: string; child: number };
-  seatPid = spawned.child;
   ok("the provider's spawn ran inside the manager process, with the per-space session name", spawned.pid === managerPid && spawned.name === "extseat" && spawned.session === `cotal-${SPACE}`, { spawned, managerPid });
   ok("the seat is a live child the provider started", alive(spawned.child), spawned.child);
   const census = envelope(cli("ps", "--json").stdout);
@@ -197,10 +196,11 @@ try {
   ok("the pty seat stops", stopPty.status === 0, stopPty.stdout + stopPty.stderr);
 
   const down = cli("down");
-  up = false;
+  up = down.status !== 0;
   ok("cotal down stops the stack", down.status === 0, down.stdout + down.stderr);
   console.log(`seat-runtime-ext:live: ${pass} checks passed`);
 } finally {
-  if (seatPid !== undefined && alive(seatPid)) { try { process.kill(seatPid, "SIGKILL"); } catch { /* gone */ } }
+  // A stack this suite started and did not bring down is stopped the same way an operator would,
+  // scoped to this sandbox root; a pty manager stops its seats with it.
   if (up) cli("down");
 }

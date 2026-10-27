@@ -6825,8 +6825,9 @@ every registry provider it contributes. Commands appear in help, completion, and
 providers are loaded on demand by commands such as `supervise`, and by a running manager the first
 time a managed seat names one with `spawn --runtime <name>`, so a `pty` manager launches a seat on
 an installed `tmux` without a restart; local process providers participate in `status` and
-selective `down`. Removing a runtime extension refuses the next seat that names it, and seats
-already running on it stay where they are. `remove` and `list` manage them. The `@cotal-ai/web` dashboard is the
+selective `down`. Removing an additional runtime extension, one the manager was not started with,
+refuses the next seat that names it; the manager's own runtime and the seats already running stay
+as they are. `remove` and `list` manage them. The `@cotal-ai/web` dashboard is the
 canonical service preset and local-process example. Installed packages and their location are described in
 [config](config.md). When a package needs an export its linked `@cotal-ai/*` peer does not have,
 `add` rolls back and names which install is behind, as a later load of an installed one does.
