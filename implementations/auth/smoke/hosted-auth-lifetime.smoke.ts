@@ -90,10 +90,21 @@ try {
   try {
     const kv = await new Kvm(verifier.nc).open(epAuthBucket(a.space));
     ok(parsePlaneClaimRow((await kv.get(PLANE_CLAIM_KEY))!.value)?.state === "held", "hosted failed close leaves the row held");
-    // The independent verifier can connect before the existing barrier has reconnected.
-    await new Promise((r) => setTimeout(r, 1000));
+    // A fresh verifier connection does not prove the retained barrier has reconnected.
+    // Retry only the public retryable refusal, within a bound, rather than assuming a fixed delay.
+    const deadline = Date.now() + 10_000;
     let retryFailure: unknown;
-    try { await retry.close(); } catch (e) { retryFailure = e; }
+    let attempts = 0;
+    do {
+      attempts++;
+      try { await retry.close(); retryFailure = undefined; break; }
+      catch (e) {
+        if (planeClaimRefusal(e) !== "release-unreachable") throw e;
+        retryFailure = e;
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    } while (Date.now() < deadline);
+    console.log(`hosted close after broker restart: ${attempts} attempt(s)`);
     ok(retryFailure === undefined && parsePlaneClaimRow((await kv.get(PLANE_CLAIM_KEY))!.value)?.state === "released",
       "hosted close retries the release after the broker returns");
   } finally { await verifier.close(); }
