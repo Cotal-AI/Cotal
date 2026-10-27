@@ -66,6 +66,10 @@ const OS_ENV_ALLOW = [
   "APPDATA",
   "LOCALAPPDATA",
   "XDG_RUNTIME_DIR",
+  // The usage opt-out and the CI marker other tools read too: a seat's own `cotal` commands then
+  // report, or stay silent, as the run that launched it does (docs/telemetry.md).
+  "DO_NOT_TRACK",
+  "CI",
   // Windows system env. SystemRoot is mandatory: without it a spawned process aborts at startup
   // (node `InitializeOnce`, winsock/ICU can't load) — and a `pty`-runtime (ConPTY) child does NOT
   // inherit it the way a plain child_process does, so a manager-spawned agent dies before its first
@@ -125,6 +129,9 @@ export const OPERATOR_ENV_KEEP = [
   "COTAL_CODEX_BIN",
   "COTAL_OPENCODE_BIN",
   "COTAL_ORCA_BIN",
+  "COTAL_TELEMETRY",
+  "COTAL_TELEMETRY_DISABLED",
+  "COTAL_TELEMETRY_URL",
 ] as const;
 
 /** Build the base env a spawned agent runs with.

@@ -95,8 +95,8 @@
     {
       "name": "a selection that names no registration falls through",
       "file": "packages/workspace/src/mesh-target.ts",
-      "find": "  if (current && selectionTargetsHere(cwd, current, meshes)) {\n    const cur = meshes.find((m) => m.space === current);\n    if (!cur) {",
-      "replace": "  if (current && selectionTargetsHere(cwd, current, meshes) && meshes.some((m) => m.space === current)) {\n    const cur = meshes.find((m) => m.space === current);\n    if (!cur) {",
+      "find": "  if (current && selectionTargetsHere(cwd, current, meshes, offline)) {\n    const cur = meshes.find((m) => m.space === current);\n    if (!cur) {",
+      "replace": "  if (current && selectionTargetsHere(cwd, current, meshes, offline) && meshes.some((m) => m.space === current)) {\n    const cur = meshes.find((m) => m.space === current);\n    if (!cur) {",
       "expectRed": "a command run under that selection refuses with TARGET_NOT_FOUND rather than reaching another space",
       "cell": "a command run under that selection refuses with TARGET_NOT_FOUND rather than reaching another space",
       "afterRestore": "pnpm --filter cotal-ai... build"

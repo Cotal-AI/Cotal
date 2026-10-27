@@ -24,6 +24,7 @@ import { brokerStopBlocked } from "../lib/broker-service.js";
 import { resolveServiceAdapter, sameServiceAdapterPin } from "../lib/service-adapters.js";
 import { assertDefinitionRoot, serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { addedDefinitionStep, stackMemberFor } from "../lib/stack-journal.js";
+import { adapterInstallRefusal, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { definitionListeners, exposedPlaintext, listenerRow } from "../lib/stack-listeners.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts, assertRestartAdmitted, PROCESS_STOP_GRACE_MS, prepareKernelServiceStop, prepareNativeServiceStop, prepareProcessService, readinessAddressSurvivors, readServiceLog, retainedStopRequest, selectServiceInstance, startProcessService, stopProcessService } from "../lib/service-process.js";
@@ -146,14 +147,14 @@ function interruptedStart(name: string, space: string, selected: string | undefi
 }
 
 /** `root` is the selected space's root, where a definition must have been added to launch. */
-export async function serviceAction(args: ParsedArgs, space: string, root: string, commandName = "service"): Promise<void> {
+export async function serviceAction(args: ParsedArgs, space: string, root: string, commandName = "service", resolved?: PresetServiceTarget): Promise<void> {
   const [mode, name] = args.positionals as [string, string];
   const values = args.values as { instance?: string; "new-instance"?: boolean; foreground?: boolean; "with-agents"?: boolean; "dry-run"?: boolean; yes?: boolean; tail?: string; follow?: boolean; json?: boolean };
   const presentation = presentationOf(args.values);
   const store = serviceDefinitionStore(space, addedDefinitionStep), definition = store.read(name);
   if (!definition) {
     const stackName = stackMemberFor(space, name);
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; no process or extension was ${mode === "stop" ? "stopped" : "started"}`, { target: { space, name }, remedy: stackName ? `this space's controller stack names it ${stackName}: use cotal ${commandName === "down" ? "down" : `${commandName} ${mode}`} ${stackName} --space ${space}${mode === "stop" ? ", or bare cotal down to stop the whole stack" : ""}` : name === "web" ? "save the dashboard explicitly with cotal service add web --preset web and its required registered root, protected credential file and read-only intent; if its provider is absent, use cotal ext add @cotal-ai/web" : mode === "stop" ? "list this space's saved definitions with cotal service" : "add a supported service definition explicitly before starting it" });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; no process or extension was ${mode === "stop" ? "stopped" : "started"}`, { target: { space, name }, remedy: stackName ? `this space's controller stack names it ${stackName}: use cotal ${commandName === "down" ? "down" : `${commandName} ${mode}`} ${stackName} --space ${space}${mode === "stop" ? ", or bare cotal down to stop the whole stack" : ""}` : name === "web" ? "the web dashboard is an extension: add it with cotal ext add @cotal-ai/web, then start it with cotal service start web --creds <file>" : mode === "stop" ? "list this space's saved definitions with cotal service" : "add a supported service definition explicitly before starting it" });
   }
   if (mode === "start" || mode === "restart" || mode === "install") assertDefinitionRoot(definition, space, root, mode);
   const rows = serviceInstances(space, name);
@@ -164,8 +165,15 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     id = selected;
   }
   const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "install");
-  const target = { space, name, instanceId: selected?.name ?? null };
+  // A preset name resolved to another saved name keeps the name the person typed beside it.
+  const target = { space, name, instanceId: selected?.name ?? null, ...(resolved && resolved.requested !== name ? { requested: resolved.requested } : {}) };
   if (["start", "stop", "restart"].includes(mode)) assertNoServiceUnitAttempts(space, name);
+  // The owned unit entry runs only a direct process, so an adapter definition's install refuses
+  // before anything is allocated.
+  if (mode === "install" && definition.record.value.launch.type === "adapter") {
+    const launch = definition.record.value.launch;
+    throw adapterInstallRefusal(space, name, launch.adapter, launch.options, commandName === "manager" || resolved?.preset === "manager" ? "manager" : undefined, target);
+  }
   if (mode === "install" && values["dry-run"]) return previewNativeInstall(definition, selected, presentation, commandName);
   if (mode === "uninstall" && values["dry-run"]) return previewSystemdUninstall(definition, selected!, presentation, commandName);
   if (mode === "install") {
@@ -377,10 +385,14 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     finally { release?.(); }
   }
   const result = instanceProjection(started.instance);
-  writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}) }, noOp: started.noOp }, (row) => {
+  writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}), ...(resolved ? { presetDefinition: resolved.saved } : {}) }, noOp: started.noOp }, (row) => {
     const view = instanceView(row, started.noOp ? "Already running; nothing was started" : row.nativeEndpoint ? "Owned process running; native adapter readiness recorded" : row.reportedListener ? "Owned broker process reported its listener" : row.readinessObservation === "http-reachable" ? "Owned process running; HTTP reachable" : "Owned service process running");
     // A background child reports how to reach it, such as the dashboard's bootstrap file, in its own log.
-    return values.foreground ? view : { sections: [...view.sections, { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`, description: "Read the service's own startup output, including how to reach it when it reports that" }] }] }] };
+    if (values.foreground) return view;
+    // One instance of a definition needs no instance or space on the line that reads it.
+    const only = serviceInstances(space, name).length === 1;
+    const logs = commandName === "manager" ? "cotal manager logs" : only && !args.values.space ? `cotal service logs ${row.definition}` : `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`;
+    return { sections: [...view.sections, { title: "Next", blocks: [{ kind: "commands", items: [{ command: logs, description: "Read the service's own startup output, including how to reach it when it reports that" }, { command: commandName === "manager" ? "cotal manager stop" : `cotal service stop ${row.definition}`, description: "Stop it" }] }] }] };
   });
   if (values.foreground && started.child && started.exit) {
     let signal: "SIGINT" | "SIGTERM" | undefined;

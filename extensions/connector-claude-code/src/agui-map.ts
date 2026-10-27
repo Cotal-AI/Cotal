@@ -179,9 +179,8 @@ const ORIGIN_RULE: Record<string, "human" | "channel" | "auto-continuation" | nu
  *
  * **THIS IS NOT `promptSource`-PRESENCE.** That predicate asks "is the field there?", and the field
  * is there on task-notifications and caveats as `"system"`, so it would open runs on harness
- * plumbing. This asks "is the value exactly `sdk`?", in a branch that only runs when `origin` is
- * absent, against a two-value measured population. Different predicate, different position,
- * measured rather than inferred from a partition of three captures.
+ * plumbing. When `origin` is absent, `ABSENT_ORIGIN_RULE` enumerates the accepted `promptSource`
+ * values and their attribution. Field presence alone does not decide whether a record opens a run.
  */
 const ABSENT_ORIGIN_RULE: Record<string, "sdk" | "human" | null> = {
   sdk: "sdk",

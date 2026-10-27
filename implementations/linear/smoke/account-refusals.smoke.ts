@@ -8,6 +8,11 @@
  * because the child would read its account under that home; with COTAL_HOME set the child inherits
  * it, and the same definition plans.
  *
+ * The grammar refuses a flag an operation does not take by naming it and the flags the operation
+ * does take: `serve --json` says serve is a foreground service with no --json or --plain output,
+ * and `account login --json` names --plain as its only output flag. Each operation's help shows
+ * its own one-line usage, and the command's usage lists those forms one per line.
+ *
  * Run: pnpm smoke:linear-accounts   (needs `pnpm build` of core and workspace first)
  */
 import { randomUUID } from "node:crypto";
@@ -21,8 +26,10 @@ process.env.COTAL_HOME = join(home, "cotal");
 process.env.HOME = home;
 const { homeCotalDirFallbacks, isCommandFailure, recordMesh } = await import("@cotal-ai/workspace");
 const { linearDir, saveAccount, storedTokenPath } = await import("../src/account.js");
-const { accountForRead } = await import("../src/cli.js");
+const { accountForRead, validateLinearArguments } = await import("../src/cli.js");
 const { linearService } = await import("../src/service-adapter.js");
+const { registry } = await import("@cotal-ai/core");
+await import("../src/index.js");
 
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, x?: unknown): void => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log(`  ✗ FAIL: ${n}`, x ?? ""); } };
@@ -33,6 +40,27 @@ const refusal = async (fn: () => unknown) => {
 };
 
 try {
+  const grammar = (positionals: string[], values: Record<string, string | boolean>) => refusal(() => validateLinearArguments({ positionals, values, raw: [] }));
+  const serveJson = await grammar(["serve", "work"], { endpoint: "com.example.linear", json: true });
+  check("serve --json is a usage refusal naming the flag and the operation", serveJson?.code === "USAGE_INVALID" && serveJson.message.startsWith("--json does not belong to linear serve"), serveJson);
+  check("...that says serve has no --json or --plain output", serveJson?.message.includes("foreground service that reports as text and has no --json or --plain output") === true, serveJson);
+  check("...and names the flags serve takes with its usage", serveJson?.remedy === "drop --json; linear serve takes --endpoint, --space, --server: cotal linear serve <account> --endpoint <reverse-dns-name> [--space <s>] [--server <url>]", serveJson);
+  const loginJson = await grammar(["account", "login", "work"], { mode: "readonly", json: true });
+  check("account login --json names --plain as its only output flag", loginJson?.code === "USAGE_INVALID" && loginJson.message.includes("linear account login, whose only output flag is --plain"), loginJson);
+  const serveTimeout = await grammar(["serve", "work"], { endpoint: "com.example.linear", timeout: "5" });
+  check("a non-format foreign flag is named without an output reason", serveTimeout?.code === "USAGE_INVALID" && serveTimeout.message === "--timeout does not belong to linear serve; no account or request was opened", serveTimeout);
+  const serveAccepted = await grammar(["serve", "work"], { endpoint: "com.example.linear", space: "s", server: "nats://127.0.0.1:4222" });
+  check("serve with only its own flags passes the grammar", serveAccepted === undefined, serveAccepted);
+  const callerJson = await grammar(["caller", "seat"], { endpoint: "com.example.linear", out: "/tmp/caller.creds", json: true });
+  check("caller still takes --json", callerJson === undefined, callerJson);
+
+  const command = registry.resolve<import("@cotal-ai/core").Command>("command", "linear");
+  const leaves = (command.subcommands ?? []).flatMap((sub) => sub.subcommands?.length ? sub.subcommands : [sub]);
+  const usages = leaves.map((leaf) => leaf.usage ?? "");
+  check("each of the 9 operations has a one-line usage, and the command's usage is those forms one per line", leaves.length === 9 && usages.every((usage) => usage.startsWith("cotal linear ") && !usage.includes("\n")) && command.usage === usages.join("\n"), { usages, command: command.usage });
+  const serveSub = command.subcommands?.find((sub) => sub.name === "serve");
+  check("serve's help usage is its own form", serveSub?.usage === "cotal linear serve <account> --endpoint <reverse-dns-name> [--space <s>] [--server <url>]", serveSub?.usage);
+
   const missing = await refusal(() => accountForRead("nosuch"));
   check("an account with no record is TARGET_NOT_FOUND", missing?.code === "TARGET_NOT_FOUND", missing);
   check("...with the route that records it", missing?.remedy?.includes("cotal linear account add nosuch") === true, missing);

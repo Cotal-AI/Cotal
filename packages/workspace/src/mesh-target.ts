@@ -121,11 +121,12 @@ export interface MeshTargetErrorDetails {
   root?: string;
   /** Running meshes, for the ambiguous case — each formatted `"<space> (<root>)"`. */
   available?: string[];
-  /** The same running meshes by SPACE NAME, in `available`'s order — set only where the ambiguity is
-   *  a set of meshes that are recorded AND running, so a caller that must act on each (rather than
-   *  print them) can select one by name. Absent for every other ambiguity: several tenants on one
-   *  root's disk, or an unreadable account record, name no running manager to act on, and there the
-   *  refusal stands. */
+  /** The same meshes by SPACE NAME, in `available`'s order — set where the ambiguity is a set of
+   *  RECORDED meshes a caller can select by name: the running meshes of the bare fallback, or the
+   *  registrations one folder's broker hosts, so a caller that must act on each (rather than print
+   *  them) reads each by name and decides for it. Absent for every other ambiguity: several tenants
+   *  on one root's disk, or an unreadable account record, name no registration to act on, and there
+   *  the refusal stands. */
   spaces?: string[];
   /** What the caller asked for that didn't match (e.g. an unknown `--space`). */
   requested?: string;
@@ -557,40 +558,125 @@ export function retainedLegacyBroker(root: string): { server: string; open: bool
   return server ? { server, open: true } : undefined;
 }
 
-/** The spaces registered or prepared for the project root `cwd` is in, none outside a project. */
-function folderSpaces(cwd: string, meshes: readonly MeshEntry[]): { root: string; spaces: string[] } | undefined {
-  const root = findCotalRoot(cwd);
-  if (!isGenuineSpace(root)) return undefined;
-  const spaces = new Set(meshes.filter((m) => canonicalRoot(m.root) === canonicalRoot(root)).map((m) => m.space));
-  const prepared = preparedSpaceAt(root)?.space;
-  if (prepared !== undefined) spaces.add(prepared);
-  return { root, spaces: [...spaces].sort() };
+/** Where `space` runs when this machine registered it for a folder that is not `root`, which is how
+ *  a legacy root that holds its records reads after the folder was copied, after another folder took
+ *  the name over, or after this folder was moved and its recorded path went with it. The legacy
+ *  launcher writes no stack journal, so {@link stackElsewhereRemedy}'s journal rules cannot answer
+ *  here and the registration is the only record that names the folder the stack runs from. The step
+ *  is that folder, or the way back when it no longer exists. Undefined when the space is registered
+ *  here, nowhere, or by hand for a broker this machine does not start, leaving an ordinary stopped
+ *  root its own `cotal up`. */
+export function legacyStackElsewhere(root: string, space: string): { recordedRoot: string; remedy: string } | undefined {
+  // A registry this cannot read cannot say the space runs elsewhere, so the root keeps the sentence
+  // it had, as {@link stackRootElsewhere} does for the same reason.
+  let entry: MeshEntry | undefined;
+  try { entry = findMesh(space); } catch { return undefined; }
+  if (!entry || entry.origin !== "up") return undefined;
+  const recordedRoot = canonicalRoot(entry.root);
+  if (recordedRoot === canonicalRoot(root)) return undefined;
+  // The recorded folder still being there means the stack runs from it, so the step is to use it.
+  // Gone means this folder was moved out of it, and only moving back makes that path exist again.
+  return { recordedRoot, remedy: existsSync(recordedRoot) ? `use the stack from ${recordedRoot}, where "${space}" is registered` : movedRootRemedy(recordedRoot) };
 }
 
-/** Whether a project root with no registration or prepared space still holds a stack of its own: a
- *  stack journal, or the broker configuration its last start rendered, as a legacy `down` that
- *  dropped its registration or a moved folder leaves. A command there refuses it as not started. */
+/** Why the records the folder `root` holds are not its own to act on: they are those of a stack that
+ *  runs from another folder, as a copy, a moved folder and one whose name a later `up` took over keep
+ *  them. It is the `not-started` refusal a command that resolves its target there gets, so a command
+ *  that acts on the folder's own records, such as `clean store`, names the same folder and step.
+ *  Undefined for a folder whose records are its own, and for one that holds none. */
+export function recordsElsewhereError(root: string): MeshTargetError | undefined {
+  const stack = stackRecord(root);
+  if (stack !== undefined)
+    return stack.recordedRoot !== undefined && stack.stackRemedy !== undefined && stack.home === undefined
+      ? new MeshTargetError("not-started", `the stack journal in ${root} was recorded at ${stack.recordedRoot}`, { root, ...stack })
+      : undefined;
+  const retained = retainedLegacyBroker(root);
+  // A tenant count this cannot read cannot say the space runs elsewhere, as for legacyStackElsewhere.
+  let named: string | undefined;
+  try { named = retained === undefined || retained.open ? undefined : soleSpaceOf(authDir(root)); } catch { return undefined; }
+  const elsewhere = named === undefined ? undefined : legacyStackElsewhere(root, named);
+  return elsewhere && new MeshTargetError("not-started", `the mesh "${named}" in ${root} is registered for ${elsewhere.recordedRoot}`, { root, server: retained!.server, lastRun: true, stackSpace: named, recordedRoot: elsewhere.recordedRoot, stackRemedy: elsewhere.remedy });
+}
+
+/** The space a target failure concerns, which its report heads with `Mesh:` and its envelope carries
+ *  as `target.space`: the space it names, or, in a folder holding the records of a stack that runs
+ *  from another folder, the space those records name, as `up` and `down` there name it. That one is
+ *  kept out of `details.space`, which callers read as a prepared space. */
+export function targetErrorSpace(details: MeshTargetErrorDetails): string | undefined {
+  return details.space ?? (details.recordedRoot !== undefined && details.stackRemedy !== undefined && details.home === undefined ? details.stackSpace : undefined);
+}
+
+/** What the project root `cwd` is in holds, none outside a project: the spaces it has REGISTERED (a
+ *  `cotal up` wrote the registration and no `cotal down` has removed it, so each may still be
+ *  running), and the space it has prepared and never started. */
+function folderSpaces(cwd: string, meshes: readonly MeshEntry[]): { root: string; registered: string[]; prepared?: string } | undefined {
+  const root = findCotalRoot(cwd);
+  if (!isGenuineSpace(root)) return undefined;
+  const registered = [...new Set(meshes.filter((m) => canonicalRoot(m.root) === canonicalRoot(root)).map((m) => m.space))].sort();
+  const prepared = preparedSpaceAt(root)?.space;
+  return { root, registered, ...(prepared === undefined ? {} : { prepared }) };
+}
+
+/** Whether this root holds a stack of its own: a recorded one, or a legacy broker it rendered. */
 function holdsOwnStack(root: string): boolean {
   return stackRecord(root) !== undefined || retainedLegacyBroker(root) !== undefined;
 }
 
-/** Whether the selection is the target here. Inside a project whose root has one space, that space
- *  is the target, and its heading says the selection applies outside the folder. So is a root whose
- *  own stack is stopped with no registration ({@link holdsOwnStack}). A root with several spaces,
- *  none of them the selection, keeps the selection and says so before the command acts, with the
- *  `--space` that targets one of them instead. */
-function selectionTargetsHere(cwd: string, current: string, meshes: readonly MeshEntry[]): boolean {
+/** Whether a folder with no space registered or prepared for it holds the records of a stack that is
+ *  not its own to restart: a journal recorded at another folder (a copy, a moved folder, a `.cotal`
+ *  linked to another's), a stack that runs under another Cotal home, or a legacy root whose space this
+ *  machine registered for another folder ({@link legacyStackElsewhere}). `cotal up` there refuses or
+ *  takes the name over, so the commands run there refuse and name that folder or home rather than
+ *  release to the selection. */
+function recordsRunElsewhere(folder: { root: string; registered: readonly string[]; prepared?: string }): boolean {
+  if (folder.registered.length || folder.prepared !== undefined) return false;
+  const stack = stackRecord(folder.root);
+  if (stack !== undefined) return stack.recordedRoot !== undefined || stack.home !== undefined;
+  const retained = retainedLegacyBroker(folder.root);
+  // A tenant count this cannot read cannot say the space runs elsewhere, as for legacyStackElsewhere.
+  try {
+    const named = retained === undefined || retained.open ? undefined : soleSpaceOf(authDir(folder.root));
+    return named !== undefined && legacyStackElsewhere(folder.root, named) !== undefined;
+  } catch { return false; }
+}
+
+/**
+ * Whether the selection is the target here.
+ *
+ * A FOLDER'S SPACE CAPTURES THE COMMANDS RUN THERE ONLY WHILE IT RUNS. One running space registered
+ * for this root is the target, and its heading says the selection applies outside the folder. A
+ * space prepared here and never started, and one whose stack here is stopped (its registration gone
+ * with only its journal or rendered broker configuration left, or its broker not answering the run's
+ * liveness sweep), is the target of `up`, `down`, `space show` and `status`'s folder section only —
+ * the commands that are about the folder itself. Everything else run there targets the selection,
+ * and the run says under its heading what this folder holds ({@link noteFolderSpaceHeld}). A folder
+ * whose records are those of a stack that runs elsewhere ({@link recordsRunElsewhere}) is not released
+ * to the selection: the command refuses and names where that stack runs.
+ *
+ * It used to be enough to be registered OR prepared: a folder's prepared space captured every read
+ * there, so `status` in a project whose space was never started reported that space rather than the
+ * working selection, and `ps` in a checkout whose space is stopped asked about the stopped one.
+ *
+ * A root with several running spaces, none of them the selection, keeps the selection and says so
+ * before the command acts, with the `--space` that targets one of them instead.
+ */
+function selectionTargetsHere(cwd: string, current: string, meshes: readonly MeshEntry[], offline: ReadonlySet<string>): boolean {
   const folder = folderSpaces(cwd, meshes);
-  if (!folder || folder.spaces.includes(current)) return true;
-  if (folder.spaces.length === 0) return !holdsOwnStack(folder.root);
-  if (folder.spaces.length === 1) {
-    noteFolderSpace(folder.spaces[0]!, current);
+  if (!folder || folder.registered.includes(current) || folder.prepared === current) return true;
+  const running = folder.registered.filter((space) => !offline.has(space));
+  if (running.length === 0) {
+    if (recordsRunElsewhere(folder)) return false;
+    noteFolderSpaceHeld(folder, current);
+    return true;
+  }
+  if (running.length === 1) {
+    noteFolderSpace(running[0]!, current);
     return false;
   }
   recordOperationWarning({
     code: "SELECTION_NOT_FOLDER_SPACE",
-    target: { space: current, folderSpaces: folder.spaces, root: folder.root },
-    message: `this targets the selected space "${current}", not this folder's spaces ${folder.spaces.map((s) => `"${s}"`).join(", ")}; pass --space <space> to target one of them`,
+    target: { space: current, folderSpaces: running, root: folder.root },
+    message: `this targets the selected space "${current}", not this folder's spaces ${running.map((s) => `"${s}"`).join(", ")}; pass --space <space> to target one of them`,
   });
   return true;
 }
@@ -601,34 +687,115 @@ export function noteFolderSpace(space: string, current: string): void {
   recordOperationSpaceNote(space, `this folder's space; the selected space "${current}" applies outside it`);
 }
 
-/** The one space registered or prepared at the root of the project folder `cwd` is in, which a
- *  command without `--space` targets there. Undefined outside a project and where the root has none
- *  or several. */
+/** Say under a heading that NAMES the space this folder holds that it is not running, so commands
+ *  here target the selection `current` until it is. `space show` is about the folder, so it heads its
+ *  report with that space rather than with the target. */
+export function noteFolderSpaceShown(space: string, state: "prepared" | "stopped", current: string): void {
+  recordOperationSpaceNote(space, `this folder's ${state} space; commands here target the selected space "${current}" until it runs`);
+}
+
+/** Say under the run's `Mesh: <current>` heading that this folder holds a space that is not running,
+ *  so the selection is the target here, and name the `cotal up` that starts it. A refusal whose own
+ *  next step names `cotal up` leaves this one out, so it names one. An envelope carries the same note
+ *  as a `FOLDER_SPACE_NOT_RUNNING` warning, which stderr does not repeat. A folder that holds none
+ *  says nothing. */
+function noteFolderSpaceHeld(folder: { root: string; registered: readonly string[]; prepared?: string }, current: string): void {
+  const held = heldSpace(folder);
+  if (!held) return;
+  const text = `this folder holds the ${held.state} space "${held.space}"`, step = `${held.state === "prepared" ? "start" : "restart"} it with cotal up`;
+  recordOperationSpaceNote(current, text, step);
+  recordOperationWarning({ code: "FOLDER_SPACE_NOT_RUNNING", target: { space: held.space, state: held.state, root: folder.root, selected: current }, message: `${text}; ${step}` }, { echo: false });
+}
+
+/** The space a folder holds that is not running: the one it prepared, the one its stopped stack is
+ *  registered for, or the one its own stack journal or rendered broker configuration names after a
+ *  legacy `down` dropped its registration. Undefined for a folder that holds none, and for one whose
+ *  records are those of a stack that runs elsewhere ({@link recordsRunElsewhere}), which `cotal up`
+ *  there does not start. */
+function heldSpace(folder: { root: string; registered: readonly string[]; prepared?: string }): { space: string; state: "prepared" | "stopped" } | undefined {
+  if (folder.prepared !== undefined) return { space: folder.prepared, state: preparedLifecycle(folder.root, folder.prepared).state === "prepared" ? "prepared" : "stopped" };
+  if (folder.registered.length === 1) return { space: folder.registered[0]!, state: "stopped" };
+  if (recordsRunElsewhere(folder)) return undefined;
+  const named = stackRecord(folder.root)?.stackSpace ?? (retainedLegacyBroker(folder.root) ? soleSpaceOf(authDir(folder.root)) : undefined);
+  return named === undefined ? undefined : { space: named, state: "stopped" };
+}
+
+/** The space this folder holds that is not running, which only the commands about the folder itself
+ *  name: `up`, `down`, `space show` and `status`'s folder section. Every other command run here
+ *  targets the selection. Undefined outside a project, where a space registered for this root may
+ *  still be running, and where the folder holds none. */
+export function folderSpaceHeld(cwd: string): { space: string; root: string; state: "prepared" | "stopped" } | undefined {
+  const folder = folderSpaces(cwd, loadMeshes());
+  if (!folder || folder.registered.length) return undefined;
+  const held = heldSpace(folder);
+  return held === undefined ? undefined : { ...held, root: folder.root };
+}
+
+/** The one space REGISTERED at the root of the project folder `cwd` is in, when it is not the selection
+ *  `current` and the folder's own records show its stack stopped, read without dialing its broker:
+ *  its stack journal's last whole-stack operation is a completed `down`, or, for a root the retained
+ *  launcher started, no broker pidfile names a live process, as after its `down` or a crash. A
+ *  controller stack writes no broker pidfile, so where its journal records anything else, as a running
+ *  stack's does, the pidfile is not read. Commands
+ *  here then target the selection, and bare `cotal`, which reads no broker, names it with what the
+ *  folder holds. Undefined where the records do not show that, as for a controller stack whose members
+ *  ended without a `down`, and for a space registered by hand or by a catalog, whose broker this
+ *  machine does not start. */
+export function folderSpaceStopped(cwd: string, current: string): { space: string; root: string; state: "stopped" } | undefined {
+  const folder = folderSpaces(cwd, loadMeshes());
+  const space = folder?.registered.length === 1 ? folder.registered[0]! : undefined;
+  if (!folder || space === undefined || space === current) return undefined;
+  const origin = findMesh(space)?.origin;
+  if (origin === "manual" || origin === "catalog") return undefined;
+  try {
+    const path = stackJournalPath(folder.root), file = lstatSync(path, { throwIfNoEntry: false });
+    let stopped: boolean;
+    if (file !== undefined) {
+      if (!file.isFile() || file.size > 64 * 1024) return undefined;
+      const journal = JSON.parse(readFileSync(path, "utf8")) as { space?: unknown; root?: unknown; operation?: { kind?: unknown; phase?: unknown } } | null;
+      stopped = journal?.space === space && journal.root === canonicalRoot(folder.root) && journal.operation?.kind === "down" && journal.operation.phase === "completed";
+    } else {
+      const pid = readPidfile(localProcessPath("nats.pid", { root: folder.root, space }));
+      stopped = pid === undefined || parsePid(pid) !== undefined && probeLiveness(parsePid(pid)!) === "dead";
+    }
+    return stopped ? { space, root: folder.root, state: "stopped" } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The one space REGISTERED at the root of the project folder `cwd` is in, which a command without
+ *  `--space` targets there while it runs. Undefined outside a project and where the root has none or
+ *  several. A space prepared here and never started is not one: see {@link folderSpaceHeld}. */
 export function folderSpace(cwd: string): string | undefined {
   const folder = folderSpaces(cwd, loadMeshes());
-  return folder?.spaces.length === 1 ? folder.spaces[0] : undefined;
+  return folder?.registered.length === 1 ? folder.registered[0] : undefined;
 }
 
 /** The space a command without `--space` targets in the project folder `cwd` is in when that is not
- *  the selection `current`: the root's one registered or prepared space. Undefined with nothing
- *  selected, outside a project, and where the selection is the target. */
-export function folderSpaceOverSelection(cwd: string, current: string | null): string | undefined {
+ *  the selection `current`: the root's one registered space, while it runs. `offline` names the spaces
+ *  whose broker the caller found not answering, which do not capture a command; a caller that reads
+ *  no broker passes none. Undefined with nothing selected, outside a project, and where the selection
+ *  is the target. */
+export function folderSpaceOverSelection(cwd: string, current: string | null, offline: readonly string[] = []): string | undefined {
   if (current === null) return undefined;
   const folder = folderSpace(cwd);
-  return folder !== current ? folder : undefined;
+  return folder !== undefined && folder !== current && !offline.includes(folder) ? folder : undefined;
 }
 
 /** The one registration recorded for `root`, if any. A broker that runs several spaces records one
- *  entry per space, all under the same root. With no `--space` to pick one, `.find()` would silently
- *  resolve whichever sorted first; name the tenants and refuse instead (the same posture as
- *  `soleSpaceOf` for an unrecorded multi-space root). */
+ *  entry per space, all under the same root, and so do two remote spaces registered from the same
+ *  folder. With no `--space` to pick one, `.find()` would silently resolve whichever sorted first;
+ *  name the tenants and refuse instead (the same posture as `soleSpaceOf` for an unrecorded
+ *  multi-space root). The names ride along as `spaces`: `update` replaces the one binary they all
+ *  share, so it reads each of them in turn rather than refusing the machine-wide question. */
 function registrationAt(root: string, meshes: readonly MeshEntry[]): MeshEntry | undefined {
   const rootMatches = meshes.filter((m) => canonicalRoot(m.root) === canonicalRoot(root));
   if (rootMatches.length > 1)
     throw new MeshTargetError(
       "ambiguous-target",
       `this folder's broker hosts ${rootMatches.length} spaces (${rootMatches.map((m) => m.space).join(", ")}) - name one with --space`,
-      { available: rootMatches.map((m) => `${m.space} (${m.root})`) },
+      { available: rootMatches.map((m) => `${m.space} (${m.root})`), spaces: rootMatches.map((m) => m.space) },
     );
   return rootMatches[0];
 }
@@ -644,7 +811,9 @@ function registrationAt(root: string, meshes: readonly MeshEntry[]): MeshEntry |
 export function credsSpace(cwd: string): { space: string; selected: boolean } | undefined {
   const meshes = loadMeshes();
   const current = getCurrent();
-  if (current && selectionTargetsHere(cwd, current, meshes)) return { space: current, selected: true };
+  // Offline by design: a credential goes to the broker its caller paired it with, and this reads no
+  // liveness, so a space registered for this folder is taken as running here.
+  if (current && selectionTargetsHere(cwd, current, meshes, new Set())) return { space: current, selected: true };
   const root = findCotalRoot(cwd);
   if (!isGenuineSpace(root)) return undefined;
   assertRootIsSingleTenant(root);
@@ -662,11 +831,15 @@ export function resolveReadsLiveness(cwd: string, flags: ResolveFlags = {}): boo
   const meshes = loadMeshes();
   const current = getCurrent();
   if (current) {
-    // The selection is the target unless this project's root has one space other than it, or holds
-    // a stopped stack of its own with none.
+    // With a selection, liveness answers one question: does a space this folder has registered still
+    // run, and so capture the command instead of the selection? A folder that registers the
+    // selection itself resolves without it.
     const folder = folderSpaces(cwd, meshes);
-    if (!folder || folder.spaces.length > 1 || folder.spaces.includes(current)) return false;
-    if (folder.spaces.length === 0 && !holdsOwnStack(folder.root)) return false;
+    if (!folder || folder.registered.includes(current) || folder.prepared === current) return false;
+    if (folder.registered.length) return true;
+    // This folder registers nothing. A root holding its own stopped stack is still what a read
+    // discovers here, so it falls through to the registration check below.
+    if (!holdsOwnStack(folder.root)) return false;
   }
   const root = findCotalRoot(cwd);
   return !isGenuineSpace(root) || registrationAt(root, meshes) === undefined;
@@ -676,10 +849,14 @@ export function resolveReadsLiveness(cwd: string, flags: ResolveFlags = {}): boo
  * Resolve the mesh target by precedence (first match wins):
  *  1. `--space` — registry lookup (errors if that space isn't running).
  *  2. `--server` — registry entry on that server (for creds/personas), else the local project.
- *  3. The `current` selected by `cotal use`, except inside a project whose root has one space other
- *     than it, or holds a stopped stack of its own with no registration, where step 4 applies. It stays the target when its broker is down, and a selection
- *     that names no registration refuses rather than reaching another mesh. Inside a project whose
- *     root has several spaces, none of them the selection, the run warns first.
+ *  3. The `current` selected by `cotal use`, except inside a project whose root has one RUNNING space
+ *     other than it, where step 4 applies. A space this folder prepared and never started, and one
+ *     whose stack here is stopped, does not take the selection's place; a folder holding the records
+ *     of a stack that runs from another folder or under another Cotal home refuses at step 4 and
+ *     names where it runs ({@link recordsRunElsewhere}). The selection stays the target when its
+ *     own broker is down, and a selection that names no registration refuses rather than reaching
+ *     another mesh. Inside a project whose root has several running spaces, none of them the
+ *     selection, the run warns first.
  *  4. A genuine local project (`cwd` walks up to a real `.cotal/`).
  *  5. The registry's *running* meshes: 0 ⇒ error; 1 ⇒ use it; N ⇒ error naming
  *     each + its root. `flags.offline` (from a sweep) is excluded here; a named `--space` and
@@ -738,7 +915,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
 
   const meshes = loadMeshes();
   const current = getCurrent();
-  if (current && selectionTargetsHere(cwd, current, meshes)) {
+  if (current && selectionTargetsHere(cwd, current, meshes, offline)) {
     const cur = meshes.find((m) => m.space === current);
     if (!cur) {
       notStarted(current, cwd);
@@ -788,7 +965,11 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     const retained = retainedLegacyBroker(root);
     if (retained) {
       const named = retained.open ? undefined : soleSpaceOf(authDir(root));
-      throw new MeshTargetError("not-started", `the mesh${named === undefined ? "" : ` "${named}"`} in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, ...(named === undefined ? {} : { stackSpace: named }) });
+      // A root whose space this machine registered for ANOTHER folder is not a root whose own stack
+      // is merely stopped: the stack runs from that folder, so `cotal up` here would refuse the name
+      // or take it over rather than start what the caller asked for. Name that folder instead.
+      const elsewhere = named === undefined ? undefined : legacyStackElsewhere(root, named);
+      throw new MeshTargetError("not-started", `the mesh${named === undefined ? "" : ` "${named}"`} in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, ...(named === undefined ? {} : { stackSpace: named }), ...(elsewhere === undefined ? {} : { recordedRoot: elsewhere.recordedRoot, stackRemedy: elsewhere.remedy }) });
     }
     // No record for this root (migration, or our broker went down and the entry was just pruned).
     // Before guessing DEFAULT_SERVER, refuse if a DIFFERENT mesh is recorded there — otherwise the

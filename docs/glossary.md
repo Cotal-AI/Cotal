@@ -61,8 +61,10 @@ One-line definitions of the terms used across these docs and the spec. The base 
   `replay` is on, bounded to the reader's ACL and optionally to `replayWindow`.
   [SPEC §7](../SPEC.md#7-channels)
 
-- **Instance (id)**: a connected participant; its **id** is its principal (below), used
-  identically as sender, presence key, and durable name. [SPEC §2](../SPEC.md#2-identity)
+- **Instance (id)**: a connected participant whose **id** is its principal (below), used
+  as sender and presence key. Per-instance durable names also include its lifecycle UID
+  so a same-name successor does not inherit them. [SPEC §2](../SPEC.md#2-identity),
+  [§8](../SPEC.md#8-nats--jetstream-binding)
 
 - **Join link**: a `cotal://` / `cotals://` URL encoding broker host, space, optional credential,
   and optional channels, the onboarding half of the contract.
@@ -115,8 +117,10 @@ One-line definitions of the terms used across these docs and the spec. The base 
   freed name is held reserved until it completes, which is what makes reusing an agent's name
   safe. [SPEC §13.1](../SPEC.md#131-lifecycle-identity), [identity & auth](identity-and-auth.md)
 
-- **Role / service**: a named anycast target a group of agents share; a message to the role
-  reaches one of them. [SPEC §1](../SPEC.md#1-scope-and-terminology), [§4](../SPEC.md#4-delivery-modes)
+- **Role / service**: a named anycast target shared by consumers; a message reaches one of
+  them. This messaging role is distinct from a registered endpoint service with a
+  discoverable command contract. [SPEC §1](../SPEC.md#1-scope-and-terminology),
+  [§4](../SPEC.md#4-delivery-modes), [Control surface](control-surface.md#service-discovery)
 
 - **Runtime (`pty` / `tmux` / `cmux` / `orca` / `herdr`)**, how the manager runs each agent process: the
   built-in pty, or a native terminal surface via an extension. [run-a-mesh.md](run-a-mesh.md)
@@ -124,8 +128,10 @@ One-line definitions of the terms used across these docs and the spec. The base 
 - **Space**: an isolated coordination context and tenant boundary; one space maps to one NATS
   account. [SPEC §1](../SPEC.md#1-scope-and-terminology), [spaces.md](spaces.md)
 
-- **Spawn capability**, the `spawn` control-plane capability in an agent file: grants publish to
-  the privileged control subject so the agent may start or despawn peers. [agent-files.md](agent-files.md)
+- **Spawn capability**, the `spawn` control-plane capability in an agent file: requests the
+  manager lifecycle commands. Issued endpoint grants and target scope determine which peers
+  the caller may manage; it is not blanket authority over a space.
+  [agent-files.md](agent-files.md), [SPEC Appendix B](../SPEC.md#appendix-b-profile-acls)
 
 - **Trusted reader**: the privileged component that reads the mixed durable backstop on an
   agent's behalf and re-authorizes each entry (current ACL and membership) before delivering it.

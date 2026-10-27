@@ -15,7 +15,7 @@ is the map: what the tree provides, what you need, and how creds flow.
 | file | what it is |
 |---|---|
 | `deploy/docker/Dockerfile` | Builds one image (`cotal-runner`) bundling the `cotal`, `claude`, and `opencode` CLIs, installing the mesh plugin (`cotal setup`), and pre-completing Claude's first-run onboarding for unattended use. |
-| `deploy/docker/entrypoint.sh` | Waits for the broker to be reachable, then runs `cotal <cmd> --server $COTAL_SERVERS`. |
+| `deploy/docker/entrypoint.sh` | Waits for the broker to be reachable, then runs `cotal <cmd> --server $COTAL_SERVERS` under the daemon Node flag `--max-semi-space-size=1`. |
 | `deploy/docker/compose.yaml` | Two example services: `team-a` (a manager + roster) and `solo` (one agent). |
 | `deploy/docker/roster.example.yaml` | A roster template to copy. |
 
@@ -50,7 +50,8 @@ for personas.
   must be nats-server 2.12 or newer (the v0.4 control surface floor); agents fail loud at connect
   against an older one.
 - **The account signer:** on the host beside your broker, `cotal auth signer --out signer.json` writes
-  `signer.json`: account signing material with no operator key.
+  `signer.json`: account signing material with no operator key. The file is a secret: it can mint any
+  identity in that account.
 - **A model credential per connector type** (see below).
 
 ## Steps
@@ -101,7 +102,7 @@ because the Claude connector lists it, not because every `CLAUDE_CODE_*` name is
 | connector | env | notes |
 |---|---|---|
 | `claude` | `CLAUDE_CODE_OAUTH_TOKEN` | from `claude setup-token` on your host; runs on your Claude Pro/Max subscription, same as local |
-| `opencode` | the env var of the provider behind each agent's `model:` | per provider: `OPENCODE_API_KEY` for OpenCode's hosted models, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc. |
+| `opencode` | the env var of the provider behind each agent's `model:` | forwarded without config: `OPENCODE_API_KEY` for OpenCode's hosted models, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `NOUS_API_KEY`. Any other provider variable needs a [`spawn.env`](config.md#environment-variables) entry |
 
 Every var set on a team container reaches every agent in it; **the container is the team's trust
 boundary**, so secrets are not isolated *between* agents in the same container. For hard per-agent

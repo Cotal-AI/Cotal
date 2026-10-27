@@ -19,6 +19,7 @@ const handle: AgentHandle = {
 };
 const runtime: Runtime = {
   kind: "fixture",
+  streamsTerminal: false,
   spawn: () => handle,
   adopt: (candidate) => candidate.id === reference.id ? handle : (() => { throw new Error("unknown reference"); })(),
 };
@@ -26,6 +27,7 @@ assert.equal(runtime.adopt!(reference), handle);
 
 const withoutAdopt: Runtime = {
   kind: "fixture",
+  streamsTerminal: true,
   spawn: () => handle,
 };
 assert.equal(withoutAdopt.adopt, undefined, "a runtime without durable custody may omit adopt");
@@ -34,6 +36,11 @@ const source = readFileSync(join(import.meta.dirname, "..", "src", "runtime.ts")
 const contract = source.slice(source.indexOf("export interface RuntimeReference"), source.indexOf("export interface RuntimeProvider"));
 assert.match(contract, /adopt\?\(reference: RuntimeReference\): AgentHandle;/, "capability absence is representable as optional adopt");
 assert.doesNotMatch(contract, /\b(?:Pty|IPty)\b/, "the generic Runtime contract must not expose a PTY type");
+// Terminal streaming is DECLARED, not discovered by catching a throw: a backend that says nothing
+// would be read as streaming and a foreground spawn would be taken through an attach that cannot
+// open. Optional here is the defect, so the shape is asserted rather than the value.
+assert.match(contract, /readonly streamsTerminal: boolean;/, "a runtime states whether it streams a terminal, and the field is required");
+assert.doesNotMatch(contract, /streamsTerminal\?/, "streamsTerminal must not be optional: absence would be guessed at");
 
 const managerAdopt = readFileSync(join(import.meta.dirname, "..", "..", "..", "implementations", "manager", "src", "runtime", "index.ts"), "utf8");
 assert.match(managerAdopt, /runtime "\$\{runtime\.kind\}" does not support adopt/, "the manager refuses by name when adopt is absent");

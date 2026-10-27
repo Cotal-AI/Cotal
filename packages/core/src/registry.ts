@@ -15,6 +15,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
  * they are invisible to {@link resolve}/{@link all} until {@link commitStaged} publishes them
  * atomically. Registrations made in OTHER async contexts during the import's awaits go straight to
  * live and are never captured (so a rollback never discards an unrelated registration).
+ *
+ * A root can also DECLARE a module before importing it ({@link Registry.provide}): the keys it
+ * registers and how to import it. {@link Registry.load} then imports only the module behind the key
+ * a process asks for, so a process that runs one command need not import every command's module.
  */
 export interface Extension {
   readonly kind: string;
@@ -30,6 +34,16 @@ export interface ExtensionRef {
   readonly name: string;
 }
 
+/** A module that registers extensions when it is imported, declared to the registry before it loads.
+ *  A composition root declares one so that a process which needs only some extensions imports only
+ *  their modules: {@link Registry.load} imports the provider of the key it is asked for, once. */
+export interface ExtensionProvider {
+  /** Every key importing the module registers that a caller may {@link Registry.load} by. */
+  readonly provides: readonly ExtensionRef[];
+  /** Imports the module. Its registrations are the module's own, as with any import. */
+  readonly load: () => Promise<unknown>;
+}
+
 /** Every `kind:word` key an extension claims: its name, then its aliases. */
 function claims(ext: Extension): string[] {
   return [ext.name, ...(ext.aliases ?? [])].map((word) => `${ext.kind}:${word}`);
@@ -37,6 +51,8 @@ function claims(ext: Extension): string[] {
 
 export class Registry {
   #byKey = new Map<string, Extension>();
+  /** `kind:name` → the declared provider that registers it, and its import once one has started. */
+  #providers = new Map<string, { provider: ExtensionProvider; loading?: Promise<unknown> }>();
   /** `kind:alias` → the claiming extension's `kind:name` key, for committed extensions. */
   #aliases = new Map<string, string>();
   /** While a stage is active in the CURRENT async context, {@link register} writes there instead of
@@ -120,11 +136,44 @@ export class Registry {
   }
 
   /** Resolve one extension by kind + name or alias. Unknown throws. Staged (uncommitted) registrations are
-   *  invisible here; only committed ones resolve. */
+   *  invisible here; only committed ones resolve. A key whose declared provider has not loaded throws
+   *  too, naming that: {@link load} resolves it. */
   resolve<T extends Extension>(kind: T["kind"], name: string): T {
     const ext = this.#byKey.get(this.#canonical(kind, name));
-    if (!ext) throw new Error(`no ${kind} registered for "${name}"`);
+    if (!ext) {
+      if (this.#providers.has(`${kind}:${name}`)) throw new Error(`${kind} "${name}" is declared by a provider this process has not loaded`);
+      throw new Error(`no ${kind} registered for "${name}"`);
+    }
     return ext as T;
+  }
+
+  /** Declare a provider: a module that registers `provides` when it is imported. Nothing is imported
+   *  here. A key that another provider already declares is refused, so a key has one provider. */
+  provide(provider: ExtensionProvider): void {
+    const keys = provider.provides.map((ref) => `${ref.kind}:${ref.name}`);
+    for (const key of keys) if (this.#providers.has(key)) throw new Error(`extension provider already declared: ${key}`);
+    const entry = { provider };
+    for (const key of keys) this.#providers.set(key, entry);
+  }
+
+  /** Whether a provider was declared for exactly this kind + name, loaded or not. A boolean probe
+   *  that never throws and imports nothing. */
+  provides(kind: string, name: string): boolean {
+    return this.#providers.has(`${kind}:${name}`);
+  }
+
+  /** Resolve kind + name, first importing the provider declared for it unless that import has run.
+   *  Concurrent calls share one import. A key no provider declares resolves as {@link resolve} does.
+   *  A provider that loads without registering the key it declared throws: the declaration is wrong,
+   *  and no other extension stands in for it. */
+  async load<T extends Extension>(kind: T["kind"], name: string): Promise<T> {
+    const entry = this.#providers.get(`${kind}:${name}`);
+    if (entry) {
+      entry.loading ??= entry.provider.load();
+      await entry.loading;
+      if (!this.#byKey.has(this.#canonical(kind, name))) throw new Error(`the provider declared for ${kind} "${name}" loaded without registering it`);
+    }
+    return this.resolve<T>(kind, name);
   }
 
   /** Every registered (committed) extension, optionally narrowed to one kind. */

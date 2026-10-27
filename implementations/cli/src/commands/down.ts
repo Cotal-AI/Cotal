@@ -26,8 +26,10 @@ import {
   findMesh,
   findPreparedSpace,
   getCurrent,
+  legacyStackElsewhere,
   localMeshesForRoot,
   preparedSpaceAt,
+  retainedLegacyBroker,
   soleSpaceOf,
   writeResult,
   type Report,
@@ -97,10 +99,11 @@ import { askManager, resolveControlTarget } from "../lib/control.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { captureSeatCheckpoint } from "../lib/seat-capture.js";
-import { processRecorded, stopLocalProcess } from "../lib/local-process-stop.js";
+import { processRecorded, stopInFlight, stopLocalProcess } from "../lib/local-process-stop.js";
 import { stopManager } from "../lib/manager-proc.js";
 import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
 import { controllerStackRecorded, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
+import { noticeBetweenSteps } from "../lib/interrupt-notice.js";
 import { goneRootDown, goneRootStackDown, validateGoneRootDownArguments } from "./stack-gone.js";
 import { readStackJournal, recordedProcessLine } from "../lib/stack-journal.js";
 import { restoreNextStep } from "../lib/restore.js";
@@ -159,13 +162,15 @@ export function validateDownArguments(args: ParsedArgs): void {
   if (args.values["abandon-launch"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-launch applies only to a controller stack's member launch, and this root has none; nothing was abandoned");
   if (args.values["dry-run"] === true && args.values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
   if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.file === undefined && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined) return;
-  if ((args.values.json !== undefined || args.values.plain !== undefined) && !(bareStop(args.values) && stoppedLegacyStack())) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview or a stack that is already stopped; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
+  // A folder holding another folder's registered space answers with a refusal, not with the lines a
+  // bare stop prints, so structured output carries it rather than refusing the flag.
+  if ((args.values.json !== undefined || args.values.plain !== undefined) && !(bareStop(args.values) && (stoppedLegacyStack() || recordsElsewhere(canonicalRoot(cotalRoot()), "stop")))) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
 }
 
 /** A bare `down` stops only the stack of the folder it runs in. When this folder's root holds no
- *  stack and the space named by `--space`, or else the selected one, is a controller stack rooted at
- *  another folder, refuse with that space and its root, so the remedy is a `down` that stops it. A
- *  folder with its own `.cotal` keeps the selected space from applying; a `--space` it holds no
+ *  stack and the space named by `--space`, or else the selected one, is a stack this machine started
+ *  at another folder, refuse with that space and its root, so the remedy is a `down` that stops it.
+ *  A folder with its own `.cotal` keeps the selected space from applying; a `--space` it holds no
  *  registration for still names that root. */
 function refuseStackElsewhere(values: ParsedArgs["values"]): void {
   if (values.file !== undefined || values.run !== undefined) return;
@@ -178,7 +183,7 @@ function refuseStackElsewhere(values: ParsedArgs["values"]): void {
     root = space === undefined ? undefined : stackRootElsewhere(space, here);
   } catch { return; }
   if (root === undefined) return;
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${values.space === undefined ? `the selected space "${space}" is` : `--space ${space} names`} a controller stack rooted at ${root}, and \`cotal down\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`, { target: { root: here, space, stackRoot: root }, remedy: `run \`${sameDown(values)}\` from ${root}` });
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${values.space === undefined ? `the selected space "${space}" is` : `--space ${space} names`} a stack rooted at ${root}, and \`cotal down\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`, { target: { root: here, space, stackRoot: root }, remedy: `run \`${sameDown(values)}\` from ${root}` });
 }
 
 /** The one route that stops the stack `up` starts from the machine home. */
@@ -292,6 +297,11 @@ function stoppedLegacyStack(): { root: string; space?: string; started: boolean 
   if (registered.length && !kept) return undefined;
   let space: string | undefined;
   try { space = soleSpaceOf(authDir(root)) ?? kept?.space; } catch { return undefined; }
+  // A root whose space this machine registers for ANOTHER folder holds that space's records, not a
+  // stack of its own that is merely stopped. Reporting it as one sent the operator to `cotal up`
+  // here, which takes the name over from the folder the stack runs in. Leave it to the refusal
+  // that names that folder.
+  if (space !== undefined && legacyStackElsewhere(root, space)) return undefined;
   const prepared = preparedSpaceAt(root);
   const started = existsSync(join(root, ".cotal", "server-open.conf")) || existsSync(join(authDir(root), "server.conf"));
   if (!prepared && !started) return undefined;
@@ -304,6 +314,8 @@ function stoppedLegacyStack(): { root: string; space?: string; started: boolean 
  *  machine has started or registered no stack at all, starting one, as `cotal status` says. A
  *  registry this cannot read may hold one. */
 function noStackHere(target: { root: string; space?: string }, action: "stop" | "preview"): CommandFailure {
+  const records = recordsElsewhere(target.root, action);
+  if (records) return records;
   let elsewhere: boolean;
   try { elsewhere = loadMeshes().some((mesh) => mesh.origin !== "manual" && mesh.origin !== "catalog"); } catch { elsewhere = true; }
   if (!elsewhere) return new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no stack at this folder's root, and this machine has no stack started or registered, so there is nothing to ${action}`, { target, remedy: "run `cotal up` in a project" });
@@ -324,10 +336,42 @@ function noOwnedStack(root: string): CommandFailure {
       target: { root, spaces: local.map((mesh) => mesh.space) },
       remedy: "remove the one that does not run here with `cotal space forget <name>`",
     });
+  // Records of a space registered for another folder are real records, so the unclassified refusal
+  // below sent the operator to `cotal status`, which did not say so either.
+  const records = recordsElsewhere(root, "stop");
+  if (records) return records;
   // A registration of any kind, or a process record no registration explains, is a stack this
   // cannot classify.
   if (registered || pidRecordsUnder(root)) return unclassified;
   return absent;
+}
+
+/** The space this root's own records name, when this machine registered it for another folder. A
+ *  root whose last start left its broker configuration still holds that space's trust, so a copied,
+ *  renamed or taken-over folder reads as one with a stack of its own until the registration is
+ *  asked where that space runs. Undefined when the root configured no broker, names no single space,
+ *  or holds that space's own registration. */
+function legacyRootElsewhere(root: string): { space: string; recordedRoot: string; remedy: string } | undefined {
+  try {
+    const retained = retainedLegacyBroker(root);
+    if (!retained || retained.open) return undefined;
+    const space = soleSpaceOf(authDir(root));
+    if (space === undefined) return undefined;
+    const elsewhere = legacyStackElsewhere(root, space);
+    return elsewhere && { space, ...elsewhere };
+  } catch { return undefined; }
+}
+
+/** The refusal for a folder holding the records of a space this machine registers for another
+ *  folder: a copy of it, the folder a later `up` took the name over from, or this folder moved out
+ *  of its recorded path. It names that folder and the step that reaches the stack there, because a
+ *  `cotal up` here would refuse the name or take it over rather than start what the folder holds. */
+function recordsElsewhere(root: string, action: "stop" | "preview"): CommandFailure | undefined {
+  const elsewhere = legacyRootElsewhere(root);
+  return elsewhere && new CommandFailure("refused", "CONFLICT", `this folder holds the records of "${elsewhere.space}", which is registered for ${elsewhere.recordedRoot}, not for this folder, so there is no stack here to ${action}`, {
+    target: { root, space: elsewhere.space, recordedRoot: elsewhere.recordedRoot },
+    remedy: elsewhere.remedy,
+  });
 }
 
 /** Keep the retained pidfile sweep from crossing an exact recorded broker-sharing boundary or
@@ -496,6 +540,13 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   let folderContext: LocalProcessContext | undefined;
   const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: resolveRuntimeSpace(process.cwd()) });
   refuseUncontainedRecords(selected, folderCtx());
+  // A signal ends the stop where it is, and the notice names the members it stopped and those still
+  // running. One that lands after a member was signalled waits for that member's exit, so its stop is
+  // reported first; a second one ends the stop at once and names that member. Once every member is
+  // stopped, the cleanup below finishes first.
+  const stopped: string[] = [];
+  let cleaning = false, cleaned = false;
+  const interrupt = noticeBetweenSteps(() => legacyStopInterruptNotice(selected, folderCtx(), stopped, stopInFlight(), cleaned), () => cleaning || stopInFlight() !== undefined);
   // The stop's lines follow the space they stop, as every other report of down begins.
   console.log(`${renderReport({ space: guarded.space, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
   // Every dry run returned or was refused above, so from here on this is the whole-stack stop of
@@ -504,7 +555,9 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   let any = false;
   let allStopped = true;
   for (const component of selected) {
-    any = processRecorded(component, folderCtx()) || any;
+    await interrupt.between();
+    const recorded = processRecorded(component, folderCtx());
+    any = recorded || any;
     if (component.stopLast && !allStopped) {
       stderrLine("✗ ", `not stopping ${component.label} because an earlier component did not stop`, c.red);
       continue;
@@ -514,6 +567,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
       if (component.name === "manager") await stopManager(context.space, { withAgents: values["with-agents"] });
       else if (component.name === "delivery") await stopDelivery(context.space, { preserveCredentials: true });
       else await stopLocalProcess(component, context);
+      if (recorded) stopped.push(component.label);
     } catch (e) {
       allStopped = false;
       stderrLine("✗ ", `${(e as Error).message}`, c.red);
@@ -521,9 +575,12 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   }
   if (!allStopped) {
     stderrLine("✗ ", "not cleanly stopped - keeping artifacts and the registry entry", c.red);
+    await interrupt.between();
+    interrupt.release();
     process.exitCode = 1;
     return;
   }
+  cleaning = true;
 
   if (selected.some((component) => component.name === "delivery"))
     await removeDeliveryCredentials(folderCtx().space);
@@ -561,11 +618,28 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     rmSync(join(root, ".cotal", "run"), { recursive: true, force: true });
     removeMeshesByRoot(root, undefined, localMeshesForRoot(root).find(keepsRegistration)?.space);
   }
+  cleaning = false;
+  cleaned = true;
+  await interrupt.between();
+  interrupt.release();
   if (!any) {
     console.error(c.red("Nothing running for the local stack (no recorded pidfiles)."));
     process.exit(1);
   }
   console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: "Start it again" }] }] }] }, "rich", terminalWidth(process.stdout))}`);
+}
+
+/** What an interrupted bare down of a legacy stack left: the members it stopped, the ones still
+ *  running, and the down that finishes the stop. `cut` is a member a second signal left signalled
+ *  with its exit not confirmed. */
+function legacyStopInterruptNotice(members: readonly LocalProcess[], context: LocalProcessContext, stopped: readonly string[], cut: LocalProcess | undefined, cleaned: boolean): string {
+  const running = members.filter((member) => processAlive(member, context)).map((member) => member.label);
+  const done = stopped.length ? `${stopped.join(", ")} ${stopped.length === 1 ? "was" : "were"} stopped` : "no member was stopped";
+  const left = running.length ? `${running.join(", ")} ${running.length === 1 ? "is" : "are"} still running` : "no member is running";
+  const head = `Interrupted while stopping the stack in ${canonicalRoot(context.root)}; ${done}, and ${left}.`;
+  if (cut) return `${head} The stop of ${cut.label} is not confirmed. Run cotal down --yes to finish the stop.`;
+  if (running.length) return `${head} Run cotal down --yes to finish the stop.`;
+  return cleaned ? `${head} Run cotal up to start it again.` : `${head} Run cotal down --yes to finish its cleanup.`;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

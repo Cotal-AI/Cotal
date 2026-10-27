@@ -48,9 +48,11 @@ RUN pnpm install --frozen-lockfile \
 # install cotal@cotal-mesh --scope user. Runs as uid 10001 so the plugin cache and enablement
 # under ~/.claude are owned by the user that runs at runtime.
 # Its space is a throwaway one in /tmp/cotal-image, so nothing is prepared at /workspace, where the
-# runtime joins the external broker.
+# runtime joins the external broker. DO_NOT_TRACK keeps usage telemetry off for this build step, so the
+# image holds no telemetry settings file: each container mints its own install id on its first command,
+# instead of every container reporting one id cloned from the image.
 RUN mkdir -p /tmp/cotal-image \
-  && pnpm cotal setup --destination local --harness claude --project /tmp/cotal-image --space image --no-input
+  && DO_NOT_TRACK=1 pnpm cotal setup --destination local --harness claude --project /tmp/cotal-image --space image --no-input
 
 # Pre-complete claude's first-run onboarding for the runtime user. A fresh container has no
 # ~/.claude.json, so claude 2.1.179 would block a managed (non-interactive) session on the

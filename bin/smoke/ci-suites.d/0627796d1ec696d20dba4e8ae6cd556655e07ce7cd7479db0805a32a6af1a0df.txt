@@ -1,0 +1,2 @@
+# One run's program identity from native run-status on a static-auth manager: agrees with run() and run-ps, reads no other run, never fabricates.
+smoke:run-status-program-identity

@@ -5,7 +5,7 @@ import {
   CotalEndpoint, acquireLock, assertLifecycleToken, canonicalJson, checkConversationApprovalPending, checkConversationPendingAnswer,
   checkConversationSelection, conversationApprovalRefusal, conversationGrant, deprovisionAgent, mintCreds, mkSecretDir, newIdentity,
   principalKey, provisionAgentDurables, processStartToken, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider,
-  type ConversationApprovalPending, type ConversationGrant, type ConversationPending, type ConversationSelection,
+  type ConversationApprovalPending, type ConversationApprovalRefusal, type ConversationGrant, type ConversationPending, type ConversationSelection,
 } from "@cotal-ai/core";
 import { getSpaceAuth, homeCotalDir, resolveTargetOrThrow, userAuthStateDir, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
 import {
@@ -104,19 +104,29 @@ function markUnderApproval(dir: string, record: SavedIdentity): void {
   save(dir, record);
 }
 
+/** The authority recorded that nothing was issued for this request, and the saved request is gone.
+ *  `decision` says why in a form a host can act on: the person's denial, the approval's expiry, or
+ *  a refusal of the proposed selection. */
+export class ConversationRefusal extends Error {
+  constructor(readonly decision: ConversationApprovalRefusal | "refused", message: string) {
+    super(message);
+    this.name = "ConversationRefusal";
+  }
+}
+
 /** What one creation answer proves. A selection refusal, a recorded denial or expiry, and a pending
  *  approval each prove that nothing was issued. Any other answer than an exact issued identity
  *  leaves the outcome unknown, so it throws and the request stays saved. */
 function creationOutcome(
   record: SavedIdentity, authority: ConversationAuthority, response: { status: number; body: unknown }, what: "creation" | "recovery",
-): { refused: string } | { pending: ConversationPending } | { material: ConversationMaterial } {
+): { refused: string; decision: ConversationRefusal["decision"] } | { pending: ConversationPending } | { material: ConversationMaterial } {
   const remote = record.remote!;
   if (!remote.material) {
     const refusal = selectionRefusal(response.status, response.body);
-    if (refusal) return { refused: `${refusal}; no identity was issued` };
+    if (refusal) return { refused: `${refusal}; no identity was issued`, decision: "refused" };
     const decided = conversationApprovalRefusal(response.status, response.body);
-    if (decided === "denied") return { refused: "the person denied this connection; no identity was issued" };
-    if (decided === "expired") return { refused: "the approval expired before this connection was issued; no identity was issued. Connect again to ask again" };
+    if (decided === "denied") return { refused: "the person denied this connection; no identity was issued", decision: "denied" };
+    if (decided === "expired") return { refused: "the approval expired before this connection was issued; no identity was issued. Connect again to ask again", decision: "expired" };
     if (response.status === 202) {
       const pending = checkConversationPendingAnswer(response.body,
         { requestId: record.requestId, authorityOrigin: new URL(authority.url).origin, proposed: record.selection ?? null });
@@ -159,6 +169,31 @@ export async function provisionUserApp(
   target: MeshTarget, name: string, session: string | undefined, events: boolean, selection?: ConversationSelection,
 ): Promise<UserAppConnection | { pending: ConversationPending }> {
   if (!session || !/^[A-Za-z0-9_-]{1,128}$/.test(session)) throw new Error(await noNativeSession(target));
+  const root = identityRoot();
+  mkSecretDir(root);
+  privateDir(root);
+  // Space-specific records remain the recovery authority. Serialize across spaces as well so two
+  // hosts cannot open different identities for the same native conversation at the same time.
+  const sessionLock = acquireLock(join(root, `session-${hash(session)}.lock`), { waitMs: 0 });
+  try {
+    for (const entry of readdirSync(root)) {
+      const dir = join(root, entry);
+      if (!isUserAppDir(dir) || !existsSync(join(dir, RECORD))) continue;
+      const previous = read(dir);
+      if (previous.session !== session || previous.space === target.space) continue;
+      if (previous.consumer.pid !== process.ppid && !consumerGone(previous.consumer))
+        throw new Error("this native conversation still has a live consumer on another space; disconnect it before choosing another");
+      // A pending request or a dead consumer must finish its exact retirement before a new target
+      // receives a request. Failure keeps the old record and sends nothing to the new authority.
+      await retireUserApp(dir);
+    }
+    return await provisionOnSpace(target, name, session, events, selection);
+  } finally { sessionLock.release(); }
+}
+
+async function provisionOnSpace(
+  target: MeshTarget, name: string, session: string, events: boolean, selection?: ConversationSelection,
+): Promise<UserAppConnection | { pending: ConversationPending }> {
   const store = workspaceSecretStore(target.root);
   const infra = target.userAuth?.remote === true ? undefined : await getSpaceAuth(store, target.space);
   const authority = infra ? undefined : await discoverConversationAuthority(target);
@@ -173,6 +208,19 @@ export async function provisionUserApp(
   mkSecretDir(root);
   privateDir(root);
   const dir = join(root, hash(`${target.space}\0${session}`));
+  if (existsSync(join(dir, RECORD))) {
+    const previous = read(dir);
+    const changed = previous.label !== name || canonicalJson(previous.selection ?? null) !== canonicalJson(selection ?? null);
+    // Replacing an unissued request needs no approval of the unwanted name or permissions. Resolve
+    // the old request through its authority first: if approval raced us, retire that exact identity.
+    // The outer session lock keeps a watcher from recreating the old request during replacement.
+    if (changed && previous.state === "creating" && previous.remote && !previous.remote.material &&
+        previous.session === session && previous.trust === trust(target)) {
+      if (previous.consumer.pid !== process.ppid && !consumerGone(previous.consumer))
+        throw new Error("this native conversation still has a live inbox consumer; its pending request was not replaced");
+      await retireUserApp(dir);
+    }
+  }
   // A reconnect first finishes the previous explicit departure. Only a confirmed terminal
   // retirement can release this session key for a new request and a new secret.
   if (existsSync(join(dir, RECORD)) && read(dir).state === "retiring") {
@@ -222,7 +270,7 @@ export async function provisionUserApp(
       const outcome = creationOutcome(record, authority, response, "creation");
       if ("refused" in outcome) {
         discard(dir);
-        throw new Error(outcome.refused);
+        throw new ConversationRefusal(outcome.decision, outcome.refused);
       }
       if ("pending" in outcome) {
         record.remote.approval = { pending: outcome.pending.approval };

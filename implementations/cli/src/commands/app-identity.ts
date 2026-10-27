@@ -14,7 +14,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import { resolveTargetOrThrow, type MeshTarget } from "@cotal-ai/workspace";
-import { isUserAppDir, provisionUserApp, retireDeadUserApps, retireUserApp } from "../lib/app-user-identity.js";
+import { ConversationRefusal, isUserAppDir, provisionUserApp, retireDeadUserApps, retireUserApp } from "../lib/app-user-identity.js";
 
 /** Every credential directory an earlier static-mesh provision made was a fresh `mkdtemp` under the
  *  OS temp dir with this prefix. Provision makes none now; retire still removes them. */
@@ -50,11 +50,13 @@ interface IdentityRecord {
 }
 
 /** `pending` names the request a person has not decided yet and the page where they decide it. It
- *  carries no credential, secret or path. Provisioning again replays that same request. */
+ *  carries no credential, secret or path. Provisioning again replays that same request. `refused`
+ *  says the authority recorded a decision that issued nothing and the saved request is gone; any
+ *  other error leaves the request saved for the next replay. */
 export type AppIdentityReply =
   | { ok: true; env: Record<string, string>; retire?: { dir: string }; grant?: ConversationGrant }
   | ({ ok: false; pending: true } & ConversationPending)
-  | { ok: false; error: string };
+  | { ok: false; error: string; refused?: ConversationRefusal["decision"] };
 
 function reply(r: AppIdentityReply | { ok: true }): void {
   process.stdout.write(`${JSON.stringify(r)}\n`);
@@ -74,16 +76,17 @@ export async function appIdentity(args: ParsedArgs): Promise<void> {
     if (verb === "reap" && args.positionals.length === 1) return reply(await reap(values));
     reply({ ok: false, error: "usage: cotal app-identity provision --name <name> [--space <space>] | retire --dir <dir> | reap [--space <space>]" });
   } catch (e) {
-    reply({ ok: false, error: errorText(e) });
+    reply({ ok: false, error: errorText(e), ...(e instanceof ConversationRefusal ? { refused: e.decision } : {}) });
   }
 }
 
 /** The mesh the conversation joins, resolved as a bare `cotal spawn` resolves it: `--space`, then
  *  the `cotal use` mesh, then the working directory's project, then the only one running. Without
  *  `--space` it first sweeps the registry, so a recorded mesh whose broker is down does not count
- *  as running. */
+ *  as running. A present `--space` that is blank is not a default: it names no mesh. */
 function target(space: string | undefined): Promise<MeshTarget> {
-  return resolveTargetOrThrow(space ? { space } : {});
+  if (space !== undefined && !space.trim()) throw new Error("--space needs a space name; a blank name selects no mesh");
+  return resolveTargetOrThrow(space !== undefined ? { space } : {});
 }
 
 async function provision(values: FlagValues<typeof appIdentityFlags>): Promise<AppIdentityReply> {

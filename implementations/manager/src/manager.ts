@@ -83,8 +83,8 @@ import {
   digestIdToken,
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -294,6 +294,10 @@ const INPUT_SLICE_CHARS = 2048;
  * are not counted into the receipt, so `bytes` still reports what the caller asked to deliver. */
 export const PASTE_START = "\x1b[200~";
 export const PASTE_END = "\x1b[201~";
+/** `details[].kind` on an `attach` refusal raised because the seat's runtime opens no terminal
+ * stream. The message carries that runtime's own guidance, which is operator copy and changes; this
+ * marker is the contract a caller keys on so it can act without reading the wording. */
+export const RUNTIME_NO_TERMINAL_DETAIL = "ai.cotal.manager.runtime-no-terminal";
 /** Pick a `setInterval` period for {@link Manager.renewDaemonCreds} that guarantees at least one
  * tick lands inside every renewal owner's `[renewAt, exp)` window.
  *
@@ -909,6 +913,10 @@ export interface StartAgentOpts {
   /** The §13.2 rail this spawn rode. Class-rail harness refusals name `--on`; instance-pinned
    *  refusals stay local. Direct `startAgent` (roster / `--spawn`) is not a class request. */
   route?: "one" | "all" | "inst";
+  /** The terminal runtime this one seat launches on. Absent uses this manager's own runtime, the
+   *  same choice `cotal up --runtime` made. A named runtime is resolved once and reused for every
+   *  later seat that names it. An unknown or unreachable one refuses the launch and starts nothing. */
+  runtime?: string;
   /** Launch under an admitted delegated user intent (SPEC 13.16): the agent is `owner`'s, and
    *  `parent` is its ledger parent and its recorded spawner. Set only by the composition root's
    *  in-process call; the ctl spawn handler never maps a payload field into it. */
@@ -917,6 +925,8 @@ export interface StartAgentOpts {
 
 interface ManagedLaunch {
   source: ManagerResumeAgent["launch"]["source"];
+  /** The runtime kind this seat was launched on. Absent means the manager's own runtime. */
+  runtime?: string;
   cwd: string;
   model?: string;
   variant?: string;
@@ -1329,6 +1339,12 @@ export class Manager {
   private readonly executionState: { kind: "none" } | { kind: "runtime" };
   // Declared only: no own Runtime slot exists in the none arm.
   declare private readonly runtime: Runtime;
+  /** One backend per kind a seat has asked for, beside {@link runtime}. The manager's own runtime
+   *  stays the default and is never replaced by a later seat's choice. */
+  private readonly runtimes = new Map<string, Runtime>();
+  /** Hosted pooled control, recorded so a later seat cannot add a custodial runtime the constructor
+   *  already refused for the manager's own. */
+  private readonly pooled: boolean;
   /** Internal test seam. Production leaves this undefined and uses the scoped delivery-admin evictor. */
   private staticLifecycleEvict?: (principal: string) => Promise<import("@cotal-ai/core").EvictionResult>;
   private readonly preserveStopTimeoutMs: number;
@@ -1679,6 +1695,7 @@ export class Manager {
     this.secrets = opts.secretStore ?? workspaceSecretStore(this.workspaceRoot);
     if (opts.secretStore) this.secretStoreIdentity = injectedSecretStoreIdentity(opts.secretStore);
     this.installedExtensions = opts.installedExtensions ?? false;
+    this.pooled = opts.pooled === true;
     this.executionState = opts.execution === "none" ? { kind: "none" } : { kind: "runtime" };
     if (!this.remoteAuthority) {
       const local = loadManagerInstanceIdentity(this.workspaceRoot, this.space);
@@ -1721,6 +1738,13 @@ export class Manager {
     return this.executionState.kind === "none" ? "none" : this.requiredRuntime.kind;
   }
 
+  /** Whether this manager's runtime opens a terminal stream on the seats it spawns, so a caller
+   *  knows before it asks whether `attach` can open one here. A control instance with no execution
+   *  spawns no seat, so it streams no terminal either. */
+  get streamsTerminal(): boolean {
+    return this.executionState.kind !== "none" && this.requiredRuntime.streamsTerminal;
+  }
+
   get execution(): "runtime" | "none" {
     return this.executionState.kind;
   }
@@ -1733,6 +1757,42 @@ export class Manager {
   private get requiredRuntime(): Runtime {
     if (this.executionState.kind === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     return this.runtime;
+  }
+
+  /** Import the installed extension that provides a seat's runtime before {@link runtimeFor}
+   *  resolves it, as {@link resolveConnector} does for a connector. On the published binary the
+   *  manager process imports only its own runtime, so a seat that names another installed runtime
+   *  found nothing in the registry and was refused as unknown. The manifest is consulted first, so a
+   *  live `cotal ext remove` refuses the next launch even while an earlier import keeps the provider
+   *  registered; seats already on that runtime keep their cached backend. A library composition
+   *  resolves only what its root imported. The refusal names an official runtime's package. */
+  private async loadSeatRuntime(kind: string | undefined): Promise<void> {
+    const asked = kind?.trim();
+    if (!this.installedExtensions || this.executionState.kind === "none" || !asked || asked === "auto" || asked === "pty" || asked === this.runtime.kind) return;
+    if (!manifestExtensionNames("runtime").includes(asked)) throw new Error(runtimeInstallHint(asked));
+    if (registry.all<RuntimeProvider>("runtime").some((provider) => provider.name === asked)) return;
+    await materializeFromManifest<RuntimeProvider>({ kind: "runtime", name: asked }, { hint: (ref) => runtimeInstallHint(ref.name) });
+  }
+
+  /** The backend one seat launches, restarts, and is reaped through. An omitted or blank choice is
+   *  this manager's own runtime. A named one is created once, cached by its resolved kind, and reused
+   *  for every later seat of that kind. The manager's own runtime is never replaced. An unknown or
+   *  unreachable runtime throws, and pooled control refuses a custodial one by the same rule the
+   *  constructor applied to the manager's own. */
+  private runtimeFor(kind: string | undefined): Runtime {
+    if (this.executionState.kind === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    const asked = kind?.trim();
+    if (!asked) return this.runtime;
+    if (asked === "auto")
+      throw new Error(`runtime "auto" chooses the manager's runtime, not one seat; omit runtime to use ${this.runtime.kind}`);
+    if (asked === this.runtime.kind) return this.runtime;
+    const cached = this.runtimes.get(asked);
+    if (cached) return cached;
+    const runtime = createRuntime(asked, `cotal-${this.space}`);
+    if (this.pooled && isCustodialRuntime(runtime))
+      throw new Error(`pooled control refuses custodial runtime "${runtime.kind}" before starting agents`);
+    this.runtimes.set(runtime.kind, runtime);
+    return runtime;
   }
 
   /** What a default process stop does with this manager's seats. `release` drops manager-local
@@ -2077,7 +2137,7 @@ export class Manager {
       watchChannels: false,
       // `host` says which machine runs this manager, as an agent's card does: an owner with several
       // managers tells them apart by it. Advisory display metadata, never a routing input.
-      card: { id, ...(this.remoteAuthority ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.supervisor } : {}), name: this.name, role: "manager", kind: "endpoint", meta: { host: hostname() } },
+      card: { id, ...(this.remoteAuthority ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.supervisor } : {}), name: this.name, role: "manager", kind: "endpoint", meta: { host: hostname(), terminal: this.streamsTerminal ? "stream" : "none" } },
     });
     // Raw failures ride error; conditions the endpoint is already surviving ride warning. Both
     // matter to a supervisor operator, especially a failed standing-credential renewal.
@@ -5009,8 +5069,18 @@ export class Manager {
       if (held) held.lastError = `the retirement was NOT requested: this manager has no serve identity yet, so it cannot speak as the registered serving instance. The despawn stopped "${a.name}" and the name stays held. NEXT: let the manager finish registering, then re-attempt the same-name spawn to re-drive the teardown.`;
       return;
     }
-    const uncertain = (why: string) =>
-      `the despawn stopped "${a.name}", but the retirement's completion could NOT be confirmed (${why}). The name stays held - not failed, not done - and a same-name spawn re-drives the same teardown; the auth service also finishes any started retirement on its next boot. NEXT: if the auth rail stays unreachable, recover the stack (\`cotal supervise\`), then re-attempt the same-name spawn.`;
+    const reportFailure = (why: string, unconfirmed = false): void => {
+      // An orphan rollback owns no name hold. Re-read after the rail awaits so a successor's
+      // hold never receives the predecessor's error or supplies its despawn/retry claims.
+      const current = this.retiring.get(a.name);
+      const held = current?.target.lifecycleUid === a.lifecycleUid ? current : undefined;
+      const copy = !unconfirmed ? why : held
+        ? `the despawn stopped "${a.name}", but the retirement's completion could NOT be confirmed (${why}). The name stays held - not failed, not done - and a same-name spawn re-drives the same teardown; the auth service also finishes any started retirement on its next boot. NEXT: if the auth rail stays unreachable, recover the stack (\`cotal supervise\`), then re-attempt the same-name spawn.`
+        : `the retirement's completion could NOT be confirmed (${why}). No hold reserves the name for this lifecycle.`;
+      if (held) held.lastError = copy;
+      const prefix = held ? `despawn ${a.name}` : `retire ${a.name}: lifecycle ${a.lifecycleUid}`;
+      console.error(`${prefix}: ${copy}`);
+    };
     try {
       // The caller triple and the TARGET are both grant-pinned now (#350): the `handle` target
       // rides the subject, so this ephemeral credential can ask to retire exactly this
@@ -5063,27 +5133,20 @@ export class Manager {
         if (r.ok) {
           this.confirmRetirement(a);
         } else if (r.error?.code === "expired") {
-          // A stale-epoch refusal: the responder answered, but at another epoch than this resolve
-          // bound (a plane restart mid-despawn landed on the new epoch) - the retry copy, never a
-          // hard despawn failure line, since a same-name spawn (or the auth service's own boot
-          // resume) re-drives the same teardown.
-          const copy = uncertain(r.error.message);
-          if (held) held.lastError = copy;
-          console.error(`despawn ${a.name}: ${copy}`);
+          // A stale-epoch refusal cannot confirm retirement. The retry copy follows the
+          // current lifecycle's hold, which an orphan rollback does not create.
+          reportFailure(r.error.message, true);
         } else {
           // The rail's refusal is already the operator copy (lease-loss/stale/foreign-op faces,
           // full-no-op statements included) - surface it INTACT, never flattened.
           const message = r.error?.message ?? "the auth service refused the retirement without a reason";
-          if (held) held.lastError = message;
-          console.error(`despawn ${a.name}: ${message}`);
+          reportFailure(message);
         }
       } finally {
         await nc.close().catch(() => {});
       }
     } catch (e) {
-      const copy = uncertain(rejectionText(e));
-      if (held) held.lastError = copy;
-      console.error(`despawn ${a.name}: ${copy}`);
+      reportFailure(rejectionText(e), true);
     }
   }
 
@@ -5398,9 +5461,10 @@ export class Manager {
           .reduce((max, p) => Math.max(max, p.ts), 0) + 1;
         // Same ordering as the spawn path: the replacement seat's reference is recorded on the
         // still-active slot before its processes exist, so a crash here never strands it.
-        const custody = this.reserveCustody();
+        const runtime = this.runtimeFor(a.launch.runtime);
+        const custody = this.reserveCustody(runtime);
         if (custody) await this.recordSlotCustody(a, custody);
-        const handle = await this.spawnCustodied(a.name, spec, a.launch.cwd, custody);
+        const handle = await this.spawnCustodied(runtime, a.name, spec, a.launch.cwd, custody);
         replacement = handle;
         restart.sessionStatePath = spec.sessionStatePath ?? restart.sessionStatePath;
         if (continueSession !== undefined) {
@@ -5565,6 +5629,8 @@ export class Manager {
     // scalar/array (the CLI never does). Core doesn't interpret the keys; the connector validates them.
     if (args.launchOptions !== undefined && (typeof args.launchOptions !== "object" || args.launchOptions === null || Array.isArray(args.launchOptions)))
       return Promise.resolve({ ok: false, error: "launchOptions: expected a key:value mapping" });
+    if (args.runtime !== undefined && (typeof args.runtime !== "string" || !args.runtime.trim()))
+      return Promise.resolve({ ok: false, error: "runtime: expected a non-empty runtime name" });
     let supervise: { restarts: number; windowMs: number } | undefined;
     if (args.supervise !== undefined) {
       const raw = args.supervise;
@@ -5652,6 +5718,7 @@ export class Manager {
         allowPublish,
         shareTools,
         ...(supervise !== undefined ? { supervise } : {}),
+        ...(typeof args.runtime === "string" ? { runtime: args.runtime.trim() } : {}),
         route,
       },
       caller,
@@ -6066,6 +6133,13 @@ export class Manager {
     opts = ownLists(opts);
     if (opts.resolved) opts.resolved = ownLists(opts.resolved);
     if (opts.supervise) opts.supervise = { restarts: opts.supervise.restarts, windowMs: opts.supervise.windowMs };
+    let runtime: Runtime;
+    try {
+      await this.loadSeatRuntime(opts.runtime);
+      runtime = this.runtimeFor(opts.runtime);
+    } catch (e) {
+      return { ok: false, error: rejectionText(e) };
+    }
     if (opts.delegatedIntent) {
       if (!this.remoteAuthority?.executeDelegatedUserIntent)
         return { ok: false, error: `"${opts.name}" names a delegated user intent, and this manager has no host execution for one` };
@@ -6134,8 +6208,8 @@ export class Manager {
     // exit, so a name cannot be respawned in place. User-mode seats have no static slot that
     // keeps the incarnation owned across a process death, so the same refusal applies there.
     if (opts.supervise !== undefined) {
-      if (this.requiredRuntime.kind !== "pty")
-        return { ok: false, error: `supervise is a restart policy this host cannot enforce: runtime "${this.requiredRuntime.kind}" cannot respawn a name in place` };
+      if (runtime.kind !== "pty")
+        return { ok: false, error: `supervise is a restart policy this host cannot enforce: runtime "${runtime.kind}" cannot respawn a name in place` };
       if (this.userMode)
         return { ok: false, error: "supervise is a restart policy this host cannot enforce: a user-mode seat has no static slot to keep the incarnation owned across a process death" };
     }
@@ -6151,8 +6225,8 @@ export class Manager {
     }
     // A delegated seat starts outside this host from values alone, so a choice only this host can
     // honour is refused here, before enrollment, and named rather than dropped.
-    if (this.requiredRuntime.spawnDelegated) {
-      const delegatedBy = `runtime "${this.requiredRuntime.kind}" starts seats outside this host`;
+    if (runtime.spawnDelegated) {
+      const delegatedBy = `runtime "${runtime.kind}" starts seats outside this host`;
       if (!this.remoteAuthority?.enrollManagedAgent)
         return { ok: false, error: `${delegatedBy}, which needs a host that enrolls managed agents (remoteAuthority.enrollManagedAgent); a delegated seat has no local grant path` };
       try {
@@ -6325,9 +6399,9 @@ export class Manager {
       }
     }
     // The child takes launch options as `--opt k=v`, so only string values can cross to it.
-    const unportable = this.requiredRuntime.spawnDelegated ? Object.keys(launchOptions ?? {}).filter((k) => typeof launchOptions![k] !== "string") : [];
+    const unportable = runtime.spawnDelegated ? Object.keys(launchOptions ?? {}).filter((k) => typeof launchOptions![k] !== "string") : [];
     if (unportable.length)
-      return { ok: false, error: `runtime "${this.requiredRuntime.kind}" starts seats outside this host, so it cannot pass non-string launch options (${unportable.join(", ")})` };
+      return { ok: false, error: `runtime "${runtime.kind}" starts seats outside this host, so it cannot pass non-string launch options (${unportable.join(", ")})` };
     // The AG-UI event plane is on unless the launch explicitly opted out. Refused HERE, before
     // anything is minted: a connector that cannot
     // emit must fail before provisioning rather than after, exactly as an unsupported `resume` does.
@@ -6414,7 +6488,7 @@ export class Manager {
       // launch. Minting it inside `runtime.spawn` (as it used to be) put the processes on disk
       // before anything recorded how to address them, so a crash in that window left a live seat
       // outside every manager and the successor retired the slot over it.
-      const custody = this.reserveCustody();
+      const custody = this.reserveCustody(runtime);
       // ACCEPT SEAM (spawn-as-action): the incarnation identity is minted and NOTHING has
       // been provisioned yet — the action serve path binds the goal + replies the acceptance HERE. A
       // throw (bind conflict / duplicate goalId) aborts the spawn before provisioning: the catch below
@@ -6637,12 +6711,12 @@ export class Manager {
       // manager path is produced for it, only the handoff its runtime writes into the child.
       let spec: LaunchSpec | undefined;
       let handle: AgentHandle;
-      if (this.requiredRuntime.spawnDelegated) {
+      if (runtime.spawnDelegated) {
         const handoff = this.composeManagedHandoff(enrolled!.material, enrolled!.actorToken);
         if (this.delegatedLaunched.has(lifecycleUid))
-          throw new Error(`lifecycle ${lifecycleUid} was already handed to runtime "${this.requiredRuntime.kind}"; a lifecycle is handed off at most once`);
+          throw new Error(`lifecycle ${lifecycleUid} was already handed to runtime "${runtime.kind}"; a lifecycle is handed off at most once`);
         this.delegatedLaunched.add(lifecycleUid);
-        handle = this.requiredRuntime.spawnDelegated(
+        handle = runtime.spawnDelegated(
           { agent, persona: readFileSync(configPath, "utf8"), managerInstanceId: this.managerInstanceId, role, model, variant, prompt, launchOptions: launchOptions as Record<string, string> | undefined, events },
           handoff,
         );
@@ -6655,7 +6729,7 @@ export class Manager {
         spec = connector.buildLaunch(launchOpts);
         if (carried) this.transcripts!.consume(opts.resumeClaim!, opts.resume!);
         spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
-        handle = await this.spawnCustodied(name, spec, cwd, custody);
+        handle = await this.spawnCustodied(runtime, name, spec, cwd, custody);
       }
       hooks?.onLaunched?.(); // The "launched" progress edge (process spawned, pre-presence)
       const managed: ManagedAgent = {
@@ -6678,6 +6752,7 @@ export class Manager {
         control: spec?.control,
         ...(spec ? {} : { handedOff: true as const }),
         launch: {
+          runtime: runtime.kind,
           source: opts.resolved
             ? {
                 kind: "manifest",
@@ -6835,7 +6910,7 @@ export class Manager {
       // "no role", so dropping the key preserves the reply (surfaced by readiness:live).
       // A host that granted other channels than this spawn asked for: the receipt carries both.
       const acl = enrolled ? enrolledAcl({ allowSubscribe, allowPublish }, enrolled.material) : undefined;
-      const okData = { name, agent, id: managed.id, mode: handle.kind, lifecycleUid, ...(role !== undefined ? { role } : {}), ...(opts.eventsNotice !== undefined ? { eventsNotice: opts.eventsNotice } : {}), ...(acl ? { acl } : {}), ...(readiness.operator !== undefined ? { waitingFor: readiness.operator } : {}) };
+      const okData = { name, agent, id: managed.id, mode: handle.kind, streamsTerminal: runtime.streamsTerminal, lifecycleUid, ...(role !== undefined ? { role } : {}), ...(opts.eventsNotice !== undefined ? { eventsNotice: opts.eventsNotice } : {}), ...(acl ? { acl } : {}), ...(readiness.operator !== undefined ? { waitingFor: readiness.operator } : {}) };
       await hooks?.onOutcome?.({ kind: "succeeded", data: okData });
       return { ok: true, data: okData };
     } catch (e) {
@@ -7174,12 +7249,13 @@ export class Manager {
    *  reference, and user or open meshes, which keep no slot. */
   private async orphanedResumeSeat(entry: ManagerResumeAgent, principal: string, liveRoster: Presence[]): Promise<RuntimeReference | undefined> {
     if (!this.auth || this.userMode || entry.identity.mode !== "static") return undefined;
-    if (typeof (this.requiredRuntime as Partial<CustodialRuntime>).reap !== "function") return undefined;
+    const runtime = this.runtimeFor(entry.launch.runtime);
+    if (typeof (runtime as Partial<CustodialRuntime>).reap !== "function") return undefined;
     if (liveRoster.some((p) => p.card.id === principal && p.lifecycleUid !== entry.identity.lifecycleUid)) return undefined;
     const slot = await this.readStaticReconcileSlot(entry.name);
     if (slot?.phase !== "active" || slot.actor !== entry.identity.id || slot.lifecycleUid !== entry.identity.lifecycleUid) return undefined;
     if (ownedBySibling(slot, this.managerInstanceId)) return undefined;
-    return slot.runtime?.kind === this.requiredRuntime.kind ? slot.runtime : undefined;
+    return slot.runtime?.kind === runtime.kind ? slot.runtime : undefined;
   }
 
   /** Reap a seat {@link orphanedResumeSeat} found, then wait for its principal to leave presence so
@@ -7187,7 +7263,7 @@ export class Manager {
    *  proves nothing or the principal stays live, which means another process holds it. */
   private async reapOrphanedResumeSeat(principal: string, reference: RuntimeReference): Promise<string | undefined> {
     try {
-      const evidence = await requireRuntimeReap(this.requiredRuntime, reference);
+      const evidence = await requireRuntimeReap(this.runtimeFor(reference.kind), reference);
       console.error(`resume: reaped orphaned seat ${reference.kind}:${reference.id} of retained principal "${principal}" (${evidence.detail})`);
     } catch (e) {
       return `retained principal "${principal}" is already live and its recorded seat ${reference.kind}:${reference.id} could not be reaped: ${rejectionText(e)}`;
@@ -7217,8 +7293,13 @@ export class Manager {
     try {
       if (entry.space !== this.space)
         return { ok: false, error: `retained agent ${entry.name} belongs to space "${entry.space}", not "${this.space}"` };
-      if (entry.launch.runtime !== this.requiredRuntime.kind)
-        return { ok: false, error: `retained agent ${entry.name} requires runtime "${entry.launch.runtime}", current manager uses "${this.requiredRuntime.kind}"` };
+      try {
+        await this.loadSeatRuntime(entry.launch.runtime);
+      } catch (e) {
+        return { ok: false, error: `retained agent ${entry.name} requires runtime "${entry.launch.runtime}", which this manager cannot resolve: ${rejectionText(e)}` };
+      }
+      if (entry.launch.runtime !== this.runtimeFor(entry.launch.runtime).kind)
+        return { ok: false, error: `retained agent ${entry.name} requires runtime "${entry.launch.runtime}", which this manager cannot resolve` };
       const nameErr = this.nameError(entry.name);
       if (nameErr) return { ok: false, error: nameErr };
       if (this.agents.has(entry.name) || (!batchReserved && this.reserved.has(entry.name)))
@@ -7383,10 +7464,11 @@ export class Manager {
       if (!Number.isSafeInteger(readinessTimeoutMs) || readinessTimeoutMs <= 0)
         return { ok: false, error: `connector ${connector.name} declares invalid readinessTimeoutMs ${JSON.stringify(connector.readinessTimeoutMs)}; expected a positive safe integer` };
       const resumeId = entry.identity.mode === "user" ? principalKey(entry.identity.owner, entry.identity.actor).key : entry.identity.id;
-      const custody = this.reserveCustody();
+      const runtime = this.runtimeFor(entry.launch.runtime);
+      const custody = this.reserveCustody(runtime);
       if (custody) await this.recordSlotCustody({ name: entry.name, id: resumeId, lifecycleUid: entry.identity.lifecycleUid }, custody);
       prepared.spawned = true;
-      const handle = await this.spawnCustodied(entry.name, prepared.spec, entry.launch.cwd, custody);
+      const handle = await this.spawnCustodied(runtime, entry.name, prepared.spec, entry.launch.cwd, custody);
       const managed: ManagedAgent = {
         name: entry.name,
         role: entry.role,
@@ -7411,6 +7493,7 @@ export class Manager {
         handle,
         control: prepared.spec.control,
         launch: {
+          runtime: entry.launch.runtime,
           source: entry.launch.source,
           cwd: entry.launch.cwd,
           model: entry.launch.model,
@@ -9924,15 +10007,15 @@ export class Manager {
   /** Mint the custody reference for a seat this manager is about to spawn, BEFORE the processes
    *  exist. Absent for a runtime with no durable custody (there is nothing a successor could reap
    *  by reference), which is the only case that still spawns unreserved. */
-  private reserveCustody(): RuntimeReference | undefined {
-    return isCustodialRuntime(this.requiredRuntime) ? this.requiredRuntime.reserve() : undefined;
+  private reserveCustody(runtime: Runtime): RuntimeReference | undefined {
+    return isCustodialRuntime(runtime) ? runtime.reserve() : undefined;
   }
 
   /** Spawn under a reserved reference and prove the runtime honoured it. A runtime that minted its
    *  own id instead would leave every durable record addressing a seat that does not exist, so the
    *  mismatch tears the new seat down and throws rather than returning an unaddressable handle. */
-  private async spawnCustodied(name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined): Promise<AgentHandle> {
-    const handle = this.requiredRuntime.spawn(name, spec, cwd, reserved);
+  private async spawnCustodied(runtime: Runtime, name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined): Promise<AgentHandle> {
+    const handle = runtime.spawn(name, spec, cwd, reserved);
     if (reserved === undefined) return handle;
     const got = handle.reference;
     if (got?.kind === reserved.kind && got.id === reserved.id) return handle;
@@ -9948,7 +10031,7 @@ export class Manager {
       disposal = "the handle carries no reference, so nothing could reap it by identity and only a best-effort stop was issued";
     } else {
       try {
-        const evidence = await requireRuntimeReap(this.requiredRuntime, got);
+        const evidence = await requireRuntimeReap(runtime, got);
         disposal = `the spawned seat was reaped (${evidence.detail})`;
       } catch (e) {
         // Two unrelated failures used to share one sentence here, and the difference is the part the
@@ -9962,7 +10045,7 @@ export class Manager {
       }
     }
     throw new Error(
-      `runtime "${this.requiredRuntime.kind}" reserved custody ${reserved.kind}:${reserved.id} for "${name}" but spawned ` +
+      `runtime "${runtime.kind}" reserved custody ${reserved.kind}:${reserved.id} for "${name}" but spawned ` +
         `${got ? `${got.kind}:${got.id}` : "a handle with no reference"}; the recorded reference would address no seat, so ${disposal}`,
     );
   }
@@ -9976,7 +10059,8 @@ export class Manager {
   private recordSeat(a: ManagedAgent): void {
     if (!this.auth || this.userMode) return;
     const policy = a.restart?.policy;
-    const adoptable = a.handle.reference !== undefined && typeof this.requiredRuntime.adopt === "function";
+    const runtime = this.runtimeFor(a.handle.kind);
+    const adoptable = a.handle.reference !== undefined && typeof runtime.adopt === "function";
     if (!policy && !adoptable) return;
     const agent = this.resumeEntryOf(a);
     if (policy) {
@@ -10020,8 +10104,8 @@ export class Manager {
     const identity = record.agent.identity;
     if (identity.mode !== "static" || identity.id !== row.actor || identity.lifecycleUid !== row.lifecycleUid) return undefined;
     if (record.instanceId !== this.managerInstanceId || record.agent.space !== this.space) return undefined;
-    if (record.agent.launch.runtime !== this.requiredRuntime.kind) {
-      console.error(`! ${row.alias}: its seat ran on runtime "${record.agent.launch.runtime}" and this manager uses "${this.requiredRuntime.kind}"; the lifecycle is retired, not restarted`);
+    if (record.agent.launch.runtime !== row.runtime?.kind) {
+      console.error(`! ${row.alias}: its seat ran on runtime "${record.agent.launch.runtime}" and its slot names "${row.runtime?.kind ?? "none"}"; the lifecycle is retired, not restarted`);
       return undefined;
     }
     return record;
@@ -10035,7 +10119,7 @@ export class Manager {
     const entry = record.agent;
     if (entry.identity.mode !== "static") return "its record is not a static identity";
     if (row.runtime === undefined) return "its slot names no seat";
-    const runtime = this.requiredRuntime;
+    const runtime = this.runtimeFor(row.runtime.kind);
     if (typeof runtime.adopt !== "function") return `runtime "${runtime.kind}" cannot adopt a seat`;
     // The credential is the manager's own lifecycle-keyed file, and its seed renews it.
     const credsPath = resolve(entry.identity.credential.path);
@@ -10072,6 +10156,7 @@ export class Manager {
       // The runtime names an adopted handle by what it holds; the record names the seat.
       handle: { ...adopted, name: entry.name },
       launch: {
+        runtime: entry.launch.runtime,
         source: entry.launch.source,
         cwd: entry.launch.cwd,
         model: entry.launch.model,
@@ -10114,7 +10199,7 @@ export class Manager {
     // names is reaped first. A runtime that cannot prove it gone refuses, and the terminal retires it.
     if (row.runtime !== undefined) {
       try {
-        const evidence = await requireRuntimeReap(this.requiredRuntime, row.runtime);
+        const evidence = await requireRuntimeReap(this.runtimeFor(row.runtime.kind), row.runtime);
         console.error(`${row.alias}: the seat its previous manager left ${evidence.detail}`);
       } catch (error) {
         return `the seat its previous manager left could not be reaped: ${rejectionText(error)}`;
@@ -10159,7 +10244,8 @@ export class Manager {
     // An unproven reap throws from here rather than printing, so it propagates into
     // driveStaticRetirement's catch, which records the failure and HOLDS the name. That is the whole
     // point of refusing: the alias must not be freed while a seat nobody proved gone may still run.
-    const evidence = await requireRuntimeReap(this.requiredRuntime, a.runtime);
+    const runtime = this.runtimeFor(a.runtime.kind);
+    const evidence = await requireRuntimeReap(runtime, a.runtime);
     console.error(`static retirement ${a.name}: orphan seat process ${evidence.detail}`);
   }
 
@@ -11289,6 +11375,16 @@ export class Manager {
     } catch (e) {
       slot.release();
       // The external runtimes refuse attach() before acquiring anything (see the residual above).
+      //
+      // A runtime that streams NO terminal is `unimplemented` and not a precondition: asking again
+      // cannot change it, and a caller that reads this as transient retries a refusal forever. The
+      // runtime's own throw is the guidance for watching the agent where it really runs, so it is
+      // carried through verbatim, and the namespaced detail lets a caller act on the one fact
+      // without reading the wording. This is the same answer `input` gives a runtime that cannot
+      // write, for the same reason.
+      if (!this.runtimeFor(a.handle.kind).streamsTerminal)
+        throw new EpEnvelopeError("unimplemented", `the ${a.handle.kind} runtime streams no terminal, so agent "${a.name}" has none to attach: ${rejectionText(e)}`,
+          [{ kind: RUNTIME_NO_TERMINAL_DETAIL, runtime: a.handle.kind }], "not-executed");
       throw new EpEnvelopeError("failed-precondition", rejectionText(e), undefined, "not-executed");
     }
     // establishAttach releases the claim it was handed on every exit; nothing to unwind here.

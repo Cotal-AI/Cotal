@@ -395,21 +395,7 @@ async function dispatchStep(
     result = await perform(ctx, inputHash);
     assertCrossable(result, `the result of ${stepKeyString(key)}`);
   } catch (e) {
-    const endedAt = host.options.handler.now();
-    // A REFUSAL IS NOT A FAILURE. The handler attempted nothing, so recording `failed` would
-    // replay a failure forever for work the world never saw (measured: the mesh handler's L5016
-    // settled `failed`, and a run started before the durable-action surface landed could never
-    // heal). The entry settles `refused` under the handler's own code, and the run halts with
-    // the uncatchable L5025: a capable host's resume finds the refusal and performs the step.
-    if (e instanceof EffectRefused) {
-      await host.journal.settle(
-        key,
-        { status: "refused", error: { code: e.code, kind: "refused", message: e.message } },
-        endedAt,
-      );
-      throw new RunHeld(stepKeyString(key), e.message);
-    }
-    return await settleThrown(host, key, frame, e, endedAt);
+    return await settleDispatchThrown(host, key, frame, e, host.options.handler.now());
   }
 
   const endedAt = host.options.handler.now();
@@ -418,9 +404,28 @@ async function dispatchStep(
   return result;
 }
 
+/** Settle a failed effect or observation dispatch, including a host's refusal to attempt it. */
+async function settleDispatchThrown(host: EffectHost, key: StepKey, frame: EffectFrame, e: unknown, endedAt: number): Promise<never> {
+  // A REFUSAL IS NOT A FAILURE. The handler attempted nothing, so recording `failed` would
+  // replay a failure forever for work the world never saw (measured: the mesh handler's L5016
+  // settled `failed`, and a run started before the durable-action surface landed could never
+  // heal). The entry settles `refused` under the handler's own code, and the run halts with
+  // the uncatchable L5025: a capable host's resume finds the refusal and performs the step.
+  if (e instanceof EffectRefused) {
+    await host.journal.settle(
+      key,
+      { status: "refused", error: { code: e.code, kind: "refused", message: e.message } },
+      endedAt,
+    );
+    throw new RunHeld(stepKeyString(key), e.message);
+  }
+  return await settleThrown(host, key, frame, e, endedAt);
+}
+
 /**
  * Settle a step whose dispatch threw anything but a refusal, and rethrow what the program sees.
- * {@link performEffect} and {@link performHold} differ only in what a refusal records.
+ * Effects and `waitUntil` share {@link settleDispatchThrown}; {@link performHold} keeps its own
+ * refusal rule so an at-most-once step stays pending.
  */
 async function settleThrown(host: EffectHost, key: StepKey, frame: EffectFrame, e: unknown, endedAt: number): Promise<never> {
   // A journal that just refused an append cannot be asked to record why. It leaves by its own
@@ -605,35 +610,7 @@ async function observeUntil(
     try {
       inTime = await host.options.handler.observe({ name, every, deadlineAt, deadline, attempt }, ctx);
     } catch (e) {
-      const endedAt = host.options.handler.now();
-      if (e instanceof JournalAppendRejected) throw e;
-      // A refusal is not a failure here either: nothing was observed, so the entry settles
-      // `refused` and a capable host picks the wait up exactly where it stands, with the
-      // observations it has already made intact.
-      if (e instanceof EffectRefused) {
-        await host.journal.settle(
-          key,
-          { status: "refused", error: { code: e.code, kind: "refused", message: e.message } },
-          endedAt,
-        );
-        throw new RunHeld(stepKeyString(key), e.message);
-      }
-      if (e instanceof Cancelled) {
-        await host.journal.settle(key, { status: "cancelled" }, endedAt);
-        throw e;
-      }
-      const raised = (e as { code?: unknown } | null | undefined)?.code;
-      const carried = typeof raised === "string" && /^L\d{4}$/.test(raised) ? raised : null;
-      const rec = e instanceof EffectError ? recordableError(e, "handler-fault") : undefined;
-      // The same rule as the effect site above: the probe is other people's code too.
-      const stack = stackOf(e);
-      const error: EntryError = {
-        ...(rec !== undefined ? rec.error : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) }),
-        ...(stack !== undefined ? { stack } : {}),
-      };
-      await host.journal.settle(key, { status: "failed", error }, endedAt);
-      frame.clock.advance(endedAt);
-      throw rec?.faithful === true ? e : new EffectError(error.code, error.kind, error.message);
+      return await settleDispatchThrown(host, key, frame, e, host.options.handler.now());
     }
 
     if (!inTime) {
@@ -836,6 +813,7 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
           : {}),
         ...(option(bag, "onFork") !== undefined ? { onFork: option(bag, "onFork") as "respawn" | "adopt" } : {}),
         ...(option(bag, "events") !== undefined ? { events: option(bag, "events") as boolean } : {}),
+        ...(option(bag, "runtime") !== undefined ? { runtime: option(bag, "runtime") as string } : {}),
       };
       return await performEffect(host,
         "spawn",

@@ -1368,6 +1368,9 @@ export class MeshHandler {
     if (req.events !== undefined && typeof req.events !== "boolean")
       throw new EffectError("L4000", "spawn",
         `spawn(${req.persona}) events must be true or false; refusing ${JSON.stringify(req.events)} rather than launching with the default event plane`);
+    if (req.runtime !== undefined && (typeof req.runtime !== "string" || req.runtime.trim() === ""))
+      throw new EffectError("L4000", "spawn",
+        `spawn(${req.persona}) runtime must be a non-empty runtime name; refusing ${JSON.stringify(req.runtime)} rather than launching on the manager's own runtime`);
 
     // A recorded goalId is a previous attempt's ACCEPTANCE: the submission landed and its
     // identity was bound before the crash. Go straight back to the terminal. An entry that says
@@ -2911,6 +2914,7 @@ export function spawnArgs(req: SpawnRequest): Record<string, unknown> {
     ...(req.join !== undefined && req.join.length > 0 ? { subscribe: req.join.map((c) => c.channel) } : {}),
     ...(req.supervise !== undefined ? { supervise: readSupervise(req.supervise, req.persona) } : {}),
     ...(req.events !== undefined ? { events: req.events } : {}),
+    ...(req.runtime !== undefined ? { runtime: req.runtime } : {}),
   };
 }
 

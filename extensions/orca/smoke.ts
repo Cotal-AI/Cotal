@@ -203,6 +203,11 @@ else { process.stderr.write("Orca runtime unavailable"); process.exit(2); }
 
 const resolved = registry.resolve<RuntimeProvider>("runtime", "orca");
 ok("orcaRuntimeProvider registered as 'runtime/orca'", resolved === orcaRuntimeProvider);
+// Declared, not discovered by catching the throw from attach(): a caller reads this to decide
+// whether to ask for an attach at all, so a foreground `cotal spawn` on this runtime launches the
+// seat and stops there instead of failing on an attach that cannot open. Graded above the live
+// gate, because what a backend declares does not depend on whether its CLI is installed here.
+ok("the runtime declares that it streams no terminal", new OrcaRuntime().streamsTerminal === false);
 
 if (!orca.available()) {
   const message = `SKIPPED (${LIVE_CHECK_COUNT} live checks not run) — Orca CLI/runtime is not reachable`;

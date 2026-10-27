@@ -2,9 +2,10 @@
 
 > **Reference**: TypeScript observer surfaces (`MeshView`) · **For:** integrators building a watch surface · **Wire contract:** [SPEC](../SPEC.md)
 
-`MeshView` is the shared model behind every surface that lets a human *watch* a live mesh: the
-terminal [console](watch-a-mesh.md), the plain stream, and the web dashboard. It defines what
-those surfaces show and keeps them from drifting apart.
+`MeshView` is the CLI's shared model for the terminal [console](watch-a-mesh.md) and its
+plain stream. It derives display data from a Cotal endpoint. The web dashboard uses the
+same core endpoint APIs through its own HTTP and SSE implementation; it does not consume
+this class.
 
 **Reference-implementation boundary.** MeshView is an observer API. The wire remains the source of
 truth; every field below is a *rendering* derived from it. A different client is free to derive its own model
@@ -13,13 +14,15 @@ presence) lives in the [SPEC](../SPEC.md).
 
 ## The observer
 
-Every surface is built on one **read-only observer**: a `CotalEndpoint` started with
-`consume: false, registerPresence: false, watchPresence: true`, invisible to peers, binding no
-durables, reading the space through the live tap plus history and presence-watch. No surface opens
-its own NATS connection, and none re-implements the wire semantics. On an open mesh the console
-adds a second, presence-only endpoint under the observer's card the moment the operator sends, so
-agents can reply (see [watch a mesh](watch-a-mesh.md)); a pure-watch session stays the invisible
-observer.
+The CLI observer is a `CotalEndpoint` started with
+`consume: false, registerPresence: false, watchPresence: true`. It is invisible to peers,
+binds no inbox durable and reads through tap, history and presence-watch. History reads
+can still create temporary consumers. Each running console owns its endpoint connection;
+the dashboard owns a separate one.
+
+On an open mesh the console adds a presence-only endpoint under the observer's card when
+the operator first sends, so agents can reply (see [Watch a mesh](watch-a-mesh.md)). A
+pure-watch session remains invisible.
 
 ## MeshView data
 
@@ -132,7 +135,9 @@ one feed is not.
 
 ## Feature to surface map
 
-| Feature | Model field | console (Ink) | stream | web |
+The web column compares corresponding features, not consumers of `MeshView` fields.
+
+| Feature | CLI model field | console (Ink) | stream | web |
 |---|---|---|---|---|
 | roster (status, activity, age) | `agents` / `endpoints` | ✓ panel | ✓ presence lines | ✓ sidebar |
 | all-activity feed | `feed` | ✓ feed panel | ✓ log | ✓ Monitor view |
@@ -182,9 +187,9 @@ on the live surfaces, design intent until the wire grows to support them:
 
 ## Principles
 
-- **Derive once, render many.** Classification, coalescing, sorting, id→name, rate, windowing, and
-  the operator signals all live in `MeshView`. A surface only *lays out* the model; it never
-  re-derives it. New surfaces are thin clients.
+- CLI feed classification, coalescing, sorting, name lookup, rates and windowing live in
+  `MeshView`. Its terminal renderers use that model. The dashboard derives its own HTTP
+  responses and browser state from core APIs.
 - **Presentation stays per-surface.** Colour palette, layout, CSS, keybindings, and input handling
   belong to each renderer, not the model.
 - **No fallbacks.** If the observer cannot do what a surface needs, throw; do not silently degrade.

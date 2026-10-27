@@ -94,6 +94,12 @@ bounded decision record, not prose.
   to the last one, so a bridged simulation settles a race the same way, also when the dry run's
   recorder wraps the simulator.
 
+`waitUntil` observations and ordinary effects use the same dispatch-failure recorder. A handler
+refusal records `refused` and holds the run for a capable host. Cancellation records `cancelled`.
+Other handler failures record their language code, or `L4000` when none is supplied, with their
+message, recordable detail and stack when available. A journal append rejection during dispatch
+leaves the entry pending and exits without recording a handler failure.
+
 Full rules, with every code: [`spec/cotal-lang.md`](../spec/cotal-lang.md).
 
 ## Continuing a run
@@ -251,7 +257,7 @@ writes the lines before the resume point again.
 
 ```bash
 cotal run start --file build.cotal.js                   # the manager starts it; the minted id is printed
-cotal run                                               # list run records: state, holder, lineage
+cotal run                                               # list run records and their recorded state
 cotal run show run-3f2a90c41b7e0d5a6c884e19b02df4a1                        # print the record and its last 20 journal rows; --limit <n> prints up to 1000, --json all
 cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # the manager takes the run back
 cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"yes"'
@@ -322,7 +328,7 @@ is refused at the effect.
 The manager endpoint serves `run-cancel` with `{ runId, reason }`. Call it through an issued
 credential on a handle pinned to the manager instance, retaining the Describe-derived epoch bind.
 The reason must encode to 1 through 512 UTF-8 bytes, and the request deadline is at most 30 seconds.
-There is no new CLI or MCP convenience verb in this change.
+No CLI or MCP verb wraps it.
 
 A signer-holding manager accepts the original caller's owner, actor and lifecycle under a live
 issued generation. On a signerless manager, the issuing host also accepts an interactive actor of
@@ -338,7 +344,10 @@ reply proves process cleanup or that another host stopped. Revoked runs remain r
 `run show`, but cannot receive new drive or answering authority. The endpoint's `run-status`
 reply carries `revoked: { by, reason }` independently of the recorded run state. A running record
 with that marker is not proof of a stopped holder. `revocationUnreadable` means the marker could
-not be checked; do not read that as unrevoked or resumable. A released record without a marker can
+not be checked; do not read that as unrevoked or resumable. The same reply carries the run's
+`programHash`, the value its `run-ps` row carries, read from that run's records alone, so checking one
+run's program identity needs no full run list. It is absent when the run has no recorded program,
+and `programUnreadable` replaces it when the program record cannot be read. A released record without a marker can
 be resumed under its original admission; a released record with a marker cannot. The human
 `run show` view displays admission revocation separately from recorded state. An unreadable marker
 produces a partial result with exit 4, in human and JSON output, as it does in the run list.
@@ -396,14 +405,15 @@ is recorded `released` and waits for `cotal run resume <runId>`; one still waiti
 the whole stack. The `run-cancel` endpoint above cancels one hosted run, and the CLI has no verb
 for it.
 
-Bare `cotal run`, hosted or `--local`, reads the marker beside each run record and prints `revoked` for a
-run that carries one, whatever state the record itself holds, with the revoker and the reason
-under the table. The record is display only here: a revoke writes no terminal state, because no host drove
-the run to one and the journal owns the facts. A marker the listing cannot read, whether the store
-is unreachable or the marker has a version or shape it does not know, prints `unchecked` in the
-`STATE` column. The reason and the state the record carries go to stderr, and the command exits 1
-once every row is printed. The hosted `run-ps` rows carry the marker as `revoked` (`by` and
-`reason`) or a failed read as `revocationUnreadable`, beside the record's own `state`.
+Bare `cotal run`, hosted or `--local`, reads the marker beside each run record and prints
+`admission revoked` in the `Recorded state` column for a run that carries one, whatever state the
+record itself holds, with the revoker and the reason under the table. The record is display only
+here: a revoke writes no terminal state, because no host drove the run to one and the journal owns
+the facts. A marker the listing cannot read, whether the store is unreachable or the marker has a
+version or shape it does not know, prints `revocation not checked` in that column and a warning on
+stderr. The listing is then a partial result and exits 4 once every row is printed. The hosted
+`run-ps` rows carry the marker as `revoked` (`by` and `reason`) or a failed read as
+`revocationUnreadable`, beside the record's own `state`.
 
 A run whose step was refused (L5016) stays held; a
 resume on a host that can perform the step performs it live and continues from there.
@@ -455,7 +465,7 @@ is reported as incomplete; do not retry it in a loop or use it to release work.
 
 ## Keyed submission
 
-The new `run-start-keyed` command binds an envelope submission ID to one host-minted run.
+The manager's `run-start-keyed` command binds an envelope submission ID to one host-minted run.
 `run-submission-status` reads that binding for the authenticated caller incarnation. Both need
 fresh issued reach and a digest-verified description pinned to one manager instance and epoch.
 Legacy `run-start` is unchanged. An unsupported keyed command never falls back to it.
@@ -517,6 +527,10 @@ The run's wire footprint is [SPEC §14](../SPEC.md#14-workflow-runs-v05):
 | the admission | `admission.v1.<endpoint>.<runId>` in `cotal_admission_<space>` | the caller the run was admitted for, its channel ceiling and its provenance; written once before the driver starts, and the store refuses a second write on the key |
 | a revocation | `revoked.v1.<endpoint>.<runId>` in the same store | who revoked the run and why; create-only, idempotent, permanent at the broker, read by every host before its next channel effect |
 
+The implementation writes the `program` record, and SPEC §14 refers to it, but the
+record-kind table in SPEC §13.7 does not list it. That table omission remains a
+specification gap; the table above describes the implemented storage layout.
+
 The driver writes `journalHigh` at activation and again after each journal append, before the
 program acts on the entry. A successor whose replay ends below it refuses the run with
 `RunJournalTailTruncated`. That holds for records appended since the last activation too.
@@ -569,7 +583,6 @@ identifiers carry no authority to read, rearm or claim the parent's pauses. New 
 child-derived identifiers. A fork is a new run and takes a new admission under the caller who
 forks it; the parent's ceiling is not inherited.
 
-
 ## What ships today
 
 The language, its validator, interpreter, simulator and dry run are `@cotal-ai/lang`
@@ -582,13 +595,15 @@ substrate of §14 (the `WFJ_<space>` stream, the five record kinds, the activati
 per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migrate and fork are
 `@cotal-ai/runtime` (`implementations/runtime`). The migrate check is reachable as
 `cotal run check <runId> <program>`; committing a migration it judged admissible
-is not reachable from any surface yet. On the mesh handler, `sleep`, `checkpoint`,
-`wait(message(...))`, `wait(idle(...))`, `wait(down(...))`, `wait(replied(...))`, `notify`,
-`spawn`, `conclave`, `ask`, `monitor` and `turn` are durable.
+is not reachable from any surface yet, and neither is a fork: `planFork` and `commitFork` are
+library exports of `@cotal-ai/runtime` with no CLI or MCP verb. On the mesh handler, `sleep`,
+`checkpoint`, `wait(message(...))`, `wait(idle(...))`, `wait(down(...))`, `wait(replied(...))`,
+`waitUntil`, `notify`, `spawn`, `conclave`, `ask`, `monitor` and `turn` are durable.
 `spawn` is
 the manager's spawn action submitted under the step's own identity: the goal binds under the step's
 request id, so a resumed run re-attaches to the same seat instead of allocating a second one, a
-failed or refused spawn is catchable as L4002 with the manager's recorded reason, and a spawn on a
+spawn whose seat fails to come up is catchable as L4002 with the manager's recorded reason (one the
+endpoint refuses at accept is L4000, described below), and a spawn on a
 race branch that loses is despawned by the run's own cancellation sweep. A seat belongs to the run
 that spawned it: when the run completes, it despawns every seat it spawned, including a race
 winner's and one whose spawn failed while its process stayed up. A spawn marked `onFork: "adopt"`
@@ -623,7 +638,10 @@ at the spawn rather than accepted and ignored. `events: false` is the workflow f
 `cotal spawn --no-events`: the seat starts without its AG-UI event plane. A connector that
 publishes none, such as Hermes, needs it, because an omitted `events` arms the plane and the
 manager refuses that connector at the spawn. A value that is not a boolean is refused at the
-spawn. `conclave` joins its
+spawn. `runtime` names the terminal runtime of this one seat (`pty`, or an installed extension such
+as `tmux`). Omitted, the seat uses the serving manager's own runtime. A name that manager cannot
+resolve refuses the spawn and starts nothing, and the other seats keep the runtime they already have.
+`conclave` joins its
 members to a real channel as durable membership rows: the channel derives from the step's own
 request id when the program names none (a program-named channel is borrowed, never torn down, and
 a membership that predates the conclave survives its close), each member handle resolves to its

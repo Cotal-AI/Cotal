@@ -93,6 +93,10 @@ for (const k of PER_SESSION) process.env[k] = `parent-${k}`;
 /** Machine-wide operator knobs: no connector assigns them per spawn, so they cross. */
 process.env.COTAL_HOME = "/tmp/operator-cotal-home";
 process.env.COTAL_CODEX_BIN = "/tmp/operator-codex-bin";
+/** The usage telemetry opt-outs, the self-hosted intake and CI cross too, so a seat's own `cotal`
+ *  commands report, or stay off, as the run that launched it does (docs/telemetry.md). */
+const TELEMETRY_ENV = { DO_NOT_TRACK: "1", CI: "true", COTAL_TELEMETRY: "off", COTAL_TELEMETRY_DISABLED: "1", COTAL_TELEMETRY_URL: "http://intake.invalid/v1/telemetry" };
+Object.assign(process.env, TELEMETRY_ENV);
 
 const cwd = process.cwd();
 
@@ -174,6 +178,8 @@ function assertBoundary(label: string, out: string, opts: { explicit: boolean })
   );
   const homeVar = process.platform === "win32" ? "USERPROFILE" : "HOME";
   check(`${homeVar} present`, new RegExp(`(^|\\n)${homeVar}=`).test(out));
+  const dropped = Object.entries(TELEMETRY_ENV).filter(([k, v]) => !out.split(/\r?\n/).includes(`${k}=${v}`)).map(([k]) => k);
+  check("the usage telemetry opt-outs, the intake and CI crossed", dropped.length === 0, dropped);
 }
 
 // pty — the default, always-available backend. Default launchEnv (no spawn.env) is the 0.30.1 leak.

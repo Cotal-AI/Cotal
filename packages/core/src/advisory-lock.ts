@@ -63,6 +63,20 @@ export interface AcquireOptions {
   readonly onTimeout?: (owner: LockOwner) => Error;
 }
 
+/** Read one Linux process snapshot. The remainder starts at field 3 (state). */
+function processStatFields(pid: number): string[] | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // comm can contain spaces and parentheses, so only its final terminator is structural.
+    const after = stat.lastIndexOf(") ");
+    if (after < 0 || stat.slice(0, stat.indexOf(" ")) !== String(pid)) return undefined;
+    return stat.slice(after + 2).trim().split(/\s+/);
+  } catch {
+    // An absent or unreadable identity is not evidence of death.
+    return undefined;
+  }
+}
+
 /** A best-effort, OS-cheap process-start token used ONLY to detect PID reuse. Undefined ⇒ the check
  *  is skipped for that platform and the bounded wait is the sole backstop (never a hard dependency). */
 export function processStartToken(pid: number): string | undefined {
@@ -73,18 +87,8 @@ export function processStartToken(pid: number): string | undefined {
   // backstop) rather than a false reclaim. Teardown identity pinning does NOT use this function on
   // win32; see `win32ProcessCreationToken` in pid.ts (#1437).
   if (process.platform === "win32") return undefined;
-  try {
-    // Linux: /proc/<pid>/stat field 22 (starttime). comm (field 2) may hold spaces/parens, so parse
-    // after the final ')': the remainder begins at field 3 (state), so starttime is index 19.
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const after = stat.lastIndexOf(") ");
-    if (after >= 0) {
-      const token = stat.slice(after + 2).split(" ")[19];
-      if (token) return token;
-    }
-  } catch {
-    /* not Linux, or the process is gone — fall through */
-  }
+  // Linux: field 22 (starttime) is index 19 after comm.
+  if (process.platform === "linux") return processStatFields(pid)?.[19];
   try {
     // macOS/BSD: the process start date is stable for the life of the PID.
     const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
@@ -139,9 +143,17 @@ function readOwner(path: string): { owner?: LockOwner; ino?: number } | undefine
 
 /** Inspect a lock file: absent, stale (dead/aborted owner or torn record), or active with the owner. */
 export function inspectLock(path: string): LockInspection {
+  const inspection = inspectLockSnapshot(path);
+  return inspection.state === "active"
+    ? { state: "active", owner: inspection.owner }
+    : { state: inspection.state };
+}
+
+/** Keep the verdict and the inode from the same owner read together for generation-pinned reclaim. */
+function inspectLockSnapshot(path: string): LockInspection & { readonly ino?: number } {
   const found = readOwner(path);
   if (found === undefined) return { state: "absent" };
-  const owner = found.owner;
+  const { owner, ino } = found;
   if (
     !owner ||
     typeof owner.pid !== "number" ||
@@ -149,30 +161,20 @@ export function inspectLock(path: string): LockInspection {
     owner.pid <= 0 ||
     typeof owner.nonce !== "string"
   ) {
-    return { state: "stale" };
+    return { state: "stale", ino };
   }
-  if (!pidAlive(owner.pid)) return { state: "stale" };
-  // Linux keeps an exited, unreaped process addressable by kill(pid, 0). Only a complete
-  // stat record for this pinned process proves that it can no longer consume anything.
-  if (process.platform === "linux" && owner.start !== undefined) {
-    try {
-      const stat = readFileSync(`/proc/${owner.pid}/stat`, "utf8");
-      const after = stat.lastIndexOf(") ");
-      const fields = stat.slice(after + 2).trim().split(/\s+/);
-      if (after >= 0 && stat.slice(0, stat.indexOf(" ")) === String(owner.pid) && fields[19] === owner.start && fields[0] === "Z")
-        return { state: "stale" };
-    } catch {
-      // Unreadable identity is not evidence of death.
-    }
-  }
+  if (!pidAlive(owner.pid)) return { state: "stale", ino };
   // PID alive — but is it still the SAME process? A recorded start token that no longer matches means
   // the PID was recycled: the original owner is gone (stale). A token we simply cannot obtain is NOT
   // grounds to reclaim — the live PID keeps the lock active/unknown.
   if (owner.start !== undefined) {
-    const now = processStartToken(owner.pid);
-    if (now !== undefined && now !== owner.start) return { state: "stale" };
+    const fields = process.platform === "linux" ? processStatFields(owner.pid) : undefined;
+    const now = process.platform === "linux" ? fields?.[19] : processStartToken(owner.pid);
+    // Linux keeps zombies addressable by kill(pid, 0). Judge state and identity from one snapshot.
+    if (now === owner.start && fields?.[0] === "Z") return { state: "stale", ino };
+    if (now !== undefined && now !== owner.start) return { state: "stale", ino };
   }
-  return { state: "active", owner };
+  return { state: "active", owner, ino };
 }
 
 /** Publish `content` at `path` iff nothing is there — atomic (temp write + hard link). Returns true on
@@ -216,11 +218,9 @@ function reclaimStale(path: string, inspectedIno: number | undefined): LockOwner
   try {
     // Under the sentinel the canonical file is immutable (publish is blocked while it exists), so a
     // re-inspect that is still stale AND the same inode is exactly the generation we set out to reclaim.
-    const found = readOwner(path);
-    if (found === undefined) return; // already gone
-    const state = inspectLock(path).state;
-    if (state === "active") return; // reacquired under us (should not happen while it exists) — leave it
-    if (inspectedIno !== undefined && found.ino !== undefined && found.ino !== inspectedIno) return; // a different generation
+    const inspection = inspectLockSnapshot(path);
+    if (inspection.state !== "stale") return; // already gone or reacquired under us
+    if (inspectedIno !== undefined && inspection.ino !== undefined && inspection.ino !== inspectedIno) return; // a different generation
     unlinkSync(path);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
@@ -286,11 +286,10 @@ function tryAcquireOnce({ path, nonce, content }: Attempt): AttemptResult {
     };
   }
   // Held — inspect and either wait (live) or reclaim (dead).
-  const found = readOwner(path);
-  const inspection = inspectLock(path);
+  const inspection = inspectLockSnapshot(path);
   if (inspection.state === "absent") return { kind: "retry" }; // raced with a release
   if (inspection.state === "stale") {
-    const reclaimer = reclaimStale(path, found?.ino);
+    const reclaimer = reclaimStale(path, inspection.ino);
     return reclaimer ? { kind: "reclaiming", owner: reclaimer } : { kind: "retry" };
   }
   return { kind: "held", owner: inspection.owner };

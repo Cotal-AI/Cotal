@@ -4,8 +4,8 @@
  * `regular`, the exact `minimal` shape, nothing at `off` and under the environment opt-outs, no
  * argument or flag value in any body, the typed error code of a refusal, `cotal telemetry` itself
  * silent, an intake that never answers adding no more than its timeout and changing no exit code,
- * the refusals of a bad `COTAL_TELEMETRY` and a malformed settings file, and the one-time notice
- * under a real pty. No broker is started.
+ * the refusals of a bad `COTAL_TELEMETRY` and a malformed settings file, `ci` false under `CI=false`
+ * and `CI=0`, and the one-time notice under a real pty. No broker is started.
  *
  * Run: pnpm smoke:telemetry
  */
@@ -282,6 +282,18 @@ for (const { level, extra, name } of [
   p.onData((d) => (out += d));
   await new Promise<void>((resolve) => p.onExit(() => resolve()));
   check("no notice at minimal", !clean(out).includes("Cotal collects") && minimal.settings().noticeShownAt === undefined, clean(out).slice(0, 300));
+}
+
+// ---- the ci field: CI set to anything but 0 or false, so a script that says CI=false is not CI ----
+{
+  const s = sandbox();
+  await s.run(["version"]); // the day's install event
+  await settled();
+  for (const [value, ci] of [["true", true], ["1", true], ["woodpecker", true], ["false", false], ["FALSE", false], ["0", false], ["", false]] as const) {
+    const r = await s.run(["version"], { CI: value });
+    await settled();
+    check(`CI=${JSON.stringify(value)} sends ci ${ci}`, r.status === 0 && r.sent.length === 1 && r.sent[0]?.ci === ci, r.sent[0]?.ci);
+  }
 }
 
 // ---- one install id per OS user: COTAL_HOME does not move the settings file ----

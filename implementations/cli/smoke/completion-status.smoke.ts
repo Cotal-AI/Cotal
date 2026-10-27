@@ -564,9 +564,9 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("-s offers them too", exactly(short, ["cc", "rr"]), shown(short));
   const subs = offered(["config"]);
   check("config offers get, set and unset", exactly(subs, ["get", "set", "unset"]), shown(subs));
-  // actor took these words but declared none of them, so it offered only its options.
+  // The legacy `actor` is hidden, so completion offers nothing for it; `auth` carries its verbs.
   const actor = offered(["actor"]);
-  check("actor offers grant, revoke, label and list", exactly(actor, ["grant", "revoke", "label", "list"]), shown(actor));
+  check("the hidden legacy actor command completes nothing", !/^(grant|revoke|label|list)$/m.test(actor.stdout), shown(actor));
   for (const sub of ["get", "set", "unset"]) {
     const keys = offered(["config", sub]);
     check(`config ${sub} offers the keys`, exactly(keys, ["harness", "persona", "detach-key", "color", "editor"]), shown(keys));
@@ -592,7 +592,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const agents = join(prepared, ".cotal", "agents");
   const definition = readFileSync(join(agents, "default.md"), "utf8");
   for (const name of ["\u001b[2Jx", "nl\n:default\nforged", "bidi‮z", "tab\tx"]) writeFileSync(join(agents, `${name}.md`), definition, { mode: 0o600 });
-  for (const words of [["persona", "show"], ["persona", "edit"], ["persona", "remove"], ["personas", "show"]]) {
+  for (const words of [["persona", "show"], ["persona", "edit"], ["persona", "remove"]]) {
     const r = offered([...words, "--space", "cc"]);
     const directives = r.stdout.split("\n").filter((line) => line.startsWith(":"));
     check(`${words.join(" ")} leaves out a catalog file name with a control character`, exactly(r, ["default"]) && directives.length === 1 && !/[\u0000-\u0009\u000b-\u001f\u007f‮]/u.test(r.stdout), shown(r));
@@ -603,7 +603,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const folder = realpathSync(agents);
     chmodSync(agents, 0o000);
-    for (const words of [["persona", "show"], ["persona", "edit"], ["personas", "show"], ["spawn"]]) {
+    for (const words of [["persona", "show"], ["persona", "edit"], ["spawn"]]) {
       const r = s.run(["__complete", ...words, "--space", "cc", ""], { COTAL_COMPLETE_DEBUG: "1" });
       check(`${words.join(" ")} fails its completion on an unreadable catalog folder and names it`,
         r.status === 1 && r.stdout === "" && r.stderr.includes(`cannot read the persona catalog ${folder}: permission denied`), shown(r));

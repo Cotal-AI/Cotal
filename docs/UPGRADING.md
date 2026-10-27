@@ -9,7 +9,7 @@ naming what migrates on its own, what does not, and the order to move the pieces
 
 ## The pre-1.0 upgrade contract
 
-The packages are pre-1.0, so a minor bump may break an API or an on-disk expectation. Four
+The packages are pre-1.0, so a minor bump may break an API or an on-disk expectation. Five
 commitments make that survivable for someone with a fleet:
 
 - **Pin an exact version.** `0.N.P`, never `^0.N.P`. A range can pull a breaking minor in during an
@@ -33,6 +33,38 @@ commitments make that survivable for someone with a fleet:
 What this page does not promise is a rolling upgrade. Nothing in the current line dual-serves two
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
+
+## Starting the manager by name after 0.105.0
+
+`cotal manager start` starts the manager for this folder's or the selected space, with the pty
+runtime and the broker the space is registered with. `manager stop`, `status`, `logs` and
+`restart` act on it. Nothing has to be added first: the first start saves a service definition
+named `manager` from the manager preset's defaults. `cotal manager start` after `cotal up` reports
+the manager `up` started and starts no second one.
+
+`cotal service` lists every built-in service, started or not, and `cotal service start <preset>`
+starts one from its defaults. A preset that needs a file the space does not keep, such as the
+feedback form's tester keys, refuses and names the flag. `cotal service add <name> --exec
+"<command>"` adds a program of your own without a definition file.
+
+### What changes for a running deployment
+
+`supervise` is deprecated again, see [deprecated daemon entries](#deprecated-daemon-entries). It
+keeps its flags and behavior and prints one line on stderr. `cotal manager install` is not
+supported yet and refuses. A unit you write yourself runs `cotal manager start --foreground --space
+<space>`; a unit that runs `supervise` keeps working.
+
+`--execution`, `--spawn`, `--seat-cap` and the resume flags have no `manager start` form yet. A
+`supervise` run that names one says so instead of naming `manager start`; keep `supervise` for it.
+
+### Before the upgrade
+
+- Nothing has to change before the upgrade. A unit, script or container that runs `supervise`
+  keeps working and prints the deprecation line.
+- A script that read the `presets` array of `cotal service --json` still finds it. The new
+  `services` array lists each saved and built-in service with its state.
+- A definition a preset-name start saved is an ordinary preset definition, so an earlier release
+  lists, starts and stops it after a downgrade.
 
 ## Service definitions record their root after 0.100.2
 
@@ -87,6 +119,26 @@ runs a launch only with `--detach` (`-d`), which returns once the agent joins, o
 - On a user-auth mesh that runs elsewhere, a spawn in this terminal provisions its agent through the
   agent-provisioning endpoint the mesh advertises. A mesh that advertises none refuses it and names
   `-d` among the remedies.
+
+## Folder spaces capture commands only while running after 0.105.0
+
+A space prepared in a project folder and never started, or one whose stack there is stopped, no
+longer captures the commands run in that folder. They target the space `cotal use` selected, and
+the line under the `Mesh:` heading names what the folder holds and the `cotal up` that starts it.
+A running folder space keeps capturing them, as after 0.100.2. `cotal up`, `cotal down`,
+`cotal space show` and the folder part of `cotal status` keep their folder scope. Nothing on a
+running mesh changes.
+
+- A script that runs in a folder whose space is prepared or stopped and means that space names it
+  with `--space`, or starts it with `cotal up` first.
+- `meshes.folder` in `cotal status --json` and `folder` in `cotal space --json` are `null` in such
+  a folder; `target.space` names what the command targeted, and `warnings` carries a
+  `FOLDER_SPACE_NOT_RUNNING` entry naming the folder's space.
+- A copy of a project, a moved project folder and a folder whose space name a later `up` took over
+  still refuse `TARGET_UNAVAILABLE` and name the folder the stack runs from, as before 0.106.0.
+- `cotal status` reports what it found at a glance; `cotal status --wide` prints every row in full,
+  and `cotal status --all` dials every space. `--json` is unchanged, with an optional
+  `meshes.catalogs[].account`.
 
 ## Space selection inside a project folder after 0.100.2
 
@@ -468,7 +520,7 @@ section says what each one does after the upgrade and what to change before it.
 | `run journal`, `run migrate`, `run ps` | `run show`, `run check`, `run` |
 | `deliver pending <name>` | `pending <agent>` |
 | `web` | `service add <name> --preset web`, then `service start <name>` |
-| The four daemon entries | Their service presets, under [deprecated daemon entries](#deprecated-daemon-entries) |
+| `deliver`, `auth-service`, `feedback-intake`, and `supervise` until 0.101.3 and again after 0.105.0 | Their service presets and `cotal manager start`, under [deprecated daemon entries](#deprecated-daemon-entries) |
 
 The sections on this page for each command family give the details of its change.
 
@@ -514,31 +566,39 @@ terminal again; see [Spawn in this terminal after 0.100.0](#spawn-in-this-termin
 
 ### Deprecated daemon entries
 
-`deliver`, `auth-service` and `feedback-intake` stay accepted with their existing flags for every
-caller: units Cotal installed, units and scripts you wrote, and container commands. They are
-deprecated and are removed in `1.0.0`, one release for all three. Help and completion no longer
-list them. Each run prints one line on stderr naming its replacement and that release.
+`deliver`, `auth-service`, `feedback-intake` and `supervise` stay accepted with their existing
+flags for every caller: units Cotal installed, units and scripts you wrote, and container commands.
+They are deprecated and are removed in `1.0.0`, one release for all four. Help and completion no
+longer list them. Each run prints one line on stderr naming its replacement and that release.
 Stdout, behavior and exit codes are unchanged, so no unit restarts in a loop because of the
 upgrade. `deliver pending` warns the same way and names `cotal pending <agent>`.
 
 | Entry | Replacement |
 |---|---|
-| `deliver` | `cotal service add <name> --preset delivery` |
-| `auth-service` | `cotal service add <name> --preset auth-service` |
-| `feedback-intake` | `cotal service add <name> --preset feedback-intake` |
+| `deliver` | `cotal service start delivery`, or `cotal service add <name> --preset delivery` |
+| `auth-service` | `cotal service start auth-service`, or `cotal service add <name> --preset auth-service` |
+| `feedback-intake` | `cotal service start feedback-intake`, or `cotal service add <name> --preset feedback-intake` |
+| `supervise` | `cotal manager start`, or `cotal manager start --foreground` in a unit or container |
 
-`cotal service add <name> --preset <preset> --help` lists the options a preset takes, and
-`cotal service start <name>` starts it. The delivery daemon and auth service that `up` starts
-itself do not warn, so the line in a log always comes from a unit, script or container you can
-change.
+`cotal service start <preset>` starts the built-in service from its defaults and refuses naming any
+option it needs that has none; `cotal service add <name> --preset <preset> --help` lists every
+option. The delivery daemon, auth service and manager that `up` starts itself do not warn, so the
+line in a log always comes from a unit, script or container you can change.
 
-`supervise` was deprecated with them in 0.91.0 and no longer is. It keeps its flags, prints no
-warning, is not removed in `1.0.0`, and help lists it under Run a manager.
+`supervise` was deprecated with them in 0.91.0, was not deprecated from 0.101.3, and is deprecated
+again after 0.105.0, now with `cotal manager start` as its replacement. `manager start` has no
+`--execution`, `--spawn`, `--seat-cap` or resume flags yet; a `supervise` run that names one prints
+that instead of the replacement, and those callers keep `supervise` until `manager start` has them.
+`cotal manager start` uses a registered space, so a container that ran `supervise --server <url>`
+runs `cotal space add <space> --server <url> --root <dir>` first.
 
 ### Owned units
 
 A manager unit that an earlier `cotal service install` wrote keeps calling `supervise`. After the
-upgrade it starts the new binary. This release does not rewrite that unit.
+upgrade it starts the new binary and prints the deprecation line. This release does not rewrite
+that unit, and `cotal manager install` refuses until a Cotal-written unit can run the manager. A
+unit you write yourself runs `cotal manager start --foreground --space <space>` with
+`KillMode=mixed`.
 
 A unit that this release's `cotal service install <name>` writes runs the hidden `__service-unit`
 entry, which an earlier binary does not have. Before you downgrade, stop it with
@@ -548,8 +608,9 @@ downgrade, install the unit again with the earlier binary's `service install`.
 ### Containers
 
 The `solo` service in `deploy/docker/compose.yaml` runs `spawn scout --foreground`. The team
-service and the image's default command run `supervise` with `--roster`. An image you already
-built carries its own CLI and is unaffected until you rebuild it.
+service runs `supervise` with `--roster`, and the image's default command runs bare `supervise`;
+both print the deprecation line. An image you already built carries its own CLI and is unaffected
+until you rebuild it.
 
 ### Before the upgrade
 
@@ -557,7 +618,7 @@ built carries its own CLI and is unaffected until you rebuild it.
   `cotal up`.
 - Add `--foreground` to every container command or script that runs `cotal spawn <name>` directly.
 - Move units and scripts that call `deliver`, `auth-service` or `feedback-intake` to their service
-  presets before `1.0.0`.
+  presets, and those that call `supervise` to `cotal manager start`, before `1.0.0`.
 - Before a downgrade, stop and uninstall every unit this release's `service install` wrote.
 
 ## Team commands in 0.91.0
@@ -788,7 +849,8 @@ composed packages and extension metadata together; an old cached declaration is 
 behind a retained instance. Native stops require a fresh full-scope read and unchanged request-bound
 policy, with native returned evidence plus original process exit. Missing terminal evidence retains
 its reservation and blocks replacement, without force kill. Cleanup remains not checked.
-The direct service route currently refuses foreground mode. On an open mesh there is no
+The manager preset accepts `service start --foreground`, as its declared capabilities have since
+0.91.0. On an open mesh there is no
 authenticated caller, so readiness and stop impact come from the pinned child's own request-bound
 local receipt. Its registration must equal the launch identity bound to that PID. Status shows it
 as a child-reported local receipt, not an attributed endpoint response. OS installation and
@@ -1227,7 +1289,9 @@ that many seconds. Both kinds of token are now refused.
 Remove `clockToleranceSec` from each call and each `IdpConfig`. A host whose clock is more than 5
 seconds off the issuer's needs its time synchronized.
 
-## Auth context closure in 0.71.0 (unreleased)
+<a id="auth-context-closure-in-0710-unreleased"></a>
+
+## Auth context closure in 0.72.0
 
 Existing deployments need no credential migration or restart for these additive APIs. Embedded
 hosts can now inspect `handle.connections()` and await `handle.closed` after `close()` or `drain()`
@@ -1248,7 +1312,9 @@ credentials or evicts connections. Zero rows prove absence only with a complete 
 single-server proof. An embedded endpoint's trusted composition can retain transport custody
 through `EndpointOptions.onConnection`.
 
-## Unreleased
+<a id="unreleased"></a>
+
+## Event plane of an owned spawn in 0.72.1
 
 On a per-user-auth mesh, a spawn-scoped caller can arm the event plane of a child under its own
 owner without `admin`. This fixes owned spawns in spaces whose registration policy requires the
@@ -1257,7 +1323,9 @@ needed. Cross-owner arming still requires `admin`, and the child's own-channel r
 envelope are unchanged. A silent non-owner caller in a space without the policy still has the
 plane disarmed, with a notice if provisioning succeeds.
 
-## Hosted auth plane identity in the store (unreleased)
+<a id="hosted-auth-plane-identity-in-the-store-unreleased"></a>
+
+## Hosted auth plane identity in the store in 0.76.0
 
 A hosted context started through `startAuthService` keeps its auth plane instance identity in the
 injected `SecretStore` under `authInstanceKey(space)`, with the other auth secret kinds. It used to

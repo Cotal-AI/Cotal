@@ -7,7 +7,7 @@ import {
   type ServiceAuthorityRequest,
 } from "@cotal-ai/core";
 import { CommandFailure, protectedLocalDirectory } from "@cotal-ai/workspace";
-import { linearClusterArtifacts, linearCommandDefs, linearContractArtifactValues } from "./contract.js";
+import { LINEAR_CAPABILITY, linearClusterArtifacts, linearCommandDefs, linearContractArtifactValues } from "./contract.js";
 import { assertLinearEndpointName } from "./serve.js";
 import type { LinearUpstream } from "./upstream.js";
 
@@ -100,11 +100,15 @@ export async function serveLinearUserAuth(opts: {
     if (stopped) return;
     const answer = (await provider.serviceEndpointAuthority({ store, dir, request: record.request })).result;
     if (stopped) return;
-    if (answer.state === "approval-required")
+    if (answer.state === "approval-required") {
+      // The approval names the Linear capability as its caller ceiling, or no caller could be granted.
+      // A remote id that is not one plain word is named, not printed into a command to paste.
+      const approve = /^[\w.-]+$/.test(answer.proposalId) ? ` with cotal service-endpoint approve ${answer.proposalId} --caller-ceiling ${LINEAR_CAPABILITY} --space ${space}` : "";
       throw new CommandFailure("refused", "PERMISSION_DENIED", "the space owner must approve this Linear service and bind its endpoint name before it can serve", {
         target: { space, endpoint, instanceId: record.request.instanceId, proposalId: answer.proposalId },
-        remedy: "approve the original proposal in the selected space, then repeat the same serve command; its request identity is retained",
+        remedy: `approve proposal ${approve ? answer.proposalId : JSON.stringify(answer.proposalId)}${approve}, then repeat the same serve command; its request identity is retained`,
       });
+    }
     if (answer.state === "pending")
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original Linear registration is still pending; no replacement was submitted", {
         target: { space, endpoint, instanceId: record.request.instanceId }, remedy: "inspect the original registration, then repeat the same serve command to replay its request",

@@ -265,10 +265,10 @@ export function commandIsCotalDelivery(command: string): boolean {
  *  from `kill(pid, 0)` alone that reads as a healthy component forever. */
 export type ProcessRecordState = "alive" | "dead" | "unknown" | "absent" | "unattributable" | "foreign";
 
-/** A process record with the evidence behind its verdict — callers that must EXPLAIN a refusal
- *  need the pid and the command line that earned it, and a bare state cannot carry them. */
-export interface ProcessRecord {
-  state: ProcessRecordState;
+/** A process record with the evidence behind its verdict. Missing and empty records are `absent`
+ *  and carry no evidence fields. Other states keep the path read, so a refusal never resolves it again. */
+export type ProcessRecord = { state: "absent" } | {
+  state: Exclude<ProcessRecordState, "absent">;
   /** The file this verdict read. A refusal names it rather than resolving the record again: a second
    *  resolution can pick a record migrated since the read, or throw on one that appeared beside it. */
   path: string;
@@ -278,7 +278,7 @@ export interface ProcessRecord {
   content?: string;
   /** The live process's command line, when it was readable (present on `alive` and `foreign`). */
   command?: string;
-}
+};
 
 /** Read + attribute one process record, so every component decides on the same evidence by the
  *  same rule; only `isOwnCommand` differs between them.
@@ -296,7 +296,7 @@ export function readProcessRecord(
   readCommand: CommandReader = readProcessCommand,
 ): ProcessRecord {
   const raw = readPidfile(path);
-  if (!raw) return { state: "absent", path }; // no record, or a pre-protocol husk: nothing is behind it
+  if (!raw) return { state: "absent" }; // no record, or a pre-protocol husk: nothing is behind it
   const pid = parsePid(raw);
   // NOT `absent`. Folding non-empty corrupt content into "nothing recorded" is what let the ensure
   // paths OVERWRITE it and launch a replacement, which is the same defect as deleting it: that

@@ -172,12 +172,32 @@ jobs:
           pack-dir-artifact-id: ${{ needs.pack.outputs.artifact }}
           create-github-releases: false
           push-git-tags: true
+
+  # Outside the publish queue on purpose: this observes the registry and must not delay the next
+  # publication. The GitHub Release, and the announcement it fires, come after this job's install
+  # check, so nothing names a version the normal installer cannot yet resolve (0.103.1 was announced
+  # five minutes before `npm view cotal-ai@0.103.1` answered). A version that never installs before
+  # the deadline fails this job and gets no Release; the packages are on the registry either way.
+  verify-install:
+    needs: publish
+    if: needs.publish.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Verify the published CLI installs and runs
+        run: |
+          version=$(node --print "require('./bin/package.json').version")
+          node scripts/verify-release-installable.mjs "$version" --deadline-ms=1500000
       # The notes lead with the changeset summaries (what changed, as written in the package
       # changelogs) and end with GitHub's generated list of merged PRs since the previous version
       # release, which .github/release.yml keeps the version PR out of. GH_PAT rather than the job
       # token, so the Release fires the release-published workflows (the Discord announcement).
       - name: Cut the GitHub Release
-        if: steps.publish.outputs.published == 'true'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
@@ -199,21 +219,3 @@ jobs:
             printf '\n%s\n' "$notes"
           } > "$RUNNER_TEMP/release-notes.md"
           gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --latest --notes-file "$RUNNER_TEMP/release-notes.md"
-
-  # Outside the publish queue on purpose: this observes the registry and must not delay the next
-  # publication. Its result is reported on the run, not used as a gate.
-  verify-install:
-    needs: publish
-    if: needs.publish.outputs.published == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-      - name: Verify the published CLI installs and runs
-        run: |
-          version=$(node --print "require('./bin/package.json').version")
-          node scripts/verify-release-installable.mjs "$version" --deadline-ms=1500000

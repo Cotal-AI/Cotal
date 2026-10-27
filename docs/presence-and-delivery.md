@@ -72,7 +72,17 @@ reader's roster.
 Details: [SPEC §6](../SPEC.md#6-presence-and-discovery). The dashboard surfaces a stale view
 on the same header mark it uses for a refused poll ([watch a mesh](watch-a-mesh.md)).
 
-`CotalEndpoint.presenceView()` reports whether its local roster can support an absence verdict.
+An agent seat does not watch presence. A watch delivers every member's heartbeat to every watcher,
+so a space of K watching members moves K² deliveries every heartbeat. A seat reads the roster when
+a tool needs it instead: `CotalEndpoint.readPresence()` pages batched Direct Gets over the bucket,
+binds no consumer, applies the reader rules above and reads a record older than the liveness window
+as offline. Calls made while a read is in flight share it. A peer an earlier read saw that has left
+the bucket stays in the roster as offline. The manager, the delivery daemon, `cotal chat` and the
+dashboard keep their watches, because they act on liveness transitions. The read needs the agent
+grant `$JS.API.DIRECT.GET.KV_cotal_presence_<space>`, and a credential minted before that grant
+existed is refused with the grant named.
+
+`CotalEndpoint.presenceView()` reports whether a watching endpoint's roster can support an absence verdict.
 `current` is usable, `unpopulated` means the current watch has not completed its initial snapshot,
 and `stale` means the watch has been silent past its liveness window. Both unsafe states carry
 `fresh: false`, so an older consumer degrades instead of treating a partial reconnect refill as a
@@ -97,12 +107,11 @@ recoverable warning. If consecutive writes keep failing for a full presence TTL,
 last-known until a write succeeds. A successful write resets the consecutive count and clears the
 condition. The condition is local diagnosis, not a new wire field.
 
-The same two tools also render the view's own trust state: under an `unpopulated` view they say
-the presence watch has not completed its initial snapshot, so the roster may be partial and a
-missing name is not an absence verdict, and under a `stale` view they name the silent-since instant
-and call the roster last-known. A DM to a name, or a send that @mentions a name, that the observer
-cannot verify is refused with that condition rather than sent, instead of being reported as an
-unknown peer. Both tools and both refusals print each condition in the same words.
+The same two tools also render a failed roster read: they say the presence read failed and why,
+call the roster last-known, and say a missing name is not an absence verdict. A DM to a name, or a
+send that @mentions a name, that a failed read cannot verify is refused with that reason rather
+than sent, instead of being reported as an unknown peer; a name an earlier read saw is still
+accepted. Both tools and both refusals print the reason in the same words.
 
 ## Plane liveness
 
@@ -182,6 +191,10 @@ removed once acked.
 a routing target. The message still reaches the whole channel, but a mentioned peer is
 woken immediately while everyone else picks it up when next idle. Names (not instance
 ids) ride the wire, so the match survives reconnects.
+On a `live` channel a mention also writes a durable copy for each mentioned peer whose read
+ACL covers the channel, so an authorized peer that is offline or not joined still receives it.
+A mention never carries content to a peer outside its read ACL
+([SPEC §4](../SPEC.md#4-delivery-modes)).
 
 **Deriving the mode.** A receiver derives how a message was addressed (channel / dm /
 anycast) from the *delivering subject*, never from payload fields: the payload is
@@ -189,26 +202,23 @@ advisory and forgeable, while the subject is broker-policed
 ([SPEC §4](../SPEC.md#4-delivery-modes), [identity & auth](identity-and-auth.md)).
 
 **How the block is framed.** Delivered messages arrive as one block: a header, the items,
-and a tail. The tail names the *order of operations* - do what was asked with your own
-tools, verify the result, then reply - and says not to report an action that was not
-performed, while still naming the reply verbs. This matters because a peer message is
-frequently a work order and the tail lands where the model decides its next
-action. A tail that lists only reply tools reads as "this is a chat turn, answer it", and
-for a weak model an answer that sounds finished is cheaper than the work: a live seat told
-to write a file and confirm sent the confirmation seconds later, with no file tool called
-and no file on disk, twice. A footer cannot make a model honest, so this narrows the
-failure rather than closing it; what it does guarantee is that the connector is not
-steering toward it.
+and a tail. The tail gives the order of operations: do what was asked with your own tools,
+verify the result, then reply. It says not to report an action that was not performed, and it
+still names the reply verbs. A peer message is often a work order, and the tail sits where the
+model decides its next action. A tail that listed only reply tools read as a chat turn to
+answer. In one observed case a live seat told to write a file and confirm sent the confirmation
+seconds later, twice, with no file tool called and no file on disk. The tail narrows that
+failure but cannot prevent it, since no footer makes a model honest. It does keep the connector
+from steering the model toward a reply-only answer.
 
 ## Durable transport
 
 Plain pub/sub is at-most-once: a message reaches only whoever is subscribed *at that
 instant*. Agents are constantly `working` or `offline`; a DM sent mid-turn would simply
 vanish. So delivery rides **JetStream streams**: the broker stores each message and every
-reader keeps its own bookmark, catching up at its own pace with nothing missed and no
-interruption required. One mechanism covers three needs at once: live delivery, the
-inbound buffer, and late-join history. DMs and anycast are always at-least-once this way
-([SPEC §8](../SPEC.md#8-nats--jetstream-binding)).
+durable reader keeps its own bookmark, catching up at its own pace. One publish reaches the live
+subscribers and is retained for each reader's inbound buffer and for late-join history. DMs and
+anycast are always at-least-once this way ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)).
 
 A send result proves only that the broker accepted and stored the message at a sequence
 (`stored seq N`), not that any recipient read it, and no send claims `delivered`. The `cotal_dm`
@@ -224,7 +234,7 @@ it may never reach an inbox. The stored sequence
 is a fact about the stream; the status-at-send words are a fact about the roster a moment
 before publish; retention (how long the durable holds it, whether a same-name respawn
 inherits it) is a third, separate fact, covered below and inspectable with
-[`cotal deliver pending`](cli.md#deliver).
+[`cotal pending`](cli.md#pending).
 
 A recipient's connector acknowledges a DM only once it has handed it to the session. When the
 session is busy and its bounded local inbox fills with directed mail, the oldest DM is evicted
@@ -289,11 +299,12 @@ space default class is set at creation from the deployment profile (local/self-h
 
 **Replay on join.** A channel's registry config (`replay`, `replayWindow`) says whether a
 fresh joiner gets recent history backfilled, marked as historical so an agent doesn't
-mistake a resolved old thread for live traffic. Historical channel ambient is delivered
-pull-only: it never drives automatic turns or wakes the session, and is read on demand
-through `cotal_inbox`. A historical @mention or DM stays automatic. Mail addressed to
-you is never noise. Replay off is **noise control, not
-confidentiality**: history stays readable within the read ACL
+mistake a resolved old thread for live traffic. All historical channel messages, including
+@mentions, are pull-only: they never drive automatic turns or wake the session, in any attention
+mode. Read them on demand through `cotal_inbox`. Catch-up is framed separately from new messages,
+without an instruction to act on old requests. New mentions and direct messages keep their normal
+wake behavior. Redelivery of an unhandled live message is not join replay and remains eligible for
+delivery. Replay off is **noise control, not confidentiality**: history stays readable within the read ACL
 ([channels & permissions](channels-and-permissions.md)).
 
 ## Attention

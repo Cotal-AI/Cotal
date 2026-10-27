@@ -2,10 +2,10 @@
 
 > **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.md)
 
-A running mesh is a stream of live activity: who is present, what they are doing, what they
-are saying to each other. Cotal gives you three read-only surfaces onto one space. All three
-render the *same* observer model ([`MeshView`](mesh-view.md)); none opens its own connection or
-re-implements the wire. Pick by where you are:
+Cotal's watch surfaces show who is present, their reported activity and the messages your
+credential permits you to read. The terminal console and plain stream share the CLI's
+[`MeshView`](mesh-view.md). The web dashboard owns a separate endpoint and serves HTTP
+snapshots and live events. The console also provides authorized operator actions.
 
 | Surface | Command | Use it to |
 |---|---|---|
@@ -32,14 +32,18 @@ cotal console                    # no --space on an open mesh → the admin over
 **Admin overview.** On an open mesh, `cotal console` with **no `--space`** opens a space picker:
 every space on the server (enumerated from its `CHAT_*` streams and presence buckets) with its
 agents, channels, and message counts. Pick one to drop into its console; `b` returns to the
-overview. `--space X` skips the picker. Under auth a server hosts a single space, so the console
-enters it directly (no overview). `D` deletes the selected space once you type its name. A space this
+overview. `--space X` skips the picker. On an authenticated mesh the console enters the
+resolved space directly. This scopes the view; a broker can host several accounts and spaces.
+`D` deletes the selected space once you type its name. A space this
 host registered as a static-auth mesh on that server is deleted under a teardown minted from its trust
 material, which names the resume transfer buckets the space holds at that moment; any other space is
 deleted under the console's own connection, bare on an open mesh or your `--creds` file.
 
 **Lenses and keys** (TUI). The layout is a roster, a live feed, per-channel tabs, a golden-signal
-tiles strip, and toggleable lenses:
+tiles strip, and toggleable lenses. The roster and DM peer list share the same pane sizing:
+side by side with content on wide terminals, stacked above it below 80 columns.
+
+The keys are:
 
 | Key | Does |
 |---|---|
@@ -71,17 +75,18 @@ caller at all (a raw `--creds` file cannot), and it is independent of `canWrite`
 chat. `D` kills the selected agent behind a confirm (`y` graceful stop, `f` force-kill), and the
 `Ctrl-P` palette adds **Spawn agent** (waits for the join, like `cotal spawn --detach`),
 `status <agent>`, `ps`, `purge` (type the space name to confirm, like the space delete), and
-`delchan <channel>` (type the channel name to confirm): the web dashboard's channel delete, run
-from the console. It is core's `clearChannel` (a filtered history purge plus the registry entry)
-with the dashboard's per-action authority, a one-shot `channel-purger` credential minted from the
+`delchan <channel>` (type the channel name to confirm). Channel deletion calls core's
+`clearChannel`, which purges the channel's history and removes its registry entry. It uses a
+one-shot `channel-purger` credential minted from the
 resolved mesh's seed on a static mesh, a `channel-purger` view on a user mesh, a bare connection
 on an open one; no manager is involved. A wildcard is refused, so the one destructive control
 names one channel. A refusal, from the broker, the manager, or a user mesh's login, lands on the
-status line. On a space with several managers, `D`, `:status`, and `a` are pinned to the manager hosting the seat and
-`:ps` merges every manager's rows; `:spawn` and `:purge` ride the class queue, as `cotal spawn
---detach` and `cotal purge` do without `--on`. A manager that does not answer keeps its last known
-rows and is named as silent. A manager that answers with an error is named with that error and its
-old rows are withheld rather than shown as current.
+status line. Targeted actions (`D`, `status`, and `a`) locate the manager hosting the seat.
+On static-auth and open meshes, `ps` gathers and merges the managers' rows. A silent manager's
+last known rows remain marked as silent; a manager's error withholds its old rows. The
+user-auth console uses the bearer-backed owner route for `ps` rather than this scatter.
+Untargeted `spawn` and `purge` use manager resolution without an instance pin; a routing
+refusal is shown rather than silently choosing a different manager.
 
 Choose **Spawn agent** in the palette to open the launch form. Searching for `spawn` or
 `new agent` finds the same action. Set an application, persona,
@@ -100,19 +105,20 @@ the manager, including seats absent from presence. `msg` and `delchan` list chan
 wait for text before sending. You can also type a complete command, or use Tab to complete
 an `@agent` or `#channel` token. Empty lists and manager read failures are shown in the palette.
 
-`a` on a roster agent (or `:attach <agent>`) suspends the console and hands the terminal to the
+`a` on a roster agent (or `attach <agent>` in the palette) suspends the console and hands the terminal to the
 seat: it is `cotal attach` run in place, the same one-use holder-bound mesh session, the same
 reconnect on a lost link, the same end reasons, with the observer running in the background
 throughout. `Ctrl-]` (or `COTAL_DETACH_KEY`) returns and repaints the console, and the verdict
 lands on the status line: detached, the seat is gone, or why it could not attach. A bad
 `COTAL_DETACH_KEY` is refused before the screen is handed over. Attach is `canControl`-gated and
-needs what `cotal attach` needs: a `pty` seat and the space's local seed to redeem the session
-grant (a static-auth mesh; an open mesh holds no seed, so attach refuses there as it does on the
-command line).
+needs a `pty` seat. Session redemption follows the registered mesh mode: open meshes use a
+bare connection, static-auth meshes require the space's local signing material, and user-auth
+meshes redeem the grant through the identity service. A user-auth attach does not use a local
+static seed.
 
 **Operator participant mode.** By default the operator is invisible, and a message it sends is
 one-way: an agent's DM reply has no peer to land on. On an open mesh, the operator's **first send**
-(`:dm`, `:call`, `:ask`, `:msg`, or a compose) puts the operator on the roster: the console starts
+(`dm`, `call`, `ask`, `msg`, or a compose) puts the operator on the roster: the console starts
 a second, presence-only endpoint carrying the observer's own card (the same id, name, and
 `role: "operator"`, so it is the `from` of everything the observer sends), the status bar says
 `on roster` for the rest of the session, and the god-view tap the console already runs shows the
@@ -177,7 +183,7 @@ DMs), the selected content in the centre, the NEEDS-YOU lane always on the right
 - **Monitor**: the all-activity feed (two-line messages with a delivery-mode badge, per-mode
   filter chips, and pause), the roster (status as shape *and* colour, role, a one-line activity,
   and the agent's harness: claude / opencode / hermes), and the golden-signal tiles
-  (working / waiting / idle / offline / oldest-unattended). The roster groups live peers by the
+  (working / waiting / idle / offline / stalest live heartbeat). The roster groups live peers by the
   machine each one reports as its host, with a count per machine, so placement across machines
   reads at a glance. A peer that reports no host, such as a manager, is listed last under *host
   not reported*. Seats do not report which manager runs them, so the roster has no manager grouping.
@@ -254,22 +260,16 @@ come back as their escape in both the response and the line printed in the termi
 read is what was actually sent. Ordinary text, accents and non-Latin scripts included, is left
 alone: a character that renders as itself is left as itself.
 
-A channel name has to be the name the mesh actually uses: dotted segments of letters, digits, `_`
-and `-`, or a `*` or `>` where the mesh reads a whole subtree. Anything else is refused rather than
-quietly rewritten, because the wire rewrites what it cannot use and two different names would then
-be one channel. That matters most on the delete button: a name that had to be rewritten would have
-purged a channel you did not name, while the answer showed you the name you typed. Delete takes no
-wildcard at all, so the one destructive control names one channel.
+Channel reads accept dotted segments of letters, digits, `_` and `-`, or a `*` or `>`
+where the mesh reads a subtree. Invalid names are refused rather than rewritten into a
+different channel. Read routes reject announced request bodies with `413` and close that
+connection. A request refused by the session gate is also closed if it announced a body.
+Ordinary bodyless requests keep their connection.
 
-The delete request itself is capped at 8 KiB, which is far more than a channel name can be and far
-less than a machine can spend. A larger body is refused with a `413` naming the limit, the server
-stops reading it rather than taking it all in first and complaining afterwards, and the connection
-that body arrived on is closed so the rest of it cannot be sent. It is never shortened to fit: a
-trimmed name is a name you did not type, which is the thing the paragraph above exists to prevent.
-Every other route takes no request body. It refuses an announced body before reading it with the
-same `413` and closed connection. A request the gate refuses is closed the same way when it
-announced a body, so a caller without a session cannot hold the dashboard reading an upload.
-Ordinary bodyless requests keep their connection as usual.
+The service route refuses channel deletion. The older embedded web handler retains a
+separate delete route with an 8 KiB body limit and no wildcard targets; that route is not
+an operator action in the current service. Use the console or the authorized CLI
+`channel remove` command to delete a channel.
 
 **Message bodies render Markdown** (headings, lists, **bold**, `code`, blockquotes, links) across
 the Monitor, channel, and DM views, parsed and sanitized client-side. Agent text is untrusted, so
@@ -286,7 +286,8 @@ can actually read.
 
 ## What each surface can see
 
-Every surface is a read-only observer; what it *sees* depends on its credential:
+Observation is read-only. The console's separate operator actions require their own
+authority. What each observer sees depends on its credential:
 
 - The **console TUI** uses an admin observation credential on a static-auth mesh when local
   signing material is available. Its god-view includes chat, DMs and anycast (`dmVisible: true`).
@@ -299,5 +300,5 @@ Every surface is a read-only observer; what it *sees* depends on its credential:
   observer cred hides the DM lens.
 
 See [identity and auth](identity-and-auth.md) for the observer vs admin scopes, and
-[MeshView](mesh-view.md) for the shared model behind all three surfaces. Normative delivery and
+[MeshView](mesh-view.md) for the terminal observer model. Normative delivery and
 visibility rules live in the [SPEC](../SPEC.md).

@@ -601,8 +601,11 @@ async function completionOut(positionals: string[]): Promise<string> {
   for (const name of ["to", "channel", "role"]) assert.ok(send.flags?.some((flag) => flag.name === name), `send declares the ${name} destination flag`);
   assert.ok(!flaggedSend.includes("spawn\t"), "flagged send does not fall back to top-level commands");
 
+  const flaggedPersona = await completionOut(["persona", "--space", "demo", ""]);
+  assert.ok(/^show$/mu.test(flaggedPersona), "flags before persona subcommands are ignored");
+  // The legacy `personas` is hidden, so completion offers nothing for it.
   const flaggedPersonas = await completionOut(["personas", "--space", "demo", ""]);
-  assert.ok(flaggedPersonas.includes("show\tprint a persona's card"), "flags before personas subcommands are ignored");
+  assert.ok(!/^show/mu.test(flaggedPersonas), "the hidden legacy personas command completes nothing");
 
   const exactUp = await completionOut(["up"]);
   assert.ok(exactUp.includes("--space"), "exact flag-only commands offer their flags");
@@ -912,6 +915,70 @@ async function completionOut(positionals: string[]): Promise<string> {
     if (realHome === undefined) delete process.env.COTAL_HOME;
     else process.env.COTAL_HOME = realHome;
     removeMesh("hosted");
+  }
+}
+
+// --- update --self from a folder whose prepared space never started, and from a folder that holds
+// two remote registrations: neither names a manager here, so neither refuses the software update.
+// Reproduced on a published 0.105.0 (2026-10-26): `cotal setup --configure-only`, then a bare
+// `cotal update --self` in that folder refused with `"<space>" is prepared but not started - start it
+// with cotal up`; two Cloud spaces registered with `space add --from` from one folder, nothing
+// selected, refused with `multiple meshes running: a (/f), b (/f)` and read neither.
+{
+  const { readManagerContinuity } = await import("../src/commands/update.js");
+  const { recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace } = await import("@cotal-ai/workspace");
+  const realHome = process.env.COTAL_HOME, cwd = process.cwd();
+  const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "cotal-update-prepared-")));
+  process.env.COTAL_HOME = join(sandbox, "home");
+  const capture = async (run: () => Promise<"none" | "legacy">) => {
+    let out = "";
+    const realLog = console.log;
+    console.log = (s?: unknown) => void (out += `${s}\n`);
+    try { return { verdict: await run(), out }; } finally { console.log = realLog; }
+  };
+  try {
+    // A folder whose space was prepared and never started: no broker, no journal, no manager.
+    const prepared = join(sandbox, "prepared");
+    mkdirSync(join(prepared, ".cotal", "agents"), { recursive: true });
+    recordPreparedSpace({ space: "drafted", root: prepared, ts: new Date(0).toISOString() });
+    process.chdir(prepared);
+    const inFolder = await capture(() => readManagerContinuity({}));
+    assert.equal(inFolder.verdict, "none", "a prepared space that never started holds no custody, so the update proceeds");
+    assert.ok(inFolder.out.includes(`drafted: prepared in ${prepared}, not started; no manager running`), "the skip names the prepared space and its folder");
+    assert.ok(!inFolder.out.includes("manager-caller"), "the skip reaches no exchange");
+    const named = await capture(() => readManagerContinuity({ space: "drafted" }));
+    assert.equal(named.verdict, "none", "the same prepared space named with --space holds no custody either");
+    process.chdir(cwd);
+
+    // Two remote user meshes registered from one folder: each is read by name and skipped.
+    const shared = join(sandbox, "shared");
+    mkdirSync(join(shared, ".cotal"), { recursive: true });
+    for (const space of ["cloud_a", "cloud_b"]) {
+      recordMesh({
+        space, server: "nats://127.0.0.1:9", mode: "user", origin: "catalog", catalogOwner: "owner-key", root: shared, tlsRequired: false,
+        userAuth: {
+          provider: "cotal", remote: true,
+          idp: { url: "http://127.0.0.1:9/idp", issuer: "http://127.0.0.1:9/idp", audience: "cotal-mesh" },
+          endpoints: { url: "http://127.0.0.1:9/" },
+          sentinelCredsPath: join(shared, "sentinel.creds"),
+        },
+        ts: new Date().toISOString(),
+      });
+    }
+    process.chdir(shared);
+    const pair = await capture(() => reportRunningManagers({}, readManagerContinuity));
+    assert.equal(pair.verdict, "none", "two remote registrations in one folder name no manager here, so the update proceeds");
+    for (const space of ["cloud_a", "cloud_b"])
+      assert.ok(pair.out.includes(`${space}: this mesh's manager runs elsewhere; no custody on this machine`), `${space} is read by name and skipped`);
+    assert.ok(pair.out.includes("2 meshes running; reading each manager's continuity"), "the folder's two registrations are enumerated, not refused");
+    console.log("  ✓ update --self skips a never-started prepared space and reads a folder's two remote registrations by name");
+  } finally {
+    process.chdir(cwd);
+    removePreparedSpace("drafted");
+    for (const space of ["cloud_a", "cloud_b"]) removeMesh(space);
+    if (realHome === undefined) delete process.env.COTAL_HOME;
+    else process.env.COTAL_HOME = realHome;
+    rmSync(sandbox, { recursive: true, force: true });
   }
 }
 
@@ -1320,12 +1387,15 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   assert.equal(restated.outcome, "refused", "the outcome is kept");
   assert.equal(restated.code, "PERMISSION_DENIED", "the code is kept");
   assert.deepEqual((restated.native?.detail as { managers: unknown }).managers, [
-    { name: "box-a/orca", instanceId: "aaa1", host: "box-a", activity: "supervisor (orca)", since: "2026-10-01T00:00:00.000Z" },
-    { name: "manager", instanceId: "bbb2", host: null, activity: null, since: null },
-  ], "each manager carries what its presence reports, and nothing it does not; one without a name shows as <host>/<runtime>");
+    { name: "box-a/orca", instanceId: "aaa1", host: "box-a", activity: "supervisor (orca)", runtime: "orca", terminal: null, since: "2026-10-01T00:00:00.000Z" },
+    { name: "manager", instanceId: "bbb2", host: null, activity: null, runtime: null, terminal: null, since: null },
+  ], "each manager carries what its presence reports, and nothing it does not; one without a name shows as <host>/<runtime>, and a presence that does not say whether a terminal attaches reports neither way");
   assert.equal(restated.remedy, `rerun it on one: ${displayCmd()} stop --name 'x y' --json --on box-a/orca or ${displayCmd()} stop --name 'x y' --json --on bbb2`, "the Next reruns the caller's own command with --on for each manager, by the shortest value that picks it");
   const shown = renderReport(commandFailureReport(restated), "plain");
   assert.match(shown, /Live managers[\s\S]*Manager\s+Instance[\s\S]*box-a\/orca\s+aaa1\s+box-a\s+supervisor \(orca\)\s+2026-10-01T00:00:00\.000Z/, "the report lists each manager on its own row, by name first");
+  const reported = [{ ...(roster[0] as unknown as { card: Record<string, unknown> }), card: { ...(roster[0] as unknown as { card: Record<string, unknown> }).card, meta: { host: "box-a", terminal: "none" } } }] as unknown as import("@cotal-ai/core").Presence[];
+  const said = await managerChoiceFailure(refusal, async () => reported, ["ps"]);
+  assert.equal(((said?.native?.detail as { managers: { terminal: unknown }[] }).managers[0])?.terminal, "none", "a manager that reports no terminal attach is carried as reporting none");
   const unread = await managerChoiceFailure(refusal, async () => { throw new Error("no roster"); }, ["ps"]);
   assert.deepEqual((unread?.native?.detail as { managers: { instanceId: string }[] }).managers.map((m) => m.instanceId), ["aaa1", "bbb2"], "an unreadable roster still names the instance ids");
   let read = false;
@@ -1349,8 +1419,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   const hostless = new CommandFailure("refused", "PERMISSION_DENIED", "2 of your managers are live, and this command needs exactly one of them", { native: { detail: { managers: [{ name: "orca", instanceId: "c".repeat(30), host: null, activity: "supervisor (orca)", since: null }] } } });
   assert.match(renderReport(commandFailureReport(hostless), "plain"), /orca\s+c{30}\s+not reported \(started by an older cotal\)\s+supervisor \(orca\)/, "a manager with no host in its presence reads as started by an older cotal, not as a bare dash");
   const candidates = [
-    { name: "factory", instanceId: "a".repeat(30), host: "pc", activity: "supervisor (tmux)", since: null },
-    { name: "pc/pty", instanceId: "b".repeat(30), host: "pc", activity: "supervisor (pty)", since: null },
+    { name: "factory", instanceId: "a".repeat(30), host: "pc", activity: "supervisor (tmux)", runtime: "tmux", terminal: "none" as const, since: null },
+    { name: "pc/pty", instanceId: "b".repeat(30), host: "pc", activity: "supervisor (pty)", runtime: "pty", terminal: "stream" as const, since: null },
   ];
   const ambiguous = new ManagerPinUnmatched("pc", candidates, 2);
   assert.equal(ambiguous.code, "TARGET_AMBIGUOUS", "a value that matches several managers is ambiguous");
@@ -1360,6 +1430,19 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   const equals = await managerChoiceFailure(ambiguous, async () => { throw new Error("not read"); }, ["ps", "--on=pc"]);
   assert.equal(equals?.remedy, `rerun it on one: ${displayCmd()} ps --on factory or ${displayCmd()} ps --on pc/pty`, "and replaces an --on=<value> the same way");
   assert.equal(await managerChoiceFailure(new ManagerPinUnmatched("x", [], 0), async () => [], ["ps", "--on", "x"]), undefined, "with no manager to offer, the refusal stands as it is");
+
+  // The question's rows carry the backend, so the choice is informed BEFORE a launch: picking a
+  // manager whose runtime streams no terminal is what sent an operator through a complete launch to
+  // a partial failure, and the row that offered it said only `supervisor (tmux)`.
+  const { managerOptions } = await import("../src/lib/manager-choice.js");
+  const hints = managerOptions(candidates).options.map((option) => option.hint);
+  assert.match(hints[0]!, /tmux · no terminal attach/, "an external runtime's row says no terminal attaches to its seats");
+  assert.match(hints[1]!, /pty · terminal attach/, "a pty manager's row says one does");
+  assert.doesNotMatch(hints.join("\n"), /supervisor \(/, "the runtime cell replaces the activity line it was read from, rather than repeating it");
+  const unreported = managerOptions([{ ...candidates[0]!, terminal: null }]).options[0]!.hint;
+  assert.match(unreported, /tmux · terminal attach not reported/, "a manager that does not report it is shown as not reporting it, never as attachable");
+  const activityOnly = managerOptions([{ ...candidates[0]!, runtime: null, activity: "busy", terminal: null }]).options[0]!.hint;
+  assert.match(activityOnly, /busy/, "and one whose presence carries no runtime keeps the activity it does carry");
 }
 
 {
@@ -1392,11 +1475,26 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   assert.deepEqual(managedLaunchAcl(acl), acl, "the manager's acl field is carried as it was sent");
   assert.equal(managedLaunchAcl(undefined), null, "a launch without one carries null");
   assert.equal(managedLaunchAcl({ requested: acl.requested }), undefined, "one that cannot be read is told apart from none");
-  const result = { kind: "managed-launch", name: "worker", id: "u_own.worker", lifecycleUid: "a".repeat(26), space: "demo", managerInstanceId: "b".repeat(26), harness: "probe", runtime: "pty", role: null, request: null, intent: null, readiness: "joined", requestedModel: null, detached: true } as const;
+  const result = { kind: "managed-launch", name: "worker", id: "u_own.worker", lifecycleUid: "a".repeat(26), space: "demo", managerInstanceId: "b".repeat(26), harness: "probe", runtime: "pty", role: null, request: null, intent: null, readiness: "joined", requestedModel: null, detached: true, streamsTerminal: true } as const;
   const narrowed = renderReport(managedLaunchView({ ...result, acl }), "plain");
   assert.match(narrowed, /Granted:\s+read general [·-] post none; asked for read > [·-] post >\n/, "the receipt lists what was granted");
   assert.equal(narrowed.match(/Granted/g)?.length, 1, "on one line");
   assert.doesNotMatch(renderReport(managedLaunchView({ ...result, acl: null }), "plain"), /Granted/, "a launch granted what it asked for shows no such line");
+
+  // A seat on a runtime that streams no terminal: the receipt says so where the runtime and the
+  // view are named, and its Next is what actually reaches the agent. `attach` is named once, as
+  // the thing that is not available, and never offered as a command to run.
+  const { displayCmd: cmd } = await import("../src/lib/self-exec.js");
+  const external = renderReport(managedLaunchView({ ...result, acl: null, runtime: "orca", detached: false, streamsTerminal: false }), "plain");
+  assert.match(external, /Runtime:\s+orca [·-] no terminal stream\n/, "the runtime row says it streams no terminal");
+  assert.match(external, /View:\s+not attached; the seat runs in the manager's orca session\n/, "and the view row says where the seat runs instead");
+  assert.match(external, new RegExp(`${cmd()} watch --space demo`), "the Next follows the mesh");
+  assert.match(external, new RegExp(`${cmd()} send -t worker`), "and gives the agent work over it");
+  assert.match(external, /attach is not available here: the orca runtime streams no terminal\./, "and says once that attach is not available");
+  assert.doesNotMatch(external, new RegExp(`${cmd()} attach worker`), "never offering the attach command itself");
+  const streaming = renderReport(managedLaunchView({ ...result, acl: null, detached: false }), "plain");
+  assert.match(streaming, /View:\s+attaching to the allocated incarnation\n/, "a streaming runtime still attaches in this terminal");
+  assert.match(renderReport(managedLaunchView({ ...result, acl: null, streamsTerminal: null }), "plain"), /Runtime:\s+pty\n/, "a manager too old to report it is shown as before");
 }
 
 console.log("✓ command-kernel smoke passed");

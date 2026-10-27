@@ -122,6 +122,8 @@ export interface SpawnRequest {
   /** `false` starts the agent without its event plane, for a connector that publishes none.
    *  Omitted, the host's default applies. */
   readonly events?: boolean;
+  /** The terminal runtime this one seat launches on. Omitted, the serving manager uses its own. */
+  readonly runtime?: string;
 }
 
 export interface TurnRequest {

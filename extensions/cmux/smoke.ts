@@ -162,6 +162,10 @@ process.stdout.write("OK");
       "/tmp",
     );
     ok("cmux runtime handle implements waitForExit", typeof handle.waitForExit === "function");
+    // Declared, not discovered by catching the throw from attach(): a caller reads this to decide
+    // whether to ask for an attach at all, so a foreground `cotal spawn` on this runtime launches
+    // the seat and stops there instead of failing on an attach that cannot open.
+    ok("the runtime declares that it streams no terminal", new CmuxRuntime().streamsTerminal === false);
     ok("cmux handle reports running from exact workspace inventory", handle.status() === "running");
     handle.stop({ graceful: false });
     await handle.waitForExit!();

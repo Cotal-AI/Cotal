@@ -181,7 +181,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
       // nothing optional. The conversation must stay off the mesh until then.
       const approve = async (name: string) => {
         await until(() => authority.pending(name).length === 1, `${name} did not ask the person for approval`, 120_000);
-        assert(!b.agent.roster().some((row) => row.card.name === name), `${name} joined before the person approved it`);
+        assert(!(await b.agent.readRoster()).roster.some((row) => row.card.name === name), `${name} joined before the person approved it`);
         authority.decide(authority.pending(name)[0]!.requestId, { approve: EMPTY });
       };
       const options = { home, cwd: root, cli: [process.execPath, ...process.execArgv, import.meta.filename], sender, peer: b.agent, env: childEnv, approve,

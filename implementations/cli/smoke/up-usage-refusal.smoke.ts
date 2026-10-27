@@ -35,6 +35,8 @@
  * those use is held by a loopback listener that never answers NATS, so a regression still cannot
  * start a broker there. On Linux, two cells hold one by a client connection's local end instead,
  * open and then in TIME-WAIT, with nothing listening, and need the refusal to say which.
+ * A refusal that names the whole fix, such as a nats:// address where the root's recorded policy or
+ * --tls-cert serves TLS, prints no help after it. Those cells need `openssl` on PATH.
  *
  * Run: pnpm smoke:up-usage-refusal
  */
@@ -305,6 +307,32 @@ const holder = createServer((socket) => socket.on("error", () => {}));
 const held = await new Promise<number>((resolve) => holder.listen(0, "127.0.0.1", () => resolve((holder.address() as AddressInfo).port)));
 const started = (root: string) => existsSync(join(root, ".cotal", "nats.pid"));
 try {
+  // A refusal that names the address to pass is the whole fix, so no help follows it and scrolls the
+  // fix away: a nats:// address where the root's recorded policy or --tls-cert serves TLS, and a
+  // tls:// address with no TLS to serve.
+  {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-tls-")));
+    roots.push(root);
+    mkdirSync(join(root, ".cotal"));
+    const [cert, key] = [join(root, "c.pem"), join(root, "k.pem")];
+    const minted = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "2", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], { encoding: "utf8" });
+    check("openssl mints the certificate the TLS refusals are given", minted.status === 0 && existsSync(cert), { status: minted.status, stderr: minted.stderr?.slice(0, 400) });
+    const policyFile = join(root, ".cotal", "broker-policy.json");
+    const policy = JSON.stringify({ version: 1, transport: { kind: "tls-required", certFile: cert, keyFile: key } });
+    writeFileSync(policyFile, policy);
+    const plainRoot = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-plain-")));
+    roots.push(plainRoot);
+    mkdirSync(join(plainRoot, ".cotal"));
+    for (const { label, args, cwd, message, remedy } of [
+      { label: "a nats:// --server in a root whose recorded policy serves TLS", args: ["--server", `nats://127.0.0.1:${held}`], cwd: root, message: `this root serves the broker over TLS (${policyFile}), so --server must be a tls:// address`, remedy: `pass --server tls://127.0.0.1:${held}` },
+      { label: "a nats:// --server with --tls-cert", args: ["--server", `nats://127.0.0.1:${held}`, "--tls-cert", cert, "--tls-key", key], cwd: plainRoot, message: "--tls-cert serves the broker over TLS, so --server must be a tls:// address", remedy: `pass --server tls://127.0.0.1:${held}` },
+      { label: "a tls:// --server with no TLS configured", args: ["--server", `tls://127.0.0.1:${held}`], cwd: plainRoot, message: "--server names a tls:// address, but no TLS certificate and key are configured", remedy: "serve TLS with --tls-cert <cert.pem> --tls-key <key.pem>, or use a nats:// address" },
+    ]) {
+      const r = run(["up", ...args], cwd);
+      check(`up refuses ${label} with its fix and no help, exit 1`, r.status === 1 && r.stdout === "" && r.stderr.includes(message) && r.stderr.includes(remedy) && !/Usage|Options/.test(r.stderr), shown(r));
+    }
+    check("the refusals leave the recorded policy as it was and start no broker", readFileSync(policyFile, "utf8") === policy && !started(root) && !started(plainRoot), readdirSync(join(root, ".cotal")));
+  }
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-read-")));
     roots.push(root);
@@ -449,6 +477,30 @@ try {
   check("a bare up whose folder names a space that runs from another folder refuses CONFLICT, exit 2, naming cotal up --space <name> and the down in that folder",
     inUse.status === 2 && /Code:\s+CONFLICT/.test(inUse.stderr) && inUse.stderr.includes(`space "main" is already in use by a mesh at nats://127.0.0.1:${greeting} (${other})`)
       && inUse.stderr.includes(`start a separate space in this folder with cotal up --space <name>, naming one no other folder uses, or stop "main" first with cotal down in ${other}`), shown(inUse));
+
+  // THE SAME SPACE, RUNNING FROM THIS VERY PROJECT, started again at another address. The refusal
+  // above belongs to a name another folder holds; here the folder IS that space's project, so the
+  // offer to start a separate space in it names the project it is already in. A subfolder of the
+  // project resolves to the same root, which is where `up` there reaches this branch at all.
+  const inner = join(legacy, "inner");
+  mkdirSync(inner, { recursive: true });
+  const greeterHere = spawn(process.execPath, ["-e", `require("node:net").createServer((s) => { s.on("error", () => {}); s.write('INFO {"server_id":"here","proto":1}\\r\\n'); }).listen(0, "127.0.0.1", function () { console.log(this.address().port); });`], { stdio: ["ignore", "pipe", "inherit"] });
+  const here = Number((await once(greeterHere.stdout!, "data"))[0].toString().trim());
+  process.env.COTAL_HOME = join(home, ".cotal");
+  recordMesh({ space: "main", server: `nats://127.0.0.1:${here}`, root: legacy, mode: "auth", origin: "up", ts: now });
+  const elsewhereAddress = `nats://127.0.0.1:${await freePort()}`;
+  const ownProject = run(["up", "--server", elsewhereAddress], legacy);
+  const subfolder = run(["up", "--server", elsewhereAddress], inner);
+  if (started(legacy)) run(["down", "--yes"], legacy);
+  removeMesh("main");
+  delete process.env.COTAL_HOME;
+  greeterHere.kill();
+  for (const [where, r] of [["its own project root", ownProject], ["a subfolder of that project", subfolder]] as const)
+    check(`up --server naming another address, run from ${where} of a space that runs there, refuses CONFLICT, exit 2, naming the address it runs at and the bare up that reaches it`,
+      r.status === 2 && /Code:\s+CONFLICT/.test(r.stderr)
+        && r.stderr.includes(`space "main" already runs from this project at nats://127.0.0.1:${here}, and this start names ${elsewhereAddress}`)
+        && r.stderr.includes(`run cotal up here with no --server or --host to reach the mesh at nats://127.0.0.1:${here}, or stop it first with cotal down in ${legacy}`)
+        && !r.stderr.includes("start a separate space in this folder"), shown(r));
 } finally {
   holder.close();
 }

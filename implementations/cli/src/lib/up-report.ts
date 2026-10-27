@@ -21,9 +21,10 @@ export function renderDetachedSummary(status: DetachedStatus): string {
   return `✓ running in the background: ${components.join(", ")} - ${status.root ? `from ${oneLine(status.root)}, stop with: ${stop}` : `stop with: ${stop}`}`;
 }
 
-/** The steps after a detached boot: launch an agent when its manager runs, and stop the stack the
- *  way {@link renderDetachedSummary} names. */
-export function detachedNext(status: DetachedStatus, space: string): { command: string; description: string }[] {
+/** The steps after a detached boot, or after a refresh that found the mesh already running: launch
+ *  an agent when its manager runs, and stop the stack the way {@link renderDetachedSummary} names.
+ *  It reads only what a refresh can also establish, so both receipts end the same way. */
+export function detachedNext(status: Pick<DetachedStatus, "root" | "machineHome" | "manager">, space: string): { command: string; description: string }[] {
   const items = status.manager ? [{ command: `cotal spawn --space ${space}`, description: "Launch your default agent" }] : [];
   const where = status.root ? ` from ${oneLine(status.root)}` : "";
   if (!status.machineHome) items.push({ command: "cotal down", description: `Stop the stack${where}` });

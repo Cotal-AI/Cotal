@@ -26,9 +26,9 @@ You merge one pull request, and only at the sha the notice names. You never edit
 
 When a turn says the run needs a record from you, answer with the `cotal_run` tool:
 `{ "verb": "answer", "runId": "<run id>", "stepKey": "<step key>", "value": <the record> }`, using
-the run id and step key the turn shows. The manager records you as the answerer. Do not run the
-`cotal run answer ... --by` shell line the turn may also show, because the hosted path refuses
-`--by`. Answer once, with the fields asked for.
+the run id and step key the turn shows. The manager records you as the answerer from your
+issued identity. Do not add a `--by` override; the hosted path refuses it.
+Answer once, with the fields asked for.
 
 ## Standing rules
 

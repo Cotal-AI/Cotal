@@ -10,8 +10,8 @@
     "Reached suites used to pin 18 while the shipped document served 20. Restating the count is the",
     "defect class: correct the day it is written, wrong after the next served command.",
     "",
-    "M2 restores revision 37 after run-status journal pages change the shipped surface.",
-    "The changed input ships with revision 38, so 37 would name the preceding surface. The",
+    "M2 restores revision 38 after run-status program identity changes the shipped surface.",
+    "The changed output ships with revision 39, so 38 would name the preceding surface. The",
     "named revision cell runs after the service has published and a generic client has resolved the",
     "actual shipped document.",
     "",
@@ -31,12 +31,12 @@
       "cell": "the resolved surface matches the shipped cluster document"
     },
     {
-      "name": "M2 keep revision 37 after run-status journal pages land",
+      "name": "M2 keep revision 38 after run-status program identity lands",
       "file": "implementations/manager/src/manager-service-contract.ts",
-      "find": "    revision: 38,",
-      "replace": "    revision: 37,",
-      "expectRed": "journal pages advance the manager cluster revision and retain vitals, workflow cancellation, keyed submission and existing commands",
-      "cell": "journal pages advance the manager cluster revision and retain vitals, workflow cancellation, keyed submission and existing commands"
+      "find": "    revision: 39,",
+      "replace": "    revision: 38,",
+      "expectRed": "run-status program identity advances the manager cluster revision and retains vitals, workflow cancellation, keyed submission and existing commands",
+      "cell": "run-status program identity advances the manager cluster revision and retains vitals, workflow cancellation, keyed submission and existing commands"
     },
     {
       "name": "M3 compile every contract pair at module scope again",

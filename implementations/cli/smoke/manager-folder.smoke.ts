@@ -7,6 +7,10 @@
  * the host, and a typed folder's line gives the command again with `-C` and `--on`. A manager whose
  * host is not reported is asked about as the manager's host.
  *
+ * On a narrow terminal the rerun command stays whole on one line, so a copy of that line is a whole
+ * command and never a flag without its value, and the refusal line wraps at spaces under clack's
+ * bar instead of running past the terminal.
+ *
  * Drives the real clack prompt over in-memory streams, with a stand-in for the manager's
  * `resolve-cwd`. No binary, broker or terminal.
  *
@@ -20,15 +24,16 @@ const { check, finish } = createSuite();
 const plain = (text: string) => text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
-const remote: ManagerSelection = { manager: { name: "remote", instanceId: "krudqi08ilzx2viqeh8sv34ygs1surr", host: "fx6-remote", activity: null, since: null }, selector: "remote" };
-const unknown: ManagerSelection = { manager: { name: null, instanceId: "krudqi08ilzx2viqeh8sv34ygs1surr", host: null, activity: null, since: null }, selector: "krudqi08ilzx2viqeh8sv34ygs1surr" };
+const remote: ManagerSelection = { manager: { name: "remote", instanceId: "krudqi08ilzx2viqeh8sv34ygs1surr", host: "fx6-remote", activity: null, runtime: null, terminal: null, since: null }, selector: "remote" };
+const unknown: ManagerSelection = { manager: { name: null, instanceId: "krudqi08ilzx2viqeh8sv34ygs1surr", host: null, activity: null, runtime: null, terminal: null, since: null }, selector: "krudqi08ilzx2viqeh8sv34ygs1surr" };
 
 /** Ask once over in-memory streams. Each step waits for its pattern in what was written since the
  *  last step, then types its keys. */
-async function ask(selection: ManagerSelection, answers: (path: string) => FolderCheck, steps: [RegExp, string][]) {
+async function ask(selection: ManagerSelection, answers: (path: string) => FolderCheck, steps: [RegExp, string][], columns?: number) {
   const input = new PassThrough();
   let text = "", mark = 0;
-  const output = new Writable({ write(chunk, _encoding, done) { text += chunk.toString(); done(); } });
+  const stream = new Writable({ write(chunk, _encoding, done) { text += chunk.toString(); done(); } });
+  const output = columns === undefined ? stream : Object.assign(stream, { isTTY: true, columns });
   const asked: string[] = [];
   const result = askManagerFolder(selection, ["spawn", "-d"], async (path) => { asked.push(path); return answers(path); }, { input, output });
   for (const [pattern, keys] of steps) {
@@ -78,4 +83,40 @@ for (const typed of ["C:\\Users\\dev\\work", "\\\\server\\share\\work", "relativ
   const run = await ask(unknown, () => { throw new Error("not asked"); }, [[/Which folder on the manager's host should the agent work in\?/, "\r"]]);
   check("a manager whose host is not reported is asked about as the manager's host", run.value === undefined && /Host:\s+not reported/.test(run.out), run.out);
 }
+// A narrow terminal: the command the receipt offers must survive being copied off one line, and
+// the refusal must not run past the terminal. The width is the terminal's, not the command's: a
+// command wider than the terminal keeps its own line, which a terminal soft-wraps and a copy keeps
+// whole, rather than being broken between a flag and its value.
+const LONG = "/home/david/f26/cli-journey-1023/a";
+const ID = "krudqi08ilzx2viqeh8sv34ygs1surr";
+const pinned: ManagerSelection = { manager: { ...remote.manager, host: "pc-ubuntu" }, selector: ID };
+const commandOf = (out: string) => /`(cotal|pnpm cotal|npx cotal-ai)[^`]*`/.exec(out)?.[0] ?? "";
+const flagWithoutValue = (line: string) => /(^|\s)(--on|-C|--space|--server)\s*$/.test(line.replace(/`$/, ""));
+
+for (const columns of [60, 72, 80, 100, 132, 200]) {
+  const run = await ask(pinned, (path) => ({ cwd: path }), [[/Which folder on pc-ubuntu/, `${LONG}\r`]], columns);
+  const receipt = run.out.slice(run.out.indexOf("Folder chosen")).split("\n");
+  const whole = `cotal spawn -d -C ${LONG} --on ${ID}`;
+  const onOneLine = receipt.filter((line) => line.includes(whole));
+  check(`at ${columns} columns the rerun command is whole on one line`, onOneLine.length === 1, { columns, receipt });
+  check(`at ${columns} columns no receipt line ends with a flag that lost its value`, !receipt.some(flagWithoutValue), { columns, receipt });
+}
+{
+  const run = await ask(pinned, (path) => ({ cwd: path }), [[/Which folder on pc-ubuntu/, `${LONG}\r`]], 80);
+  check("the command the receipt offers is marked as a command, so no wrap may split it", commandOf(run.out).includes(`-C ${LONG} --on ${ID}`), run.out);
+}
+{
+  const refusal = `cwd does not resolve on this host: "${LONG}" (path cannot be resolved: ENOENT, no such file or directory)`;
+  const run = await ask(pinned, (path) => (path === LONG ? { refusal } : { cwd: path }), [
+    [/Which folder on pc-ubuntu/, `${LONG}\r`],
+    [/cannot use it[\s\S]*Which folder/, "\x03"],
+  ], 80);
+  const lines = run.out.split("\n");
+  const at = lines.findIndex((line) => line.includes("cannot use it"));
+  const block = lines.slice(at, at + 3);
+  check("the refusal names the manager's host", block[0]!.includes("the manager on pc-ubuntu cannot use it"), block);
+  check("the refusal wraps at spaces instead of running past the terminal", block.every((line) => line.trimEnd().length <= 80) && block.some((line) => line.includes("\u2502")), block);
+  check("and no word of it is broken across its lines", block.join("\n").replace(/[\u2502\u25b2]\s*/g, "").replace(/\s+/g, " ").includes(`the manager on pc-ubuntu cannot use it: cwd does not resolve on this host: "${LONG}"`), block);
+}
+
 finish();

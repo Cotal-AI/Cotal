@@ -131,9 +131,11 @@ try {
   const up = cotal(["up", "--detach", "--space", SPACE, "--server", SERVER]);
   check("up --detach starts the authenticated stack", up.status === 0, out(up));
   if (process.platform !== "win32") {
-    const manager = managerRecordState(undefined, undefined, SPACE, root).command ?? "";
+    const managerRecord = managerRecordState(undefined, undefined, SPACE, root);
+    const manager = managerRecord.state === "absent" ? "" : managerRecord.command ?? "";
     check("up starts the manager as the hidden `__daemon-manager --space <s> --server <url>`", manager.includes(` __daemon-manager --space ${SPACE} --server ${SERVER}`), manager);
-    const delivery = readProcessRecord(canonicalLocalProcessPath(DELIVERY_PIDFILE, { root, space: SPACE }), () => true).command ?? "";
+    const deliveryRecord = readProcessRecord(canonicalLocalProcessPath(DELIVERY_PIDFILE, { root, space: SPACE }), () => true);
+    const delivery = deliveryRecord.state === "absent" ? "" : deliveryRecord.command ?? "";
     check("up starts the delivery daemon as the hidden `__daemon-deliver --space <s> --server <url>`", delivery.includes(` __daemon-deliver --space ${SPACE} --server ${SERVER}`), delivery);
     // The twins are the deprecated entries without the warning, so up's own daemon logs never carry it.
     const logs = [MANAGER_LOGFILE, DELIVERY_LOGFILE].map((file) => readFileSync(canonicalLocalProcessPath(file, { root, space: SPACE }), "utf8"));

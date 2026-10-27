@@ -36,12 +36,14 @@ export function controllerStackRecorded(root: string): boolean {
   return readStackJournal(canonicalRoot(root)) !== undefined;
 }
 
-/** The root of the controller stack this machine started for `space` in a folder other than `root`,
- *  or undefined. `cotal down` stops only the stack of the folder it runs in, so a refusal names it. */
+/** The root of the stack this machine started for `space` in a folder other than `root`, or
+ *  undefined. `cotal down` stops only the stack of the folder it runs in, so a refusal names it.
+ *  Every stack `cotal up` registered answers here, not only a controller one: a legacy stack is
+ *  stopped by the same `cotal down` in its own root, so naming that root is the step either way. */
 export function stackRootElsewhere(space: string, root: string): string | undefined {
   try {
     const mesh = findMesh(space);
-    return mesh && mesh.origin === "up" && canonicalRoot(mesh.root) !== canonicalRoot(root) && controllerStackRecorded(mesh.root) ? mesh.root : undefined;
+    return mesh && mesh.origin === "up" && canonicalRoot(mesh.root) !== canonicalRoot(root) ? mesh.root : undefined;
   } catch {
     return undefined;
   }
@@ -326,7 +328,7 @@ function stopTarget(root: string, values: ParsedArgs["values"]) {
   if (values.space !== undefined && values.space !== journal0.space) {
     const space = String(values.space), elsewhere = stackRootElsewhere(space, root);
     recordOperationSpace(space);
-    throw new CommandFailure("refused", "CONFLICT", `--space ${space} ${elsewhere ? `names a controller stack rooted at ${elsewhere}` : "is not this folder's stack"}, and \`cotal down\` stops only the stack of the folder it runs in; this folder's stack is ${journal0.space}, so no member was stopped`, {
+    throw new CommandFailure("refused", "CONFLICT", `--space ${space} ${elsewhere ? `names a stack rooted at ${elsewhere}` : "is not this folder's stack"}, and \`cotal down\` stops only the stack of the folder it runs in; this folder's stack is ${journal0.space}, so no member was stopped`, {
       target: { root, space, recordedSpace: journal0.space, ...(elsewhere ? { stackRoot: elsewhere } : {}) },
       remedy: elsewhere ? `run \`${sameDown(values)}\` from ${elsewhere}` : `run \`${sameDown(values)}\` from the folder whose stack is ${space}, or drop --space to stop ${journal0.space} here`,
     });

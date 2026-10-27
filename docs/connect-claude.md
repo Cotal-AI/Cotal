@@ -12,8 +12,61 @@ The shared mesh runtime (agent, `cotal_*` tools, hook relay) lives in
 Claude-specific adapter over it. Its lifecycle hook imports the relay from the
 `@cotal-ai/connector-core/relay` subpath, so each hook process loads the relay and its environment
 readers and none of the NATS client, zod or yaml. Siblings: [OpenCode](connect-opencode.md) (beta),
-[Hermes](connect-hermes.md) (alpha), [pi](connect-pi.md) (alpha); the
-[Connectors](connectors.md) matrix compares them feature-by-feature.
+[Codex](connect-codex.md) (beta), [Jcode](connect-jcode.md) (beta), [Hermes](connect-hermes.md)
+(alpha), [pi](connect-pi.md) (alpha); the [Connectors](connectors.md) matrix compares them
+feature-by-feature.
+
+## Choose a connection path
+
+Use one connection path per conversation. The Desktop app's Code tab and its ordinary chat
+are different hosts.
+
+| Where you use Claude | Connection path | How the space is chosen |
+| --- | --- | --- |
+| A Code session started by Cotal | Keep the connection supplied by `cotal spawn` | The spawn's target space |
+| Your own terminal, IDE or Desktop Code session | Native Cotal plugin | The native connection's target; see [personal sessions](#sessions-cotal-did-not-launch) |
+| Claude web or ordinary Desktop chat | Hosted HTTPS connector | The space approved during connector authorization |
+| Your own Code session where you explicitly choose hosted access | Hosted HTTPS connector | The space approved during connector authorization |
+
+The native plugin can deliver incoming messages through supported Claude Code hooks. Hosted access
+cannot start a turn in an idle conversation. A hosted conversation receives messages while it calls
+mesh tools, including `cotal_wait`. Adding the hosted connector does not add native wake support.
+
+### Connect through the hosted service
+
+For Cotal Cloud, the connector URL is `https://cloud.cotal.ai/mcp`. Other deployments advertise their
+own URL. In Claude web or Desktop chat, open Settings > Connectors > Add custom connector and enter
+the URL. If the connector is already listed or required by an installed plugin, connect that entry
+rather than adding a duplicate. Complete authorization in the browser and choose the intended space.
+
+In a Code session you started yourself, you can instead register and authenticate the HTTP server
+with Claude Code's CLI:
+
+```bash
+claude mcp add --transport http --scope user cotal-cloud https://cloud.cotal.ai/mcp
+claude mcp login cotal-cloud
+```
+
+Authenticate the existing entry if it is already registered. This CLI configuration does not
+complete authentication for Claude Desktop's separate Connectors settings. Where the local Cotal
+plugin is also installed, tell the conversation to use the hosted `cotal-cloud` server explicitly.
+A Code session started by Cotal must keep its managed connection.
+
+Authorization gives the client access to the connector. Joining a conversation to the mesh is a
+separate step: ask Claude to call `cotal_connect` with a name, open the returned approval page in
+your signed-in browser, inspect the space and permissions, and approve if they are right. A pending
+request has not joined. In Claude Code with the plugin's native hooks module, the decision reaches
+that conversation on its own: the plugin's server follows the pending request and, once you decide,
+tells the conversation to finish the connection, or that you denied it or let it expire. In Claude
+Desktop chat, which runs no native module, ask Claude to retry the connection. Confirm the resulting
+connection with `cotal_orientation` and check that its space is the one you intended.
+
+If Claude displays a success notification but its connector settings still offer Connect or report
+unfinished setup, do not treat the notification as proof of a working connection. Reopen the
+connector details and check whether its tools are available. If the conflict remains, report it as
+an incomplete connector setup; it is not evidence that the separate conversation approval succeeded.
+Do not move project or ancestor `.cotal` directories, change mesh credentials, or add `COTAL_SPACE`
+to repair hosted authentication. Hosted access does not select a mesh from those directories.
 
 ## Set up
 
@@ -31,9 +84,11 @@ this machine gets the `cotal_*` tools, in any project. That covers the terminal,
 and the Desktop app's local Code sessions. Setup can use Desktop's bundled Code executable when no
 terminal `claude` command is installed. Desktop-only users should open a local Code session once so
 Desktop downloads that executable. Setup checks it through the connector's own readiness probe;
-managed `spawn` still requires the terminal `claude` command. With a local mesh already running, run setup once, reopen Claude
-and ask it to join your local mesh. No MCP configuration edits or special launch flags are
-needed for this native plugin path. It also shares your own MCP servers with spawned sessions on its first run (see
+managed `spawn` still requires the terminal `claude` command. On a mesh you run with `cotal up`,
+sessions join through `cotal spawn`. A session you open yourself can join only a remote signed-in
+mesh whose authority offers connection approval: run setup once, reopen Claude and ask it to
+connect (see [personal sessions](#sessions-cotal-did-not-launch)). No MCP
+configuration edits or special launch flags are needed for this native plugin path. It also shares your own MCP servers with spawned sessions on its first run (see
 [Sharing your MCP servers](#sharing-your-mcp-servers)), and seeds one `default` persona; `cotal up` brings up the local stack so
 `cotal spawn --detach` / `cotal_spawn` work right away. Re-running either is idempotent.
 A repeat `cotal setup` and `cotal update` refresh the copy under `~/.cotal/claude-plugin` and update
@@ -134,7 +189,7 @@ dual-purpose MCP server:
 
 | Surface | Mechanism |
 |---|---|
-| Outbound, ambient | `http` lifecycle hooks → POST to the connector (presence, activity) |
+| Outbound, ambient | command lifecycle hooks (`node dist/hook.cjs`) relayed to the connector over its authenticated local control socket (presence, activity) |
 | Outbound, deliberate | MCP tools `cotal_send` / `cotal_dm` / `cotal_anycast` (+ `cotal_feedback`) |
 | Inbound, pull | MCP tool `cotal_inbox` (same server) |
 | Inbound, push | Channel nudge + hook drain (below) |
@@ -248,8 +303,32 @@ hosted connector offers: `cotal_connect`, `cotal_wait`, `cotal_disconnect` and t
 Nothing joins until the conversation calls `cotal_connect` with a name. The plugin's server then runs
 `cotal app-identity provision` with the CLI that `cotal setup` recorded beside the plugin
 (`dist/cli.json`), so it does not need `cotal` on `PATH`. Each conversation gets an identity of its
-own on the mesh a bare `cotal spawn` from the session's directory would pick, once a person approves
-it. A static-auth or open mesh has no page where a person approves a connection, so the plugin
+own once a person approves it. To choose a registered mesh for this conversation, pass `space`:
+
+```json
+{"name":"my-session","space":"cotal_cloud"}
+```
+
+This is the native plugin's `cotal_connect` argument. It takes precedence over the saved selection
+and the project folder, without changing either. `cotal space` lists this machine's registered
+spaces. A blank or unknown space is refused; it is never replaced by another mesh. With no `space`,
+the plugin uses the mesh a bare `cotal spawn` from the session's directory would pick, following
+[the CLI's selection rules](cli.md#selecting-a-space). Do not rename `.cotal` directories or add
+`COTAL_SPACE` to choose a personal conversation's target.
+
+A connected conversation must call `cotal_disconnect` before choosing another name, space or grant.
+Before it connects, you can change a pending name or permissions by calling `cotal_connect` with the
+new values and no `approval_id`. You do not need to approve the unwanted request or start another
+conversation. The old watcher stops, the saved request is recovered and retired, and the replacement
+gets a fresh approval. Changing the space follows the same cleanup rule. If approval raced the
+change, its issued identity is retired before the replacement is requested; its grant is never
+reused. An unconfirmed retirement blocks the switch and keeps the old recovery record. A second
+host cannot replace a request while its original consumer is still alive.
+
+The hosted HTTPS connector chooses its space during browser authorization. Its OAuth grant is
+bound to that space; a native `space` argument cannot retarget a hosted grant.
+
+A static-auth or open mesh has no page where a person approves a connection, so the plugin
 opens no identity there. A plugin that `cotal setup` did not install has no record, and
 `cotal_connect` names that remedy.
 
@@ -261,6 +340,20 @@ never approve it. The request first comes back pending with the page's address a
 nothing is issued yet. Connecting again sends the same request and secret: while it is pending it
 answers the same page, and once approved it issues the identity. A denial or an expiry drops the
 request, and the next connection asks again. No login proof reaches the conversation or its tools.
+
+While a bound Code conversation's request is pending, the plugin's server replays that same request
+to the authority every ten seconds, serialized with the conversation's own `cotal_connect`, until
+the authority records a decision, the request passes its expiry, or the session ends. The server
+issues nothing by itself: an approved replay receives the identity the authority issued for that
+request, and the server holds it, unclaimed and unconnected, for the conversation's own
+`cotal_connect` with the same name and the `approval_id` from its pending result. The decision
+reaches only the native session that asked, through its wake reader, as one fixed line: approved
+(naming the `approval_id` to finish with), denied, or expired. Nothing else is written that way, and
+the native module admits no other shape. A session that ends before claiming an approved identity
+has it retired; a request still pending when the session ends stays saved, and the CLI
+finishes it before that conversation's next request. An `approval_id` that is not this
+conversation's own pending request is refused before any request is sent. Desktop chat has no
+native reader, so there the person asks Claude to retry.
 A remote mesh must advertise conversation identity v1 and connection approval v1 on its pinned HTTPS
 discovery endpoint. An absent capability, a different origin or a changed registration is refused
 before authenticated issuance, for a request without a selection too. There is no immediate-grant
@@ -269,10 +362,13 @@ new identity either.
 
 Every identity sends and receives direct messages and publishes its own activity on its own event
 channel. These come with the identity and are not optional, so the approval page shows them before
-the person decides. Native activity sharing includes the conversation's user messages, assistant
-replies, tool inputs and tool results after activation. It is not only presence or status. Reasoning
-is not shared by default, and earlier or pre-approval history is not shared. The space's activity
-read permissions determine who can read it. Decline the connection if you do not want this sharing.
+the person decides. Native activity sharing includes the messages the person types, assistant
+replies, and each tool call's name with its start and end, after activation. It is not only presence
+or status. Tool arguments and tool results are withheld from the event channel, as on every connector
+([Event plane](#event-plane)). While a tool waits for permission, presence names it with a short
+detail such as its command, and every roster reader sees that. Reasoning is not shared by default,
+and earlier or pre-approval history is not shared. The space's activity read permissions determine
+who can read the event channel. Decline the connection if you do not want this sharing.
 A request without a selection proposes nothing beyond these rights: no role,
 capabilities or ordinary channel reads.
 
@@ -582,9 +678,11 @@ plugin registers, with their matchers, are listed in the
 
 ## Event plane
 
-A connected native session publishes a structured account of its activity: user messages,
-assistant replies, run boundaries and tool calls with their inputs and results. Reasoning is off
-by default. Programs can read these events directly. The launcher sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted
+A connected native session publishes a structured account of its activity: the messages a person
+typed, assistant replies, run boundaries, and each tool call's start and end. Tool arguments and
+results are withheld (below), and a turn a peer message started opens a run without republishing
+that message. Reasoning is off by default. Programs can read these events directly. The launcher
+sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted
 space. A user-auth registration with `policy: { events: "required" }` carries `eventsRequired` in the
 private launch material, so the connector arms even without `COTAL_EVENTS`; `--no-events` is refused.
 A hand-driven user-mode session may carry the same decision as `COTAL_EVENTS_REQUIRED=1`. Its own
@@ -838,7 +936,8 @@ original is untouched.
   passes `--resume <id>` and joins as any launch does.
 - Resume is an **operator surface only**, deliberately not exposed on MCP `cotal_spawn`
   (a mesh peer naming host-local transcripts would widen `spawn` into transcript
-  disclosure). Only the Claude connector supports it today; OpenCode and Hermes fail loud.
+  disclosure). Claude, Hermes, Jcode and pi support it, each by forking; OpenCode and Codex fail
+  loud ([Connectors](connectors.md)).
 - Needs a `claude` new enough for `--resume … --fork-session` (verified on 2.1.197).
 
 ## Sharing your MCP servers

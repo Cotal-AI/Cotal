@@ -16,7 +16,8 @@
  * On Linux, a space started as a controller
  * stack is written as its stack journal and instance records, with nothing launched. A stack journal
  * whose members this home has no record of, with a live manager, stands for a stack running under
- * another Cotal home: create, down and status there name that home. A folder path with a control
+ * another Cotal home: create, down and status there name that home, and so do ps and who with
+ * another space selected. A folder path with a control
  * character or a bidirectional formatting mark is refused by create and up before anything is written. A stopped stack whose broker
  * bind does not serve its recorded address refuses up and is started again with the --host it names.
  * A space name over 64 characters is refused by create, `up --space`, `space add` and `meshes add`
@@ -559,6 +560,18 @@ if (process.platform === "linux") {
     const stop = await json(args, awayRoot);
     check(`${args.join(" ")} there refuses TARGET_UNAVAILABLE with the COTAL_HOME step, and stops nothing`, otherHome(stop) && unchanged(), shown(stop));
   }
+  // Another space selected does not release the folder to it: this stack runs, under another home,
+  // so it is not a stopped space of this folder that its `cotal up` restarts.
+  {
+    const selected = getCurrent();
+    recordMesh({ space: "awaysel", server: DEAD, root: home, mode: "open", origin: "manual", ts });
+    setCurrent("awaysel");
+    const read = await json(["ps"], awayRoot), text = await run(["who"], {}, awayRoot);
+    if (selected === undefined) clearCurrent(); else setCurrent(selected);
+    removeMesh("awaysel");
+    check("ps and who there with another space selected still refuse with the COTAL_HOME step, naming no stopped space of this folder",
+      otherHome(read) && text.status === 2 && /another Cotal home/.test(text.stderr) && !/this folder holds|restart it with cotal up/.test(text.stdout + text.stderr) && unchanged(), { ps: shown(read), who: shown(text) });
+  }
   // A space this home prepared at the root does not hide the other home.
   recordPreparedSpace({ space: "away", root: awayRoot, ts });
   const status = await json(["status"], awayRoot);
@@ -959,7 +972,7 @@ if (process.platform === "linux") {
     [named, inRoot, endpoints].every((r) => refused(r, 2, "TARGET_UNAVAILABLE") && JSON.stringify(r.env?.target) === JSON.stringify({ space: "demo", root: fresh })), [named, inRoot, endpoints].map((r) => r.env?.target ?? shown(r)));
   const selected = await json(["use", "demo"]);
   check("use selects it and names its root", selected.status === 0 && getCurrent() === "demo" && selected.env?.result.preparedRoot === fresh && selected.env.result.currentRecorded === false, shown(selected));
-  // The default report says it under Brokers; the recorded-meshes diagnostics say it again under --verbose.
+  // The default report says it under Spaces; the recorded-meshes diagnostics say it again under --verbose.
   const status = await run(["status", "--plain"]);
   check("status says the selected space is prepared, not started", status.status === 0 && /Selected space 'demo' is prepared, not started/.test(status.stdout), shown(status));
   const verbose = await run(["status", "--plain", "--verbose"]);

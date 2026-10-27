@@ -23,8 +23,9 @@ jcode version --json
 cotal spawn --agent jcode
 ```
 
-If an older Cotal installation is missing the connector, run `cotal ext seed --repair` (or
-`cotal ext add @cotal-ai/connector-jcode`). This connector intentionally uses the released
+If an older Cotal installation is missing the connector, run `cotal ext seed` (or
+`cotal ext add @cotal-ai/connector-jcode`); use `cotal ext seed --repair` when an earlier seed
+failed or was interrupted. This connector intentionally uses the released
 binary's `api-bridge` command; it does not require a Rust checkout.
 
 ## Spawn it
@@ -163,7 +164,8 @@ code remains transient by default and retries inside the same bounded window; ne
 must be added to the explicit classifier and its exact-count regression.
 
 Jcode currently supports **stdio** MCP servers. The connector writes only its own `cotal` entry to
-the private `JCODE_HOME/mcp.json`; it starts a stdio MCP bridge for that entry and relays its calls
+the private `JCODE_HOME/mcp.json`. Jcode starts this package's stdio MCP bridge for that entry, and
+the bridge relays its calls
 to the host's one `MeshAgent`. The Jcode/MCP child receives a per-launch relay capability, but not
 the Cotal broker credential or its launch-material pointer. Jcode also overlays project
 `.jcode/mcp.json`, `.mcp.json`, and `.claude/mcp.json`; a managed launch **refuses** a workspace

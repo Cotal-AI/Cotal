@@ -550,7 +550,7 @@ async function previewBoot(file: string, values: TeamValues): Promise<void> {
   if (local && local.origin !== "up") throw new CommandFailure("refused", "CONFLICT", "a remote, discovered or hand-registered space cannot become an owned local boot target", { target: { space } });
   if (local && waiting && canonicalRoot(local.root) !== canonicalRoot(waiting.root)) throw new CommandFailure("refused", "CONFLICT", "prepared and registered records disagree on this space's root; no boot target was chosen", { target: { space } });
   const root = waiting?.root ?? local?.root ?? process.cwd();
-  let localState: { controlDir: "real" | "absent"; recordedSpaces: string[]; maintenance: string; possibleProcesses: string[]; managerRecord: { state: string; pid: number | null; path: string } | null };
+  let localState: { controlDir: "real" | "absent"; recordedSpaces: string[]; maintenance: string; possibleProcesses: string[]; managerRecord: { state: string; pid: number | null; path?: string } | null };
   let serviceCensus: ReturnType<typeof readLocalServiceCensus>;
   let additiveRecords: ReturnType<typeof listLedgerFiles>, additiveAttempts: ReturnType<typeof listAdditiveTeamAttempts>;
   let bootAttempts: ReturnType<typeof listFreshTeamAttempts>;
@@ -562,7 +562,7 @@ async function previewBoot(file: string, values: TeamValues): Promise<void> {
     localState = { controlDir, recordedSpaces: controlDir === "real" ? localMeshesForRoot(root).map((entry) => entry.space) : [],
       maintenance: controlDir === "real" ? readMaintenanceJournal(root)?.state ?? "none-recorded" : "not-checked",
       possibleProcesses: controlDir === "real" ? liveMeshProcesses(root, space) : [],
-      managerRecord: manager ? { state: manager.state, pid: manager.pid ?? null, path: manager.path } : null };
+      managerRecord: manager ? manager.state === "absent" ? { state: manager.state, pid: null } : { state: manager.state, pid: manager.pid ?? null, path: manager.path } : null };
     serviceCensus = readLocalServiceCensus(space);
     additiveRecords = controlDir === "real" ? listLedgerFiles(root, { requireReadable: true }) : { valid: [], refused: [] };
     additiveAttempts = controlDir === "real" ? listAdditiveTeamAttempts(root) : { valid: [], steps: [], agentSteps: [], returned: [], refused: [] };

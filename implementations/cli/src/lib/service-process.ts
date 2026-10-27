@@ -7,7 +7,7 @@ import { refuseRecordedSupervisor } from "./service-supervision.js";
 import { serviceInstallIntents } from "./service-install-intent.js";
 import { serviceUninstallIntents } from "./service-uninstall-intent.js";
 import { serviceUnitActionStore } from "./service-unit-action.js";
-import { selfArgv } from "./self-exec.js";
+import { daemonArgv } from "./self-exec.js";
 import { loadServiceAdapter, resolveServiceAdapter, sameServiceAdapterPin, type LoadedServiceAdapter, type ResolvedServiceAdapter } from "./service-adapters.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { instanceProjection, observeServiceProcess, processServiceHost, requireProcessIdentity, serviceInstances, serviceInstanceStore, type ServiceCustody, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
@@ -255,7 +255,8 @@ function executable(definition: ServiceDefinitionInput): string {
 function environment(definition: ServiceDefinitionInput): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   // LOCALAPPDATA locates Cotal's own folder on Windows when COTAL_HOME is unset, as HOME does elsewhere.
-  for (const key of ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM", "COLORTERM", "NO_COLOR", "FORCE_COLOR", "COTAL_HOME", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"]) if (process.env[key] !== undefined) env[key] = process.env[key];
+  // The usage telemetry variables and CI reach the service as they reach a seat (docs/telemetry.md).
+  for (const key of ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM", "COLORTERM", "NO_COLOR", "FORCE_COLOR", "COTAL_HOME", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "DO_NOT_TRACK", "CI", "COTAL_TELEMETRY", "COTAL_TELEMETRY_DISABLED", "COTAL_TELEMETRY_URL"]) if (process.env[key] !== undefined) env[key] = process.env[key];
   // Variable names are not secrets, so a missing one is named with the child variable it feeds.
   const missing = Object.entries(definition.envRefs ?? {}).filter(([, source]) => process.env[source] === undefined);
   if (missing.length) {
@@ -468,7 +469,7 @@ export function prepareProcessService(definition: ServiceDefinitionSnapshot) {
   const adapter = launch.type === "adapter" ? resolveServiceAdapter(launch.adapter, launch.options) : undefined;
   let cliInvocation: string[] | undefined;
   if (adapter?.declaration.requiresCli) {
-    try { cliInvocation = selfArgv(); }
+    try { cliInvocation = daemonArgv(); }
     catch { throw new CommandFailure("refused", "UNSUPPORTED", "this native adapter requires the verified cotal binary entry; an arbitrary library entry was not re-executed"); }
   }
   return { program, adapter, cliInvocation, env: environment(definition.record.value), launcher: requireProcessIdentity(process.pid) };
@@ -1088,11 +1089,16 @@ function lastLoggedLine(path: string, from: number): string | undefined {
   } catch { return undefined; } finally { closeSync(fd); }
 }
 
-/** One bounded raw log slice. File identity and byte offsets are local file facts, not global sequences.
- *  A log this account cannot read is refused as `readOwnedLogTail` refuses it. */
+/** {@link ownedLogSlice} of a service instance's log, or undefined when no instance store exists. */
 export function serviceLogSlice(space: string, id: string, position: { offset: number; dev: number; ino: number } | undefined, tail: number) {
   const path = serviceLogPath(space, id);
-  if (!path) return undefined;
+  return path ? ownedLogSlice(path, position, tail) : undefined;
+}
+
+/** One bounded raw slice of an owned private log file. File identity and byte offsets are local file
+ *  facts, not global sequences. A log this account cannot read is refused as `readOwnedLogTail`
+ *  refuses it. */
+export function ownedLogSlice(path: string, position: { offset: number; dev: number; ino: number } | undefined, tail: number) {
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) {

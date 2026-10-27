@@ -6,6 +6,7 @@ import {
   findMesh,
   findPreparedSpace,
   folderSpace,
+  folderSpaceHeld,
   folderSpaceOverSelection,
   getCurrent,
   isMeshRegistryError,
@@ -13,6 +14,7 @@ import {
   loadMeshes,
   loadPreparedSpaces,
   noteFolderSpace,
+  noteFolderSpaceShown,
   plainFlag,
   preparedLifecycle,
   presentationOf,
@@ -155,7 +157,7 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     const offline = new Set(sweep.offline);
     const items = loadMeshes().map((m) => row(m, current, m.origin === "catalog" ? "not-checked" : offline.has(m.space) ? "unreachable" : "reachable"));
     const prepared = loadPreparedSpaces().map((p) => preparedRow(p, current));
-    const folder = folderSpaceOverSelection(process.cwd(), current) ?? null;
+    const folder = folderSpaceOverSelection(process.cwd(), current, sweep.offline) ?? null;
     const result: SpacesResult = { kind: "spaces", current, currentRecorded: current === null || items.some((s) => s.current), folder, items, prepared };
     writeResult(presentation, { command: "space", target: null, result, warnings: selectionWarnings(result) }, spacesView);
     return;
@@ -163,10 +165,16 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
   if (sub === "show") {
     if (rest.length > 1) throw usage("usage: cotal space show [<name>]");
     const current = getCurrent() ?? null;
-    // Without a name it shows the space a command without --space targets here.
-    // With no name it shows what a command without `--space` targets: this folder's space, selected or not.
-    const folder = rest[0] === undefined ? folderSpace(process.cwd()) : undefined;
-    if (folder !== undefined && current !== null && folder !== current) noteFolderSpace(folder, current);
+    // With no name it is about this folder: the space it has registered, or the one it holds
+    // prepared or stopped, which `show` names even though every other command here targets the
+    // selection. Then the selection.
+    const registered = rest[0] === undefined ? folderSpace(process.cwd()) : undefined;
+    // A folder whose only trace of its space is its own stack journal records no space to show, so
+    // `show` falls through to the selection there; the journal's own refusals name that space.
+    const held = rest[0] === undefined && registered === undefined ? folderSpaceHeld(process.cwd()) : undefined;
+    const recorded = held !== undefined && (findMesh(held.space) ?? findPreparedSpace(held.space)) !== undefined ? held : undefined;
+    const folder = registered ?? recorded?.space;
+    if (current !== null && recorded !== undefined && recorded.space !== current) noteFolderSpaceShown(recorded.space, recorded.state, current);
     const name = rest[0] ?? folder ?? current;
     if (name === null)
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no space is selected", { remedy: "name one with `cotal space show <name>`, or select one with `cotal use <name>`" });
@@ -180,6 +188,12 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
       return;
     }
     const check: Check = m.origin === "catalog" ? "not-checked" : (await brokerAnswers(m.server)) ? "reachable" : "unreachable";
+    // The space this folder registered is the target of the commands run here only while it runs,
+    // which its broker answering shows.
+    if (current !== null && registered !== undefined && registered !== current) {
+      if (check === "unreachable") noteFolderSpaceShown(registered, "stopped", current);
+      else noteFolderSpace(registered, current);
+    }
     writeResult(presentation, { command: "space", target: { space: m.space }, result: detail(m, current, check) }, spaceView);
     return;
   }

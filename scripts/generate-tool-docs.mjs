@@ -53,7 +53,7 @@ const ANNOTATIONS = {
     effect: "clears only the messages it returns (nothing at all when peek is true)",
     availability: "always",
     notes:
-      "One call carries at most a receivable window; what does not fit stays buffered, is named in the reply, and comes back on the next call. A message larger than the window comes back in parts, one per call, and is cleared with its last part. A message with an empty id is tracked as itself, so it is held, named and read in parts like any other. OpenCode, Codex, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is what this call returns and clears. In focus mode, normal channel recall is also shown read-only (replay-gated) and is never cleared by the read; an oversized recall message comes back in parts the same way, and later recall waits behind it until its last part goes out.",
+      "One call carries at most a receivable window; what does not fit stays buffered, is named in the reply, and comes back on the next call. A message larger than the window comes back in parts, one per call, and is cleared with its last part. A message with an empty id is tracked as itself, so it is held, named and read in parts like any other. OpenCode, Codex, Hermes, and Pi expose no arguments, and Jcode exposes only `peek`: automatic traffic remains connector-owned, while buffered quiet ambient is what this call returns and clears. In focus mode, normal channel recall is also shown read-only (replay-gated) and is never cleared by the read; an oversized recall message comes back in parts the same way, and later recall waits behind it until its last part goes out.",
   },
   cotal_send: {
     effect: "publishes to a channel",
@@ -210,7 +210,7 @@ lines.push(
 );
 lines.push("");
 lines.push(
-  "The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` and rendered onto each host's native tool API (an MCP server for [Claude Code](connect-claude.md) and [Codex](connect-codex.md), native plugin tools for [OpenCode](connect-opencode.md), [Hermes](connect-hermes.md), and [pi](connect-pi.md)), so the surface cannot drift across connectors. Argument defaults shown below are rendered for an agent subscribed to `general`; an agent reads only the channels its persona lists, so one that lists none has no default channel at all and `cotal_send` requires an explicit `channel`. Channel-scoped calls are bounded by your ACLs ([channels & permissions](channels-and-permissions.md)).",
+  "The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` and rendered onto each host's native tool API (an MCP server for [Claude Code](connect-claude.md), [Codex](connect-codex.md) and [Jcode](connect-jcode.md), native plugin tools for [OpenCode](connect-opencode.md), [Hermes](connect-hermes.md), and [pi](connect-pi.md)), so the surface cannot drift across connectors. Argument defaults shown below are rendered for an agent subscribed to `general`; an agent reads only the channels its persona lists, so one that lists none has no default channel at all and `cotal_send` requires an explicit `channel`. Channel-scoped calls are bounded by your ACLs ([channels & permissions](channels-and-permissions.md)).",
 );
 lines.push("");
 lines.push(
@@ -241,7 +241,7 @@ for (const s of specs) {
   lines.push("");
   if (s.name === "cotal_inbox") {
     lines.push(
-      "**Connector variants:** Claude Code exposes the `peek` argument and otherwise reads the whole local inbox, one receivable window per call. OpenCode, Codex, Hermes, and Pi expose no arguments: the call pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only. On every variant the call clears only what that response actually carried.",
+      "**Connector variants:** Claude Code exposes the `peek` argument and otherwise reads the whole local inbox, one receivable window per call. OpenCode, Codex, Hermes, and Pi expose no arguments: the call pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only. Jcode also pulls only buffered quiet ambient but keeps the `peek` argument. On every variant the call clears only what that response actually carried.",
     );
     lines.push("");
   }

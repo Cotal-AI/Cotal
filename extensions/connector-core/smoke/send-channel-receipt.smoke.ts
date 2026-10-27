@@ -129,8 +129,8 @@ const proto = MeshAgent.prototype as unknown as {
   );
 }
 
-// ── #1229: send/dm consult the roster's TRUST state, not just the roster. A real MeshAgent over
-//    a stub endpoint, so the guard runs through the shipped send()/dm() paths. ──
+// ── #1229: send/dm consult whether the roster READ succeeded, not just the roster. A real
+//    MeshAgent over a stub endpoint, so the guard runs through the shipped send()/dm() paths. ──
 {
   const cfg1229 = {
     space: "demo",
@@ -146,6 +146,9 @@ const proto = MeshAgent.prototype as unknown as {
     ({ id: "m", ts: 1, space: "demo", from: { id: "a", name: "alice", kind: "agent" }, channel, parts: [] }) as never;
   const OTTO = { card: { id: "OTTOID0000000000000000000000000000000000000", name: "otto", role: "worker" }, status: "idle" };
 
+  /** A presence read that fails the way an old credential does: the broker refuses the Direct Get. */
+  const refused = () => Promise.reject(new Error("presence read refused for alice: this credential may not publish $JS.API.DIRECT.GET.KV_cotal_presence_demo"));
+
   function agentOverEp(ep: Record<string, unknown>): MeshAgentType {
     const a = new MeshAgent({ ...cfg1229 });
     a.on("error", () => {});
@@ -154,21 +157,14 @@ const proto = MeshAgent.prototype as unknown as {
     return a;
   }
 
-  // (d) unpopulated view, empty roster; the snapshot wait populates the roster — the send goes out.
+  // (d) the read returns the peer: the send goes out, after exactly one read.
   {
-    const roster: unknown[] = [];
-    const view: { state: string; fresh: boolean; staleSince?: number } = { state: "unpopulated", fresh: false };
+    let reads = 0;
     const multicast: { text: string; opts: { channel?: string; mentions?: string[] } }[] = [];
     const agent = agentOverEp({
       card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
-      getRoster: () => roster,
-      presenceView: () => view,
-      waitForPresenceSnapshot: async () => {
-        view.state = "current";
-        view.fresh = true;
-        roster.push(OTTO);
-        return "snapshot";
-      },
+      getRoster: () => [OTTO],
+      readPresence: async () => { reads++; return [OTTO]; },
       multicast: async (text: string, opts: { channel?: string; mentions?: string[] }) => {
         multicast.push({ text, opts });
         return mkMsg(opts?.channel);
@@ -178,20 +174,19 @@ const proto = MeshAgent.prototype as unknown as {
     });
     const msg = await agent.send("hi", "ch", ["otto"]);
     check(
-      "1229:d send waits for the presence snapshot and then publishes the mention",
-      multicast.length === 1 && multicast[0]!.opts.mentions?.[0] === "otto" && msg.channel === "ch",
-      multicast,
+      "1229:d send reads the roster once and then publishes the mention",
+      reads === 1 && multicast.length === 1 && multicast[0]!.opts.mentions?.[0] === "otto" && msg.channel === "ch",
+      { reads, multicast },
     );
   }
 
-  // (e) unpopulated view that never populates: the refusal names the view, never "unknown mention".
+  // (e) a failed read and an empty roster: the refusal names the read's error, never "unknown mention".
   {
     const multicast: unknown[] = [];
     const agent = agentOverEp({
       card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
       getRoster: () => [],
-      presenceView: () => ({ state: "unpopulated", fresh: false }),
-      waitForPresenceSnapshot: async () => "timeout",
+      readPresence: refused,
       multicast: async () => {
         multicast.push("called");
         return mkMsg();
@@ -206,21 +201,20 @@ const proto = MeshAgent.prototype as unknown as {
       threw = e instanceof Error ? e.message : String(e);
     }
     check(
-      "1229:e send under an unpopulated view that never populates refuses naming the view condition, not \"unknown mention\"",
-      threw.includes("initial snapshot") && !threw.includes("unknown mention") && threw.includes("otto"),
+      "1229:e send under a failed read refuses naming the read's error and the missing grant, not \"unknown mention\"",
+      threw.includes("presence read failed") && threw.includes("DIRECT.GET.KV_cotal_presence_demo") && !threw.includes("unknown mention") && threw.includes("otto"),
       threw,
     );
     check("1229:e the refused send never reached multicast", multicast.length === 0, multicast);
   }
 
-  // (f) stale view, empty roster: dm refuses naming the stale view, never "no peer", and never sends.
+  // (f) a failed read and an empty roster: dm refuses naming the read's error, never "no peer", and never sends.
   {
     const unicast: unknown[] = [];
     const agent = agentOverEp({
       card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
       getRoster: () => [],
-      presenceView: () => ({ state: "stale", fresh: false, staleSince: 1_700_000_000_000 }),
-      waitForPresenceSnapshot: async () => "timeout",
+      readPresence: refused,
       multicast: async () => mkMsg(),
       unicast: async () => {
         unicast.push("called");
@@ -235,20 +229,19 @@ const proto = MeshAgent.prototype as unknown as {
       threw = e instanceof Error ? e.message : String(e);
     }
     check(
-      "1229:f dm under a stale view refuses naming the stale view, not \"no peer\"",
-      threw.includes("silent since") && !threw.includes("no peer") && threw.includes("otto"),
+      "1229:f dm under a failed read refuses naming the read's error, not \"no peer\"",
+      threw.includes("presence read failed") && !threw.includes("no peer") && threw.includes("otto"),
       threw,
     );
     check("1229:f the refused dm never reached unicast", unicast.length === 0, unicast);
   }
 
-  // (g) control: a current view keeps the existing refusal — the guard added no permissiveness.
+  // (g) control: a read that succeeded keeps the existing refusal — the guard added no permissiveness.
   {
     const agent = agentOverEp({
       card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
       getRoster: () => [],
-      presenceView: () => ({ state: "current", fresh: true }),
-      waitForPresenceSnapshot: async () => "timeout",
+      readPresence: async () => [],
       multicast: async () => mkMsg(),
       unicast: async () => mkMsg("dm"),
       unicastAttributed: async () => ({ msg: mkMsg("dm"), ack: { seq: 7, duplicate: false } }),
@@ -259,18 +252,17 @@ const proto = MeshAgent.prototype as unknown as {
     } catch (e) {
       threw = e instanceof Error ? e.message : String(e);
     }
-    check("1229:g a current view still refuses an unobserved mention with the existing sentence", threw.includes("unknown mention"), threw);
+    check("1229:g a read that succeeded still refuses an unobserved mention with the existing sentence", threw.includes("unknown mention"), threw);
   }
 
-  // (h) stale view with the peer present: presence in a partial/last-known roster is still an
-  //     observation, so the DM goes out rather than being refused over view hygiene.
+  // (h) a failed read with the peer in the last roster: an earlier read's row is still an
+  //     observation, so the DM goes out rather than being refused over the failed read.
   {
     const unicast: { to: string; text: string }[] = [];
     const agent = agentOverEp({
       card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
       getRoster: () => [OTTO],
-      presenceView: () => ({ state: "stale", fresh: false, staleSince: 1_700_000_000_000 }),
-      waitForPresenceSnapshot: async () => "timeout",
+      readPresence: refused,
       multicast: async () => mkMsg(),
       unicast: async (to: string, text: string) => {
         unicast.push({ to, text });
@@ -282,7 +274,7 @@ const proto = MeshAgent.prototype as unknown as {
       },
     });
     const { peer, ack } = await agent.dm("otto", "x");
-    check("1229:h dm to a peer present in a stale-view roster still publishes", unicast.length === 1 && peer?.card.name === "otto", unicast);
+    check("1229:h dm to a peer in the last roster still publishes under a failed read", unicast.length === 1 && peer?.card.name === "otto", unicast);
     check("1229:h dm passes through the attributed ack sequence", ack.seq === 7, ack);
   }
 
@@ -294,8 +286,7 @@ const proto = MeshAgent.prototype as unknown as {
     const agent = agentOverEp({
       card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
       getRoster: () => [peerCard],
-      presenceView: () => ({ state: "current", fresh: true }),
-      waitForPresenceSnapshot: async () => "snapshot",
+      readPresence: async () => [peerCard],
       multicast: async () => mkMsg(),
       unicast: async () => mkMsg("dm"),
       unicastAttributed: async () => ({ msg: mkMsg("dm"), ack: { seq: 7, duplicate: false } }),

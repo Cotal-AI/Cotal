@@ -32,12 +32,14 @@ account, identity, epoch and active-run checks when composing callbacks.
 
 On an authenticated static mesh, the manager starts reconciling durable orphaned static slots,
 then overlaps the remaining sweep with control-service registration. Startup logs each terminal as
-`static reconcile k/N via <broker>: <alias> ...`; `cotal ps` becomes available before a slow sweep
-completes. The no-race boundary is per alias: `spawn` for an alias still reconciling refuses until
-that exact lifecycle terminal attempt returns; unrelated aliases and read-only control remain
-available. A terminal error releases that alias fence so the sweep can continue, but leaves the
-slot wedged until the next manager start re-drives it; `k/N` is sweep progress, not a count of
-successful terminals. An active orphan retires only after delivery-admin has verified its broker
+`static reconcile terminal alias=<alias> phase=<phase> uid=<uid> attempt=<n>/<max>` and the sweep
+total as `static reconcile completed: <n> attempted, <n> succeeded, <n> failed`. `cotal ps` becomes
+available before a slow sweep completes. The no-race boundary is per alias: `spawn` for an alias
+still reconciling refuses until that exact lifecycle terminal attempt returns; unrelated aliases and
+read-only control remain available. A terminal error releases that alias fence so the sweep can
+continue. The same process retries the alias after 1, 5 and 30 seconds; after the fourth failed
+attempt it logs `retry-exhausted` and the slot stays held until the next manager start re-drives
+it. An active orphan retires only after delivery-admin has verified its broker
 principal gone. The broker result is persisted in the lifecycle's per-UID audit record before
 cleanup and alias reuse. The orphan OS process is not reaped by this reconciliation path.
 

@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { closeSync, readFileSync, rmSync } from "node:fs";
 import { relative } from "node:path";
 import { DEFAULT_SERVER, openPrivateAppend, writePrivateRecord } from "@cotal-ai/core";
-import { selfArgv } from "./self-exec.js";
+import { daemonArgv } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
 import {
@@ -153,7 +153,8 @@ export function managerHasDeliveryMarker(pid: number, space: string = folderSpac
 /** Start the control-plane manager detached (pid in `.cotal/manager.<spaceKey>.pid`, output to
  *  `.cotal/manager.<spaceKey>.log`), stopped by `cotal down`. Re-execs this same CLI's hidden
  *  `__daemon-manager`, the same entry as `supervise`, which the composed `cotal` binary registers;
- *  `process.execArgv` carries the tsx loader in dev and is empty in prod. Its
+ *  `process.execArgv` carries the tsx loader in dev and is empty in prod, and the daemon runs under
+ *  the daemon node flags ({@link daemonArgv}). Its
  *  auto runtime resolves to pty when detached, which answers the control plane
  *  (`cotal_spawn`/`despawn`/`purge`/`persona`) with no tmux/cmux needed. */
 export type ManagerStartOpts = {
@@ -184,7 +185,7 @@ export function startManagerDetached(
   // Then clear a provably dead PRE-UPGRADE record before claiming the canonical slot, so an upgraded
   // root does not end up holding both names and failing every later read as ambiguous. It refuses
   // (throws) on a live or unattributable one rather than orphaning the daemon behind it.
-  const [node, ...self] = selfArgv();
+  const [node, ...self] = daemonArgv();
   reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));
   reclaimDeadPreUpgradeRecord(MANAGER_DELIVERY_AWARE_MARKER, ctx(space));
   const logPath = managerLogPath(space);
@@ -249,6 +250,7 @@ export function assertManagerRecordReplaceable(
   space: string = folderSpace(),
 ): void {
   const record = managerRecordState(probe, readCommand, space);
+  if (record.state === "absent") return;
   const state = record.state;
   // The record this is about, named in full: on a root that hosts two spaces "the manager pidfile"
   // is not a location an operator can act on, and on an un-upgraded one it is not even this name.

@@ -81,6 +81,7 @@ function cmuxLayout(label: string, tab: Tab): string {
  */
 export class CmuxRuntime implements Runtime {
   readonly kind = "cmux";
+  readonly streamsTerminal = false;
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     // `name` becomes a temp-script key and a `cotal-<name>` tab id — keep it a bare token

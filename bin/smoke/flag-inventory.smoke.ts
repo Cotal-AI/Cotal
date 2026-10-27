@@ -68,7 +68,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   up: {
     flags: [
       "channels:string", "detach:boolean:d", "dry-run:boolean", "file:string:f", "host:string",
-      "idp:string", "manager-name:string", "max-sessions:string", "open:boolean", "runtime:string", "server:string", "space:string",
+      "idp:string", "manager-name:string", "max-sessions:string", "open:boolean", "runtime:string", "seat-cap:string", "server:string", "space:string",
       // `up` starts in the background by default; `--foreground` keeps the stack in this terminal
       // and `--root` names the prepared project.
       "foreground:boolean", "root:string", "json:boolean:j", "plain:boolean",
@@ -121,7 +121,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   use: { flags: ["clear:boolean", "json:boolean:j", "plain:boolean"], positionals: true },
   // Bare status is the infrastructure inventory; `status <agent> [--on]` inspects one incarnation.
   // `--components` (2026-08) is the historical health pass the bare service inventory replaces.
-  status: { flags: ["all:boolean", "components:boolean", "creds:string", "json:boolean:j", "on:string", "plain:boolean", "server:string", "space:string:s", "verbose:boolean:v"], positionals: true },
+  status: { flags: ["all:boolean", "components:boolean", "creds:string", "json:boolean:j", "on:string", "plain:boolean", "server:string", "space:string:s", "verbose:boolean:v", "wide:boolean"], positionals: true },
   doctor: { flags: ["fix:boolean", "json:boolean:j", "plain:boolean", "space:string"], positionals: true },
   // `who` and `whoami` (2026-10): the roster and the CLI's own identity, on the structured output contract.
   who: { flags: [...TARGET, "all:boolean", "waiting:boolean", "json:boolean:j", "plain:boolean"], positionals: false },
@@ -209,10 +209,11 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Held DMs of one agent, or one exact retired durable with `--durable`.
   pending: { flags: ["creds:string", "durable:string", "json:boolean:j", "limit:string", "plain:boolean", "server:string", "space:string"], positionals: true },
   // `service` (2026-10): one registry for built-in presets and user definitions; the action and the
-  // name are positional. A preset's own options are declared by its adapter, not here.
+  // name are positional. A preset's own options are declared by its adapter, not here. `--exec` and
+  // `--cwd` save a person's own program in one line (2026-10-26).
   service: {
     flags: [
-      "dry-run:boolean", "file:string:f", "follow:boolean", "foreground:boolean", "instance:string",
+      "cwd:string:C", "dry-run:boolean", "exec:string", "file:string:f", "follow:boolean", "foreground:boolean", "instance:string",
       "json:boolean:j", "new-instance:boolean", "plain:boolean", "preset:string", "space:string:s",
       "tail:string", "with-agents:boolean", "yes:boolean:y",
     ],
@@ -285,7 +286,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   // Anonymous usage telemetry: the bare form reports the level, a level word writes it.
   telemetry: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
-  // Guarded maintenance over the hidden `reconcile-gate` and `seats` command objects below.
+  // The manager's lifecycle verbs and guarded maintenance over the hidden `reconcile-gate` and `seats`
+  // command objects below. The CLI runs `manager <verb>` as `service <verb> manager`, with the service
+  // flags and the manager preset's options, so the group itself declares only maintenance flags.
   manager: { flags: ["drain:boolean", "dry-run:boolean", "endpoint:string", "instance:string", "json:boolean:j", "plain:boolean", "server:string", "space:string:s", "yes:boolean:y"], positionals: true },
 
   // ---- Hidden entries the design keeps --------------------------------------------------------
@@ -293,11 +296,11 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // scripts, containers) and warn on each run. `up` launches the twins, which share each entry's
   // declaration without the warning.
   supervise: {
-    flags: ["console-host:string", "console-port:string", "execution:string", "launch:string", "max-sessions:string", "name:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
+    flags: ["console-host:string", "console-port:string", "execution:string", "launch:string", "max-sessions:string", "name:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string", "resume-commit-token:string", "roster:string", "runtime:string", "seat-cap:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
     positionals: false,
   },
   "__daemon-manager": {
-    flags: ["console-host:string", "console-port:string", "execution:string", "launch:string", "max-sessions:string", "name:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
+    flags: ["console-host:string", "console-port:string", "execution:string", "launch:string", "max-sessions:string", "name:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string", "resume-commit-token:string", "roster:string", "runtime:string", "seat-cap:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
     positionals: false,
   },
   deliver: {
@@ -333,6 +336,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "port:string", "server:string", "service-endpoints:boolean", "space:string",
       // `--auth-timeout` (2026-10): the broker's auth callout timeout in seconds, from `up`.
       "auth-timeout:string",
+      // `--spaces` (2026-10, #4819): several spaces served from one callout process.
+      "spaces:string",
     ],
     positionals: false,
   },
@@ -340,7 +345,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: [
       "advertised-server:string", "agent-provisioning-url:string", "callout-only:boolean",
       "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
-      "port:string", "server:string", "service-endpoints:boolean", "space:string", "auth-timeout:string",
+      "port:string", "server:string", "service-endpoints:boolean", "space:string", "auth-timeout:string", "spaces:string",
     ],
     positionals: false,
   },
@@ -401,7 +406,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: [
       "console-host:string", "console-port:string", "launch:string", "launch-request:string", "launch-sha256:string",
       "max-sessions:string", "name:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string",
-      "root:string", "roster:string", "runtime:string", "server:string", "service-instance:string", "space:string",
+      "root:string", "roster:string", "runtime:string", "seat-cap:string", "server:string", "service-instance:string", "space:string",
       "state-directory:string", "ws-port:string",
     ],
     positionals: false,

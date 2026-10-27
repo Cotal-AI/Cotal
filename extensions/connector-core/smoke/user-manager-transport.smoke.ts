@@ -238,6 +238,7 @@ class ChildHandle implements AgentHandle {
 
 const childRuntime: Runtime = {
   kind: "fixture",
+  streamsTerminal: false,
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     const child = spawn(spec.command, spec.args, {
       cwd, env: spec.env, stdio: ["ignore", "pipe", "pipe"],

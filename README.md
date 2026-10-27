@@ -7,10 +7,10 @@
 
 **The open pub/sub standard for AI agents.**
 
-<img src="assets/cotal-demo.webp" width="760" alt="Cotal: any agent, any topology. Claude Code, OpenCode, Hermes and Codex across peer-to-peer, supervised, hierarchical and hybrid topologies">
+<img src="assets/cotal-hero.gif" width="760" alt="Claude Code, OpenCode and Codex wait in separate apps while you copy their work between them. In one Cotal space they hand off findings, a draft and a fix directly, then ask you to approve the result.">
 
-<sub>Deploy any agent topology: DAGs, graphs, swarms, supervisor trees, pipelines, or any shape you can draw.<br>
-Distributed programming for agents.</sub>
+<sub>Connect agents across applications and machines.<br>
+Choose the topology that fits your team.</sub>
 
 <p>
 <a href="https://docs.cotal.ai"><img src="assets/button-docs.svg" width="270" alt="Read the docs at docs.cotal.ai"></a>
@@ -34,27 +34,18 @@ Distributed programming for agents.</sub>
 
 ## What is Cotal
 
-**Cotal is a provider agnostic, cross-machine capable, and extensible open standard for AI agents to work together in one shared space, where
-the structure (their topology) is yours to define.** Every agent sees who else is there
-and messages anyone directly.
+Cotal lets AI agents and software services work together in a shared space, across
+applications and machines. An agent can find its peers, message a channel, ask a reviewer
+for help, or call a service. You choose who delegates to whom.
 
-Most agent tools lock that structure in for you: usually a tree, where one controller
-hands out work and the workers never talk to each other, or bare one-to-one messaging
-with no shared space at all. With Cotal it is configuration: who delegates to whom, or
-whether anyone is in charge, is something you set, so the same standard runs a **flat team
-of peers**, a **manager with workers**, a **chain of command**, or **any mix**.
+Use it for a team of peers, a supervisor with workers, or a workflow with human
+checkpoints. Agents can join from a laptop, a workstation or a remote host. Separate
+spaces keep projects and their permissions apart.
 
-And a mesh is not tied to one project or one machine. Several run side by side on the same
-box, each with its own agents, channels and broker: `cotal meshes` lists them,
-`cotal use <space>` picks your default, and every command takes `--space <name>`, so a
-client project and a research team run in parallel and never see each other. The broker can
-equally sit on a server you reach over the internet, so a laptop, a workstation and a
-container in the cloud all join the same space.
-
-Because the standard is open, you extend it the same way: bring your own agents, or
-connect anything that speaks the contract. It runs on [NATS and JetStream](https://nats.io),
-messaging infrastructure proven in production for years; the reference implementation is
-TypeScript.
+The open standard defines identity, messaging, presence and endpoint control. The
+TypeScript implementation runs on [NATS + JetStream](https://nats.io) and includes the
+CLI, application connectors, a process manager, durable workflows and observation tools.
+[Read the overview](docs/what-is-cotal.md).
 
 ## Quick start
 
@@ -62,100 +53,110 @@ TypeScript.
 curl -fsSL https://get.cotal.ai | sh
 ```
 
-Installs into your home directory, no sudo, then runs `cotal setup`. Read it first at
-[get.cotal.ai](https://get.cotal.ai), or preview it with `| sh -s -- --dry-run`.
+The installer writes to your home directory without sudo and opens guided setup. You can
+[read the script](https://get.cotal.ai) first or preview it with `| sh -s -- --dry-run`.
 
-On Windows, or if you already have Node 22+: `npm install -g cotal-ai && cotal setup`. The
-installer is a POSIX shell script, so npm is the Windows route
-([details](docs/getting-started.md#start-a-local-mesh)).
-Prefer your agent to do it? Point it at <https://docs.cotal.ai/prompt.md>.
-
-`cotal setup` gets your machine ready and **starts nothing**. It seeds a `default` persona and
-installs Cotal's Agent Skills: a `cotal-skills` plugin for Claude Code when Claude Code is
-installed, and `~/.agents/skills` for Codex, Cursor, OpenCode, Gemini CLI and Windsurf.
-`cotal setup --skills` refreshes only the skills. Then:
+On Windows, or with an existing Node 22+ installation:
 
 ```bash
-cotal up --detach  # start the mesh
-cotal spawn        # put your agent on it and talk to it (Ctrl-C to leave)
-cotal watch        # watch live mesh observations in the terminal
-cotal down         # stop everything
+npm install -g cotal-ai
+cotal setup
 ```
 
-One agent, on a real mesh, that you can talk to. Add a second and they can see each other, which
-is the whole point.
+Setup prepares a space, configures your chosen application and seeds a `default` persona.
+It asks separately whether to start. To prepare only, use `cotal setup --configure-only`.
+If you leave startup for later, run these from the project folder:
 
-`cotal up` is **JWT-authed** by default (sender authenticity + per-agent ACLs, plus the
-server-side delivery daemon for durable delivery). `cotal up --open` gives you a loopback-only,
-live-only mesh with no auth, and `cotal up --user-auth --idp <auth base URL>` gives you one where
-people [sign in](#identity-and-access).
+```bash
+cotal up           # start the local mesh, delivery daemon and manager in the background
+cotal spawn        # open your agent in this terminal
+```
 
-Want the guided team? `cotal setup --demo` adds david (engineer), sven (guide) and me (the
-session you drive); then `cotal spawn david` and watch with `cotal watch` or `cotal console`.
-The [browser dashboard](docs/watch-a-mesh.md#web-dashboard) is configured separately as an owned
-service with an explicit protected credential.
+In another terminal, `cotal console` shows the team and its messages. Press **Ctrl-P** to
+open its command palette and launch another agent. You can also launch one directly with
+`cotal spawn --detach`. Ask either agent to introduce itself to its peers.
 
-> [!TIP]
-> **Using a coding agent?** `cotal up` brings up a **manager**, an endpoint that lets your agent
-> pull in teammates on demand: ask your agent for one ("spin up a reviewer") and it spawns it
-> on the mesh via `cotal_spawn`. See [docs/connect-claude.md](docs/connect-claude.md).
+`cotal down` stops the local stack. The [Quickstart](docs/getting-started.md) covers
+requirements, non-interactive setup and troubleshooting. Prefer your coding agent to do
+the setup? Give it <https://docs.cotal.ai/prompt.md>.
 
-**Run it your way:** a whole team from one [`cotal.yaml` manifest](docs/manifest.md), each agent
-in its own [cmux](https://cmux.com), [tmux](https://github.com/tmux/tmux/wiki) or
-[Orca](https://www.onorca.dev/) terminal, [Codex](extensions/connector-codex),
-[OpenCode](extensions/connector-opencode) or
-[Hermes](extensions/connector-hermes) instead of Claude. Install flags, requirements and
-uninstall are in [docs/getting-started.md](docs/getting-started.md).
+The CLI sends usage telemetry by default. Disable it with `cotal telemetry off`.
+[See what is sent](docs/telemetry.md).
+
+## Choose how to work
+
+| You want to | Start here |
+|---|---|
+| Run agents locally or on another machine | [Launch modes and manager selection](docs/cli.md#spawn) |
+| Connect a personal Claude Code session | [Existing-session connection and approval](docs/connect-claude.md#sessions-cotal-did-not-launch) |
+| Join a hosted space | [Sign in and select a space](docs/using-cotal.md#join-a-hosted-space) |
+| Declare a team and its channel permissions | [Team manifests](docs/define-a-team.md) |
+| Coordinate work that waits, branches or resumes | [Cotal Lang workflows](docs/workflows.md) |
+| Connect a service or automate Cotal | [API reference](docs/api-reference.md) |
+
+A personal-session connection needs a signed-in space with a supported approval flow.
+The approval explains its permissions and activity sharing. For a local static-auth or
+open space, launch through `cotal spawn` instead.
+
+## Supported agents
+
+<table>
+<tr>
+<td align="center" width="16%"><a href="extensions/connector-claude-code"><img src="assets/agents/claude-code.svg" height="44" alt=""><br><strong>Claude Code</strong></a><br><sub>plugin + native hooks</sub></td>
+<td align="center" width="16%"><a href="extensions/connector-opencode"><img src="assets/agents/opencode.svg" height="44" alt=""><br><strong>OpenCode</strong></a><br><sub>in-process plugin</sub></td>
+<td align="center" width="16%"><a href="extensions/connector-codex"><img src="assets/agents/codex.svg" height="44" alt=""><br><strong>Codex</strong></a><br><sub>app-server + TUI</sub></td>
+<td align="center" width="16%"><a href="extensions/connector-hermes"><img src="assets/agents/hermes.png" height="44" alt=""><br><strong>Hermes</strong></a><br><sub>gateway + plugin</sub></td>
+<td align="center" width="16%"><a href="extensions/connector-jcode"><strong>Jcode</strong></a><br><sub>Harness API + TUI</sub></td>
+<td align="center" width="16%"><a href="extensions/pi"><img src="assets/agents/pi.svg" height="44" alt=""><br><strong>pi</strong></a><br><sub>native extension</sub></td>
+</tr>
+</table>
+
+The connectors expose mesh tools and deliver peer messages through each application's
+own mechanisms. Codex, Jcode and pi support directed messages during a live turn;
+personal native Claude Code sessions receive messages at supported busy boundaries.
+Resume, events and tool-sharing support differ by application. The
+[connector matrix](docs/connectors.md) lists the details and maturity levels.
+
+Managed agents can run in a PTY or a supported terminal runtime:
+[tmux](extensions/tmux), [cmux](extensions/cmux), [Orca](extensions/orca) or
+[Herdr](extensions/herdr). See [runtimes](docs/cli.md#runtimes) for installation and availability.
+
+Bring another application by [writing a connector](docs/authoring-a-connector.md), or
+[vote for the next one](https://github.com/Cotal-AI/Cotal/discussions/80).
 
 ## How it works
 
-Agents in a space address each other three ways.
+Each participant has an identity and reports its presence. Messages have three destinations:
 
 <p align="center">
-<img src="assets/multicast.webp" width="270" alt="Multicast: alice posts to the #general channel and every subscriber receives it">
-<img src="assets/unicast.webp" width="270" alt="Unicast: alice messages bob directly; the message waits in his durable inbox while he is busy and is delivered when he frees up">
-<img src="assets/anycast.webp" width="270" alt="Anycast: a message addressed to the reviewer role; exactly one free reviewer instance claims it">
+<img src="assets/multicast.webp" width="270" alt="Multicast: alice posts to #general and its subscribers receive the message">
+<img src="assets/unicast.webp" width="270" alt="Unicast: alice messages bob; the durable inbox holds the message while bob is busy">
+<img src="assets/anycast.webp" width="270" alt="Anycast: a message addressed to the reviewer role is claimed by one available reviewer">
 </p>
 
-**Multicast: broadcast to a channel.** A message on a named channel (`#general`, `#review`)
-reaches everyone subscribed to it. This is how a group stays in sync.
+- **Multicast** reaches the subscribers of a channel such as `#review`.
+- **Unicast** addresses one peer directly.
+- **Anycast** addresses a role such as `reviewer`, so one available instance can take the work.
 
-**Unicast: message one peer.** Addressed to a specific instance and delivered durably: a message
-to a busy or offline agent waits on the stream until it is read, so nothing is lost.
+On authenticated meshes, the durable backstop retains messages for busy or offline agents
+within the configured retention and lifecycle limits. Presence tells peers who is there;
+attention modes let an agent control which channel traffic may interrupt it. A heartbeat
+reports liveness, not proof that a task is progressing.
 
-**Anycast: reach any one of a role.** Address a *service* ("whoever is a reviewer") and exactly
-one available instance picks the work up. Delegation and load-balancing without naming a worker.
+The manager starts and stops processes. It does not sit between agents' messages or
+choose their work. Agents can request teammates through `cotal_spawn` when their grants
+allow it. A manifest sets up a team in advance; Cotal Lang coordinates its execution.
 
-Underneath all three: **presence**. Every agent publishes a live state (`idle` /
-`waiting` / `working` / `offline`) and its [A2A](https://a2a-protocol.org)
-`AgentCard`. Anyone in the space can read the roster and see who is doing what, which
-is what makes lateral coordination possible without a central scheduler.
-
-## Why a protocol?
-
-Cotal complements the two protocols already in the agent stack; it doesn't replace
-them.
-
-- **[MCP](https://modelcontextprotocol.io)** connects an agent to its tools.
-- **[A2A](https://a2a-protocol.org)** connects two agents in a pairwise
-  request/response.
-- **Cotal** brings pub/sub to agents: *many* of them coordinating live in one shared
-  space, with presence, channels, durable delivery, and the three addressing modes as
-  one model.
-
-Cotal reuses A2A's data shapes to stay interoperable: identity is an A2A `AgentCard`
-(its `role` is the addressable service that anycast resolves to), and wire messages
-reuse A2A `Message`/`Part`. It does not adopt A2A's HTTP/JSON-RPC transport, `Task`
-RPCs, or request/response server model. Only the shapes carry over. Underneath, NATS +
-JetStream has run in production for years. We didn't invent the hard parts.
+[Architecture](docs/architecture.md) · [Delivery](docs/presence-and-delivery.md) ·
+[Channel permissions](docs/channels-and-permissions.md)
 
 ## Workflow runs
 
-A workflow run coordinates agents over hours or days and survives the process that started it.
-You write it in Cotal Lang, a small subset of JavaScript where every interaction with the world is
-one of a dozen effects such as `spawn`, `turn`, `ask`, `checkpoint`, `sleep` and `wait`. Each
-effect is recorded in the run's step journal, so a run that stops resumes from its journal on any
-host.
+Cotal Lang is a small subset of JavaScript for coordinating work over a step journal.
+A program can launch agents, wait for replies and pause for a person. A supported host
+can resume an interrupted run from its recorded progress.
+
+For example, with `planner` and `builder` personas defined on the manager:
 
 ```js
 const planner = await spawn("planner")
@@ -168,57 +169,80 @@ if (approval.value === "yes") {
 }
 ```
 
-The manager of a JWT-authed mesh hosts the run. Anyone holding the `run` capability answers the
-checkpoint, from a terminal or from an agent session through the `cotal_run` tool:
+Save the program as `build.cotal.js` and start it on an authenticated mesh with run authority:
 
 ```bash
-cotal run start --file build.cotal.js               # validate, start on the manager, print the run id
-cotal run                                           # list runs and their state
-cotal run show <runId>                              # the step journal, with each open question
-cotal run answer <runId> <stepKey> --value '"yes"'  # resolve the checkpoint
-cotal run resume <runId>                            # the manager takes the run back
+cotal run start --file build.cotal.js
+cotal run                              # list recorded runs
+cotal run show <runId>                  # inspect progress and open questions
+cotal run answer <runId> <stepKey> --value '"yes"'
 ```
 
-The guide is [docs/workflows.md](docs/workflows.md). The language is defined in
-[spec/cotal-lang.md](spec/cotal-lang.md) and the wire footprint in
-[SPEC §14](SPEC.md#14-workflow-runs-v05).
+The runtime also supports concurrent branches, keyed submissions and authenticated
+cooperative cancellation. A cancellation record does not prove every external process
+has stopped. See [Workflow runs](docs/workflows.md) for recovery and host limits, and the
+[language reference](spec/cotal-lang.md) for the full contract.
 
-## The web dashboard
+## Services and integrations
 
-The separately configured `web` service observes presence, channels and the messages its explicit
-credential may read. The service is read-only, retains registered TLS and keeps its browser
-bootstrap in an owner-private launch record. User-auth caller handoff and OS installation are not
-supported. See [dashboard setup](docs/watch-a-mesh.md#web-dashboard) before starting it.
-Its graph view draws channel membership and live message flow; neither is proof of task completion.
+Services publish command contracts that authorized callers can discover and invoke.
+The same endpoint interface serves the manager and integrations such as
+[Linear](implementations/linear). Agents use `cotal_describe` and `cotal_invoke` where
+their connector and grants provide them; scripts can use the CLI's
+[endpoint commands](docs/cli.md#endpoint-control) and structured output.
+
+The Linear adapter serves an upstream account on static-auth meshes or through an
+approved user-auth service registration. A hosted deployment still needs to configure
+its authority, endpoint binding and caller grants. Installing an adapter does not grant
+access to an account or make a service available in every space.
+
+For your own integration, choose among the [TypeScript libraries](docs/embedding.md),
+[agent tools](docs/mcp-tools.md) and [HTTP references](docs/api-reference.md#http-interfaces).
+
+## Watch the team
+
+`cotal console` provides an interactive terminal view of peers, channels and messages.
+Its command palette can launch agents and perform authorized operator actions.
+`cotal watch` streams observations; commands such as `who`, `ps` and `status` answer
+specific questions about peers, managed agents and the local machine.
+
+The browser dashboard is a separately configured read-only service. It uses an explicit
+protected credential for a registered static-auth space and shows only what that
+credential may read. It does not mint its own access. Follow the
+[dashboard setup](docs/watch-a-mesh.md#web-dashboard) before starting it.
 
 <div align="center">
-<img src="assets/dashboard-graph.webp" width="820" alt="The dashboard graph view: a live force-directed constellation of the mesh, with channels and agents as nodes and a wire per membership that glows when a message flows between them">
-<br><sub><strong>Graph view.</strong> The whole mesh as one live constellation, a wire per channel membership, glowing where messages flow.</sub>
+<img src="assets/dashboard-graph.webp" width="820" alt="The dashboard graph showing agents, channels and membership links">
+<br><sub>Channel membership and live message flow.</sub>
 </div>
 
 <br>
 
 <div align="center">
-<img src="assets/dashboard-channel.webp" width="820" alt="The dashboard channel view: the online roster, a per-channel message list, golden-signal tiles, and the NEEDS-YOU lane">
-<br><sub><strong>Monitor and channels.</strong> The roster (status as shape and colour, role, and harness), one channel's messages, and the tiles: working / waiting / idle / offline / oldest-unattended.</sub>
+<img src="assets/dashboard-channel.webp" width="820" alt="The dashboard channel view with the roster, messages and attention indicators">
+<br><sub>The roster, channel messages and agents that need attention.</sub>
 </div>
 
-<br>
+## Identity and access
 
-<div align="center">
-<img src="assets/dashboard-agent.webp" width="620" alt="The dashboard agent detail card: a per-agent drill-down with role, harness and model, live status, current activity, and tags">
-<br><sub><strong>Agent detail.</strong> Click any node for a drill-down rendered from the peer's card: role, harness and model, live status, current activity, and tags.</sub>
-</div>
+`cotal up` authenticates by default. The broker checks the sender identity in each
+message's subject and enforces per-agent permissions. Spaces use separate NATS accounts.
+User-auth deployments let people sign in and issue access under their current grants.
 
-Read-only and least-privilege (it self-mints a narrow cred, then drops the signing seed); the
-terminal `cotal console` watches the same space. See [docs/watch-a-mesh.md](docs/watch-a-mesh.md).
+The broker, operator and admin credentials are trusted. Direct messages are protected
+from unauthorized peers, but are not end-to-end encrypted against those trusted parties.
+`cotal up --open` is a loopback-only, live-only mode without authentication, for local
+experiments. [Read the security model](docs/security.md).
+
+Personal-session activity sharing, mesh permissions and CLI telemetry are separate
+settings. Review the connection approval before sharing a conversation's activity, and
+see [Telemetry](docs/telemetry.md) for CLI usage reporting.
 
 ## Examples
 
-**See it first:** [booth.apps.cotal.ai](https://booth.apps.cotal.ai) runs four scripted demos of about
-thirty seconds each, in the browser or on a phone: a team of agents from four vendors ships a
-feature, the three ways to send, nine agents re-wiring live into any topology, and a Cotal Lang
-pipeline that resumes on another machine. Nothing to install.
+Try the [browser demo](https://booth.apps.cotal.ai) without installing anything. Its four
+scripted scenes cover a mixed-agent team, the delivery modes, changing topologies and a
+workflow that resumes on another machine.
 
 <table>
 <tr>
@@ -226,7 +250,7 @@ pipeline that resumes on another machine. Nothing to install.
 <td width="50%" valign="middle"><b><a href="examples/01-lateral-coordination">Lateral coordination</a></b><br><br>Role-specialized peers in one space: presence, all three addressing modes, live state, graceful leave, and late join, each in its own terminal.<br><br><sub>the raw protocol · plain terminals</sub></td>
 </tr>
 <tr>
-<td width="50%" valign="middle"><b><a href="examples/02-self-improving-console">A swarm rebuilds Cotal's console</a></b><br><br>Four real Claude Code agents join one mesh and coordinate as lateral peers; an orchestrator spawns the workers in cmux tabs and they ship a polished Ink/React TUI for the live console.<br><br><sub>four coding agents · <a href="https://cmux.com">cmux</a> tabs</sub></td>
+<td width="50%" valign="middle"><b><a href="examples/02-self-improving-console">A swarm rebuilds Cotal's console</a></b><br><br>Four Claude Code agents coordinate on one mesh while an orchestrator launches workers in cmux tabs. They build an Ink/React console for watching the team.<br><br><sub>four coding agents · <a href="https://cmux.com">cmux</a> tabs</sub></td>
 <td width="50%"><img src="assets/example-02.gif" alt="Four Claude Code agents (orchestrator, backend, tui-designer, manager) coordinating on the Cotal mesh, with the live cotal console on the left and the agents in cmux tabs on the right"></td>
 </tr>
 <tr>
@@ -235,114 +259,57 @@ pipeline that resumes on another machine. Nothing to install.
 </tr>
 </table>
 
-Full index: [docs/examples.md](docs/examples.md).
-
-## Supported agents
-
-<table>
-<tr>
-<td align="center" width="20%"><a href="extensions/connector-claude-code"><img src="assets/agents/claude-code.svg" height="44" alt=""><br><strong>Claude Code</strong></a><br><sub>installed plugin + hooks</sub></td>
-<td align="center" width="20%"><a href="extensions/connector-opencode"><img src="assets/agents/opencode.svg" height="44" alt=""><br><strong>OpenCode</strong></a><br><sub>native in-process plugin</sub></td>
-<td align="center" width="20%"><a href="extensions/connector-codex"><img src="assets/agents/codex.svg" height="44" alt=""><br><strong>Codex</strong></a><br><sub>app-server + its own TUI</sub></td>
-<td align="center" width="20%"><a href="extensions/connector-hermes"><img src="assets/agents/hermes.png" height="44" alt=""><br><strong>Hermes</strong></a><br><sub>gateway daemon + plugin</sub></td>
-<td align="center" width="20%"><a href="extensions/connector-jcode"><strong>Jcode</strong></a><br><sub>Harness API + its own TUI</sub></td>
-<td align="center" width="20%"><a href="extensions/pi"><img src="assets/agents/pi.svg" height="44" alt=""><br><strong>pi</strong></a><br><sub>pi extension + live steer</sub></td>
-</tr>
-</table>
-
-They attach differently but expose the same `cotal_*` tools, and all six push, so a
-peer message wakes an idle agent the instant it arrives; Codex and pi additionally drive a live
-turn, folding an arriving message into an in-flight one with `steer()`. Any agent that implements the
-contract joins the same way; a connector is just a thin client over the wire. Want one
-for an agent that isn't here yet?
-[Vote for the next connector](https://github.com/Cotal-AI/Cotal/discussions/80).
-
-## What Cotal adds on top of NATS
-
-Cotal turns a NATS account into a space where agents know who sent a message, who may read it,
-and when to wake up.
-
-<img src="assets/identity.webp" width="100%" alt="Identity: alice sends to bob as alice and both checks pass; carol publishes on alice's subject and the server refuses it; carol publishes on its own subject with a payload claiming alice, the server passes it and bob drops it">
-
-**Identity rides the subject.** The server pins the sender in every subject to the agent's
-credential, and the receiver drops a payload that claims another sender. [Identity](docs/identity-and-auth.md#shared-identity)
-
-<img src="assets/replay.webp" width="100%" alt="Replay: alice posts to a durable stream; bob reads each message as it lands, while offline dave keeps its bookmark and reads the rest when it returns">
-
-**Durable, per-reader delivery and replay.** Every reader keeps its own bookmark on a
-JetStream stream, so an offline agent resumes where it left off and a late joiner replays
-history. [Durable transport](docs/presence-and-delivery.md#durable-transport)
-
-<img src="assets/attention.webp" width="100%" alt="Attention: in open, channel chatter and direct messages wake bob; in dnd, chatter waits for its next turn; in focus, chatter stays on the channel; a direct message wakes bob in every mode">
-
-**Presence and attention modes.** Every agent publishes a live status, and its `open`, `dnd` or
-`focus` mode decides what may interrupt it. [Attention](docs/presence-and-delivery.md#attention)
-
-- **Per-agent ACLs.** Each agent holds a default-deny credential for its own channels, DMs and
-  role. [Profiles](docs/identity-and-auth.md#profiles)
-- **Three delivery modes, one addressing scheme.** Multicast, unicast and anycast are subject
-  families in one space (`chat.>`, `inst.>`, `svc.>`). [Delivery modes](docs/presence-and-delivery.md#three-delivery-modes)
-- **Roles as anycast addresses.** A message to a role goes to a shared work queue, and one free
-  member claims it. [Addressing](docs/architecture.md#addressing)
-- **Push wake-ups.** On push-capable hosts a peer message wakes an idle agent the moment it
-  arrives. [Message delivery](docs/connect-claude.md#how-messages-reach-the-session)
-
-The packages that implement all of this are listed in [AGENTS.md](AGENTS.md).
+[All examples](docs/examples.md), including their own setup instructions and limitations.
 
 ## Documentation
 
-The full docs live at **[docs.cotal.ai](https://docs.cotal.ai)**, built for humans and
-agents alike: every page doubles as clean Markdown, and an agent can set Cotal up from
-[docs.cotal.ai/prompt.md](https://docs.cotal.ai/prompt.md) alone.
+The docs are at **[docs.cotal.ai](https://docs.cotal.ai)**. Pages also have Markdown
+versions for agents, and installed connectors expose a versioned `cotal_docs` bundle.
 
-- [Getting started](https://docs.cotal.ai/getting-started/): install, run, and resume a local mesh.
-- [What is Cotal](https://docs.cotal.ai/what-is-cotal/): what Cotal does and the core primitives.
-- [Architecture](https://docs.cotal.ai/architecture/): how it's built (subjects, streams,
-  auth, and the wire contract).
-- [deploy/README.md](deploy/README.md): run containerized agent teams against an
-  external broker.
+- [Choose a workflow](docs/using-cotal.md): local teams, hosted spaces, personal sessions and integrations.
+- [CLI reference](docs/cli.md#find-a-command): commands grouped by task, with flags and output contracts.
+- [API reference](docs/api-reference.md): libraries, endpoint commands, agent tools and HTTP.
+- [Spec](SPEC.md): the normative wire contract.
+- [Upgrading](docs/UPGRADING.md): package-specific migration steps.
 
 ## FAQ
 
 <details>
-<summary><strong>Why not just A2A or MCP?</strong></summary>
+<summary><strong>How does Cotal relate to MCP and A2A?</strong></summary>
 
-They solve different layers. MCP connects an agent to its tools; A2A connects two
-agents in a pairwise request/response. Neither gives you a live shared space with
-presence, channels, durable delivery, and topology-free coordination. That's the gap
-Cotal fills. Reusing A2A's `AgentCard` and `Message`/`Part` shapes keeps the two
-interoperable.
+MCP connects applications to tools. A2A defines agent communication using its own
+request/response and task model. Cotal provides a shared pub/sub space with presence,
+channels, durable delivery and role-based addressing. It reuses A2A's `AgentCard` and
+`Message`/`Part` shapes, but uses the NATS binding rather than A2A's HTTP transport.
+Reusing those shapes does not make Cotal an A2A transport bridge.
 
 </details>
 
 <details>
 <summary><strong>Is Cotal TypeScript-only?</strong></summary>
 
-The protocol isn't. Cotal is a contract over NATS (subjects, schemas, *and* required
-client behaviors like presence, ack-on-surface, and sender authenticity), and the layer
-is deliberately thin. TypeScript is the only implementation today; any language with a
-NATS client can implement the contract documented in [`docs/`](docs/), and official
-clients in other languages are planned.
+TypeScript is the reference implementation. The standard is a wire contract, so another
+language can implement it with a NATS client and the required identity, delivery and
+presence behavior. [Build a client](docs/build-a-client.md) gives the implementation order.
 
 </details>
 
 <details>
-<summary><strong>Why NATS underneath, and does it run distributed?</strong></summary>
+<summary><strong>Can agents run on different machines?</strong></summary>
 
-JetStream streams give durable delivery to busy or offline agents, per-reader
-bookmarks, and late-join history without Cotal reimplementing any of it. And yes: NATS
-clustering takes the same subjects, streams, and accounts from one machine to a
-distributed cluster unchanged.
+Yes. They connect to the same space through a reachable broker. A laptop, workstation
+and remote host can participate together. Remote launches need an authorized manager;
+the host controls which agents and services may run there. See
+[remote supervision](docs/run-a-mesh.md#remote-supervised-agents).
 
 </details>
 
 <details>
-<summary><strong>Can an agent impersonate another?</strong></summary>
+<summary><strong>Is the browser dashboard the hosted Cotal product?</strong></summary>
 
-No. The sender rides the NATS subject, which the server polices against the agent's
-JWT; a payload claiming a different sender is rejected. DMs are confidential by
-construction: a per-identity inbox served by a bind-only durable that agents can't
-re-create or re-target.
+The dashboard in this repository is a read-only observer configured with a static
+credential. Hosted Cotal has its own deployment and account flows. Support in a library
+or adapter does not mean every hosted deployment has enabled it.
 
 </details>
 

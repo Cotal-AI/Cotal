@@ -16,12 +16,28 @@
  * not start it, and status and whoami name the same step. With the space
  * prepared at the old path, up, down, whoami and status there all name moving back, or forgetting and
  * adopting, and up says to move aside first any folders found at the old path.
+ * With another space selected, a folder whose own stack is stopped does not capture the command: a
+ * folder's space is the target there only while it runs, so the selection is, and `status` names what
+ * the folder holds and the `cotal up` that starts it where the folder records a space name, as `--json`
+ * does in its warnings; a refusal with its own Next leaves that `cotal up` out of its heading. A copy and
+ * a moved folder are not released to the selection: their reads still refuse and name the folder the
+ * stack runs from, and bare `cotal` there offers no `cotal up` for it.
  * `space create` in a copy refuses; where the folder its journal names holds no journal, as for a
  * copy from another machine, the refusal and status name `space create --adopt`, which rewrites the
  * journal to name the copy and its store, and prepares the space there. A folder renamed from a path
  * with a control character, where `cotal up` refuses to start, is told only to adopt the journal. A
  * legacy root after its `down` names the address its last start configured, which a bare `cotal up`
- * there starts again. A service instance record cut short is named with its path and the move that
+ * there starts again. A legacy root holding the records of a space this machine registers for
+ * another folder, as a copy, a folder a later `up` took the name over from, or one moved away from
+ * its recorded path, names that folder instead: the reads and `spawn --dry-run` there say to use the
+ * stack from it, or to move back when it is gone, with another space selected too, and a bare `down`
+ * says the folder holds records and no stack of its own. A bare `up` there refuses the same way
+ * rather than take the name over, and names the `--space` that does when that folder is gone. A
+ * registration added by hand never redirects it. In a copy and a moved folder, journal or legacy,
+ * `clean store` and `clean all`, dry runs included, refuse as the reads do and keep the store, before
+ * any liveness check, status does not offer `clean store`, and the reads head their refusal with the
+ * space the folder's records name.
+ * A service instance record cut short is named with its path and the move that
  * sets it aside by `service`, and `down` carries that as its cause; status warns about it in place of `cotal up`.
  *
  * The journal is written by hand in the shape `cotal up` leaves when its broker never started; the
@@ -102,6 +118,50 @@ check("status names no default broker address", noDefault(status), shown(status)
 const components = run(["status", "--components"]);
 check("status --components refuses the target and probes no default broker", /target\s+refused · not-started/.test(components.stdout) && noDefault(components), shown(components));
 
+// ── with a space selected, this folder's stopped stack does not take its place ───────────────────
+// A folder's space captures the commands run there only while it runs. This root's stack is stopped,
+// so every command but the ones about the folder itself targets the selection, and the run says what
+// this folder holds and the `cotal up` that starts it. With nothing selected the refusals above stand.
+{
+  const other = realpathSync(mkdtempSync(join(home, "selected-")));
+  check("rig: another space is registered elsewhere and selected",
+    run(["meshes", "add", "sel07", "--server", "nats://127.0.0.1:24712", "--mode", "open", "--root", other, "--force"], other).status === 0 &&
+      run(["use", "sel07"], other).status === 0);
+  const HELD = `this folder holds the stopped space "la07"; restart it with cotal up`;
+  for (const command of ["whoami", "ps", "who", "endpoints"]) {
+    const r = run([command, "--json"]);
+    check(`${command} there targets the selection, not this folder's stopped space`, r.envelope?.target?.space === "sel07" && !(r.envelope?.error?.message ?? "").includes("24711"), shown(r));
+    check(`${command} --json there carries what this folder holds as a FOLDER_SPACE_NOT_RUNNING warning`,
+      (r.envelope?.warnings ?? []).some((w) => w.code === "FOLDER_SPACE_NOT_RUNNING" && w.message === HELD), shown(r));
+  }
+  // The selection's broker is down, so a read refuses. sel07 was added by hand, so its Next names no
+  // `cotal up` and the heading keeps this folder's. A selection an `up` started names `cotal up` in its
+  // own folder as its Next, so the heading leaves this folder's out. Either way the refusal names one.
+  const once = (r: ReturnType<typeof run>) => r.status === 2 && (r.stderr.match(/cotal up/g) ?? []).length === 1;
+  const manualRefusal = run(["who"]);
+  check("a refusal whose Next names no cotal up keeps this folder's under the heading, so it names one",
+    once(manualRefusal) && manualRefusal.stderr.includes(`Mesh: sel07\n  ${HELD}\n`), shown(manualRefusal));
+  const upRoot = realpathSync(mkdtempSync(join(home, "selected-up-")));
+  const upRecord = join(home, ".cotal", "meshes", `space.${Buffer.from("sel08").toString("hex")}.json`);
+  writeFileSync(upRecord, JSON.stringify({ space: "sel08", server: "nats://127.0.0.1:24712", root: upRoot, mode: "open", origin: "up", ts: new Date().toISOString() }) + "\n", { mode: 0o600 });
+  check("rig: sel08, started by an up, is selected", run(["use", "sel08"], upRoot).status === 0);
+  const upRefusal = run(["who"]);
+  check("rig: sel07 is selected again", run(["use", "sel07"], other).status === 0);
+  rmSync(upRecord);
+  check("a refusal whose Next names cotal up in the selection's folder leaves this folder's out of the heading, so it names one",
+    once(upRefusal) && upRefusal.stderr.includes(`Mesh: sel08\n  this folder holds the stopped space "la07"\n`) && upRefusal.stderr.includes("Next\n  run `cotal up` there to restart"), shown(upRefusal));
+  const selectedStatus = run(["status", "--json"]), selectedText = run(["status"]);
+  check("status there reports the selection, with this folder's stopped space and its up under the heading",
+    selectedStatus.envelope?.target?.space === "sel07" && selectedText.stdout.includes(`Mesh: sel07\n  ${HELD}`), shown(selectedText));
+  check("status names no default broker address there either", noDefault(selectedStatus) && noDefault(selectedText), shown(selectedStatus));
+  // `space show` is about the folder, but this root records no space it can show: `la07` lives only
+  // in its stack journal, which `up`, `down` and the refusals above name. So it shows the selection.
+  const shownSpace = run(["space", "show"]);
+  check("space show there shows the selection, since this folder's space is recorded only in its journal",
+    shownSpace.status === 0 && /^ {2}space: +sel07 \(selected\)$/m.test(shownSpace.stdout) && !/la07/.test(shownSpace.stdout), shown(shownSpace));
+  check("rig: the selection is cleared again", run(["use", "--clear"], other).status === 0);
+}
+
 // A journal cut short or emptied names its path. No space is recorded at this root, so there are no
 // saved definitions, and the way out is to remove it and run `cotal up`.
 {
@@ -137,11 +197,47 @@ spawnSync("cp", ["-a", root, copy]);
 const copied = run(["up", "--json"], copy);
 check("up in a copied folder refuses CONFLICT, exit 2, naming the folder its journal was recorded at",
   copied.status === 2 && copied.envelope?.error?.code === "CONFLICT" && (copied.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was copied from there`) && copied.envelope.error.remedy === `use the stack from ${root}, which holds it; this copy does not`, shown(copied));
+// A copy's store may be the only copy of the stack's history, so clean refuses there as the reads do,
+// naming the original, and removes nothing. The reads head their refusal with the space the journal
+// names, as up and down there do.
+{
+  const store = join(copy, ".cotal", "nats", "jetstream");
+  mkdirSync(store, { recursive: true });
+  const cleans = [run(["clean", "store", "--dry-run"], copy), run(["clean", "store", "--force"], copy), run(["clean", "all", "--force"], copy)];
+  check("clean store and clean all in a copy, dry run included, refuse TARGET_UNAVAILABLE naming the original, and the store stays",
+    cleans.every((r) => refusedWith(r, "TARGET_UNAVAILABLE", `the stack journal in ${copy} was recorded at ${root}, so this folder is a copy or was moved from there; nothing was removed`, `use the stack from ${root}, which holds it; this copy does not`)) && existsSync(store), cleans.map(shown));
+  rmSync(join(copy, ".cotal", "nats"), { recursive: true, force: true });
+  const ps = run(["ps"], copy), psJson = run(["ps", "--json"], copy);
+  check("ps in a copy heads its refusal with the space its journal names, and carries it as target.space",
+    ps.status === 2 && /^Mesh: la07$/m.test(ps.stdout + ps.stderr) && psJson.status === 2 && psJson.envelope?.target?.space === "la07", { text: shown(ps), json: shown(psJson) });
+}
+// Another space selected does not release a copy to it: the journal is the stack's that runs from the
+// original, which `cotal up` here refuses, so reads still name the original rather than a stopped
+// space of this folder and the `cotal up` that would start it.
+{
+  check("rig: sel07 is selected again", run(["use", "sel07"], copy).status === 0);
+  for (const command of ["ps", "whoami"]) {
+    const r = run([command, "--json"], copy);
+    check(`${command} in a copy with another space selected still refuses TARGET_UNAVAILABLE and names the original`,
+      refusedWith(r, "TARGET_UNAVAILABLE", `the stack journal in ${copy} was recorded at ${root}, so this folder is a copy or was moved from there`, `use the stack from ${root}, which holds it; this copy does not`), shown(r));
+  }
+  const entry = run([], copy);
+  check("bare cotal there names no stopped space of this folder and offers no cotal up for it",
+    entry.status === 0 && /^sel07 · /m.test(entry.stdout) && !/this folder holds/.test(entry.stdout) && !/Start this folder's space/.test(entry.stdout), shown(entry));
+  check("rig: the selection is cleared again", run(["use", "--clear"], copy).status === 0);
+}
 renameSync(root, moved);
 // Nothing on this machine records la07 or an instance of its stack, so moving back would not start it.
 const adoptOnly = `adopt it with \`cotal space create la07 --adopt --root ${moved}\`; this machine records neither "la07" nor an instance of its stack, so moving the folder back would not start it`;
 const movedUp = run(["up", "--json"], moved);
 const movedStatus = run(["status", "--json"], moved), movedWho = run(["whoami", "--json"], moved);
+// With another space selected the moved folder still refuses, with the same step.
+run(["use", "sel07"], moved);
+const movedSelected = run(["ps", "--json"], moved);
+run(["use", "--clear"], moved);
+mkdirSync(join(moved, ".cotal", "nats", "jetstream"), { recursive: true });
+const movedClean = run(["clean", "store", "--force"], moved), movedStore = existsSync(join(moved, ".cotal", "nats", "jetstream"));
+rmSync(join(moved, ".cotal", "nats"), { recursive: true, force: true });
 // A broker from an earlier release that kept running after the move created empty store folders there.
 mkdirSync(join(root, ".cotal", "nats", "jetstream"), { recursive: true });
 const recreatedUp = run(["up", "--json"], moved);
@@ -151,6 +247,10 @@ check("up in a moved folder whose space this machine does not record refuses CON
   movedUp.status === 2 && movedUp.envelope?.error?.code === "CONFLICT" && (movedUp.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && movedUp.envelope.error.remedy === adoptOnly, shown(movedUp));
 check("status and whoami there name the same next step",
   (movedStatus.envelope?.result?.hints ?? []).includes(adoptOnly) && movedWho.status === 2 && movedWho.envelope?.error?.remedy === adoptOnly, { status: shown(movedStatus), whoami: shown(movedWho) });
+check("ps there with another space selected refuses TARGET_UNAVAILABLE with the same step, not the selection",
+  refusedWith(movedSelected, "TARGET_UNAVAILABLE", `the stack journal in ${moved} was recorded at ${root}, so this folder is a copy or was moved from there`, adoptOnly), shown(movedSelected));
+check("clean store in that moved folder refuses TARGET_UNAVAILABLE with the same step, and the store stays",
+  refusedWith(movedClean, "TARGET_UNAVAILABLE", `the stack journal in ${moved} was recorded at ${root}, so this folder is a copy or was moved from there; nothing was removed`, adoptOnly) && movedStore, shown(movedClean));
 check("with empty folders at the old path it is still moved, and names the same step",
   recreatedUp.status === 2 && (recreatedUp.envelope?.error?.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && recreatedUp.envelope?.error?.remedy === adoptOnly, shown(recreatedUp));
 // With la07 prepared at the old path, moving back starts it again; adopting it here needs a forget first.
@@ -339,8 +439,34 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
   check(`${command} names the address its last start configured and the bare up`, (r.envelope?.error?.message ?? "").includes("last ran at nats://127.0.0.1:24712") && r.envelope?.error?.remedy === `start it again with \`cotal up\` in ${legacy}`, r.envelope?.error);
   check(`${command} in a stopped legacy root names no default broker address`, noDefault(r), shown(r));
 }
-// Another space selected does not change that: the root's own stopped stack is the target, so a
-// command there never reaches the selection.
+// `watch` refuses that target like every other read. It used to end on one red line with exit 1,
+// with no mesh heading and no next step, because it took the exiting connect helper while `history`,
+// `channel` and `chat` in the same folder threw theirs and got the classified report. Asserted
+// against `history` in the same root, so the two cannot drift apart again.
+{
+  // `history` is the sibling read whose answer this one must equal, so its refusal is the
+  // expectation rather than a copy of the sentence, which the two could drift apart from.
+  const read = run(["history", "--json"], legacy);
+  const expected = read.envelope?.error;
+  const watched = run(["watch"], legacy);
+  check("the sibling read refuses this target under a classified code", read.status === 2 && expected?.code !== undefined && expected.message !== undefined && expected.remedy !== undefined, shown(read));
+  check("watch in a stopped legacy root refuses with that same code, message and next step, exit 2",
+    refusedWith(watched, expected?.code ?? "", expected?.message ?? "", expected?.remedy ?? ""), shown(watched));
+  // Byte-identical to the sibling's own report, so whatever that report carries in a given root —
+  // its mesh heading where a space resolved, its fields, its Next — this one carries too.
+  const readText = run(["history"], legacy);
+  check("watch's report is the one history prints in that root, to the byte",
+    watched.status === readText.status && watched.stderr === readText.stderr && watched.stdout === readText.stdout, { watch: shown(watched), history: shown(readText) });
+  // The stream form carries the same code and next step, in place of the generic observer sentence.
+  const streamed = run(["watch", "--json"], legacy);
+  const records = streamed.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type: string; data: { code?: string; message?: string; remedy?: string } });
+  check("watch --json reports that refusal in its error record, under its own code, ahead of end",
+    streamed.status === 2 && records[0]?.type === "error" && records[0].data.code === expected?.code && records[0].data.message === expected?.message && records[0].data.remedy === expected?.remedy && records[1]?.type === "end", shown(streamed));
+}
+
+// With another space selected the stopped stack does not capture the command: a folder's space is
+// the target there only while it runs, so the selection is, and nothing reaches the legacy address.
+// `status` names what this folder holds and the `cotal up` that starts it.
 {
   const elsewhere = realpathSync(mkdtempSync(join(home, "selected-")));
   const record = join(home, ".cotal", "meshes", `space.${Buffer.from("sel").toString("hex")}.json`);
@@ -349,12 +475,138 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
   writeFileSync(join(home, ".cotal", "current-mesh"), "sel\n", { mode: 0o600 });
   for (const command of ["ps", "who", "send"]) {
     const r = run(command === "send" ? ["send", "-c", "general", "probe", "--json"] : [command, "--json"], legacy);
-    check(`${command} in a stopped legacy root with another space selected refuses as not started, naming its last address`,
-      r.status === 2 && r.envelope?.error?.code === "TARGET_UNAVAILABLE" && (r.envelope.error.message ?? "").includes("last ran at nats://127.0.0.1:24712") && !JSON.stringify(r.envelope).includes("24713"), shown(r));
+    check(`${command} in a stopped legacy root with another space selected targets the selection, not the stopped stack`,
+      r.envelope?.target?.space === "sel" && !(r.envelope?.error?.message ?? "").includes("24712"), shown(r));
   }
+  // This root rendered an OPEN broker configuration, which records no space name, so there is no
+  // space to name under the heading: the folder's own `up` and `down` name its address instead.
+  const legacyStatus = run(["status"], legacy);
+  check("status there reports the selection, and names no space for a folder whose stopped stack records none",
+    /^Mesh: sel$/m.test(legacyStatus.stdout) && !/this folder holds/.test(legacyStatus.stdout) && noDefault(legacyStatus), shown(legacyStatus));
   rmSync(record);
   rmSync(join(home, ".cotal", "current-mesh"));
   rmSync(elsewhere, { recursive: true, force: true });
+}
+// A legacy root holding a space's records while this machine registers that space for ANOTHER
+// folder: a copy of that folder, the folder a later `up` took the name over from, or this folder
+// moved out of its recorded path. The legacy launcher writes no journal, so the registration is the
+// only record that names where the stack runs. Reads named this root's own last address and sent
+// the operator to `cotal up` here, which then refuses the name or takes it over. They now name that
+// folder and the step that reaches it, and a bare `down` says the folder holds records, not a stack.
+{
+  const legacyAuth = realpathSync(mkdtempSync(join(home, "legacy-auth-")));
+  const key = Buffer.from("lg01").toString("hex");
+  mkdirSync(join(legacyAuth, ".cotal", "auth"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(legacyAuth, ".cotal", "auth", "server.conf"), "# Generated by `cotal up` - do not edit by hand.\nhost: 127.0.0.1\nport: 24714\n", { mode: 0o600 });
+  writeFileSync(join(legacyAuth, ".cotal", "auth", `account.${key}.json`), JSON.stringify({ space: "lg01", account: { pub: "P", jwt: "J", signingSeed: "S", signingPub: "SP" } }) + "\n", { mode: 0o600 });
+  const lastRan = `the mesh "lg01" in ${legacyAuth} last ran at nats://127.0.0.1:24714`;
+  const ownUp = `start it again with \`cotal up\` in ${legacyAuth}`;
+  const record = join(home, ".cotal", "meshes", `space.${key}.json`);
+  mkdirSync(join(home, ".cotal", "meshes"), { recursive: true, mode: 0o700 });
+  const registerAt = (at: string, origin: string) =>
+    writeFileSync(record, JSON.stringify({ space: "lg01", server: "nats://127.0.0.1:24715", root: at, mode: "auth", origin, ts: new Date().toISOString() }) + "\n", { mode: 0o600 });
+
+  // Control: with the space registered nowhere, the root is one whose own stack is merely stopped.
+  const alone = run(["ps", "--json"], legacyAuth);
+  check("control: a legacy root no registration names keeps its own address and its own cotal up",
+    refusedWith(alone, "TARGET_UNAVAILABLE", `${lastRan}, and no space is registered for it here`, ownUp), shown(alone));
+
+  // The recorded folder is still there, so the stack runs from it. A copy and a folder whose name a
+  // later `up` took over read the same, because nothing on disk tells the two apart.
+  const holder = realpathSync(mkdtempSync(join(home, "holder-")));
+  registerAt(holder, "up");
+  const useHolder = `use the stack from ${holder}, where "lg01" is registered`;
+  for (const command of ["ps", "who", "whoami", "endpoints"]) {
+    const r = run([command, "--json"], legacyAuth);
+    check(`${command} in a legacy copy names the folder "lg01" is registered for, and the stack there`,
+      refusedWith(r, "TARGET_UNAVAILABLE", `${lastRan}, and "lg01" is registered for ${holder}, not for this folder`, useHolder), shown(r));
+    check(`${command} there still names no default broker address`, noDefault(r), shown(r));
+  }
+  const preview = run(["spawn", "--dry-run", "--json"], legacyAuth);
+  check("spawn --dry-run there carries that sentence and the same next step, not only that no target resolved",
+    preview.status === 2 && (preview.envelope?.error?.message ?? "").includes(`"lg01" is registered for ${holder}, not for this folder`) && preview.envelope?.error?.remedy === useHolder, shown(preview));
+  const stop = run(["down", "--yes", "--json"], legacyAuth);
+  check("a bare down there refuses CONFLICT, says the folder holds records and no stack of its own, and names the same step",
+    refusedWith(stop, "CONFLICT", `this folder holds the records of "lg01", which is registered for ${holder}, not for this folder, so there is no stack here to stop`, useHolder), shown(stop));
+  // A bare up does not take the name over from the folder it is registered for, as down there does not
+  // stop it. Its legacy launcher has no JSON receipt, so --json starts nothing whichever refusal runs.
+  const start = run(["up", "--json"], legacyAuth);
+  check("a bare up there refuses CONFLICT rather than take the name over, and names the same step",
+    refusedWith(start, "CONFLICT", `this folder holds the records of "lg01", which is registered for ${holder}, not for this folder, so up did not start it here`, useHolder), shown(start));
+  // Its store may be the only copy of that space's history, so clean refuses there as the reads do.
+  const store = join(legacyAuth, ".cotal", "nats", "jetstream");
+  mkdirSync(store, { recursive: true });
+  const cleans = [run(["clean", "store", "--dry-run"], legacyAuth), run(["clean", "store", "--force"], legacyAuth), run(["clean", "all", "--force"], legacyAuth)];
+  check("clean store and clean all there, dry run included, refuse TARGET_UNAVAILABLE as the reads do, and the store stays",
+    cleans.every((r) => refusedWith(r, "TARGET_UNAVAILABLE", `${lastRan}, and "lg01" is registered for ${holder}, not for this folder; nothing was removed`, useHolder)) && existsSync(store), cleans.map(shown));
+  // A copy of a running project copies its pidfiles, which name the original's live processes. The
+  // refusal comes before the liveness check, whose `cotal down` refuses here.
+  writeFileSync(join(legacyAuth, ".cotal", "nats.pid"), `${process.pid}\n`, { mode: 0o600 });
+  const runningClean = run(["clean", "store", "--force"], legacyAuth);
+  rmSync(join(legacyAuth, ".cotal", "nats.pid"));
+  check("clean store in a copy whose pidfile names a live process still refuses TARGET_UNAVAILABLE naming the holder, not cotal down",
+    refusedWith(runningClean, "TARGET_UNAVAILABLE", `${lastRan}, and "lg01" is registered for ${holder}, not for this folder; nothing was removed`, useHolder) && existsSync(store), shown(runningClean));
+  const storedStatus = run(["status", "--json"], legacyAuth);
+  check("status there does not offer clean store, which refuses there",
+    storedStatus.envelope !== undefined && !(storedStatus.envelope.result?.hints ?? []).some((hint) => hint.includes("clean store")), shown(storedStatus));
+  const ps = run(["ps"], legacyAuth), psJson = run(["ps", "--json"], legacyAuth);
+  check("ps there heads its refusal with the space the folder's records name, and carries it as target.space",
+    ps.status === 2 && /^Mesh: lg01$/m.test(ps.stdout + ps.stderr) && psJson.envelope?.target?.space === "lg01", { text: shown(ps), json: shown(psJson) });
+  // Another space selected does not release the folder to it: "lg01" is not a stopped space of this
+  // folder that its `cotal up` restarts, so the reads still name the folder it is registered for, and
+  // `space show` does not show it as this folder's.
+  {
+    check("rig: sel07 is selected again", run(["use", "sel07"], legacyAuth).status === 0);
+    const r = run(["ps", "--json"], legacyAuth), text = run(["who"], legacyAuth), shownHere = run(["space", "show"], legacyAuth);
+    check("ps in that folder with another space selected still names the folder \"lg01\" is registered for",
+      refusedWith(r, "TARGET_UNAVAILABLE", `${lastRan}, and "lg01" is registered for ${holder}, not for this folder`, useHolder), shown(r));
+    check("who there names no stopped space of this folder and no cotal up that would restart it",
+      refusedWith(text, "TARGET_UNAVAILABLE", `${lastRan}, and "lg01" is registered for ${holder}, not for this folder`, useHolder) && !/this folder holds|restart it with cotal up/.test(text.stdout + text.stderr), shown(text));
+    check("space show there shows the selection, not \"lg01\" as this folder's stopped space",
+      shownHere.status === 0 && /^ {2}space: +sel07 \(selected\)$/m.test(shownHere.stdout) && !/lg01/.test(shownHere.stdout), shown(shownHere));
+    check("rig: the selection is cleared again", run(["use", "--clear"], legacyAuth).status === 0);
+  }
+
+  // A registration added by hand names a broker this machine does not start, so it never stands for
+  // a stack the operator can reach by changing folder: the root keeps its own `cotal up`.
+  registerAt(holder, "manual");
+  const manual = run(["ps", "--json"], legacyAuth);
+  check("a hand-added registration elsewhere does not redirect the folder",
+    refusedWith(manual, "TARGET_UNAVAILABLE", `${lastRan}, and no space is registered for it here`, ownUp), shown(manual));
+
+  // The recorded folder is gone, so this folder was moved out of it, and only moving back makes
+  // that path exist again for a command to run there.
+  const gone = realpathSync(mkdtempSync(join(home, "gone-")));
+  rmSync(gone, { recursive: true, force: true });
+  registerAt(gone, "up");
+  const moved = run(["ps", "--json"], legacyAuth);
+  check("a legacy root whose recorded folder no longer exists is told to move back there, not to start one here",
+    refusedWith(moved, "TARGET_UNAVAILABLE", `${lastRan}, and "lg01" is registered for ${gone}, not for this folder`, `move this folder back to ${gone}, then run the command again there`), shown(moved));
+  run(["use", "sel07"], legacyAuth);
+  const movedSelected = run(["ps", "--json"], legacyAuth);
+  run(["use", "--clear"], legacyAuth);
+  check("with another space selected it is still told to move back there, not sent to the selection",
+    refusedWith(movedSelected, "TARGET_UNAVAILABLE", `${lastRan}, and "lg01" is registered for ${gone}, not for this folder`, `move this folder back to ${gone}, then run the command again there`), shown(movedSelected));
+  // A moved folder's bare up no longer takes the name over: it names moving back, and the --space that
+  // takes the name over to run the stack from here, since that folder is gone and its broker is silent.
+  const movedStart = run(["up", "--json"], legacyAuth);
+  check("a bare up in a moved legacy folder refuses CONFLICT, naming moving back or the --space takeover",
+    refusedWith(movedStart, "CONFLICT", `this folder holds the records of "lg01", which is registered for ${gone}, not for this folder, so up did not start it here`, `move this folder back to ${gone}, then run the command again there; or, to run it from this folder, take the name over with cotal up --space lg01`), shown(movedStart));
+  const movedCleans = [run(["clean", "store", "--dry-run"], legacyAuth), run(["clean", "store", "--force"], legacyAuth)];
+  const movedStatus = run(["status", "--json"], legacyAuth);
+  check("clean store in a moved legacy folder refuses and keeps the store, and status there does not offer it",
+    movedCleans.every((r) => refusedWith(r, "TARGET_UNAVAILABLE", `${lastRan}, and "lg01" is registered for ${gone}, not for this folder; nothing was removed`, `move this folder back to ${gone}, then run the command again there`)) && existsSync(store) &&
+      movedStatus.envelope !== undefined && !(movedStatus.envelope.result?.hints ?? []).some((hint) => hint.includes("clean store")), { cleans: movedCleans.map(shown), status: shown(movedStatus) });
+  // Control: the store is removable once the folder holds its own space's records again.
+  rmSync(record);
+  const ownClean = run(["clean", "store", "--dry-run"], legacyAuth);
+  check("control: with lg01 registered nowhere, clean store's dry run there would remove the store",
+    ownClean.status === 0 && ownClean.stdout.includes("would remove .cotal/nats"), shown(ownClean));
+  registerAt(gone, "up");
+
+  rmSync(record);
+  rmSync(holder, { recursive: true, force: true });
+  rmSync(legacyAuth, { recursive: true, force: true });
 }
 
 // A service instance record of a prepared space cut short, as an interrupted write leaves it, is named

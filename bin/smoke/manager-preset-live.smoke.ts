@@ -20,7 +20,7 @@
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -204,6 +204,12 @@ try {
     liveInstance = live?.name;
     const liveState = () => live ? serviceInstanceStore(SPACE).read(live.name)?.record.value.state : undefined;
     check("service start runs the saved manager in the background", start.status === 0 && liveState() === "running", out(start));
+    // The controller starts the preset's native child under the daemon node flag: it is among the
+    // node flags before the entry script, which is what the child's own process.execArgv holds.
+    const childPid = live ? serviceInstanceStore(SPACE).read(live.name)?.record.value.process?.pid : undefined;
+    const childArgv = childPid ? readFileSync(`/proc/${childPid}/cmdline`, "utf8").split("\0").filter(Boolean) : [];
+    const childEntry = childArgv.indexOf(BIN);
+    check("the controller runs the manager preset under node --max-semi-space-size=1", childEntry > 0 && childArgv.slice(1, childEntry).includes("--max-semi-space-size=1"), childArgv);
     const stopCommand = `cotal service stop mgr --instance ${live?.name} --space ${SPACE} --yes`;
     const preview = cotal(["down", "--dry-run", "--json"]);
     let checks: { definition?: string; instanceId?: string; action?: string }[] = [], warnings: { code?: string; message?: string }[] = [];

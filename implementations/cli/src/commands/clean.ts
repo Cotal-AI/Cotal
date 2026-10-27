@@ -21,6 +21,7 @@ import {
   localMeshesForRoot,
   presentationOf,
   readMaintenanceJournal,
+  recordsElsewhereError,
   releaseMaintenanceLock,
   renewalRecordPath,
   removeMeshesByRoot,
@@ -28,6 +29,9 @@ import {
   resolveSpace,
   STORE_ENTRY_NAMES,
   SYSTEM_CREDS_FILES,
+  spaceRootTarget,
+  targetErrorSpace,
+  workspaceErrorParts,
   workspaceSecretStore,
   type LocalProcess,
   type LocalProcessContext,
@@ -177,6 +181,16 @@ export async function clean(args: ParsedArgs): Promise<void> {
       releaseMaintenanceLock(lock);
     }
     return;
+  }
+
+  // A copy, a moved folder and one whose name a later `up` took over hold the records of a stack that
+  // runs from another folder, and their store may be its only history. They refuse as every command
+  // that resolves its target there does, naming that folder, before the liveness checks below, whose
+  // `cotal down` refuses there too.
+  const elsewhere = recordsElsewhereError(root);
+  if (elsewhere) {
+    const { message, remedy } = workspaceErrorParts({ kind: "target", error: elsewhere });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}; nothing was removed`, { target: { ...spaceRootTarget({ root, space: targetErrorSpace(elsewhere.details) }), recordedRoot: elsewhere.details.recordedRoot }, ...(remedy ? { remedy } : {}) });
   }
 
   // store | all: the JetStream store delete, plus (for `all`) the space identity. The broker-wide

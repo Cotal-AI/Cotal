@@ -4,7 +4,9 @@
  * the hints last and no roster, only the selected registration checked unless `--all` asks for each,
  * a part it cannot read named on its row and reported partial (exit 4) rather than complete, and the
  * usage refusals, and the nats-server it would run named, with one on PATH below the broker floor
- * refused by `up` before any broker starts. Broker-free: every registration points at a closed port. The live rows are in
+ * refused by `up` before any broker starts. A stopped root whose broker kept a store names
+ * `reset store <space>` under Next where that reset reaches it, and clean where it cannot.
+ * Broker-free: every registration points at a closed port. The live rows are in
  * `smoke:delivery-responder-visibility`, `smoke:component-health`, `smoke:ps-user-mode` and
  * `smoke:up-tls-routes`.
  *
@@ -13,7 +15,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { connect } from "node:net";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { createSuite, freePort } from "@cotal-ai/smoke-kit";
@@ -27,6 +29,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 const { check, finish } = createSuite();
+const VERSION = (JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "..", "bin", "package.json"), "utf8")) as { version: string }).version;
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const roots: string[] = [];
 process.on("exit", () => {
@@ -42,8 +45,9 @@ type Envelope = {
   result: {
     kind: string;
     machine: { nats: string; natsServer: { path: string; version: string | null } | null; natsProblem: string | null };
+    extensions?: { items: { label: string; version: string }[] | null };
     folder: { auth: { state: string }; personas: { root: string; default: string; error: string | null }; processes: { name: string; state: string }[] | null };
-    meshes: { current: string | null; unreadable: { file: string; error: string }[]; items: Mesh[] };
+    meshes: { current: string | null; folder?: string | null; unreadable: { file: string; error: string }[]; items: Mesh[] };
     selected: { resolved: boolean; code?: string; space?: string; server?: string | null; connection?: string };
     maintenance?: { root: string; space: string | null; state: string; attemptId: string | null; next: string | null } | null;
     store?: { state: string; at?: string; cause?: string; path?: string | null };
@@ -59,9 +63,9 @@ function sandbox() {
   const home = mkdtempSync(join(tmpdir(), "cotal-status-report-"));
   roots.push(home);
   mkdirSync(join(home, ".cotal"));
-  const run = (args: string[], extraEnv: Record<string, string> = {}) => {
+  const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) => {
     const r = spawnSync(process.execPath, [BIN, ...args], {
-      cwd: home,
+      cwd,
       env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
       encoding: "utf8",
       timeout: 120_000,
@@ -107,12 +111,12 @@ if (!brokerDisplayOnly) {
   check("--plain writes the same words with no ANSI and ASCII punctuation", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && !/[●○·…→↳—–]/.test(plain.stdout) && words(plain.stdout) === words(asPlain(rich.stdout)), shown(plain));
   check(
     "the sections keep the infrastructure order and end with the hints",
-    JSON.stringify(titles(plain.stdout)) === JSON.stringify(["This machine", "Brokers", "Selected space", "Next"]),
+    JSON.stringify(titles(plain.stdout)) === JSON.stringify(["This machine", "Spaces", "Selected space", "Next"]),
     titles(plain.stdout),
   );
   check(
     "--verbose adds the detail sections before Next",
-    verbose.status === 0 && JSON.stringify(titles(verbose.stdout)) === JSON.stringify(["This machine", "Brokers", "Selected space", "Machine", "Extensions", "This Folder", "Recorded Meshes", "Selected Mesh", "Next"]),
+    verbose.status === 0 && JSON.stringify(titles(verbose.stdout)) === JSON.stringify(["This machine", "Spaces", "Selected space", "Machine", "Extensions", "This Folder", "Recorded Meshes", "Selected Mesh", "Next"]),
     titles(verbose.stdout),
   );
   check("the report names no roster", !/roster/i.test(plain.stdout) && !/roster/i.test(verbose.stdout), plain.stdout);
@@ -214,7 +218,19 @@ if (!brokerDisplayOnly) {
     check(`control: ${label} gets no bare up`, !/(^|\s)cotal up(\s{2}|$)/m.test(next), next);
   check("control: a controller stack is not read from legacy pidfiles", !/(^|\s)cotal up(\s{2}|$)/m.test(legacyNext(["manager"], { controllerStack: true })), legacyNext(["manager"], { controllerStack: true }));
   const plain = run(["status", "--space", "alpha", "--plain"]);
-  check("the report says not checked for the other registration", /beta\s+not checked/.test(plain.stdout), plain.stdout);
+  const NOT_DIALED = "Unselected spaces are not dialed - cotal status --all dials each";
+  check("the other registration carries no connection state, and one note says why, once",
+    /^ {2}beta +open$/m.test(plain.stdout) && !/^ {2}\S+ +not checked/m.test(plain.stdout) &&
+      (plain.stdout.match(/are not dialed/g) ?? []).length === 1 && plain.stdout.includes(NOT_DIALED), plain.stdout);
+  check("the selected space is the first row, marked, with its own dialed state",
+    /^ {2}-> alpha +unreachable[^\n]* +open$/m.test(plain.stdout) &&
+      plain.stdout.indexOf("-> alpha") < plain.stdout.indexOf("beta "), plain.stdout);
+  const wide = run(["status", "--space", "alpha", "--plain", "--wide"]);
+  check("--wide groups the spaces under their broker addresses again and keeps their origin",
+    new RegExp(`^ {2}nats://127.0.0.1:${a}$`, "m").test(wide.stdout) && new RegExp(`^ {2}nats://127.0.0.1:${b}$`, "m").test(wide.stdout) &&
+      /^ {2}-> alpha +unreachable[^\n]* +open - registered endpoint$/m.test(wide.stdout) && !wide.stdout.includes(NOT_DIALED), shown(wide));
+  check("control: the default report has no broker address as a group title",
+    !new RegExp(`^ {2}nats://127.0.0.1:${a}$`, "m").test(plain.stdout), plain.stdout);
   const all = run(["status", "--space", "alpha", "--all", "--json"]);
   check("--all checks every registration", byName(all.envelope).alpha === "unreachable" && byName(all.envelope).beta === "unreachable", byName(all.envelope));
   check("--all is named in the target", all.envelope?.target.scope === "all" && all.envelope.target.space === "alpha", all.envelope?.target);
@@ -223,7 +239,8 @@ if (!brokerDisplayOnly) {
   const other = run(["status", "--space", "alpha", "--server", `nats://127.0.0.1:${await freePort()}`, "--json"]);
   check("a --server that names another address leaves the selected registration not checked", byName(other.envelope).alpha === "not-checked" && other.envelope?.result?.selected.connection === "unreachable", { items: byName(other.envelope), connection: other.envelope?.result?.selected.connection });
   const otherPlain = run(["status", "--space", "alpha", "--server", `nats://127.0.0.1:${await freePort()}`, "--plain"]);
-  check("…and the report says not checked for it", /alpha\s+not checked/.test(otherPlain.stdout), otherPlain.stdout);
+  check("…and its row carries no connection state, under the note that says what was dialed",
+    /^ {2}-> alpha +open$/m.test(otherPlain.stdout) && !/^ {2}\S+ +not checked/m.test(otherPlain.stdout) && otherPlain.stdout.includes("are not dialed"), otherPlain.stdout);
   const same = run(["status", "--space", "alpha", "--server", `nats://127.0.0.1:${a}`, "--json"]);
   check("control: a --server that names the recorded address checks it", byName(same.envelope).alpha === "unreachable", byName(same.envelope));
   // Under `--all` with a `--server` that names another address, the selected row shows its own
@@ -494,6 +511,145 @@ if (process.platform !== "win32") {
   check("and no broker answers at its address", !(await new Promise<boolean>((done) => { const socket = connect(port, "127.0.0.1"); socket.once("connect", () => { socket.destroy(); done(true); }); socket.once("error", () => done(false)); })), port);
 }
 
+// ── This machine shows what is set up and what needs attention ───────────────────────────────────
+{
+  const { home, run } = sandbox();
+  const bin = join(home, "apps");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "aa-bin"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  // `bb-bin` is deliberately absent, so bb is an application this machine has not set up.
+  const connector = (name: string, requires: string[]) => ({
+    pkg: `@rig/${name}`, version: VERSION, spec: `@rig/${name}@${VERSION}`,
+    provides: [{ kind: "connector", name }], commands: [],
+    // No setup provider, so no package is imported for its rows.
+    connectors: [{ name, requires, setup: null }],
+  });
+  const manifest = join(home, ".config", "cotal", "extensions");
+  mkdirSync(manifest, { recursive: true });
+  writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [
+    connector("aa", ["aa-bin"]), connector("bb", ["bb-bin"]),
+    { pkg: "@rig/one", version: VERSION, spec: `@rig/one@${VERSION}`, provides: [{ kind: "runtime", name: "one" }], commands: [] },
+    { pkg: "@rig/two", version: VERSION, spec: `@rig/two@${VERSION}`, provides: [{ kind: "runtime", name: "two" }], commands: [] },
+  ] }));
+  const onPath = { PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
+  const plain = run(["status", "--space", "nosuch", "--plain"], onPath);
+  const machine = plain.stdout.split("\n\n")[0] ?? "";
+  check("the applications line names what is set up and counts the rest behind cotal setup",
+    /^ {2}Agent applications: +aa - 1 more with cotal setup$/m.test(plain.stdout), shown(plain));
+  check("no row is printed per known application",
+    !/^ {2}aa: /m.test(plain.stdout) && !/^ {2}bb: /m.test(plain.stdout) && !/not on PATH/.test(plain.stdout), machine);
+  check("the extensions line is one count at the version they share",
+    new RegExp(`^ {2}Extensions: +4 extensions at ${VERSION.replaceAll(".", "\\.")}$`, "m").test(plain.stdout), machine);
+  check("a healthy broker executable and an absent optional dashboard print no row",
+    !/Broker executable/.test(plain.stdout) && !/Dashboard/.test(plain.stdout), machine);
+  const json = run(["status", "--space", "nosuch", "--json"], onPath);
+  const read = json.envelope?.result?.machine as { connectors?: { name: string; missing: string[] }[] } | undefined;
+  check("--json still carries every known application and its missing requirements",
+    json.status === 0 && (read?.connectors ?? []).map((c) => `${c.name}:${c.missing.join()}`).join(" ") === "aa: bb:bb-bin" &&
+      (json.envelope?.result?.extensions as { items?: unknown[] } | undefined)?.items?.length === 4, read);
+  const wide = run(["status", "--space", "nosuch", "--plain", "--wide"], onPath);
+  check("--wide prints the row per application and every extension label again",
+    /^ {2}aa: +available on PATH$/m.test(wide.stdout) && /^ {2}bb: +bb-bin not on PATH$/m.test(wide.stdout) &&
+      /^ {2}Extensions: +aa v/m.test(wide.stdout) && /Broker executable/.test(wide.stdout) && /Dashboard/.test(wide.stdout), shown(wide));
+  const all = run(["status", "--space", "nosuch", "--plain", "--all"], onPath);
+  check("--all reports the same rows in full", /^ {2}aa: +available on PATH$/m.test(all.stdout) && /Broker executable/.test(all.stdout), shown(all));
+  // A pin an upgrade did not carry is the one thing named, against the version the rest share.
+  writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [
+    connector("aa", ["aa-bin"]),
+    { pkg: "@rig/one", version: VERSION, spec: `@rig/one@${VERSION}`, provides: [{ kind: "runtime", name: "one" }], commands: [] },
+    { pkg: "@rig/old", version: "0.0.1", spec: "@rig/old@0.0.1", provides: [{ kind: "runtime", name: "old" }], commands: [] },
+  ] }));
+  const skewed = run(["status", "--space", "nosuch", "--plain"], onPath);
+  check("an extension at another version is the only one named",
+    new RegExp(`^ {2}Extensions: +3 extensions at ${VERSION.replaceAll(".", "\\.")} - old v0\\.0\\.1$`, "m").test(skewed.stdout), shown(skewed));
+}
+
+// ── a folder's space is the target here only while it runs ───────────────────────────────────────
+// Both arms, in the folder that holds the space: a running registration is the target and says the
+// selection applies outside it; a prepared or stopped one is not, and the report names the selection
+// with what this folder holds under it.
+{
+  const greeter = spawn(process.execPath, ["-e", `const s = require("node:net").createServer((c) => { c.on("error", () => {}); c.end('INFO {"server_id":"folder","version":"2.12.12","proto":1,"max_payload":1048576}\\r\\n'); }); s.listen(0, "127.0.0.1", () => console.log(s.address().port));`], { stdio: ["ignore", "pipe", "inherit"] });
+  try {
+    const [answered] = (await once(greeter.stdout!, "data")) as [Buffer];
+    const live = `nats://127.0.0.1:${answered.toString().trim()}`;
+    const closed = `nats://127.0.0.1:${await freePort()}`;
+    /** A sandbox whose working folder holds `held` and whose selection is another space. */
+    const folderRig = async (hold: (project: string, run: ReturnType<typeof sandbox>["run"]) => void) => {
+      const { home, run } = sandbox();
+      const project = join(home, "project"), elsewhere = join(home, "elsewhere");
+      mkdirSync(join(project, ".cotal"), { recursive: true });
+      mkdirSync(elsewhere);
+      hold(project, run);
+      check("rig: the selection is registered elsewhere", run(["meshes", "add", "sel", "--server", closed, "--mode", "open", "--root", elsewhere, "--force"]).status === 0);
+      check("rig: it is selected", run(["use", "sel"]).status === 0);
+      return { run: (args: string[]) => run(args, {}, project) };
+    };
+
+    const running = await folderRig((project, run) => {
+      check("rig: this folder's space is registered at a broker that answers",
+        run(["meshes", "add", "held", "--server", live, "--mode", "open", "--root", project, "--force"]).status === 0);
+    });
+    const runningText = running.run(["status", "--plain"]);
+    const runningJson = running.run(["status", "--json"]);
+    check("a running folder space is the target, and the heading says the selection applies outside it",
+      runningJson.envelope?.target.space === "held" && runningJson.envelope.result?.meshes.current === "sel" &&
+        /^Mesh: held\n {2}this folder's space; the selected space "sel" applies outside it$/m.test(runningText.stdout), shown(runningText));
+
+    const stopped = await folderRig((project, run) => {
+      check("rig: this folder's space is registered at a broker that does not answer",
+        run(["meshes", "add", "held", "--server", closed, "--mode", "open", "--root", project, "--force"]).status === 0);
+    });
+    const stoppedText = stopped.run(["status", "--plain"]);
+    const stoppedJson = stopped.run(["status", "--json"]);
+    check("a stopped folder space is not the target: the selection is, with what this folder holds under it",
+      stoppedJson.envelope?.target.space === "sel" &&
+        /^Mesh: sel\n {2}this folder holds the stopped space "held"; restart it with cotal up$/m.test(stoppedText.stdout) &&
+        !/this folder's space/.test(stoppedText.stdout), shown(stoppedText));
+
+    const prepared = await folderRig((project, run) => {
+      const created = run(["space", "create", "held", "--root", project]);
+      check("rig: this folder holds a prepared space", created.status === 0, shown(created));
+    });
+    const preparedText = prepared.run(["status", "--plain"]);
+    const preparedJson = prepared.run(["status", "--json"]);
+    check("a prepared folder space is not the target either, and its up is named under the selection",
+      preparedJson.envelope?.target.space === "sel" && preparedJson.envelope.result?.meshes.folder === null &&
+        /^Mesh: sel\n {2}this folder holds the prepared space "held"; start it with cotal up$/m.test(preparedText.stdout), shown(preparedText));
+  } finally {
+    if (greeter.exitCode === null && greeter.signalCode === null) {
+      const exited = once(greeter, "exit");
+      greeter.kill();
+      await exited;
+    }
+  }
+}
+
+// ── a stopped root whose broker kept a store names the reset that reaches it ─────────────────────
+// Next named the legacy `clean store --force` for a stale store. `reset store <space>` replaces it
+// where it selects this root's store; a root whose down removed that registration has no reset
+// target, and its reset refusal names clean, so status keeps naming clean there.
+{
+  const { home, run } = sandbox();
+  const parent = mkdtempSync(join(tmpdir(), "cotal-status-stale-"));
+  roots.push(parent);
+  const [registered, unregistered] = ["stalereg", "staleunreg"].map((name) => join(parent, name));
+  for (const root of [registered, unregistered]) mkdirSync(join(root, ".cotal", "nats"), { recursive: true });
+  const previousHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = join(home, ".cotal-home");
+  try { recordMesh({ space: "stalereg", server: `nats://127.0.0.1:${await freePort()}`, root: registered, mode: "open", origin: "up", ts: new Date().toISOString() }); }
+  finally { if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome; }
+  const staleHints = (root: string) => (run(["status", "--json"], {}, root).envelope?.result?.hints ?? []).filter((hint) => hint.startsWith("if the stored JetStream state is stale:"));
+  const reg = staleHints(registered);
+  check("a registered stopped root names reset store with the space registered there", reg.length === 1 && / reset store stalereg, then `up` with your usual flags$/.test(reg[0]!) && !reg[0]!.includes("clean"), reg);
+  const preview = run(["reset", "store", "stalereg", "--dry-run", "--json"], {}, registered);
+  check("…and that reset reaches the store as printed", preview.status === 0 && preview.envelope?.outcome === "ok", shown(preview));
+  const unreg = staleHints(unregistered);
+  check("a root with no registration a reset selects keeps clean store --force", unreg.length === 1 && / clean store --force, then `up` with your usual flags \(`clean all` also resets identity\)$/.test(unreg[0]!), unreg);
+  const refused = run(["reset", "store", "staleunreg", "--dry-run", "--json"], {}, unregistered);
+  check("…because reset refuses that root TARGET_NOT_FOUND", refused.status === 2 && refused.envelope?.error?.code === "TARGET_NOT_FOUND", shown(refused));
+}
+
 
 }
 
@@ -540,6 +696,31 @@ if (process.platform !== "win32") {
   } finally {
     if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
   }
+}
+
+// ── a folder holding a space this machine registers for another folder ───────────────────────────
+// A copy of a legacy project, the folder a later `up` took the name over from, and one moved away
+// from its recorded path all hold the space's records with no registration of their own. Status read
+// them as a folder whose own stack was merely stopped and offered `cotal up` here, which refuses the
+// name or takes it over. It now names the registered folder and the step that reaches it.
+{
+  const { home, run } = sandbox();
+  const key = Buffer.from("st01").toString("hex");
+  mkdirSync(join(home, ".cotal", "auth"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(home, ".cotal", "auth", "server.conf"), "# Generated by `cotal up` - do not edit by hand.\nhost: 127.0.0.1\nport: 24716\n", { mode: 0o600 });
+  writeFileSync(join(home, ".cotal", "auth", `account.${key}.json`), JSON.stringify({ space: "st01", account: { pub: "P", jwt: "J", signingSeed: "S", signingPub: "SP" } }) + "\n", { mode: 0o600 });
+  const holder = mkdtempSync(join(tmpdir(), "cotal-status-holder-"));
+  roots.push(holder);
+  const previousHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = join(home, ".cotal-home");
+  try { recordMesh({ space: "st01", server: "nats://127.0.0.1:24717", root: holder, mode: "auth", origin: "up", ts: new Date().toISOString() }); }
+  finally { if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome; }
+  const json = run(["status", "--json"]);
+  const selected = json.envelope?.result?.selected;
+  check("status in a folder whose space is registered elsewhere names that folder, not this one's own cotal up",
+    (selected as { message?: string } | undefined)?.message === `the mesh "st01" in ${home} last ran at nats://127.0.0.1:24716, and "st01" is registered for ${holder}, not for this folder`, shown(json));
+  check("its Next is the step that reaches the stack there, and offers no plain cotal up here",
+    (json.envelope?.result?.hints ?? []).includes(`use the stack from ${holder}, where "st01" is registered`) && !(json.envelope?.result?.hints ?? []).some((hint) => hint === `start it again with \`cotal up\` in ${home}`), json.envelope?.result?.hints);
 }
 
 if (brokerDisplayOnly) check("broker display profile reaches all five fixtures", brokerDisplayCases === 5);

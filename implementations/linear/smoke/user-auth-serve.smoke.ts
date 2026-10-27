@@ -18,8 +18,10 @@ import { cotalAuthProvider } from "../../auth/src/provider.js";
 import { startAuthService, type AuthServiceHandle } from "../../auth/src/service.js";
 import { authClientSentinelKey, ensurePinnedIdp, loadOwnerSecret, saveAuthServiceInfo } from "../../auth/src/store.js";
 import { mintServiceCallerPayloadObserverCreds } from "../../auth/src/service-caller-payload-bootstrap.js";
+import { serviceEndpointHostCall } from "../../auth/src/service-host-client.js";
+import { isCommandFailure } from "@cotal-ai/workspace";
 import { SERVICE_CALLER_PAYLOAD_FLOOR } from "../../auth/src/service-caller-payload.js";
-import { LINEAR_COMMANDS } from "../src/contract.js";
+import { LINEAR_CAPABILITY, LINEAR_COMMANDS } from "../src/contract.js";
 import { linearUserAuthRequest, serveLinearUserAuth } from "../src/user-auth-serve.js";
 import type { LinearUpstream } from "../src/upstream.js";
 
@@ -104,16 +106,21 @@ try {
   const bind = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "name-bind", granter: { kind: "operator", auditId: "owned-fixture" },
     input: { endpoint, owner, expectedRevision: 0, claimReference: "owned-fixture-namespace" } });
   assert.equal(bind.state, "bound"); if (bind.state !== "bound") throw new Error("name binding");
-  await assert.rejects(start(), /space owner must approve/);
+  const refused = await start().then(() => undefined, (error: unknown) => error);
+  assert.ok(isCommandFailure(refused) && /space owner must approve/.test(refused.message), String(refused));
   assert.equal(closedUpstreams, 1, "approval refusal closes its upstream");
   assert.ok(proposalId);
   const request = seen.find((r): r is Extract<ServiceAuthorityRequest, { operation: "register" }> => r.operation === "register")!;
-  const proposal = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "proposal-read", granter: { kind: "owner", owner }, input: { proposalId } });
-  assert.equal(proposal.state, "present"); if (proposal.state !== "present") throw new Error("proposal read");
+  assert.deepEqual(refused.target, { space: a.space, endpoint, instanceId: request.instanceId, proposalId }, "the refusal's target carries the live proposal id");
+  // The owner approves by running the remedy's command as printed; its ceiling must cover the Linear commands.
+  const remedy = /cotal service-endpoint approve (\S+) --caller-ceiling (\S+) --space (\S+), then repeat the same serve command/.exec(refused.remedy ?? "");
+  assert.ok(remedy, `the remedy names the approve command: ${refused.remedy}`);
+  assert.deepEqual(remedy.slice(1), [proposalId, LINEAR_CAPABILITY, a.space], "the approve command names this proposal, the Linear capability and this space");
   const capabilities = LINEAR_COMMANDS.map(command => ({ endpoint, command, instanceId: request.instanceId, instanceOnly: true }));
-  const approved = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "decide", granter: { kind: "owner", owner }, input: {
-    proposalId, expectedProposalRevision: proposal.record.revision, expectedNameRevision: bind.binding.revision, decision: "approve", callerCeiling: capabilities } });
+  const approved = (await serviceEndpointHostCall(dir, remedy[3]!, ["approve", remedy[1]!], { "caller-ceiling": remedy[2]! })).answer;
   assert.equal(approved.state, "approved");
+  if (approved.state !== "approved") throw new Error("approval");
+  assert.deepEqual(approved.approval.callerCeiling.map(c => c.command).sort(), [...LINEAR_COMMANDS].sort(), "the remedy's ceiling covers every Linear command");
   let initialized!: () => void;
   const ready = new Promise<void>(resolve => { initialized = resolve; });
   running = start(initialized);
@@ -192,7 +199,7 @@ try {
     ctl.abort(); await running; running = undefined;
     assert.equal(closedUpstreams, 3, "restart stop closes its upstream");
   }
-  console.log("LINEAR HOSTED SERVE: approval replay, native ready, exact caller discovery/invocation, ungranted refusal, account pin, stop and same-instance restart passed");
+  console.log("LINEAR HOSTED SERVE: approval refusal names its proposal and approve command, the printed approval, approval replay, native ready, exact caller discovery/invocation, ungranted refusal, account pin, stop and same-instance restart passed");
 } finally {
   ctl.abort(); await running?.catch(() => {});
   for (const nc of conns) await nc.close();

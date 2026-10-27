@@ -9,7 +9,7 @@ import type { CotalEndpoint, CotalMessage, Delivery } from "@cotal-ai/core";
 
 export async function runPersonalNativeAcceptance(input: {
   home: string; cwd: string; cli: string[]; sender: CotalEndpoint;
-  peer: { roster(): Array<{ card: { id?: string; name: string } }> };
+  peer: { readRoster(): Promise<{ roster: Array<{ card: { id?: string; name: string } }> }> };
   env: NodeJS.ProcessEnv;
   /** The fixture person approves the connection `name` asked for, once it is waiting. */
   approve(name: string): Promise<void>;
@@ -92,10 +92,10 @@ export async function runPersonalNativeAcceptance(input: {
   });
   child.stderr.on("data", (piece: Buffer) => writeFileSync(err, piece));
   const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-  const until = async (condition: () => boolean, label: string, ms = 60_000) => {
+  const until = async (condition: () => boolean | Promise<boolean>, label: string, ms = 60_000) => {
     const end = Date.now() + ms;
     while (Date.now() < end) {
-      if (condition()) return;
+      if (await condition()) return;
       if (child.exitCode !== null || child.signalCode !== null) throw new Error(`native acceptance exited before ${label}; private logs retained`);
       await wait(100);
     }
@@ -122,13 +122,13 @@ export async function runPersonalNativeAcceptance(input: {
     assert(guidance.includes(asked[0].approval.url) && guidance.includes("do not open the decision page or approve on their behalf") &&
       guidance.includes(`retry cotal_connect with name ${JSON.stringify(name)}`) && guidance.includes("Do not poll"),
       "the pending answer the model sees does not carry the person-only approval guidance");
-    assert(!input.peer.roster().some((row) => row.card.name === name), "the native conversation joined before the person approved it");
+    assert(!(await input.peer.readRoster()).roster.some((row) => row.card.name === name), "the native conversation joined before the person approved it");
     await input.approve(name);
     const approvedAt = sequence;
     prompt(`The person approved this connection in Cotal. Call mcp__cotal__cotal_connect again with name ${name}, then reply READY_NATIVE and its connection_id.`);
-    await until(() => assistantSaid("READY_NATIVE", approvedAt) && input.peer.roster().some((row) => row.card.name === name), "native connect");
+    await until(async () => assistantSaid("READY_NATIVE", approvedAt) && (await input.peer.readRoster()).roster.some((row) => row.card.name === name), "native connect");
     passed.push("native-connect-waits-for-the-person");
-    const native = input.peer.roster().find((row) => row.card.name === name)!;
+    const native = (await input.peer.readRoster()).roster.find((row) => row.card.name === name)!;
     assert(native.card.id, "native connection has no actual principal");
     nativePrincipal = native.card.id;
     if (input.onConnected) await input.onConnected(nativePrincipal, session);
@@ -205,7 +205,7 @@ export async function runPersonalNativeAcceptance(input: {
     passed.push("explicit-interrupt-and-genuine-input-resume");
     console.log("  ✓ explicit native interruption retains mail without autonomous restart, then resumes on input");
     prompt("Call cotal_disconnect with your own connection_id and reply NATIVE_CLEANUP_COMPLETE.");
-    await until(() => assistantSaid("NATIVE_CLEANUP_COMPLETE") && !input.peer.roster().some((row) => row.card.name === name && (row as any).status !== "offline"), "native disconnect");
+    await until(async () => assistantSaid("NATIVE_CLEANUP_COMPLETE") && !(await input.peer.readRoster()).roster.some((row) => row.card.name === name && (row as any).status !== "offline"), "native disconnect");
     passed.push("native-exact-disconnect");
     console.log("  ✓ intended native disconnect retires its own conversation");
   } finally {

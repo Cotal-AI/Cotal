@@ -11,8 +11,8 @@ nothing adapter-specific leaks into the core.
 
 ## A2A influence
 
-Cotal reuses A2A's vocabulary and shapes so it stays interoperable rather than siloed, and
-implements them over NATS/JetStream.
+Cotal reuses A2A's vocabulary and data shapes over NATS/JetStream. The shared shapes do
+not provide transport interoperability with an A2A HTTP endpoint.
 
 **From A2A** come the *data shapes*: `AgentCard` (identity / role / tags / skills),
 `Message` / `Part` (text and data), and correlation ids (`contextId`). We do not adopt
@@ -197,13 +197,12 @@ A manual `/reconnect` is the human-invoked counterpart.
 
 ## Manager supervision
 
-The CLI does not spawn agents itself; a long-lived **manager** owns their lifecycle,
-asked over the mesh. The manager is not a privileged control plane: it is an ordinary
-service endpoint on the same `ep` rails as any other daemon
-([§13](../SPEC.md#13-endpoint-control-surface-v04)), holding only the capability rows its
-callers grant it. It owns process lifecycle and config binding (start / stop / restart,
-binding env and policy) and has no say in what work the agents do. Agents coordinate
-laterally; the manager only births and configures them.
+A foreground `cotal spawn` runs the application directly in the caller's terminal.
+A managed launch, selected with `--detach`, `--on` or the interactive manager picker,
+asks a long-lived manager to own the process. The manager serves the same `ep` control
+interface as other services ([§13](../SPEC.md#13-endpoint-control-surface-v04)), under
+its issued authority. It handles launch configuration, stop and supervised restart;
+agents exchange messages directly and choose their own work.
 
 - **Off the message hot path.** Each agent self-connects to the mesh through its own
   connector. The manager owns processes in order to control them, but observes everything
@@ -296,11 +295,12 @@ stay operator-only.
 
 ## Observers
 
-A watch surface is a read-only observer: an endpoint that consumes without registering
-presence (invisible to peers) while watching everyone else's. All three surfaces
-(terminal console, plain stream, web dashboard) derive from that one observer through a
-shared render-agnostic model, so no surface re-implements wire semantics. The guide is
-[watch a mesh](watch-a-mesh.md); the model is [MeshView](mesh-view.md).
+A watch surface uses a non-consuming endpoint: it registers no presence, binds no inbox
+durable and reads through the endpoint's tap, history and presence APIs. The terminal
+console and its plain stream share the CLI's [MeshView](mesh-view.md) model. The web
+dashboard owns a separate endpoint and exposes HTTP snapshots and SSE events; it does
+not import the CLI model. The console's authorized operator actions use separate control
+calls. See [Watch a mesh](watch-a-mesh.md).
 
 ## Addressing
 

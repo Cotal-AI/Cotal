@@ -39,6 +39,7 @@ import {
   workspaceErrorParts,
   spaceRootTarget,
   targetErrorCode,
+  targetErrorSpace,
   terminalWidth,
   userCotalDir,
   type OperationScope,
@@ -59,7 +60,6 @@ import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printCommandHelp, printHelpPath, printEntry } from "./help.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
-import { servicePresetCommand } from "./lib/service-presets.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
 import { metadataPositionals } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
@@ -68,13 +68,16 @@ import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
 import { reportLostOutput } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
-import { managerChoiceFailure, pickManager, rosterOf } from "./lib/manager-choice.js";
-import { goneStackRefusal } from "./commands/stack-gone.js";
-import { canPrompt } from "./commands/meshes-wizard.js";
+import { GLOBAL_FLAG_WORDS, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { didYouMean, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { UnusableFile } from "./lib/unusable-file.js";
 import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./telemetry.js";
+
+// The service surfaces, the manager choice and the gone-stack refusal are imported where a command
+// or a failure needs them, so a process that runs one daemon command never loads them.
+const serviceSurfaces = () => Promise.all([import("./lib/service-presets.js"), import("./commands/manager-service.js")]);
+const managerChoice = () => import("./lib/manager-choice.js");
 
 /** Whether `args` ask for help: `--help` or `-h` before any `--`, after which every word is text. */
 function asksForHelp(args: readonly string[]): boolean {
@@ -83,8 +86,10 @@ function asksForHelp(args: readonly string[]): boolean {
   return options.includes("--help") || options.includes("-h");
 }
 
-/** Whether a global flag (`--no-color`, `--no-input`) is `word`, applying it when it is. */
+/** Whether a global flag ({@link GLOBAL_FLAG_WORDS}: `--no-color`, `--no-input`) is `word`, applying
+ *  it when it is. */
 function takeGlobalFlag(word: string): boolean {
+  if (!GLOBAL_FLAG_WORDS.has(word)) return false;
   if (word === "--no-color") disableColor();
   else if (word === "--no-input") disableInput();
   else return false;
@@ -237,13 +242,14 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   if (name === "team" && (sub === "deploy" || sub === "remove")) return true; // existing native manager/channel operations never install local connectors
   // `backup restore` is excluded: it starts the restored stack and resumes its seats through `up
   // --restore`, so it reconciles connectors under the same rules as that startup. Other modes stay offline.
-  if (name === "reset" || name === "down" || name === "doctor" || name === "feedback" || (name === "backup" && sub !== "restore") || name === "mint" || name === "manager" || name === "channel" || name === "stop" || name === "input" || name === "auth" || name === "endpoint" || name === "service" || name === "daemon") return true; // native maintenance and channel policy never install connector packages
+  if (name === "reset" || name === "down" || name === "doctor" || name === "feedback" || (name === "backup" && sub !== "restore") || name === "mint" || (name === "manager" && sub !== "start" && sub !== "restart") || name === "channel" || name === "stop" || name === "input" || name === "auth" || name === "endpoint" || name === "service" || name === "daemon") return true; // native maintenance and channel policy never install connector packages
   if (name === "run" && (sub === "turns" || sub === "yield")) return true; // self-only relay does not repair the operator installation
   if (name === "update") return true; // update owns one explicit reconcile; never auto-refresh then force-refresh
   // The seed is skipped for an INTERNAL CHILD re-exec — the `up`/`spawn` that spawns the delivery
   // daemon / manager / auth service sets COTAL_SKIP_CONNECTOR_SEED=1 in their env AFTER it reconciled,
   // so the child doesn't redo the seed on boot. A USER running the same public command directly (e.g.
-  // `cotal supervise --roster`, the agent supervisor + container entrypoint) still seeds on first run.
+  // `cotal supervise --roster`, the agent supervisor + container entrypoint, or `cotal manager start`,
+  // which replaces it) still seeds on first run.
   if (process.env.COTAL_SKIP_CONNECTOR_SEED === "1") return true;
   if (name === "ext" && sub === "seed") return true; // the explicit maintenance command self-reconciles
   if (name === "ext" && sub === "add" && isAuthenticSeedChild()) return true; // a seed child must not recurse
@@ -282,10 +288,11 @@ const PICKS_MANAGER: ReadonlySet<string> = new Set(["spawn", "ps", "stop", "atta
  *  `--no-input` or `COTAL_NO_PROMPT=1` is not asked and keeps the refusal. A cancelled question exits 0, having
  *  done nothing. */
 async function pinPickedManager(e: unknown, cmd: Command, parsed: ParsedArgs, argv: readonly string[]): Promise<boolean> {
-  if (!PICKS_MANAGER.has(cmd.name) || parsed.values.on !== undefined || !canPrompt()) return false;
+  if (!PICKS_MANAGER.has(cmd.name) || parsed.values.on !== undefined || !(await import("./commands/meshes-wizard.js")).canPrompt()) return false;
   const failure = isCommandFailure(e) ? e : isConnectRefusal(e) ? e.failure() : undefined;
   if (!failure) return false;
   const target = { space: typeof parsed.values.space === "string" ? parsed.values.space : undefined, server: typeof parsed.values.server === "string" ? parsed.values.server : undefined };
+  const { pickManager, rosterOf } = await managerChoice();
   const picked = await pickManager(failure, () => rosterOf(target), argv);
   if (picked === null) process.exit(0);
   if (picked === undefined) return false;
@@ -529,7 +536,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   let lead = 0;
   for (; lead < argv.length; lead++) {
     const word = argv[lead]!;
-    if (word === "--json" || word === "-j" || word === "--plain") output.push(word);
+    if (OUTPUT_FLAG_WORDS.has(word)) output.push(word);
     else if (leadingGlobals.has(word)) usageExit(`Option '${word}' cannot be repeated`);
     else if (takeGlobalFlag(word)) leadingGlobals.add(word);
     else break;
@@ -598,13 +605,21 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   let cmd = findCommand(commands, word);
   let rest = ownWords(cmd, words, leadingGlobals);
   const wantsHelp = asksForHelp(rest);
-  if (cmd?.name === "service") {
-    try { cmd = servicePresetCommand(cmd, rest); }
-    catch (error) {
+  // A service invocation takes its preset's flags, and `manager <verb>` is `service <verb> manager`.
+  // Both are read again after the seed below re-resolves the command.
+  const serviceSurface = async (found: Command | undefined, words: string[]): Promise<{ cmd: Command | undefined; rest: string[] }> => {
+    if (found?.name !== "service" && found?.name !== "manager") return { cmd: found, rest: words };
+    const [{ servicePresetCommand }, { managerServiceCommand }] = await serviceSurfaces();
+    try {
+      if (found.name === "service") return { cmd: servicePresetCommand(found, words), rest: words };
+      const lifecycle = managerServiceCommand(found, words);
+      return lifecycle ? { cmd: lifecycle.cmd, rest: lifecycle.argv } : { cmd: found, rest: words };
+    } catch (error) {
       const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
-      failureExit(cmd, failure, asksForJson(cmd, rest), rest.includes("--plain"));
+      return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"));
     }
-  }
+  };
+  ({ cmd, rest } = await serviceSurface(cmd, rest));
   // The usage telemetry hook is armed as soon as the command is known, so a usage refusal below
   // counts too, and before anything runs, so the one-time notice precedes the command's output.
   const arm = (): void => {
@@ -655,7 +670,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       commands = surface();
       cmd = findCommand(commands, word);
       if (!cmd) usageExit(unknownCommandMessage(commands, word));
-      rest = ownWords(cmd, words, leadingGlobals);
+      ({ cmd, rest } = await serviceSurface(cmd, ownWords(cmd, words, leadingGlobals)));
       arm();
     }
   }
@@ -733,7 +748,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // A refused manager selection among several live managers becomes the choice: each manager
     // and the command again with `--on` for it. A space whose stack folder is gone names its stop.
     const target = { space: typeof parsed.values.space === "string" ? parsed.values.space : undefined, server: typeof parsed.values.server === "string" ? parsed.values.server : undefined };
-    const choice = async (failure: CommandFailure) => (await managerChoiceFailure(failure, () => rosterOf(target), argv)) ?? goneStackRefusal(failure);
+    const choice = async (failure: CommandFailure) => {
+      const [{ managerChoiceFailure, rosterOf }, { goneStackRefusal }] = await Promise.all([managerChoice(), import("./commands/stack-gone.js")]);
+      return (await managerChoiceFailure(failure, () => rosterOf(target), argv)) ?? goneStackRefusal(failure);
+    };
     if (isCommandFailure(e)) failureExit(cmd, inOperationSpace(await choice(e), scope.space), json, parsed.values.plain === true, scope);
     // A command that declares a structured output reports by the outcome table. A target it could
     // not resolve or connect to is refused before any request, under the refusal's own code; a
@@ -742,7 +760,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       if (isConnectRefusal(e)) failureExit(cmd, inOperationSpace(await choice(e.failure()), scope.space), json, parsed.values.plain === true, scope);
       if (isWorkspaceTargetError(e)) {
         const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
-        const target = spaceRootTarget(e.details);
+        const target = spaceRootTarget({ root: e.details.root, space: targetErrorSpace(e.details) });
         failureExit(cmd, inOperationSpace(new CommandFailure("refused", targetErrorCode(e.code), message, { ...(remedy ? { remedy } : {}), ...(target ? { target } : {}) }), scope.space), json, parsed.values.plain === true, scope);
       }
       // A registry record or directory it could not read is refused by its file, as `space` reports
@@ -763,7 +781,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       process.exit(1);
     }
     // A command without structured output shows the same choice and keeps its exit 1.
-    const restated = isConnectRefusal(e) ? await managerChoiceFailure(e.failure(), () => rosterOf(target), argv) : undefined;
+    const restated = isConnectRefusal(e) ? await managerChoice().then(({ managerChoiceFailure, rosterOf }) => managerChoiceFailure(e.failure(), () => rosterOf(target), argv)) : undefined;
     if (restated) {
       writeSync(2, `${renderReport(commandFailureReport(restated), parsed.values.plain === true ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
       process.exit(1);

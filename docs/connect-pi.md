@@ -5,8 +5,8 @@
 `@cotal-ai/pi` is Cotal's first host-native framework adapter. It loads into the operator's own
 [Pi coding agent](https://github.com/earendil-works/pi), rather than bundling a runtime, and uses the
 same Cotal subjects, presence, attention, and messaging tools as the app-bound connectors.
-Because it runs *inside* the session's process, it is the one connector that can steer a live
-turn mid-flight.
+Because it runs *inside* the session's process, peer messages steer the live turn directly.
+Codex and Jcode also steer a busy session, from a host process outside it.
 
 **Alpha** means the core path works today (spawn it, load it into your own interactive pi, or
 embed it via pi's SDK). Pi session fork/resume and supervised crash recovery are wired; model
@@ -52,7 +52,7 @@ turn unshown, and a later batch carries it again.
 Pi emits `agent_end` to extensions without exposing whether it will retry. Error and unknown
 reasons, and zero/missing-output `length`, therefore retain the delivery association in `waiting`
 while the driver itself attempts the continuation: it re-dispatches the retained batch through the
-same send path, with a fixed backoff and a fixed attempt count, and each attempt's `agent_start`
+same send path, with a fixed 50 ms backoff and at most two attempts, and each attempt's `agent_start`
 proves continuation the same way an externally-triggered one does. A clean terminal boundary on any
 attempt commits the retained work as usual. Once the attempts are spent, the driver holds with a
 presence that names the state as needing intervention, states the attempt count, and says what the

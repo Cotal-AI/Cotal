@@ -73,8 +73,11 @@ export interface GatewayHost {
    *  Throw {@link ApprovalRequired} until the person approves through the authority's own UI; issue
    *  only their approved selection within their current access. `approvalId` is an untrusted resume
    *  handle, never proof of approval. Bind it to this account, name and unchanged request, and do not
-   *  reuse an issued approval for another connection. */
-  open(account: string, name: string, context?: string, selection?: ConversationSelection, approvalId?: string): Promise<GatewayConnection>;
+   *  reuse an issued approval for another connection. `space`, when the native schema offers it, is
+   *  the registered mesh the caller named. Omit it to keep the embedder's default resolution. A
+   *  present value is already a non-blank token; resolve that mesh or refuse, and never substitute
+   *  another space's pending or live identity. */
+  open(account: string, name: string, context?: string, selection?: ConversationSelection, approvalId?: string, space?: string): Promise<GatewayConnection>;
   /** The connection `id` if `account` owns it, otherwise undefined. Never a default. Throw, with the
    *  reason and the retry, when `account` owns `id` but it can no longer serve, such as a
    *  disconnected connection whose cleanup is unfinished. */
@@ -203,6 +206,9 @@ export interface GatewayOptions {
   /** `cotal_connect` takes the channels, role and capabilities a connection requests
    *  within the person's own access, and hands the canonical selection to {@link GatewayHost.open}. */
   selection?: boolean;
+  /** A native embedder accepts an optional registered space name and passes it to
+   *  {@link GatewayHost.open}. Hosted OAuth is bound to one space, so this stays off there. */
+  space?: boolean;
   /** Offer an `approval_id` resume handle for hosted permission requests. The host must validate
    *  its exact request binding and record the person's decision independently of this handle. */
   approvalResume?: boolean;
@@ -430,10 +436,15 @@ export function registerCotalGatewayTools(
         "as the pending result directs. Keep the returned connection_id and pass it on every other cotal_* " +
         "call. If a new name is taken, the next free name is chosen (name_2, name_3, ...) and reported. " +
         "Never reuse another conversation's connection_id or approval_id." +
-        (options.selection ? ` ${SELECTION_TEXT}` : ""),
+        (options.selection ? ` ${SELECTION_TEXT}` : "") +
+        (options.space
+          ? " Optional space names one mesh already registered and signed in on this computer, overriding the default target without changing configuration. Omit it to use the CLI's default target."
+          : ""),
       inputSchema: z.strictObject({
         name: z.string().min(1).describe("The agent name to request, for example claude_web."),
         ...(options.connectContext ? { context: z.string().min(1).max(128).optional().describe("Conversation binding supplied by the native host.") } : {}),
+        ...(options.space ? { space: z.string().min(1).max(64).optional()
+          .describe("Registered signed-in mesh to join for this conversation. Overrides the default target without changing configuration. A blank name is refused.") } : {}),
         ...(options.selection ? SELECTION_SHAPE : {}),
         ...(options.approvalResume ? { approval_id: z.string().regex(/^[a-z2-7]{26}$/).optional()
           .describe("The approval.id from THIS conversation's pending result. Resumes only that unchanged request; it does not approve it.") } : {}),
@@ -452,6 +463,18 @@ export function registerCotalGatewayTools(
       } catch (e) {
         return refuse(`cotal_connect: ${errorText(e)}. Nothing was connected.`);
       }
+      const rawSpace = "space" in input && typeof input.space === "string" ? input.space : undefined;
+      if (rawSpace !== undefined && !options.space) {
+        return refuse("cotal_connect: this connection is bound to its signed-in space and cannot choose another. Nothing was connected.");
+      }
+      let space: string | undefined;
+      if (rawSpace !== undefined) {
+        const named = rawSpace.trim();
+        if (!named || !/^[A-Za-z0-9_-]+$/.test(named)) {
+          return refuse(`cotal_connect: ${JSON.stringify(rawSpace)} is not a space name. Use letters, digits, - and _. Nothing was connected.`);
+        }
+        space = named;
+      }
       const approvalId = typeof input.approval_id === "string" ? input.approval_id : undefined;
       for (const candidate of approvalId ? [name] : gatewayNames(name)) {
         // A name the mesh would refuse is the caller's to fix, not a collision to rename around.
@@ -462,7 +485,7 @@ export function registerCotalGatewayTools(
         }
         try {
           const context = "context" in input && typeof input.context === "string" ? input.context : undefined;
-          const c = await host.open(account, candidate, context, selection, approvalId);
+          const c = await host.open(account, candidate, context, selection, approvalId, space);
           watch(c);
           const renamed = candidate === name ? "" : ` (${JSON.stringify(name)} was taken)`;
           const listening = wake ? `\n${wake.listening(c)}` : "";
@@ -695,6 +718,8 @@ export interface GatewayStdio {
   tools?: ReadonlySet<string>;
   /** See {@link GatewayOptions.selection}. */
   selection?: boolean;
+  /** See {@link GatewayOptions.space}. */
+  space?: boolean;
   /** See {@link GatewayOptions.approvalResume}. */
   approvalResume?: boolean;
   /** See {@link GatewayOptions.waitSeconds}. */
@@ -715,6 +740,7 @@ export async function serveGatewayStdio(host: GatewayHost, o: GatewayStdio = {})
     ...(o.connectContext ? { connectContext: true } : {}),
     ...(o.tools ? { tools: o.tools } : {}),
     ...(o.selection ? { selection: true } : {}),
+    ...(o.space ? { space: true } : {}),
     ...(o.approvalResume ? { approvalResume: true } : {}),
     ...(o.waitSeconds === undefined ? {} : { waitSeconds: o.waitSeconds }),
     ...(o.wake ? { wake: o.wake } : {}),

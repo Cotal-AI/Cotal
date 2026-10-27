@@ -4,7 +4,7 @@
  * connects, writes, seeds or imports an extension.
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, getCurrent, loadMeshes, loadPreparedSpaces, localeIsUtf8, plainPunctuation, readMesh, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, loadMeshes, loadPreparedSpaces, localeIsUtf8, plainPunctuation, readMesh, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
@@ -164,6 +164,8 @@ export function printEntry(commands: readonly Command[], listing = false): void 
   let outside: string | undefined;
   // The `up` that starts a prepared space: no other command works on it until it runs.
   let start: string | undefined;
+  // What this folder holds that is not running, when a command here targets the selection instead.
+  let folderHeld: string | undefined;
   let unreadable = false;
   // Setup is the first step only on a machine with no space at all.
   let anySpace = false;
@@ -172,11 +174,20 @@ export function printEntry(commands: readonly Command[], listing = false): void 
   if (!removed) try {
     const selected = getCurrent();
     const root = findCotalRoot(process.cwd());
-    // A command run here targets the space registered or prepared in this folder over the selection,
-    // as it does with nothing selected.
-    const folder = folderSpace(process.cwd());
-    space = folder ?? selected;
+    // A command run here targets the space this folder has registered over the selection while it
+    // runs, as it does with nothing selected. A space prepared here, or one whose stack here is
+    // stopped, is not the target of anything but `up`, so it is named as this folder's `up` rather
+    // than as the space. A registered one is named so when this folder's records show its stack
+    // stopped, since help reads no broker.
+    const stopped = selected ? folderSpaceStopped(process.cwd(), selected) : undefined;
+    const folder = stopped ? undefined : folderSpace(process.cwd());
+    const held = folder === undefined ? stopped ?? folderSpaceHeld(process.cwd()) : undefined;
+    // With nothing selected no selection takes its place, so a command here targets the space this
+    // folder prepared, and it leads.
+    const preparedHere = selected || !held ? undefined : findPreparedSpace(held.space);
+    space = folder ?? selected ?? (preparedHere && canonicalRoot(preparedHere.root) === canonicalRoot(held!.root) ? held!.space : undefined);
     if (selected && folder !== undefined && folder !== selected) outside = selected;
+    if (held) start = canonicalRoot(held.root) === canonicalRoot(root) ? "cotal up" : `cotal up --root ${shellWord(held.root)}`;
     if (space) {
       const mesh = readMesh(space);
       const prepared = mesh === undefined ? findPreparedSpace(space) : undefined;
@@ -185,6 +196,7 @@ export function printEntry(commands: readonly Command[], listing = false): void 
       const harness = resolvePreference("harness", { space, preferences }).value;
       context = [space, mesh ? mesh.origin === "catalog" || mesh.origin === "manual" ? "registered" : "local" : here ? "prepared here" : prepared ? "prepared" : "not recorded", harness ? `default agent ${harness}` : "no default application"].join(" · ");
       if (prepared) start = here ? "cotal up" : `cotal up --root ${shellWord(prepared.root)}`;
+      if (held && held.space !== space) folderHeld = `this folder holds the ${held.state} space "${held.space}"`;
     } else anySpace = loadMeshes().length > 0 || loadPreparedSpaces().length > 0;
   } catch {
     unreadable = true;
@@ -192,11 +204,17 @@ export function printEntry(commands: readonly Command[], listing = false): void 
   const sections: Section[] = [];
   if (removed) sections.push({ blocks: [{ kind: "lines", lines: [{ text: "This folder no longer exists, so commands that use a space refuse here. cd to an existing folder first.", tone: "waiting" }] }] });
   else if (unreadable) sections.push({ blocks: [{ kind: "lines", lines: [{ text: "The local space or defaults could not be read. Status reports the affected records.", tone: "waiting" }] }] });
-  else if (context) sections.push({ blocks: [{ kind: "lines", lines: [{ text: context, tone: "hint" }, ...(outside ? [{ text: `this folder's space; the selected space "${outside}" applies outside it`, tone: "hint" } as const] : [])] }] });
+  else if (context) sections.push({ blocks: [{ kind: "lines", lines: [{ text: context, tone: "hint" },
+    // Help reads no broker, so it cannot tell whether this folder's space runs; it says when it applies.
+    ...(outside ? [{ text: `this folder's space while it runs; the selected space "${outside}" applies outside it and while it is stopped`, tone: "hint" } as const] : []),
+    ...(folderHeld ? [{ text: folderHeld, tone: "hint" } as const] : [])] }] });
   else sections.push({ blocks: [{ kind: "lines", lines: ["No space is selected.", { text: anySpace ? "Select one with `cotal use <name>`; `cotal space` lists them." : "Set up a local space, or connect to a self-hosted one.", tone: "hint" }] }] });
   sections.push({ title: "Usage", blocks: [{ kind: "lines", lines: [{ text: "cotal <command> [options]", tone: "command" }] }] });
   sections.push(actions("Start here", space ? [
-    start ? ["up", start, "Start this space"] : ["spawn", "cotal spawn", "Open your default agent"],
+    // A folder's `up` starts THAT folder's space, not the one commands here target, so it is named
+    // as the folder's and the selection keeps its own first action.
+    ...(start ? [["up", start, folderHeld ? "Start this folder's space" : "Start this space"] as [string, string, string]] : []),
+    ...(start && !folderHeld ? [] : [["spawn", "cotal spawn", "Open your default agent"] as [string, string, string]]),
     ["setup", "cotal setup", "Review setup and defaults"],
     ["use", "cotal use", "Choose another space"],
   ] : anySpace ? [
@@ -234,8 +252,9 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
   const usage = sub ? sub.usage ?? `cotal ${path}` : commandUsage(cmd);
   const sections: Section[] = [
     { title: `cotal ${path}`, blocks: [{ kind: "lines", lines: [selected.summary] }] },
-    // A titled section indents its lines two columns, so the usage is fitted to what is left.
-    { title: "Usage", blocks: [{ kind: "lines", lines: usageLines(usageTokens(usage), width - 2).map((text) => ({ text, tone: "command" as const })) }] },
+    // A titled section indents its lines two columns, so the usage is fitted to what is left. A usage
+    // that declares several forms, one per line, shows each form on its own lines.
+    { title: "Usage", blocks: [{ kind: "lines", lines: usage.split("\n").flatMap((form) => usageLines(usageTokens(form), width - 2)).map((text) => ({ text, tone: "command" as const })) }] },
   ];
   if (selected.aliases?.length) sections.push({ title: "Shorthands", blocks: [{ kind: "lines", lines: [{ text: selected.aliases.map((alias) => `cotal ${sub ? `${cmd.name} ${sub.name.split(" ").slice(0, -1).map((word) => word + " ").join("")}` : ""}${alias}`).join(" · "), tone: "command" }] }] });
   const subs = (sub ? sub.subcommands ?? [] : cmd.subcommands ?? []).filter((item) => !item.hidden);

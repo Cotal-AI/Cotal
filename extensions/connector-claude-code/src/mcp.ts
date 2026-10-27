@@ -46,7 +46,11 @@ import { openWakeFeed } from "./wake-feed.js";
 
 /** What a plain session's local server tells the model ahead of the gateway's own steps. */
 const LOCAL =
-  "This is the Cotal server on this computer. It joins the person's local Cotal mesh. If a hosted " +
+  "This is the Cotal server on this computer. It can join this computer's registered meshes, including signed-in remote spaces. " +
+  "When the person names a mesh, pass it as space to cotal_connect. Omit space only to use the CLI's default target. " +
+  "Do not move .cotal directories or change environment variables to select a conversation's mesh. " +
+  "Disconnect an existing connection before choosing another space. Before connecting, replace an unwanted pending name or permissions " +
+  "by calling cotal_connect with the new values and no approval_id; never ask the person to approve an unwanted request just to clear it. If a hosted " +
   "Cotal connector is also available, use this one unless the person asks for the hosted one: a " +
   "conversation uses one Cotal path. ";
 
@@ -63,6 +67,7 @@ const CODE_LISTENING =
   "This plugin's native hooks module delivers Cotal-attributed incoming messages. " +
   'A prompt beginning "Cotal: inline messages" contains complete messages; answer those without fetching them again. ' +
   'A notification beginning "Cotal:" without complete messages names the connection_id; read those with cotal_inbox. ' +
+  'A notification beginning "Cotal: the person approved", "Cotal: the person denied" or "Cotal: the approval for connection" reports the person\'s decision on this conversation\'s pending cotal_connect; finish it exactly as that notification says, and after a denial or expiry do not ask again on your own. ' +
   "cotal_connect reports whether its incoming-message reader is connected. Where it is not: " +
   GATEWAY_LISTENING;
 
@@ -72,26 +77,31 @@ const CODE_LISTENING =
  *  conversation joins the local mesh only when it calls `cotal_connect`, as an identity of its own.
  *  Nothing reaches a broker before that. */
 async function serveLocal(desktop: boolean): Promise<void> {
+  // Desktop Chat runs no native hooks module. In Code, the server and native wake reader are
+  // children of the same host process, which names their private feed.
+  const feed = desktop ? undefined : await openWakeFeed(process.ppid);
   const host = createAppHost({
     cotal: () => readCliRecord(dirname(process.argv[1] ?? "")),
     // Claude Desktop's working directory is not the person's project, so the mesh is found from a
     // directory that is no project: the `cotal use` mesh, else the only one running.
     cwd: desktop ? parse(homedir()).root : process.cwd(),
     env: process.env,
+    // The person's decision on a pending request reaches only the native session that asked.
+    ...(feed ? { notify: (session, notice) => feed.notifyApproval(session, notice) } : {}),
   });
-  // Desktop Chat runs no native hooks module. In Code, the server and native wake reader are
-  // children of the same host process, which names their private feed.
-  const feed = desktop ? undefined : await openWakeFeed(process.ppid);
   feed?.onNative((event) => host.nativeEvent(event));
   let rearm: (connection?: GatewayConnection, fireNow?: boolean) => void = () => {};
   const served = await serveGatewayStdio(host, {
     source: "claude-local",
     connectContext: !desktop,
+    space: !desktop,
     // A signed-in Code conversation asks for its own grant and calls with it; see the host.
     ...(desktop ? {} : { tools: NATIVE_GATEWAY_TOOLS, selection: true }),
     ...(feed
       ? {
           instructions: `${LOCAL}${GATEWAY_CONNECTING} ${CODE_LISTENING}`,
+          // The decision notice names the approval_id the conversation finishes with.
+          approvalResume: true,
           wake: {
             signal(c, preview) {
               const session = host.sessionFor(c.id);

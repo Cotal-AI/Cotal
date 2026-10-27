@@ -29,6 +29,12 @@ pre-signal agent inventory was spared; those agents may have been reaped.
 - **Manager**: a detached supervisor answering the control plane, so
   `cotal spawn --detach` and the `cotal_spawn` tool work right after `up`.
 
+`up` starts the manager, the delivery daemon and the user-auth service under the Node flag
+`--max-semi-space-size=1`, which caps V8's young generation at 2 MB. Each service that
+`cotal service start` or `cotal manager start` launches through the CLI gets the same flag, and so
+does the unit that `cotal service install` writes. A daemon then holds less memory, most of all
+in its first minutes.
+
 Cotal creates the presence bucket in memory storage. Its records are liveness that every endpoint
 rewrites each heartbeat, so nothing is lost when a broker restart empties it, and nats-server's file
 store write latch cannot reach it. A broker stop removes the memory stream itself, so every `cotal up`,
@@ -101,15 +107,18 @@ cotal up --detach --host 0.0.0.0 --space main --no-manager
 
 # manager host (registered remote mesh, same space)
 cotal space add main --server nats://broker.example:4222 --root ~/meshes/main
-cotal supervise --space main --server nats://broker.example:4222
+cotal manager start --space main
 ```
 
-Wait for `✓ manager up` in `.cotal/manager.<spaceKey>.log` on the manager host before spawning
-agents. On a broker host started without `--no-manager`, `cotal up --detach` prints `✓ running in
+`cotal manager start` dials the broker the registration names and returns once the manager
+serves, with `Readiness observation: endpoint-serving`; `cotal manager logs --space main` reads its
+log and `cotal manager stop --space main` stops it. On a broker host started without
+`--no-manager`, `cotal up` starts the manager itself. Wait for `✓ manager up` in
+`.cotal/manager.<spaceKey>.log` there before spawning agents: `cotal up --detach` prints `✓ running in
 the background:` with `manager` listed once the manager pidfile is live; stop that local manager
 only after the `✓ manager up` line. A host started WITH `--no-manager` never runs one, so neither
 the wait nor the stop applies there. That detach stdout is not a safe teardown boundary: it is
-pidfile liveness, not `✓ manager up`. `✓ manager up` is supervise's post-start line after
+pidfile liveness, not `✓ manager up`. `✓ manager up` is the manager's post-start line after
 `await mgr.start()`. Stopping the manager after only the detach line can still default-terminate
 the child during registration after it has taken the governance slot. Stopping before that
 post-start log line can leave the endpoint governance slot held until the holder's gate
@@ -178,12 +187,14 @@ enrollment for it. Mount the enrollment URL as a private file, place the seat pe
 machine, and launch the foreground seat:
 
 ```bash
-COTAL_ENROLLMENT_FILE=/run/secrets/cotal-enrollment \
-  cotal spawn --config ./worker.md --space main
+cotal spawn --foreground --file ./worker.md --space main \
+  --enrollment-file /run/secrets/cotal-enrollment
 ```
 
-The URL is redeemed once with an unauthenticated GET. Redirects, off-machine plain HTTP, retries,
-and login fallback are refused. If the seat has no mesh record yet, the enrollment response's stock
+A launcher that cannot pass the flag may name the same file in `COTAL_ENROLLMENT_FILE` instead
+([CLI reference](cli.md#spawn)). The URL is redeemed once with an unauthenticated GET. Redirects,
+off-machine plain HTTP, retries and login fallback are refused. If the seat has no mesh record yet,
+the enrollment response's stock
 user-bundle fields register it before the launch. The returned actor token then uses the same remote
 auth-service exchange as a login-provisioned agent. The enrollment URL and file path do not enter the
 preflight or harness environment. A failed or reused enrollment leaves no actor material on disk; ask the owner
@@ -366,7 +377,7 @@ host platform that keeps these writers in its own storage intercepts both reques
 instead. Copying host secrets or actor-ledger files to a participant is not supported. Foreground
 spawning and operator-local hosted managers use their existing paths.
 
-The remote manager that `cotal supervise` starts can host workflow runs through its host: the host
+The remote manager that `cotal manager start` starts can host workflow runs through its host: the host
 admits each run and signs only the run's own driver, mediator and operator credentials. A logged-in
 user's `cotal run start` against it is admitted: the auth callout issues the user's manager
 connection, and the host binds each run to the owner who registered the manager. The run spawns
@@ -376,7 +387,7 @@ host's own manager refuses user-auth runs by name.
 [User-auth run start](design/user-auth-run-start.md)
 records the path.
 
-The registry entry decides the broker URL `supervise` dials, so a mesh published over `wss://` is
+The registry entry decides the broker URL the manager dials, so a mesh published over `wss://` is
 dialed as a websocket. The manager-authority registration it runs first also takes its TLS
 requirement from that entry, so the prepare credential is not exchanged over a plaintext
 connection the record did not describe. `cotal meshes add` records both.
@@ -389,7 +400,7 @@ requests terminal retirement. Deleting DM or delivery consumers is not retiremen
 a resumable lifecycle's frontier or pending state. The alias remains held until the terminal barrier
 confirms. Restore service and renew successfully before asking it to recover an agent. See
 [Identity & auth](identity-and-auth.md#remote-manager-authority) and the [CLI
-reference](cli.md#supervise).
+reference](cli.md#manager).
 
 ## Spawning agents
 
@@ -404,27 +415,30 @@ cotal stop --name reviewer         # stop one
 How a spawn resolves:
 
 - **Persona.** A bare `cotal spawn` uses `.cotal/agents/default.md`; a positional name
-  picks `.cotal/agents/<name>.md`; `--config` takes an explicit ref or path. Set
-  `COTAL_DEFAULT_PERSONA=<name-or-path>` to change the fallback. Fields and format:
-  [agent files](agent-files.md).
+  picks `.cotal/agents/<name>.md`; `--file <persona-file>` takes a persona file by path. Set
+  `COTAL_DEFAULT_PERSONA=<name-or-path>` or the saved [`persona` preference](config.md#preferences)
+  to change the fallback. Fields and format: [agent files](agent-files.md).
 - **Harness.** Resolution order is an explicit `--agent` or `cotal_spawn` `agent` argument,
-  then the persona file's `agent:` pin, then the invoking caller's `COTAL_DEFAULT_AGENT`,
-  then the manager's `COTAL_DEFAULT_AGENT`, then the product default (Claude). Compared in
+  then the persona file's `agent:` pin, then the invoking caller's `COTAL_DEFAULT_AGENT`, then
+  the caller's saved [`harness` preference](config.md#preferences), then the manager's
+  `COTAL_DEFAULT_AGENT`, then the product default (Claude). Compared in
   [Connectors](connectors.md); per-connector guides:
-  [Claude](connect-claude.md) · [OpenCode](connect-opencode.md) ·
-  [Hermes](connect-hermes.md) · [pi](connect-pi.md).
+  [Claude](connect-claude.md) · [OpenCode](connect-opencode.md) · [Codex](connect-codex.md) ·
+  [Jcode](connect-jcode.md) · [Hermes](connect-hermes.md) · [pi](connect-pi.md).
 - **Model.** `--model` overrides the persona file's `model:` (Claude: `opus` / `sonnet` or
   a full id; OpenCode: `provider/model`). Connectors that expose a catalog report it via
   `cotal models --harness opencode`: model ids plus available variants; pick one with
   `--model provider/model --variant high`.
-- **Tools.** A spawned Claude Code agent gets the cotal tools plus the MCP servers the cotal
-  config shares, which first-run `cotal setup` fills with your own; narrow them per spawn with
-  `--share-tools` ([config](config.md)).
+- **Tools.** A spawned Claude Code agent gets the cotal tools, Claude's own native MCP sources,
+  and the MCP servers the cotal config shares, which first-run `cotal setup` fills with your
+  own. `--share-tools none` keeps only the cotal tools, and `--share-tools a,b` restricts one
+  spawn to the named declared servers ([config](config.md#the-config-file)).
 - **Launch options.** `--opt key=value` (repeatable) passes a native harness flag straight
   through; a persona or manifest `launchOptions:` mapping does the same declaratively (a
   `--opt` wins per key). It is a **raw passthrough**, with no allow/deny list: Claude renders
   each as `--key value` (a bare `--key` for an empty value), OpenCode merges them into its
-  agent config, and Hermes has no option surface so it fails loud. The trust boundary is the
+  agent config, and Codex passes each as a `-c key=value` config override. Hermes, Jcode and pi
+  have no option surface, so a launch that carries one fails loud. The trust boundary is the
   `spawn` capability itself, not the flag set, so granting `spawn` is host-launch authority
   ([security](security.md)). A key must be a plain flag name; malformed or prototype-polluting
   keys are refused.
@@ -437,9 +451,10 @@ every platform, so replacing the manager worker closes its seats and the pty run
 update. Any manager stop, bare `cotal down` included, stops and deprovisions those seats. A stopping
 manager refuses new spawns and first waits for the ones it already accepted, so their seats stop too. On Linux
 it can still adopt and reap seats that an earlier manager launched under a detached per-seat
-custodian, so those seats drain under the new manager; it starts no new custodian. A custodian whose agent has exited exits a few seconds later on its own. `cotal seats`
-lists the custodians left on the machine, and `cotal seats --drain` retires the ones whose agent
-has exited while keeping every seat whose agent still runs ([cli.md](cli.md#seats)). When a pty
+custodian, so those seats drain under the new manager; it starts no new custodian. A custodian whose agent has exited exits a few seconds later on its own. `cotal manager seats`
+lists the custodians left on the machine, and `cotal manager seats --drain` retires the ones whose agent
+has exited while keeping every seat whose agent still runs ([cli.md](cli.md#seats)). The hidden
+`cotal seats` spelling still works. When a pty
 agent exits on its own, in-process or under a custodian, the manager logs a `seat reaped:` line
 with the exit code and, for a signalled child, the signal number. The line ends with the last line
 the child printed that starts with a connector's `[cotal-<name>]` or `[cotal-<name>/<part>]`
@@ -469,8 +484,10 @@ personas, and its mode). So a bare `cotal spawn <persona>` from *any* directory 
 running mesh with the right credentials instead of mistaking the cwd for a space:
 
 - `cotal use <name>` sets the default from every directory, including inside another mesh's
-  project. There a command warns that it targets the selection and names the `--space` for the
-  folder's own space. `--space <name>` overrides the selection for one command.
+  project. A folder's space captures the commands run there only while it runs: a prepared or
+  stopped folder space leaves them to the selection, and the line under the `Mesh:` heading names
+  what the folder holds and the `cotal up` that starts it. `--space <name>` overrides the selection
+  for one command.
 - When one broker has records for several spaces, `cotal up --space <name>` refreshes that named
   space.
 - A refresh rewrites only what that command decided: the server, root and mode, the user-auth
@@ -483,7 +500,8 @@ running mesh with the right credentials instead of mistaking the cwd for a space
   Neither reaches another mesh.
 - With nothing selected, a project with its own `.cotal/` resolves to that project's mesh;
   otherwise one running mesh is used automatically and several are an error.
-- `cotal meshes` lists them (`(default)` marks the default); `cotal down` removes the entry. A
+- `cotal meshes` lists them (`(default)` marks the default); `cotal down` removes the entry,
+  except for a space named after its folder, which keeps its registration while stopped. A
   controller stack's space stays prepared at its root, and a selection that names it stays.
 - `cotal space create <name> [--root <dir>]` names a space before it runs. It records the name
   and root apart from the registry and makes `<root>/.cotal/`, and `cotal up` in that root starts
@@ -514,11 +532,11 @@ without a terminal nothing prompts.
 the mode is inferred from what that folder holds.
 
 The instance identities of the manager and the user-auth service are not part of that folder.
-Each root keeps its own in `.cotal/space.<hex>/`, so `cotal supervise` or `cotal up --user-auth` in
+Each root keeps its own in `.cotal/space.<hex>/`, so `cotal manager start` or `cotal up --user-auth` in
 the root you copied the folder to starts an instance of its own. A root last run by an older Cotal
 still holds them in `.cotal/auth`, as `manager-instance.<hex>.json`, `manager-siblings.<hex>.json`
 and `space.<hex>/.cotal/auth/auth-instance.<hex>.json`. Delete those files from a copy of such a
-folder before the first `cotal supervise` or `cotal up` there. On the root itself, the first start
+folder before the first `cotal manager start` or `cotal up` there. On the root itself, the first start
 moves each record to `.cotal/space.<hex>/`. It refuses and keeps both entries when either place
 holds a symlink or anything else that is not a regular file, or when the two places hold different
 records.
@@ -717,7 +735,7 @@ binds the exact op, gate revision, and holder set. Use `cotal reconcile-gate` wh
 wait-timeout: the facts were always in the manager log; they now reach the spawn caller too.
 
 Give reconciliation a **quiet manager**. Suspend systemd restart policies, watchdogs, health-check
-restart loops, and any other automation that can start or kill `cotal supervise` while boot healing or
+restart loops, and any other automation that can start or kill the manager while boot healing or
 `cotal reconcile-gate` is running. Leave one recovery attempt in control until it finishes.
 Restarting the manager during the walk interrupts the current authority window. Durable progress makes
 that interruption resumable, but a quiet manager is still the fastest and safest incident procedure.

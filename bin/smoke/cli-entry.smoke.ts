@@ -165,6 +165,15 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("help lists every command group under the entry screen, and no hidden command",
     everyday !== -1 && setup > everyday && /^\s+send\s/m.test(help.stdout) && /^\s+endpoint, ep\s/m.test(help.stdout)
       && !/^\s+start\b/m.test(help.stdout) && !help.stdout.includes("--all"), shown(help));
+  // A legacy command hidden from help says so on its own help page, naming what replaces it in the
+  // words of its docs/cli.md row.
+  const legacyRows = [...readFileSync(join(REPO, "docs", "cli.md"), "utf8").matchAll(/^\| [^|]+ \| \[`([a-z-]+)`\]\([^)]*\) \| Legacy, hidden from `cotal help`: [^|]*; ([^;|]+ replaces? it) \|$/gm)];
+  check("docs/cli.md names what replaces each of the ten hidden legacy commands", legacyRows.length === 10, legacyRows.map((row) => row[1]));
+  for (const [, name, replacement] of legacyRows) {
+    const page = cotal([name!, "--help"]), words = page.stdout.split(/\s+/).join(" ");
+    check(`${name} is not listed, and its --help says it is legacy and ${replacement}`, !new RegExp(`^\\s+${name}\\b`, "m").test(help.stdout)
+      && page.status === 0 && words.includes("(legacy) ") && words.includes(replacement!), shown(page));
+  }
   // A command its docs call plumbing, which spawned agents exec, is left out and still answers.
   const bearerHelp = cotal(["help", "agent-bearer"]);
   check("help leaves out agent-bearer, and its own help still prints", !/^\s+agent-bearer\b/m.test(help.stdout)
@@ -843,6 +852,12 @@ for (const { alias, cmd } of aliases) {
   refused("a missing flag value writes no seed store", cotal(["spawn", "--space"]), /--space/);
   const control = cotal(["sync"]);
   check("control: a valid command that is not a read seeds the same sandbox shape", control.status === 0 && control.wrote.length > 0, shown(control));
+  // `manager start` replaces `supervise`, which seeds on first run, so it seeds too; the group's
+  // other verbs keep the native-maintenance rule and seed nothing.
+  const managerStart = cotal(["manager", "start"]);
+  check("manager start seeds on first run, as the supervise it replaces does", managerStart.wrote.length > 0, shown(managerStart));
+  const managerStatus = cotal(["manager", "status"]);
+  check("manager status seeds nothing", managerStatus.wrote.length === 0, shown(managerStatus));
 }
 
 // ── A signal while the CLI loads ──────────────────────────────────────────────────────────────────

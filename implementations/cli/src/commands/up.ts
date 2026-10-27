@@ -94,6 +94,7 @@ import {
   assertUserAuthInfo,
   authDir,
   brokerAddressForDisplay,
+  brokerPolicyPath,
   getSoleSpaceAuth,
   soleSpaceOf,
   getSpaceAuth,
@@ -183,6 +184,7 @@ import {
   connectUserControlOrThrow,
   userViewAuth,
   recordOperationSpace,
+  recordsElsewhereError,
   recordOperationWarning,
   retainSystemSigningSeed,
   restoreLeftOut,
@@ -435,7 +437,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   // A --tls-cert broker serves TLS only, and its address says so, so every client dials tls:// and
   // checks the certificate against the address it names.
   if (!args.values.file && args.values["tls-cert"] !== undefined && typeof args.values.server === "string" && /^nats:\/\//i.test(args.values.server))
-    throw new CommandFailure("refused", "USAGE_INVALID", "--tls-cert serves the broker over TLS, so --server must be a tls:// address; nothing was started or written", { remedy: `pass --server ${tlsAddress(args.values.server)}` });
+    throw new CommandFailure("refused", "USAGE_INVALID", "--tls-cert serves the broker over TLS, so --server must be a tls:// address; nothing was started or written", { remedy: `pass --server ${tlsAddress(args.values.server)}`, selfContained: true });
   if (args.values.file !== undefined && args.values.foreground === true) throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime");
   if (args.values.foreground === true && (args.values.json === true || args.values.plain === true)) throw new CommandFailure("refused", "USAGE_INVALID", "foreground up keeps native terminal custody and cannot produce a finite JSON or plain receipt");
   // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
@@ -1416,6 +1418,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   });
   // The manifest route checks its own effective address, which `--server` only overrides.
   if (!values.file && values.server !== undefined) assertTlsIntentServed(values.server, transport, "--server");
+  // AND THE OTHER DIRECTION. `assertTlsIntentServed` refuses a `tls://` address this start would
+  // serve in cleartext; this refuses a `nats://` one it would serve over TLS. `up -f` has carried
+  // the same check since it gained one, and so has a `--server nats://` passed with `--tls-cert`
+  // (see `validateUpArguments`), but a root whose RECORDED policy serves TLS reached neither: it
+  // started a TLS broker, registered it under the `nats://` address nothing can dial, and printed
+  // `TLS: serving <subject> at nats://…` over it.
+  if (!values.file && values.server !== undefined) assertTlsAddressServed(values.server, transport, meshRoot);
 
   // CONTROLLER-OWNED STACK. A root whose stack the service controller owns, or a fresh prepared
   // static-auth, open or user-auth root with nothing legacy retained, starts as exact controller members instead
@@ -1458,6 +1467,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // A named space this machine runs from another folder is refused before anything is written here,
   // and in every presentation, since the launcher below has no structured receipt.
   if (!values.file && values.space !== undefined) await refuseRunningElsewhere(values.space, meshRoot);
+  // A bare one in a folder holding the records of a space registered for another folder does not take
+  // that name over, as `down` there does not stop it.
+  if (!values.file && values.space === undefined) await refuseRecordsElsewhere(meshRoot);
   if (values.json || values.plain) {
     // `up -f` always takes the retained launcher, so the controller route is no remedy there. Its
     // manifest is checked first, so a manifest that does not validate gets its own refusal.
@@ -1584,12 +1596,23 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const keptStopped = registration !== undefined && !resumeAttempt && values.server === undefined && keepsRegistration(registration) && !(await isReachable(registration.server));
     const registeredServer = keptStopped ? undefined : registration?.server;
     const implicit = !resumeAttempt && registeredServer === undefined && values.server === undefined && values.host === undefined && !values["user-auth"];
-    const retained = implicit ? retainedLegacyBroker(cotalRoot()) : undefined;
+    // THE ADDRESS AND THE MODE ARE TWO DECISIONS, and only the address belongs to `--server` and
+    // `--host`. Reading both off `implicit` meant that naming the address dropped the mode: an open
+    // root restarted at the address it already ran on came back in static auth, with a delivery
+    // daemon and no line saying so, and the broker that had served its agents unauthenticated now
+    // refused them. The address still follows the flags; the recorded mode is inherited whenever
+    // this start names no mode of its own.
+    const recorded = resumeAttempt ? undefined : retainedLegacyBroker(cotalRoot());
+    // A flag still wins: `--open` over a root that last ran with auth starts it open, as it always
+    // has, and `--user-auth` asks for the mode the user-auth state decides. Only silence inherits.
+    if (recorded?.open && values["user-auth"] !== true) values.open = true;
+    const retained = implicit ? recorded : undefined;
     // An address up chooses for a TLS broker names TLS, as an explicit one must.
     const serving = (url: string) => transport.kind === "tls-required" ? tlsAddress(url) : url;
     if (retained) {
-      if (retained.open) values.open = true;
       console.log(c.dim(`starting this folder's stopped stack as it last ran: ${serving(retained.server)}${values.open ? ", open" : ""}`));
+    } else if (recorded?.open) {
+      console.log(c.dim("starting this folder's stopped stack in the mode it last ran: open"));
     } else if (implicit) {
       const cleaned = cleanedManifestStart(cotalRoot(), recordedSpace, values.open === true);
       if (cleaned) throw new CommandFailure("refused", "CONFLICT", `this folder was deployed from a manifest as "${cleaned.space}" at ${cleaned.server} in ${cleaned.mode === "open" ? "open" : "static auth"} mode, and its identity and broker configuration were removed, so a bare up would not start it as it was deployed; nothing was started`, { target: { root: cotalRoot(), space: cleaned.space, server: cleaned.server }, remedy: `deploy it again with ${cleaned.command}` });
@@ -1884,6 +1907,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         stderrLine("✗ ", `mesh "${held.space}" is running at ${server} but its presence/lease TTLs could not be reconciled: ${(e as Error).message}`, c.red);
         process.exit(1);
       }
+      // A refresh is a receipt like any other start: it names its mesh before it says anything
+      // about it, and ends with the steps to take. It used to print this one green line alone, so
+      // `up` in a running project's subfolder answered without saying which mesh it reached or what
+      // to do next, while the launch beside it printed both.
+      console.log(`${renderReport({ space: held.space, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
       console.log(c.green(`✓ mesh "${held.space}" already running at ${server}`));
       // USER MODE: re-upping IS the documented recovery for a dead auth service (the provider's
       // failure copy says "restart it with `cotal up`"), so a refresh must re-ensure the service —
@@ -1962,6 +1990,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // ceiling, the store) from the record as it stands at write time, not from `held`.
       recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ...(values.host ? { attachHost: values.host } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ts: new Date().toISOString() }, "refresh");
       seedPersonaAfterUp(root);
+      // The same Next a launch ends with: this mesh runs, so the steps are the ones that use and
+      // stop it. A manager the refresh found or healed is what makes `spawn` one of them.
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecordState(undefined, undefined, held.space).state === "alive", machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}) }, held.space) }] }] }, "rich", terminalWidth(process.stdout))}`);
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -4273,6 +4304,19 @@ export async function claimSpace(space: string, server: string, root: string): P
     // A space name is this machine's, so a separate space here needs a name of its own.
     let controller = false;
     try { controller = readStackJournal(existing.root)?.journal.space === space; } catch { /* named with the legacy stop */ }
+    // THIS project's own space, running at its own address, started again with another one. The
+    // refusal below belongs to a name another folder holds: it reads as if this folder were a
+    // stranger to the space and offers to start a separate one here, when the folder IS that
+    // space's project and a start naming no address joins the mesh already running in it. No
+    // command moves a stack that ran to another address, so say which address it runs at.
+    // The address must differ for this sentence to be true: the early return above compares roots
+    // as written while this compares them resolved, so a record naming this root by another
+    // spelling reaches here at its OWN address, and that case keeps the refusal below.
+    if (canonicalRoot(existing.root) === canonicalRoot(root) && existing.server !== server)
+      throw new CommandFailure("refused", "CONFLICT", `space "${space}" already runs from this project at ${existing.server}, and this start names ${server}; nothing was started`, {
+        target,
+        remedy: `run cotal up here with no --server or --host to reach the mesh at ${existing.server}, or stop it first with cotal down${controller ? " --yes" : ""} in ${shellWord(existing.root)}`,
+      });
     throw new CommandFailure("refused", "CONFLICT", `space "${space}" is already in use by a mesh at ${existing.server} (${existing.root})`, { target, remedy: `start a separate space in this folder with cotal up --space <name>, naming one no other folder uses, or stop "${space}" first with cotal down${controller ? " --yes" : ""} in ${shellWord(existing.root)}` });
   }
   // The recorded root is this root only where it physically resolves, so it is resolved before any
@@ -4771,6 +4815,22 @@ async function refuseRunningElsewhere(space: string, root: string): Promise<void
   throw new CommandFailure("refused", "CONFLICT", `space "${space}" runs at ${owner.server}, started in ${owner.root}, so up did not start it again`, { target: { space, root: owner.root, server: owner.server }, remedy: `use it from here with --space ${space}, or stop it with cotal down${controller ? " --yes" : ""} in ${owner.root}` });
 }
 
+/** Refuses a bare `up` in a folder holding the records of a space this machine registers for another
+ *  folder, as a copy, a moved folder and one whose name a later `up` took over keep them. The retained
+ *  launcher writes no stack journal, so this is that launcher's form of the journal's refusal: it
+ *  names that folder and the step reads there name. When that folder is gone and its broker does not
+ *  answer, it also names the `--space` that takes the name over to run the stack from this folder. */
+async function refuseRecordsElsewhere(root: string): Promise<void> {
+  const records = recordsElsewhereError(root)?.details;
+  if (!records?.lastRun || records.stackSpace === undefined || records.recordedRoot === undefined || records.stackRemedy === undefined) return;
+  const space = records.stackSpace;
+  const takeover = !existsSync(records.recordedRoot) && !(await isReachable(findMesh(space)?.server ?? records.server ?? DEFAULT_SERVER));
+  throw new CommandFailure("refused", "CONFLICT", `this folder holds the records of "${space}", which is registered for ${records.recordedRoot}, not for this folder, so up did not start it here`, {
+    target: { root, space, recordedRoot: records.recordedRoot },
+    remedy: takeover ? `${records.stackRemedy}; or, to run it from this folder, take the name over with cotal up --space ${space}` : records.stackRemedy,
+  });
+}
+
 /** The channels files one `up` has read, by path. It reads its seed when it checks the flags, when it
  *  prepares the broker and when it seeds the registry, and `--channels` may name a pipe or a FIFO,
  *  which a second open finds empty or waits on for a writer that is gone. */
@@ -4907,7 +4967,20 @@ function resolveTransport(
 function assertTlsIntentServed(server: string, transport: BrokerTransport, source: string): void {
   const tls = server.split(",").some((url) => url.trim().toLowerCase().startsWith("tls://"));
   if (tls && transport.kind !== "tls-required")
-    throw new CommandFailure("refused", "USAGE_INVALID", `${source} names a tls:// address, but no TLS certificate and key are configured, so the broker would serve plaintext; nothing was started`, { target: { server: brokerAddressForDisplay(server) ?? "not displayable" }, remedy: "serve TLS with --tls-cert <cert.pem> --tls-key <key.pem>, or use a nats:// address" });
+    throw new CommandFailure("refused", "USAGE_INVALID", `${source} names a tls:// address, but no TLS certificate and key are configured, so the broker would serve plaintext; nothing was started`, { target: { server: brokerAddressForDisplay(server) ?? "not displayable" }, remedy: "serve TLS with --tls-cert <cert.pem> --tls-key <key.pem>, or use a nats:// address", selfContained: true });
+}
+
+/** A broker that serves TLS is dialed `tls://`, so an address naming `nats://` would be recorded,
+ *  registered and handed to every later client as plaintext. Refuse it before anything starts,
+ *  naming the recorded policy that serves TLS and the address to pass instead. */
+function assertTlsAddressServed(server: string, transport: BrokerTransport, root: string): void {
+  if (transport.kind !== "tls-required") return;
+  if (!server.split(",").some((url) => /^nats:\/\//i.test(url.trim()))) return;
+  throw new CommandFailure("refused", "USAGE_INVALID", `this root serves the broker over TLS (${brokerPolicyPath(root)}), so --server must be a tls:// address; nothing was started or written`, {
+    target: { root, server: brokerAddressForDisplay(server) ?? "not displayable" },
+    remedy: `pass --server ${tlsAddress(server)}`,
+    selfContained: true,
+  });
 }
 
 /** Persist a transport, and the auth callout timeout the broker configuration rendered, after its

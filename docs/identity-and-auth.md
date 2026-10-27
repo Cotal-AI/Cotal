@@ -64,7 +64,8 @@ the same library ([CLI](cli.md)). The out-of-band profiles last 24 hours unless
 `--expires-in <seconds>` or `--expires-at` sets another lifetime, and a standing-renewal consumer
 requires a bounded credential. `--no-expiry` issues one with no expiry, which `cotal doctor auth`
 reports as a warning; it reports any other unbounded credential as a finding. `--replace` replaces a
-label's credential once it has expired or when it has no expiry. `--identity <creds>` reuses a file's nkey and principal,
+label's credential once it has expired, when it has no expiry, or when `auth revoke-credential`
+revoked its key. `--identity <creds>` reuses a file's nkey and principal,
 but the out-of-band agent mint allocates a new lifecycle UID. It does not reuse the old
 bind-only inboxes; clients must use the UID in the receipt and explicitly provision it when
 needed. Minting static creds is a
@@ -84,7 +85,7 @@ normative shapes are [SPEC Appendix B](../SPEC.md#appendix-b-profile-acls); in b
 
 | Profile | Is |
 |---|---|
-| **agent** | The ordinary peer: publishes as itself to its declared channels, reads within its read ACL + its own DM/task inboxes. Its read-only presence and channel-registry watches create and inspect client-managed ordered consumers but cannot delete any consumer on those streams; the broker removes a finished watch's consumer five minutes after its last interest. |
+| **agent** | The ordinary peer: publishes as itself to its declared channels, reads within its read ACL + its own DM/task inboxes. It reads the roster on demand with a Direct Get of the presence bucket, which binds no consumer. Its channel-registry watch, and the presence watch older seats hold, create and inspect client-managed ordered consumers but cannot delete any consumer on those streams; the broker removes a finished watch's consumer five minutes after its last interest. |
 | **observer** | Read-only chat + presence; DMs invisible. What `cotal console` runs. Its only consumer deletes name its own history readers (`hist_<readerId>_<n>` on CHAT, keyed on its nkey or on the connection the server assigned), so each history read removes its consumers when it ends, and it cannot remove another principal's watch or the delivery daemon's fan-out consumer. The broker removes its finished watch consumers. |
 | **admin** | Elevated *read-only* god-view: sees DMs and anycast live, still writes nothing. A deliberate opt-in for elevated operator observation. Deletes its own history readers on CHAT and DM, and no other consumer. |
 | operator-side | Narrow single-purpose creds for the machinery (supervising, provisioning, teardown, delivery); the reference implementation splits these so no one connection can read every DM *and* delete every stream ([security model](security.md)). |
@@ -303,7 +304,9 @@ In-process TLS is deliberately not another deployment mode: it would duplicate c
 and fork proxy-based deployments.
 
 **Callout replicas.** `cotal auth-service --callout-only --space <s> --server <url>` runs one more
-member of the space's callout queue group. The broker hands each connect to one member, so a
+member of the space's callout queue group. `cotal auth-service` is a deprecated entry kept for
+existing units and scripts; new setups use the `auth-service` service preset
+([deprecated daemon entries](UPGRADING.md#deprecated-daemon-entries)). The broker hands each connect to one member, so a
 replica keeps connects answered while the full auth service restarts or crashes, and adds capacity.
 A replica runs the same connect checks as the full service and holds nothing else: no HTTP
 listener, no `auth-service.json`, no plane claim, service registration, barrier, scanner or sweep,
@@ -343,15 +346,19 @@ under a host-custodied scoped anchor. It returns no result content, private key 
 [embedding.md](embedding.md) documents these host doors' contracts.
 
 The public listener has a closed surface: `GET /health`, `GET /jwks`, `POST /exchange`,
-`POST /manager-service-authority`, `POST /manager-instances`, and `GET /.well-known/cotal-mesh`;
-every other path is 404. It
+`POST /manager-service-authority`, `POST /manager-instances`, the three `/chat-session/open`,
+`/chat-session/bearer` and `/chat-session/retire` routes, and `GET /.well-known/cotal-mesh`. A space
+whose auth service runs with `--service-endpoints` also serves `/service-endpoint-authority` and
+`/service-endpoint-host` there ([embedding.md](embedding.md)); without it they answer 404. Every
+other path is 404. It
 does **not** require the loopback
 capability. That capability proves same-uid access to a 0600 local file and has no remote meaning;
 on the public face the credential is the proof. A human presents an EdDSA IdP JWT checked against
 the pinned JWKS, issuer, and audience. An agent presents its spawn-time actor token, whose hash must
-match a fresh managed-ledger row. The public face mints two elevated views, both still gated on
-ledger scope `admin`: `channel-writer` (`cotal channel set` and `cotal channel defaults`) and `channel-purger` (the
-dashboard's per-click channel delete). It also mints the narrowing `manager-caller` view for humans
+match a fresh managed-ledger row. The public face mints three elevated views, all still gated on
+ledger scope `admin`: `channel-writer` (`cotal channel set` and `cotal channel defaults`), `channel-purger` (the
+dashboard's per-click channel delete) and the one-object `transfer-writer` (below). It also mints
+the scope-free `session-caller` view (below) and the narrowing `manager-caller` view for humans
 or managed agents. That view binds the bearer to one live registered manager instance. It adds no
 capability, except that a `spawn` holder's view may read that manager's `status`, `models` and
 `resolve-cwd`, which a host-local launch there needs. A manager using a delegated runtime refuses
@@ -609,6 +616,10 @@ the despawn still stops the agent and *holds* the name. **A
 same-name `cotal spawn` re-drives the whole teardown** and finishes it. Retrying the despawn has no
 effect because the agent is already stopped. The operator copy tells you to recover the stack
 (`cotal supervise`) rather than reusing the name over an unretired predecessor.
+
+A failed spawn can also retire an orphan lifecycle without holding its name. Its retirement
+failure names the lifecycle and reports that no hold reserves the name for it. A same-name
+spawn does not retry that orphan's teardown. A refusal from the auth service keeps its reason.
 
 **A crash mid-retirement resumes at the next boot.** The retirement's last two steps (recording the
 issuance gate terminal, then the lifecycle head terminal) are separate durable writes, and a crash
@@ -896,8 +907,9 @@ still sets `COTAL_CREDS` itself.
   auth` is the one diagnosis and repair surface). A manager-spawned agent cred also expires
   after 24h, the manager renews it only while the agent is live, and despawn retires it. A
   static mesh has no auth callout, so a compromised agent that copied its creds can still
-  reconnect until they expire, and a `cotal mint` cred without `--expires-in` or `--expires-at`
-  stays valid until the signing key is rotated ([security](security.md)). Per-user-auth spaces
+  reconnect until they expire. An out-of-band `cotal auth mint` cred lasts 24 hours unless a
+  lifetime flag says otherwise, and one minted with `--no-expiry` stays valid until its key is
+  revoked or the signing key is rotated ([security](security.md)). Per-user-auth spaces
   close this: bearers live minutes, `cotal actor revoke` denies the next exchange and the next
   connect and evicts the principal's live connections immediately.
 - **Not non-repudiation.** Authenticity is broker-enforced, not portable proof; it does

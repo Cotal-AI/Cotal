@@ -505,7 +505,7 @@ try {
     `manager-caller selection found 2 live remote manager candidates for owner ${owner} (${sortedLive.join(", ")}); ` +
     `exactly one is required, so name one with --manager-instance <instanceId>`;
   const expectedSelectionThrottled =
-    "too many manager-caller selection refusals - name a manager instance (--on <id> or --manager-instance <id>) or start one with `cotal supervise`, then wait a minute and retry";
+    "too many manager-caller selection refusals - name a manager instance (--on <id> or --manager-instance <id>) or start one with `cotal manager start`, then wait a minute and retry";
   const expectedPinnedSelectionThrottled =
     "too many pinned manager-caller selection refusals - check that the pinned manager instance is live and registered to you, then wait a minute and retry";
 

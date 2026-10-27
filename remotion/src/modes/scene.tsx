@@ -6,8 +6,8 @@ import React from "react";
 import { AbsoluteFill, Easing, interpolate } from "remotion";
 import { fontFamily } from "../_shared";
 
-// Square-ish stage. Single source of truth for size.
-export const STAGE = { w: 860, h: 620 } as const;
+// Shared card width. Each card family sets its own height.
+export const CARD_WIDTH = 860;
 
 // The README shows the NATS cards (nats/) one per row at the column width, 294
 // CSS px on a 360 px phone, and the mode cards (modes/) at a fixed 270 CSS px,
@@ -15,8 +15,8 @@ export const STAGE = { w: 860, h: 620 } as const;
 // (18 px) still renders above 10 CSS px at 270, and their stages are taller to
 // make room for it.
 export const CARD_TYPE = 1.9;
-export const MODE_STAGE = { w: STAGE.w, h: 780 } as const;
-export const NATS_STAGE = { w: STAGE.w, h: 700 } as const;
+export const MODE_STAGE = { w: CARD_WIDTH, h: 780 } as const;
+export const NATS_STAGE = { w: CARD_WIDTH, h: 700 } as const;
 const INSET = 16;
 
 // The cast of the three mode cards: the same points and presence in each, so only

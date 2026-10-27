@@ -373,7 +373,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | `description` | string | MAY | one-line summary |
 | `tags` | string[] | MAY | capability tags |
 | `skills` | `AgentSkill[]` | MAY | `{ id, name, description? }` |
-| `meta` | object | MAY | free-form display metadata. Reserved flat string keys are `connector` (host harness name), `model` (pinned model), `provider` (effective provider serving the model, connector-reported), `host` (self-reported machine), `cwd`, `repo`, `branch`, `head`, `sessionKind`, and `sessionId`. All are advisory only |
+| `meta` | object | MAY | free-form display metadata. Reserved flat string keys are `connector` (host harness name), `model` (pinned model), `provider` (effective provider serving the model, connector-reported), `host` (self-reported machine), `cwd`, `repo`, `branch`, `head`, `sessionKind`, `sessionId`, and `terminal` (`stream` or `none`, whether a terminal attaches to the seats this manager starts). All are advisory only |
 | `protocolVersion` | string | MUST from v0.4 | wire version spoken (§11); `"0.4"` for this revision. Advertisement is the marker at the v0.4 reachability boundary (§13.11): a participant that omits it is pre-0.4 (omission means the pre-0.4 line, where the field was optional) and MUST NOT be addressed on the `ep` rails. A change signal, not negotiation |
 
 An instance MUST refresh its own presence entry on the heartbeat interval, default 2000 ms.
@@ -393,6 +393,15 @@ A reader that kept a record whose `ts` is missing or text such as `"nope"` could
 show its peer live after the key expired. Readers print the string fields as text, and an object
 such as `{"toString":null,"valueOf":null}` throws when converted, so one kept row would fail every
 reader's roster.
+
+A watch delivers every member's heartbeat to every watcher, so a space of K watching members moves
+K² deliveries per heartbeat interval. A participant that needs the roster only when it acts (an
+agent resolving a DM target, checking an `@mention`, listing who is present) SHOULD read it on
+demand instead: batched Direct Gets over `$KV.cotal_presence_<space>.>` (`next_by_subj`, paged), which
+bind no consumer. A read applies the reader rules above, and a record whose `ts` is older than the
+liveness window reads `offline`. Only a read that completed supports an absence verdict; a failed
+read MUST NOT be reported as "no such peer". Observers that act on liveness transitions
+(supervision, delivery `@mention` resolution, dashboards) watch.
 
 `PresenceCondition`:
 
@@ -6171,6 +6180,12 @@ a released record with a marker cannot resume. A failed marker read MUST be repo
 not as marker absence or permission to resume. A terminal record remains terminal whether or not
 it has a marker.
 
+The `run-status` view also carries optional `programHash`, the language's hash of the run's
+recorded program, which is the value the run list carries for that run. It is read from that run's
+program record alone. It is absent when the run has no recorded program. A program record that
+cannot be read or parsed MUST be reported as `programUnreadable: string`, with no `programHash`,
+and never as a hash or as an absent program.
+
 A `run-status` request MAY carry `journal: { offset }`, a row offset into the journal. The reply
 then carries `journalTotal`, the journal's row count, and its `journal` holds the rows from
 `offset`, in journal order, that fit in one reply under the serving connection's payload limit: at
@@ -6371,6 +6386,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.API.CONSUMER.INFO.<DLV>.<dlvD>`
 - `$JS.API.CONSUMER.MSG.NEXT.<DLV>.<dlvD>`
 - `$JS.ACK.<DLV>.<dlvD>.>`, the **durable backstop**: BIND-ONLY its own pre-created per-member DELIVER consumer `dlvD` (the trusted reader's re-authorized handoff, §8). The agent holds NO grant on the mixed pre-auth `INBOX` fan-out stream.
+- `$JS.API.DIRECT.GET.<KV>` (the on-demand presence read, §6)
 - `$JS.API.CONSUMER.CREATE.<KV>.>`
 - `$JS.API.CONSUMER.INFO.<KV>.>`
 - `$JS.FC.>`

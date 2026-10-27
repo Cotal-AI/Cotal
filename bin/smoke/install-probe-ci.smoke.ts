@@ -72,26 +72,28 @@ check(
   "build must come before probe",
 );
 
-// The maintained action pushes the per-package tags and creates no releases; a later step cuts one
-// release for the version once the action reports a publication.
+// The maintained action pushes the per-package tags and creates no releases; the publish job cuts
+// none either, so nothing is announced from inside the publish queue.
 const publishBody = csJobs.get("publish") ?? "";
 check(
-  "the publisher cuts one GitHub Release per version after a publication",
+  "the publisher pushes the tags and cuts no GitHub Release itself",
   /uses: changesets\/action\/publish@/.test(publishBody) &&
     /create-github-releases: false/.test(publishBody) &&
-    /if: steps\.publish\.outputs\.published == 'true'/.test(publishBody) &&
-    publishBody.indexOf("gh release create") > publishBody.indexOf("changesets/action/publish@"),
+    !publishBody.includes("gh release create"),
   publishBody.slice(0, 200),
 );
-// The install check is a job of its own after publish, so it stays out of the publish queue.
+// The install check is a job of its own after publish, so it stays out of the publish queue, and
+// the one GitHub Release for the version is cut there only after the install check passed, so the
+// announcement never names a version the installer cannot yet resolve.
 const verifyBody = csJobs.get("verify-install") ?? "";
 check(
-  "a successful publication is followed by a fresh install check",
+  "a successful publication is followed by a fresh install check, then the GitHub Release",
   /^\s+published: \$\{\{ steps\.publish\.outputs\.published \}\}\s*$/m.test(publishBody) &&
     /^\s+needs: publish\s*$/m.test(verifyBody) &&
     /if: needs\.publish\.outputs\.published == 'true'/.test(verifyBody) &&
-    /verify-release-installable\.mjs/.test(verifyBody),
-  "the install observation must follow publication",
+    /verify-release-installable\.mjs/.test(verifyBody) &&
+    verifyBody.indexOf("gh release create") > verifyBody.indexOf("verify-release-installable.mjs"),
+  "the install observation must follow publication and precede the Release",
 );
 
 const EXPECTED = 6;

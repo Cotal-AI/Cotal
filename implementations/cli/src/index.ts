@@ -1,6 +1,6 @@
 import "./exec-endpoint/service-adapter.js";
 import "./lib/broker-service.js";
-import { serviceUnitEntry } from "./commands/service-unit-entry.js";
+import "./service-unit.js";
 import { registry, type Command } from "@cotal-ai/core";
 import {
   CommandFailure, credentialMintFlags, jsonFlag, plainFlag, presentationOf, serverFlag, spaceFlag, targetFlags, validateCredentialMintArguments, validateCredentialRevokeArguments,
@@ -227,18 +227,18 @@ const baseCommands: Command[] = [
     name: "service",
     aliases: ["svc", "services"],
     group: "Services",
-    summary: "read local service definitions and existing component observations",
+    summary: "run Cotal's built-in services and your own programs: list, add, start, stop, status, logs",
     positionals: "[show | add | remove | start | stop | restart | status | logs | install | uninstall] [name]",
     flagNames: ["space", "json", "plain"],
     flags: serviceFlags,
     outputs: ["json", "ndjson", "plain"],
     reads: true,
     subcommands: ([
-      { name: "list", flagNames: ["space", "json", "plain"], summary: "read saved definitions and local component observations", hidden: true, reads: true, prepareMeshTarget: false },
+      { name: "list", flagNames: ["space", "json", "plain"], summary: "list the built-in services and the ones you saved, with their state", hidden: true, reads: true, prepareMeshTarget: false },
       { name: "show", flagNames: ["space", "json", "plain"], summary: "read a saved definition without exposing argument or credential contents", usage: "cotal service show <name>", reads: true, prepareMeshTarget: false },
-      { name: "add", flagNames: ["space", "file", "preset", "json", "plain"], summary: "save a file or declared preset without starting a process", usage: "cotal service add [name] [--file <definition.json>|--preset <name> <declared-options>]", prepareMeshTarget: false },
+      { name: "add", flagNames: ["space", "exec", "cwd", "file", "preset", "json", "plain"], summary: "save your own program (--exec), a preset or a definition file; starts nothing", usage: "cotal service add <name> --exec \"<command>\" [--cwd <dir>] | --preset <preset> [<options>] | --file <definition.json>", prepareMeshTarget: false },
       { name: "remove", flagNames: ["space", "instance", "yes", "json", "plain"], aliases: ["rm"], summary: "forget a stopped, unsupervised owned definition", usage: "cotal service remove <name> [--instance <full-id>] [--yes]", prepareMeshTarget: false },
-      { name: "start", flagNames: ["space", "instance", "new-instance", "foreground", "dry-run", "json", "plain"], summary: "start an owned process or declared adapter without dependencies", usage: "cotal service start <name> [--instance <id>|--new-instance] [--foreground|--dry-run]", prepareMeshTarget: false },
+      { name: "start", flagNames: ["space", "instance", "new-instance", "foreground", "dry-run", "json", "plain"], summary: "start a service; a built-in one is saved from its defaults first, and nothing else is started for it", usage: "cotal service start <name> [<preset options>] [--instance <id>|--new-instance] [--foreground|--dry-run]", prepareMeshTarget: false },
       { name: "stop", flagNames: ["space", "instance", "yes", "with-agents", "dry-run", "json", "plain"], summary: "stop the exact owned process through its declared native policy", usage: "cotal service stop <name> [--instance <id>] [--with-agents] [--yes|--dry-run]", prepareMeshTarget: false },
       { name: "restart", flagNames: ["space", "instance", "yes", "with-agents", "dry-run", "json", "plain"], summary: "confirm an exact owned stop before one replacement launch", usage: "cotal service restart <name> [--instance <id>] [--with-agents] [--yes|--dry-run]", prepareMeshTarget: false },
       { name: "status", flagNames: ["space", "instance", "json", "plain"], summary: "read instance identity and process observations without repair", usage: "cotal service status <name> [--instance <id>]", reads: true, prepareMeshTarget: false },
@@ -302,9 +302,10 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "clean",
+    hidden: true,
     group: "Mesh",
     summary:
-      "configurable cleanup - history/store/all, plus explicit committed-restore fallback cleanup",
+      "(legacy) configurable cleanup - history/store/all, plus explicit committed-restore fallback cleanup. `reset`, `history clear` and `backup cleanup-fallback` replace it",
     usage:
       "cotal clean history --force [--dms] [--space <s>] [--server <url>] [--creds <path>] | cotal clean <store|all> --force [--store-dir <dir>] | cotal clean <store|all> --dry-run [--store-dir <dir>] | cotal clean <restore-attempt|restore-fallback> --attempt <id> --force [--discard-history]",
     positionals: "<history|store|all|restore-attempt|restore-fallback>",
@@ -341,7 +342,8 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "meshes",
     group: "Mesh",
-    summary: "list the meshes this machine knows (`(default)` marks the `current` default a bare spawn joins); add/rm register one running elsewhere",
+    hidden: true,
+    summary: "(legacy) list the meshes this machine knows; add/rm register one running elsewhere. `space`, `space add` and `space forget` replace it",
     usage: "cotal meshes [list] [--json] | meshes add [<space>] [--server <url>] [--root <dir>] [--mode auth|open] | meshes rm <space> …  (bare `meshes add` on a terminal is guided)",
     positionals: "[list | add <space> | rm <space> …]",
     flags: meshesFlags,
@@ -431,8 +433,9 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "join",
+    hidden: true,
     group: "Mesh",
-    summary: "join a space (interactive) - --space <s> --name <n> [--role <r>]",
+    summary: "(legacy) join a space (interactive) - --space <s> --name <n> [--role <r>]. `chat` replaces it",
     flags: [
       ...targetFlags,
       { name: "name", type: "string", value: "<n>", description: "your presence name" },
@@ -479,8 +482,9 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "topology",
+    hidden: true,
     group: "Mesh",
-    summary: "validate + view a mesh manifest's access graph (read-only)",
+    summary: "(legacy) validate + view a mesh manifest's access graph (read-only). `team check --graph` replaces it",
     positionals: "<view>",
     flags: [{ name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "the manifest to inspect" }],
     run: topology,
@@ -706,7 +710,8 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "personas",
     group: "Agents",
-    summary: "list/manage local personas (.cotal/agents)",
+    hidden: true,
+    summary: "(legacy) list/manage local personas (.cotal/agents) with the earlier parser. `persona` replaces it",
     usage:
       'cotal personas <list [-v] [--running] | show <name> | edit <name> | new <name> (--prompt <t>|--from <f>) --subscribe <a,b|""> [--role <r>] [--model <m>] | rm <name> --force>',
     positionals: "<list | show <name> | edit <name> | new <name> | rm <name>>",
@@ -761,8 +766,9 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "endpoints",
+    hidden: true,
     group: "Observe",
-    summary: "read authorized live presence, including agents and infrastructure",
+    summary: "(legacy) read authorized live presence, including agents and infrastructure. `who --all` replaces it",
     flags: endpointsFlags,
     outputs: ["json", "plain"],
     reads: true,
@@ -797,8 +803,9 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "describe",
+    hidden: true,
     group: "Observe",
-    summary: "read a native endpoint's authorized, digest-verified command contracts",
+    summary: "(legacy) read a native endpoint's authorized, digest-verified command contracts. `endpoint describe` replaces it",
     usage: "cotal describe <endpoint>  [--space <s>] [--server <url>]",
     positionals: "<endpoint>",
     flags: describeFlags,
@@ -811,8 +818,9 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "invoke",
+    hidden: true,
     group: "Observe",
-    summary: "invoke a native command with schema validation and attributed result receipts",
+    summary: "(legacy) invoke a native command with schema validation and attributed result receipts. `endpoint invoke` replaces it",
     usage: "cotal invoke <endpoint> <command>  [--args '<json>'] [--name <agent> | --self] [--admin]",
     positionals: "<endpoint> <command>",
     flags: invokeFlags,
@@ -839,8 +847,9 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "console",
+    hidden: true,
     group: "Observe",
-    summary: "live protocol view for a space - lazygit-style TUI, or a line stream on --plain",
+    summary: "(legacy) live protocol view for a space - lazygit-style TUI, or a line stream on --plain. `watch` replaces it",
     flags: [...targetFlags, { name: "plain", type: "boolean", description: "line stream instead of the TUI" }],
     run: console_,
   },
@@ -881,5 +890,3 @@ export { updateFlags } from "./commands/update.js";
 // must outlive the manager's readiness wait (#159 B1).
 export { START_TIMEOUT_MS } from "./lib/control.js";
 export { launchAgent } from "./lib/manifest/live.js";
-
-registry.register(serviceUnitEntry);

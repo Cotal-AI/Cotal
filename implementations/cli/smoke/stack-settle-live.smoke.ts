@@ -69,7 +69,8 @@
  *     killed under a live manager, `down` refuses before any stop
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
  *     it, `up` then `down` stop both. While the broker is live, its refusal of a seat's credential
- *     is kept as it is. The legacy name and the broker stop name their stack members. Under umask
+ *     is kept as it is. `down manager` stops `stack-manager` through the service stop and `up`
+ *     starts it again; the broker stop then names its stack members. Under umask
  *     0002 the delivery-aware marker is 0600. After a clean down, a group-writable `.cotal/auth`
  *     makes `reset space --dry-run` name it and its repair. A `down` after every member crashed
  *     exits 0 and keeps the delivery credential, and the reset preview then names `cotal up` and
@@ -140,11 +141,11 @@
  *     last up has no recorded outcome, names the half-started stack under the selected space and
  *     leads Next with `down --yes`, then `up --root <root>`, since the next `up` reuses the broker and
  *     cannot finish it; it offers no bare `up`, and `--json` names the space and root. With the space
- *     selected, the Brokers block calls it prepared, not started, never stopped, and
+ *     selected, the Spaces block calls it prepared, not started, never stopped, and
  *     `meshes.currentStopped` is false while its broker runs. `ps` refuses
  *     `TARGET_UNAVAILABLE` and names `cotal status` in the root. `down` settles that up and stops the
  *     broker, `up` then starts the stack and registers the space, and `down` stops it, after which the
- *     Brokers block and `meshes.currentStopped` call it stopped.
+ *     Spaces block and `meshes.currentStopped` call it stopped.
  * 16. A `down` interrupted while it waits on a frozen delivery daemon it signalled. It exits 130 naming
  *     `cotal down --abandon-stop <request> --yes` with the stop's request. Once the daemon exits,
  *     `down --yes` refuses `LIFECYCLE_BLOCKED` naming the same command, which stops the rest of the
@@ -908,13 +909,23 @@ try {
     check("the marker is a regular file, not a link", lstatSync(marker).isFile(), lstatSync(marker).isSymbolicLink());
 
     // A named stop resolves the selected space, and an earlier section's stopped space stays selected.
-    const legacyName = cli(root, "down", "manager", "--space", space, "--yes", "--json");
-    check("down manager on a controller stack names stack-manager", legacyName.status === 2 && legacyName.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(legacyName.env.error.remedy?.includes("stack-manager")), shown(legacyName));
+    // `manager` is a preset name, so it reaches the stack's own member through the service stop.
+    const firstManager = pidOf(space, "stack-manager");
+    const presetName = cli(root, "down", "manager", "--space", space, "--yes", "--json");
+    check("down manager on a controller stack stops stack-manager through the service stop and names it",
+      presetName.status === 0 && presetName.env?.outcome === "ok" && presetName.env.result?.kind === "service-stop" && presetName.env.target?.requested === "manager" && presetName.env.target?.name === "stack-manager"
+        && gone(space, "stack-manager") && firstManager !== null && await until(() => !alive(firstManager), 10_000), shown(presetName));
+    // The stack's own start brings the manager back; the stopped record stays beside the new one.
+    const restarted = cli(root, "up", "--json");
+    const manager = serviceInstances(space, "stack-manager").find((row) => observeServiceProcess(row.record.value) === "running")?.record.value.process?.pid ?? null;
+    if (manager !== null) owned.add(manager);
+    const states = Object.fromEntries(((restarted.env?.result?.members ?? []) as { role: string; state: string }[]).map((member) => [member.role, member.state]));
+    check("up then starts the manager again and reuses the broker and delivery",
+      restarted.status === 0 && states.manager === "started" && states.broker === "reused" && states.delivery === "reused" && manager !== null && manager !== firstManager, { states, ...shown(restarted) });
     const brokerFirst = cli(root, "down", "stack-broker", "--space", space, "--yes", "--json");
     check("the broker stop refusal names its stack dependants", brokerFirst.status === 2 && brokerFirst.env?.error?.code === "LIFECYCLE_BLOCKED" && brokerFirst.env.error.message.includes("stack-manager") && !brokerFirst.env.error.message.includes("legacy"), shown(brokerFirst));
 
     const broker = pidOf(space, "stack-broker");
-    const manager = pidOf(space, "stack-manager");
     // A managed seat's shell dials the broker with its own credential first. The seat context is set
     // by hand, with a credential from another root of this suite that this broker does not trust.
     const uid = mintLifecycleUid();
@@ -1522,7 +1533,7 @@ try {
   {
     const space = "cutup";
     const root = prepare(space);
-    // Selected, so status also names it under Brokers, where an unregistered selection is shown.
+    // Selected, so status also names it under Spaces, where an unregistered selection is shown.
     check(`${space}: use selects it`, cli(root, "use", space, "--json").status === 0);
     const port = await freePort();
     const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: root, env, stdio: "ignore" });
@@ -1541,7 +1552,7 @@ try {
     check(`${space}: status names the half-started stack under the selected space and leads Next with down, then the up that starts it again`,
       status.stdout.includes(cut) && status.stdout.includes("Half started · the last up ended before delivery and manager started; broker runs") && Boolean(first?.includes("down --yes") && first.includes("it ended before it registered the space, so up cannot finish it")) && Boolean(second?.includes(`up --root ${root}`) && second.includes("Then start the stack again")) && !status.stdout.includes("start it with"),
       { first, second, stdout: status.stdout.slice(-3000) });
-    check(`${space}: the Brokers block calls the selection prepared, not started, and not stopped, while its broker runs`,
+    check(`${space}: the Spaces block calls the selection prepared, not started, and not stopped, while its broker runs`,
       status.stdout.includes(`Selected space '${space}' is prepared, not started`) && !status.stdout.includes(`Selected space '${space}' is stopped`), { stdout: status.stdout.slice(0, 2500) });
     const json = cli(root, "status", "--json");
     const meshes = json.env?.result?.meshes as { currentStopped?: boolean; currentPrepared?: boolean } | undefined;
@@ -1559,7 +1570,7 @@ try {
     const stopped = cli(root, "down", "--yes", "--json");
     check(`${space}: down stops it`, stopped.status === 0 && gone(space, "stack-broker") && gone(space, "stack-manager"), shown(stopped));
     const after = cli(root, "status"), afterJson = cli(root, "status", "--json");
-    check(`${space}: once a completed down stopped it, the Brokers block calls it stopped and status --json says so`,
+    check(`${space}: once a completed down stopped it, the Spaces block calls it stopped and status --json says so`,
       after.stdout.includes(`Selected space '${space}' is stopped`) && (afterJson.env?.result?.meshes as { currentStopped?: boolean } | undefined)?.currentStopped === true, { stdout: after.stdout.slice(0, 2500) });
   }
 

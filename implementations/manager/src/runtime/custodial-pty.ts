@@ -19,6 +19,7 @@ export function custodyRoot(): string {
  */
 export class CustodialPtyRuntime implements CustodialRuntime {
   readonly kind = "pty" as const;
+  readonly streamsTerminal = true;
   readonly supportsRelease = true;
   /**
    * Private cache of active SeatRecords keyed by custody reference id, populated on spawn and adopt

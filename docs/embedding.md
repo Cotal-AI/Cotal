@@ -240,8 +240,8 @@ absent. The reported path is kept byte for byte, whitespace included; an empty s
 
 | symbol | package | purpose |
 |---|---|---|
-| `runAuthService(args, store?)` | `@cotal-ai/auth` | boot the auth-service daemon; `store` injects the secret material. |
-| `runDelivery(args, store?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred. |
+| `runAuthService(args, store?, options?)` | `@cotal-ai/auth` | boot the auth-service daemon; `store` injects the secret material, and `options` takes the daemon lifecycle hooks or [`interactiveManagerSelection`](#interactive-manager-primary). |
+| `runDelivery(args, store?, onStarted?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred, and `onStarted` receives a `status()`/`close()` handle once it serves. |
 | `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, the per-start `cap`, `readiness`, `drain`, and idempotent `close`. `close` rejects when the context did not release its plane claim: the claim row was no longer its own, or the release write failed. The row then stays held, and the next start reclaims it through the liveness oracle. With the optional `publicFace` input it also serves the public exchange face and carries `publicUrl`. The optional `calloutLimits` input sets the auth callout's deadline, concurrency and slow-line limits ([callout deadlines](identity-and-auth.md#callout-deadlines)). With the optional `platformControl` input the handle also has `platformControlAuthority`, the in-process platform control door, `platformControlReadiness`, its read-only readiness read, `observeManagerGate`, the manager gate read a host composing the delegated user intent decisions passes them, and `activateManagedLifecycle`, the activation that host runs at a delegated launch's pinned lifecycle UID. With `platformControl.host` it also has `registerHostIncarnation`, which registers the host process's own endpoint instance and returns the incarnation a delegated execution pins, `observeHostGate`, the read of that endpoint's issuance gate, and `awaitHostFence`, which resolves once a later registration or barrier fences an incarnation. `runAuthService` remains the CLI entry. |
 | `PlatformControlAuthorityRequest`, `PlatformControlInnerRequest`, `PlatformControlAuthorityResult`, `PlatformControlAssignment` *(types)* | `@cotal-ai/core` | the closed envelope, its inner request union, its result and the backend's assignment row for `platformControlAuthority`. `platformControlOwner` in `@cotal-ai/auth` derives the `p_` owner the door issues under. |
 | `startDeliveryService(inputs)` | `@cotal-ai/delivery` | start one account-scoped delivery instance and return a `HostedServiceHandle` with `readiness`, `drain`, and idempotent `close`. `close` rejects when its lease release does not commit or cannot be confirmed, or when another holder's lease row is still there after it. The process runner remains the CLI entry. |
@@ -419,11 +419,11 @@ to 86400 seconds. It is a trusted-host input for the renewal rehearsal, and no r
 sets it. `issuerSessionTtlSeconds` sets the credential lifetime of the plane's held issuer session
 the same way, bounded to 5 to 300 seconds, with the five-minute `issuer` lifetime as the default. SPEC §13.1 and §13.6 define the view.
 
-The auth plane can renew a registered manager's
-five standing credentials from the current service registration. Run-driver renewal still
-refuses without an authoritative activated-run reader, so these handles do not yet make a
-complete pooled auth and delivery host. A fresh auth plane can initialize without a
-delivery-admin responder. Reclaiming a held claim from a dead predecessor needs the delivery
+The auth plane can renew a registered manager's five standing credentials from the current
+service registration. Run-driver renewal reads the hosted run attempt and checks its active
+fence as well as the manager's open issuance gate and process epoch. A moved gate or run
+fence refuses issuance. These primitives do not establish a complete pooled deployment.
+A fresh auth plane can initialize without a delivery-admin responder. Reclaiming a held claim from a dead predecessor needs the delivery
 instance first: its admin rail must complete the broker connection-liveness sweep before the
 auth plane takes the claim. An absent or inconclusive oracle refuses the reclaim.
 
@@ -588,7 +588,8 @@ embedding's backend obtains the bearer from the stock exchange with the person's
 bearer's space, principal, lifecycle and instance are checked before anything is dialled, and the
 describe is pinned to that instance. The view carries only the commands the person's ledger scope
 grants. `spawn`, for example, carries `spawn`, `despawn`, `inspect`, the persona commands and
-`goal-result`, while operator reads such as `status` and `models` come only with `admin`; the broker
+`goal-result`, plus the launch reads `status`, `models` and `resolve-cwd` on that one instance,
+while operator reads such as `ps` and `slots` come only with `admin`; the broker
 refuses a command the view does not carry. The connection never reconnects on its own; `reopen`
 acquires again and re-checks every pin.
 
@@ -633,7 +634,7 @@ distinct schema root, the input `generateBrowserContracts` from
 out because they are not schemas; the generator recomputes every digest and refuses a mismatch.
 The namespace includes closed standing/run renewal, admission, maintenance, enrollment,
 retirement and goal-index scan helpers. `publicIdentities(state)` returns the `identities` record every request
-carries: the five public ids, in the order the host echoes them. `remoteRunHosting` builds the four `runHosting` callbacks from the registration
+carries: the five public ids, in the order the host echoes them. `remoteManagerClient.remoteRunHosting` builds the four `runHosting` callbacks from the registration
 and the transport you supply for the host's run admission, run attempt and authority requests, so
 your manager sends the run requests the stock manager sends. The namespace provides no signer or
 new grant. The host still owns authenticated issuance, current registration and activated-run
@@ -693,7 +694,7 @@ emitted again as an `error`.
 
 ### auth-service
 
-`runAuthService(args, store?)` reads its provisioned long-lived secret kinds (service keys, callout
+`runAuthService(args, store?, options?)` reads its provisioned long-lived secret kinds (service keys, callout
 account, issuer keys, owner secret) through the injected `SecretStore`; a host provisions those into
 the store first. It is a **signer and identity authority**, not a scoped daemon: at runtime it holds
 the data-account and callout-account signing seeds, the issuer's private JWKs, and the
@@ -720,7 +721,7 @@ await runAuthService(
 
 ### delivery
 
-`runDelivery(args, store?)` runs from a **pre-minted scoped `delivery` cred** and never loads the
+`runDelivery(args, store?, onStarted?)` runs from a **pre-minted scoped `delivery` cred** and never loads the
 signer. Provide the cred either through the injected store (under
 `deliveryCredsKey(space, { injected: true })`) or with a
 `--creds` file; the two are mutually exclusive. The daemon re-fetches the cred from the store at 75%
@@ -1179,34 +1180,31 @@ low-level operator primitives. Handle them as account-authority material:
 
 ## Hosted composition gaps
 
-The primitives above are present as exports, but three capabilities are **not** cleanly composable
-from the public contract today. Each is tied to work in flight; a host either waits for the seam or
-scopes the capability out. None is a wire concern.
+Three composition limits remain. A host must supply the missing isolation or integration,
+or leave the affected capability unavailable.
 
-1. **Delivery immediate live eviction and a fully-hosted membership feed.** The renewable
-   `membership-rw.creds` is now a `SecretStore` kind. `startMembership` reads it through the
-   injected store, and the manager re-signs it there. The graph-feed writer therefore renews on a hosted
-   backend (its data connection adopts each generation on a preflight-proven 75% timer). What still
-   reads from a fixed on-disk path are the *static* `membership-observer.creds` and
-   `connection-evictor.creds` ($SYS creds, minted at the `up` that provisions the account and renewed by `up --rotate-sys`) and `membership.json`
-   (`{accountId}`, non-secret config); those, plus the private provisioning wrapper, keep immediate
-   live eviction and a fully-hosted feed a partial gap. A host that re-mints the observer into the
-   injected store under the same system signer and scope has it adopted by the running feed at 75%
-   of its lifetime. Missing files degrade membership to
-   traffic-only and make live eviction refuse (loudly). The supported delivery contract here is the
-   Plane-3 durable backstop.
-2. **Supervisor signer isolation.** `ManagerOptions.secretStore` now injects the one `SecretStore` the
+Membership and live eviction already read their credentials through `SecretStore`.
+`startMembership` reads the data-account writer and system-account observer there; eviction
+reads the observer and evictor pair on each operation. Both use per-space keys and check
+that the observer names the daemon's account. The feed derives that account from the
+daemon's credential, without `membership.json`. The host still owns provisioning and
+rotation. An absent observer leaves the feed traffic-only; missing eviction authority
+refuses eviction. The membership reader can adopt a host-renewed observer with the same
+issuer and scope at 75% of its lifetime.
+
+1. **Supervisor signer isolation.** `ManagerOptions.secretStore` now injects the one `SecretStore` the
    manager reads/writes every secret through, including the composed `SpaceAuth`
    signer (the split trust records), its daemon-cred renewal, and its per-agent kinds. What remains is process
    isolation: the manager still decrypts the signer in-process at its uid, so untrusted agent children
    must run under a different uid/container/mount namespace or behind a future remote signer.
-3. **Per-space lifecycle on a shared broker.** The trust layer is multi-space
+2. **Per-space lifecycle on a shared broker.** The trust layer is multi-space
    (`createBrokerAuth` + `createSpaceAccountAuth` + N-space `serverConfig`, persisted as
-   `broker.json` + `account.<key>.json`) and `cotal up` renders the whole tenant list, but there is
-   no per-space provisioning verb and no per-space teardown/backup/restore: the CLI's broker-wide
-   lifecycle verbs refuse on a multi-space root, naming the tenants.
-   This is the remaining multi-space operator layer.
-4. **A non-Better-Auth production IdP.** The exchange core (`createIdpBridge`) is EdDSA-generic, but
+   `broker.json` + `account.<key>.json`) and `cotal up` renders the whole tenant list. The CLI
+   still lacks tenant-account provisioning and per-space teardown/backup/restore on that
+   broker. Its broker-wide lifecycle verbs refuse on a multi-space root, naming the tenants.
+   The existing `cotal space add` registers a connection, and `space delete` removes a
+   space's streams; neither supplies that tenant-account lifecycle.
+3. **A non-Better-Auth production IdP.** The exchange core (`createIdpBridge`) is EdDSA-generic, but
    the stock provider and login client are Better-Auth-endpoint-shaped, `cotalAuthProvider`
    self-registers on import (colliding with a host-owned provider under `resolveAuthProvider`), and
    the login flow speaks Better Auth's device-code endpoints. A different IdP is a host-built auth
@@ -1230,7 +1228,7 @@ place and keep:
 | `delivery.creds` | standing scoped cred | `SecretStore` or `--creds` | `SecretStore` (delivery) |
 | actor ledger, IdP pin | authorization + trust config | ambient `userAuthStateDir(findCotalRoot(), space)` | none (root-relative; not `store`/`COTAL_HOME`) |
 | `membership-rw.creds` | standing scoped cred | `SecretStore` | `SecretStore` (delivery + manager renewal) |
-| membership-observer / connection-evictor creds + `membership.json` | scoped $SYS creds / config | workspace filesystem | none (see gap 1) |
+| membership-observer / connection-evictor creds | scoped $SYS creds | per-space `SecretStore` keys | injected `SecretStore`; account identity is checked against the daemon credential, not `membership.json` |
 | manager agent creds, actor tokens, sentinel creds | lifecycle authority | `SecretStore` | `SecretStore` (manager `secretStore`) |
 | `~/.cotal/meshes/space.<key>.json` record (holds IdP trust pins/root pointers) | non-secret, integrity-critical | machine home | process-global `COTAL_HOME` only |
 | auth-health, renewal records | non-secret diagnostics | workspace filesystem | `workspaceRoot` |
@@ -1259,7 +1257,7 @@ ledger row. It verifies the current manager registration proof, space, account a
 no owner or attribution from the body.
 
 `AuthAuthorityPlane.revokeManagerRun` implements the operation. `AuthProvider.requestRemoteRunRevoke`
-transports it, and `remoteRunHosting` supplies `RunHostingContext.revokeRun` for a signerless
+transports it, and `remoteManagerClient.remoteRunHosting` supplies `RunHostingContext.revokeRun` for a signerless
 manager. The callback returns the stored `RunRevocation`, including on repeats. A host composing
 its own remote authority must supply that callback to revoke. No signer reaches the participant.
 CLI and MCP revoke verbs are a follow-up described in the [run-start design](design/user-auth-run-start.md).
@@ -1479,8 +1477,9 @@ another account, a bearer from another issuer, space, subject or key, one that n
 witness or no serve duty, a closure set or artifact that is not the embedded one, and a closure
 that does not read at its digest. `authorizeTrustedServeSnapshot` stays the host's.
 
-For a serving connection, `serviceEndpointRenewal({ store, dir, witness })` returns that loop as a
-bearer function: pass its `bearer` as `EndpointOptions.bearer` and its `sentinelCreds` with it. The
+For a serving connection, the auth provider's `serviceEndpointRenewal({ store, dir, witness })` hook
+returns that loop as a bearer function. It is an `AuthProvider` method, not a package export. Pass
+its `bearer` as `EndpointOptions.bearer` and its `sentinelCreds` with it. The
 first pull activates on the signed-in login and every later pull renews on the stored renewal proof.
 If that proof has expired, as after a machine was off for more than a day, the next pull replays the
 same activate request on the signed-in login, which mints again while the root and the approval stand.

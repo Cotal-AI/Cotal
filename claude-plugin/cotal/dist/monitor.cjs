@@ -137,6 +137,30 @@ function hasIdentity(env = process.env) {
 // ../connector-core/dist/control.js
 var MAX_FRAME_BYTES = 1 << 20;
 
+// src/approval-notice.ts
+var APPROVAL_ID = /^[a-z2-7]{26}$/;
+var STATUSES = /* @__PURE__ */ new Set(["approved", "denied", "expired"]);
+function approvalFrame(frame) {
+  const approval = frame?.approval;
+  if (!approval || typeof approval !== "object") return void 0;
+  const { name, status, id } = approval;
+  if (typeof name !== "string" || !name || name.length > 128 || /[\r\n]/.test(name) || name !== name.trim()) return void 0;
+  if (typeof status !== "string" || !STATUSES.has(status)) return void 0;
+  if (typeof id !== "string" || !APPROVAL_ID.test(id)) return void 0;
+  return { name, status, id };
+}
+function approvalEvent(n) {
+  const name = JSON.stringify(n.name);
+  switch (n.status) {
+    case "approved":
+      return `Cotal: the person approved connection ${name}. Finish it: call cotal_connect with name ${name} and approval_id ${JSON.stringify(n.id)}.`;
+    case "denied":
+      return `Cotal: the person denied connection ${name}. Nothing was connected. Do not ask again unless the person asks you to.`;
+    case "expired":
+      return `Cotal: the approval for connection ${name} expired before the person decided. Nothing was connected. Call cotal_connect with name ${name} again to ask again.`;
+  }
+}
+
 // src/wake-feed.ts
 var import_node_fs2 = require("node:fs");
 var import_node_os = require("node:os");
@@ -348,6 +372,12 @@ function main() {
         try {
           if (line.length > INLINE_FRAME_LIMIT) continue;
           const frame = JSON.parse(line);
+          const decided = approvalFrame(frame);
+          if (decided) {
+            process.stdout.write(`${approvalEvent(decided)}
+`);
+            continue;
+          }
           if (isNativeInlineFrame(frame)) {
             if (frame.inline.session === session && frame.route === path)
               process.stdout.write(`Cotal inline delivery: ${JSON.stringify(frame)}
