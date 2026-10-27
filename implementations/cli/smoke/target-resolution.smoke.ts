@@ -30,7 +30,7 @@
  * Run: pnpm smoke:target-resolution
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, teardownOnSignal, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -430,8 +430,21 @@ const QUESTION = "Which one?";
   // lock creates `.cotal/maintenance` before these refusals, and a folder left with it reads as a
   // root of the default space.
   const fresh = mkdtempSync(join(tmpdir(), "cotal-target-resolution-fresh-"));
+  // A process umask of 0002 leaves this directory group-writable, and `up -f` refuses that before
+  // it reads the manifest. The temp root is private, so tightening only this directory changes nothing else.
+  chmodSync(fresh, 0o700);
   try {
     const entries = () => readdirSync(fresh).sort().join(",");
+    writeFileSync(join(fresh, "two.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: gamma\nbroker: { servers: "${A},${A}" }\nchannels: {}\n`);
+    const two = run(["up", "-f", "two.yaml", "--dry-run"], fresh);
+    check("up -f --dry-run with two broker.servers entries refuses, exit 1, naming broker.servers and the single bind, with no help",
+      two.status === 1 && two.stdout === "" && /broker\.servers names more than one broker address, and up -f binds a single broker address/.test(two.stderr) && /set broker\.servers in .*two\.yaml to one address/.test(two.stderr) && !/Usage|Options|Invalid URL/.test(two.stderr) && entries() === "two.yaml", shown(two));
+    writeFileSync(join(fresh, "one.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: gamma\nbroker: { servers: "${A}" }\nchannels: {}\n`);
+    const flagged = run(["up", "-f", "one.yaml", "--server", `${A},${A}`, "--dry-run"], fresh);
+    check("up -f --dry-run with two --server entries refuses, exit 1, naming --server",
+      flagged.status === 1 && flagged.stdout === "" && /--server names more than one broker address, and up -f binds a single broker address/.test(flagged.stderr) && /pass one --server address/.test(flagged.stderr) && !/Usage|Options|Invalid URL/.test(flagged.stderr) && entries() === "one.yaml,two.yaml", shown(flagged));
+    rmSync(join(fresh, "one.yaml"));
+    rmSync(join(fresh, "two.yaml"));
     writeFileSync(join(fresh, "list.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: gamma\nbroker: { servers: ["${A}"] }\nchannels: {}\n`);
     const invalid = run(["up", "-f", "list.yaml"], fresh);
     check("up -f with a manifest that does not validate refuses, exit 1, and leaves the folder as it found it",

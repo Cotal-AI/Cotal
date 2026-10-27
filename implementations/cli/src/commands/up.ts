@@ -3255,6 +3255,7 @@ export async function prepareFreshTeamBoot(file: string, opts: { space: string; 
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, flags);
   const m = eff.manifest;
   const host = m.broker?.host ?? "127.0.0.1";
+  refuseMultiBrokerBind(m.broker?.servers, serverSource, m.space, file, true);
   const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, hostSource, serverSource) : (m.broker?.servers ?? DEFAULT_SERVER);
   const open = m.broker?.auth === false;
   const mode = open ? "open" as const : m.broker?.auth === "user" ? "user" as const : "auth" as const;
@@ -3287,6 +3288,7 @@ export async function prepareResumeTeamBoot(file: string, opts: { space: string;
     throw new CommandFailure("refused", "CONFLICT", "the team manifest no longer names the selected space; nothing was resumed", { target: { selectedSpace: opts.space, declaredSpace: prepared.manifest.space } });
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, { transport: opts.transport, dryRun: false, freshTeamBoot: true });
   const m = eff.manifest;
+  refuseMultiBrokerBind(m.broker?.servers, serverSource, m.space, file, true);
   const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, hostSource, serverSource) : (m.broker?.servers ?? DEFAULT_SERVER);
   const open = m.broker?.auth === false;
   const mode = open ? "open" as const : m.broker?.auth === "user" ? "user" as const : "auth" as const;
@@ -3331,6 +3333,21 @@ export function controllerStackNative(): StackUpNative {
     recordMesh: (entry) => recordOurMesh({ ...entry, ts: new Date().toISOString() }, "started", true),
     commitTransport: (root, chosen, authTimeout) => commitTransportPolicy(root, chosen, true, undefined, authTimeout),
   };
+}
+
+/** `up -f` creates one broker, so its effective address is one URL. A comma-separated list is a
+ *  connect target (the shared resolver and `topology view` accept it) and cannot be a bind address.
+ *  Refused before any parse, naming `source` (`broker.servers` or `--server`). A fresh team boot
+ *  throws, because that path reports through the outcome table; the ordinary path prints the same
+ *  sentence and exits 1, as the URL-shape check just above it does. */
+function refuseMultiBrokerBind(servers: string | undefined, source: string, space: string, file: string, fresh: boolean): void {
+  if (servers === undefined || servers.split(",").filter((entry) => entry.trim()).length <= 1) return;
+  const message = `${source} names more than one broker address, and up -f binds a single broker address; nothing was started or written`;
+  const remedy = source === "--server" ? "pass one --server address" : `set broker.servers in ${file} to one address`;
+  if (fresh) throw new CommandFailure("refused", "USAGE_INVALID", message, { target: { space, source }, remedy });
+  stderrLine("✗ ", `${message}`, c.red);
+  stderrLine("  ", remedy, c.dim);
+  process.exit(1);
 }
 
 /** The structured refusal for a manifest `up -f` cannot use: the located problems of one that does
@@ -3398,6 +3415,8 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, opts);
   const m = eff.manifest;
   const host = m.broker?.host ?? "127.0.0.1";
+  // up -f binds one new broker. Refused before any parse, naming the source.
+  refuseMultiBrokerBind(m.broker?.servers, serverSource, m.space, file, opts.freshTeamBoot === true);
   // Same bind-vs-probe reconciliation as the flag path: a manifest that sets `broker.host` without
   // an explicit `broker.servers` would otherwise bind one address and be probed at another.
   const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, hostSource, serverSource) : (m.broker?.servers ?? DEFAULT_SERVER);
