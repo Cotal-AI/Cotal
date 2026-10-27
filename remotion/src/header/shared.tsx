@@ -2,8 +2,8 @@
 // HeaderModesReel, HeaderAssemble, HeaderBanner). Same cream/gold brand
 // language as the README connection-type cards (src/modes/scene.tsx), but:
 //   - a SOLID cream full-bleed background (1-bit GIF alpha looks rough), and
-//   - wire/beam primitives sized to the whole composition (scene.tsx's hardcode
-//     the 860x620 STAGE in their <svg>, which clips wide header layouts).
+//   - wire/beam primitives sized to the whole composition (scene.tsx's fill
+//     the card, which clips wide header layouts).
 // Each variant imports from here + ../modes/scene and authors in its own comp
 // coordinate space.
 
@@ -45,7 +45,6 @@ export {
   GOLD,
   INK,
   NODE_R,
-  STAGE,
 } from "../modes/scene";
 export type { Pt } from "../modes/scene";
 export {
@@ -84,7 +83,7 @@ export const CreamStage: React.FC<{
   </AbsoluteFill>
 );
 
-// --- full-frame SVG layer + wire/beam/pulse (no 860x620 clip) ------------------
+// --- full-frame SVG layer + wire/beam/pulse (fills the frame) ------------------
 
 // An <svg> sized to the whole composition. Put <path>s for wires/beams inside.
 export const Field: React.FC<{ children: React.ReactNode }> = ({ children }) => {
