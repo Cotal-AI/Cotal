@@ -98,6 +98,19 @@ export class ManagerPinUnmatched extends CommandFailure {
   }
 }
 
+/** A named agent that the search found on no single manager: each of `managers` holds it, or each
+ *  did not answer while every manager that answered lacks it. A terminal is asked `question`, among
+ *  `managers` only. */
+export class AgentManagerUnsettled extends CommandFailure {
+  constructor(readonly question: string, readonly managers: readonly ManagerCandidate[], code: "TARGET_AMBIGUOUS" | "TARGET_UNAVAILABLE", message: string, target: Record<string, unknown>) {
+    super("refused", code, message, { target, native: { detail: { managers } }, remedy: "rerun it with --on naming one of the managers listed" });
+  }
+}
+
+/** The managers `instanceIds` name, as `known` shows them, or by instance id alone. */
+export const managersByInstance = (instanceIds: readonly string[], known: readonly ManagerCandidate[] = []): ManagerCandidate[] =>
+  instanceIds.map((instanceId) => known.find((m) => m.instanceId === instanceId) ?? candidateOf(instanceId, undefined));
+
 const targetFlags = (values: { space?: unknown; server?: unknown }) =>
   ({ ...(typeof values.space === "string" ? { space: values.space } : {}), ...(typeof values.server === "string" ? { server: values.server } : {}) });
 
@@ -279,18 +292,21 @@ function choose(chosen: ManagerCandidate, managers: readonly ManagerCandidate[],
 
 /**
  * The manager to rerun a command on, asked on this terminal after its unpinned manager selection
- * was refused among several live managers: the most recently started is listed first and is the
- * default. The question and the chosen manager are written to stderr, so `--json` output stays
- * whole. The pick is the `--on` the refusal's Next reruns with, and the refusal came before any
- * effect. Undefined for any other failure, and null when the question is cancelled.
+ * was refused among several live managers, or after a named agent was found on no single manager,
+ * when only the managers that hold it or did not answer are listed: the most recently started is
+ * listed first and is the default. The question and the chosen manager are written to stderr, so
+ * `--json` output stays whole. The pick is the `--on` the refusal's Next reruns with, and the
+ * refusal came before any effect. Undefined for any other failure, and null when the question is
+ * cancelled.
  */
 export async function pickManager(failure: CommandFailure, readRoster: () => Promise<readonly Presence[]>, argv: readonly string[]): Promise<ManagerCandidate | null | undefined> {
-  const managers = await severalLive(failure, readRoster);
-  if (!managers) return undefined;
+  const unsettled = failure instanceof AgentManagerUnsettled ? failure : undefined;
+  const managers = unsettled ? [...unsettled.managers] : await severalLive(failure, readRoster);
+  if (!managers?.length) return undefined;
   const { newest, options } = managerOptions(managers);
   const prompts = await import("./prompts.js");
   const picked = await prompts.select({
-    message: `${managers.length} of your managers are live. Which one should run this?`,
+    message: unsettled?.question ?? `${managers.length} of your managers are live. Which one should run this?`,
     options,
     initialValue: 0,
     output: process.stderr,
@@ -439,17 +455,17 @@ export async function askManagerFolder(
 }
 
 /** `failure` restated as the choice it is, when it is the refusal of an unpinned manager selection
- *  among several live managers, or a `--on` that picked no single manager: each manager by name,
- *  with its instance id and the host, activity and process start its presence reports, and a Next
- *  that reruns `argv` on each. The outcome and code are kept. The roster is read only for the
- *  unpinned refusal, and one that cannot be read leaves the instance ids. Undefined for any other
- *  failure. */
+ *  among several live managers, a `--on` that picked no single manager, or a named agent found on
+ *  no single manager: each manager by name, with its instance id and the host, activity and process
+ *  start its presence reports, and a Next that reruns `argv` on each. The outcome and code are kept.
+ *  The roster is read only for the unpinned refusal, and one that cannot be read leaves the instance
+ *  ids. Undefined for any other failure. */
 export async function managerChoiceFailure(
   failure: CommandFailure,
   readRoster: () => Promise<readonly Presence[]>,
   argv: readonly string[],
 ): Promise<CommandFailure | undefined> {
-  if (failure instanceof ManagerPinUnmatched) {
+  if (failure instanceof ManagerPinUnmatched || failure instanceof AgentManagerUnsettled) {
     if (!failure.managers.length) return undefined;
     return new CommandFailure(failure.outcome, failure.code, failure.message, { target: failure.target, native: failure.native, remedy: reruns(failure.managers, argv), cause: failure });
   }
