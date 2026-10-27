@@ -65,7 +65,6 @@ import {
   restoreLeftOut,
 } from "@cotal-ai/workspace";
 import { jetstreamManager } from "@nats-io/jetstream";
-import type { NatsConnection } from "@nats-io/transport-node";
 import {
   DEV_OWNER,
   dialerFor,
@@ -90,6 +89,7 @@ import { cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
 import { parsePid, probeLiveness, readPidfile } from "@cotal-ai/workspace";
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
+import { directKvValue, refuseLiveUnrecordedDaemons } from "./down-live-lease.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
@@ -488,10 +488,8 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   validateDownArguments(args);
   if (args.positionals.length > 1) return stopNamedServiceSet(args);
   if (args.positionals.length) return service(namedStopArguments(args), "down");
-  // A stack whose folder is gone stops from this machine's records, wherever down runs.
   const gone = goneRootDown(args.values);
   if (gone) return goneRootStackDown(gone.space, gone.root, args.values);
-  // A root whose stack the service controller owns stops only through its recorded members.
   if (controllerStackRecorded(cotalRoot())) return stackDown(cotalRoot(), args.values);
   const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; "session-store"?: string[]; space?: string };
   // A legacy root whose stack is already stopped: a bare down and its preview stop nothing.
@@ -500,6 +498,9 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     // A root that never started a stack never ran a manager, so it has no agents to stop.
     if (stopped) {
       const { started, ...target } = stopped;
+      // Missing pidfiles are not proof the daemons stopped. A live lease refuses before this
+      // answers that nothing is running, and before the broker is stopped.
+      await refuseLiveUnrecordedDaemons(localProcessSurface(), { root: target.root, space: target.space ?? resolveRuntimeSpace(process.cwd()) });
       return nothingRunning(presentationOf(args.values), target, values["with-agents"] === true && started, [], values["dry-run"] === true);
     }
   }
@@ -557,6 +558,9 @@ async function downCommand(args: ParsedArgs): Promise<void> {
 
   let any = false;
   let allStopped = true;
+  // A missing manager or delivery pidfile is not proof those daemons stopped. They renew leases
+  // while they run, so a live lease with no pidfile refuses before the broker is stopped.
+  await refuseLiveUnrecordedDaemons(selected, { ...folderCtx(), space: guarded.space });
   for (const component of selected) {
     await interrupt.between();
     const recorded = processRecorded(component, folderCtx());
@@ -1085,32 +1089,6 @@ async function connectorCapabilities(name: string): Promise<Pick<Connector, "sup
 function resolveStore(path: string): string {
   const resolved = path.startsWith("/") ? path : join(process.cwd(), path);
   return resolved;
-}
-
-/** Direct Get one KV subject's last value without creating any consumer. `allowEmpty` treats a
- *  DEL/PURGE tombstone as absence instead of an error. */
-async function directKvValue<T>(
-  nc: NatsConnection,
-  stream: string,
-  subject: string,
-  allowEmpty = false,
-): Promise<T | undefined> {
-  const response = await nc.request(
-    `$JS.API.STREAM.MSG.GET.${stream}`,
-    JSON.stringify({ last_by_subj: subject }),
-    { timeout: 5_000 },
-  );
-  const body = JSON.parse(new TextDecoder().decode(response.data)) as {
-    message?: { data?: string; hdrs?: string };
-    error?: { description?: string };
-  };
-  if (body.error) throw new Error(`maintenance inventory read failed: ${body.error.description ?? "JetStream error"}`);
-  if (!body.message?.data) {
-    const headers = body.message?.hdrs ? Buffer.from(body.message.hdrs, "base64").toString("utf8") : "";
-    if (allowEmpty && /^KV-Operation:\s*(?:DEL|PURGE)\s*$/im.test(headers)) return undefined;
-    throw new Error(`maintenance inventory is missing ${subject}`);
-  }
-  return JSON.parse(Buffer.from(body.message.data, "base64").toString("utf8")) as T;
 }
 
 /** Wire-truth control-plane quiescence: a live manager/delivery daemon renews its lease

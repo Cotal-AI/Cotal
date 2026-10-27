@@ -808,6 +808,7 @@
     "smoke:mint-provision:auth": "tsx implementations/cli/smoke/mint-provision.smoke.ts",
     "smoke:down-lease-tombstone": "tsx implementations/cli/smoke/down-lease-tombstone.smoke.ts",
     "smoke:down-target": "tsx implementations/cli/smoke/down-target.smoke.ts",
+    "smoke:down-pidfile-liveness:live": "tsx implementations/cli/smoke/down-pidfile-liveness-live.smoke.ts",
     "smoke:flag-inventory": "tsx bin/smoke/flag-inventory.smoke.ts",
     "smoke:capability-census": "tsx bin/smoke/capability-census.smoke.ts",
     "smoke:capability-census:live": "tsx bin/smoke/capability-census-live.smoke.ts",

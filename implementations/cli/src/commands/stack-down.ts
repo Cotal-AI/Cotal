@@ -26,6 +26,8 @@ import { instanceProjection, observeServiceProcess, serviceInstances, serviceIns
 import { abandonableSignalStop, assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, readinessAddressSurvivors, resumableSignalStop, retainedStopRequest, settleExitedInstance, PROCESS_STOP_GRACE_MS, stopProcessService } from "../lib/service-process.js";
 import { abandonLaunchRemedy, abandonRemedy, abandonRetainedStackStop, abandonUnresolvedStackLaunch, acquireStackOperationLock, interruptedUpLeftManagerOut, newStackOperation, localRecords, previewStackSettlement, processGone, readStackJournal, recordedProcessesUnder, recordedProcessLine, refuseControllerCut, removeStaleLocalRecords, RESUME_REMEDY, runningStackRoles, settleRetainedStackStops, STACK_DEFINITION, STACK_ROLES, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, staleRecordNotice, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { readStackRuns } from "../lib/stack-runs.js";
+import { refuseLiveUnrecordedDaemons } from "./down-live-lease.js";
+import { localProcessSurface } from "../ext-loader.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -349,7 +351,10 @@ async function previewStackStop(root: string, values: ParsedArgs["values"], pres
   const { journal0, settlement, members, target } = stopTarget(root, values);
   // As the real stop does, a stack its own down stopped refuses --with-agents unless that down took it.
   const stopped = alreadyStopped(journal0, members);
-  if (stopped || stackNeverStarted(journal0)) return nothingRunning(presentation, target, stopped && withAgents && !journal0.operation.withAgents, [], true);
+  if (stopped || stackNeverStarted(journal0)) {
+    await refuseLiveUnrecordedDaemons(localProcessSurface(), { root, space: journal0.space });
+    return nothingRunning(presentation, target, stopped && withAgents && !journal0.operation.withAgents, [], true);
+  }
   // A preview reports what would refuse the real stop instead of refusing itself.
   let blocked: CommandFailure | undefined, restore: string | undefined, stranded: ReturnType<typeof strandedRegistration>;
   try { restore = scopeRefusals(journal0); stranded = strandedRegistration(journal0, members); assertJournalWritable(root, values); assertServiceRecordsWritable(root, journal0.space, values); }
@@ -417,8 +422,13 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   const { previous, journal0, settlement, members, target } = stopTarget(root, values);
   // The completed down that stopped the stack also stopped its agents when it took --with-agents, so
   // a repeat has nothing left to stop. A stack that never started has no agents either.
-  if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && !journal0.operation.withAgents, [...abandonWarnings, ...await readinessAddressSurvivors(journal0.space)]);
-  if (stackNeverStarted(journal0)) return nothingRunning(presentation, target, false, abandonWarnings);
+  if (alreadyStopped(journal0, members) || stackNeverStarted(journal0)) {
+    // A controller stack with no recorded member can still have a manager or delivery daemon whose
+    // pidfile was moved. Its lease is the evidence, read before this stop reports nothing running.
+    await refuseLiveUnrecordedDaemons(localProcessSurface(), { root, space: journal0.space });
+    if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && !journal0.operation.withAgents, [...abandonWarnings, ...await readinessAddressSurvivors(journal0.space)]);
+    return nothingRunning(presentation, target, false, abandonWarnings);
+  }
   // A stopped broker takes connections and never answers, so every read through it would wait out
   // its budget and the broker's own stop would wait on a signal it cannot act on.
   const broker = members.find((member) => member.role === "broker" && member.live);

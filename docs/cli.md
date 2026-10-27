@@ -1671,7 +1671,9 @@ that finishes it: `cotal down --run <id>` for a readable one, and for an unreada
 could not be read and the same command once it is repaired. It reads each record its sweep stops as the stopped-stack check
 above does. A record that check leaves unread, such as one behind a link, refuses `LIFECYCLE_BLOCKED`
 before the first stop and is named once, where reading stopped. No process behind it is read or
-signalled, and no record is removed. These are known-blocker
+signalled, and no record is removed. A manager or delivery daemon whose pidfile is gone while
+its lease is still live refuses `LIFECYCLE_BLOCKED`, exit 2, before the broker stops. The refusal
+names that daemon and says to stop it, or put its pidfile back, then run `cotal down` again. These are known-blocker
 checks, not a complete live broker-sharing or stop plan; aliases, remote tenants,
 agent impact and process identity remain unproved. These paths do not check full
 whole-stack target ownership, set exclusion, confirmed agent impact or schema
