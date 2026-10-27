@@ -209,6 +209,10 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   `--opt permission-mode=default` (or another mode); the connector adds the default only when the
   launch options carry neither `permission-mode` nor `dangerously-skip-permissions`. Claude refuses
   the bypass mode as root and under a policy that disables it; such a host must pass a mode.
+  Claude also asks each user to accept the bypass mode once, in a warning only that user may answer.
+  Cotal never answers it. A managed seat that stops on it fails at the startup bound, and the error
+  names both ways forward: accept it yourself once with `claude --permission-mode bypassPermissions`
+  in a terminal, or launch with `--opt permission-mode=default`.
 
 - **Model auth.** Locally, `claude` still reads macOS Keychain / `~/.claude`. In a container or
   CI there is no Keychain, so the connector forwards the documented credential set:
@@ -266,7 +270,10 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   not wake it while it is idle. The PTY runtimes read the child's screen, and the tmux, cmux, Orca
   and Herdr runtimes read the pane's screen. If neither the prompt nor the input screen appears
   within 15 seconds, the seat ends with a bounded error naming the unmatched prompt instead of
-  hanging silently or answering another dialog. The PTY runtime writes that error to the seat's output and
+  hanging silently or answering another dialog. Claude's first-run screens, the text style picker and
+  the login method choice, and its Bypass Permissions warning are screens Cotal never answers. When
+  the bound ends on one of them, the error names it and the step that clears it, such as running
+  `claude` once in a terminal as that user to finish setup and log in. The PTY runtime writes that error to the seat's output and
   stops the child as a graceful stop does, so a child that ignores SIGTERM is killed 3 seconds
   later. Confirmation ends before the stop begins, so later child output receives no startup
   response. The other runtimes write the error to the manager's log.

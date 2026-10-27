@@ -14,6 +14,7 @@ export interface SeatLaunchSpec {
   confirm?: string;
   confirmBefore?: readonly import("./startup-confirm.js").StartupReply[];
   confirmReady?: readonly string[];
+  confirmBlockers?: readonly import("./startup-confirm.js").StartupBlocker[];
   /** The launch's private temporary directories, recorded on the seat record (see SeatRecord). */
   artifacts?: string[];
 }
@@ -204,6 +205,7 @@ function startCustodian(opts: LaunchSeatOpts, artifactRoot: string) {
     confirm: opts.spec.confirm,
     confirmBefore: opts.spec.confirmBefore,
     confirmReady: opts.spec.confirmReady,
+    confirmBlockers: opts.spec.confirmBlockers,
     ...(opts.spec.artifacts?.length ? { artifacts: opts.spec.artifacts, artifactRoot } : {}),
     run,
     // Resolved HERE, not in the custodian: the custodian's environment is scrubbed to `PATH` plus the

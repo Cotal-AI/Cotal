@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, writeLaunchArtifact, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
-import { CLAUDE_READY_TEXTS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
+import { CLAUDE_READY_TEXTS, CLAUDE_STARTUP_BLOCKERS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
 import { claudeUserMcpEnvKeys } from "./user-mcp.js";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
@@ -349,6 +349,7 @@ export const claudeConnector: Connector = {
       // Claude skips the gate when channels are off for the session, and opens its input screen.
       confirm: "WARNING: Loading development channels",
       confirmReady: CLAUDE_READY_TEXTS,
+      confirmBlockers: CLAUDE_STARTUP_BLOCKERS,
       ...(opts.cwd ? { confirmBefore: CLAUDE_WORKSPACE_TRUST_REPLIES } : {}),
       control,
       ...(opts.carried ? { resumeRecordPath: carriedForkRecord(opts.carried.home) } : {}),

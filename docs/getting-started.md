@@ -128,6 +128,27 @@ cotal watch                # watch live mesh observations in the terminal
 cotal down                 # stop everything
 ```
 
+### Before the manager launches Claude Code
+
+A bare `cotal spawn` runs Claude Code in your terminal, where you answer its first-run screens
+yourself. An agent the manager launches (`cotal spawn --detach`, `cotal_spawn` or `cotal up -f`)
+has nobody at its terminal, and Cotal does not answer those screens. Do Claude's first run once
+beforehand: run `claude` in a terminal as the same user, pick a text style, log in, then exit.
+
+A managed Claude agent runs in Bypass Permissions mode, which Claude asks each user to accept
+once. Cotal never accepts it for you. Pick one route:
+
+- Accept it yourself: run `claude --permission-mode bypassPermissions` in a terminal and choose
+  `Yes, I accept`.
+- Keep Claude's normal prompts: launch with `--opt permission-mode=default`, or in a manifest give
+  the agent `launchOptions: {permission-mode: default}`. The agent joins without the warning, and
+  each tool call it makes, mesh tools included, waits at its terminal until you answer it there:
+  `cotal attach <name>` on the built-in `pty` runtime, or the agent's window in the runtime's own
+  app, such as `tmux attach-session -t cotal-<space>` for `tmux`.
+
+A managed launch that stops on one of these screens fails after 15 seconds, and the manager's log
+under `.cotal/` names the screen and the step that clears it.
+
 The dashboard ships with `cotal-ai`, but its service definition and explicit credential are
 configured separately. See [Watch a mesh](watch-a-mesh.md#web-dashboard) for its supported scope.
 `cotal console` also provides the terminal TUI.

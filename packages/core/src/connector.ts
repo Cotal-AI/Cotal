@@ -1,6 +1,6 @@
 import type { Extension, ExtensionRef } from "./registry.js";
 import type { McpServerSpec } from "./connector-config.js";
-import type { StartupReply } from "./startup-confirm.js";
+import type { StartupBlocker, StartupReply } from "./startup-confirm.js";
 
 /** Identity + mesh coordinates the manager hands a connector to launch an agent. */
 export interface LaunchOpts {
@@ -165,6 +165,11 @@ export interface LaunchSpec {
    * normalized like confirm. Seen on two consecutive screen reads, it ends the startup watch with
    * no key. Requires confirm. */
   confirmReady?: readonly string[];
+  /** Optional native startup screens the watch never answers, such as a harness's first-run setup or
+   * a safety warning only its user may accept. Each is matched like a confirmBefore prompt. While one
+   * is on screen no key is sent, and when the startup bound ends with one on screen the failure names
+   * its reason. Requires confirm. */
+  confirmBlockers?: readonly StartupBlocker[];
   /** This agent's local control endpoint — the OS path its lifecycle hooks connect to (passed in
    *  the child env as `COTAL_CONTROL_SOCKET`/`COTAL_CONTROL_TOKEN`), plus the first-frame `token`
    *  that authenticates it. The connector mints it in `buildLaunch`; the manager keeps it IN MEMORY
