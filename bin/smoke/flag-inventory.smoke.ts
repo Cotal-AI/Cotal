@@ -310,14 +310,14 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     // `--root` (2026-10): name the workspace root instead of inheriting it from the cwd walk.
     flags: [
       "creds:string", "dev-mint:boolean", "durable:string", "json:boolean", "limit:string",
-      "root:string", "server:string", "shard:string", "shards:string", "space:string", "tls:boolean",
+      "root:string", "server:string", "shard:string", "shards:string", "space:string", "spaces:string", "tls:boolean",
     ],
     positionals: true,
   },
   "__daemon-deliver": {
     flags: [
       "creds:string", "dev-mint:boolean", "durable:string", "json:boolean", "limit:string",
-      "root:string", "server:string", "shard:string", "shards:string", "space:string", "tls:boolean",
+      "root:string", "server:string", "shard:string", "shards:string", "space:string", "spaces:string", "tls:boolean",
     ],
     positionals: true,
   },
