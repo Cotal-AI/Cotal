@@ -1048,7 +1048,7 @@ const SESSION_WORKED_MS = 5_000;
  *  never fix; everything else is worth another attempt. */
 type Established =
   | { ok: true; nc: NatsConnection; grant: SessionGrant; link: RedeemLink; inbox: string; server: string; resumedFrom?: { host: string; source: string } }
-  | { ok: false; kind: AttachRefusal | "fatal"; message: string; fromManager?: true };
+  | { ok: false; kind: AttachRefusal | "fatal"; message: string; fromManager?: true; code?: string; noTerminal?: true };
 
 /** What a caller should DO about a manager refusal. `denied` will not change by asking again;
  *  `gone` is the seat the manager no longer knows, so there is nothing left to attach to; anything
@@ -1192,7 +1192,8 @@ async function establishAttachSession(
     // said once, with the runtime's own guidance for watching the agent where it really runs, and
     // the Next names what does reach the seat - never "inspect and reattach", which cannot succeed
     // here and is the advice this refusal exists to replace.
-    if (first && reply.details?.some((detail) => detail.kind === RUNTIME_NO_TERMINAL_DETAIL))
+    const noTerminal = reply.details?.some((detail) => detail.kind === RUNTIME_NO_TERMINAL_DETAIL) === true;
+    if (first && noTerminal)
       throw new CommandFailure("refused", "UNSUPPORTED", reply.error ? oneLine(reply.error) : "the seat's runtime streams no terminal, so there is none to attach", {
         target: { space: t.space, agent: v.name, managerInstanceId: reply.managerInstanceId ?? on ?? null },
         native: { code: reply.code, outcome: reply.nativeOutcome },
@@ -1200,7 +1201,7 @@ async function establishAttachSession(
       });
     if (first && (reply.preSubmitRefusal || reply.nativeOutcome === "not-executed"))
       throw managerFailure(reply, "terminal attach", { space: t.space, agent: v.name, managerInstanceId: reply.managerInstanceId ?? on ?? null });
-    return { ok: false, kind: attachRefusal(reply.code, reply.details), message: reply.error ?? "error", fromManager: true };
+    return { ok: false, kind: attachRefusal(reply.code, reply.details), message: reply.error ?? "error", fromManager: true, code: reply.code, ...(noTerminal ? { noTerminal: true } : {}) };
   }
   // P2 item 6: the reply is the holder-bound §13.6 session GRANT (no ws:// URL). Redeem it over the
   // mesh. A static-auth mesh mints a per-session, rails-only caller cred from the resolved root's
@@ -1645,7 +1646,7 @@ async function runAttachLoop(
     }
     if (!est.ok) {
       // Nothing changes for the first attach: any refusal is the same loud exit as before.
-      if (first || est.kind === "fatal" || est.kind === "denied") return await done({ kind: "failed", message: est.message });
+      if (first || est.kind === "fatal" || est.kind === "denied") return await done({ kind: "failed", message: est.message, ...(est.fromManager ? { refusal: { code: est.code, noTerminal: est.noTerminal === true } } : {}) });
       if (est.kind === "gone") return await done({ kind: "gone" });
       const notice = reconnectNotice(est, saidWhy);
       if (notice) {
@@ -1724,8 +1725,10 @@ async function runAttachLoop(
 }
 
 /** How the attach finished, decided inside the loop and acted on outside it — so the terminal is
- *  always given back before anything prints or exits. */
-export type AttachVerdict = { kind: "ended"; reason: string } | { kind: "gone" } | { kind: "failed"; message: string };
+ *  always given back before anything prints or exits. A failure the manager refused carries that
+ *  refusal's code and whether it bore the manager's marker that the seat's runtime streams no
+ *  terminal, so a caller can act on it without reading the wording. */
+export type AttachVerdict = { kind: "ended"; reason: string } | { kind: "gone" } | { kind: "failed"; message: string; refusal?: { code?: string; noTerminal: boolean } };
 
 /** What an attach needs to know: the mesh coordinates the control commands take, plus the seat,
  *  plus what an unresolvable mesh does on the first attempt (`exit`, the command's default, or
