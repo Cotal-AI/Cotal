@@ -319,7 +319,9 @@ it does not name. Real containment is still a sandbox or a VM.
 Model discovery is the exception, and it is deliberate rather than an oversight. When the `codex` or
 `opencode` connector enumerates a model catalog (`cotal models`, and the manager's selector), it runs
 that harness with your environment minus Cotal's own `COTAL_*`, and it does **not** consult
-`spawn.env`. Those probes are short-lived catalog reads rather than agent seats, so an allow-list
+`spawn.env`. The file it runs is chosen first: the operator pin (`COTAL_CODEX_BIN`,
+`COTAL_OPENCODE_BIN`), then the absolute path the manager resolved at boot, then the bare name.
+Those probes are short-lived catalog reads rather than agent seats, so an allow-list
 that confines a seat does not confine them.
 
 ### Launch material

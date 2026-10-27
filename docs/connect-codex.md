@@ -57,7 +57,9 @@ The **variant** is Codex's reasoning effort (`minimal` | `low` | `medium` | `hig
 Like the `codex` CLI itself, the connector does not validate model ids or efforts locally. An
 unknown value fails at request time, server-side.
 
-The catalog comes from a short-lived `codex app-server`. If it exits, closes its input, or does
+The catalog comes from a short-lived `codex app-server`, the binary a launch runs:
+`COTAL_CODEX_BIN` when you set it, otherwise the absolute path the manager resolved at boot.
+If it exits, closes its input, or does
 not answer `model/list` within 10 seconds, `cotal models` reports that as the Codex error and the
 manager keeps serving the other connectors.
 
