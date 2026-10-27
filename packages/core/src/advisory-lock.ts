@@ -143,9 +143,17 @@ function readOwner(path: string): { owner?: LockOwner; ino?: number } | undefine
 
 /** Inspect a lock file: absent, stale (dead/aborted owner or torn record), or active with the owner. */
 export function inspectLock(path: string): LockInspection {
+  const inspection = inspectLockSnapshot(path);
+  return inspection.state === "active"
+    ? { state: "active", owner: inspection.owner }
+    : { state: inspection.state };
+}
+
+/** Keep the verdict and the inode from the same owner read together for generation-pinned reclaim. */
+function inspectLockSnapshot(path: string): LockInspection & { readonly ino?: number } {
   const found = readOwner(path);
   if (found === undefined) return { state: "absent" };
-  const owner = found.owner;
+  const { owner, ino } = found;
   if (
     !owner ||
     typeof owner.pid !== "number" ||
@@ -153,9 +161,9 @@ export function inspectLock(path: string): LockInspection {
     owner.pid <= 0 ||
     typeof owner.nonce !== "string"
   ) {
-    return { state: "stale" };
+    return { state: "stale", ino };
   }
-  if (!pidAlive(owner.pid)) return { state: "stale" };
+  if (!pidAlive(owner.pid)) return { state: "stale", ino };
   // PID alive — but is it still the SAME process? A recorded start token that no longer matches means
   // the PID was recycled: the original owner is gone (stale). A token we simply cannot obtain is NOT
   // grounds to reclaim — the live PID keeps the lock active/unknown.
@@ -163,10 +171,10 @@ export function inspectLock(path: string): LockInspection {
     const fields = process.platform === "linux" ? processStatFields(owner.pid) : undefined;
     const now = process.platform === "linux" ? fields?.[19] : processStartToken(owner.pid);
     // Linux keeps zombies addressable by kill(pid, 0). Judge state and identity from one snapshot.
-    if (now === owner.start && fields?.[0] === "Z") return { state: "stale" };
-    if (now !== undefined && now !== owner.start) return { state: "stale" };
+    if (now === owner.start && fields?.[0] === "Z") return { state: "stale", ino };
+    if (now !== undefined && now !== owner.start) return { state: "stale", ino };
   }
-  return { state: "active", owner };
+  return { state: "active", owner, ino };
 }
 
 /** Publish `content` at `path` iff nothing is there — atomic (temp write + hard link). Returns true on
@@ -210,11 +218,9 @@ function reclaimStale(path: string, inspectedIno: number | undefined): LockOwner
   try {
     // Under the sentinel the canonical file is immutable (publish is blocked while it exists), so a
     // re-inspect that is still stale AND the same inode is exactly the generation we set out to reclaim.
-    const found = readOwner(path);
-    if (found === undefined) return; // already gone
-    const state = inspectLock(path).state;
-    if (state === "active") return; // reacquired under us (should not happen while it exists) — leave it
-    if (inspectedIno !== undefined && found.ino !== undefined && found.ino !== inspectedIno) return; // a different generation
+    const inspection = inspectLockSnapshot(path);
+    if (inspection.state !== "stale") return; // already gone or reacquired under us
+    if (inspectedIno !== undefined && inspection.ino !== undefined && inspection.ino !== inspectedIno) return; // a different generation
     unlinkSync(path);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
@@ -280,11 +286,10 @@ function tryAcquireOnce({ path, nonce, content }: Attempt): AttemptResult {
     };
   }
   // Held — inspect and either wait (live) or reclaim (dead).
-  const found = readOwner(path);
-  const inspection = inspectLock(path);
+  const inspection = inspectLockSnapshot(path);
   if (inspection.state === "absent") return { kind: "retry" }; // raced with a release
   if (inspection.state === "stale") {
-    const reclaimer = reclaimStale(path, found?.ino);
+    const reclaimer = reclaimStale(path, inspection.ino);
     return reclaimer ? { kind: "reclaiming", owner: reclaimer } : { kind: "retry" };
   }
   return { kind: "held", owner: inspection.owner };
