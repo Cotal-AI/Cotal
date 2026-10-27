@@ -52,10 +52,12 @@ export function checkedEviction<T>(principal: string, data: unknown, failClosed:
 
 /** The one unverified result every barrier relies on to never authorize: nothing was kicked,
  *  nothing was verified gone, and the note says why. Both evictors log it and return it through
- *  this builder, so a change to the result or its log line cannot land in only one of them. */
-function failClosedWith(log: (line: string) => void): (principal: string, note: string) => EvictionResult {
+ *  this builder, so a change to the result or its log line cannot land in only one of them.
+ *  The logger is read from the options on each call and invoked as a method of them, which is
+ *  how each factory logged before they shared this builder. */
+function failClosedWith(opts: { log: (line: string) => void }): (principal: string, note: string) => EvictionResult {
   return (principal, note) => {
-    log(`auth-barrier-evict: ${principal}: ${note}`);
+    opts.log(`auth-barrier-evict: ${principal}: ${note}`);
     return { principal, kicked: 0, remaining: 0, verifiedGone: false, scanComplete: false, note };
   };
 }
@@ -78,7 +80,7 @@ export function makeDeliveryAdminEvictor(opts: {
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): EvictPrincipal {
-  const failClosed = failClosedWith(opts.log);
+  const failClosed = failClosedWith(opts);
   return async (principal: string): Promise<EvictionResult> => {
     try {
       return await withDeliveryAdminEndpoint(opts, "supervisor", "auth-barrier-evict", async (ep) => {
@@ -99,7 +101,7 @@ export function makeDeliveryAdminEvictor(opts: {
  * refusal, an unreachable rail or an unusable reply leaves every holder it covers unverified.
  */
 export function makeDeliveryAdminHolderEvictor(opts: Parameters<typeof makeDeliveryAdminEvictor>[0]): (holderPrincipals: readonly string[]) => Promise<EvictionResult[]> {
-  const failClosed = failClosedWith(opts.log);
+  const failClosed = failClosedWith(opts);
   return async (principals) => {
     const evictions: EvictionResult[] = [];
     try {
