@@ -119,6 +119,10 @@ export interface RestoreFlags {
   /** Consent for admission gate 3, as the ordinary resume path takes it: a restored journal's
    *  retained seats pass the same gates, so they need the same override available. */
   "accept-stale-checkpoint"?: boolean;
+  /** The JetStream file storage cap, in bytes, the restored listener is started with. `up` parses
+   *  the flag and passes the number; it is journaled so a later adopt records the cap the broker is
+   *  already running. */
+  maxFileStore?: number;
 }
 
 export interface PreparedRestore {
@@ -137,6 +141,9 @@ export interface PreparedRestore {
   inventory: JsonValue;
   serverName: string;
   serverNonce: string;
+  /** The JetStream file storage cap this restore's listener was started with. Absent means the
+   *  broker runs on nats-server's dynamic default, and the adopted record must say the same. */
+  maxFileStore?: number;
   /** True only when reconstructed from durable commit/repair state after coordinator loss. */
   reentry: boolean;
   journalState: "commit-intent" | "manager-committed" | "active" | "degraded";
@@ -150,6 +157,15 @@ type RecoverableRestoreRecord = CommitIntentRecord | RestoreManagerCommittedReco
 function launchString(launch: Readonly<Record<string, JsonValue>>, key: string): string {
   const value = launch[key];
   if (typeof value !== "string" || !value) throw new Error(`restore launch record is missing ${key}`);
+  return value;
+}
+
+/** The store cap a restore launch recorded. Absent is the dynamic default; anything else is a
+ *  damaged journal, refused rather than adopted as a different cap than the listener is running. */
+function journaledLaunchCap(value: JsonValue | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1)
+    throw new Error(`the restore launch records an invalid maxFileStore (${JSON.stringify(value)}); refusing to guess the broker's store cap`);
   return value;
 }
 
@@ -173,6 +189,7 @@ function removeRecordedOwnedPaths(ownedPaths: readonly AttemptOwnedPath[] | unde
 export function rehydratePreparedRestore(root: string, journal: RecoverableRestoreRecord): PreparedRestore {
   const resume = readMaintenanceResumeDocument(root, journal.resume);
   const restoreOnly = launchString(journal.launch, "restoreOnly");
+  const maxFileStore = journaledLaunchCap(journal.launch.maxFileStore);
   if (restoreOnly !== "full" && restoreOnly !== "registry") throw new Error(`unsupported restored selection ${restoreOnly}`);
   const replacementPending = !journal.listenerProof && Boolean(journal.listenerReplacements?.length);
   const serverNonce = journal.listenerProof?.serverNonce ??
@@ -195,6 +212,7 @@ export function rehydratePreparedRestore(root: string, journal: RecoverableResto
     inventory: resume.inventory,
     serverName,
     serverNonce,
+    ...(maxFileStore !== undefined ? { maxFileStore } : {}),
     reentry: !replacementPending,
     journalState: journal.state,
     ...(journal.state !== "commit-intent" && journal.managerCommit ? { managerCommit: journal.managerCommit } : {}),
@@ -1010,7 +1028,11 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     if (JSON.stringify(authorityBeforeMutation) !== JSON.stringify(currentAuthority))
       throw new Error("current trust state changed during restore validation");
     await validateManifest(artifact.manifest, flags, journal, authorityBeforeMutation);
-    const resumeLaunch = (resume.launch ?? {}) as { server?: unknown };
+    const resumeLaunch = (resume.launch ?? {}) as { server?: unknown; maxFileStore?: JsonValue };
+    // The cap the restored broker runs with: the number `up` parsed from the flag, else the cap the
+    // cut preserved. A damaged preserved value is refused here, before anything moves.
+    const preservedCap = journaledLaunchCap(resumeLaunch.maxFileStore);
+    const restoreCap = flags.maxFileStore ?? preservedCap;
     const effectiveServer = canonicalServerEndpoint(controller ? journal.cut.launch.server : flags.server ?? (typeof resumeLaunch.server === "string" ? resumeLaunch.server : "nats://127.0.0.1:4222"));
     // The restored broker binds this address after commit intent, so another listener there would
     // leave the attempt degraded. It is refused here, before anything moves, as backup create does.
@@ -1180,6 +1202,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       ...(rolledBack?.runs.length ? { rolledBackRuns: rolledBack.runs as unknown as JsonValue, ...(rolledBack.more ? { rolledBackRunsMore: rolledBack.more } : {}) } : {}),
       serverName,
       serverNonce,
+      ...(restoreCap !== undefined ? { maxFileStore: restoreCap } : {}),
       // Durable evidence of consent, as the ordinary resume journals it: an operator asking later
       // why a seat resumed from a checkpoint past its horizon reads it from the journal.
       ...(staleConsent.length
@@ -1206,6 +1229,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       inventory: resume.inventory,
       serverName,
       serverNonce,
+      ...(restoreCap !== undefined ? { maxFileStore: restoreCap } : {}),
       reentry: false,
       journalState: "commit-intent",
       cleanupStage: () => {

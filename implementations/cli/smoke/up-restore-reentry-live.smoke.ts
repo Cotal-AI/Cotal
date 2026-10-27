@@ -23,7 +23,10 @@
  *     NAME, because a bare non-zero check would report this finding for an unrelated failure.
  *  3. CONTROL - that pass left `commit-intent` with a bound listener still ALIVE, the precondition
  *     for the re-entry to take the resume branch rather than start over.
- *  4. SUBJECT B - the restore re-entry completes (exit 0) under that same inherited lock.
+ *  4. SUBJECT B - the restore re-entry completes (exit 0) under that same inherited lock, and the mesh
+ *     record it rewrites keeps the store cap the listener was started with. The boot passes
+ *     `--max-file-store`; a restore adopt that drops the field leaves the record disagreeing with the
+ *     broker that is still running.
  *
  * Sandboxes COTAL_HOME under a scratch base with proven-clean `.cotal` ancestry; kills only its own
  * children. Needs `nats-server` on PATH.
@@ -49,6 +52,9 @@ const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
 const prepareIntentPath = join(root, ".cotal", "maintenance", "v1", "prepare-intent.json");
 const artifact = join(root, "registry-backup");
 const coreDist = join(WT, "packages", "core", "dist", "index.js");
+// Comfortably above the space's own reservations, as the ordinary adopt probe uses. What is under
+// test is that the cap survives the restore adopt, not where it sits.
+const CAP = 17179869184;
 
 // A bare unmanaged endpoint the manager did not spawn: the ten-line idle-endpoint shape from
 // console-control.smoke.ts (:68-78), copied because that suite does not export it. It registers
@@ -118,7 +124,7 @@ try {
   const space = "restore_alpha";
 
   console.log("1) CONTROL: a preserved mesh and an artifact to restore from");
-  const first = runSync(["up", "--detach", "--open", "--server", server, "--space", space]);
+  const first = runSync(["up", "--detach", "--open", "--server", server, "--space", space, "--max-file-store", String(CAP)]);
   ok("the ordinary boot exited 0", first.status === 0, tail(first).slice(-1200));
 
   // The cut describes the manager over the ep rails, so it must not be taken until the manager has
@@ -205,6 +211,15 @@ try {
     !/held by a live owner|holds this root|recovery is already in progress|maintenance lock/i.test(log),
     { status: recovered.status, log: log.slice(-2000) });
   ok("the restore re-entry exited 0", recovered.status === 0, { status: recovered.status, log: log.slice(-2000) });
+  const recorded = (() => {
+    const dir = join(home, "meshes");
+    for (const name of existsSync(dir) ? readdirSync(dir).filter((entry) => entry.endsWith(".json")) : []) {
+      const mesh = JSON.parse(readFileSync(join(dir, name), "utf8")) as { space?: string; maxFileStore?: unknown };
+      if (mesh.space === space) return mesh.maxFileStore;
+    }
+    return undefined;
+  })();
+  ok("the adopted restore record keeps the store cap the listener was started with", recorded === CAP, recorded);
 
   runSync(["down"]);
   console.log(`\nUP RESTORE RE-ENTRY SMOKE OK ✅  (${pass} passed)`);

@@ -928,7 +928,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // `up` keeps the startup interrupt notice (`keepsStartupNotice`); a restore reports its own.
     await releaseStartupNotice();
     // A `backup restore` owns stdout for its receipt, so its seat admission lines go to stderr.
-    const prepared = await prepareRestore(cotalRoot(), values as RestoreFlags, restoreSink ? (line) => console.error(line) : undefined);
+    // Parsed here, before the launch is journaled: the later read in the ordinary path is the same
+    // flag, and a restore that waited for it would journal no cap.
+    const restoreCap = parseMaxFileStore(values["max-file-store"]);
+    const prepared = await prepareRestore(cotalRoot(), { ...(values as RestoreFlags), ...(restoreCap !== undefined ? { maxFileStore: restoreCap } : {}) }, restoreSink ? (line) => console.error(line) : undefined);
     pendingRestores.set(prepared.attemptId, prepared);
     const committed = readMaintenanceJournal(prepared.root);
     if (committed && cutController(committed.cut)) {
@@ -1262,6 +1265,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
               server: recoveredRestore.server,
               host: recoveredRestore.host,
               "store-dir": recoveredRestore.targetPath,
+              "max-file-store": recoveredRestore.maxFileStore === undefined ? undefined : String(recoveredRestore.maxFileStore),
               runtime: recoveredRestore.runtime,
               detach: recoveredRestore.detached,
               foreground: !recoveredRestore.detached,
@@ -2845,41 +2849,7 @@ async function verifySpawnedOrdinaryListener(pending: PendingOrdinaryResume): Pr
 
 async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume, heldLock?: MaintenanceLock): Promise<void> {
   await proveOrdinaryResumeListener(pending);
-  await recreateAdoptedMemoryBuckets(pending.root, pending.space, pending.server, pending.mode);
-  const svc = await ensureRecoveredUserAuth(pending);
-  // Read the recorded exposure BEFORE re-recording: `recordOurMesh` writes the entry whole, so a
-  // record built without this field would erase the operator's decision, and the adopted manager
-  // below would then be launched loopback-only from an entry that no longer remembers otherwise.
-  const adoptAttachHost = attachHostFor(pending.space);
-  const adoptMaxSessions = maxSessionsFor(pending.space);
-  recordOurMesh({
-    space: pending.space,
-    server: pending.server,
-    root: pending.root,
-    mode: pending.mode,
-    // Adopted from the recorded policy: this path proves and re-adopts a listener it did not start.
-    tlsRequired: adoptedTlsRequired(pending.root),
-    ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
-    ...(adoptAttachHost ? { attachHost: adoptAttachHost } : {}),
-    ...(adoptMaxSessions !== undefined ? { maxSessions: adoptMaxSessions } : {}),
-    ...(pending.maxFileStore !== undefined ? { maxFileStore: pending.maxFileStore } : {}),
-    storeDir: resolve(pending.storeDir),
-    ts: new Date().toISOString(),
-  }, "started");
-  const controlPlane = await startDeliveryWithBroker(pending.space, pending.server, adoptedTlsRequired(pending.root), {
-    runtime: pending.runtime,
-    attachHost: adoptAttachHost,
-    maxSessions: adoptMaxSessions,
-    resumeAttempt: pending.attemptId,
-    resumeCommit: commitTokenHandoff(pending.root, pending.managerCommit !== undefined, heldLock),
-  });
-  await completeResumeActivation(
-    pending.attemptId,
-    controlPlane !== undefined && svc.ok,
-    !svc.ok ? "adopted resume listener has no user-auth service" : "adopted resume listener has a degraded control plane",
-    pending.server,
-    heldLock,
-  );
+  await adoptProvenListener(pending, pending.storeDir, "adopted resume listener", heldLock);
 }
 
 async function ensureRecoveredUserAuth(
@@ -2901,38 +2871,48 @@ async function ensureRecoveredUserAuth(
 
 async function resumeProvenRestoreListener(prepared: PreparedRestore, heldLock?: MaintenanceLock): Promise<void> {
   await provePreparedRestoreListener(prepared);
-  await recreateAdoptedMemoryBuckets(prepared.root, prepared.space, prepared.server, prepared.mode);
-  const svc = await ensureRecoveredUserAuth(prepared);
-  // Same ordering constraint as the pending-adopt path above: capture the recorded exposure before
-  // `recordOurMesh` rewrites the entry, or a restore silently demotes the mesh to loopback attach.
-  const restoreAttachHost = attachHostFor(prepared.space);
-  const restoreMaxSessions = maxSessionsFor(prepared.space);
+  await adoptProvenListener(prepared, prepared.targetPath, "proven restore listener", heldLock);
+}
+
+/** Record and activate a listener this attempt proved and did not start. Exposure and the store cap
+ *  are read off the attempt before `recordOurMesh` rewrites the entry whole, so neither adopt can
+ *  drop a field the other keeps. `noun` is only the degraded reason's subject. */
+async function adoptProvenListener(
+  attempt: PendingOrdinaryResume | PreparedRestore,
+  storeDir: string,
+  noun: string,
+  heldLock?: MaintenanceLock,
+): Promise<void> {
+  await recreateAdoptedMemoryBuckets(attempt.root, attempt.space, attempt.server, attempt.mode);
+  const svc = await ensureRecoveredUserAuth(attempt);
+  const attachHost = attachHostFor(attempt.space);
+  const maxSessions = maxSessionsFor(attempt.space);
   recordOurMesh({
-    space: prepared.space,
-    server: prepared.server,
-    root: prepared.root,
-    mode: prepared.mode,
-    // Same as the ordinary-resume path: a restore adopts an existing listener, so the requirement
-    // comes from the policy that listener was started from, never from a default.
-    tlsRequired: adoptedTlsRequired(prepared.root),
+    space: attempt.space,
+    server: attempt.server,
+    root: attempt.root,
+    mode: attempt.mode,
+    // The listener was already started, so the requirement comes from the policy it started from.
+    tlsRequired: adoptedTlsRequired(attempt.root),
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
-    ...(restoreAttachHost ? { attachHost: restoreAttachHost } : {}),
-    ...(restoreMaxSessions !== undefined ? { maxSessions: restoreMaxSessions } : {}),
-    storeDir: resolve(prepared.targetPath),
+    ...(attachHost ? { attachHost } : {}),
+    ...(maxSessions !== undefined ? { maxSessions } : {}),
+    ...(attempt.maxFileStore !== undefined ? { maxFileStore: attempt.maxFileStore } : {}),
+    storeDir: resolve(storeDir),
     ts: new Date().toISOString(),
   }, "started");
-  const controlPlane = await startDeliveryWithBroker(prepared.space, prepared.server, adoptedTlsRequired(prepared.root), {
-    runtime: prepared.runtime,
-    attachHost: restoreAttachHost,
-    maxSessions: restoreMaxSessions,
-    resumeAttempt: prepared.attemptId,
-    resumeCommit: commitTokenHandoff(prepared.root, prepared.managerCommit !== undefined, heldLock),
+  const controlPlane = await startDeliveryWithBroker(attempt.space, attempt.server, adoptedTlsRequired(attempt.root), {
+    runtime: attempt.runtime,
+    attachHost,
+    maxSessions,
+    resumeAttempt: attempt.attemptId,
+    resumeCommit: commitTokenHandoff(attempt.root, attempt.managerCommit !== undefined, heldLock),
   });
   await completeResumeActivation(
-    prepared.attemptId,
+    attempt.attemptId,
     controlPlane !== undefined && svc.ok,
-    !svc.ok ? "proven restore listener has no user-auth service" : "proven restore listener has a degraded control plane",
-    prepared.server,
+    !svc.ok ? `${noun} has no user-auth service` : `${noun} has a degraded control plane`,
+    attempt.server,
     heldLock,
   );
 }
