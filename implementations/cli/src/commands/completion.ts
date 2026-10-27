@@ -27,8 +27,10 @@ import { SCRIPTS, LOAD_NOW } from "../lib/completion-scripts.js";
  * personas) that a static script never could.
  *
  * The protocol between the stub and `__complete` is line-oriented and tolerant (unknown lines
- * are ignored), so a stub can stay in place while the protocol grows. `install` still refreshes
- * a recorded stub whose bytes differ from this version, and leaves one that already matches.
+ * are ignored), so a stub can stay in place while the protocol grows. `install` rewrites a
+ * recorded stub when its recorded hash still matches and its bytes differ from this version,
+ * and leaves one that already matches. A recorded stub whose bytes no longer match that hash
+ * is left unchanged unless `--force` is passed.
  *
  *   cotal completion                            # which shells have the stub, and whether it is current
  *   cotal completion script <shell>             # print the stub to stdout
