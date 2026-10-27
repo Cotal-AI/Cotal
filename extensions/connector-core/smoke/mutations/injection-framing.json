@@ -110,12 +110,12 @@
     },
     {
       "name": "M7 a sender name may reach the brackets it is rendered inside",
-      "file": "extensions/connector-core/src/framing.ts",
-      "find": "  return s.replace(/[\\r\\n\\v\\f\\u0085\\u2028\\u2029[\\]]+/g, \" \");",
+      "file": "packages/core/src/peer-label.ts",
+      "find": "  return s.replace(FRAME_UNSAFE, \" \");",
       "replace": "  return s;",
       "cell": "a sender name cannot close the attribution it is rendered inside",
       "expectRed": "a sender name cannot close the attribution it is rendered inside",
-      "note": "The name half of the same defect, and the reason the neutralization lives in one shared helper: this single mutation reddens both the injected block and the cotal_inbox reply, because both render attribution through it."
+      "note": "The name half of the same defect. Sender attribution renders through peerLabel, and channel, service and kind through attributionSafe. Both call frameField in packages/core/src/peer-label.ts, so this mutation of that one replace reddens the sender cell and the field cells together."
     },
     {
       "name": "M8 the wake hint's channel label is rendered as it arrived",

@@ -346,12 +346,12 @@
     },
     {
       "name": "K31 a peer may close the bracket it is named inside",
-      "file": "extensions/connector-core/src/framing.ts",
-      "find": "  return s.replace(/[\\r\\n\\v\\f\\u0085\\u2028\\u2029[\\]]+/g, \" \");",
+      "file": "packages/core/src/peer-label.ts",
+      "find": "  return s.replace(FRAME_UNSAFE, \" \");",
       "replace": "  return s;",
       "cell": "...and a peer cannot close the bracket it is named inside",
       "expectRed": "...and a peer cannot close the bracket it is named inside",
-      "note": "Attribution is rendered inside brackets on every surface that carries it, this tool's reply and the connectors' wake hints alike, so a name holding a closing bracket or a newline ends the attribution early and starts writing the surface's own syntax. `fmtFrom` is the shared primitive, which is why the neutralization lives there rather than at one call site. The neutralization now lives in `framing.ts`, shared with the auto-injected block, so one mutation here grades both surfaces."
+      "note": "Attribution is rendered inside brackets, so a name holding a closing bracket or a newline ends it early. The sender renders through peerLabel and the other fields through attributionSafe, and both call frameField in packages/core/src/peer-label.ts, so this mutation of that one replace grades every field."
     },
     {
       "name": "K32 a service name is rendered as the publisher wrote it",

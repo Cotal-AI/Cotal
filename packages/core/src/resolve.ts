@@ -11,9 +11,9 @@
  * See .internal/plans/peer-addressing.md.
  */
 import type { Presence, PresenceStatus } from "./types.js";
-import { peerLabel } from "./peer-label.js";
+import { frameField, peerLabel } from "./peer-label.js";
 
-export { peerLabel };
+export { frameField, peerLabel };
 
 /** A peer that matched an ambiguous name — structural, so each surface renders it itself.
  *  The full `id` is the authoritative, routable address. */
