@@ -648,9 +648,11 @@ export interface MergedRecord<S = unknown, T = unknown> {
   staleProjection: boolean;
 }
 
-/** Decode one records-KV value. Bytes that are not JSON are a permanent `internal` refusal
- *  naming the key, the same refusal a garbled field gets, never a bare `SyntaxError` a caller
- *  could retry as a transient store failure. Every reader of this bucket decodes through here. */
+/** Decode one records-KV value from its stored bytes. Bytes that are not JSON are a permanent
+ *  `internal` refusal naming the key, the same refusal a garbled field gets, never a bare
+ *  `SyntaxError` a caller could retry as a transient store failure. Readers that hold a
+ *  {@link KvEntry} use {@link decodeEntry}, which decodes through the entry so the bucket codec
+ *  applies. Readers that hold raw bytes use this. */
 export function decodeRecordJson(value: Uint8Array, key: string): unknown {
   try {
     return JSON.parse(new TextDecoder().decode(value));
@@ -661,7 +663,11 @@ export function decodeRecordJson(value: Uint8Array, key: string): unknown {
 }
 
 export function decodeEntry<T>(e: KvEntry, key: string): T {
-  return decodeRecordJson(e.value, key) as T;
+  try {
+    return e.json<T>();
+  } catch (err) {
+    throw new EpEnvelopeError("internal", `record ${key} does not decode as JSON: ${(err as Error).message}`);
+  }
 }
 
 const liveEntry = (e: KvEntry | null): e is KvEntry => !!e && e.operation === "PUT";
