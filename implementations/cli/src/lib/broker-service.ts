@@ -10,7 +10,7 @@ import { isReachable, registry, writeSecretFileCreateOnly } from "@cotal-ai/core
 import {
   CommandFailure, assertRecordIdentity, assertSingleSpaceBroker, authDir, canonicalRoot, decodeLocalJson,
   findMesh, findPreparedSpace, listSpaceAccounts, loadMeshes, localMeshesForRoot, localProcessPath, oneLine,
-  localRecordAccess, parsePid, readBrokerPolicy, readLocalRecordSource, readMaintenanceJournal, readPidfile,
+  localRecordAccess, NATS_PIDFILE, parsePid, readBrokerPolicy, readLocalRecordSource, readMaintenanceJournal, readPidfile,
   controllerAttemptBroker, cutController, maintenanceAdmitsStackWork, serviceAdapterAttempt,
   serviceMetadataDigest, verifyIdentityPin, type LocalProcess, type ProcessIdentityRecord, type ServiceAdapterContext,
   type ServiceAdapterKernelStopPlan, type ServicePreset,
@@ -26,7 +26,6 @@ export const brokerPreset: ServicePreset = {
 };
 
 const CONFIG_LIMIT = 1024 * 1024;
-const LEGACY_BROKER_PIDFILE = "nats.pid";
 
 interface BrokerTarget { root: string; space: string; server: string; host: string; port: number; scheme: "nats" | "tls"; config: string; binary: string }
 
@@ -208,7 +207,7 @@ function configDigest(path: string): string {
 
 /** A legacy root-scoped broker record is a different custody. It is never adopted or removed. */
 function refuseLegacyBroker(target: BrokerTarget): void {
-  const raw = readPidfile(localProcessPath(LEGACY_BROKER_PIDFILE, { root: target.root, space: target.space }));
+  const raw = readPidfile(localProcessPath(NATS_PIDFILE, { root: target.root, space: target.space }));
   if (raw !== undefined) refuse("LIFECYCLE_BLOCKED", "a legacy nats.pid record exists under this root; the broker service neither adopts nor clears it", { root: target.root, remedy: "inspect and stop the legacy broker with its original route before using the broker service" });
 }
 

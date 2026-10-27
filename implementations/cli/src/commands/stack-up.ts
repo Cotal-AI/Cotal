@@ -29,6 +29,7 @@ import {
   isCommandFailure,
   loadMeshes,
   localMeshesForRoot,
+  NATS_PIDFILE,
   presentationOf,
   readBrokerPolicy,
   readMaintenanceJournal,
@@ -292,7 +293,7 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   // folder, and a stack stopped without `down` keeps it along with its pid files and user-auth state.
   if (!preparedHere) return false;
   if (readMaintenanceJournal(canonical)) return false;
-  if (existsSync(join(canonical, ".cotal", "nats.pid")) || liveMeshProcesses(canonical, space).length) return false;
+  if (existsSync(join(canonical, ".cotal", NATS_PIDFILE)) || liveMeshProcesses(canonical, space).length) return false;
   if (unsupported.length) {
     // A prepared root the retained launcher already started holds the user-auth state it wrote, and
     // keeps that launcher for an option only it takes.
@@ -313,13 +314,13 @@ function stackPreflight(root: string, space: string, recorded: StackJournal | un
   const legacy = foreignLocalProcesses(root, space);
   // A service of this space started at this root, such as a `manager` preset, writes its own record
   // here. It is named with the stop `down` names for it; the stack still neither adopts nor replaces it.
-  const held = legacy.length && !existsSync(join(root, ".cotal", "nats.pid")) ? serviceHeldRecords(root, space) : [];
+  const held = legacy.length && !existsSync(join(root, ".cotal", NATS_PIDFILE)) ? serviceHeldRecords(root, space) : [];
   if (held.length && held.length === legacy.length)
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${held.map((row) => `the ${row.definition} service of this space runs this root's ${row.record.name} (pid ${row.record.pid}, instance ${row.instanceId})`).join("; ")}, outside the controller stack, which neither adopts nor replaces it`, {
       target: { root, space, processes: legacy, services: held.map((row) => ({ definition: row.definition, instanceId: row.instanceId })) },
       remedy: `stop ${held.length === 1 ? "it" : "each"} with ${held.map((row) => `\`cotal svc stop ${row.definition} --instance ${row.instanceId} --space ${space} --yes\``).join(", ")}, then run \`cotal up\` again`,
     });
-  if (legacy.length || existsSync(join(root, ".cotal", "nats.pid"))) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "legacy pidfile-owned processes or records remain under this root; the controller stack neither adopts nor replaces them", { target: { root, space, processes: legacy } });
+  if (legacy.length || existsSync(join(root, ".cotal", NATS_PIDFILE))) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "legacy pidfile-owned processes or records remain under this root; the controller stack neither adopts nor replaces them", { target: { root, space, processes: legacy } });
   if (localMeshesForRoot(root).some((mesh) => mesh.space !== space)) throw new CommandFailure("refused", "CONFLICT", "another locally started space uses this root; a single-space controller stack cannot share its broker", { target: { root, space } });
   let ledgers, additive, boots, summaries;
   try { ledgers = listLedgerFiles(root, { requireReadable: true }); additive = listAdditiveTeamAttempts(root); boots = listFreshTeamAttempts(root); summaries = listFreshTeamSummaries(root); }
