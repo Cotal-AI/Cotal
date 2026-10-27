@@ -17,6 +17,7 @@ import {
   DEFAULT_SERVER,
   DEFAULT_SPACE,
   DEV_OWNER,
+  isAuthRejection,
   registry,
   parseCommandArgs,
   token,
@@ -237,6 +238,27 @@ function superviseExecution(v: Values): "runtime" | "none" {
   if (v.execution === "none" && ["runtime", "spawn", "roster", "launch", "resume-attempt", "resume-commit-token", "resume-commit-file", "resume-commit-sha256"].some((key) => v[key] !== undefined))
     throw new CommandFailure("refused", "USAGE_INVALID", "execution: none forbids runtime and startup workload flags");
   return v.execution ?? "runtime";
+}
+
+/** The broker's refusal of the credential a starting manager presented, as a classified refusal:
+ *  which credential, which broker, and where a manager that broker trusts starts. A local manager
+ *  signs with the space signer of the folder it runs in, so a folder whose signer the broker does
+ *  not trust, or that has none, is told to start it from the folder that hosts the space. */
+async function refusedManagerCredential(error: Error, space: string, server: string, remote: boolean): Promise<CommandFailure> {
+  const root = findCotalRoot();
+  const broker = brokerAddressForDisplay(server) ?? "the broker";
+  const target = { space, root, broker };
+  const native = { code: error.name, detail: error.message };
+  if (remote)
+    return new CommandFailure("refused", "PERMISSION_DENIED", `the broker at ${broker} refused the manager-service credential the host issued for space "${space}", so no manager started`, { target, native, remedy: "sign in again with cotal login, then start the manager again; the space host must still grant your sign-in the supervise scope" });
+  const credential = await getSpaceAuth(workspaceSecretStore(root), space)
+    ? `the manager credential this folder's signer for space "${space}" minted (${root})`
+    : `a manager with no credential, because this folder holds no signer for space "${space}" (${root})`;
+  const host = findMesh(space);
+  const remedy = host !== undefined && host.root !== root
+    ? `start the manager from ${host.root}, the folder that hosts space "${space}": cd ${host.root} && cotal manager start${host.mode === "user" ? `. A manager on another machine joins a user-auth space as a signed-in participant (cotal meshes add, then cotal login) once its host grants the supervise scope` : ""}`
+    : `start the manager from the folder whose cotal up started the broker at ${broker}`;
+  return new CommandFailure("refused", "PERMISSION_DENIED", `the broker at ${broker} refused ${credential}, so no manager started`, { target, native, remedy });
 }
 
 /** Run a manager daemon in this process (the long-lived supervisor), then block.
@@ -675,7 +697,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     // settles, so wait for it to release the lease first; the start error still decides the exit.
     startFailed = true;
     await stopped;
-    throw error;
+    throw !service && isAuthRejection(error) ? await refusedManagerCredential(error as Error, space, server, target.remoteUser) : error;
   }
   // A stop that arrived during start owns the exit; this process never announces itself ready.
   if (shuttingDown) return;

@@ -4933,6 +4933,10 @@ authentication or registration can leave those files classified as runtime. Inva
 arguments refuse before connector seeding, with one error line rather than seeding first.
 A refusal names the caught value's `message`, or the value itself when it has none, so an auth
 provider that rejects with `null` or a string still gets its refusal line and exit status 1.
+When the broker refuses the credential the manager presents, such as one this folder's signer
+minted for a space another folder hosts, `supervise` exits 2 with a `PERMISSION_DENIED` refusal
+under a `Mesh:` heading that names the credential and the broker, and its Next names the folder
+that hosts the space.
 
 On a normal `SIGINT`/`SIGTERM`, the manager stops every seat and requires the selected runtime to
 prove the seat is gone before it releases the manager lease or service registration. A stop that
