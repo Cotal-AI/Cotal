@@ -16,5 +16,7 @@ export function coldOsEnvironment(source = process.env, platform = process.platf
     if (!systemRoot) throw new Error("cold Windows setup requires the host SystemRoot");
     env.PSModulePath = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");
   }
+  // A cold profile is a test launch in a fresh home, so the CLI it runs reports no usage.
+  env.DO_NOT_TRACK = "1";
   return env;
 }
