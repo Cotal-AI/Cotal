@@ -186,7 +186,7 @@ const docsCommand: Command = {
   positionals: "[<page>]",
   flags: docsFlags,
   outputs: ["json", "plain"],
-  examples: ["cotal docs", "cotal docs architecture", "cotal docs --search allowSubscribe", "cotal docs spec --refresh"],
+  examples: [{ command: "cotal docs", note: "list the docs pages bundled with this version" }, { command: "cotal docs cli", note: "read the CLI reference" }, { command: "cotal docs --search <query>", note: "find the sections that match a query" }],
   reads: true,
   run: docs,
   complete: docsComplete,

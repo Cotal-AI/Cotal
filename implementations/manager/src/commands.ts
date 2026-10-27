@@ -1065,8 +1065,8 @@ const managerCommands: Command[] = [
 ];
 
 const maintenance = [
-  { name: "reconcile", source: "reconcile-gate", summary: "repair an owned manager issuance gate from its mesh root" },
-  { name: "seats", source: "seats", summary: "inspect retained local seats; --drain removes only childless records" },
+  { name: "reconcile", source: "reconcile-gate", summary: "repair an owned manager issuance gate from its mesh root", examples: [{ command: "cotal manager reconcile --dry-run", note: "show whether its issuance gate needs repair" }, { command: "cotal manager reconcile --yes", note: "repair it" }] },
+  { name: "seats", source: "seats", summary: "inspect retained local seats; --drain removes only childless records", examples: [{ command: "cotal manager seats", note: "list the seats an earlier manager left" }, { command: "cotal manager seats --drain --dry-run", note: "preview draining the finished seats" }] },
 ].map((mode) => {
   const source = managerCommands.find((command) => command.name === mode.source);
   if (!source) throw new Error(`manager command ${mode.source} is not registered`);
@@ -1081,13 +1081,13 @@ for (const mode of maintenance) for (const flag of mode.command.flags ?? []) {
 
 /** The manager's lifecycle, which the CLI runs as `service <verb> manager` before this group parses. */
 const lifecycle = [
-  { name: "start", summary: "start the manager for this folder's or the selected space; pty runtime and its registered broker by default", usage: "cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--foreground|--dry-run] [--space <s>]" },
-  { name: "stop", summary: "stop it; its agents follow the runtime's default unless --with-agents", usage: "cotal manager stop [--with-agents] [--yes|--dry-run] [--space <s>]" },
-  { name: "restart", summary: "stop it, then start it again", usage: "cotal manager restart [--with-agents] [--yes|--dry-run] [--space <s>]" },
-  { name: "status", summary: "show whether it runs, and its process and endpoint", usage: "cotal manager status [--space <s>]" },
-  { name: "logs", summary: "read what it logged", usage: "cotal manager logs [--tail <n>] [--follow] [--space <s>]" },
-  { name: "install", summary: "start it at login with a systemd user unit", usage: "cotal manager install [--dry-run] [--space <s>]" },
-  { name: "uninstall", summary: "remove that unit", usage: "cotal manager uninstall [--yes|--dry-run] [--space <s>]" },
+  { name: "start", summary: "start the manager for this folder's or the selected space; pty runtime and its registered broker by default", examples: [{ command: "cotal manager start", note: "start it with the pty runtime" }, { command: "cotal manager start --foreground", note: "keep it in this terminal" }, { command: "cotal manager start --name <name>", note: "name it, so commands can pick it with --on" }], usage: "cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--foreground|--dry-run] [--space <s>]" },
+  { name: "stop", summary: "stop it; its agents follow the runtime's default unless --with-agents", examples: [{ command: "cotal manager stop", note: "stop the manager" }, { command: "cotal manager stop --with-agents", note: "stop it and every agent it runs" }], usage: "cotal manager stop [--with-agents] [--yes|--dry-run] [--space <s>]" },
+  { name: "restart", summary: "stop it, then start it again", examples: [{ command: "cotal manager restart", note: "stop the manager, then start it again" }], usage: "cotal manager restart [--with-agents] [--yes|--dry-run] [--space <s>]" },
+  { name: "status", summary: "show whether it runs, and its process and endpoint", examples: [{ command: "cotal manager status", note: "show whether it runs, its process and endpoint" }], usage: "cotal manager status [--space <s>]" },
+  { name: "logs", summary: "read what it logged", examples: [{ command: "cotal manager logs", note: "read what the manager logged" }, { command: "cotal manager logs --follow", note: "keep following it" }], usage: "cotal manager logs [--tail <n>] [--follow] [--space <s>]" },
+  { name: "install", summary: "start it at login with a systemd user unit", examples: [{ command: "cotal manager install", note: "start it at login with a systemd user unit" }, { command: "cotal manager install --dry-run", note: "show the unit it would install" }], usage: "cotal manager install [--dry-run] [--space <s>]" },
+  { name: "uninstall", summary: "remove that unit", examples: [{ command: "cotal manager uninstall", note: "remove its login unit" }], usage: "cotal manager uninstall [--yes|--dry-run] [--space <s>]" },
 ] as const;
 
 function managerInvocation(args: ParsedArgs): { command: Command; args: ParsedArgs } | undefined {
@@ -1113,12 +1113,13 @@ const managerGroup: Command = {
   group: "Services",
   summary: "start, stop and check the manager that runs your agents",
   usage: "cotal manager [start | stop | restart | status | logs | install | uninstall | reconcile | seats] [options]",
+  examples: [{ command: "cotal manager start", note: "start the manager that runs your agents" }, { command: "cotal manager status", note: "check whether it runs" }, { command: "cotal manager logs --follow", note: "follow what it logs" }],
   positionals: "[start | stop | restart | status | logs | install | uninstall | reconcile | seats]",
   outputs: ["json", "plain"],
   flags: [...maintenanceFlags.values()],
   subcommands: [
-    ...lifecycle.map((mode) => ({ name: mode.name, summary: mode.summary, usage: mode.usage, flagNames: ["json", "plain"], outputs: mode.name === "logs" ? ["json", "ndjson", "plain"] as const : ["json", "plain"] as const })),
-    ...maintenance.map((mode) => ({ name: mode.name, summary: mode.summary, flagNames: mode.command.flags?.map((flag) => flag.name), outputs: mode.command.outputs, usage: mode.name === "seats" ? "cotal manager seats [--drain [--yes|--dry-run]] [--json|--plain]" : "cotal manager reconcile [--space <space>] [--server <url>] [--instance <id>] [--yes|--dry-run] [--json|--plain]" })),
+    ...lifecycle.map((mode) => ({ name: mode.name, summary: mode.summary, usage: mode.usage, examples: mode.examples, flagNames: ["json", "plain"], outputs: mode.name === "logs" ? ["json", "ndjson", "plain"] as const : ["json", "plain"] as const })),
+    ...maintenance.map((mode) => ({ name: mode.name, summary: mode.summary, examples: mode.examples, flagNames: mode.command.flags?.map((flag) => flag.name), outputs: mode.command.outputs, usage: mode.name === "seats" ? "cotal manager seats [--drain [--yes|--dry-run]] [--json|--plain]" : "cotal manager reconcile [--space <space>] [--server <url>] [--instance <id>] [--yes|--dry-run] [--json|--plain]" })),
   ],
   reads: true,
   prepareMeshTarget: false,

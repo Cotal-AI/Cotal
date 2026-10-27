@@ -21,7 +21,7 @@ const deliveryCommands: Command[] = [
     positionals: "<agent>", usage: "cotal pending <agent> [--durable <exact-dm-durable>] [--limit <1..100>] [--space <s>] [--json|--plain]",
     flags: pendingFlags, outputs: ["json", "plain"], reads: true, prepareMeshTarget: false,
     validate: validatePendingArguments, run: pendingView,
-    examples: ["cotal pending reviewer", "cotal pending reviewer --durable <exact-dm-durable> --json"],
+    examples: [{ command: "cotal pending <agent>", note: "count the DMs waiting for an agent, unread" }, { command: "cotal pending <agent> --json", note: "the same as one JSON document" }],
   },
   {
     kind: "command",
