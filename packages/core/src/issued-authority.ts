@@ -451,7 +451,7 @@ export function openIssuedStore(kv: KV, jsm: JetStreamManager, space: string): I
     if (!m) return undefined;
     if (m.header?.get("KV-Operation"))
       throw new EpEnvelopeError("failed-precondition", `issued row ${key} carries a deletion marker; a deletion is never absence (SPEC 13.15)`);
-    return { value: decodeRecordJson(m.data, key), revision: m.seq };
+    return { value: decodeRecordJson(m.data, key, true), revision: m.seq };
   }
   async function readEvidence(ref: IssuedAuthorityRef): Promise<{ evidence: IssuedEvidence; digest: string }> {
     const key = own(ref);

@@ -652,10 +652,11 @@ export interface MergedRecord<S = unknown, T = unknown> {
  *  `internal` refusal naming the key, the same refusal a garbled field gets, never a bare
  *  `SyntaxError` a caller could retry as a transient store failure. Readers that hold a
  *  {@link KvEntry} use {@link decodeEntry}, which decodes through the entry so the bucket codec
- *  applies. Readers that hold raw bytes use this. */
-export function decodeRecordJson(value: Uint8Array, key: string): unknown {
+ *  applies. Readers that hold raw bytes use this. `fatal` refuses invalid UTF-8 instead of
+ *  replacing it. The issued-authority read passes it, because that read already did. */
+export function decodeRecordJson(value: Uint8Array, key: string, fatal = false): unknown {
   try {
-    return JSON.parse(new TextDecoder().decode(value));
+    return JSON.parse(new TextDecoder("utf-8", { fatal }).decode(value));
   } catch (err) {
     // Mediated-writer state that does not decode is a writer bug; readers fail loud (§13.9).
     throw new EpEnvelopeError("internal", `record ${key} does not decode as JSON: ${(err as Error).message}`);
