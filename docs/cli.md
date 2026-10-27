@@ -137,7 +137,9 @@ before it acts, such as a missing argument, an invalid flag value or two flags t
 dash or a minus sign followed by one of the command's flag names, as an autocorrecting editor writes
 `--`: the refusal names the dash and the flag to type. After `--` such a word is an argument as
 typed. The command prints the error, then any remedy,
-then its help on stderr, writes nothing on stdout, exits 1, and does not run. A refusal for a missing
+then its help on stderr, writes nothing on stdout, exits 1, and does not run. The help is the one
+`--help` prints for the same words, so a refused `cotal persona create` shows the `persona create`
+help. A refusal for a missing
 `--yes` outside an interactive terminal prints its error and a remedy that names `--yes`, without the
 help. A control character in
 a word the error quotes, from the command line or from a file, shows as its `\uXXXX` escape, so a
@@ -4862,7 +4864,9 @@ first, and no other service is started for it. `mgr` is an alias.
 
 `cotal manager <verb>` is `cotal service <verb> manager`: every [`service`](#service) rule applies,
 and its flags and the manager preset's options (`--runtime`, `--roster`, `--name`, `--server`,
-`--console-port`, `--console-host`, `--ws-port`, `--max-sessions`) are taken on the line. The first
+`--console-port`, `--console-host`, `--ws-port`, `--max-sessions`) are taken on the line.
+`cotal help manager <verb>` and `cotal manager <verb> --help` print the verb's help with those
+options. The first
 start saves the space's `manager` service from the preset's defaults and says so on stderr; `cotal
 service show manager` reads it. A start that names another `--runtime` or other option for a
 stopped manager saves it again with that option, and says so. A running one refuses

@@ -20,6 +20,15 @@
  * Usage and Shorthands, before Commands and Options; they used to come last, after the options, as
  * bare command lines, and most commands had none.
  *
+ * `cotal <command> --help` prints the same help as `cotal help <command>` for every command and
+ * subcommand `cotal help` lists. `manager <verb> --help` showed the service command's summary while
+ * `help manager <verb>` listed only --json and --plain under Options, and `ext seed --help` printed
+ * the `ext` help.
+ *
+ * The `persona create` example runs as written against a fresh Cotal home; it lacked the
+ * `--subscribe ""` a persona body needs. A usage refusal shows the help `--help` prints for the same
+ * words, so a refused `persona create` shows its own help; it showed the `persona` help.
+ *
  * A usage that declares several forms, one per line, as `linear` does, shows each form on its own
  * lines; help printed them joined by an escaped `\u000a`. A flag a `linear` operation does not take
  * is refused naming it and that operation's flags and usage, without the help: `serve --json` says
@@ -27,11 +36,12 @@
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, with the
  * built `@cotal-ai/linear` extension imported for its cells. The examples census renders each help
- * in this process from the built surfaces the binary composes. Nothing is started or deleted.
+ * in this process from the built surfaces the binary composes, and runs both help forms of each
+ * through the binary. Nothing is started or deleted.
  *
  * Run: pnpm smoke:usage-format
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -182,9 +192,9 @@ for (const [args, usage, foreign] of [
     if (unlisted.length) problems.push(`${command}: --${unlisted.join(", --")} is not among the options its help lists`);
     return problems;
   };
-  let covered = 0;
+  const paths: string[][] = [];
   const census = (cmd: Command, path: readonly string[], node: Command | Subcommand): void => {
-    covered++;
+    paths.push([cmd.name, ...path]);
     const examples = node.examples ?? [];
     const problems: string[] = [];
     if (examples.length < 1 || examples.length > 3) problems.push(`declares ${examples.length} examples`);
@@ -205,7 +215,26 @@ for (const [args, usage, foreign] of [
     for (const sub of node.subcommands ?? []) if (!sub.hidden) census(cmd, [...path, sub.name], sub);
   };
   for (const cmd of commands) census(cmd, [], cmd);
-  console.log(`  examples census: ${covered} commands and subcommands`);
+  console.log(`  examples census: ${paths.length} commands and subcommands`);
+
+  // `cotal <path> --help` and `cotal help <path>` reach the help through two routes, the dispatcher's
+  // and the help command's, and print one help. Run a few at a time; each is a process of its own.
+  const binary = (args: string[]) => new Promise<ReturnType<typeof run>>((resolve) => {
+    const child = spawn(process.execPath, [BIN, ...args], { cwd: neutral, env, timeout: 120_000 });
+    let stdout = "", stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+  const helps: [ReturnType<typeof run>, ReturnType<typeof run>][] = [];
+  let next = 0;
+  await Promise.all(Array.from({ length: 6 }, async () => {
+    for (let i = next++; i < paths.length; i = next++) helps[i] = await Promise.all([binary([...paths[i]!, "--help"]), binary(["help", ...paths[i]!])]);
+  }));
+  paths.forEach((path, i) => {
+    const [flag, word] = helps[i]!;
+    check(`cotal ${path.join(" ")} --help prints the same help as cotal help ${path.join(" ")}`, flag.status === word.status && flag.stdout === word.stdout && flag.stderr === word.stderr, { "--help": shown(flag), help: shown(word) });
+  });
 
   // The binary prints the same order, and `manager <verb> --help`, which reads the service command,
   // shows the manager's own examples.
@@ -215,6 +244,22 @@ for (const [args, usage, foreign] of [
   const managerStart = run(["manager", "start", "--help"]);
   const declared = registry.resolve<Command>("command", "manager").subcommands?.find((sub) => sub.name === "start")?.examples ?? [];
   check("cotal manager start --help shows the manager start examples", managerStart.status === 0 && declared.length > 0 && declared.every((example) => typeof example !== "string" && managerStart.stdout.includes(`  ${example.command}`)), shown(managerStart));
+
+  // The persona create example, its placeholders filled in, run as written against a fresh Cotal home
+  // in the folder of a space prepared there, which needs no stack. Without --subscribe the refusal
+  // shows the persona create help.
+  const fresh = { COTAL_HOME: join(home, "persona-home") };
+  const project = join(home, "persona-project");
+  mkdirSync(project, { mode: 0o700 });
+  const prepared = run(["space", "create", "personas", "--root", project], fresh);
+  const [example] = registry.resolve<Command>("command", "persona").subcommands?.find((sub) => sub.name === "create")?.examples ?? [];
+  const written = typeof example === "string" ? example : example?.command ?? "";
+  const created = run(words(written.replace("<name>", "reviewer").replace("<text>", "review the diff")).slice(1), fresh, project);
+  const saved = run(["persona", "show", "reviewer", "--json"], fresh, project);
+  check(`${written} runs as written and saves a persona that reads no channels`, prepared.status === 0 && created.status === 0 && saved.status === 0 && JSON.stringify(JSON.parse(saved.stdout).result.definition.subscribe) === "[]", { prepared: shown(prepared), created: shown(created), saved: shown(saved) });
+  const noReadSet = run(["persona", "create", "other", "--prompt", "review the diff"], fresh, project);
+  check("persona create without --subscribe is refused with the persona create help, not the persona help",
+    usageShape(noReadSet, /provide --subscribe <a,b> or --subscribe "" for none/) && noReadSet.stderr.includes("\nUsage\n  cotal persona create <name> ") && !/^Commands$/m.test(noReadSet.stderr), shown(noReadSet));
 }
 
 // No mark at all: the report names the outcome in words, and `!` stays the warning mark.

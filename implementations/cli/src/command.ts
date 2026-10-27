@@ -58,7 +58,7 @@ import {
 import { deferredSeedRefusal, reconcileSeededConnectors } from "./seed/reconcile.js";
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
-import { printCommandHelp, printHelpPath, printEntry } from "./help.js";
+import { printHelpPath, printEntry } from "./help.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
 import { metadataPositionals } from "./lib/command-path.js";
@@ -158,9 +158,10 @@ function debugStacks(failure: Error): void {
 }
 
 /** A classified failure: its line and remedy on stderr, its envelope on stdout when one was asked
- *  for, and the exit code its outcome sets. The envelope is written synchronously, because stdout
- *  to a pipe is asynchronous on some platforms and `exit` would cut it short. */
-function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope): never {
+ *  for, and the exit code its outcome sets. A usage refusal is followed by the help of the command
+ *  or subcommand `words` name. The envelope is written synchronously, because stdout to a pipe is
+ *  asynchronous on some platforms and `exit` would cut it short. */
+function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope, words: readonly string[] = []): never {
   const warnings = scope ? scope.warnings ?? [] : operationWarnings();
   recordTelemetryFailure(failure.outcome, failure.code, failure);
   // A command's own usage refusal reads as the parser's: the error, its remedy, then the help. A
@@ -168,7 +169,7 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   // and its remedy says the whole fix. A file the command cannot use is reported like one that does
   // not exist, and a refused flag value names its corrected value, so it gets the classified report.
   if (failure.code === "USAGE_INVALID" && !json && !(failure instanceof UnusableFile) && !(failure instanceof FlagValueRefusal)) {
-    usageRefusal(failure, plain, failure.selfContained ? undefined : cmd);
+    usageRefusal(failure, plain, failure.selfContained ? undefined : cmd, words);
     debugStacks(failure);
     process.exit(1);
   }
@@ -208,7 +209,7 @@ async function extSeedGate(registry: Registry, argv: string[], configFolder: Con
   // A help request short-circuits to usage and mutates NOTHING (the maintenance run writes the seed
   // stamp/manifest).
   if (asksForHelp(argv)) {
-    printCommandHelp(extCmd);
+    printHelpPath(extCmd, ["seed"]);
     return true;
   }
   if (configFolder) failureExit(extCmd, configFolderRefusal(configFolder), false);
@@ -341,10 +342,11 @@ export interface RunCliOptions {
   startupNotice?: StartupNotice;
 }
 
-/** A usage refusal on stderr, then `cmd`'s help when one is given. Plain output and a locale without
+/** A usage refusal on stderr, then, when a command is given, the help `--help` prints for the same
+ *  `words`: the subcommand's when they name one, else `cmd`'s. Plain output and a locale without
  *  UTF-8 have no refusal mark, so there the refusal is the classified report, which names its outcome
  *  in words. Either way the words it quotes are escaped, as the report escapes every text. */
-function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command): void {
+function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command, words: readonly string[] = []): void {
   const report = plain || !localeIsUtf8();
   if (report) writeSync(2, `${renderReport(commandFailureReport(failure), plain ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
   else {
@@ -353,19 +355,19 @@ function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command): v
   }
   if (!cmd) return;
   if (report) console.error("");
-  printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));
+  printHelpPath(cmd, helpPath(cmd, words).path, (line) => console.error(line), terminalWidth(process.stderr));
 }
 
-/** A usage error, written by {@link usageRefusal} with the command's help when there is one, and
- *  with `remedy` under the message when the parser can name one. Exit 1. */
-function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string): never {
+/** A usage error, written by {@link usageRefusal} with the help of the command or subcommand `words`
+ *  name when there is one, and with `remedy` under the message when the parser can name one. Exit 1. */
+function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string, words: readonly string[] = []): never {
   // A JSON caller gets the refusal as an envelope, so stdout stays one document and the help text
   // the remedy names stays out of it.
   if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: remedy ?? `run \`cotal help ${cmd.name}\`` }), true);
   recordTelemetryFailure("refused", "USAGE_INVALID", message);
   // The help goes to stderr with the reason, so a refused run leaves stdout empty and a script that
   // sources or parses it gets nothing.
-  usageRefusal(new CommandFailure("refused", "USAGE_INVALID", message, remedy === undefined ? undefined : { remedy }), plain, cmd);
+  usageRefusal(new CommandFailure("refused", "USAGE_INVALID", message, remedy === undefined ? undefined : { remedy }), plain, cmd, words);
   process.exit(1);
 }
 
@@ -418,14 +420,14 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   const json = asksForJson(cmd, rest);
   const plain = rest.includes("--plain");
   const misspelled = cmd.rawArgs ? undefined : misspelledOption(cmd, rest);
-  if (misspelled) usageExit(misspelled.message, cmd, json, plain, misspelled.remedy);
+  if (misspelled) usageExit(misspelled.message, cmd, json, plain, misspelled.remedy, rest);
   let parsed: ParsedArgs;
   try {
     parsed = parseCommandArgs(cmd, rest);
   } catch (e) {
     if (isArgError(e)) {
       const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest);
-      usageExit(refusal.message, cmd, json, plain, refusal.remedy);
+      usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
     }
     throw e;
   }
@@ -437,7 +439,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   // whose variable is unset would act on whichever space is selected.
   const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
   if (spaceFlag && typeof parsed.values.space === "string" && !parsed.values.space.trim())
-    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `--space${spaceFlag.short ? `/-${spaceFlag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" }), json, parsed.values.plain === true);
+    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `--space${spaceFlag.short ? `/-${spaceFlag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" }), json, parsed.values.plain === true, undefined, rest);
   // An empty --store-dir reads as no value and opens the default store, and a ~ no shell expanded
   // names a folder called ~ in the working folder.
   const storeDir = parsed.values["store-dir"];
@@ -450,8 +452,8 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   try {
     cmd.validate?.(canonical);
   } catch (error) {
-    if (isCommandFailure(error)) failureExit(cmd, error, json, canonical.values.plain === true);
-    if (isArgError(error)) usageExit((error as Error).message.split(".")[0]!, cmd, json, plain);
+    if (isCommandFailure(error)) failureExit(cmd, error, json, canonical.values.plain === true, undefined, rest);
+    if (isArgError(error)) usageExit((error as Error).message.split(".")[0]!, cmd, json, plain, undefined, rest);
     throw error;
   }
   // The NATS client keeps only the host and port of a broker URL, so a user and password in it were
@@ -496,22 +498,29 @@ function canonicalSubcommand(cmd: Command, parsed: ParsedArgs): ParsedArgs {
   return changed ? { ...parsed, positionals } : parsed;
 }
 
-/** `-h`/`--help` anywhere after a command: that command's help, or its subcommand's when the first
- *  positional names one. Read from the declared specs, so a stub's help never imports its package. */
-function printHelpFor(cmd: Command, rest: readonly string[]): void {
+/** The subcommand path the words in `rest` name under `cmd`, and the first word where a subcommand
+ *  belongs that names none. Read from the declared specs, so a stub's help never imports its package. */
+function helpPath(cmd: Command, rest: readonly string[]): { path: string[]; unknown?: string } {
   const words = metadataPositionals(cmd, rest).positionals.map((item) => item.value);
   let surface: Pick<Command, "subcommands"> = cmd;
   const path: string[] = [];
   for (const word of words) {
     const sub: Subcommand | undefined = findSubcommand(surface, word);
-    // A word where a subcommand belongs that names none refuses as `cotal help` does, so a mistyped
-    // subcommand never gets its group's help. History's own first word may be a channel.
-    if (!sub && surface.subcommands?.length && !(surface === cmd && cmd.name === "history")) return printHelpPath(cmd, [...path, word]);
+    // History's own first word may be a channel.
+    if (!sub && surface.subcommands?.length && !(surface === cmd && cmd.name === "history")) return { path, unknown: word };
     if (!sub || sub.hidden) break;
     path.push(sub.name); surface = sub;
     if (!sub.subcommands?.length) break;
   }
-  printHelpPath(cmd, path);
+  return { path };
+}
+
+/** `-h`/`--help` anywhere after a command: that command's help, or its subcommand's when the first
+ *  positional names one. A word where a subcommand belongs that names none refuses as `cotal help`
+ *  does, so a mistyped subcommand never gets its group's help. */
+function printHelpFor(cmd: Command, rest: readonly string[]): void {
+  const { path, unknown } = helpPath(cmd, rest);
+  printHelpPath(cmd, unknown === undefined ? path : [...path, unknown]);
 }
 
 /**
@@ -744,7 +753,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     const mode = parsed.positionals[0];
     const json = structured(cmd, mode) && parsed.values.json === true;
     // A usage error a command raises from its own checks prints the command's help, not a stack trace.
-    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json, parsed.values.plain === true);
+    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json, parsed.values.plain === true, undefined, rest);
     // A refused manager selection among several live managers becomes the choice: each manager
     // and the command again with `--on` for it. A space whose stack folder is gone names its stop.
     const target = { space: typeof parsed.values.space === "string" ? parsed.values.space : undefined, server: typeof parsed.values.server === "string" ? parsed.values.server : undefined };
@@ -752,7 +761,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       const [{ managerChoiceFailure, rosterOf }, { goneStackRefusal }] = await Promise.all([managerChoice(), import("./commands/stack-gone.js")]);
       return (await managerChoiceFailure(failure, () => rosterOf(target), argv)) ?? goneStackRefusal(failure);
     };
-    if (isCommandFailure(e)) failureExit(cmd, inOperationSpace(await choice(e), scope.space), json, parsed.values.plain === true, scope);
+    if (isCommandFailure(e)) failureExit(cmd, inOperationSpace(await choice(e), scope.space), json, parsed.values.plain === true, scope, rest);
     // A command that declares a structured output reports by the outcome table. A target it could
     // not resolve or connect to is refused before any request, under the refusal's own code; a
     // failure it did not classify is unknown: it may have had effects that cannot be attributed.
