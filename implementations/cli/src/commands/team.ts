@@ -558,7 +558,7 @@ async function previewBoot(file: string, values: TeamValues): Promise<void> {
   try {
     const controlDir = realDirNoSymlink(root, ".cotal") ? "real" as const : "absent" as const;
     if (controlDir === "real") assertSingleSpaceBroker(authDir(root), "team boot preview");
-    const manager = controlDir === "real" ? managerRecordState(undefined, undefined, space, root) : null;
+    const manager = controlDir === "real" ? managerRecordState(space, root) : null;
     localState = { controlDir, recordedSpaces: controlDir === "real" ? localMeshesForRoot(root).map((entry) => entry.space) : [],
       maintenance: controlDir === "real" ? readMaintenanceJournal(root)?.state ?? "none-recorded" : "not-checked",
       possibleProcesses: controlDir === "real" ? liveMeshProcesses(root, space) : [],

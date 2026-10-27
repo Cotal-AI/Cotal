@@ -131,7 +131,7 @@ try {
   const up = cotal(["up", "--detach", "--space", SPACE, "--server", SERVER]);
   check("up --detach starts the authenticated stack", up.status === 0, out(up));
   if (process.platform !== "win32") {
-    const managerRecord = managerRecordState(undefined, undefined, SPACE, root);
+    const managerRecord = managerRecordState(SPACE, root);
     const manager = managerRecord.state === "absent" ? "" : managerRecord.command ?? "";
     check("up starts the manager as the hidden `__daemon-manager --space <s> --server <url>`", manager.includes(` __daemon-manager --space ${SPACE} --server ${SERVER}`), manager);
     const deliveryRecord = readProcessRecord(canonicalLocalProcessPath(DELIVERY_PIDFILE, { root, space: SPACE }), () => true);
@@ -183,7 +183,7 @@ try {
       process.chdir(cwd);
     }
     check("the stack's own manager stops before the unit's command line runs",
-      stopped === true && managerRecordState(undefined, undefined, SPACE, root).state !== "alive", stopped);
+      stopped === true && managerRecordState(SPACE, root).state !== "alive", stopped);
     const mesh = findMesh(SPACE);
     if (!mesh) throw new Error(`no mesh named "${SPACE}" is registered for the unit's snapshot`);
     // The installer's `[...selfArgv(), "supervise"]`, from a CLI started the way cotal() starts one.

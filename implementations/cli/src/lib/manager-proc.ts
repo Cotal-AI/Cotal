@@ -51,7 +51,7 @@ export function liveManagerWouldApplyMaxSessions(command: string | undefined, re
 }
 
 /** The space whose manager this folder's commands mean. Every helper below defaults to it, and the
- *  ones a caller reaches with an explicit `--space` take it as their last argument: the records are
+ *  ones a caller reaches with an explicit `--space` take that space first: the records are
  *  per-space now, so a helper that assumed the folder's space would answer about a sibling tenant's
  *  manager on a root that hosts more than one. Resolved from the folder's own RECORDS first: an open
  *  mesh has no account record to name its space, and answering with the default there is how a
@@ -80,23 +80,27 @@ const PID_PATH = (space: string = folderSpace(), root: string = cotalRoot()): st
 const DELIVERY_AWARE_MARKER = (space: string = folderSpace()): string =>
   localProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx(space));
 
-/** The recorded manager, attributed by {@link readProcessRecord} to a `cotal supervise` process. */
+/** The seams a test injects. Production passes nothing: the subject comes first, and a caller that
+ *  needs a probe or a command reader names it here rather than spelling `undefined` to reach past it. */
+export type RecordSeams = { probe?: LivenessProbe; readCommand?: CommandReader };
+
+/** The recorded manager, attributed by {@link readProcessRecord} to a `cotal supervise` process.
+ *  `root` is the folder whose records answer, so a caller in another folder can name it. */
 export function managerRecordState(
-  probe: LivenessProbe = probeLiveness,
-  readCommand: CommandReader = readProcessCommand,
   space: string = folderSpace(),
   root: string = cotalRoot(),
+  seams: RecordSeams = {},
 ): ProcessRecord {
-  return readProcessRecord(PID_PATH(space, root), commandIsCotalSupervisor, probe, readCommand);
+  return readProcessRecord(PID_PATH(space, root), commandIsCotalSupervisor, seams.probe ?? probeLiveness, seams.readCommand ?? readProcessCommand);
 }
 
 /** {@link managerRecordState}'s verdict alone, for the callers that only branch on it. */
 export function managerLiveness(
-  probe: LivenessProbe = probeLiveness,
-  readCommand: CommandReader = readProcessCommand,
   space: string = folderSpace(),
+  root: string = cotalRoot(),
+  seams: RecordSeams = {},
 ): ProcessRecordState {
-  return managerRecordState(probe, readCommand, space).state;
+  return managerRecordState(space, root, seams).state;
 }
 
 /** One line describing what was found behind the record, for a caller that has to explain itself. */
@@ -113,7 +117,7 @@ export function describeManagerRecord(r: ProcessRecord): string {
  *  between "not running", "cannot tell" and "someone else's process", and acting on the difference
  *  is the whole point. */
 export function managerUp(space: string = folderSpace()): boolean {
-  return managerLiveness(probeLiveness, readProcessCommand, space) === "alive";
+  return managerLiveness(space) === "alive";
 }
 
 /** Whether a live `cotal supervise` process on this machine may be serving `space`. A supervisor
@@ -245,11 +249,11 @@ export function startManagerDetached(
  *  unattributable record is the same defect as deleting it, reached through a different verb, which
  *  is the third time that shape has appeared in this change. Any future starter calls this first. */
 export function assertManagerRecordReplaceable(
-  probe: LivenessProbe = probeLiveness,
-  readCommand: CommandReader = readProcessCommand,
   space: string = folderSpace(),
+  root: string = cotalRoot(),
+  seams: RecordSeams = {},
 ): void {
-  const record = managerRecordState(probe, readCommand, space);
+  const record = managerRecordState(space, root, seams);
   if (record.state === "absent") return;
   const state = record.state;
   // The record this is about, named in full: on a root that hosts two spaces "the manager pidfile"
@@ -310,13 +314,12 @@ async function awaitManagerUp(space: string, started: ProcessIdentityRecord | { 
  *  runtime/launch spec (`up -f`) must stop any leftover manager first — a reused one is taken as-is. */
 export async function ensureManager(
   o: ManagerStartOpts = {},
-  probe: LivenessProbe = probeLiveness,
-  readCommand: CommandReader = readProcessCommand,
+  seams: RecordSeams = {},
 ): Promise<{ running: boolean; started: boolean; pid?: number }> {
   const space = o.space ?? folderSpace();
-  const state = managerLiveness(probe, readCommand, space);
+  const state = managerLiveness(space, cotalRoot(), seams);
   if (state === "alive") return { running: true, started: false };
-  assertManagerRecordReplaceable(probe, readCommand, space); // refuses on unknown / unattributable, reports foreign
+  assertManagerRecordReplaceable(space, cotalRoot(), seams); // refuses on unknown / unattributable, reports foreign
   await seedBeforeLaunch();
   const pid = startManagerDetached(o);
   await awaitManagerUp(space, identityRecord(pid));

@@ -88,7 +88,7 @@ try {
   const { deliveryLiveness } = await import("../src/lib/delivery-proc.js");
   process.chdir(wsRoot); // the shipped readers resolve their root by walking up from cwd
   check("CONTROL: with no daemon and no record, the record is absent and the down guard is clear",
-    !existsSync(PID_PATH) && deliveryLiveness(undefined, SPACE) === "absent" && mayBeRunning(DELIVERY_ROW, ctx) === false);
+    !existsSync(PID_PATH) && deliveryLiveness(SPACE) === "absent" && mayBeRunning(DELIVERY_ROW, ctx) === false);
 
   // ---- THE SUBJECT: a daemon started on the NON-LAUNCHER path, as a container entrypoint would ----
   const env: NodeJS.ProcessEnv = { ...process.env };
@@ -139,7 +139,7 @@ try {
       && readFileSync(identityPinPath(PID_PATH), "utf8").trim().split(/\s+/)[0] === String(recordedPid),
     existsSync(identityPinPath(PID_PATH)) ? readFileSync(identityPinPath(PID_PATH), "utf8").trim() : null);
   check("CELL: the shipped reader reports the live daemon as ALIVE rather than absent",
-    deliveryLiveness(undefined, SPACE) === "alive", deliveryLiveness(undefined, SPACE));
+    deliveryLiveness(SPACE) === "alive", deliveryLiveness(SPACE));
   // THE CHECK THE ISSUE IS ABOUT. `mayBeRunning` must see this daemon as live, so a preserving cut
   // fences it and never calls the stack down around it; over an absent or stale record it returns
   // false and the live daemon reads as gone.
@@ -158,7 +158,7 @@ try {
   await wait(300); // let it exec, so the argv read sees its final command line
   writeFileSync(PID_PATH, String(stranger.pid));
   check("CELL: a live pid that is provably NOT a delivery daemon reads FOREIGN, not as a healthy daemon",
-    deliveryLiveness(undefined, SPACE) === "foreign", { got: deliveryLiveness(undefined, SPACE), strangerPid: stranger.pid });
+    deliveryLiveness(SPACE) === "foreign", { got: deliveryLiveness(SPACE), strangerPid: stranger.pid });
   if (daemonRecord !== undefined) writeFileSync(PID_PATH, daemonRecord);
   else rmSync(PID_PATH, { force: true }); // there was none: leave the root as this cell found it
   stranger.kill("SIGKILL");
@@ -175,7 +175,7 @@ try {
   check("CELL: and the identity pin goes with it",
     recordWasThere && !existsSync(identityPinPath(PID_PATH)), existsSync(identityPinPath(PID_PATH)));
   check("CONTROL: with the daemon gone the down guard is clear again",
-    mayBeRunning(DELIVERY_ROW, ctx) === false && deliveryLiveness(undefined, SPACE) === "absent");
+    mayBeRunning(DELIVERY_ROW, ctx) === false && deliveryLiveness(SPACE) === "absent");
 
   console.log(`\nDELIVERY-PIDFILE-OWNERSHIP SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
