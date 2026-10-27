@@ -32,7 +32,7 @@ import type { KV, Kvm } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { canonicalJson, rawDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
-import { isCasLoss } from "./endpoint-records.js";
+import { isCasLoss, decodeRecordJson } from "./endpoint-records.js";
 import { assertGeneration, callerTokens, type EpCaller } from "./endpoint-subjects.js";
 export { assertGeneration, isIssuedCaller, EP_RAIL_V1, type IssuedCaller } from "./endpoint-subjects.js";
 import type { IssuedCaller } from "./endpoint-subjects.js";
@@ -410,7 +410,6 @@ export function issuedStoreStreamNames(space: string): string[] {
 }
 
 const enc = new TextEncoder();
-const dec = new TextDecoder("utf-8", { fatal: true });
 const bytes = (value: unknown): Uint8Array => enc.encode(canonicalJson(value));
 
 /** The evidence store over an already bound KV. It checks no shape: issuers and resolvers bind
@@ -452,7 +451,7 @@ export function openIssuedStore(kv: KV, jsm: JetStreamManager, space: string): I
     if (!m) return undefined;
     if (m.header?.get("KV-Operation"))
       throw new EpEnvelopeError("failed-precondition", `issued row ${key} carries a deletion marker; a deletion is never absence (SPEC 13.15)`);
-    return { value: JSON.parse(dec.decode(m.data)), revision: m.seq };
+    return { value: decodeRecordJson(m.data, key), revision: m.seq };
   }
   async function readEvidence(ref: IssuedAuthorityRef): Promise<{ evidence: IssuedEvidence; digest: string }> {
     const key = own(ref);

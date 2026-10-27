@@ -689,7 +689,8 @@ a monitored agent, and refuses one the run never performed `monitor` on. It read
 same witness a conclave join resolves members through: the value carries the handle, the reason
 (`lapsed` when nothing live holds the name any more, `superseded` when a live row holds it under
 a different incarnation) and the time of observation. Presence liveness skips any value without a
-string `card.id` and `card.name`, so a participant that publishes a malformed row under its own key
+string `card.id` equal to its key, a string `card.name`, a known `status` and a finite `ts`, so a
+participant that publishes a malformed row under its own key
 cannot fail another run's wait, turn or conclave join. A superseded incarnation is down at once. A
 lapsed one is down only after its presence row has stayed gone for 30 seconds, because a seat whose
 connector stalls past the row's 6-second TTL, under host load or across a reconnect, renews it under

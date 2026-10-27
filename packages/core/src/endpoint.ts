@@ -163,6 +163,7 @@ import {
   assertInboxConnId,
   type ParsedSubject,
   presenceBucket,
+  isPresenceRow,
   membershipBucket,
   MEMBERSHIP_FEED_KEY,
   principalKey,
@@ -7372,21 +7373,14 @@ export class CotalEndpoint extends EventEmitter {
     } catch {
       return undefined;
     }
-    if (!isUsablePresence(p)) {
+    if (!isPresenceRow(p, e.key)) {
       this.presenceBindingDrops++;
-      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(e.key)}: not a record with a string card.name, a known status, a finite ts, string display fields and a condition with a string code`));
+      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(e.key)}: not a usable presence row (a record with card.id equal to its KV key, a string card.name, a known status, a finite ts, string display fields and a condition with a string code)`));
       return undefined;
     }
-    // Defense-in-depth: the KV key IS the publisher's identity —
-    // publishPresence() writes its record under card.id — so a record whose embedded card.id disagrees
-    // with its bucket key is forged or corrupt. Drop it rather than surface a spoofed roster identity.
-    // The write-side scoping ($KV.<presenceBucket>.<own-id>) is the primary guard; this rejects a
-    // mis-keyed record even if a broad writer slips one in under another agent's key.
-    if (p.card.id !== e.key) {
-      this.presenceBindingDrops++;
-      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(e.key)}: card.id ${JSON.stringify(p.card.id)} does not match its KV key`));
-      return undefined;
-    }
+    // isPresenceRow is the one gate: it refuses a row whose card.id disagrees with the KV key, so a
+    // forged or mis-keyed record never surfaces a spoofed roster identity. The write-side scoping
+    // ($KV.<presenceBucket>.<own-id>) is the primary guard.
     return p;
   }
 
@@ -7804,32 +7798,6 @@ function assertPartsSerializable(parts: readonly Part[]): void {
       throw new Error(`cannot publish a data part carrying a non-JSON value (SPEC §5) - ${problem}`);
     }
   }
-}
-
-/** A `Record` so that adding a status to {@link PresenceStatus} fails to compile until the reader accepts it. */
-const PRESENCE_STATUSES: Record<PresenceStatus, true> = { idle: true, waiting: true, working: true, offline: true };
-
-/** The presence fields this observer computes with, in their SPEC §6 types. A missing `ts` or text
- *  such as `"nope"` makes the liveness arithmetic NaN, and a JSON `1e400` parses as `Infinity`;
- *  neither age is ever greater than the TTL, so the row would stay live after its key expired
- *  (#2612). `card.name` is the roster sort key: a non-string throws inside the watch loop and
- *  ends the watch. `status` decides offline and is what roster consumers read. `card.role`,
- *  `activity`, `attention` and `condition.code` are printed as text, and the peer writes its own
- *  row: an object such as `{"toString":null,"valueOf":null}` throws on conversion and would fail
- *  every reader's roster. A present `condition` must be an object with a string `code`, which SPEC
- *  §6 makes required: `null`, a bare string or an object with no code is dropped too. `card.id` is
- *  left to the KV-key check, which rejects anything but the key string. */
-function isUsablePresence(value: unknown): value is Presence {
-  return isRecord(value) && isRecord(value.card) && typeof value.card.name === "string" &&
-    isOptionalString(value.card.role) &&
-    typeof value.status === "string" && Object.hasOwn(PRESENCE_STATUSES, value.status) &&
-    typeof value.ts === "number" && Number.isFinite(value.ts) &&
-    isOptionalString(value.activity) && isOptionalString(value.attention) &&
-    (value.condition === undefined || (isRecord(value.condition) && typeof value.condition.code === "string"));
-}
-
-function isOptionalString(value: unknown): boolean {
-  return value === undefined || typeof value === "string";
 }
 
 /** Shallow-equal two per-channel-mode maps (presence dedup): a change must re-emit, so an attention

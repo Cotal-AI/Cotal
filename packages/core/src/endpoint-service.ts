@@ -22,7 +22,7 @@ import {
 import { EpEnvelopeError, EP_NO_LIVE_INSTANCES, lifecycleBlocked, type EpClass, type EpErrorCode, type EpErrorDetail, type EpNoLiveInstancesDetail } from "./endpoint-envelope.js";
 import {
   RECORD_KINDS, GOVERN_HEAD, recordSpecKey, recordStatusKey, recordAtomicKey, readRecord, recordsBucket,
-  createRecordEntry, updateRecordEntry, deleteRecordEntry, assertStatusValue,
+  createRecordEntry, updateRecordEntry, deleteRecordEntry, assertStatusValue, decodeRecordJson,
 } from "./endpoint-records.js";
 import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TRAIT_URNS, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
 import { createPublicKey, verify as verifySignature } from "node:crypto";
@@ -337,7 +337,7 @@ async function readEndpointGovernance(kv: KV, endpoint: string): Promise<ParsedE
   if (!entry) return { commands: new Map(), provisional: null, revision: null };
   if (entry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the endpoint governance head ${key} carries a ${entry.operation} marker; a monotonic history-bearing record is never deleted, so this is tampering or a storage fault - reconcile the head before registering, a deletion never resets governance history (SPEC 13.7)`);
-  return { ...parseEndpointGovernance(decodeJson(entry.value, key), key), revision: entry.revision };
+  return { ...parseEndpointGovernance(decodeRecordJson(entry.value, key), key), revision: entry.revision };
 }
 
 /** Union the new spec's governed declarations into the binding governance (monotonic: a governed
@@ -514,7 +514,7 @@ export async function registerServiceInstance(
       throw new EpEnvelopeError("conflict", `a name-authority transfer raced this registration: owner "${spec.owner}" is authorized at nameAuthorityRevision ${authorizedNameRevision} but the frozen gate is at ${obs.nameAuthorityRevision}; re-read and re-decide (SPEC 13.9)`);
     current = await kv.get(key);
     if (current && current.operation === "PUT") {
-      const stored = parseServiceSpec(decodeJson(current.value, key), { endpoint: spec.endpoint });
+      const stored = parseServiceSpec(decodeRecordJson(current.value, key), { endpoint: spec.endpoint });
       if (stored.owner !== spec.owner)
         throw new EpEnvelopeError("permission-denied", `instance "${args.instanceId}" is registered to owner "${stored.owner}"; a re-registration can never change ownership (SPEC 13.1: instance ids are never reused across identities)`);
     }
@@ -769,7 +769,7 @@ async function recoverCommittedSpecWrite(
   if (prior && again.revision === prior.revision) return fail("; spec read-back shows the write did not commit");
   let got: unknown;
   try {
-    got = decodeJson(again.value, key);
+    got = decodeRecordJson(again.value, key);
   } catch (e) {
     return fail(`; spec read-back is garbled: ${(e as Error)?.message ?? String(e)}`);
   }
@@ -818,7 +818,7 @@ export async function completeFrozenRegistrationFromSpec(
   if (!specEntry || specEntry.operation !== "PUT" || specEntry.revision <= args.gate.registrationRevision)
     return { completed: false, raced: false };
   try {
-    parseServiceSpec(decodeJson(specEntry.value, specKey), { endpoint: args.endpoint });
+    parseServiceSpec(decodeRecordJson(specEntry.value, specKey), { endpoint: args.endpoint });
   } catch (e) {
     throw new EpEnvelopeError("unavailable", `the frozen registration's spec is unreadable; the gate stays frozen (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
   }
@@ -1004,14 +1004,6 @@ async function reopenGateAfterAbort(barrier: EpIssuanceBarrier, token: number, s
   }
 }
 
-function decodeJson(value: Uint8Array, key: string): unknown {
-  try {
-    return JSON.parse(new TextDecoder().decode(value));
-  } catch (e) {
-    throw new EpEnvelopeError("internal", `record ${key} does not decode as JSON: ${(e as Error).message}`);
-  }
-}
-
 /** Write an instance's status with the FULL §13.9 writer fence. `epoch` is the
  *  WRITER-AUTHENTICATED epoch — in production the record writer reads it from the
  *  broker-authenticated `epr` subject (§13.9), never from the payload; this helper trusts its
@@ -1088,7 +1080,7 @@ export async function writeServiceStatus(
       throw new EpEnvelopeError("conflict", `the status for "${args.endpoint}/${args.instanceId}" moved (observed revision ${args.expectedStatusRevision}, stored ${current}); a derived write against a moved base would merge-lose the concurrent write, re-read and re-derive (SPEC 13.6)`);
   }
   if (stored && stored.operation === "PUT") {
-    const recorded = parseServiceStatus(decodeJson(stored.value, key));
+    const recorded = parseServiceStatus(decodeRecordJson(stored.value, key));
     // ESCALATED is IRREVERSIBLE here (§13.6): no later write, any epoch, replaces it. The only
     // permitted touch on an escalated row is the supervisor's retirement mark, which the
     // escalation reconciler writes DIRECTLY (never through this writer).
@@ -1230,7 +1222,7 @@ export async function deregisterServiceInstance(
   let statusRevision: number | undefined;
   if (statusEntry && statusEntry.operation === "PUT") {
     // A successor's status: deleting it would leave that successor registered and never live.
-    if (parseServiceStatus(decodeJson(statusEntry.value, statusKey)).observedSpecRevision > specEntry.revision)
+    if (parseServiceStatus(decodeRecordJson(statusEntry.value, statusKey)).observedSpecRevision > specEntry.revision)
       return { removed: false, reason: "superseded" };
     try {
       await deleteRecordEntry(kv, statusKey, statusEntry.revision);
@@ -1347,7 +1339,7 @@ export async function readSvcRecordLeader(
   }
   if (!m) return undefined;
   if (m.header?.get("KV-Operation")) return { deleted: true }; // a deregistration, not corruption (§13.5)
-  return { value: decodeJson(m.data, key), revision: m.seq };
+  return { value: decodeRecordJson(m.data, key), revision: m.seq };
 }
 
 /** The PRODUCTION `reconcileRegistration` hook for {@link epScatter} (§13.5): a bounded post-T
@@ -1599,7 +1591,7 @@ export async function authorizeServeGrant(
   const specEntry = await kv.get(specKey);
   if (!specEntry || specEntry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `no registered spec for "${args.endpoint}/${args.instanceId}"; a serve credential is minted only for a REGISTERED instance (SPEC 13.9)`);
-  const spec = parseServiceSpec(decodeJson(specEntry.value, specKey), { endpoint: args.endpoint });
+  const spec = parseServiceSpec(decodeRecordJson(specEntry.value, specKey), { endpoint: args.endpoint });
   assertBoundedOwner(args.holder.owner, "serve credential holder");
   if (args.holder.owner !== spec.owner)
     throw new EpEnvelopeError("permission-denied", `the serve credential holder "${args.holder.owner}" is not the registered owner "${spec.owner}" of "${args.endpoint}" (SPEC 13.9: serving is the registered owner's authority)`);

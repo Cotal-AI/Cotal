@@ -27,6 +27,7 @@
  * Presence lives in a JetStream KV bucket, not a subject (see presenceBucket()).
  */
 import { fromPublic } from "@nats-io/nkeys";
+import type { Presence, PresenceStatus } from "./types.js";
 
 const ILLEGAL = /[^A-Za-z0-9_-]/g;
 
@@ -888,6 +889,33 @@ export function deliveryOf(subject: string): DeliveryMode | null {
 /** Name of the KV bucket holding presence for a space. */
 export function presenceBucket(space: string): string {
   return `cotal_presence_${token(space)}`;
+}
+
+const PRESENCE_STATUSES: Record<PresenceStatus, true> = { idle: true, waiting: true, working: true, offline: true };
+
+function presenceRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function presenceOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+/** The presence row shape every reader relies on (SPEC §6). A record whose `card.id` differs from
+ *  its KV key, whose `card.name` or `status` has the wrong type, whose `ts` is not finite, whose
+ *  printed display fields are present and not strings, or whose `condition` is present and is not
+ *  an object with a string `code`, is not a row. `card.id` must be a non-empty string and equal the
+ *  key it was read under: the key is the identity the write grant proves, and an empty id matches
+ *  no key. */
+export function isPresenceRow(value: unknown, key: string): value is Presence {
+  if (!presenceRecord(value) || !presenceRecord(value.card)) return false;
+  const card = value.card;
+  if (card.id !== key || typeof card.id !== "string" || card.id.length === 0 || typeof card.name !== "string") return false;
+  return presenceOptionalString(card.role) &&
+    typeof value.status === "string" && Object.hasOwn(PRESENCE_STATUSES, value.status) &&
+    typeof value.ts === "number" && Number.isFinite(value.ts) &&
+    presenceOptionalString(value.activity) && presenceOptionalString(value.attention) &&
+    (value.condition === undefined || (presenceRecord(value.condition) && typeof value.condition.code === "string"));
 }
 
 /** Name of the KV bucket holding the channel registry (config) for a space — sibling of

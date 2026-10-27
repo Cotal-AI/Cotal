@@ -41,7 +41,7 @@ import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { withDeadline } from "./deadline.js";
 import { canonicalJson } from "./canonical.js";
 import { epfSubject, eptSubject, parseEpSubject, assertIdToken, type EpCaller } from "./endpoint-subjects.js";
-import { RECORD_KINDS, recordSpecKey, recordStatusKey, createRecordEntry, updateRecordEntry, assertStatusValue, readRecordLeader, isCasLoss } from "./endpoint-records.js";
+import { RECORD_KINDS, recordSpecKey, recordStatusKey, createRecordEntry, updateRecordEntry, assertStatusValue, readRecordLeader, isCasLoss, decodeRecordJson } from "./endpoint-records.js";
 import { epfStreamName, readLastFact } from "./endpoint-journal.js";
 import { eptReqStreamName, eptStreamName, timerWriterConsumerConfig, timerWriterDurable } from "./endpoint-binding.js";
 
@@ -360,7 +360,7 @@ export async function readCheckpointStatus(kv: KV, ref: CheckpointRef): Promise<
   if (!entry) return undefined;
   if (entry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the checkpoint status ${key} carries a ${entry.operation} marker; a deletion never erases a pause - reconcile the store (SPEC 13.6)`);
-  return { value: parseCpStatus(JSON.parse(new TextDecoder().decode(entry.value)), key), revision: entry.revision };
+  return { value: parseCpStatus(decodeRecordJson(entry.value, key), key), revision: entry.revision };
 }
 
 /** Publish a `.schedule` REQUEST onto the mediated timer plane — the ONLY timer publish an
@@ -441,7 +441,7 @@ export async function mintCheckpoint(
       throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" spec carries a ${existing.operation} marker; a deletion never erases a pause and a re-mint never rebinds its holder - reconcile the store (SPEC 13.6)`);
     if (!existing)
       throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" spec is not readable after a create conflict; reconcile the store (SPEC 13.6)`);
-    const prior = parseCpSpec(JSON.parse(new TextDecoder().decode(existing.value)), ref, specKey);
+    const prior = parseCpSpec(decodeRecordJson(existing.value, specKey), ref, specKey);
     if (prior.holder.id !== holder.id || prior.holder.lifecycleUid !== holder.lifecycleUid
       || prior.initialDeadline !== deadline
       || (prior.goal === undefined) !== (goal === undefined)
@@ -484,10 +484,10 @@ export async function mintCheckpoint(
         throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" status carries a ${won.operation} marker; a deletion never erases a pause and a mint never resurrects one - reconcile the store (SPEC 13.6)`);
       if (!won)
         throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" status is not readable after a create conflict; reconcile the store (SPEC 13.6)`);
-      statusValue = parseCpStatus(JSON.parse(new TextDecoder().decode(won.value)), statusKey);
+      statusValue = parseCpStatus(decodeRecordJson(won.value, statusKey), statusKey);
     }
   } else {
-    statusValue = parseCpStatus(JSON.parse(new TextDecoder().decode(existingStatus.value)), statusKey);
+    statusValue = parseCpStatus(decodeRecordJson(existingStatus.value, statusKey), statusKey);
   }
   // Replay identity covers the DEADLINE too: a still-initial (generation-1 waiting) status must
   // carry exactly the requested deadline (a differing deadline is a different mint intent). A
@@ -989,7 +989,7 @@ export async function resumeCheckpoint(
   const specEntry = await kv.get(specKey);
   if (!specEntry || specEntry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" is unknown (or its spec carries a deletion marker); resume presents only a minted token (SPEC 13.6)`);
-  const spec = parseCpSpec(JSON.parse(new TextDecoder().decode(specEntry.value)), ref, specKey);
+  const spec = parseCpSpec(decodeRecordJson(specEntry.value, specKey), ref, specKey);
   if (spec.holder.id !== presenter.id || spec.holder.lifecycleUid !== presenter.lifecycleUid)
     throw new EpEnvelopeError("permission-denied", `resume of checkpoint "${ref.token}" is holder-bound to ${spec.holder.id}/${spec.holder.lifecycleUid}; the presenter ${presenter.id}/${presenter.lifecycleUid} is not the holder (SPEC 13.10)`);
 
@@ -1039,7 +1039,7 @@ export async function readCheckpointSpec(kv: KV, ref: CheckpointRef): Promise<Ch
   if (!entry) return undefined;
   if (entry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the checkpoint spec ${key} carries a ${entry.operation} marker; a deletion never erases a pause - reconcile the store (SPEC 13.6)`);
-  return parseCpSpec(JSON.parse(new TextDecoder().decode(entry.value)), ref, key);
+  return parseCpSpec(decodeRecordJson(entry.value, key), ref, key);
 }
 
 /** OWNER-forced expiry (§13.6): the pause's owner settles a DUE checkpoint `expired` without a
