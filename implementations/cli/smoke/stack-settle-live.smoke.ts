@@ -566,7 +566,9 @@ try {
     const reserved = cli(root, "up", "--no-manager", "--json");
     track(space);
     check(`a recorded cap of ${MIN_FILE_STORE - 1}, the membership bucket's reservation, fails OPERATION_FAILED, exit 5, naming ${MIN_FILE_STORE} as the least`, reserved.status === 5 && reserved.env?.error?.code === "OPERATION_FAILED" && Boolean(reserved.env.error.remedy?.includes(`with at least ${MIN_FILE_STORE} bytes`)), shown(reserved));
-    const capped = cli(root, "status", "--json");
+    // Another space of this suite is selected, and a stopped folder's commands target the selection,
+    // so status names this stack with --space.
+    const capped = cli(root, "status", "--space", space, "--json");
     const cappedSelected = capped.env?.result?.selected as { message?: string; storeCap?: number } | undefined;
     check("status then says the stack is stopped after a failed up, shows the recorded cap and names up --max-file-store at the floor, not a bare up",
       capped.status === 0 && Boolean(cappedSelected?.message?.includes(`"${space}" is stopped; its last operation, cotal up, failed`)) && cappedSelected?.storeCap === MIN_FILE_STORE - 1
@@ -575,7 +577,7 @@ try {
     track(space);
     check(`up --max-file-store ${MIN_FILE_STORE} starts the stack`, floor.status === 0, shown(floor));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
-    const stoppedStatus = cli(root, "status", "--json");
+    const stoppedStatus = cli(root, "status", "--space", space, "--json");
     const stoppedSelected = stoppedStatus.env?.result?.selected as { message?: string; storeCap?: number } | undefined;
     check("status then says the stack is stopped after a completed down, not prepared but not started, and names a bare up",
       stoppedStatus.status === 0 && Boolean(stoppedSelected?.message?.includes(`"${space}" is stopped; its last operation, cotal down, completed`)) && stoppedSelected?.storeCap === undefined
