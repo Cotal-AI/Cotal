@@ -5,10 +5,10 @@ import { personaCatalog } from "../lib/persona-files.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { preflightProcessServiceStop, prepareNativeServiceStop, selectServiceInstance, stopProcessService } from "../lib/service-process.js";
-import { stackMemberFor } from "../lib/stack-journal.js";
+import { STACK_DEFINITION, stackMemberFor } from "../lib/stack-journal.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { yesRequired } from "../lib/confirmation-required.js";
-import { nativeImpactView } from "./service-actions.js";
+import { nativeImpactView, unsavedServiceStep } from "./service-actions.js";
 import { resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { announcePresetTarget, recordedProcessRefusal } from "./service-registry.js";
 
@@ -30,6 +30,19 @@ function setView(rows: readonly MemberResult[], title: string): Report {
     { kind: "table", columns: [{ key: "name", label: "Service" }, { key: "instance", label: "Full instance" }, { key: "host", label: "Execution host" }, { key: "state", label: "Stop result" }], rows: rows.map((row) => ({ name: row.name, instance: row.instanceId, host: row.instance.executionHost, state: { text: row.state.replaceAll("-", " "), tone: row.state === "original-process-gone" ? "ok" as const : row.state === "refused" || row.state === "failed" ? "failed" as const : "waiting" as const } })) },
     { kind: "lines", lines: ["Only the selected owned incarnations are controlled, in the displayed order. This is not atomic and completed stops are not rolled back. Process exit and a returned native stop do not prove descendant, authority or lease cleanup. Failed and unattempted members retain their labeled pre-stop snapshot; no fresh state is inferred."] },
   ] }] };
+}
+
+const BROKER_NAMES = new Set(["nats", "broker", STACK_DEFINITION.broker]);
+
+/** Why the set refuses a name that reaches no saved definition, with the step a single named `down`
+ *  names. A set never stops the broker, so a broker name names the bare `down` instead. */
+function unmatchedMember(space: string, name: string, preset: boolean): CommandFailure {
+  const stackName = BROKER_NAMES.has(name) ? undefined : stackMemberFor(space, name);
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `${oneLine(name)} matches no saved definition${preset ? "" : " or preset"} in space ${oneLine(space)}; no service was stopped`, {
+    target: { space, name },
+    remedy: BROKER_NAMES.has(name) ? "a set of names never stops the broker; a bare cotal down stops it with the whole stack"
+      : stackName ? `this space's controller stack names it ${stackName}; name ${stackName} instead, or run bare cotal down to stop the whole stack` : unsavedServiceStep(name, "stop"),
+  });
 }
 
 function membersStillEligible(members: readonly Member[]): void {
@@ -77,13 +90,16 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
   const store = serviceDefinitionStore(space), members: Member[] = [], presetTargets: PresetServiceTarget[] = [];
   for (const requested of args.positionals) {
     // A preset name reaches the service built on it, as a single named down does.
-    const resolved = resolvePresetService(space, root, requested, "stop", args.values);
+    let resolved: PresetServiceTarget | undefined;
+    try { resolved = resolvePresetService(space, root, requested, "stop", args.values); }
+    catch (error) {
+      // The broker preset with no saved service built on it still names the broker.
+      if (requested === "broker" && isCommandFailure(error) && error.code === "TARGET_NOT_FOUND") throw unmatchedMember(space, requested, true);
+      throw error;
+    }
     if (resolved?.recorded) throw recordedProcessRefusal(requested, resolved.recorded, space, "down");
     const name = resolved?.name ?? requested, definition = store.read(name);
-    if (!definition) {
-      const stackName = stackMemberFor(space, name);
-      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${oneLine(name)} matches no saved definition or preset in space ${oneLine(space)}; no service was stopped`, { target: { space, name }, ...(stackName ? { remedy: `this space's controller stack names it ${stackName}; name ${stackName} instead, or run bare cotal down to stop the whole stack` } : {}) });
-    }
+    if (!definition) throw unmatchedMember(space, name, false);
     const same = members.find((member) => member.definition.name === name);
     if (same) throw new CommandFailure("refused", "USAGE_INVALID", `${oneLine(same.requested)} and ${oneLine(requested)} both name ${oneLine(name)}; name each service once, and no service was stopped`, { target: { space, name } });
     if (resolved) presetTargets.push(resolved);

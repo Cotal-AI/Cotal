@@ -146,6 +146,12 @@ function interruptedStart(name: string, space: string, selected: string | undefi
       : new CommandFailure("unknown", "OPERATION_UNKNOWN", `the start of ${name} was interrupted before it confirmed the process of instance ${left.name} (observed: ${observed}); its record is kept`, { target, remedy: `inspect it with cotal service status ${name} --instance ${left.name} --space ${space}` });
 }
 
+/** The next step for a name that resolves to no saved definition and to no member of the space's
+ *  controller stack. */
+export function unsavedServiceStep(name: string, mode: string): string {
+  return name === "web" ? "the web dashboard is an extension: add it with cotal ext add @cotal-ai/web, then start it with cotal service start web --creds <file>" : mode === "stop" ? "list this space's saved definitions with cotal service" : "add a supported service definition explicitly before starting it";
+}
+
 /** `root` is the selected space's root, where a definition must have been added to launch. */
 export async function serviceAction(args: ParsedArgs, space: string, root: string, commandName = "service", resolved?: PresetServiceTarget): Promise<void> {
   const [mode, name] = args.positionals as [string, string];
@@ -154,7 +160,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   const store = serviceDefinitionStore(space, addedDefinitionStep), definition = store.read(name);
   if (!definition) {
     const stackName = stackMemberFor(space, name);
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; no process or extension was ${mode === "stop" ? "stopped" : "started"}`, { target: { space, name }, remedy: stackName ? `this space's controller stack names it ${stackName}: use cotal ${commandName === "down" ? "down" : `${commandName} ${mode}`} ${stackName} --space ${space}${mode === "stop" ? ", or bare cotal down to stop the whole stack" : ""}` : name === "web" ? "the web dashboard is an extension: add it with cotal ext add @cotal-ai/web, then start it with cotal service start web --creds <file>" : mode === "stop" ? "list this space's saved definitions with cotal service" : "add a supported service definition explicitly before starting it" });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; no process or extension was ${mode === "stop" ? "stopped" : "started"}`, { target: { space, name }, remedy: stackName ? `this space's controller stack names it ${stackName}: use cotal ${commandName === "down" ? "down" : `${commandName} ${mode}`} ${stackName} --space ${space}${mode === "stop" ? ", or bare cotal down to stop the whole stack" : ""}` : unsavedServiceStep(name, mode) });
   }
   if (mode === "start" || mode === "restart" || mode === "install") assertDefinitionRoot(definition, space, root, mode);
   const rows = serviceInstances(space, name);

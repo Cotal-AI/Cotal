@@ -170,6 +170,10 @@ try {
     const refusedInstall = envelope(upCotal(["manager", "install", "--dry-run", "--json"])) as LogsEnvelope & { error?: { code?: string; remedy?: string } };
     check("  and so does cotal manager install --dry-run while it runs, with the same advice",
       refusedInstall.outcome === "refused" && refusedInstall.error?.code === "UNSUPPORTED" && refusedInstall.error.remedy === refusedStop.error?.remedy, refusedInstall);
+    const brokerSet = envelope(upCotal(["down", "broker", "delivery", "--dry-run", "--json"])) as LogsEnvelope & { error?: { code?: string; message?: string; remedy?: string } };
+    check("cotal down broker delivery refuses the whole set and names the bare down that stops the broker",
+      brokerSet.outcome === "refused" && brokerSet.error?.code === "TARGET_NOT_FOUND" && brokerSet.error.message === `broker matches no saved definition in space ${UP_SPACE}; no service was stopped`
+        && brokerSet.error.remedy === "a set of names never stops the broker; a bare cotal down stops it with the whole stack", brokerSet);
 
     // A follow is a read-only view: it writes one JSON record per line and ends when down stops the manager.
     const follow = spawn(process.execPath, ["--import", TSX_LOADER, BIN, "manager", "logs", "--follow", "--json", "--tail", "3"], { cwd: upProject, env: upAt.env, stdio: ["ignore", "pipe", "pipe"] });
