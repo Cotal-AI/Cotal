@@ -69031,6 +69031,8 @@ function claims(ext) {
 }
 var Registry = class {
   #byKey = /* @__PURE__ */ new Map();
+  /** `kind:name` → the declared provider that registers it, and its import once one has started. */
+  #providers = /* @__PURE__ */ new Map();
   /** `kind:alias` → the claiming extension's `kind:name` key, for committed extensions. */
   #aliases = /* @__PURE__ */ new Map();
   /** While a stage is active in the CURRENT async context, {@link register} writes there instead of
@@ -69117,12 +69119,46 @@ var Registry = class {
     return this.#aliases.get(key) ?? key;
   }
   /** Resolve one extension by kind + name or alias. Unknown throws. Staged (uncommitted) registrations are
-   *  invisible here; only committed ones resolve. */
+   *  invisible here; only committed ones resolve. A key whose declared provider has not loaded throws
+   *  too, naming that: {@link load} resolves it. */
   resolve(kind, name) {
     const ext = this.#byKey.get(this.#canonical(kind, name));
-    if (!ext)
+    if (!ext) {
+      if (this.#providers.has(`${kind}:${name}`))
+        throw new Error(`${kind} "${name}" is declared by a provider this process has not loaded`);
       throw new Error(`no ${kind} registered for "${name}"`);
+    }
     return ext;
+  }
+  /** Declare a provider: a module that registers `provides` when it is imported. Nothing is imported
+   *  here. A key that another provider already declares is refused, so a key has one provider. */
+  provide(provider) {
+    const keys = provider.provides.map((ref) => `${ref.kind}:${ref.name}`);
+    for (const key of keys)
+      if (this.#providers.has(key))
+        throw new Error(`extension provider already declared: ${key}`);
+    const entry = { provider };
+    for (const key of keys)
+      this.#providers.set(key, entry);
+  }
+  /** Whether a provider was declared for exactly this kind + name, loaded or not. A boolean probe
+   *  that never throws and imports nothing. */
+  provides(kind, name) {
+    return this.#providers.has(`${kind}:${name}`);
+  }
+  /** Resolve kind + name, first importing the provider declared for it unless that import has run.
+   *  Concurrent calls share one import. A key no provider declares resolves as {@link resolve} does.
+   *  A provider that loads without registering the key it declared throws: the declaration is wrong,
+   *  and no other extension stands in for it. */
+  async load(kind, name) {
+    const entry = this.#providers.get(`${kind}:${name}`);
+    if (entry) {
+      entry.loading ??= entry.provider.load();
+      await entry.loading;
+      if (!this.#byKey.has(this.#canonical(kind, name)))
+        throw new Error(`the provider declared for ${kind} "${name}" loaded without registering it`);
+    }
+    return this.resolve(kind, name);
   }
   all(kind) {
     const values = [...this.#byKey.values()];
@@ -75492,10 +75528,10 @@ async function submitFeedback(input, options = {}) {
 var import_node_child_process3 = require("node:child_process");
 
 // ../connector-core/dist/docs-bundle.generated.js
-var DOCS_VERSION = "0.108.1";
+var DOCS_VERSION = "0.109.0";
 function loadDocsBundle() {
   return {
-    "version": "0.108.1",
+    "version": "0.109.0",
     "generatedFrom": "docs/*.md + SPEC.md + spec/cotal-lang.md + spec/cotal.schema.json",
     "pages": [
       {
