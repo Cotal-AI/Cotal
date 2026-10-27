@@ -1226,7 +1226,8 @@ log("winner", out.index);
     bare.admissible === false && bare.orphans.some((o) => o.step.includes("spawn:old") && o.code === "L5003"), bare.orphans);
   const report = await migrateRun({ endpoint: EP, runId: "sp-10", source: EDITED, entries, pins, kv, actor: "david", now: () => Date.now(), overrides: { adopt: [handle] } });
   c("--adopt <handle> makes it admissible", report.admissible === true, report.orphans);
-  const committed = await commitMigration(kv, EP, report, "driver-10", { entries, handler: mk("sp-10x") });
+  const committed = await commitMigration(kv, EP, report, "driver-10", { entries, handler: mk("sp-10x") },
+    { kv, js, jsm, space: SPACE, now: () => Date.now() });
   c("the migration is filed and applied", committed.created === true && committed.released.length === 0, committed);
   // The parked driver is superseded by the migrated program's driver: a resume under the edited
   // source, whose `spawn("keeper")` must receive the recorded seat. The new handler
