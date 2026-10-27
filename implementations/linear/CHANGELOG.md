@@ -1,5 +1,9 @@
 # @cotal-ai/linear
 
+## 0.109.4
+
+No changes in this release.
+
 ## 0.109.3
 
 No changes in this release.
