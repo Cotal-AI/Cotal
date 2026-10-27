@@ -202,7 +202,7 @@ try {
     script.exitCode === 0 && fit(script.shown, 40).length === 0 && usageOf(script.all).join("\n") === ["  cotal completion", "  script <bash|zsh|fish|powershell>"].join("\n"),
     script.all,
   );
-  // A compact `|`, as in `<persona.md>|--prompt`, is a break point too: the line ends right after it
+  // A compact `|`, as in `<persona.md>|(--prompt`, is a break point too: the line ends right after it
   // and the next starts with the following option, with no space added or lost.
   const persona = await helpAt(["help", "persona"], 40);
   check("cotal help persona on a 40-column terminal fits every line but its example commands", persona.exitCode === 0 && fit(persona.shown, 40).length === 0 && persona.all.length > 10, fit(persona.shown, 40));
@@ -210,7 +210,7 @@ try {
     "on 40 columns cotal help persona breaks a compact group after its own |",
     usageOf(persona.all).join("\n") === [
       "  cotal persona [--json|--plain] |", "  persona show <name> |", "  persona create <name>",
-      "  (--file <persona.md>|--prompt <text>|", "  --from <path>) |", "  persona edit <name> |", "  persona remove <name>",
+      "  (--file <persona.md>|", "  (--prompt <text>|--from <path>)", "  --subscribe <a,b|\"\">) |", "  persona edit <name> |", "  persona remove <name>",
       "  [--yes]; list/show/create support", "  --on <manager-instance>",
     ].join("\n"),
     usageOf(persona.all),

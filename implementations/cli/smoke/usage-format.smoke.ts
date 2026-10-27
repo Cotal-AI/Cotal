@@ -25,6 +25,10 @@
  * `help manager <verb>` listed only --json and --plain under Options, and `ext seed --help` printed
  * the `ext` help.
  *
+ * The `persona create` example runs as written against a fresh Cotal home; it lacked the
+ * `--subscribe ""` a persona body needs. A usage refusal shows the help `--help` prints for the same
+ * words, so a refused `persona create` shows its own help; it showed the `persona` help.
+ *
  * A usage that declares several forms, one per line, as `linear` does, shows each form on its own
  * lines; help printed them joined by an escaped `\u000a`. A flag a `linear` operation does not take
  * is refused naming it and that operation's flags and usage, without the help: `serve --json` says
@@ -240,6 +244,22 @@ for (const [args, usage, foreign] of [
   const managerStart = run(["manager", "start", "--help"]);
   const declared = registry.resolve<Command>("command", "manager").subcommands?.find((sub) => sub.name === "start")?.examples ?? [];
   check("cotal manager start --help shows the manager start examples", managerStart.status === 0 && declared.length > 0 && declared.every((example) => typeof example !== "string" && managerStart.stdout.includes(`  ${example.command}`)), shown(managerStart));
+
+  // The persona create example, its placeholders filled in, run as written against a fresh Cotal home
+  // in the folder of a space prepared there, which needs no stack. Without --subscribe the refusal
+  // shows the persona create help.
+  const fresh = { COTAL_HOME: join(home, "persona-home") };
+  const project = join(home, "persona-project");
+  mkdirSync(project, { mode: 0o700 });
+  const prepared = run(["space", "create", "personas", "--root", project], fresh);
+  const [example] = registry.resolve<Command>("command", "persona").subcommands?.find((sub) => sub.name === "create")?.examples ?? [];
+  const written = typeof example === "string" ? example : example?.command ?? "";
+  const created = run(words(written.replace("<name>", "reviewer").replace("<text>", "review the diff")).slice(1), fresh, project);
+  const saved = run(["persona", "show", "reviewer", "--json"], fresh, project);
+  check(`${written} runs as written and saves a persona that reads no channels`, prepared.status === 0 && created.status === 0 && saved.status === 0 && JSON.stringify(JSON.parse(saved.stdout).result.definition.subscribe) === "[]", { prepared: shown(prepared), created: shown(created), saved: shown(saved) });
+  const noReadSet = run(["persona", "create", "other", "--prompt", "review the diff"], fresh, project);
+  check("persona create without --subscribe is refused with the persona create help, not the persona help",
+    usageShape(noReadSet, /provide --subscribe <a,b> or --subscribe "" for none/) && noReadSet.stderr.includes("\nUsage\n  cotal persona create <name> ") && !/^Commands$/m.test(noReadSet.stderr), shown(noReadSet));
 }
 
 // No mark at all: the report names the outcome in words, and `!` stays the warning mark.

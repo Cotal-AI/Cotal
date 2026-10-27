@@ -137,7 +137,9 @@ before it acts, such as a missing argument, an invalid flag value or two flags t
 dash or a minus sign followed by one of the command's flag names, as an autocorrecting editor writes
 `--`: the refusal names the dash and the flag to type. After `--` such a word is an argument as
 typed. The command prints the error, then any remedy,
-then its help on stderr, writes nothing on stdout, exits 1, and does not run. A refusal for a missing
+then its help on stderr, writes nothing on stdout, exits 1, and does not run. The help is the one
+`--help` prints for the same words, so a refused `cotal persona create` shows the `persona create`
+help. A refusal for a missing
 `--yes` outside an interactive terminal prints its error and a remedy that names `--yes`, without the
 help. A control character in
 a word the error quotes, from the command line or from a file, shows as its `\uXXXX` escape, so a
