@@ -40,15 +40,15 @@
     {
       "name": "the current-registration check accepts any manager gate state, including frozen",
       "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  if (!gate || gate.state !== \"open\")\n    throw new EpEnvelopeError(\"failed-precondition\", `${what} found no current open manager gate for instance ${r.instanceId}`);\n",
-      "replace": "  if (!gate) throw new EpEnvelopeError(\"failed-precondition\", `${what} found no current open manager gate for instance ${r.instanceId}`);\n",
+      "find": "  if (!gate || gate.state !== \"open\")\n    throw new EpEnvelopeError(\"failed-precondition\", `${what} found no current open manager gate for instance ${args.instanceId}`);\n",
+      "replace": "  if (!gate) throw new EpEnvelopeError(\"failed-precondition\", `${what} found no current open manager gate for instance ${args.instanceId}`);\n",
       "expectRed": "FAIL: enrollment: a FROZEN gate is refused (a takeover in flight is not a registration)",
       "cell": "enrollment: a FROZEN gate is refused (a takeover in flight is not a registration)"
     },
     {
       "name": "the current-registration check accepts a gate held by another owner's serve principal",
       "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  if (gate.principal !== servePrincipal)\n    throw new EpEnvelopeError(\"permission-denied\", `manager gate belongs to ${gate.principal}, not serve principal ${servePrincipal}`);\n",
+      "find": "  if (gate.principal !== servePrincipal)\n    throw new EpEnvelopeError(\"permission-denied\", `${what} gate belongs to ${gate.principal}, not the server-derived serve principal ${servePrincipal}`);\n",
       "replace": "",
       "expectRed": "FAIL: enrollment: a gate held by another owner's serve principal is refused",
       "cell": "enrollment: a gate held by another owner's serve principal is refused"
@@ -56,7 +56,7 @@
     {
       "name": "the current-registration check accepts a stale serve epoch",
       "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  if (gate.processEpoch !== r.serveEpoch)\n    throw new EpEnvelopeError(\"conflict\", `manager serve epoch ${r.serveEpoch} is stale; current is ${gate.processEpoch}`);\n",
+      "find": "  if (gate.processEpoch !== args.serveEpoch)\n    throw new EpEnvelopeError(\"conflict\", `${what} serve epoch ${args.serveEpoch} is stale; current is ${gate.processEpoch}`);\n",
       "replace": "",
       "expectRed": "FAIL: enrollment: a stale serve epoch is refused as a conflict",
       "cell": "enrollment: a stale serve epoch is refused as a conflict"

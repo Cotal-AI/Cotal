@@ -214,7 +214,7 @@ try {
     await refuses("runtime-create: a FROZEN gate is refused",
       () => decide(create({ instanceId: FROZEN_INSTANCE, registrationProof: proofFor(FROZEN_INSTANCE) })), "failed-precondition", /no current open manager gate/);
     await refuses("runtime-create: a gate held by another owner's serve principal is refused",
-      () => decide(create({ instanceId: FOREIGN_INSTANCE, registrationProof: proofFor(FOREIGN_INSTANCE) })), "permission-denied", /not serve principal/);
+      () => decide(create({ instanceId: FOREIGN_INSTANCE, registrationProof: proofFor(FOREIGN_INSTANCE) })), "permission-denied", /not the server-derived serve principal/);
     await refuses("runtime-create: a stale serve epoch is refused as a conflict",
       () => decide(create({ serveEpoch: EPOCH - 1, registrationProof: proofFor(INSTANCE, "cli", REVISION, EPOCH - 1) })), "conflict", new RegExp(`epoch ${EPOCH - 1} is stale; current is ${EPOCH}`));
     await refuses("runtime-create: a forged registration proof is refused",

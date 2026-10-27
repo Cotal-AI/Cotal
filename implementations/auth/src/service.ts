@@ -69,6 +69,7 @@ import { VOID_SCHEMA, CotalEndpoint, dialerFor, deprovisionAgent, singleDocument
 import { findCotalRoot, loadManagerInstanceIdentity, runSpaceHost, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, type SpaceLane, type SpaceSettings, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
+import { assertCurrentOpenManagerGate } from "./managed-agent-enrollment.js";
 import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
 import { makePlatformControlAuthority, makePlatformControlReadiness, requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 import { OwnedConnections, type AuthConnectionState, type AuthServiceClosed } from "./owned-connections.js";
@@ -384,13 +385,7 @@ export function authorizeRemoteManagerRetirement(args: {
 }): void {
   if (args.targetOwner !== args.owner)
     throw new EpEnvelopeError("permission-denied", `manager-service retirement may target only its authenticated owner ${args.owner}, not ${args.targetOwner}`);
-  if (!args.gate || args.gate.state !== "open")
-    throw new EpEnvelopeError("failed-precondition", `manager-service retirement found no current open manager gate for instance ${args.instanceId}`);
-  const servePrincipal = remoteManagerServePrincipal(args.owner, args.instanceId);
-  if (args.gate.principal !== servePrincipal)
-    throw new EpEnvelopeError("permission-denied", `manager-service retirement gate belongs to ${args.gate.principal}, not the server-derived serve principal ${servePrincipal}`);
-  if (args.gate.processEpoch !== args.serveEpoch)
-    throw new EpEnvelopeError("conflict", `manager-service retirement serve epoch ${args.serveEpoch} is stale; current is ${args.gate.processEpoch}`);
+  assertCurrentOpenManagerGate(args.gate, args, "manager-service retirement");
 }
 
 /** The §13.9 name authority in static mode: the plane holds the space signing seed, so it
@@ -3588,6 +3583,13 @@ function refuseExchange(
   send(res, status, body);
 }
 
+/** A loopback manager-selection refusal is not a probe: audit it and answer 401, but do not charge
+ * the exchange budget or replace its reason with the shared mask. */
+function auditSelectionRefusal(res: ServerResponse, prefix: string, reason: string): void {
+  console.error(`auth-service: ${prefix}${reason}`);
+  send(res, 401, { error: reason });
+}
+
 /** Public-face authenticated manager-selection (#3959): called ONLY after the caller's
  *  credential (IdP JWT or actor secret) and ledger actor grant have verified. On loopback
  *  (`policy.selectionWindow === undefined`), selection runs directly inside the caller's try and
@@ -3751,7 +3753,7 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       if (e instanceof ConnectRateLimited) return sendRateLimited(res, e);
-      if (e instanceof ManagerSelectionRefusal) return send(res, 401, { error: reason });
+      if (e instanceof ManagerSelectionRefusal) return auditSelectionRefusal(res, "refused an agent exchange: ", reason);
       return refuseExchange(res, ctx, policy, peer, peerThrottled, "refused an agent exchange: ", 401, reason);
     }
   }
@@ -3800,7 +3802,7 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
     // denial with the reason — the client shows it to the operator verbatim.
     const reason = e instanceof Error ? e.message : String(e);
     if (e instanceof ConnectRateLimited) return sendRateLimited(res, e);
-    if (e instanceof ManagerSelectionRefusal) return send(res, 401, { error: reason });
+    if (e instanceof ManagerSelectionRefusal) return auditSelectionRefusal(res, "refused an exchange: ", reason);
     return refuseExchange(res, ctx, policy, peer, peerThrottled, "refused an exchange: ", 401, reason);
   }
 }

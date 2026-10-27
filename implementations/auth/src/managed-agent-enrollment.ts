@@ -32,6 +32,25 @@ import { remoteManagerCurrentRegistrationProof } from "./retained-manager-valida
 /** The live manager gate the host observes for itself. A null answer is an absent registration. */
 export type ObserveManagerGate = (instanceId: string) => Promise<Pick<EpGateState, "state" | "principal" | "processEpoch" | "registrationRevision"> | null>;
 
+/** One current open registration: the observed gate is open, its principal is the serve principal
+ * {@link remoteManagerServePrincipal} derives for this owner and instance, and its process epoch is
+ * the caller's. `what` only names the refusal. A door that also needs the registration proof checks
+ * that itself, so this rule stays the same wherever the gate is observed. */
+export function assertCurrentOpenManagerGate<T extends { state: string; principal: string; processEpoch: number }>(
+  gate: T | null,
+  args: { owner: string; instanceId: string; serveEpoch: number },
+  what: string,
+): T {
+  if (!gate || gate.state !== "open")
+    throw new EpEnvelopeError("failed-precondition", `${what} found no current open manager gate for instance ${args.instanceId}`);
+  const servePrincipal = remoteManagerServePrincipal(args.owner, args.instanceId);
+  if (gate.principal !== servePrincipal)
+    throw new EpEnvelopeError("permission-denied", `${what} gate belongs to ${gate.principal}, not the server-derived serve principal ${servePrincipal}`);
+  if (gate.processEpoch !== args.serveEpoch)
+    throw new EpEnvelopeError("conflict", `${what} serve epoch ${args.serveEpoch} is stale; current is ${gate.processEpoch}`);
+  return gate;
+}
+
 /** Every door here runs this one check after its own scope and target checks, so a change to the
  *  gate, principal, epoch, or proof rule reaches all of them at once. */
 async function assertCurrentManagerRegistration(
@@ -39,14 +58,7 @@ async function assertCurrentManagerRegistration(
   args: { owner: string; proofSecret: string | Uint8Array; observeManagerGate: ObserveManagerGate },
   what: string,
 ): Promise<void> {
-  const gate = await args.observeManagerGate(r.instanceId);
-  if (!gate || gate.state !== "open")
-    throw new EpEnvelopeError("failed-precondition", `${what} found no current open manager gate for instance ${r.instanceId}`);
-  const servePrincipal = remoteManagerServePrincipal(args.owner, r.instanceId);
-  if (gate.principal !== servePrincipal)
-    throw new EpEnvelopeError("permission-denied", `manager gate belongs to ${gate.principal}, not serve principal ${servePrincipal}`);
-  if (gate.processEpoch !== r.serveEpoch)
-    throw new EpEnvelopeError("conflict", `manager serve epoch ${r.serveEpoch} is stale; current is ${gate.processEpoch}`);
+  const gate = assertCurrentOpenManagerGate(await args.observeManagerGate(r.instanceId), { owner: args.owner, instanceId: r.instanceId, serveEpoch: r.serveEpoch }, what);
   const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);
   if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))
     throw new EpEnvelopeError("permission-denied", `manager ${what} proof does not match current host registration`);

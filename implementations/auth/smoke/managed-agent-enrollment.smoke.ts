@@ -232,7 +232,7 @@ try {
     await refuses("enrollment: a FROZEN gate is refused (a takeover in flight is not a registration)",
       () => enroll(enrollment({ instanceId: FROZEN_INSTANCE, registrationProof: proofFor(FROZEN_INSTANCE) })), "failed-precondition", /no current open manager gate/);
     await refuses("enrollment: a gate held by another owner's serve principal is refused",
-      () => enroll(enrollment({ instanceId: FOREIGN_INSTANCE, registrationProof: proofFor(FOREIGN_INSTANCE) })), "permission-denied", /not serve principal/);
+      () => enroll(enrollment({ instanceId: FOREIGN_INSTANCE, registrationProof: proofFor(FOREIGN_INSTANCE) })), "permission-denied", /not the server-derived serve principal/);
     await refuses("enrollment: a stale serve epoch is refused as a conflict",
       () => enroll(enrollment({ serveEpoch: EPOCH - 1, registrationProof: proofFor(INSTANCE, "cli", REVISION, EPOCH - 1) })), "conflict", new RegExp(`epoch ${EPOCH - 1} is stale; current is ${EPOCH}`));
     await refuses("enrollment: a forged registration proof is refused",
@@ -266,7 +266,7 @@ try {
     await refuses("release: a FROZEN gate is refused",
       () => release(prepare({ instanceId: FROZEN_INSTANCE, registrationProof: proofFor(FROZEN_INSTANCE) })), "failed-precondition", /no current open manager gate/);
     await refuses("release: a foreign gate principal is refused",
-      () => release(prepare({ instanceId: FOREIGN_INSTANCE, registrationProof: proofFor(FOREIGN_INSTANCE) })), "permission-denied", /not serve principal/);
+      () => release(prepare({ instanceId: FOREIGN_INSTANCE, registrationProof: proofFor(FOREIGN_INSTANCE) })), "permission-denied", /not the server-derived serve principal/);
     await refuses("release: a stale serve epoch is refused as a conflict",
       () => release(prepare({ serveEpoch: EPOCH + 1, registrationProof: proofFor(INSTANCE, "cli", REVISION, EPOCH + 1) })), "conflict", new RegExp(`epoch ${EPOCH + 1} is stale; current is ${EPOCH}`));
     await refuses("release: a forged registration proof is refused",
