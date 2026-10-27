@@ -69,7 +69,8 @@
  *     killed under a live manager, `down` refuses before any stop
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
  *     it, `up` then `down` stop both. While the broker is live, its refusal of a seat's credential
- *     is kept as it is. The legacy name and the broker stop name their stack members. Under umask
+ *     is kept as it is. `down manager` stops `stack-manager` through the service stop and `up`
+ *     starts it again; the broker stop then names its stack members. Under umask
  *     0002 the delivery-aware marker is 0600. After a clean down, a group-writable `.cotal/auth`
  *     makes `reset space --dry-run` name it and its repair. A `down` after every member crashed
  *     exits 0 and keeps the delivery credential, and the reset preview then names `cotal up` and
@@ -908,13 +909,23 @@ try {
     check("the marker is a regular file, not a link", lstatSync(marker).isFile(), lstatSync(marker).isSymbolicLink());
 
     // A named stop resolves the selected space, and an earlier section's stopped space stays selected.
-    const legacyName = cli(root, "down", "manager", "--space", space, "--yes", "--json");
-    check("down manager on a controller stack names stack-manager", legacyName.status === 2 && legacyName.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(legacyName.env.error.remedy?.includes("stack-manager")), shown(legacyName));
+    // `manager` is a preset name, so it reaches the stack's own member through the service stop.
+    const firstManager = pidOf(space, "stack-manager");
+    const presetName = cli(root, "down", "manager", "--space", space, "--yes", "--json");
+    check("down manager on a controller stack stops stack-manager through the service stop and names it",
+      presetName.status === 0 && presetName.env?.outcome === "ok" && presetName.env.result?.kind === "service-stop" && presetName.env.target?.requested === "manager" && presetName.env.target?.name === "stack-manager"
+        && gone(space, "stack-manager") && firstManager !== null && await until(() => !alive(firstManager), 10_000), shown(presetName));
+    // The stack's own start brings the manager back; the stopped record stays beside the new one.
+    const restarted = cli(root, "up", "--json");
+    const manager = serviceInstances(space, "stack-manager").find((row) => observeServiceProcess(row.record.value) === "running")?.record.value.process?.pid ?? null;
+    if (manager !== null) owned.add(manager);
+    const states = Object.fromEntries(((restarted.env?.result?.members ?? []) as { role: string; state: string }[]).map((member) => [member.role, member.state]));
+    check("up then starts the manager again and reuses the broker and delivery",
+      restarted.status === 0 && states.manager === "started" && states.broker === "reused" && states.delivery === "reused" && manager !== null && manager !== firstManager, { states, ...shown(restarted) });
     const brokerFirst = cli(root, "down", "stack-broker", "--space", space, "--yes", "--json");
     check("the broker stop refusal names its stack dependants", brokerFirst.status === 2 && brokerFirst.env?.error?.code === "LIFECYCLE_BLOCKED" && brokerFirst.env.error.message.includes("stack-manager") && !brokerFirst.env.error.message.includes("legacy"), shown(brokerFirst));
 
     const broker = pidOf(space, "stack-broker");
-    const manager = pidOf(space, "stack-manager");
     // A managed seat's shell dials the broker with its own credential first. The seat context is set
     // by hand, with a credential from another root of this suite that this broker does not trust.
     const uid = mintLifecycleUid();
