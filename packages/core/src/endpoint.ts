@@ -3054,7 +3054,7 @@ export class CotalEndpoint extends EventEmitter {
       } catch (e) {
         if (!isPublishPermissionDenied(e)) throw e;
         throw new Error(
-          `presence read refused for ${this.card.id}: this credential may not publish $JS.API.DIRECT.GET.KV_${presenceBucket(this.space)}, the on-demand roster read (SPEC Appendix B). A credential minted before that grant existed lacks it; mint a new one with the current manager or auth service.`,
+          `presence read refused for ${this.card.id}: this credential may not publish $JS.API.DIRECT.GET.KV_${presenceBucket(this.space)}, the on-demand roster read (SPEC Appendix B). A credential minted by an older issuer can lack this grant even when newly minted; upgrade the manager or auth service that issues credentials, then mint a new credential. Reusing credentials or reconnecting does not add the grant.`,
           { cause: e },
         );
       }
