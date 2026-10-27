@@ -17,7 +17,9 @@
  * whose broker does not answer stopped. `spawn -d --dry-run` there previews the space `spawn -d`
  * launches on. Bare `cotal` reads no broker: where the folder's own records show its stack stopped, as
  * after `cotal down`, it leads with the selection and names what the folder holds, as for a prepared
- * space, and otherwise says the folder's space applies while it runs.
+ * space, and otherwise says the folder's space applies while it runs. An `up` cut off before it
+ * registered the space leaves its broker running: that folder stays the target with another space
+ * selected, and `status` there names it half started with `down --yes` first, until `down` stops it.
  *
  * Needs `nats-server` on PATH. Linux and macOS run the terminal cells under a pty, Windows under ConPTY.
  *
@@ -27,13 +29,14 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SMOKE_BROKER_TOKEN, createSuite, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, teardownOnSignal, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { clean, cotalPty, repoRoot, wait, type Pty } from "./_console-pty.js";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-target-resolution-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
 const { getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, setCurrent, clearCurrent } = await import("@cotal-ai/workspace");
+const { observeServiceProcess, serviceInstances } = await import("../src/lib/service-instances.js");
 
 const { check, finish } = createSuite();
 const env: Record<string, string> = {};
@@ -70,7 +73,12 @@ for (const [space, server] of [["alpha", A], ["beta", B]] as const) {
   recordMesh({ space, server, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
 }
 
-const run = (args: string[], cwd = work) => spawnSync(TSX, [COTAL, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
+const anchors = new Map<string, SmokeSandboxAnchor>();
+const run = (args: string[], cwd = work) => {
+  const options = { cwd, env, encoding: "utf8" as const, timeout: 120_000 };
+  assertSmokeSandboxDown(anchors.get(cwd), args, options);
+  return spawnSync(TSX, [COTAL, ...args], options);
+};
 const envelope = (r: { stdout: string }) => {
   try {
     return JSON.parse(r.stdout) as Record<string, any>;
@@ -358,6 +366,65 @@ const QUESTION = "Which one?";
     check("up --json on the retained launcher refuses UNSUPPORTED, exit 2, and leaves the folder as it found it",
       json.status === 2 && envelope(json)?.error?.code === "UNSUPPORTED" && entries() === "list.yaml,user.yaml", { ...shown(json), entries: entries() });
   } finally { rmSync(fresh, { recursive: true, force: true }); }
+}
+
+// ── A half-started folder stays the target with another space selected ───────────────────────────
+{
+  // An up cut off before it registered the space leaves its broker running. That stack runs in part,
+  // so the commands run in its folder target it over the selection, as with nothing selected.
+  setCurrent("alpha");
+  const half = join(home, "half");
+  mkdirSync(half, { mode: 0o755 });
+  anchors.set(half, recordSmokeSandbox({ root: half, cotalHome: env.COTAL_HOME!, xdgConfigHome: env.XDG_CONFIG_HOME! }));
+  const created = run(["space", "create", "half"], half);
+  // One process, so the SIGINT reaches the CLI itself and not a wrapper.
+  const up = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), COTAL, "up", "--server", `nats://127.0.0.1:${await freePort()}`], { cwd: half, env, stdio: ["ignore", "pipe", "pipe"] });
+  let upOut = "";
+  up.stdout!.on("data", (chunk: Buffer) => (upOut += chunk.toString()));
+  up.stderr!.on("data", (chunk: Buffer) => (upOut += chunk.toString()));
+  const brokerPid = () => { try { return serviceInstances("half", "stack-broker")[0]?.record.value.process?.pid; } catch { return undefined; } };
+  const brokerRuns = () => { try { return serviceInstances("half", "stack-broker").some((row) => observeServiceProcess(row.record.value) === "running"); } catch { return false; } };
+  // The broker is frozen once its process is pinned, so the up is still waiting on it when interrupted.
+  const pinned = await until(() => brokerPid() !== undefined, 120_000);
+  const pid = brokerPid();
+  try {
+    if (pid !== undefined) process.kill(pid, "SIGSTOP");
+    up.kill("SIGINT");
+    await until(() => up.exitCode !== null || up.signalCode !== null, 60_000);
+    if (pid !== undefined) process.kill(pid, "SIGCONT");
+    check("an up interrupted after its broker started exits 130 and says the broker keeps running before the space was registered",
+      created.status === 0 && pinned && up.exitCode === 130 && upOut.includes(`Interrupted before the space was registered; its broker keeps running as pid ${pid}`), { created: shown(created), pinned, code: up.exitCode, signal: up.signalCode, out: upOut.slice(-600) });
+    const NOTE = `this folder's space; the selected space "alpha" applies outside it`;
+    const statusText = run(["status"], half), statusJson = run(["status", "--json"], half);
+    const next = statusText.stdout.slice(statusText.stdout.indexOf("\nNext\n") + 6).split("\n")[0] ?? "";
+    check("status there heads with the folder's space, reports it half started under This folder's space, and leads Next with down --yes",
+      statusText.status === 0 && new RegExp(`^Mesh: half\n {2}${NOTE}$`, "m").test(statusText.stdout) && /^This folder's space$/m.test(statusText.stdout) &&
+        /Half started · .*; broker runs$/m.test(statusText.stdout) && next.includes("down --yes") && next.includes("Stop what the last up started"), { next, stdout: statusText.stdout.slice(0, 2400) });
+    const json = envelope(statusJson);
+    check("status --json there targets the folder's space, names it as meshes.folder with the selection as current, and carries no FOLDER_SPACE_NOT_RUNNING",
+      json?.target?.space === "half" && json.result?.meshes?.folder === "half" && json.result.meshes.current === "alpha" && json.result.folder?.stackUnfinished?.running?.includes("broker") === true &&
+        json.warnings?.every((w: { code: string }) => w.code !== "FOLDER_SPACE_NOT_RUNNING") === true, { target: json?.target, meshes: json?.result?.meshes, folder: json?.result?.folder?.stackUnfinished, warnings: json?.warnings });
+    const psJson = run(["ps", "--json"], half), psText = run(["ps"], half);
+    check("ps there targets the folder's space and refuses TARGET_UNAVAILABLE under its heading, naming status in that folder",
+      envelope(psJson)?.target?.space === "half" && envelope(psJson)?.error?.code === "TARGET_UNAVAILABLE" && psText.status === 2 &&
+        new RegExp(`^Mesh: half\n {2}${NOTE}$`, "m").test(psText.stdout + psText.stderr) && (psText.stdout + psText.stderr).includes("which names the step that finishes or settles it"), { json: shown(psJson), text: shown(psText) });
+    const entry = run([], half);
+    check("bare cotal there leads with the folder's space and says the selection applies outside it",
+      entry.status === 0 && /^half · prepared here · /m.test(entry.stdout) && !/^alpha · /m.test(entry.stdout) && entry.stdout.includes(`the selected space "alpha" applies outside it`) && !entry.stdout.includes("this folder holds"), shown(entry));
+    // Once down stops it, nothing runs, and the selection is the target again.
+    const down = run(["down", "--yes"], half);
+    const stoppedText = run(["status"], half), stoppedJson = envelope(run(["status", "--json"], half)), stoppedPs = run(["ps", "--json"], half);
+    check("after down --yes stops it, status and ps there target the selection and name the stopped space and its up",
+      down.status === 0 && !brokerRuns() &&
+        /^Mesh: alpha\n {2}this folder holds the stopped space "half"; restart it with cotal up$/m.test(stoppedText.stdout) &&
+        stoppedJson?.target?.space === "alpha" && stoppedJson.result?.meshes?.folder === null &&
+        stoppedJson.warnings?.some((w: { code: string; target?: { space?: string; state?: string } }) => w.code === "FOLDER_SPACE_NOT_RUNNING" && w.target?.space === "half" && w.target.state === "stopped") === true &&
+        envelope(stoppedPs)?.target?.space === "alpha", { down: shown(down), text: stoppedText.stdout.slice(0, 1600), json: stoppedJson?.target, ps: shown(stoppedPs) });
+  } finally {
+    // A broker the down did not stop is this suite's own; its record still pins its process.
+    if (pid !== undefined && brokerRuns()) { process.kill(pid, "SIGCONT"); process.kill(pid, "SIGKILL"); }
+    if (up.exitCode === null && up.signalCode === null) up.kill("SIGKILL");
+  }
 }
 
 // A forgotten space's folder keeps its `.cotal/` records, which name no space, so the held default is

@@ -486,8 +486,9 @@ running mesh with the right credentials instead of mistaking the cwd for a space
 - `cotal use <name>` sets the default from every directory, including inside another mesh's
   project. A folder's space captures the commands run there only while it runs: a prepared or
   stopped folder space leaves them to the selection, and the line under the `Mesh:` heading names
-  what the folder holds and the `cotal up` that starts it. `--space <name>` overrides the selection
-  for one command.
+  what the folder holds and the `cotal up` that starts it. A folder whose interrupted `up` or `down`
+  left a member running keeps them while that member runs. `--space <name>` overrides the
+  selection for one command.
 - When one broker has records for several spaces, `cotal up --space <name>` refreshes that named
   space.
 - A refresh rewrites only what that command decided: the server, root and mode, the user-auth

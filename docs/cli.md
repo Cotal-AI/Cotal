@@ -2944,6 +2944,12 @@ folder or one whose space name a later `up` took over, is not released to the se
 there refuse `TARGET_UNAVAILABLE` and name that folder or home, as they do with nothing selected.
 For a stack that runs from another folder, the refusal heads with `Mesh: <space>` and carries
 `target.space`, naming the space this folder's records name, as `up` and `down` there do.
+Nor is a folder whose own stack's last `up` or `down` ended before it recorded an outcome while a
+member still runs, as an `up` cut off before it registered the space leaves its broker. That stack
+runs in part, so every command there targets it, as with nothing selected, and the note under its
+`Mesh:` heading says the selection applies outside the folder. `cotal status` there reports it as
+`Half started` or `Half stopped` with its Next, which for that `up` is `cotal down --yes` and then
+`cotal up --root <root>`.
 Inside a project whose root
 has several running spaces, none of them the selection, the command targets the selection. Before it
 acts, it warns on stderr and in its JSON `warnings` with `SELECTION_NOT_FOLDER_SPACE`, naming those
@@ -3150,7 +3156,9 @@ space streams. `--json` carries it as `folder.stackUnfinished`, with `kind`, `id
 before it registered the space leaves the selected space prepared and not started, and `status`
 names its stack's block or unfinished operation and the same Next under it. When that `up` left
 members running, the next `up` cannot finish it, so Next offers `cotal down --yes` and then
-`cotal up --root <root>`. While the stack is blocked, the `Delivery responder` row says that `up`
+`cotal up --root <root>`. With another space selected, `status` in that folder still reports this
+stack, under `This folder's space`, and so does every other command there while a member runs.
+While the stack is blocked, the `Delivery responder` row says that `up`
 refuses until the block is cleared. The next bare
 `up` or `down` settles the interrupted operation with an `OPERATION_SETTLED` warning. When the
 stack reached that operation's end anyway, every member running after an `up` or stopped after a
@@ -3341,7 +3349,8 @@ space, where the command targets that folder's space. There `status` reports tha
 folder. `--json` names it in `target.space` and in `meshes.folder`, which `cotal space --json` gives
 as `folder`. In the folder of a space that is prepared or stopped, `status` reports the selection
 instead, and the line under its heading names what the folder holds and the `cotal up` that starts
-it; `meshes.folder` is then `null`. `status` is a read-only report in this order: this machine
+it; `meshes.folder` is then `null`. A folder whose stack is half started or half stopped, with a
+member still running, counts as a running space's folder here. `status` is a read-only report in this order: this machine
 (the installed `cotal-ai` version, NATS and each named integration), the installed extensions and
 their versions, this folder's `.cotal/`, the recorded meshes, the selected mesh (its connection, the
 delivery responder, its channels and membership feed), then the hints. It lists no roster; `cotal ps`
