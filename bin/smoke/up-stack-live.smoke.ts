@@ -15,6 +15,9 @@
  *  2b. a refresh whose delivery launch LOSES the single-flight lease exits non-zero and says so,
  *     instead of reporting a healthy control plane over a child that is already dead (#837).
  *  3. `cotal down` stops all three: pid files gone, processes dead, port closed.
+ *  3b. A SIGINT to that bare `down --yes` names the members it stopped and those still running and
+ *     exits 130: after the heading, in each member's stop (the stop finishes and prints its line
+ *     first, and `status` reads no stale pidfile), and twice in the manager's stop (at once).
  *  4. #1307: Ctrl-C on a FOREGROUND `up` follows the same sparing rule as bare `down`. One managed
  *     seat (a shim `claude` on PATH: a real core-dist endpoint that joins presence and stays alive)
  *     runs on the in-process pty runtime, so it cannot outlive the manager: after the SIGINT the
@@ -472,6 +475,95 @@ try {
   }
   ok("broker-only down stops broker + delivery daemon", boDead, { boDeliveryPid });
   ok("broker-only down leaves no manager pidfile behind", !existsSync(record(MANAGER_PIDFILE)));
+
+  // 3b) A signal to the retained launcher's bare `down --yes` ends the stop where it is and names the
+  //     members it stopped and those still running. One that lands after a member was signalled waits
+  //     for that member's exit, so its stop line comes first and `status` reads no stale pidfile; a
+  //     second one ends the stop at once. Each member's window is held open on any host by freezing
+  //     the member (SIGSTOP) as its stop reservation appears, before it can exit.
+  type Member = "manager" | "delivery" | "nats";
+  const MEMBERS: Member[] = ["manager", "delivery", "nats"];
+  const LABEL: Record<Member, string> = { manager: "manager", delivery: "delivery daemon", nats: "nats-server" };
+  const ROW: Record<Member, string> = { manager: "Manager", delivery: "Delivery", nats: "Broker" };
+  const until = async (cond: () => boolean, ms: number) => {
+    for (const end = Date.now() + ms; !cond() && Date.now() < end;) await sleep(2);
+    return cond();
+  };
+  const interruptedDown = async (window: "heading" | Member, signals: 1 | 2 = 1) => {
+    const name = `${window === "heading" ? "after the heading" : `in the ${LABEL[window]}'s stop`}${signals === 2 ? ", twice" : ""}`;
+    const irRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-intr-"));
+    anchors.set(irRoot, recordSmokeSandbox({ root: irRoot, cotalHome: home, xdgConfigHome: configDir }));
+    const irSpace = basename(irRoot);
+    const file: Record<Member, string> = {
+      manager: canonicalLocalProcessPath(MANAGER_PIDFILE, { root: irRoot, space: irSpace }),
+      delivery: canonicalLocalProcessPath(DELIVERY_PIDFILE, { root: irRoot, space: irSpace }),
+      nats: join(irRoot, ".cotal", "nats.pid"),
+    };
+    let frozen: number | undefined;
+    try {
+      const irUp = cliIn(irRoot, "up", "--detach", "--server", `nats://127.0.0.1:${await freePort()}`);
+      ok(`${name}: up --detach starts the retained launcher`, irUp.status === 0, irUp.stdout + irUp.stderr);
+      const pid = Object.fromEntries(MEMBERS.map((m) => [m, Number(readFileSync(file[m], "utf8").trim())])) as Record<Member, number>;
+      pids.push(...Object.values(pid));
+      const options = { cwd: irRoot, env };
+      assertSmokeSandboxDown(anchors.get(irRoot), ["down", "--yes"], options);
+      // Node with the tsx loader, not the tsx CLI: that parent relays each signal and SIGKILLs a
+      // child that does not acknowledge it within 30 ms, so each signal here reaches the down once.
+      const downProc = spawnProc(process.execPath, ["--import", import.meta.resolve("tsx"), CLI, "down", "--yes"], { ...options, stdio: ["ignore", "pipe", "pipe"] });
+      let out = "", err = "";
+      downProc.stdout?.on("data", (b: Buffer) => void (out += b.toString()));
+      downProc.stderr?.on("data", (b: Buffer) => void (err += b.toString()));
+      const exited = new Promise<number | null>((res) => downProc.once("exit", (code) => res(code)));
+      if (window === "heading") {
+        ok(`${name}: down prints its heading`, await until(() => plain(out).includes(`Mesh: ${irSpace}`), 60_000), out + err);
+        downProc.kill("SIGINT");
+      } else {
+        ok(`${name}: down reserves the ${LABEL[window]}'s stop`, await until(() => existsSync(`${file[window]}.stopping`), 60_000), out + err);
+        process.kill(pid[window], "SIGSTOP");
+        frozen = pid[window];
+        downProc.kill("SIGINT");
+        await sleep(1500);
+        ok(`${name}: the signal waits for the signalled ${LABEL[window]} to exit`, downProc.exitCode === null && !new RegExp(`stopped ${LABEL[window]} \\(pid`).test(plain(out)), out + err);
+        if (signals === 2) downProc.kill("SIGINT");
+        else { process.kill(frozen, "SIGCONT"); frozen = undefined; }
+      }
+      const code = await Promise.race([exited, sleep(30_000).then(() => "timeout" as const)]);
+      ok(`${name}: down exits 130`, code === 130, { code, out, err });
+      if (frozen !== undefined) {
+        ok(`${name}: the second signal ended the stop with the ${LABEL[window as Member]} still running`, alive(frozen), frozen);
+        process.kill(frozen, "SIGCONT");
+        frozen = undefined;
+      }
+      // The stop lines are the members this down stopped, and the notice names them and the rest.
+      const stopped = MEMBERS.filter((m) => new RegExp(`✓ stopped ${LABEL[m]} \\(pid ${pid[m]}\\)`).test(plain(out)));
+      const expected = window === "heading" || signals === 2 ? [] : MEMBERS.slice(0, MEMBERS.indexOf(window) + 1);
+      ok(`${name}: it prints the stop line of each member it stopped, and only those`, stopped.join() === expected.join(), out);
+      ok(`${name}: each member it stopped is gone with its pidfile`, stopped.every((m) => !alive(pid[m]) && !existsSync(file[m])), stopped);
+      const running = MEMBERS.filter((m) => !stopped.includes(m));
+      const done = stopped.length ? `${stopped.map((m) => LABEL[m]).join(", ")} ${stopped.length === 1 ? "was" : "were"} stopped` : "no member was stopped";
+      const left = running.length ? `${running.map((m) => LABEL[m]).join(", ")} ${running.length === 1 ? "is" : "are"} still running` : "no member is running";
+      const next = signals === 2 ? `The stop of ${LABEL[window as Member]} is not confirmed. Run cotal down --yes to finish the stop.` : running.length ? "Run cotal down --yes to finish the stop." : "Run cotal up to start it again.";
+      const notice = `Interrupted while stopping the stack in ${realpathSync(irRoot)}; ${done}, and ${left}. ${next}`;
+      ok(`${name}: the notice names the members it stopped, the ones still running and the next step`, plain(err).includes(notice), { notice, err });
+      if (signals === 1) ok(`${name}: the members it did not stop are still running`, running.every((m) => alive(pid[m])), running);
+      else await until(() => !alive(pid[window as Member]), 15_000);
+      // A folder's stopped space is not selected on its own, so status names it.
+      const st = plain(cliIn(irRoot, "status", "--space", irSpace).stdout);
+      ok(`${name}: status reads the members it stopped as not started, and no stale pidfile or exited broker`,
+        stopped.every((m) => new RegExp(`${ROW[m]}\\s+○ not started`).test(st)) && !/stale pidfile|which exited/.test(st), st);
+      const finish = cliIn(irRoot, "down", "--yes");
+      ok(`${name}: cotal down --yes finishes the stop`, finish.status === 0 && await until(() => MEMBERS.every((m) => !alive(pid[m])), 20_000), finish.stdout + finish.stderr);
+    } finally {
+      if (frozen !== undefined) { try { process.kill(frozen, "SIGCONT"); } catch { /* gone */ } }
+      cliIn(irRoot, "down", "--yes");
+      rmSync(irRoot, { recursive: true, force: true });
+    }
+  };
+  await interruptedDown("heading");
+  await interruptedDown("manager");
+  await interruptedDown("delivery");
+  await interruptedDown("nats");
+  await interruptedDown("manager", 2);
 
   // 4) #1307: Ctrl-C on a FOREGROUND up stops the stack and reports the managed seat, exactly like
   //    bare down. The default pty runtime keeps the seat's PTY inside the manager process, so the
