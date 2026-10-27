@@ -656,7 +656,7 @@ function assertFreshTeamBootOwnership(root: string, space: string, mode?: "open"
   if (mode && mode !== "user" && userSpaces.length) throw new CommandFailure("refused", "CONFLICT", "this root retains user-auth state; a static or open team boot did not re-mode its identity", { target: { root, space } });
   if (localMeshesForRoot(root).some((entry) => entry.space !== space)) throw new CommandFailure("refused", "CONFLICT", "another locally registered space uses this broker root; fresh team boot did not reuse or replace its stack", { target: { root, space } });
   if (readMaintenanceJournal(root)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a recovery or maintenance attempt; team boot cannot substitute an ordinary startup", { target: { root, space } });
-  const manager = managerRecordState(undefined, undefined, space, root);
+  const manager = managerRecordState(space, root);
   if (manager.state !== "absent") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a manager record remains, including when its process appears dead; team boot will not stop or overwrite it", { target: { root, space, state: manager.state, path: manager.path }, remedy: "inspect the recorded manager and reconcile its own lifecycle before a fresh team boot" });
   const processes = liveMeshProcesses(root, space);
   if (processes.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a local component may still own this stack; team boot did not replace it", { target: { root, space, processes } });
@@ -1356,7 +1356,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const name = assertManagerName(values["manager-name"]);
     const named = { root: cotalRoot(), space: values.space ?? folderSpace() };
     if (readManagerName(named) !== name) {
-      if (managerRecordState(undefined, undefined, named.space, named.root).state === "alive")
+      if (managerRecordState(named.space, named.root).state === "alive")
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${named.space}, and it keeps the name it started with`, { target: { root: named.root, space: named.space }, remedy: `stop it with cotal down, then run cotal up --manager-name ${shellWord(name)}` });
       if (!values["dry-run"]) recordManagerName(named, name);
     }
@@ -1368,7 +1368,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const cap = parseSeatCapFlag("--seat-cap", values["seat-cap"])!;
     const capped = { root: cotalRoot(), space: values.space ?? folderSpace() };
     if (readManagerSeatCap(capped) !== cap) {
-      if (managerRecordState(undefined, undefined, capped.space, capped.root).state === "alive")
+      if (managerRecordState(capped.space, capped.root).state === "alive")
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${capped.space}, and it keeps the seat cap it started with`, { target: { root: capped.root, space: capped.space }, remedy: `stop it with cotal down, then run cotal up --seat-cap ${seatCapText(cap)}` });
       if (!values["dry-run"]) recordManagerSeatCap(capped, cap);
     }
@@ -1815,7 +1815,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // Refuse rather than warn: the flag either applies or the command fails. Matching the live
       // argv is a no-op and may proceed. An unreadable command line cannot prove a match.
       if (maxSessions !== undefined) {
-        const live = managerRecordState(undefined, undefined, held.space);
+        const live = managerRecordState(held.space);
         if (live.state === "alive" && !liveManagerWouldApplyMaxSessions(live.command, maxSessions)) {
           console.error(
             c.red(
@@ -1833,7 +1833,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // and a broker-only start. A refresh of a mesh whose manager is NOT live simply proceeds
       // broker-only.
       if (noManager) {
-        const live = managerRecordState(undefined, undefined, held.space);
+        const live = managerRecordState(held.space);
         if (live.state === "alive") {
           console.error(
             c.red(
@@ -1960,7 +1960,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // so that's not a reuse - don't claim the runtime is fixed. A dead/absent manager is (re)started
         // with it.
         if (values.runtime) {
-          const live = managerRecordState(undefined, undefined, held.space);
+          const live = managerRecordState(held.space);
           if (live.state === "alive" && managerHasDeliveryMarker(live.pid!, held.space))
             console.error(
               c.dim(`! manager already running for "${held.space}" - its runtime is fixed at start; \`cotal down\` then \`cotal up --runtime ${values.runtime}\` to change it`),
@@ -1993,7 +1993,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       seedPersonaAfterUp(root);
       // The same Next a launch ends with: this mesh runs, so the steps are the ones that use and
       // stop it. A manager the refresh found or healed is what makes `spawn` one of them.
-      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecordState(undefined, undefined, held.space).state === "alive", machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}) }, held.space) }] }] }, "rich", terminalWidth(process.stdout))}`);
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecordState(held.space).state === "alive", machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}) }, held.space) }] }] }, "rich", terminalWidth(process.stdout))}`);
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";

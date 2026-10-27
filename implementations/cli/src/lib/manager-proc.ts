@@ -80,23 +80,44 @@ const PID_PATH = (space: string = folderSpace(), root: string = cotalRoot()): st
 const DELIVERY_AWARE_MARKER = (space: string = folderSpace()): string =>
   localProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx(space));
 
+/** The seams a test injects. Production passes nothing and gets the real probe and command reader.
+ *  Both modules take this object last, after the space (and root) the record is about. */
+export interface RecordSeams {
+  probe?: LivenessProbe;
+  readCommand?: CommandReader;
+}
+
+/** A seams argument is either absent or this object. Anything else is a caller that put the
+ *  wrong value in the last position, and reading it as "no seams" would hide that. */
+export function recordSeams(seams: RecordSeams | undefined): RecordSeams {
+  if (seams === undefined) return {};
+  if (typeof seams !== "object" || seams === null || Array.isArray(seams))
+    throw new TypeError("record seams must be an object with probe and readCommand");
+  return seams;
+}
+
 /** The recorded manager, attributed by {@link readProcessRecord} to a `cotal supervise` process. */
 export function managerRecordState(
-  probe: LivenessProbe = probeLiveness,
-  readCommand: CommandReader = readProcessCommand,
   space: string = folderSpace(),
   root: string = cotalRoot(),
+  seams: RecordSeams = {},
 ): ProcessRecord {
-  return readProcessRecord(PID_PATH(space, root), commandIsCotalSupervisor, probe, readCommand);
+  const given = recordSeams(seams);
+  return readProcessRecord(
+    PID_PATH(space, root),
+    commandIsCotalSupervisor,
+    given.probe ?? probeLiveness,
+    given.readCommand ?? readProcessCommand,
+  );
 }
 
 /** {@link managerRecordState}'s verdict alone, for the callers that only branch on it. */
 export function managerLiveness(
-  probe: LivenessProbe = probeLiveness,
-  readCommand: CommandReader = readProcessCommand,
   space: string = folderSpace(),
+  root: string = cotalRoot(),
+  seams: RecordSeams = {},
 ): ProcessRecordState {
-  return managerRecordState(probe, readCommand, space).state;
+  return managerRecordState(space, root, seams).state;
 }
 
 /** One line describing what was found behind the record, for a caller that has to explain itself. */
@@ -112,8 +133,8 @@ export function describeManagerRecord(r: ProcessRecord): string {
  *  answer must use {@link managerRecordState} instead: this boolean cannot express the difference
  *  between "not running", "cannot tell" and "someone else's process", and acting on the difference
  *  is the whole point. */
-export function managerUp(space: string = folderSpace()): boolean {
-  return managerLiveness(probeLiveness, readProcessCommand, space) === "alive";
+export function managerUp(space: string = folderSpace(), root: string = cotalRoot()): boolean {
+  return managerLiveness(space, root) === "alive";
 }
 
 /** Whether a live `cotal supervise` process on this machine may be serving `space`. A supervisor
@@ -245,11 +266,11 @@ export function startManagerDetached(
  *  unattributable record is the same defect as deleting it, reached through a different verb, which
  *  is the third time that shape has appeared in this change. Any future starter calls this first. */
 export function assertManagerRecordReplaceable(
-  probe: LivenessProbe = probeLiveness,
-  readCommand: CommandReader = readProcessCommand,
   space: string = folderSpace(),
+  root: string = cotalRoot(),
+  seams: RecordSeams = {},
 ): void {
-  const record = managerRecordState(probe, readCommand, space);
+  const record = managerRecordState(space, root, seams);
   if (record.state === "absent") return;
   const state = record.state;
   // The record this is about, named in full: on a root that hosts two spaces "the manager pidfile"
@@ -310,13 +331,13 @@ async function awaitManagerUp(space: string, started: ProcessIdentityRecord | { 
  *  runtime/launch spec (`up -f`) must stop any leftover manager first — a reused one is taken as-is. */
 export async function ensureManager(
   o: ManagerStartOpts = {},
-  probe: LivenessProbe = probeLiveness,
-  readCommand: CommandReader = readProcessCommand,
+  seams: RecordSeams = {},
 ): Promise<{ running: boolean; started: boolean; pid?: number }> {
   const space = o.space ?? folderSpace();
-  const state = managerLiveness(probe, readCommand, space);
+  const root = cotalRoot();
+  const state = managerLiveness(space, root, seams);
   if (state === "alive") return { running: true, started: false };
-  assertManagerRecordReplaceable(probe, readCommand, space); // refuses on unknown / unattributable, reports foreign
+  assertManagerRecordReplaceable(space, root, seams); // refuses on unknown / unattributable, reports foreign
   await seedBeforeLaunch();
   const pid = startManagerDetached(o);
   await awaitManagerUp(space, identityRecord(pid));

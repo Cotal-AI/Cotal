@@ -20,7 +20,8 @@ const context = { root, space: "record-evidence" };
 const legacy = join(root, ".cotal", "manager.pid");
 const unexpectedProbe = (): never => { throw new Error("a record without a pid must not probe a process"); };
 const unexpectedCommand = (): never => { throw new Error("a record without a live pid must not read process argv"); };
-const manager = () => managerRecordState(unexpectedProbe, unexpectedCommand, context.space, root);
+const seams = { probe: unexpectedProbe, readCommand: unexpectedCommand };
+const manager = () => managerRecordState(context.space, root, seams);
 
 // Positive control first: a real record retains the spelling read and its content.
 writeFileSync(legacy, "not-a-pid\n");
@@ -43,7 +44,7 @@ const emptyContext = { root: emptyRoot, space: context.space };
 const canonical = canonicalLocalProcessPath(MANAGER_PIDFILE, emptyContext);
 assert.equal(localProcessPath(MANAGER_PIDFILE, emptyContext), canonical);
 assert.equal(existsSync(canonical), false);
-const absentManager = managerRecordState(unexpectedProbe, unexpectedCommand, context.space, emptyRoot);
+const absentManager = managerRecordState(context.space, emptyRoot, seams);
 console.log("missing manager record:", JSON.stringify(absentManager));
 assert.deepEqual(absent, { state: "absent" }, "missing process record must not advertise a read path");
 assert.deepEqual(absentManager, { state: "absent" }, "missing manager record must not advertise a canonical path");
@@ -78,16 +79,16 @@ assert.deepEqual(readProcessRecord(deliveryPath, commandIsCotalDelivery, () => "
 const previousCwd = process.cwd();
 try {
   process.chdir(emptyRoot);
-  assertManagerRecordReplaceable(unexpectedProbe, unexpectedCommand, context.space);
-  await stopOldHostingManagerIfPresent(unexpectedProbe, context.space);
+  assertManagerRecordReplaceable(context.space, emptyRoot, seams);
+  await stopOldHostingManagerIfPresent(unexpectedProbe, context.space, emptyRoot);
   assert.deepEqual(existsSync(canonical), false);
   writeFileSync(canonical, "not-a-pid\n");
-  assert.throws(() => assertManagerRecordReplaceable(unexpectedProbe, unexpectedCommand, context.space), (error: Error) => error.message.includes(canonical));
-  await assert.rejects(stopOldHostingManagerIfPresent(unexpectedProbe, context.space), (error: Error) => error.message.includes(canonical));
+  assert.throws(() => assertManagerRecordReplaceable(context.space, emptyRoot, seams), (error: Error) => error.message.includes(canonical));
+  await assert.rejects(stopOldHostingManagerIfPresent(unexpectedProbe, context.space, emptyRoot), (error: Error) => error.message.includes(canonical));
   writeFileSync(canonical, `${process.pid}\n`);
-  assert.throws(() => assertManagerRecordReplaceable(() => "unknown", unexpectedCommand, context.space), (error: Error) => error.message.includes(canonical));
-  await assert.rejects(stopOldHostingManagerIfPresent(() => "unknown", context.space), (error: Error) => error.message.includes(canonical));
-  assert.deepEqual(managerRecordState(() => "unknown", unexpectedCommand, context.space, emptyRoot), { state: "unknown", path: canonical, pid: process.pid });
+  assert.throws(() => assertManagerRecordReplaceable(context.space, emptyRoot, { probe: () => "unknown", readCommand: unexpectedCommand }), (error: Error) => error.message.includes(canonical));
+  await assert.rejects(stopOldHostingManagerIfPresent(() => "unknown", context.space, emptyRoot), (error: Error) => error.message.includes(canonical));
+  assert.deepEqual(managerRecordState(context.space, emptyRoot, { probe: () => "unknown", readCommand: unexpectedCommand }), { state: "unknown", path: canonical, pid: process.pid });
 } finally {
   process.chdir(previousCwd);
 }

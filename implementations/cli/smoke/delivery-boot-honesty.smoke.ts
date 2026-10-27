@@ -175,8 +175,8 @@ try {
     // The stand-in is graded before it is relied on: a fixture that failed to look alive would send
     // the propagation cell below through the spawn path this issue exists to close.
     check("FIXTURE: the recorded manager reads ALIVE, so the composition needs no spawn",
-      managerLiveness(undefined, undefined, SPACE) === "alive",
-      { pid: supervisor.pid, state: managerLiveness(undefined, undefined, SPACE) });
+      managerLiveness(SPACE) === "alive",
+      { pid: supervisor.pid, state: managerLiveness(SPACE) });
 
     const { ensureControlPlane } = await import("../src/lib/delivery-proc.js");
     const planeLines: string[] = [];

@@ -10,11 +10,11 @@ import {
   waitForDeliveryLease,
   deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
-import { DELIVERY_PROCESS, DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type CommandReader, type LivenessProbe, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
+import { DELIVERY_PROCESS, DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type LivenessProbe, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
 import { daemonArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
-import { clearManagerArtifacts, ensureManager, managerHasDeliveryMarker, managerRecordState, stopManager } from "./manager-proc.js";
+import { clearManagerArtifacts, ensureManager, managerHasDeliveryMarker, managerRecordState, recordSeams, stopManager, type RecordSeams } from "./manager-proc.js";
 import { stopLocalProcess } from "./local-process-stop.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "./delivery-responder.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
@@ -25,7 +25,7 @@ import { seedBeforeLaunch } from "../seed/launch.js";
 const folderSpace = (): string => resolveRuntimeSpace(process.cwd());
 const ctx = (space: string): LocalProcessContext => ({ root: cotalRoot(), space });
 /** READ-resolving: also names a pre-segmentation `delivery.pid` when that is what is on disk. */
-const PID_PATH = (space: string = folderSpace()): string => localProcessPath(DELIVERY_PIDFILE, ctx(space));
+const PID_PATH = (space: string = folderSpace(), root: string = cotalRoot()): string => localProcessPath(DELIVERY_PIDFILE, { root, space });
 // The daemon's cred goes through the secret-store seam; its key comes from workspace's per-kind
 // resolver (P7 §2 rule 1) — never a hand-composed path or a copied literal. The kind is per-SPACE
 // now, so the file is `.cotal/space.<hex>/delivery.creds`.
@@ -47,28 +47,35 @@ const deliveryCredsKeysToClear = (space: string) => [segmentedKey(DELIVERY_CREDS
  *  the launch (foreground `up`) can act on it. */
 type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommit?: { path: string; sha256: string }; wsPort?: number; maxSessions?: number; noManager?: boolean; onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void };
 
-/** The recorded daemon, attributed by {@link readProcessRecord} to a `cotal deliver` process. */
+/** The recorded daemon, attributed by {@link readProcessRecord} to a `cotal deliver` process.
+ *  Same order as {@link managerRecordState}: the space and root, then the test seams. */
 function deliveryRecordState(
-  probe: LivenessProbe = probeLiveness,
   space: string = folderSpace(),
-  readCommand: CommandReader = readProcessCommand,
+  root: string = cotalRoot(),
+  seams: RecordSeams = {},
 ): ProcessRecord {
-  return readProcessRecord(PID_PATH(space), commandIsCotalDelivery, probe, readCommand);
+  const given = recordSeams(seams);
+  return readProcessRecord(
+    PID_PATH(space, root),
+    commandIsCotalDelivery,
+    given.probe ?? probeLiveness,
+    given.readCommand ?? readProcessCommand,
+  );
 }
 
 /** {@link deliveryRecordState}'s verdict alone, for the callers that only branch on it. */
 export function deliveryLiveness(
-  probe: LivenessProbe = probeLiveness,
   space: string = folderSpace(),
-  readCommand: CommandReader = readProcessCommand,
+  root: string = cotalRoot(),
+  seams: RecordSeams = {},
 ): ProcessRecordState {
-  return deliveryRecordState(probe, space, readCommand).state;
+  return deliveryRecordState(space, root, seams).state;
 }
 
 /** True only if the daemon is PROVABLY running. Callers that ACT on the answer take
  *  {@link deliveryLiveness} instead; this cannot express "cannot tell". */
-export function deliveryUp(space: string = folderSpace()): boolean {
-  return deliveryLiveness(probeLiveness, space) === "alive";
+export function deliveryUp(space: string = folderSpace(), root: string = cotalRoot()): boolean {
+  return deliveryLiveness(space, root) === "alive";
 }
 
 /** Whether `cotal down` is stopping, or has stopped, the space's dead daemon: a live process holds the
@@ -126,10 +133,11 @@ function oldHostingManagerVerdict(
 export async function stopOldHostingManagerIfPresent(
   probe: LivenessProbe = probeLiveness,
   space: string = folderSpace(),
+  root: string = cotalRoot(),
 ): Promise<void> {
   // The refusal quotes this record and never reads the file again: the manager removes its record on
   // exit and a start replaces it, so a second read can find it gone or holding other content.
-  const record = managerRecordState(probe, undefined, space);
+  const record = managerRecordState(space, root, { probe });
   if (record.state === "absent") return;
   const verdict = oldHostingManagerVerdict(record, space, probe);
   // FIRST action, before any mint/write/start, so the refusal actually fences the daemon.
@@ -243,7 +251,7 @@ export async function ensureDelivery(
   if (!hasAuth()) return { running: false }; // open dev mode — no daemon, agents are live-only
 
   const space = o.space ?? folderSpace();
-  if (oldHostingManagerVerdict(managerRecordState(probe, undefined, space), space, probe) === "stop-it") {
+  if (oldHostingManagerVerdict(managerRecordState(space, cotalRoot(), { probe }), space, probe) === "stop-it") {
     console.error(
       "✗ delivery: an old Plane-3-hosting manager is still live (no delivery-aware marker). Refusing to start the daemon - run `cotal down` first, then retry.",
     );
@@ -257,7 +265,7 @@ export async function ensureDelivery(
   const id = newIdentity();
   const creds = await mintCreds(auth, id, "delivery");
   const server = o.server ?? DEFAULT_SERVER;
-  const delivery = deliveryRecordState(probe, space);
+  const delivery = deliveryRecordState(space, cotalRoot(), { probe });
   // Same refusals as the manager: a record nobody can attribute must not be silently reused (a daemon
   // reported running that is not there) nor silently replaced (two daemons on one fanout).
   if (delivery.state === "unattributable")
