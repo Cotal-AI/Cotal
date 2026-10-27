@@ -554,6 +554,9 @@ function assertConfigAncestorProtected(): void {
     if (parent === path) return;
     path = parent;
   }
+  // The seed resolves the physical directory before protectedLocalDirectory. Follow that so an
+  // owned private folder reached through a symlink is not refused for being a link.
+  try { path = realpathSync(path); } catch { /* the path that exists is checked below */ }
   if (!statSync(path).isDirectory()) return;
   protectedLocalDirectory(path, "the Cotal config folder");
 }

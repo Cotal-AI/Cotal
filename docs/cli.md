@@ -628,8 +628,8 @@ directory, `$XDG_CONFIG_HOME/cotal` or `~/.config/cotal`, which holds the extens
 seed store. An earlier seed run under a umask of 0002 left those folders group-writable, and the web
 seed's check for other local writers refused them. Each repair prints how many entries it changed
 and where. A folder above the config directory, such as `~/.config`, is not Cotal's, so `update`
-leaves it as it is. The seed still refuses it and names `chmod g-w <path>` as the next step, and
-`update` exits nonzero.
+does not repair it. `update` refuses that folder before any repair, seed or binary replacement,
+and names `chmod g-w <path>` as the next step.
 
 Third-party extensions are listed with their installed version and recorded spec but are not
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are

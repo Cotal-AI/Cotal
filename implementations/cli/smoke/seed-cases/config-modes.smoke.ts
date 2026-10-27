@@ -50,6 +50,18 @@ try {
       run.stderr.includes(`the Cotal config folder is not protected against other local writers: ${physical} is group-writable`) && run.stderr.includes(`Next\n  chmod g-w ${physical}`),
       run.stderr);
   }
+
+  {
+    // An owned private config root may be reached through a symlink. The seed resolves that
+    // physical directory before its protection walk, and update follows the same path.
+    const real = track(freshCfg());
+    chmodSync(real, 0o700);
+    const link = track(join(tmpdir(), `cotal-seed-xdg-link-${real.split("/").at(-1)}`));
+    symlinkSync(real, link);
+    const run = cotal(link, ["update"], env);
+    check("config modes: update accepts an owned private config root reached through a symlink", run.status === 0 && !run.stderr.includes("symbolic link"), run.stderr);
+    check("config modes: the web dashboard was seeded through the symlinked config root", cotal(link, ["ext", "list"]).stdout.includes("service-preset:web"));
+  }
 } finally {
   finishScenario();
 }
