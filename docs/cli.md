@@ -569,11 +569,16 @@ the binary ships, byte for byte, and reinstalls one that differs in any way (a m
 extra file, a link where the installed copy should be, an entry at another version, or an
 extensions prefix whose lock no longer matches what is on disk), brings what a
 connector installed in its harness to this release (the `cotal` plugin copy Claude Code sessions
-load, and its Claude Desktop entry), then reinstalls other `@cotal-ai/*`
-operator extensions at the binary's exact version. A built-in that passes is reported as verified;
-`cotal ext seed --force` remains the unconditional reinstall. Each extension runs in an isolated child, so one
-failure cannot poison later replays. It then checks npm; a newer binary is an informational notice
-with `cotal update --self` as the next command, not an automatic install.
+load, and its Claude Desktop entry), then checks other `@cotal-ai/*` operator extensions against
+npm's own record in the extensions prefix. One recorded at the binary's exact version with the spec
+`update` installs (`<package>@<version>`) is kept when the prefix lock records it at that version
+and every package the lock records is on disk at its recorded version. Any other is reinstalled at
+the binary's exact version, after a line that says why. A built-in or extension that passes is
+reported as verified. The extension check reads versions, not file contents. `cotal ext seed --force`
+remains the unconditional reinstall of the built-ins, and `cotal ext add <package>` of one extension.
+Each reinstall runs in an isolated child, so one failure cannot poison later replays. It then
+checks npm; a newer binary is an informational notice with `cotal update --self` as the next
+command, not an automatic install.
 
 Before disk reconciliation, `update` reads the selected running manager. A machine with no recorded
 mesh has no running manager to observe, so that read is skipped and the command completes. The same

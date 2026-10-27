@@ -13,8 +13,8 @@ import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
-import { isCommandFailure, MeshTargetError, seededCommandsMismatch } from "@cotal-ai/workspace";
-import { executeUpdate, parseNpmVersion, reportRunningManagers, update, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
+import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch } from "@cotal-ai/workspace";
+import { executeUpdate, parseNpmVersion, reportRunningManagers, update, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
 
@@ -31,6 +31,7 @@ function updateRuntime(opts: {
   npm?: (args: string[], inherit?: boolean) => { status: number | null; stdout?: string; stderr?: string; error?: string };
   spawn?: (file: string, args: string[], env: NodeJS.ProcessEnv) => { status: number | null; stdout?: string; stderr?: string; error?: string };
   reportRunningManager?: () => Promise<"none" | "legacy">;
+  verifyExtension?: UpdateRuntime["verifyExtension"];
   checkout?: boolean;
 }) {
   const events: string[] = [];
@@ -47,6 +48,7 @@ function updateRuntime(opts: {
       return await opts.reportRunningManager?.() ?? "none";
     },
     extensions: () => opts.extensions ?? [],
+    verifyExtension: opts.verifyExtension ?? (() => "not installed on disk"),
     claimUpdatePass: () => {
       events.push("claim-mutation");
       return () => void events.push("release-mutation");
@@ -701,6 +703,63 @@ async function completionOut(positionals: string[]): Promise<string> {
     events.indexOf("reconcile") < events.indexOf("refresh-connectors"),
     "update refreshes what connectors installed in their harnesses, after the connectors themselves",
   );
+}
+
+// --- a first-party extension npm's prefix record proves current is verified, not reinstalled -------
+// Every `cotal update` used to spawn `ext __update-add` for each recorded extension, and the add deletes
+// the installed copy so npm must fetch and install it again: one npm install per extension per run on a
+// machine that was already current. Each case writes a real prefix and runs the production check.
+{
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  const xdg = mkdtempSync(join(tmpdir(), "cotal-update-verify-"));
+  process.env.XDG_CONFIG_HOME = xdg;
+  const prefix = join(xdg, "cotal", "extensions");
+  const pkg = "@cotal-ai/orca";
+  const installedDir = join(prefix, "node_modules", "@cotal-ai", "orca");
+  const prefixAt = (version: string, onDisk = version): void => {
+    rmSync(prefix, { recursive: true, force: true });
+    mkdirSync(installedDir, { recursive: true });
+    const meta = { name: pkg, version, peerDependencies: { "@cotal-ai/core": "*" } };
+    writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "cotal-extensions", private: true, dependencies: { [pkg]: `^${version}` } }));
+    writeFileSync(join(prefix, "package-lock.json"), JSON.stringify({
+      name: "cotal-extensions", lockfileVersion: 3,
+      packages: { "": { name: "cotal-extensions", dependencies: { [pkg]: `^${version}` } }, [`node_modules/${pkg}`]: meta },
+    }));
+    writeFileSync(join(installedDir, "package.json"), JSON.stringify({ ...meta, version: onDisk }));
+  };
+  const run = async (entry: InstalledExtension) => {
+    const r = updateRuntime({ extensions: [entry], verifyExtension: verifyCurrentExtension });
+    assert.equal(await executeUpdate(false, r.rt), 0);
+    return { ...r, replays: r.events.filter((event) => event.startsWith("spawn:")) };
+  };
+  try {
+    prefixAt("0.13.1");
+    const current = await run(installed(pkg, "0.13.1", `${pkg}@0.13.1`));
+    assert.deepEqual(current.replays, [], "an extension recorded and installed at this generation starts no reinstall child");
+    assert.ok(current.events.some((event) => event.startsWith("out:") && event.includes(`✓ verified ${pkg}@0.13.1`)), "the kept extension is reported as verified");
+    assert.equal(
+      realpathSync(join(installedDir, "node_modules", "@cotal-ai", "core")),
+      realpathSync(hostPackageDir("@cotal-ai/core")),
+      "the kept extension's shared peer is bound to this binary's copy, as its reinstall would bind it",
+    );
+
+    for (const [why, setup, entry, reason] of [
+      ["recorded at an older version", () => prefixAt("0.13.0"), installed(pkg, "0.13.0", `${pkg}@0.13.0`), "recorded at 0.13.0, not 0.13.1"],
+      ["installed at an older version than recorded", () => prefixAt("0.13.1", "0.13.0"), installed(pkg, "0.13.1", `${pkg}@0.13.1`), `node_modules/${pkg} is 0.13.0 on disk and 0.13.1 in the prefix lock`],
+      ["missing its package tree", () => { prefixAt("0.13.1"); rmSync(installedDir, { recursive: true }); }, installed(pkg, "0.13.1", `${pkg}@0.13.1`), `node_modules/${pkg} is recorded in the prefix lock but not installed`],
+    ] as const) {
+      setup();
+      const stale = await run(entry);
+      assert.equal(stale.replays.length, 1, `an extension ${why} is reinstalled`);
+      assert.ok(stale.replays[0].includes(`ext __update-add ${pkg} ${pkg}@0.13.1`), `an extension ${why} is reinstalled at this generation`);
+      assert.ok(stale.events.includes(`err:${pkg}: ${reason}; reinstalling`), `the reinstall of an extension ${why} names its reason`);
+      assert.ok(!stale.events.some((event) => event.includes("✓ verified")), `an extension ${why} is not reported as verified`);
+    }
+  } finally {
+    rmSync(xdg, { recursive: true, force: true });
+    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = priorXdg;
+  }
 }
 
 // --- a connector refresh that fails fails the update ----------------------------------------------
