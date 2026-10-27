@@ -265,20 +265,17 @@ export function commandIsCotalDelivery(command: string): boolean {
  *  from `kill(pid, 0)` alone that reads as a healthy component forever. */
 export type ProcessRecordState = "alive" | "dead" | "unknown" | "absent" | "unattributable" | "foreign";
 
-/** A process record with the evidence behind its verdict. Missing and empty records are `absent`
- *  and carry no evidence fields. Other states keep the path read, so a refusal never resolves it again. */
-export type ProcessRecord = { state: "absent" } | {
-  state: Exclude<ProcessRecordState, "absent">;
-  /** The file this verdict read. A refusal names it rather than resolving the record again: a second
-   *  resolution can pick a record migrated since the read, or throw on one that appeared beside it. */
-  path: string;
-  /** The recorded pid, when the file held one. */
-  pid?: number;
-  /** The record's content, when it is not a pid (present on `unattributable`). */
-  content?: string;
-  /** The live process's command line, when it was readable (present on `alive` and `foreign`). */
-  command?: string;
-};
+/** A process record with the evidence behind its verdict. Each state carries the fields
+ *  `readProcessRecord` sets for it and no others. A missing or empty record is `absent` and
+ *  carries nothing: nothing was read. Every other state names the file it read, so a refusal never
+ *  resolves the record again. A record that held a pid carries that pid. Only `unattributable`
+ *  carries the content that was not a pid, and only a live process whose command line was read carries
+ *  that command. */
+export type ProcessRecord =
+  | { state: "absent" }
+  | { state: "unattributable"; path: string; content: string }
+  | { state: "dead" | "unknown"; path: string; pid: number }
+  | { state: "alive" | "foreign"; path: string; pid: number; command?: string };
 
 /** Read + attribute one process record, so every component decides on the same evidence by the
  *  same rule; only `isOwnCommand` differs between them.
