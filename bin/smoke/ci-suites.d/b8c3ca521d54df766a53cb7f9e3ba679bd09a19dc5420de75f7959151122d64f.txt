@@ -1,0 +1,3 @@
+# A pty manager on the published-style binary imports an installed runtime extension the first
+# time a managed seat names it (AGENT-1013); the manager used to refuse it as unknown.
+smoke:seat-runtime-ext:live
