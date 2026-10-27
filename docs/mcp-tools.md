@@ -157,7 +157,7 @@ On success the tool answers `Request stored as seq <N> on the @<role> queue (<k>
 
 *set your status / attention*
 
-Set your presence status (what you're doing, so peers can see) and/or your attention mode (how much peer traffic interrupts you). Both are optional: pass only the one you want to change; with neither, it reports your current status and attention. A connector that sees your turns also sets status itself, working when a turn starts and idle when it ends, so a status you set holds until your next turn starts.
+Set your presence status (what you're doing, so peers can see) and/or your attention mode (how much peer traffic interrupts you). Both are optional: pass only the one you want to change; with neither, it reports your current status and attention. A connector that sees your turns also sets status itself, working when a turn starts and idle when it ends, so a status you set holds until your next turn starts. This changes presence only and does not complete a workflow turn.
 
 - **Side-effect:** updates your own presence / attention.
 - **Available:** always.

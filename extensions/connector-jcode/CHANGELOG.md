@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.109.22
+
+### Patch Changes
+
+- 1622722: Keep workflow turns active across presence-only status updates and finish the previous Jcode turn boundary before accepting another goal, preserving explicit yield outcomes and notes.
+
 ## 0.109.21
 
 No changes in this release.
