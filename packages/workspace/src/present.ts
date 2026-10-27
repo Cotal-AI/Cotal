@@ -201,6 +201,8 @@ function renderCommands(block: Commands, style: Style, width: number, indent: st
   // A description that would have fewer than 30 columns beside its command goes on the lines under it.
   const stacked = width - indent.length - pad - 2 < 30;
   return block.items.flatMap((item, index) => {
+    // A command with no description is its line alone, with no padding after it.
+    if (!item.description) return [indent + draw(commands[index]!, style).shown];
     const description: Cell = { text: item.description, tone: "hint" };
     // A command is never split, so a copied line is a whole command; one too wide keeps its own line.
     if (stacked) return [
