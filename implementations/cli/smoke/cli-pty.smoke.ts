@@ -240,6 +240,26 @@ try {
     failLines,
   );
 
+  // A supervise refused before it connects fits the terminal: its deprecation notice wraps like any
+  // other warning, keeping each command whole, and no manager boot line comes before the refusal.
+  const prepared = mkdtempSync(join(home, "prepared-"));
+  const createPty = cotalPty(["space", "create", "pty-prepared", "--root", prepared], { cwd: home, env, cols: 80, rows: 20 });
+  ptys.push(createPty);
+  const preparedSpace = session(createPty);
+  await until(() => preparedSpace.exitCode !== undefined);
+  const supervisePty = cotalPty(["supervise", "--space", "pty-prepared"], { cwd: home, env, cols: 80, rows: 40 });
+  ptys.push(supervisePty);
+  const sup = session(supervisePty);
+  await until(() => sup.exitCode !== undefined);
+  const supText = await screen(sup.raw, 80, 40);
+  check(
+    "a supervise refused before it connects fits an 80-column terminal, its deprecation notice wrapped and no boot line first",
+    preparedSpace.exitCode === 0 && sup.exitCode === 2 && fit(supText, 80).length === 0 && lines(supText)[0] === "! `cotal supervise` is deprecated and will be removed in 1.0.0. Use" &&
+      lines(supText)[1] === "  `cotal manager start`, or `cotal manager start --foreground` to keep it in" && lines(supText)[3] === "Mesh: pty-prepared" &&
+      supText.includes("Request refused") && !supText.includes("manager boot"),
+    { created: preparedSpace.text(), supervise: supText },
+  );
+
   // On a terminal, `meshes add` with no space asks for one. `--no-input` answers with the usage line
   // instead, in either position.
   const wizardPty = cotalPty(["meshes", "add"], { cwd: home, env });

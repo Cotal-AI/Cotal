@@ -203,7 +203,7 @@ async function suite(): Promise<void> {
   refused(["--spaces", manifest, "--server", servers, "--shards", "2"], "--shards belongs to a single-space daemon", "--shards with --spaces refuses");
   refused(["pending", "scout", "--spaces", manifest, "--server", servers], "takes no \"pending\"", "deliver pending with --spaces refuses");
   const warned = cotalSync(["deliver", "--spaces", manifest]);
-  check("the deprecation warning keeps cotal deliver for --spaces instead of naming the preset", warned.text.includes("cotal service start delivery has no --spaces yet, so keep cotal deliver for this run until it does."), warned.text);
+  check("the deprecation warning keeps cotal deliver for --spaces instead of naming the preset", warned.text.includes("`cotal service start delivery` has no --spaces yet, so keep `cotal deliver` for this run until it does."), warned.text);
 
   const inspectA = await inspector(0), inspectB = await inspector(1), inspectD = await inspector(3);
   const lease = (ep: CotalEndpoint) => ep.readDeliveryLease(0);

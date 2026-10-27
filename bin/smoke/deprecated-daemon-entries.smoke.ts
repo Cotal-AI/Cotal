@@ -64,7 +64,7 @@ for (const [entry, preset] of Object.entries(DEPRECATED_DAEMON_PRESETS) as [keyo
   check(`${entry} is hidden from help and completion`, command?.hidden === true);
   check(`${entry} is marked deprecated where its own help shows it, naming ${preset}`, command?.summary.startsWith(`(deprecated, removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}; use the ${preset} service preset) `) === true, command?.summary);
   check(`${entry} keeps its pre-cut argv`, (() => { try { parseCommandArgs(command!, lines[entry].slice(1)); return true; } catch { return false; } })());
-  check(`${entry} names the registered ${preset} preset`, presets.has(preset) && warning.includes(`Use cotal service start ${preset},`), warning);
+  check(`${entry} names the registered ${preset} preset`, presets.has(preset) && warning.includes(`Use \`cotal service start ${preset}\`,`), warning);
   check(`${entry} names the shared removal release`, warning.includes(` removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}.`), warning);
 }
 {
@@ -73,11 +73,11 @@ for (const [entry, preset] of Object.entries(DEPRECATED_DAEMON_PRESETS) as [keyo
   check("supervise is still a registered entry, hidden from help and completion", command?.hidden === true);
   check("supervise is marked deprecated where its own help shows it, naming cotal manager start", command?.summary.startsWith(`(deprecated, removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}; use cotal manager start) `) === true, command?.summary);
   check("supervise keeps its pre-cut argv", (() => { try { parseCommandArgs(command!, lines.supervise.slice(1)); return true; } catch { return false; } })());
-  check("supervise names cotal manager start, with --foreground for a terminal", warning.includes("Use cotal manager start, or cotal manager start --foreground"), warning);
+  check("supervise names cotal manager start, with --foreground for a terminal", warning.includes("Use `cotal manager start`, or `cotal manager start --foreground`"), warning);
   check("supervise names the shared removal release", warning.includes(` removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}.`), warning);
   const kept = deprecatedDaemonEntryWarning(DEPRECATED_MANAGER_ENTRY, ["execution", "spawn"]);
   check("supervise with flags manager start lacks says to keep supervise for them, not to move",
-    kept.includes(" removed in 1.0.0. cotal manager start has no --execution, --spawn yet, so keep cotal supervise for this run until it does.") && !kept.includes("Use cotal manager start"), kept);
+    kept.includes(" removed in 1.0.0. `cotal manager start` has no --execution, --spawn yet, so keep `cotal supervise` for this run until it does.") && !kept.includes("Use `cotal manager start`"), kept);
   check("every supervise-only flag is a supervise flag and no manager start flag",
     SUPERVISE_ONLY_FLAGS.every((flag) => command?.flags?.some((row) => row.name === flag)), SUPERVISE_ONLY_FLAGS);
   const manager = registry.all<Command>("command").find((row) => row.name === "manager");
@@ -85,7 +85,7 @@ for (const [entry, preset] of Object.entries(DEPRECATED_DAEMON_PRESETS) as [keyo
     !registry.all<Command>("command").some((row) => row.group === "Run a manager" && row.hidden !== true) && manager?.group === "Services" && manager.hidden !== true, manager?.group);
 }
 const pendingWarning = deprecatedDaemonEntryWarning("deliver pending");
-check("deliver pending names the pending read", pendingWarning.includes("cotal pending <agent>") && registry.all<Command>("command").some((row) => row.name === "pending"), pendingWarning);
+check("deliver pending names the pending read", pendingWarning.includes("`cotal pending <agent>`") && registry.all<Command>("command").some((row) => row.name === "pending"), pendingWarning);
 
 const upgrading = readFileSync(join(WT, "docs", "UPGRADING.md"), "utf8");
 const start = upgrading.indexOf("\n### Deprecated daemon entries\n");
@@ -163,7 +163,7 @@ for (const [entry, twinName] of Object.entries(DAEMON_ENTRY_TWINS) as [keyof typ
   twin.run = async (received) => { seen = received; };
   const printed = await captured(() => command.run(args)).finally(() => { twin.run = run; });
   check("supervise --execution --spawn warns once that manager start has no form for them, then runs __daemon-manager",
-    seen === args && count(printed.err, deprecatedDaemonEntryWarning(DEPRECATED_MANAGER_ENTRY, ["execution", "spawn"])) === 1 && !printed.err.includes("Use cotal manager start"), printed.err);
+    seen === args && count(printed.err, deprecatedDaemonEntryWarning(DEPRECATED_MANAGER_ENTRY, ["execution", "spawn"])) === 1 && !printed.err.includes("Use `cotal manager start`"), printed.err);
 }
 
 // ---- Each registered entry prints it when its pre-cut line runs --------------------------------

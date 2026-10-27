@@ -27,11 +27,11 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  assertManagerName, authDir, canonicalLocalProcessPath, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, parseSeatCapFlag, publishManagerSpareCapability, readManagerName, readManagerSeatCap, reclaimDeadPreUpgradeRecord, recordManagerName, recordManagerSeatCap, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
+  assertManagerName, authDir, canonicalLocalProcessPath, canonicalRoot, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, parseSeatCapFlag, publishManagerSpareCapability, readManagerName, readManagerSeatCap, reclaimDeadPreUpgradeRecord, recordManagerName, recordManagerSeatCap, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
   c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, untilInputEnds,
   brokerAddressForDisplay, brokerUrlCredentialRefusal, brokerUrlHasUserinfo, CommandFailure, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
-  ConfirmationRequired, findMesh, folderSpace, getCurrent, type MeshEntry, type SeatCap,
+  ConfirmationRequired, findMesh, folderSpace, getCurrent, targetErrorCode, targetErrorSpace, workspaceErrorParts, type MeshEntry, type MeshTargetError, type SeatCap,
   deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY,
 } from "@cotal-ai/workspace";
 import { Manager, rejectionText } from "./manager.js";
@@ -178,7 +178,8 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
         throw new Error(`--server ${ve.server} does not match hosting space "${localSpace}" at ${target.server} - supervise refuses to split its local auth state from its broker`);
       return { space: localSpace, server: target.server, remoteUser: false, tlsRequired: target.tlsRequired, eventsRequired: target.policy?.events === "required", ...(target.policy ? { policy: target.policy } : {}) };
     } catch (error) {
-      if (!isWorkspaceTargetError(error)) throw error;
+      // A space this folder prepared whose stack here is stopped, or not started, is refused as such.
+      if (!isWorkspaceTargetError(error) || error.code === "not-started") throw error;
       return { space: localSpace, server: ve.server ?? DEFAULT_SERVER, remoteUser: false, tlsRequired: false, eventsRequired: false };
     }
   }
@@ -240,6 +241,15 @@ function superviseExecution(v: Values): "runtime" | "none" {
   return v.execution ?? "runtime";
 }
 
+/** Where a manager that the broker trusts starts: the folder that hosts `space`, when the registry
+ *  names one other than `root`, else the folder whose `cotal up` started the broker. */
+function hostFolderStep(space: string, root: string, broker: string): string {
+  const host = findMesh(space);
+  return host !== undefined && host.root !== root
+    ? `start the manager from ${host.root}, the folder that hosts space "${space}": cd ${host.root} && cotal manager start${host.mode === "user" ? `. A manager on another machine joins a user-auth space as a signed-in participant (cotal meshes add, then cotal login) once its host grants the supervise scope` : ""}`
+    : `start the manager from the folder whose cotal up started the broker at ${broker}`;
+}
+
 /** The broker's refusal of the credential a starting manager presented, as a classified refusal:
  *  which credential, which broker, and where a manager that broker trusts starts. A local manager
  *  signs with the space signer of the folder it runs in, so a folder whose signer the broker does
@@ -254,11 +264,27 @@ async function refusedManagerCredential(error: Error, space: string, server: str
   const credential = await getSpaceAuth(workspaceSecretStore(root), space)
     ? `the manager credential this folder's signer for space "${space}" minted (${root})`
     : `a manager with no credential, because this folder holds no signer for space "${space}" (${root})`;
+  return new CommandFailure("refused", "PERMISSION_DENIED", `the broker at ${broker} refused ${credential}, so no manager started`, { target, native, remedy: hostFolderStep(space, root, broker) });
+}
+
+/** A target this folder cannot start a manager for, as the refusal its code and next step name,
+ *  before anything is written or dialed. A space whose own stack here is stopped names how to start
+ *  it, and a broker named with `--server` also gets the folder whose `cotal up` started it. */
+function managerTargetRefusal(error: MeshTargetError, v: Values, root: string): CommandFailure {
+  const server = v.server ?? process.env.COTAL_SERVER;
+  const space = targetErrorSpace(error.details) ?? spaceFor(v, root);
+  const { message, remedy } = workspaceErrorParts({ kind: "target", error });
+  const elsewhere = server === undefined ? undefined : hostFolderStep(space, root, brokerAddressForDisplay(server) ?? "the broker");
+  const next = [remedy, elsewhere].filter((step) => step !== undefined).join(", or ");
+  return new CommandFailure("refused", targetErrorCode(error.code), `${message}, so no manager started`, { target: { space, root }, ...(next ? { remedy: next } : {}) });
+}
+
+/** A user-auth space that another folder hosts, named before this folder writes a manager identity:
+ *  this folder holds no signer for it, so a manager started here would have no credential. */
+function foreignHostRefusal(space: string, root: string, server: string): CommandFailure | undefined {
   const host = findMesh(space);
-  const remedy = host !== undefined && host.root !== root
-    ? `start the manager from ${host.root}, the folder that hosts space "${space}": cd ${host.root} && cotal manager start${host.mode === "user" ? `. A manager on another machine joins a user-auth space as a signed-in participant (cotal meshes add, then cotal login) once its host grants the supervise scope` : ""}`
-    : `start the manager from the folder whose cotal up started the broker at ${broker}`;
-  return new CommandFailure("refused", "PERMISSION_DENIED", `the broker at ${broker} refused ${credential}, so no manager started`, { target, native, remedy });
+  if (host?.mode !== "user" || host.userAuth?.remote === true || hasUserAuthState(root, space) || canonicalRoot(host.root) === canonicalRoot(root)) return undefined;
+  return new CommandFailure("refused", "PERMISSION_DENIED", `this folder holds no signer for user-auth space "${space}" (${root}), so no manager started`, { target: { space, root }, remedy: hostFolderStep(space, root, brokerAddressForDisplay(server) ?? "the broker") });
 }
 
 /** Run a manager daemon in this process (the long-lived supervisor), then block.
@@ -286,10 +312,13 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       throw new Error("execution: none on supervise requires a genuine hosting user-auth root, not a participant registration");
   } catch (e) {
     if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
+    if (isWorkspaceTargetError(e)) throw managerTargetRefusal(e, v, managerRoot);
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
   const { space, server } = target;
+  const foreign = service || target.remoteUser ? undefined : foreignHostRefusal(space, managerRoot, server);
+  if (foreign) throw foreign;
   // Claim before hosted registration/issuance or local endpoint initialization. Starting
   // custody proves only this process; no startup/serving phase exists and no contender is adopted.
   const releaseStartingCustody = service ? claimServicePid({ root: managerRoot, space }, MANAGER_PIDFILE) : undefined;

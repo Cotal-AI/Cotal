@@ -6,15 +6,16 @@
  *  Limits kept from the native seams, never weakened:
  *  - The auth-service child serves only a registered plain loopback broker (`targetFor` in the
  *    auth adapter). A TLS-required or non-loopback user stack refuses before any effect.
- *  - Readiness and stop of a user stack's manager use the invoking user's signed-in, granted login
+ *  - Readiness of a user stack's manager uses the invoking user's signed-in, granted login
  *    (`userViewAuth("manager-caller")`). No static or borrowed caller replaces it. Without that
- *    login the manager is not attempted and the result is a known partial `AUTH_REQUIRED`.
+ *    login the manager is not attempted and the result is a known partial `AUTH_REQUIRED`. Its stop
+ *    reads the manager's own local receipt, so the folder's owner stops it without a sign-in.
  *  - The registry entry for a first enable is recorded before the auth service exists, because the
  *    adapter resolves a registered user target. It carries only the prepared trust pins and is
  *    reported as incomplete until the provider's readiness for the exact child process answers. */
 import { resolveAuthProvider, type AuthPrepared } from "@cotal-ai/core";
 import {
-  CommandFailure, assertRecordIdentity, assertUserAuthInfo, CLI_USER_ACTOR, findMesh, userAuthStateDir,
+  CommandFailure, assertRecordIdentity, assertUserAuthInfo, CLI_USER_ACTOR, findMesh, hasUserAuthState, userAuthStateDir,
   workspaceSecretStore, type UserAuthInfo,
 } from "@cotal-ai/workspace";
 import { serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
@@ -71,8 +72,9 @@ export async function userLoginState(root: string, space: string): Promise<{ sta
   } catch { return { state: "unreadable" }; }
 }
 
-/** The refusal a user stack reports when the manager cannot be attempted for want of a login. */
-export function userLoginRequired(space: string, login: Awaited<ReturnType<typeof userLoginState>>): CommandFailure {
+/** The refusal a user stack reports when the manager cannot be attempted for want of a login.
+ *  `then` is the step after the sign-in: a bare `up` again, or the manager command that was refused. */
+export function userLoginRequired(space: string, login: Awaited<ReturnType<typeof userLoginState>>, then = "run bare cotal up again"): CommandFailure {
   const idp = "idpUrl" in login && login.idpUrl ? ` --idp ${login.idpUrl}` : "";
   const message = login.state === "not-granted"
     ? "the signed-in user has no granted interactive row for the CLI in this space; the manager was not attempted"
@@ -80,9 +82,18 @@ export function userLoginRequired(space: string, login: Awaited<ReturnType<typeo
       ? "this machine's login for the space could not be read; the manager was not attempted"
       : "no user is signed in for this space; the manager was not attempted";
   const remedy = login.state === "not-granted"
-    ? "ask the space owner to grant the CLI actor, then run bare cotal up again"
-    : `cotal login${idp}, then run bare cotal up again`;
+    ? `ask the space owner to grant the CLI actor, then ${then}`
+    : `cotal login${idp}, then ${then}`;
   return new CommandFailure("refused", "AUTH_REQUIRED", message, { target: { space }, remedy });
+}
+
+/** Refuse a start of the manager of a user-auth space that `root` hosts while no signed-in, granted
+ *  login exists, as `up` does for its own manager: its readiness is read as that login, so it could
+ *  not be confirmed. Runs before a definition is saved or a child launched. */
+export async function assertManagerLogin(root: string, space: string, then: string): Promise<void> {
+  if (!hasUserAuthState(root, space, { readOnly: true })) return;
+  const login = await userLoginState(root, space);
+  if (login.state !== "ready") throw userLoginRequired(space, login, then);
 }
 
 /** The provisional registry metadata: the prepared trust pins only. No endpoint is copied from a

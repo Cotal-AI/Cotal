@@ -11,7 +11,7 @@
 import { assertValidChannel, clearChannel, isConcreteChannel } from "@cotal-ai/core";
 import { askManager, resolveControlTarget, scatterManager, START_TIMEOUT_MS, type ManagerReply } from "../lib/control.js";
 import { connectOrThrow, userViewAuth, type ConnectFlags } from "../lib/connect.js";
-import { locateSeat, seatNotFoundMessage } from "../commands/agents.js";
+import { locateSeat, seatMissRefusal, seatNotFoundMessage } from "../commands/agents.js";
 
 /** The console's control coordinates: the same `ConnectFlags` triple the CLI's control commands
  *  resolve from. `space` is the one the console is currently watching. */
@@ -80,6 +80,7 @@ export async function control(ctx: ControlCtx, op: ControlOp, args?: Record<stri
       if (!name) return { ok: false, error: `${op} requires a name` };
       const loc = await locateSeat(ctx, name, { onRefusal: "throw" });
       if (loc.kind === "absent") return { ok: false, error: seatNotFoundMessage(loc, name) };
+      if (loc.kind === "several") return { ok: false, error: seatMissRefusal(name, `cotal ${op}`, loc) };
       if (loc.kind === "pin") on = loc.instanceId;
     }
     const t = await resolveControlTarget(ctx, spec.profile, on, { onRefusal: "throw" });

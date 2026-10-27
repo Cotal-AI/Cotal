@@ -53,6 +53,7 @@ import {
   type AgentLifecycleRelease,
   type ManagedLifecycleHandoff,
   type ParsedArgs,
+  type RuntimeProvider,
   type SecretStore,
   type SpaceAuth,
 } from "@cotal-ai/core";
@@ -836,15 +837,39 @@ export async function launchManagedPersona(
   // be retried, and turning a launch that did everything the runtime allows into a partial told the
   // operator to reattach, which that runtime cannot do either.
   if (streamsTerminal === false) return;
+  // A partial names the step that works on this seat, on the manager that runs it: ps, then attach
+  // where the runtime streams a terminal, or its own session where it streams none.
+  const where = `--space ${shellWord(t.space)} --on ${shellWord(reply.managerInstanceId)}`;
+  const ps = `${displayCmd()} ps ${where}`;
+  const next = async (): Promise<string> => (streamsTerminal ?? await registeredStreamsTerminal(result.runtime, t.space)) === false
+    ? `nothing was relaunched; check the agent with ${ps} and watch it in the manager's ${result.runtime} session, which has no terminal to attach`
+    : `nothing was relaunched; check the agent with ${ps}, then attach to it with ${displayCmd()} attach ${shellWord(result.name)} ${where}`;
   let verdict: Awaited<ReturnType<typeof attachSeat>>;
   try {
     verdict = await attachSeat({ space: t.space, server: t.server, creds: values.creds, name: d.name, expectedTarget: { id: d.id, lifecycleUid: d.lifecycleUid }, asSeat: seat !== undefined }, { on: reply.managerInstanceId, reconnect: true, onRefusal: "throw" });
-  } catch {
-    throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but its terminal could not be attached; it was not relaunched", { target, changed: [result], remedy: "use cotal ps and attach to the recorded agent and manager" });
+  } catch (e) {
+    throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but its terminal could not be attached; it was not relaunched", { target, changed: [result], native: { detail: oneLine((e as Error).message) }, remedy: await next() });
   }
-  if (verdict.kind === "failed") throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but attachment did not complete; no replacement was launched", { target, changed: [result], native: { detail: { message: verdict.message } }, remedy: "inspect the original agent and reattach; do not relaunch" });
-  if (verdict.kind === "gone" && observer) throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but its exact native terminal was unavailable before setup could open the view; no replacement was launched", { target, changed: [result], remedy: "inspect the original lifecycle and manager before another startup" });
+  // A manager too old to report the terminal says so by refusing the attach, and that refusal ends
+  // the launch as a reported one does. Since #4845 it carries a marker. Before it, the manager refused
+  // with the runtime's own text and the code an agent that is not running also gets, so that refusal
+  // counts only for a runtime this CLI's own registry declares streams no terminal.
+  if (verdict.kind === "failed" && streamsTerminal === null && (verdict.refusal?.noTerminal || (verdict.refusal?.code === "failed-precondition" && await registeredStreamsTerminal(result.runtime, t.space) === false))) {
+    stderrLine("", `the ${result.runtime} runtime has no terminal to attach, so none was opened; the agent runs in the manager's ${result.runtime} session`, c.dim);
+    return;
+  }
+  if (verdict.kind === "failed") throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but attachment did not complete; no replacement was launched", { target, changed: [result], native: { detail: oneLine(verdict.message) }, remedy: await next() });
+  if (verdict.kind === "gone" && observer) throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but its exact native terminal was unavailable before setup could open the view; no replacement was launched", { target, changed: [result], remedy: `check the original lifecycle with ${ps} before another startup` });
   console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target unavailable" : verdict.reason === "detached" ? "Detached" : "Attach session ended", blocks: [{ kind: "fields", rows: [["Agent", d.name], ["Identity", d.id], ["Manager", reply.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Leaving the view sent no stop request. The original lifecycle was not replaced.", tone: "hint" }] }] }] }, "rich", terminalWidth(process.stderr)));
+}
+
+/** Whether `runtime` streams a terminal, as a provider registered in this CLI or installed as its
+ *  extension declares it. Null when this CLI has no such provider, or it does not say. */
+async function registeredStreamsTerminal(runtime: string, space: string): Promise<boolean | null> {
+  try {
+    const declared: unknown = (await materializeExtension<RuntimeProvider>({ kind: "runtime", name: runtime })).create({ session: `cotal-${space}` }).streamsTerminal;
+    return typeof declared === "boolean" ? declared : null;
+  } catch { return null; }
 }
 
 /** The mesh's release of one agent lifecycle, when `mesh` is a remote user-auth mesh that advertises

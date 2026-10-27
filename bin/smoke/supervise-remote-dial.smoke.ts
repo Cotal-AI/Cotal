@@ -30,6 +30,9 @@
  *      With no manager answering, `ps` lists presence.
  *      On a terminal a bare `spawn` asks where the agent runs, this terminal first, and a launch
  *      pinned to a manager whose presence reports this host asks no folder.
+ *      `stop` and `attach` naming an agent that one manager runs act there and ask nothing; a name
+ *      no answering manager runs is asked about among the managers that did not answer only, and
+ *      `--json` refuses with the command again on each of them instead of asking.
  *   K: a managed spawn the host refuses at enrollment, for a role outside the caller's grant, is
  *      refused as PERMISSION_DENIED with the host's reason, and no secret staged for the agent
  *      remains under the manager's root.
@@ -493,10 +496,11 @@ try {
   };
   const twoManagers: ChildProcess[] = [];
   const twoIds: string[] = [];
-  let j1Root = "", j1Home = "";
+  let j1Root = "", j1Home = "", j2Root = "", j2Home = "";
   for (const label of ["J1", "J2"]) {
     const cellRoot = scratch("two-root"), cellHome = scratch("two-home");
     if (label === "J1") [j1Root, j1Home] = [cellRoot, cellHome];
+    else [j2Root, j2Home] = [cellRoot, cellHome];
     mkdirSync(join(cellRoot, ".cotal"), { recursive: true });
     recordMesh({ space, server: trustServer, root: cellRoot, mode: "user", userAuth: trustUserAuth, policy: { events: "required" }, origin: "manual", ts: new Date().toISOString() });
     cpSync(trustHome, cellHome, { recursive: true });
@@ -603,9 +607,52 @@ try {
   ok("J: a launch pinned to a manager whose presence reports this host asks no folder",
     local.code === 2 && /Managed launch/.test(local.out) && !/Which folder/.test(local.out), local.out.slice(-900));
 
+  // A command that names one agent finds the manager that runs it before it asks anything. Two idle
+  // processes run on J2 only, through a connector installed in J2's own extension prefix as
+  // `cotal ext add` would; they never join, and J2 keeps them running. The earlier cells'
+  // registrations are counted live and do not answer.
+  const idlerExt = join(j2Home, "xdg", "cotal", "extensions");
+  const idlerPkg = join(idlerExt, "node_modules", "@fixture", "idler-connector");
+  mkdirSync(idlerPkg, { recursive: true });
+  writeFileSync(join(idlerPkg, "package.json"), JSON.stringify({ name: "@fixture/idler-connector", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
+  writeFileSync(join(idlerPkg, "index.js"), 'import { eventChannel, registry } from "@cotal-ai/core";\nregistry.register({ kind: "connector", name: "idler", requires: ["node"], eventChannel, readinessTimeoutMs: 1500, buildLaunch: () => ({ command: "node", args: ["-e", "setInterval(() => {}, 1 << 30)"], env: { PATH: process.env.PATH ?? "" } }) });\n');
+  writeFileSync(join(idlerExt, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "@fixture/idler-connector", version: "1.0.0", spec: ".", provides: [{ kind: "connector", name: "idler" }], commands: [], connectors: [{ name: "idler", requires: ["node"] }] }] }));
+  mkdirSync(join(j2Root, ".cotal", "agents"), { recursive: true });
+  for (const seat of ["held", "held2"]) {
+    writeFileSync(join(j2Root, ".cotal", "agents", `${seat}.md`), `---\nname: ${seat}\nagent: idler\n---\nAn idle process.\n`);
+    const launched = await caller("spawn", seat, "-d", "--space", space, "--on", twoIds[1]!);
+    must(`J: ${seat} runs on J2 only`, launched.code === 0, { code: launched.code, err: launched.err.slice(-600) });
+  }
+  const envelope = (out: string): { target?: { managerInstanceId?: string }; error?: { code?: string; message?: string; remedy?: string } } | undefined => { try { return JSON.parse(out); } catch { return undefined; } };
+  const heldAttach = await inTerminal(["attach", "held", "--space", space], /attached to held|Which one should run this/, "\x1d");
+  ok("J: on a terminal, attach <name> held by one manager attaches there and asks nothing",
+    /attached to held/.test(heldAttach.out) && !/Which one should run this/.test(heldAttach.out) && heldAttach.code === 0, heldAttach.out.slice(-900));
+  const ghostAsked = await inTerminal(["stop", "ghost", "--space", space], /Which manager that did not answer should run this|Which one should run this/, "\x03");
+  ok("J: on a terminal, stop <name> that no answering manager holds asks only among the managers that did not answer, saying so",
+    /"ghost" was not found on the 2 managers that answered\. Which manager that did not answer should run this\?/.test(ghostAsked.out)
+      && others.every((id) => ghostAsked.out.includes(id)) && !twoIds.some((id) => ghostAsked.out.includes(id)) && !ghostAsked.out.includes("j-one"), ghostAsked.out.slice(-1500));
+  ok("J: cancelling it stops nothing and exits 0", ghostAsked.code === 0 && ghostAsked.out.includes("nothing was done - no manager was chosen"), ghostAsked.out.slice(-600));
+  const ghostAttach = await inTerminal(["attach", "ghost", "--space", space], /Which manager that did not answer should run this|Which one should run this/, "\x03");
+  ok("J: attach <name> asks the same question among the same managers",
+    /"ghost" was not found on the 2 managers that answered/.test(ghostAttach.out) && others.every((id) => ghostAttach.out.includes(id)) && !twoIds.some((id) => ghostAttach.out.includes(id)) && ghostAttach.code === 0, ghostAttach.out.slice(-1200));
+  const ghostJson = await inTerminal(["stop", "ghost", "--space", space, "--json"], undefined, undefined);
+  const ghostDoc = envelope(ghostJson.out.slice(ghostJson.out.indexOf("{")));
+  ok("J: stop <name> --json on a terminal asks nothing and refuses TARGET_UNAVAILABLE, exit 2, with a Next that pins --on each manager that did not answer",
+    ghostJson.code === 2 && ghostDoc?.error?.code === "TARGET_UNAVAILABLE" && !/Which/.test(ghostJson.out)
+      && others.every((id) => ghostDoc.error?.remedy?.includes(`--on ${id}`)) && !twoIds.some((id) => ghostDoc.error?.remedy?.includes(id)) && !ghostDoc.error?.remedy?.includes("j-one"), ghostJson.out.slice(-1200));
+  const heldStop = await inTerminal(["stop", "held", "--space", space], /Agent stop acknowledged|Which one should run this|Code:/, undefined);
+  ok("J: on a terminal, stop <name> held by one manager stops it there, asks nothing, and its receipt names that manager",
+    heldStop.code === 0 && /Agent stop acknowledged/.test(heldStop.out) && new RegExp(`Manager:\\s+${twoIds[1]}`).test(heldStop.out) && !/Which one should run this|Manager chosen/.test(heldStop.out), heldStop.out.slice(-1200));
+  const held2Json = await caller("stop", "held2", "--space", space, "--json");
+  ok("J: stop <name> --json stops it on the manager that holds it, with that manager in target.managerInstanceId",
+    held2Json.code === 0 && envelope(held2Json.out)?.target?.managerInstanceId === twoIds[1], { code: held2Json.code, out: held2Json.out.slice(-900), err: held2Json.err.slice(-600) });
+  const heldGone = await caller("ps", "--space", space, "--on", twoIds[1]!);
+  ok("J: both stops acted: J2 runs neither agent any more", heldGone.code === 0 && !/\bheld2?\b/.test(heldGone.out), heldGone.out.slice(-900));
+
   // L: with the space selected by `cotal use`, a bare `cotal supervise` from a folder that neither
   // hosts nor registers it starts a manager for that space on the pty runtime, in the root the space
-  // is registered at, and prints no deprecation line. Its own ps answers.
+  // is registered at, and prints the deprecation line that names `cotal manager start`. Its own ps
+  // answers.
   const selected = await caller("use", space);
   must("L: the caller selects the space", selected.code === 0, selected);
   const elsewhere = scratch("bare-cwd");
@@ -616,8 +663,8 @@ try {
   bare.stdout?.on("data", (chunk: Buffer) => { bareOut += chunk.toString(); });
   bare.stderr?.on("data", (chunk: Buffer) => { bareOut += chunk.toString(); });
   for (let i = 0; i < 1_200 && !/✓ manager up/.test(bareOut) && bare.exitCode === null; i++) await sleep(100);
-  ok("L: a bare supervise on the selected hosted space starts a manager there on the pty runtime, with no deprecation line",
-    new RegExp(`✓ manager up \\(space ${space} · [^)]*pty\\)`).test(bareOut) && !/deprecated/.test(bareOut), bareOut.slice(-900));
+  ok("L: a bare supervise on the selected hosted space starts a manager there on the pty runtime, and its deprecation line names cotal manager start",
+    new RegExp(`✓ manager up \\(space ${space} · [^)]*pty\\)`).test(bareOut) && /! cotal supervise is deprecated[^\n]*Use cotal manager start/.test(bareOut), bareOut.slice(0, 900));
   const bareId = /✓ manager up/.test(bareOut) ? loadOrCreateRemoteManagerIdentity(callerRoot, space).instanceId : undefined;
   const bareFolder = readdirSync(elsewhere);
   ok("L: it keeps its records in the space's registered root, not the folder it was started from", bareId !== undefined && bareFolder.length === 0, { bareId, bareFolder });
@@ -649,7 +696,7 @@ try {
   // exits 0. The registrations the exchange still counts do not answer.
   const none = await caller("ps", "--space", space);
   ok("J: with no manager answering, ps lists the agents presence shows, says so, and exits 0",
-    none.code === 0 && /No manager answered/.test(none.out) && none.out.includes("cotal supervise") && !/PERMISSION_DENIED|Authorization Violation|timeout/i.test(none.out + none.err), none);
+    none.code === 0 && /No manager answered/.test(none.out) && none.out.includes("cotal manager start") && !/PERMISSION_DENIED|Authorization Violation|timeout/i.test(none.out + none.err), none);
 
   await teardown();
   const remainingArtifacts = [brokerStore, root, home, xdg, ...releaseRoots].filter((path) => existsSync(path)).length;

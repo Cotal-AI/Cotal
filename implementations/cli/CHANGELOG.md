@@ -1,5 +1,34 @@
 # @cotal-ai/cli
 
+## 0.109.21
+
+### Patch Changes
+
+- d9ec395: `cotal stop <name>`, `cotal attach <name>` and `cotal input <name>` no longer ask which manager to use on a user-auth mesh where several of your managers are live. They read each of those managers, as `ps` does, and run on the one that holds the name without asking. A name that no manager holds is refused `TARGET_NOT_FOUND`, naming the managers searched, when every manager answered. When some did not answer, a terminal is asked among those managers only, and the question says the name was not found on the ones that answered. A name held on more than one manager is asked about among those managers, on any mesh, where it used to go to the first one found. Without a terminal, or with `--json`, these cases refuse with the managers in the envelope and a Next that gives the command again with `--on` for each. `--on` still pins the manager and skips the search, and the spawn question is unchanged.
+- @cotal-ai/core@0.109.21
+  - @cotal-ai/workspace@0.109.21
+
+## 0.109.20
+
+### Patch Changes
+
+- ffeaa32: `cotal manager start` on a user-auth space with no sign-in no longer launches a manager it cannot confirm. On a space the folder hosts, `manager start` and `manager restart` without a signed-in, granted login refuse `AUTH_REQUIRED` (exit 2) under a `Mesh: <space>` heading before anything is saved or launched, and Next names `cotal login`, then the command again. A manager left running without a sign-in stops: in the folder that hosts the space, `cotal manager stop` and `cotal down` read the manager's stop impact from its own local receipt, so the folder's owner needs no sign-in.
+  
+  `cotal supervise` refuses before it connects with exit 2, a `Mesh:` heading and a code, and writes nothing in the folder. A space whose own stack in this folder is stopped names `cotal up` there and, with `--server`, the folder whose `cotal up` started that broker. A user-auth space that another folder hosts names the folder that hosts it.
+  
+  The deprecation notice of `supervise` and the other deprecated daemon entries wraps at the terminal width with each command kept whole. The manager prints its boot inventory once it is up, so a refused start prints no boot line, and the line for no available connector is in plain words.
+- Updated dependencies [ffeaa32]
+  - @cotal-ai/workspace@0.109.20
+  - @cotal-ai/core@0.109.20
+
+## 0.109.19
+
+### Patch Changes
+
+- 29a824d: A foreground `cotal spawn --on <instance>` on a manager from before 0.104.2, which does not report whether its runtime streams a terminal, no longer ends `OPERATION_PARTIAL` on a runtime such as `orca` or `tmux` that has none. The CLI still finds out by attaching, and when the manager refuses that attach because the runtime streams no terminal, the launch ends with the receipt, one line naming the runtime, and exit 0. Such a manager does not mark that refusal, so the CLI accepts it only for a runtime whose provider, registered or installed with this CLI, declares no terminal. Any other attach failure after a successful launch is still partial, exit 4, and now prints the manager's reason as a `Native detail` row (`error.cause.detail` in an envelope). Its Next gives `cotal ps` and `cotal attach` with the real space and manager instance, or the runtime's own session where it streams no terminal, in place of a bare "reattach".
+- @cotal-ai/core@0.109.19
+  - @cotal-ai/workspace@0.109.19
+
 ## 0.109.18
 
 ### Patch Changes

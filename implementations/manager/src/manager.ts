@@ -1522,6 +1522,8 @@ export class Manager {
   /** Connector harness paths resolved ONCE at boot. Missing binaries do not stop unrelated manager
    * work, but they are named before the manager reports ready and remain visible in manager status. */
   private connectorStatuses: ManagerConnectorStatus[] = [];
+  /** The boot inventory's warnings, printed once start completes, so a refused start prints none. */
+  private bootNotes: string[] = [];
   /** Static aliases whose startup exact-op terminal is still in flight. Scoped per alias: control
    * serves during the sweep, but no caller can reuse or attach an alias the sweep still owns. */
   private readonly reconcilingAliases = new Set<string>();
@@ -2328,6 +2330,7 @@ export class Manager {
       });
       await this.transcripts.start();
     }
+    for (const note of this.bootNotes.splice(0)) console.error(note);
     // Plane-3 (durable backstop) is NOT the manager's job — the manager only manages agent lifecycle.
     // The server-side delivery daemon hosts the fan-out writer + trusted reader, owns the durable
     // membership registry, and serves the runtime durable join/leave/list ops (on `ctl.delivery`). The
@@ -5782,8 +5785,9 @@ export class Manager {
 
   /** Resolve every installed/registered connector's declared harness binaries before the manager
    * reports ready. A missing harness degrades only that connector, never unrelated lifecycle work:
-   * boot continues, but prints a named refusal and records it on both manager status surfaces. */
+   * boot continues, names it once start completes and records it on both manager status surfaces. */
   private async inspectConnectorsAtBoot(): Promise<void> {
+    this.bootNotes = [];
     if (this.execution === "none") { this.connectorStatuses = []; return; }
     const rows: ManagerConnectorStatus[] = [];
     let declared: Array<{ name: string; requires: readonly string[] }>;
@@ -5792,9 +5796,9 @@ export class Manager {
         declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext));
       } catch (error) {
         const reason = rejectionText(error);
-        console.error(`! manager boot: connector inventory unavailable - ${reason}`);
+        this.bootNotes.push(`! manager boot: connector inventory unavailable - ${reason}`);
         this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, reason }];
-        console.error("! manager boot: no connector available - spawn and launch stay on this instance rail only so a sibling that can launch them can take the class queue");
+        this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
         return;
       }
     } else {
@@ -5804,14 +5808,14 @@ export class Manager {
       const { binaries, reason } = resolveHarness(name, requires);
       if (reason) {
         rows.push({ agent: name, state: "unavailable", binaries, reason });
-        console.error(`! manager boot: connector ${name} unavailable - ${reason}`);
+        this.bootNotes.push(`! manager boot: connector ${name} unavailable - ${reason}`);
       } else {
         rows.push({ agent: name, state: "available", binaries });
       }
     }
     this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
     if (!this.classSpawnEnabled())
-      console.error("! manager boot: no connector available - spawn and launch stay on this instance rail only so a sibling that can launch them can take the class queue");
+      this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
   }
 
   /** True when at least one declared connector is available. Empty inventory (or a failed

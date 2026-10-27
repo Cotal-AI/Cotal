@@ -1167,7 +1167,8 @@ export async function runJcodeHost(): Promise<void> {
       );
     } finally {
       turnActive = false;
-      driving = false;
+      // Keep dispatch owned until the terminal presence write has selected this turn's yields.
+      // Otherwise the next message can be accepted before that queued idle settles its goals.
       // The recovering client owns the one post-close redrive. An old turn that finishes after
       // replacement must not race it and make the recovery look successful while its own work is
       // merely retried — or re-paced — by a stale finally block.
@@ -1182,10 +1183,12 @@ export async function runJcodeHost(): Promise<void> {
           // "waiting", not "idle": PresenceStatus has no degraded state, and idle is a lie here - the
           // seat is not ready for work, it is holding an un-acked batch and pacing a retry. An idle
           // label is exactly what made a hot-looping seat look healthy in the roster.
-          void agent.setStatus("waiting").catch(() => {});
+          await agent.setStatus("waiting").catch(() => {});
+          driving = false;
           scheduleErrorRetry();
         } else {
-          void agent.setStatus("idle").catch(() => {});
+          await agent.setStatus("idle").catch(() => {});
+          driving = false;
           if (hasDriveWork()) void drive();
         }
         // Both branches, and after both, because a turn that ended with work still owed is the
@@ -1193,6 +1196,8 @@ export async function runJcodeHost(): Promise<void> {
         // (#790) and `hasDriveWork()` reads false for automatic items the previous turn already
         // accepted but never committed. The server re-checks the ledger itself.
         armQueueFallback();
+      } else {
+        driving = false;
       }
     }
   };

@@ -33,7 +33,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { c, presenceFacts } from "../ui.js";
 import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, refuseUnregisteredManager, unansweredDescribeRefusal, resolveControlTarget, onInstance, onFlag, type ManagerReply, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin } from "../lib/control.js";
-import { managerPin, noLiveManager, rosterOf, severalLive, type ManagerCandidate } from "../lib/manager-choice.js";
+import { AgentManagerUnsettled, managerPin, managersByInstance, noLiveManager, rosterOf, severalLive, type ManagerCandidate } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
@@ -273,18 +273,24 @@ function fmtUptime(ms: number): string {
  * `stop`/`attach` mint ADMIN, which is denied that read deliberately ("the admin tier never
  * scatters"). Rather than widen admin for convenience, the lookup runs as its own privileged
  * instrument and the admin instrument is then minted pinned to the answer.
+ *
+ * On a user-auth mesh there is no scatter: the exchange refuses an unpinned selection while several
+ * of your managers are live, and names them, so each is read as `ps` reads them. `managers` is that
+ * set, as presence shows it.
  */
 export type SeatLocation =
   | { kind: "pin"; instanceId: string }
   | { kind: "unpinned" } // one instance, or a mode that cannot scatter — no ambiguity to resolve
   /** The registry lists no live manager, so no instance can host the seat or be asked for it. */
   | { kind: "no-manager"; space: string; native: { code?: string; detail: string } }
+  /** More than one instance that answered runs a seat of that name; `instances` names them. */
+  | { kind: "several"; instances: string[]; space?: string; managers?: readonly ManagerCandidate[] }
   /** Every instance answered and none hosts the seat; `instances` names them. `space` is set by
    *  {@link locateSeat}, which knows it. */
-  | { kind: "absent"; checked: number; instances: string[]; space?: string }
+  | { kind: "absent"; checked: number; instances: string[]; space?: string; managers?: readonly ManagerCandidate[] }
   /** #1638 item 3: the search could not settle. At least one registered instance did not answer
    *  FOR ITSELF, so the seat may be sitting on it; absence is not what was established. */
-  | { kind: "unknown"; answered: number; silent: string[]; refused: { instanceId: string; error: string }[]; space?: string };
+  | { kind: "unknown"; answered: number; silent: string[]; refused: { instanceId: string; error: string }[]; space?: string; managers?: readonly ManagerCandidate[] };
 
 /** Exported for the console, which drives the same targeted verbs (`stop`/`attach`) from
  *  inside a TUI and so needs the THROWING resolve: an unreachable mesh there is a notice on the
@@ -296,14 +302,35 @@ export async function locateSeat(
 ): Promise<SeatLocation> {
   // User control authority selects one manager; it does not grant the registry reads needed
   // to scatter. Carry that selection into the targeted command's fresh credential.
-  const probe = await resolveControlTarget(v, "control-caller-privileged", undefined, opts);
+  let probe: Awaited<ReturnType<typeof resolveControlTarget>>;
+  try {
+    probe = await resolveControlTarget(v, "control-caller-privileged", undefined, opts);
+  } catch (e) {
+    // The exchange would not pick one of your several live managers and named them, so each is asked
+    // which seats it runs, as `ps` reads them. A manager whose read fails has not answered for itself.
+    const managers = await refusedManagers(e, v);
+    if (!managers) throw e;
+    let space: string | undefined;
+    const instances: ScatterInstanceReply[] = [];
+    for (const manager of managers) {
+      try {
+        const asked = await askYourManagers(v, "ps", [manager]);
+        space ??= asked.space;
+        instances.push(...asked.instances);
+      } catch (error) {
+        instances.push({ instanceId: manager.instanceId, reachable: true, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    const loc = locateSeatIn(instances, name);
+    return loc.kind === "several" || loc.kind === "absent" || loc.kind === "unknown" ? { ...loc, ...(space !== undefined ? { space } : {}), managers } : loc;
+  }
   if (probe.auth.managerInstanceId !== undefined) return { kind: "pin", instanceId: probe.auth.managerInstanceId };
   if (probe.auth.bearer) return { kind: "unpinned" };
   const scatter = await scatterManager(probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
   if (!scatter.ok && scatter.noLiveManager) return { kind: "no-manager", space: probe.space, native: { code: scatter.code, detail: scatter.error } };
   if (!scatter.ok) return { kind: "unpinned" }; // cannot locate ⇒ behave exactly as before, never worse
   const loc = locateSeatIn(scatter.instances, name);
-  return loc.kind === "absent" || loc.kind === "unknown" ? { ...loc, space: probe.space } : loc;
+  return loc.kind === "several" || loc.kind === "absent" || loc.kind === "unknown" ? { ...loc, space: probe.space } : loc;
 }
 
 /**
@@ -317,6 +344,7 @@ export async function locateSeat(
  * filter counted as a manager that had looked and found nothing.
  *
  * Absence is a claim about the WHOLE space, so it is concluded only when the whole space answered.
+ * A name that more than one answering instance runs picks none of them.
  */
 export function locateSeatIn(instances: readonly ScatterInstanceReply[], name: string): SeatLocation {
   const reachable = instances.filter((i) => i.reachable);
@@ -324,8 +352,9 @@ export function locateSeatIn(instances: readonly ScatterInstanceReply[], name: s
   if (reachable.length <= 1 && !silent.length) return { kind: "unpinned" };
   const answered = reachable.filter((i) => i.error === undefined);
   const refused = reachable.filter((i) => i.error !== undefined).map((i) => ({ instanceId: i.instanceId, error: i.error as string }));
-  const host = answered.find((i) => ((i.data as AgentRow[] | undefined) ?? []).some((r) => r.name === name));
-  if (host) return { kind: "pin", instanceId: host.instanceId };
+  const hosts = answered.filter((i) => ((i.data as AgentRow[] | undefined) ?? []).some((r) => r.name === name));
+  if (hosts.length === 1) return { kind: "pin", instanceId: hosts[0]!.instanceId };
+  if (hosts.length > 1) return { kind: "several", instances: hosts.map((i) => i.instanceId).sort() };
   if (silent.length || refused.length) return { kind: "unknown", answered: answered.length, silent, refused };
   return { kind: "absent", checked: answered.length, instances: answered.map((i) => i.instanceId).sort() };
 }
@@ -344,12 +373,18 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to reach agent "${oneLine(String(v.name))}"`, { target: { space: loc.space, managerInstanceId: null, agent: String(v.name) }, native: loc.native, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
   }
   // Refused before anything is sent, as the same miss with `--on` refuses: a whole space that answered
-  // proves the name absent; one that did not cannot say where it is.
+  // proves the name absent; one that did not cannot say where it is. A name held on several managers,
+  // or found on none that answered, is a choice among those managers only, which a terminal is asked.
   if (loc.space !== undefined) recordOperationSpace(loc.space);
   const agent = String(v.name), message = seatMissRefusal(agent, verb, loc);
   if (loc.kind === "absent")
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target: { space: loc.space ?? null, agent, managerInstanceIds: loc.instances }, remedy: "run cotal ps to see the agents each manager runs" });
-  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", message, { target: { space: loc.space ?? null, agent, answered: loc.answered, silent: loc.silent, refused: loc.refused }, remedy: "run cotal ps to see which managers answer and the agents they run" });
+  const shown = oneLine(agent);
+  if (loc.kind === "several")
+    throw new AgentManagerUnsettled(`"${shown}" is held on each of these ${loc.instances.length} managers. Which one should run this?`, managersByInstance(loc.instances, loc.managers), "TARGET_AMBIGUOUS", message, { space: loc.space ?? null, agent, managerInstanceIds: loc.instances });
+  const unanswered = [...loc.silent, ...loc.refused.map((r) => r.instanceId)];
+  const question = loc.answered ? `"${shown}" was not found on the ${loc.answered === 1 ? "manager" : `${loc.answered} managers`} that answered. Which manager that did not answer should run this?` : `None of your managers answered for "${shown}". Which one should run this?`;
+  throw new AgentManagerUnsettled(question, managersByInstance(unanswered, loc.managers), "TARGET_UNAVAILABLE", message, { space: loc.space ?? null, agent, answered: loc.answered, silent: loc.silent, refused: loc.refused });
 }
 
 /** The console's wording for a seat the whole space proved absent. Main's richer `seatMissRefusal`
@@ -376,13 +411,18 @@ export function seatNotFoundMessage(loc: { checked: number }, name: string, verb
  * Measured on a live mesh: a seat that `ps` listed as running the whole time was reported absent,
  * and the same command with `--on` succeeded first time. A retry loop that reads the old sentence
  * as "already gone" stops looking for a seat that is still running.
+ *
+ * SEVERAL names each instance that runs a seat of that name, since picking one would act on a seat
+ * the operator may not mean.
  */
 export function seatMissRefusal(
   name: string,
   verb: string,
-  loc: Extract<SeatLocation, { kind: "absent" | "unknown" }>,
+  loc: Extract<SeatLocation, { kind: "absent" | "unknown" | "several" }>,
 ): string {
   const address = `To address one directly: \`${verb} --on <instance>\` (the whole id, as printed).`;
+  if (loc.kind === "several")
+    return `"${name}" is held on each of ${loc.instances.length} manager instances (${loc.instances.join(", ")}), so this command does not pick one. ${address}`;
   if (loc.kind === "absent")
     return `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space (${loc.instances.join(", ")}).`;
   const silent = loc.silent.length
@@ -1048,7 +1088,7 @@ const SESSION_WORKED_MS = 5_000;
  *  never fix; everything else is worth another attempt. */
 type Established =
   | { ok: true; nc: NatsConnection; grant: SessionGrant; link: RedeemLink; inbox: string; server: string; resumedFrom?: { host: string; source: string } }
-  | { ok: false; kind: AttachRefusal | "fatal"; message: string; fromManager?: true };
+  | { ok: false; kind: AttachRefusal | "fatal"; message: string; fromManager?: true; code?: string; noTerminal?: true };
 
 /** What a caller should DO about a manager refusal. `denied` will not change by asking again;
  *  `gone` is the seat the manager no longer knows, so there is nothing left to attach to; anything
@@ -1192,7 +1232,8 @@ async function establishAttachSession(
     // said once, with the runtime's own guidance for watching the agent where it really runs, and
     // the Next names what does reach the seat - never "inspect and reattach", which cannot succeed
     // here and is the advice this refusal exists to replace.
-    if (first && reply.details?.some((detail) => detail.kind === RUNTIME_NO_TERMINAL_DETAIL))
+    const noTerminal = reply.details?.some((detail) => detail.kind === RUNTIME_NO_TERMINAL_DETAIL) === true;
+    if (first && noTerminal)
       throw new CommandFailure("refused", "UNSUPPORTED", reply.error ? oneLine(reply.error) : "the seat's runtime streams no terminal, so there is none to attach", {
         target: { space: t.space, agent: v.name, managerInstanceId: reply.managerInstanceId ?? on ?? null },
         native: { code: reply.code, outcome: reply.nativeOutcome },
@@ -1200,7 +1241,7 @@ async function establishAttachSession(
       });
     if (first && (reply.preSubmitRefusal || reply.nativeOutcome === "not-executed"))
       throw managerFailure(reply, "terminal attach", { space: t.space, agent: v.name, managerInstanceId: reply.managerInstanceId ?? on ?? null });
-    return { ok: false, kind: attachRefusal(reply.code, reply.details), message: reply.error ?? "error", fromManager: true };
+    return { ok: false, kind: attachRefusal(reply.code, reply.details), message: reply.error ?? "error", fromManager: true, code: reply.code, ...(noTerminal ? { noTerminal: true } : {}) };
   }
   // P2 item 6: the reply is the holder-bound §13.6 session GRANT (no ws:// URL). Redeem it over the
   // mesh. A static-auth mesh mints a per-session, rails-only caller cred from the resolved root's
@@ -1645,7 +1686,7 @@ async function runAttachLoop(
     }
     if (!est.ok) {
       // Nothing changes for the first attach: any refusal is the same loud exit as before.
-      if (first || est.kind === "fatal" || est.kind === "denied") return await done({ kind: "failed", message: est.message });
+      if (first || est.kind === "fatal" || est.kind === "denied") return await done({ kind: "failed", message: est.message, ...(est.fromManager ? { refusal: { code: est.code, noTerminal: est.noTerminal === true } } : {}) });
       if (est.kind === "gone") return await done({ kind: "gone" });
       const notice = reconnectNotice(est, saidWhy);
       if (notice) {
@@ -1724,8 +1765,10 @@ async function runAttachLoop(
 }
 
 /** How the attach finished, decided inside the loop and acted on outside it — so the terminal is
- *  always given back before anything prints or exits. */
-export type AttachVerdict = { kind: "ended"; reason: string } | { kind: "gone" } | { kind: "failed"; message: string };
+ *  always given back before anything prints or exits. A failure the manager refused carries that
+ *  refusal's code and whether it bore the manager's marker that the seat's runtime streams no
+ *  terminal, so a caller can act on it without reading the wording. */
+export type AttachVerdict = { kind: "ended"; reason: string } | { kind: "gone" } | { kind: "failed"; message: string; refusal?: { code?: string; noTerminal: boolean } };
 
 /** What an attach needs to know: the mesh coordinates the control commands take, plus the seat,
  *  plus what an unresolvable mesh does on the first attempt (`exit`, the command's default, or
@@ -1751,6 +1794,7 @@ export async function attachSeat(
     else {
       const loc = await locateSeat(v, v.name, { onRefusal: "throw" });
       if (loc.kind === "absent") return { kind: "failed", message: seatNotFoundMessage(loc, v.name) };
+      if (loc.kind === "several") return { kind: "failed", message: seatMissRefusal(v.name, "cotal attach", loc) };
       if (loc.kind === "pin") on = loc.instanceId;
     }
   }
