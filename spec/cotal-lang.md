@@ -583,16 +583,16 @@ not await except through the **scopes**, the primitives whose journal kind §6.1
 scope opens a **scope frame** in the step-key grammar (§10.2), gives every branch its own key
 namespace, and writes one journal entry of its own whose result records how it settled.
 
-Scopes differ in the three traits below. The rules that depend on a trait read its column here
+Scopes differ in the four traits below. The rules that depend on a trait read its column here
 instead of naming kinds, so a new scope is a row in §6.1 and a row in this table.
 
-| Scope | Settles (§10.6) | Orphaned on migrate (§11.2) | A fork cut inside it (§11.3) |
-| --- | --- | --- | --- |
-| `parallel` | an assembly of branch outcomes | ignored: a scope outlives nothing of its own | re-entered: it decides nothing of its own |
-| `race` | an assembly of branch outcomes | ignored: a scope outlives nothing of its own | **refused** (L5020): re-entering would decide the winner again |
-| `fanOut` | an assembly of branch outcomes | ignored: a scope outlives nothing of its own | re-entered: it decides nothing of its own |
-| `conclave` | its body's own value | ignored if `closed`; else **rejected** (L5014) | **refused** (L5020): re-entering would open the conclave again on a fresh handler |
-| `once` | its body's own value | ignored: a scope outlives nothing of its own | re-entered: it decides nothing of its own |
+| Scope | Settles (§10.6) | Orphaned on migrate (§11.2) | A fork cut inside it (§11.3) | Calls the handler (§7.8) |
+| --- | --- | --- | --- | --- |
+| `parallel` | an assembly of branch outcomes | ignored: a scope outlives nothing of its own | re-entered: it decides nothing of its own | no |
+| `race` | an assembly of branch outcomes | ignored: a scope outlives nothing of its own | **refused** (L5020): re-entering would decide the winner again | no |
+| `fanOut` | an assembly of branch outcomes | ignored: a scope outlives nothing of its own | re-entered: it decides nothing of its own | no |
+| `conclave` | its body's own value | ignored if `closed`; else **rejected** (L5014) | **refused** (L5020): re-entering would open the conclave again on a fresh handler | yes: an open and a close |
+| `once` | its body's own value | ignored: a scope outlives nothing of its own | re-entered: it decides nothing of its own | no |
 
 ### 7.1 Branches and branch keys
 
@@ -715,7 +715,7 @@ dispatches, and neither are the hold's own calls, which run under the hold id. U
 frame only `ask` may run, and every other effect MUST be refused before its entry begins, with
 L4028. A validator MUST refuse such an effect called in the body of `once`, or in a function the
 body calls by name, with L2033, so a program that writes one does not start; L4028 refuses one the
-run reaches that the validator could not see. A `checkpoint`, a `waitUntil` and a `conclave` call a handler method more than once at one
+run reaches that the validator could not see. A scope whose §7 row says it calls the handler is such an effect, and L4028 refuses it before its entry begins. A `checkpoint`, a `waitUntil` and a `conclave` call a handler method more than once at one
 key (a hold is itself a checkpoint, one observation per look, an open and a close that a resume
 calls again). A `spawn`, a `turn`, a `monitor` and a `notify` build run state inside that method
 (a seat, a handoff, a watched agent, a filed notice), which a settled answer cannot build. A
@@ -1322,3 +1322,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-10-20 | Clarification with no change in meaning: §6.1 lists `spawn`'s `cwd` and `placement`, and §6.4 states that each is hashed only when the option bag carries it, `placement` as `{ endpoint, instanceId }`. A spawn that omits both keeps its six-key hash. The reference has hashed this way since lang 0.50.0. |
 | 2026-10-24 | An effect `once` does not admit, called in its body or in a function the body calls by name, is refused by the validator with L2033 (§7.8), and L4028 stays the run's refusal of one the validator could not see. Measured before it: `once(async () => { await sleep("1s") })`, directly and through a named helper, passed `validate` and a hosted start and then failed every run with L4028. |
 | 2026-10-24 | A literal that is not a duration, written where the language reads one, is refused by the validator with L2034 (§4.6). Measured before it: `sleep("5")`, `sleep(5000)`, `sleep("1.5s")`, `sleep("")`, a `checkpoint` `timeout` of `"PT5M"`, a `waitUntil` `every` of `"1.5s"` and `duration("5")` passed `validate` and a hosted start, and each run then failed when it reached the call. |
+| 2026-10-27 | The §7 table gains a fourth trait, whether a scope calls the handler. A scope whose row says it does is an effect `once` does not admit, and L4028 refuses it before its entry begins (§7.8). `conclave` is the one such scope. |

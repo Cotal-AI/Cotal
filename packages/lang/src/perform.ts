@@ -1346,8 +1346,13 @@ export async function performScope(
   /** The `branchDigest` over a named loser set. Absent where there is nothing to digest. */
   branchDigest?: (losers: readonly string[]) => string | undefined,
 ): Promise<unknown> {
-  if (scopeKey.kind === "conclave" && atMostOnce(scopeKey.scope)) throw notHoldable("conclave", scopeKey.scope);
+  // A scope that calls the handler is an effect `once` does not admit, for the same reason the
+  // effect path refuses one: a resume would call that method again at the same key. The trait says
+  // which scopes do, so a new dispatching kind is refused here without a second literal. The kind
+  // the message names is the scope's own effect kind, which is what `notHoldable` records.
   const dispatches = scopeTraits(scopeKey.kind)?.dispatches === true;
+  const scopeEffect = PRIMITIVES[scopeKey.kind]?.kind ?? null;
+  if (dispatches && scopeEffect !== null && atMostOnce(scopeKey.scope)) throw notHoldable(scopeEffect, scopeKey.scope);
   const inputHash = digest(
     subject === undefined
       ? { kind: scopeKey.kind, name: scopeKey.name }
