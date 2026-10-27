@@ -137,7 +137,7 @@ type Run = { status: number | null; stdout: string; out: string; timedOut: boole
 function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
   return new Promise((res) => {
     const child = spawnProc(TSX, [BIN, ...args], {
-      cwd: root, env: { ...process.env, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"],
+      cwd: root, env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "", out = "", timedOut = false, settled = false;
     let status: number | null = null, signal: NodeJS.Signals | null = null;

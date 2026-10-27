@@ -60,7 +60,7 @@ const root = join(base, "we ird $x 'q'");
 mkdirSync(root, { mode: 0o700 });
 const configDir = join(home, "xdg");
 const anchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
-const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const { check, finish } = createSuite();
 const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

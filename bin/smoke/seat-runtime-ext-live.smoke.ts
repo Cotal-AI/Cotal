@@ -42,7 +42,7 @@ const root = join(sandbox, "root");
 const out = join(sandbox, "out");
 for (const dir of [home, configDir, root, out]) mkdirSync(dir, { recursive: true, mode: 0o700 });
 const anchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
-const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const SPACE = basename(root);
 const record = (template: string) => canonicalLocalProcessPath(template, { root, space: SPACE });
 
