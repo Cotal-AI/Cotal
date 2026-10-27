@@ -22,7 +22,10 @@
  *      naming the folder that hosts the space. No bare `Authorization Violation` line.
  *   E4. A prepared second root of the same space under its own home: `manager start` with no sign-in
  *      is refused AUTH_REQUIRED before anything is saved; a manager left running after a sign-out is
- *      stopped by the folder's owner through `manager stop` and `down`.
+ *      stopped by the folder's owner through `manager stop` and `down`. `supervise` is refused before
+ *      it connects, under a `Mesh:` heading with a code and no boot line, from that stopped root, from
+ *      a folder with no records (naming the folder that hosts the space, writing nothing there), and
+ *      from a stopped static root.
  *   F. `cotal down` stops the auth service (space-scoped pid) with the broker; re-`up` WITHOUT
  *      --user-auth on a user-enabled root is refused fail-closed.
  *   G. `clean all`, and `reset space` on a stopped controller stack, name the IdP trust and the
@@ -151,8 +154,8 @@ async function approve(userCode: string): Promise<void> {
 let witnessNc: Awaited<ReturnType<typeof connect>> | undefined;
 // E3's second root, with its own home, so `finally` can stop and remove it.
 let other: { root: string; home: string; env: Record<string, string>; sandbox: SmokeSandboxAnchor } | undefined;
-// E4's home and its prepared roots, likewise.
-let second: { home: string; env: Record<string, string>; roots: { root: string; sandbox: SmokeSandboxAnchor }[] } | undefined;
+// E4's home, its prepared roots and its folder with no records, likewise.
+let second: { home: string; env: Record<string, string>; roots: { root: string; sandbox: SmokeSandboxAnchor }[]; bare?: string } | undefined;
 try {
   // ---------- A. up --user-auth ----------
   console.log("A) cotal up --user-auth --idp <real IdP> --auth-timeout 3 --detach");
@@ -675,8 +678,8 @@ try {
       /\nNext\n/.test(text) && text.includes(`start the manager from ${root}, the folder that hosts space "${SPACE}": cd ${root} && cotal manager start`) && text.includes("(cotal meshes add, then cotal login)"), refused.out);
   }
 
-  // ---------- E4. a second root: manager start and its owner's stop ----------
-  console.log("E4) a second root's manager start needs a sign-in, and its owner stops a manager left running without one");
+  // ---------- E4. a second root: manager start, its owner's stop, and pre-connect refusals ----------
+  console.log("E4) a second root's manager start needs a sign-in, its owner stops a manager left running without one, and supervise refuses before it connects");
   {
     const home2 = mkdtempSync(join(tmpdir(), "cotal-ua-second-home-"));
     const env = { COTAL_HOME: home2, XDG_CONFIG_HOME: join(home2, "xdg") };
@@ -716,6 +719,31 @@ try {
       stopped.status === 0 && plain(stopped.out).includes("Service stopped") && plain(stopped.out).includes("the pinned child's own local receipt") && !stopped.out.includes("AUTH_REQUIRED") && await until(() => { try { process.kill(pid2, 0); return false; } catch { return true; } }), stopped.out);
     const down2 = await cotal(["down", "--yes"], { cwd: root2, env, sandbox: sandbox2 });
     check("…and down then stops the stack", down2.status === 0, down2.out);
+    // supervise refusals: exit 2, a Mesh: heading and a code, before the manager boots or writes.
+    const preConnect = (out: string, code: string) => {
+      const text = plain(out);
+      return text.includes(`Request refused`) && field(out, "Code", code) && !text.includes("manager boot") && !text.includes("✗ ") && !text.includes("re-`cotal up`");
+    };
+    const stoppedHere = await cotal(["supervise", "--space", SPACE, "--server", SERVER], { cwd: root2, env });
+    check("supervise from that stopped root is refused as stopped, not as stale state to remove",
+      stoppedHere.status === 2 && plain(stoppedHere.out).includes(`Mesh: ${SPACE}\n`) && preConnect(stoppedHere.out, "TARGET_UNAVAILABLE") &&
+        plain(stoppedHere.out).includes(`"${SPACE}" is stopped; its last operation, cotal down, completed, so no manager started`) &&
+        plain(stoppedHere.out).includes(`start it again with \`cotal up\` in ${root2}, or start the manager from the folder whose cotal up started the broker at ${SERVER}`), stoppedHere.out);
+    second.bare = mkdtempSync(join(tmpdir(), "cotal-ua-no-records-"));
+    const elsewhere = await cotal(["supervise", "--space", SPACE, "--server", SERVER], { cwd: second.bare });
+    check("supervise from a folder with no records names the folder that hosts the space, and writes nothing there",
+      elsewhere.status === 2 && plain(elsewhere.out).includes(`Mesh: ${SPACE}\n`) && preConnect(elsewhere.out, "PERMISSION_DENIED") &&
+        plain(elsewhere.out).includes(`start the manager from ${root}, the folder that hosts space "${SPACE}": cd ${root} && cotal manager start`) &&
+        !plain(elsewhere.out).includes("cotal down") && !existsSync(join(second.bare, ".cotal")), elsewhere.out);
+    const RT = `${SPACE}-rt`;
+    const root3 = await prepare(RT);
+    const up3 = await cotal(["up", "-d", "--no-manager", "--server", `nats://127.0.0.1:${await pickFreePort()}`], { cwd: root3, env });
+    const down3 = await cotal(["down", "--yes"], { cwd: root3, env, sandbox: second.roots[1]!.sandbox });
+    check("a static second root starts and stops", up3.status === 0 && down3.status === 0, { up: up3.out, down: down3.out });
+    const staticStopped = await cotal(["supervise", "--space", RT, "--server", SERVER], { cwd: root3, env });
+    check("supervise from the stopped static root is refused as stopped, naming its own up and the broker's folder",
+      staticStopped.status === 2 && plain(staticStopped.out).includes(`Mesh: ${RT}\n`) && preConnect(staticStopped.out, "TARGET_UNAVAILABLE") &&
+        plain(staticStopped.out).includes(`start it again with \`cotal up\` in ${root3}, or start the manager from the folder whose cotal up started the broker at ${SERVER}`), staticStopped.out);
   }
 
   // ---------- F. down + fail-closed re-up ----------
@@ -789,6 +817,7 @@ try {
       await cotal(["down", "--yes"], { cwd: at, env: second.env, sandbox: anchor, timeoutMs: 30_000 }); // E4's roots, if still up
       rmSync(at, { recursive: true, force: true });
     }
+    if (second.bare) rmSync(second.bare, { recursive: true, force: true });
     rmSync(second.home, { recursive: true, force: true });
   }
   idpSrv.close();

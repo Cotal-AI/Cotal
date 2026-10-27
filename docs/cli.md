@@ -4963,7 +4963,11 @@ provider that rejects with `null` or a string still gets its refusal line and ex
 When the broker refuses the credential the manager presents, such as one this folder's signer
 minted for a space another folder hosts, `supervise` exits 2 with a `PERMISSION_DENIED` refusal
 under a `Mesh:` heading that names the credential and the broker, and its Next names the folder
-that hosts the space.
+that hosts the space. Before it connects, `supervise` refuses the same way, with exit 2 under a
+`Mesh:` heading, and writes nothing in this folder. A space whose own stack in this folder is
+stopped or not started gets `TARGET_UNAVAILABLE` and `cotal up` there, and with `--server` also the
+folder whose `cotal up` started that broker. A user-auth space that another folder hosts gets
+`PERMISSION_DENIED` and the folder that hosts it.
 
 On a normal `SIGINT`/`SIGTERM`, the manager stops every seat and requires the selected runtime to
 prove the seat is gone before it releases the manager lease or service registration. A stop that
