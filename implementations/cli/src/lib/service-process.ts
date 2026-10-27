@@ -255,7 +255,8 @@ function executable(definition: ServiceDefinitionInput): string {
 function environment(definition: ServiceDefinitionInput): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   // LOCALAPPDATA locates Cotal's own folder on Windows when COTAL_HOME is unset, as HOME does elsewhere.
-  for (const key of ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM", "COLORTERM", "NO_COLOR", "FORCE_COLOR", "COTAL_HOME", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"]) if (process.env[key] !== undefined) env[key] = process.env[key];
+  // The usage telemetry variables and CI reach the service as they reach a seat (docs/telemetry.md).
+  for (const key of ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM", "COLORTERM", "NO_COLOR", "FORCE_COLOR", "COTAL_HOME", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "DO_NOT_TRACK", "CI", "COTAL_TELEMETRY", "COTAL_TELEMETRY_DISABLED", "COTAL_TELEMETRY_URL"]) if (process.env[key] !== undefined) env[key] = process.env[key];
   // Variable names are not secrets, so a missing one is named with the child variable it feeds.
   const missing = Object.entries(definition.envRefs ?? {}).filter(([, source]) => process.env[source] === undefined);
   if (missing.length) {
