@@ -278,6 +278,18 @@ const QUESTION = "Which one?";
     r.stdout.includes(`this folder's space while it runs; the selected space "alpha" applies outside it and while it is stopped`);
   check("bare cotal there, whose records hold no broker pidfile, leads with the selection, names the stopped space and offers its up",
     leadsWithSelection(entryStopped), shown(entryStopped));
+  // A prepared selection is started by its own `up`, so the entry screen there names that one as this
+  // space's start and offers no spawn, as it does away from any project.
+  const eta = join(home, "eta");
+  mkdirSync(join(eta, ".cotal"), { recursive: true });
+  recordPreparedSpace({ space: "eta", root: eta, ts: new Date(0).toISOString() });
+  setCurrent("eta");
+  const entryPrepared = run([], zetaRoot), entryPreparedAway = run([]);
+  setCurrent("alpha");
+  removePreparedSpace("eta");
+  const startsEta = (r: ReturnType<typeof run>) => r.status === 0 && /^eta · prepared · /m.test(r.stdout) && r.stdout.includes(`\nStart here\n  cotal up --root ${eta}  Start this space\n`) && !r.stdout.includes("cotal spawn");
+  check("with a prepared selection, bare cotal there names the selection's up as this space's start and offers no spawn, as away from any project",
+    startsEta(entryPrepared) && entryPrepared.stdout.includes(`this folder holds the stopped space "zeta"`) && startsEta(entryPreparedAway), { here: shown(entryPrepared), away: shown(entryPreparedAway) });
   // A pidfile naming a live process does not show it stopped, and help reads no broker, so it says when
   // the folder's space applies; one naming a process that is gone does.
   const pidfile = join(zetaRoot, ".cotal", "nats.pid");

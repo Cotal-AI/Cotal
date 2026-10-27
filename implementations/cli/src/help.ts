@@ -164,6 +164,8 @@ export function printEntry(commands: readonly Command[], listing = false): void 
   let outside: string | undefined;
   // The `up` that starts a prepared space: no other command works on it until it runs.
   let start: string | undefined;
+  // The `up` that starts this folder's space, when commands here target the selection instead.
+  let folderStart: string | undefined;
   // What this folder holds that is not running, when a command here targets the selection instead.
   let folderHeld: string | undefined;
   // What a copy or a moved folder holds, with the step the commands here refuse with.
@@ -194,7 +196,11 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     if (holds) elsewhere = `${holds}; ${records!.stackRemedy}`;
     space = folder ?? selected ?? (preparedHere && canonicalRoot(preparedHere.root) === canonicalRoot(held!.root) ? held!.space : undefined);
     if (selected && folder !== undefined && folder !== selected) outside = selected;
-    if (held) start = canonicalRoot(held.root) === canonicalRoot(root) ? "cotal up" : `cotal up --root ${shellWord(held.root)}`;
+    if (held) {
+      const up = canonicalRoot(held.root) === canonicalRoot(root) ? "cotal up" : `cotal up --root ${shellWord(held.root)}`;
+      if (held.space === space) start = up;
+      else folderStart = up;
+    }
     if (space) {
       const mesh = readMesh(space);
       const prepared = mesh === undefined ? findPreparedSpace(space) : undefined;
@@ -221,9 +227,10 @@ export function printEntry(commands: readonly Command[], listing = false): void 
   sections.push({ title: "Usage", blocks: [{ kind: "lines", lines: [{ text: "cotal <command> [options]", tone: "command" }] }] });
   sections.push(actions("Start here", space ? [
     // A folder's `up` starts THAT folder's space, not the one commands here target, so it is named
-    // as the folder's and the selection keeps its own first action.
-    ...(start ? [["up", start, folderHeld ? "Start this folder's space" : "Start this space"] as [string, string, string]] : []),
-    ...(start && !folderHeld ? [] : [["spawn", "cotal spawn", "Open your default agent"] as [string, string, string]]),
+    // as the folder's. The selection keeps its own first action: its `up` while it is prepared or
+    // stopped, else spawn.
+    ...(start ? [["up", start, "Start this space"] as [string, string, string]] : folderStart ? [["up", folderStart, "Start this folder's space"] as [string, string, string]] : []),
+    ...(start ? [] : [["spawn", "cotal spawn", "Open your default agent"] as [string, string, string]]),
     ["setup", "cotal setup", "Review setup and defaults"],
     ["use", "cotal use", "Choose another space"],
   ] : anySpace ? [

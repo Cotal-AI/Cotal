@@ -57,7 +57,10 @@ runs from another folder, it says what the folder holds: a copy of a controller 
 root's records and the folder that space is registered for, or records moved from their recorded
 folder. It ends that line with the step the commands there name. It points a prepared space to the `cotal up` that starts it, with
 `--root <dir>` when the space is prepared in another folder and `<dir>` quoted when a shell would
-split it, and a machine with no space to `cotal setup`. With spaces on the machine but none selected
+split it, and a machine with no space to `cotal setup`. While the space it names is prepared or
+stopped, that `cotal up` is its first step and it offers no `cotal spawn`, in any folder. Otherwise,
+in a folder that holds another space, its first step is that folder's own `cotal up`, which it says
+starts this folder's space, and `cotal spawn` follows. With spaces on the machine but none selected
 or in this folder, it names `cotal use <name>` and `cotal space` instead. Every command generates its own help, usage, and shell completion from its declared
 flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. A word after the
 command that names none of its subcommands refuses with `--help` too, as `cotal help` and the command
