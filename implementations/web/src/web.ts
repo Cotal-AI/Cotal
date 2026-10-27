@@ -39,6 +39,7 @@ import {
   WEB_READINESS_HEADER,
   WEB_READINESS_PATH,
   WEB_SESSION_FILE,
+  webBoundUrl,
   writeIdentityPin,
   type ConnectFlags,
   type Connection,
@@ -1313,7 +1314,7 @@ async function launchDetachedWeb(
   const sessionPath = localProcessPath(WEB_SESSION_FILE, context);
   let session: WebSession;
   try {
-    session = await waitForDetachedWeb(child, { pidPath, sessionPath, url: boundUrl(host, port), space, timeoutMs: DETACHED_READY_TIMEOUT_MS });
+    session = await waitForDetachedWeb(child, { pidPath, sessionPath, url: webBoundUrl(host, port), space, timeoutMs: DETACHED_READY_TIMEOUT_MS });
   } catch (e) {
     let cleanupError: Error | undefined;
     try { await terminateDetachedWeb(child, pidPath); }
@@ -1527,14 +1528,7 @@ function parseWebPort(input: string | undefined): number {
 
 export function webUrl(host: string, port: number): string {
   if (host === WEB_HOST && port === WEB_PORT) return WEB_URL;
-  return boundUrl(host, port);
-}
-
-/** The address the server binds, for a client that does not resolve `cotal.localhost` itself: that
- *  name is a browser convention, and a system resolver such as WSL2's has no answer for it. */
-function boundUrl(host: string, port: number): string {
-  const literal = host.includes(":") ? `[${host}]` : host;
-  return `http://${literal}:${port}/`;
+  return webBoundUrl(host, port);
 }
 
 /** On the branded default the link is printed a second time at the bound address, so an operator
@@ -1542,7 +1536,7 @@ function boundUrl(host: string, port: number): string {
  *  one token, so opening either spends it. */
 function printLaunchLink(launchUrl: string, host: string, port: number, note: string): void {
   console.log(`  ${c.cyan(launchUrl)}  ${c.dim(note)}`);
-  const bound = boundUrl(host, port);
+  const bound = webBoundUrl(host, port);
   if (webUrl(host, port) !== bound)
     console.log(`  ${c.cyan(`${bound}${new URL(launchUrl).search}`)}  ${c.dim("(the same link, where cotal.localhost does not resolve)")}`);
 }
