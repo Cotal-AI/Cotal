@@ -26,6 +26,8 @@ import { c } from "../ui.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { supervisorMayServe } from "../lib/manager-proc.js";
+import { processGone, readStackJournal, stackScopeRefusals } from "../lib/stack-journal.js";
+import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 import {
   ConnectRefusal,
   isWorkspaceTargetError,
@@ -344,6 +346,23 @@ function preparedNeverStarted(d: MeshTargetErrorDetails): boolean {
     d.stopped === undefined && d.unsettled === undefined && d.home === undefined && d.stackSpace === undefined;
 }
 
+/** A prepared controller that completed ordinary down is cold only while its own instance records
+ *  prove every process gone, no supervisor may serve it, and its recorded broker has no listener.
+ *  The target resolver refuses before returning a MeshTarget for this lifecycle. */
+async function stoppedController(d: MeshTargetErrorDetails): Promise<boolean> {
+  if (typeof d.space !== "string" || typeof d.root !== "string" || !d.stopped ||
+      d.rootMissing === true || d.unsettled !== undefined || d.home !== undefined || d.stackSpace !== undefined) return false;
+  const journal = readStackJournal(d.root)?.journal;
+  if (!journal || journal.space !== d.space || journal.operation.kind !== "down" || journal.operation.phase !== "completed") return false;
+  const instances = serviceInstances(d.space);
+  if (journal.members.some((member) => member.instanceId !== null &&
+      !instances.some((row) => row.name === member.instanceId && row.record.value.definition === member.definition))) return false;
+  if (instances.some((row) => !["stopped", "failed"].includes(row.record.value.state) || !processGone(observeServiceProcess(row.record.value)))) return false;
+  stackScopeRefusals(journal, `cotal update --space ${d.space}`);
+  if (supervisorMayServe(d.space)) return false;
+  return assertEndpointUnreachable(journal.server).then(() => true, () => false);
+}
+
 /** The refusal sentence this command prints. A {@link MeshTargetError} arrives RAW here — the
  *  control resolver rethrows the codes it does not absorb before the connect helper can wrap them —
  *  so its `message` is the resolver's bare, command-agnostic text, with none of the recovery copy
@@ -423,6 +442,10 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
       // one for a software update, which needs only to know that no manager here holds custody.
       if (e.code === "not-started" && preparedNeverStarted(e.details)) {
         console.log(c.dim(`  ${e.details.space}: prepared in ${e.details.root}, not started; no manager running`));
+        return "none";
+      }
+      if (e.code === "not-started" && server === undefined && await stoppedController(e.details)) {
+        console.log(c.dim(`  ${e.details.space}: stopped; no manager running`));
         return "none";
       }
       if (e.code !== "unknown-space" && e.code !== "no-meshes") throw e;
