@@ -38,7 +38,7 @@ import { findCotalRoot, getSpaceAuth, hasUserAuthState, userAuthStateDir } from 
 import { agentGrants, grantMintFlags } from "./agent-grants.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { findMesh, movedProject, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
-import { isWorkspaceTargetError, resolveMeshTarget, resolveReadsLiveness, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
+import { isWorkspaceTargetError, resolveMeshTarget, resolveReadsLiveness, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
 import { renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
 import { CommandFailure, type NativeCause, type RefusalCode } from "./output.js";
@@ -371,7 +371,7 @@ export class ConnectRefusal extends Error {
 function workspaceRefusal(e: WorkspaceError, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode }): ConnectRefusal {
   // A folder whose records name no space is probed under the default space, and its refusal names
   // the folder, so its target names only the folder too.
-  const target = e.kind === "target" ? spaceRootTarget(e.error.details)
+  const target = e.kind === "target" ? spaceRootTarget({ root: e.error.details.root, space: targetErrorSpace(e.error.details) })
     : e.kind === "preflight" ? spaceRootTarget(e.failure === "unreachable" && e.target.namesNoSpace ? { root: e.target.root } : e.target) : undefined;
   return new ConnectRefusal(renderWorkspaceError(e), undefined, { ...options, parts: workspaceErrorParts(e), ...(target ? { target } : {}) });
 }
