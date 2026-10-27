@@ -172,6 +172,7 @@ const env: NodeJS.ProcessEnv = {
   PATH: process.env.PATH, HOME: join(home, "home"), COTAL_HOME: home,
   XDG_CONFIG_HOME: join(home, "config"), XDG_CACHE_HOME: join(home, "cache"), XDG_DATA_HOME: join(home, "data"),
   COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_PROMPT: "1", NO_COLOR: "1", FOREGROUND_NAMES_URL: provisioningUrl,
+  DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off",
 };
 for (const key of ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME"]) mkdirSync(env[key]!, { recursive: true });
 type Worker = { child: ChildProcessWithoutNullStreams; output: string; ready: Promise<boolean>; closed: Promise<number | null>; exited: boolean };
