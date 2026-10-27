@@ -32,9 +32,7 @@
  * 401 is a fact about the credential, not about the publisher record: the exchange itself already
  * matched this workflow's claims against the trusted-publisher configuration. A 401 on the trust
  * read is recorded as `unverifiable:trust-endpoint-needs-npm-token` and does not refuse; the
- * OIDC exchange stays the gate for ordinary uploads. With --require-dist-tags, a 401 refuses
- * before upload because it cannot establish the independent manageDistTags permission. No token
- * fallback is used. Any other non-200 answer still refuses, and a 200 body that shows
+ * OIDC exchange stays the gate. Any other non-200 answer still refuses, and a 200 body that shows
  * a stage-only or foreign publisher still refuses.
  */
 import { execFileSync } from "node:child_process";
@@ -228,20 +226,16 @@ function actionList(entry) {
  * documented `claims` object). Other publishers on the same package are ignored. Empty
  * allowed-action lists on this
  * publisher are stage-only: npm's post-2026-09-03 default. HTTP 201 from the
- * OIDC exchange is not an input here. requireDistTags also requires manageDistTags on the same
- * direct-capable matching configuration.
+ * OIDC exchange is not an input here.
  */
-export function classifyDirectPublishPermission(body, identity = { repository: "Cotal-AI/Cotal", workflowFilename: "changesets.yml", environment: REQUIRED_ENVIRONMENT }, { requireDistTags = false } = {}) {
+export function classifyDirectPublishPermission(body, identity = { repository: "Cotal-AI/Cotal", workflowFilename: "changesets.yml", environment: REQUIRED_ENVIRONMENT }) {
   const entries = publisherEntries(body);
   if (!entries) return "refused:malformed-trust";
   if (entries.length === 0) return "refused:no-trusted-publisher";
   const mine = entries.filter((entry) => isThisReleasePublisher(entry, identity));
   if (mine.length === 0) return "refused:no-github-publisher";
   const withDirect = mine.filter((entry) => actionList(entry).some(isDirectPublishAction));
-  if (withDirect.length > 0) {
-    if (requireDistTags && !withDirect.some((entry) => actionList(entry).includes("manageDistTags"))) return "refused:manage-dist-tags";
-    return "createPackage";
-  }
+  if (withDirect.length > 0) return "createPackage";
   return "stage-only";
 }
 
@@ -293,21 +287,21 @@ async function exchangePackageIdentity(pkg, registryBase, env, fetchImpl) {
   return { oidc: "exchanged", token: body.token };
 }
 
-async function readDirectPublishAuthorization(pkg, registryBase, token, fetchImpl, env, requireDistTags) {
+async function readDirectPublishAuthorization(pkg, registryBase, token, fetchImpl, env) {
   try {
     const response = await fetchImpl(trustUrl(registryBase, pkg.name), {
       method: "GET",
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       redirect: "manual",
     });
-    if (response.status === 401) return requireDistTags ? "refused:manage-dist-tags-unverifiable" : "unverifiable:trust-endpoint-needs-npm-token";
+    if (response.status === 401) return "unverifiable:trust-endpoint-needs-npm-token";
     if (response.status !== 200) return `refused:${response.status}`;
     const body = await response.json();
     return classifyDirectPublishPermission(body, {
       repository: env.GITHUB_REPOSITORY ?? "",
       workflowFilename: "changesets.yml",
       environment: REQUIRED_ENVIRONMENT,
-    }, { requireDistTags });
+    });
   } catch (error) {
     return `refused:${error instanceof Error ? error.message : String(error)}`;
   }
@@ -401,7 +395,6 @@ export async function preflightNpmPublish({
   env = process.env,
   fetchImpl = fetch,
   tag = "",
-  requireDistTags = false,
   log = console.log,
   deadline = Date.now() + 60_000,
   concurrency = 6,
@@ -501,7 +494,7 @@ export async function preflightNpmPublish({
         const exchanged = await exchangePackageIdentity(row, registryBase, env, timedFetch);
         row.oidc = exchanged.oidc;
         if (exchanged.oidc === "exchanged" && exchanged.token) {
-          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, timedFetch, env, requireDistTags);
+          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, timedFetch, env);
         } else {
           row.direct = "not-run";
         }
@@ -529,7 +522,6 @@ export async function preflightNpmPublish({
   }
   const refusedDirect = rows.filter((row) => row.direct.startsWith("refused:"));
   if (refusedDirect.length) {
-    if (refusedDirect.some((row) => row.direct.startsWith("refused:manage-dist-tags"))) throw new Error(`dist-tag authority is missing or unverifiable for ${refusedDirect.length}/${rows.length} packages; refuse before upload`);
     throw new Error(`direct-publish authorization refused ${refusedDirect.length}/${rows.length} packages`);
   }
   return { state: "ready", rows };
@@ -544,7 +536,6 @@ export async function preflightFromRepository({
   env = process.env,
   fetchImpl = fetch,
   tag = "",
-  requireDistTags = false,
   log = console.log,
   exec = execFileSync,
   deadline = Date.now() + 60_000,
@@ -554,13 +545,11 @@ export async function preflightFromRepository({
   const fixedPackages = closureFromConfig(readFileSync(join(root, ".changeset", "config.json"), "utf8"));
   const boundedExec = (file, args, options) => exec(file, args, { ...options, timeout: remainingBudget(deadline), killSignal: "SIGKILL" });
   const workspacePackages = workspacePackagesFromPnpm(root, boundedExec);
-  return preflightNpmPublish({ fixedPackages, workspacePackages, registryBase: registryBase.replace(/\/+$/, ""), env, fetchImpl, log, deadline, concurrency, tag, requireDistTags });
+  return preflightNpmPublish({ fixedPackages, workspacePackages, registryBase: registryBase.replace(/\/+$/, ""), env, fetchImpl, log, deadline, concurrency, tag });
 }
 
 if (isMainEntry(import.meta.url)) {
-  const args = process.argv.slice(2);
-  if (args.some((arg) => arg !== "--require-dist-tags")) throw new Error("unknown preflight option");
-  preflightFromRepository({ requireDistTags: args.includes("--require-dist-tags"), tag: args.includes("--require-dist-tags") ? "latest" : "" }).catch((error) => {
+  preflightFromRepository().catch((error) => {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;
   });

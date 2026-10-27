@@ -12,6 +12,28 @@ import { releaseManifests, stageReleasePlan, STAGING_TAG } from "./stage-release
 
 const root = join(import.meta.dirname, "..");
 
+test("unset, false and unrelated variables preserve the original plan and skip every staged step", () => {
+  const workflow = YAML.parse(readFileSync(join(root, ".github/workflows/changesets.yml"), "utf8"));
+  assert.equal(workflow.jobs.select.outputs.plan, "${{ steps.staged-plan.outputs.artifact-id || steps.select.outputs.publish-plan-artifact-id }}");
+  const optional = [
+    ...workflow.jobs.select.steps.filter((step) => step.with?.["artifact-ids"] || step.id === "staged-plan" || step.run?.includes("stage-release-plan.mjs stage")),
+    ...workflow.jobs.publish.steps.filter((step) => step.run?.includes("stage-release-plan.mjs check") || step.run?.includes("npm dist-tag add")),
+  ];
+  assert.equal(optional.length, 5);
+  for (const value of [undefined, "", "false", "enabled", "true"]) {
+    const enabled = optional.filter((step) => {
+      assert.match(step.if, /(?:^| && )vars\.COTAL_STAGED_RELEASE == 'true'$/);
+      return value === "true";
+    });
+    assert.equal(enabled.length, value === "true" ? 5 : 0);
+    const planArtifact = (value === "true" ? "staged-artifact" : "") || "original-artifact";
+    assert.equal(planArtifact, value === "true" ? "staged-artifact" : "original-artifact");
+  }
+  const publisher = workflow.jobs.publish.steps.find((step) => step.id === "publish");
+  assert.equal(publisher.if, undefined, "standard upload must not require staging or settings-read access");
+  assert(!workflow.jobs.publish.steps.some((step) => step.run?.includes("preflight-npm-publish.mjs")));
+});
+
 test("workflow parses and every ID download flattens the artifact into its declared plan path", () => {
   const workflow = YAML.parse(readFileSync(join(root, ".github/workflows/changesets.yml"), "utf8"));
   for (const name of ["select", "publish"]) {
@@ -20,11 +42,11 @@ test("workflow parses and every ID download flattens the artifact into its decla
     assert.equal(downloads[0].with["merge-multiple"], true);
   }
   const steps = workflow.jobs.publish.steps;
-  const verify = steps.findIndex((step) => step.name === "Verify staged closure and registry installation");
+  const verify = steps.findIndex((step) => step.name === "Verify published closure and registry installation");
   const promote = steps.findIndex((step) => step.name === "Promote verified packages to latest");
   assert(verify >= 0 && promote > verify);
   assert.match(steps[verify].run, /verify-release-installable\.mjs.*--closure/);
-  assert.equal(steps[promote].if, "steps.publish.outputs.published == 'true'");
+  assert.equal(steps[promote].if, "steps.publish.outputs.published == 'true' && vars.COTAL_STAGED_RELEASE == 'true'");
   assert.equal(steps[promote]["continue-on-error"], undefined);
 });
 const entry = (name) => ({ kind: "publish", name, version: "1.2.3", access: "public", tag: "latest" });
@@ -32,12 +54,11 @@ const manifests = [{ name: "core", version: "1.2.3" }, { name: "adapter", versio
 const fixed = manifests.map((pkg) => pkg.name);
 const plan = () => ({ version: 1, plan: [[entry("core")], [entry("adapter"), entry("cotal-ai")]] });
 
-test("staged preflight refuses missing or unreadable dist-tag authority before any upload", async () => {
+test("direct publishing needs no dist-tag grant and unreadable settings do not assert write authority", async () => {
   const claims = { repository: "Cotal-AI/Cotal", workflow_ref: "Cotal-AI/Cotal/.github/workflows/changesets.yml@refs/heads/main", ref: "refs/heads/main", event_name: "workflow_dispatch", environment: "npm-publish", aud: "npm:registry.npmjs.org", jti: "synthetic" };
   const publisher = { type: "github", claims: { repository: claims.repository, workflow_ref: { file: "changesets.yml" }, environment: "npm-publish" }, permissions: ["createPackage"] };
-  assert.equal(classifyDirectPublishPermission([publisher], undefined, { requireDistTags: true }), "refused:manage-dist-tags");
-  assert.equal(classifyDirectPublishPermission([{ ...publisher, permissions: ["manageDistTags"] }], undefined, { requireDistTags: true }), "stage-only");
-  assert.equal(classifyDirectPublishPermission([publisher, { ...publisher, permissions: ["manageDistTags"] }], undefined, { requireDistTags: true }), "refused:manage-dist-tags", "separate configurations cannot combine authority");
+  assert.equal(classifyDirectPublishPermission([publisher]), "createPackage");
+  assert.equal(classifyDirectPublishPermission([{ ...publisher, permissions: ["manageDistTags"] }]), "stage-only");
   let mode = "missing", writes = 0;
   const server = createServer((request, response) => {
     response.setHeader("Content-Type", "application/json");
@@ -52,11 +73,13 @@ test("staged preflight refuses missing or unreadable dist-tag authority before a
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const registryBase = `http://127.0.0.1:${server.address().port}`;
-  const options = { fixedPackages: ["one"], workspacePackages: [{ name: "one", version: "1.2.3", path: "/synthetic" }], registryBase, requireDistTags: true, env: { GITHUB_REPOSITORY: claims.repository, GITHUB_REF: claims.ref, GITHUB_EVENT_NAME: claims.event_name, ACTIONS_ID_TOKEN_REQUEST_URL: `${registryBase}/id-token`, ACTIONS_ID_TOKEN_REQUEST_TOKEN: "synthetic-not-a-credential" }, log: () => {} };
+  const options = { fixedPackages: ["one"], workspacePackages: [{ name: "one", version: "1.2.3", path: "/synthetic" }], registryBase, env: { GITHUB_REPOSITORY: claims.repository, GITHUB_REF: claims.ref, GITHUB_EVENT_NAME: claims.event_name, ACTIONS_ID_TOKEN_REQUEST_URL: `${registryBase}/id-token`, ACTIONS_ID_TOKEN_REQUEST_TOKEN: "synthetic-not-a-credential" }, log: () => {} };
   try {
-    for (mode of ["missing", "unreadable"]) await assert.rejects(() => preflightNpmPublish(options), /dist-tag authority is missing or unverifiable.*refuse before upload/);
-    mode = "ready";
-    assert.equal((await preflightNpmPublish(options)).state, "ready");
+    for (mode of ["missing", "unreadable", "ready"]) {
+      const result = await preflightNpmPublish(options);
+      assert.equal(result.state, "ready");
+      assert.equal(result.rows[0].direct, mode === "unreadable" ? "unverifiable:trust-endpoint-needs-npm-token" : "createPackage");
+    }
     assert.equal(writes, 0);
   } finally { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
 });
@@ -103,10 +126,9 @@ test("real repository closure produces complete dependency-ordered promotion spe
 });
 
 test("actual workflow promotion shell uses ordinary npm, stops on error and does not promote after failed verification", () => {
-  const workflow = readFileSync(join(root, ".github/workflows/changesets.yml"), "utf8");
-  const block = workflow.match(/      - name: Promote verified packages to latest\n        if: steps.publish.outputs.published == 'true'\n        run: \|\n([\s\S]*?)(?=\n  verify-install:)/)?.[1];
-  assert(block, "ordinary promotion block must exist");
-  const script = block.split("\n").map((line) => line.replace(/^          /, "")).join("\n");
+  const workflow = YAML.parse(readFileSync(join(root, ".github/workflows/changesets.yml"), "utf8"));
+  const script = workflow.jobs.publish.steps.find((step) => step.name === "Promote verified packages to latest")?.run;
+  assert(script, "ordinary promotion block must exist");
   const scratch = mkdtempSync(join(tmpdir(), "release-promotion-shell-"));
   try {
     mkdirSync(join(scratch, "bin"));

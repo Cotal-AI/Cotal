@@ -8,7 +8,7 @@ import { test } from "node:test";
 const root = join(import.meta.dirname, "..");
 const cli = join(root, "node_modules/@changesets/cli/bin.js");
 
-test("unmodified installed Changesets packs staged schema and carries its tag to the publish boundary", () => {
+for (const tag of ["latest", "cotal-staged"]) test(`unmodified installed Changesets packs ${tag} schema and carries its tag to the publish boundary`, () => {
   const scratch = mkdtempSync(join(tmpdir(), "changesets-staged-contract-"));
   try {
     writeFileSync(join(scratch, "package.json"), JSON.stringify({ name: "synthetic-root", private: true, packageManager: "pnpm@11.28.2", type: "commonjs" }));
@@ -19,12 +19,12 @@ test("unmodified installed Changesets packs staged schema and carries its tag to
     writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "synthetic-staging-contract", version: "1.2.3", files: ["index.js"] }));
     writeFileSync(join(pkg, "index.js"), "module.exports = 1;\n");
     const input = join(scratch, "publish-plan.json"), packed = join(scratch, "packed");
-    writeFileSync(input, JSON.stringify({ version: 1, plan: [[{ kind: "publish", name: "synthetic-staging-contract", version: "1.2.3", access: "public", tag: "cotal-staged" }]] }));
+    writeFileSync(input, JSON.stringify({ version: 1, plan: [[{ kind: "publish", name: "synthetic-staging-contract", version: "1.2.3", access: "public", tag }]] }));
     const env = { PATH: process.env.PATH, HOME: scratch, TMPDIR: scratch, DO_NOT_TRACK: "1", npm_config_provenance: "false" };
     const pack = spawnSync(process.execPath, [cli, "pack", "--from-publish-plan", input, "--out-dir", packed], { cwd: scratch, env, encoding: "utf8", timeout: 15_000 });
     assert.equal(pack.status, 0, pack.stderr + pack.stdout);
     const document = JSON.parse(readFileSync(join(packed, "publish-plan.json"), "utf8"));
-    assert.equal(document.plan[0][0].tag, "cotal-staged");
+    assert.equal(document.plan[0][0].tag, tag);
     assert.match(document.plan[0][0].tarball.integrity, /^sha256-/);
     const bin = join(scratch, "intercept"); mkdirSync(bin);
     const capture = join(scratch, "publish-args.json");
@@ -35,7 +35,7 @@ test("unmodified installed Changesets packs staged schema and carries its tag to
     assert.equal(publish.status, 1, publish.stderr + publish.stdout);
     const args = JSON.parse(readFileSync(capture, "utf8"));
     assert.equal(args[0], "publish");
-    assert.equal(args[args.indexOf("--tag") + 1], "cotal-staged");
+    assert.equal(args[args.indexOf("--tag") + 1], tag);
     assert(args.some((arg) => arg.endsWith(".tgz")));
     assert.match(publish.stdout + publish.stderr, /synthetic write boundary refused/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }

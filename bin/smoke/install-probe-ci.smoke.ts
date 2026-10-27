@@ -110,7 +110,7 @@ check("the selected complete plan is staged before the maintained pack action", 
 check("packing retains public builds and native assembly without repeated seat TypeScript compilation", /pnpm --filter '!\.\/examples\/\*\*' -r build/.test(csJobs.get("pack") ?? "") && /@cotal-ai\/seat build:native/.test(csJobs.get("native") ?? ""));
 check("the publisher installs frozen root tooling and consumes packed bytes without rebuilding", /pnpm --filter cotal-monorepo install --frozen-lockfile --ignore-scripts/.test(publishBody) && /cache: true/.test(publishBody) && !/pnpm (?:-r )?build/.test(publishBody));
 
-check("missing or unreadable independent tag authority refuses before upload", publishBody.indexOf("preflight-npm-publish.mjs --require-dist-tags") >= 0 && publishBody.indexOf("preflight-npm-publish.mjs --require-dist-tags") < publishBody.indexOf("uses: changesets/action/publish@"));
+check("direct publishing is default and staging requires explicit opt-in without settings-read authority", /steps\.staged-plan\.outputs\.artifact-id \|\| steps\.select\.outputs\.publish-plan-artifact-id/.test(csJobs.get("select") ?? "") && /if: steps\.publish\.outputs\.published == 'true' && vars\.COTAL_STAGED_RELEASE == 'true'/.test(publishBody) && !publishBody.includes("preflight-npm-publish.mjs"));
 
 const EXPECTED = 11;
 check(`every cell ran (${EXPECTED} before sentinel)`, pass + fail === EXPECTED, pass + fail);

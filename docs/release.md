@@ -26,10 +26,10 @@ gh workflow run changesets.yml --ref main
 ```
 
 The workflow uses the maintained Changesets actions to select the release, pack its public packages
-and publish the packed artifacts under `cotal-staged`. A small plan check validates the complete
-fixed group and sets that tag in the standard Changesets plan. GitHub Actions pins the run to one
-commit. One publication runs at a time, including verification and promotion. There is no separate
-qualification or promotion workflow.
+and publish the packed artifacts directly to `latest` using the existing publishing authority.
+GitHub Actions pins the run to one commit. One publication runs at a time, including verification.
+There is no separate qualification or promotion workflow. The optional staging mode below is off
+unless the repository variable `COTAL_STAGED_RELEASE` is set to `true`.
 
 Native build jobs produce Cotal's native binaries: the seat binding on Linux x64 and arm64, and the
 workspace binding on Windows and macOS, each for x64 and arm64. The pack job assembles those
@@ -42,12 +42,16 @@ workflow so publication has the configured identity and the native binaries are 
 
 ## Verify the result
 
-The publish action reports the packages published and pushes one git tag per package. Before
-changing any `latest` tag, the publisher checks every exact package version, installs the fixed
-closure into an isolated prefix from npm, and runs the CLI. Successful verification is followed by ordinary
-`npm dist-tag add` commands in dependency order, with `cotal-ai` last. A failed verification changes
-no `latest` tags. A failed promotion stops before later packages and creates no GitHub Release.
-Tags are separate registry writes, not an atomic transaction.
+The publish action reports the packages published and pushes one git tag per package. The publisher
+checks every exact package version, installs the fixed closure into an isolated prefix from npm,
+and runs the CLI. Default direct publishing updates `latest` during upload, before these checks.
+A verification failure stops the GitHub Release but cannot undo those tag updates.
+
+With staging enabled, the complete fixed group is validated and packed under `cotal-staged` using
+the standard Changesets plan. Only after successful closure and install checks do ordinary
+`npm dist-tag add` commands promote packages in dependency order, with `cotal-ai` last. Failed
+verification changes no `latest` tags. A failed promotion stops before later packages and creates
+no GitHub Release. Tags are separate registry writes, not an atomic transaction.
 
 The following job cuts one GitHub Release for the version, tagged `v<version>`. Its notes open with
 the install command, continue with the changeset summaries, and end with the merged pull requests
@@ -59,7 +63,7 @@ cached missing-package responses after an upload, and the large `cotal-ai` tarba
 twenty minutes to become installable, so the install job waits up to twenty-five minutes for that
 install. The install check uses a fresh cache and `--prefer-online` to request metadata revalidation.
 That does not force npm's upstream caches to converge. The publisher keeps its queue through this
-check and promotion so an older delayed release cannot overwrite a newer release's tags.
+check and any enabled promotion so an older delayed release cannot overwrite a newer release's tags.
 If an observation fails, inspect the registry and
 the published-package output before retrying. Never blindly repeat an upload whose outcome is unknown.
 
@@ -73,11 +77,21 @@ Every public npm package needs this trusted publisher:
 - Repository owner and repository: this repository.
 - Workflow filename: `changesets.yml`.
 - Environment: `npm-publish`, allowing `main`.
-- Allowed actions: direct `npm publish` and `npm dist-tag` management. These are independent
-  permissions. A successful upload or OIDC exchange does not establish tag-management authority.
-  The publisher owner must confirm both before enabling this release path. The pre-upload
-  `--require-dist-tags` census refuses a missing permission or an unreadable trust record, including
-  HTTP 401. That refusal blocks upload. It does not authorize a token fallback or permission change.
+- Allowed action: direct `npm publish`. The default workflow requires no dist-tag management grant.
+
+Staging is not enabled or operationally qualified. Before setting `COTAL_STAGED_RELEASE=true`, the
+publisher owner must establish `manageDistTags` for every package's trusted publisher. This is
+independent of `createPackage` for direct publication, as npm's
+[allowed-action documentation](https://docs.npmjs.com/trusted-publishers/#configuring-allowed-actions)
+explains. The registry enforces that authority on each native tag command. No extra trust-settings
+read is required: HTTP 401 on a settings read establishes neither write permission nor write denial.
+Do not enable the variable until the owner has established the required grant.
+
+npm's separate [staged publishing](https://docs.npmjs.com/staged-publishing/) feature does not replace
+this opt-in flow. Its staged contents are unavailable publicly until approval, so they cannot pass
+the public-registry closure install check first. `npm stage approve` requires maintainer 2FA and is
+not available to an OIDC exchange token, as the
+[npm stage command reference](https://docs.npmjs.com/cli/v12/commands/npm-stage) documents.
 
 The workflow uses GitHub OIDC and does not fall back to a long-lived npm token. A missing package or
 publisher authorization is an access problem, not permission to borrow credentials.

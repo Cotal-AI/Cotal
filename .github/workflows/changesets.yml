@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       mode: ${{ steps.select.outputs.mode }}
-      plan: ${{ steps.staged-plan.outputs.artifact-id }}
+      plan: ${{ steps.staged-plan.outputs.artifact-id || steps.select.outputs.publish-plan-artifact-id }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -37,19 +37,20 @@ jobs:
       - run: pnpm --filter cotal-monorepo install --frozen-lockfile --ignore-scripts
       - uses: changesets/action/select-mode@v2.1.2
         id: select
-      # v2.1.2 has no tag input. Its versioned plan schema carries each release's tag.
+      # Direct publication is the default. Enable only after the publisher owner confirms
+      # independent dist-tag authority. v2.1.2 carries staging tags in its versioned plan schema.
       - uses: actions/download-artifact@v4
-        if: steps.select.outputs.mode == 'publish' && github.event_name == 'workflow_dispatch'
+        if: steps.select.outputs.mode == 'publish' && github.event_name == 'workflow_dispatch' && vars.COTAL_STAGED_RELEASE == 'true'
         with:
           artifact-ids: ${{ steps.select.outputs.publish-plan-artifact-id }}
           merge-multiple: true
           path: ${{ runner.temp }}/selected-plan
       - name: Stage the complete publish plan
-        if: steps.select.outputs.mode == 'publish' && github.event_name == 'workflow_dispatch'
+        if: steps.select.outputs.mode == 'publish' && github.event_name == 'workflow_dispatch' && vars.COTAL_STAGED_RELEASE == 'true'
         run: node scripts/stage-release-plan.mjs stage "$RUNNER_TEMP/selected-plan/publish-plan.json" "$RUNNER_TEMP/publish-plan.json"
       - uses: actions/upload-artifact@v4
         id: staged-plan
-        if: steps.select.outputs.mode == 'publish' && github.event_name == 'workflow_dispatch'
+        if: steps.select.outputs.mode == 'publish' && github.event_name == 'workflow_dispatch' && vars.COTAL_STAGED_RELEASE == 'true'
         with:
           name: staged-publish-plan
           path: ${{ runner.temp }}/publish-plan.json
@@ -195,9 +196,8 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/packed
       - name: Validate the packed closure and promotion order
+        if: vars.COTAL_STAGED_RELEASE == 'true'
         run: node scripts/stage-release-plan.mjs check "$RUNNER_TEMP/packed/publish-plan.json" > "$RUNNER_TEMP/promote-specs.txt"
-      - name: Require publish and dist-tag authority before upload
-        run: node scripts/preflight-npm-publish.mjs --require-dist-tags
       # One GitHub Release per version, not one per package: the fixed group publishes every package
       # at the same version, so per-package releases are the same change listed many times over.
       - uses: changesets/action/publish@v2.1.2
@@ -207,14 +207,14 @@ jobs:
           create-github-releases: false
           push-git-tags: true
 
-      - name: Verify staged closure and registry installation
+      - name: Verify published closure and registry installation
         if: steps.publish.outputs.published == 'true'
         run: |
           version=$(node --print "require('./bin/package.json').version")
           node scripts/verify-publish-closure.mjs "$version"
           node scripts/verify-release-installable.mjs "$version" --closure --deadline-ms=1500000 --poll-interval-ms=5000
       - name: Promote verified packages to latest
-        if: steps.publish.outputs.published == 'true'
+        if: steps.publish.outputs.published == 'true' && vars.COTAL_STAGED_RELEASE == 'true'
         run: |
           while IFS= read -r spec; do
             npm dist-tag add "$spec" latest
