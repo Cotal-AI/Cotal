@@ -20,6 +20,7 @@ import {
   EpEnvelopeError,
   isPublishPermissionDenied,
   unansweredRequest,
+  EP_UNANSWERED,
   controlReplyFrom,
   controlReplyFromThrown,
   runAgentBearer,
@@ -2174,7 +2175,7 @@ export class MeshAgent extends EventEmitter {
    *  the agent and operator spawn doors share one control-op contract. (Session `resume` is
    *  intentionally NOT forwarded here: forking a host-local `~/.claude` transcript is an
    *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
-  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string; instance?: string }): Promise<ControlReply> {
+  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string; instance?: string }): Promise<ControlReply & { instanceId?: string }> {
     await this.requireConnected();
     const raw = opts?.model;
     if (raw !== undefined && !raw.trim())
@@ -2219,11 +2220,16 @@ export class MeshAgent extends EventEmitter {
         error: `${reply.error ?? "manager refused"} (requested model ${JSON.stringify(requested)}; ${recordedLabel} for "${seat}")`,
       };
     }
+    // The launch stands and only its audit failed. A refusal here reads as "nothing was spawned",
+    // and the caller's retry starts a second seat on the same work, so the seat is reported with
+    // the failed audit beside it. Nothing stands in for the pin that could not be read.
     if (!recorded.ok) {
       return {
-        ok: false,
-        error:
-          `requested model ${JSON.stringify(requested)} for "${seat}" but ${recordedLabel} — refusing to report a pin that cannot be audited`,
+        ...reply,
+        data: {
+          ...(reply.data as Record<string, unknown> | undefined),
+          pinAudit: { requested, error: recorded.error, ...(recorded.unreported ? { unreported: true } : {}) },
+        },
       };
     }
     return {
@@ -2233,10 +2239,15 @@ export class MeshAgent extends EventEmitter {
   }
 
   /** The manager's recorded model pin for a managed seat (`inspect.model`). Absence is a real
-   *  state: a launch may pin none. Distinct from a failed inspect, which cannot attest. */
-  async inspectModel(name: string, instance?: string): Promise<{ ok: true; model?: string } | { ok: false; error: string }> {
+   *  state: a launch may pin none. Distinct from a failed inspect, which cannot attest.
+   *  `unreported` marks a failure the manager side settled at once: it answered without the seat's
+   *  row, its surface has no `inspect` for this caller, or no responder took the request. */
+  async inspectModel(name: string, instance?: string): Promise<{ ok: true; model?: string } | { ok: false; error: string; unreported?: true }> {
     const info = await this.managerInvoke("inspect", { name }, instance === undefined ? undefined : { instanceId: instance });
-    if (!info.ok) return { ok: false, error: info.error ?? "inspect refused" };
+    if (!info.ok) {
+      const unreported = info.code === "not-found" || (info.code === "unavailable" && info.details?.some((d) => d.kind === EP_UNANSWERED) === true);
+      return { ok: false, error: info.error ?? "inspect refused", ...(unreported ? { unreported: true as const } : {}) };
+    }
     const model = (info.data as { model?: unknown } | undefined)?.model;
     if (model === undefined) return { ok: true };
     if (typeof model !== "string") return { ok: false, error: `inspect returned a non-string model for "${name}"` };
@@ -2273,7 +2284,7 @@ export class MeshAgent extends EventEmitter {
 
   /** One v0.4 manager-endpoint invoke (P2 item 1, 1c.2b): the generic {@link CotalEndpoint.invokeService}
    *  path (describe → §13.7 store fetch → digest-verified recompile → typed command), adapted back to
-   *  the {@link ControlReply} shape every tool above consumes. `undefined` args are stripped BEFORE the
+   *  the {@link ControlReply} shape every tool above consumes, with the instance that answered it. `undefined` args are stripped BEFORE the
    *  compiled input contract validates (closed schemas reject present-but-undefined keys; the ctl path
    *  shed them in JSON serialization). A broker-denied publish (a capability the caller's credential
    *  does not hold, e.g. a capability-less purge) has NO responder and surfaces as the deadline —
@@ -2282,7 +2293,7 @@ export class MeshAgent extends EventEmitter {
     command: string,
     args: Record<string, unknown> | undefined,
     opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; instanceId?: string } = {},
-  ): Promise<ControlReply> {
+  ): Promise<ControlReply & { instanceId?: string }> {
     const clean = args === undefined ? undefined : Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
     let r: EpAttributedReply;
     let dropBearer: (() => void) | undefined;
@@ -2349,7 +2360,7 @@ export class MeshAgent extends EventEmitter {
       return { ok: false, error: (e as Error).message };
     }
     if (r.reply.ok !== true) dropBearer?.();
-    return controlReplyFrom(r.reply);
+    return { ...controlReplyFrom(r.reply), instanceId: r.responder?.instanceId };
   }
 
   /** Resolve a managed agent's CURRENT principal triple (owner-mode targets are (owner, actor,
