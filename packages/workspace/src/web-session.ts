@@ -3,8 +3,9 @@ import { serviceStartupPath } from "./service-startup.js";
 
 /** `.cotal/web.session` — the web dashboard's record of the listener it bound, written 0600 beside its
  *  pidfile. The dashboard writes it and reads it back in its detached parent, and `cotal status` reads
- *  it from a package that cannot import the dashboard's. The name, the shape and the one reader live
- *  here so that a change reaches both packages or fails to compile in them. */
+ *  it from a package that cannot import the dashboard's. The name, the shape, the one reader and the
+ *  URL both readers derive from a bound host and port live here, so neither package keeps its own
+ *  copy. */
 export const WEB_SESSION_FILE = "web.session";
 
 /** `.cotal/web.pid` — the web dashboard's pidfile. The dashboard declares it, and `cotal status`, the
@@ -83,4 +84,13 @@ export function readWebSession(path: string): WebSession | undefined {
       return undefined;
     return { launchUrl, readiness, host, port };
   } catch { return undefined; }
+}
+
+/** The URL of a dashboard that bound `host` and `port`, with a trailing slash. An IPv6 literal is
+ *  bracketed and every other host is written as it is. The dashboard and `cotal status` both build
+ *  the address they advertise and probe from this, so the bracket rule and the trailing slash live
+ *  in one place. */
+export function webBoundUrl(host: string, port: number): string {
+  const literal = host.includes(":") ? `[${host}]` : host;
+  return `http://${literal}:${port}/`;
 }

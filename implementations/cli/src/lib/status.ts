@@ -1,5 +1,5 @@
 import { registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef, type SignedInSpace } from "@cotal-ai/core";
-import { assertRecordIdentity, extensionConnectors, installedExtensionVersion, loadExtensionsManifest, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, resolveOnPath, serviceWebSessionPath, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, type LocalProcessContext } from "@cotal-ai/workspace";
+import { assertRecordIdentity, extensionConnectors, installedExtensionVersion, loadExtensionsManifest, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, resolveOnPath, serviceWebSessionPath, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, webBoundUrl, type LocalProcessContext } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
 import { findNatsServer, natsServerProblem } from "./nats-bin.js";
 import { displayCmd } from "./self-exec.js";
@@ -36,7 +36,7 @@ export function webBoundAddress(path: string): { host: string; port: number; url
   const session = readWebSession(path);
   if (!session) return undefined;
   const { host, port, readiness } = session;
-  return { host, port, url: `http://${host.includes(":") ? `[${host}]` : host}:${port}/`, readiness };
+  return { host, port, url: webBoundUrl(host, port), readiness };
 }
 
 /** The address a mesh's dashboard recorded once it was listening, while the pid it recorded is alive.

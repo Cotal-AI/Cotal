@@ -39,6 +39,7 @@ import {
   WEB_READINESS_HEADER,
   WEB_READINESS_PATH,
   WEB_SESSION_FILE,
+  webBoundUrl,
   writeIdentityPin,
   type ConnectFlags,
   type Connection,
@@ -1533,8 +1534,7 @@ export function webUrl(host: string, port: number): string {
 /** The address the server binds, for a client that does not resolve `cotal.localhost` itself: that
  *  name is a browser convention, and a system resolver such as WSL2's has no answer for it. */
 function boundUrl(host: string, port: number): string {
-  const literal = host.includes(":") ? `[${host}]` : host;
-  return `http://${literal}:${port}/`;
+  return webBoundUrl(host, port);
 }
 
 /** On the branded default the link is printed a second time at the bound address, so an operator
