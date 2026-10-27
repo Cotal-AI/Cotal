@@ -119,6 +119,9 @@ export interface RestoreFlags {
   /** Consent for admission gate 3, as the ordinary resume path takes it: a restored journal's
    *  retained seats pass the same gates, so they need the same override available. */
   "accept-stale-checkpoint"?: boolean;
+  /** The JetStream file storage cap, in bytes, this invocation starts the restored listener with.
+   *  `up` parses the flag and passes the number. Absent means the flag was omitted. */
+  maxFileStore?: number;
 }
 
 export interface PreparedRestore {
@@ -137,6 +140,9 @@ export interface PreparedRestore {
   inventory: JsonValue;
   serverName: string;
   serverNonce: string;
+  /** The JetStream file storage cap the restored listener was started with. Absent means that
+   *  listener runs on nats-server's dynamic default, and the adopted record must say the same. */
+  maxFileStore?: number;
   /** True only when reconstructed from durable commit/repair state after coordinator loss. */
   reentry: boolean;
   journalState: "commit-intent" | "manager-committed" | "active" | "degraded";
@@ -150,6 +156,15 @@ type RecoverableRestoreRecord = CommitIntentRecord | RestoreManagerCommittedReco
 function launchString(launch: Readonly<Record<string, JsonValue>>, key: string): string {
   const value = launch[key];
   if (typeof value !== "string" || !value) throw new Error(`restore launch record is missing ${key}`);
+  return value;
+}
+
+/** The store cap a restore launch recorded. Absent is the dynamic default. Anything else is a
+ *  damaged journal, refused rather than adopted as a cap the listener is not running. */
+function journaledLaunchCap(value: JsonValue | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1)
+    throw new Error(`the restore launch records an invalid maxFileStore (${JSON.stringify(value)}); refusing to guess the broker's store cap`);
   return value;
 }
 
@@ -173,6 +188,7 @@ function removeRecordedOwnedPaths(ownedPaths: readonly AttemptOwnedPath[] | unde
 export function rehydratePreparedRestore(root: string, journal: RecoverableRestoreRecord): PreparedRestore {
   const resume = readMaintenanceResumeDocument(root, journal.resume);
   const restoreOnly = launchString(journal.launch, "restoreOnly");
+  const maxFileStore = journaledLaunchCap(journal.launch.maxFileStore);
   if (restoreOnly !== "full" && restoreOnly !== "registry") throw new Error(`unsupported restored selection ${restoreOnly}`);
   const replacementPending = !journal.listenerProof && Boolean(journal.listenerReplacements?.length);
   const serverNonce = journal.listenerProof?.serverNonce ??
@@ -195,6 +211,7 @@ export function rehydratePreparedRestore(root: string, journal: RecoverableResto
     inventory: resume.inventory,
     serverName,
     serverNonce,
+    ...(maxFileStore !== undefined ? { maxFileStore } : {}),
     reentry: !replacementPending,
     journalState: journal.state,
     ...(journal.state !== "commit-intent" && journal.managerCommit ? { managerCommit: journal.managerCommit } : {}),
@@ -1180,6 +1197,9 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       ...(rolledBack?.runs.length ? { rolledBackRuns: rolledBack.runs as unknown as JsonValue, ...(rolledBack.more ? { rolledBackRunsMore: rolledBack.more } : {}) } : {}),
       serverName,
       serverNonce,
+      // The cap this invocation starts the restored listener with. A later adopt records it, so the
+      // record names the cap the broker is running. An omitted flag journals nothing.
+      ...(flags.maxFileStore !== undefined ? { maxFileStore: flags.maxFileStore } : {}),
       // Durable evidence of consent, as the ordinary resume journals it: an operator asking later
       // why a seat resumed from a checkpoint past its horizon reads it from the journal.
       ...(staleConsent.length
@@ -1206,6 +1226,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       inventory: resume.inventory,
       serverName,
       serverNonce,
+      ...(flags.maxFileStore !== undefined ? { maxFileStore: flags.maxFileStore } : {}),
       reentry: false,
       journalState: "commit-intent",
       cleanupStage: () => {
