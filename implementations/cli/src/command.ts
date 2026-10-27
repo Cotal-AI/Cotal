@@ -208,7 +208,7 @@ async function extSeedGate(registry: Registry, argv: string[], configFolder: Con
   // A help request short-circuits to usage and mutates NOTHING (the maintenance run writes the seed
   // stamp/manifest).
   if (asksForHelp(argv)) {
-    printCommandHelp(extCmd);
+    printHelpPath(extCmd, ["seed"]);
     return true;
   }
   if (configFolder) failureExit(extCmd, configFolderRefusal(configFolder), false);

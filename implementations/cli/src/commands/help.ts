@@ -4,20 +4,22 @@ import { commandSurface } from "../ext-loader.js";
 import { printCommandList, printHelpPath } from "../help.js";
 import { unknownCommandMessage } from "../lib/nearest-word.js";
 import { cliVersion, extensionVersions, readExtensionVersions } from "../lib/version.js";
+import { managerServiceCommand } from "./manager-service.js";
 
 /** `--all`, the older way to ask for every command, which help now always lists. It is accepted and
  *  changes nothing, and neither help nor completion offers it. */
 export const helpFlags = [{ name: "all", type: "boolean", description: "accepted for scripts written before help listed every command; it changes nothing" }] as const;
 
 /** `cotal help [command…]`: every command, or the help of the command the words name. The words
- *  are literal nesting: a command (or its alias), then one of its subcommands. */
+ *  are literal nesting: a command (or its alias), then one of its subcommands. A manager lifecycle
+ *  verb is read as the dispatcher reads it, so its help is the one `--help` prints. */
 export async function help(args: ParsedArgs): Promise<void> {
   const [word, ...path] = args.positionals;
   const commands = commandSurface();
   if (word === undefined) return printCommandList(commands);
   const cmd = findCommand(commands, word);
   if (!cmd || cmd.name.startsWith("__")) throw new Error(unknownCommandMessage(commands, word));
-  printHelpPath(cmd, path);
+  printHelpPath(managerServiceCommand(cmd, path)?.cmd ?? cmd, path);
 }
 
 export const versionFlags = [jsonFlag] as const;

@@ -20,6 +20,11 @@
  * Usage and Shorthands, before Commands and Options; they used to come last, after the options, as
  * bare command lines, and most commands had none.
  *
+ * `cotal <command> --help` prints the same help as `cotal help <command>` for every command and
+ * subcommand `cotal help` lists. `manager <verb> --help` showed the service command's summary while
+ * `help manager <verb>` listed only --json and --plain under Options, and `ext seed --help` printed
+ * the `ext` help.
+ *
  * A usage that declares several forms, one per line, as `linear` does, shows each form on its own
  * lines; help printed them joined by an escaped `\u000a`. A flag a `linear` operation does not take
  * is refused naming it and that operation's flags and usage, without the help: `serve --json` says
@@ -27,11 +32,12 @@
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, with the
  * built `@cotal-ai/linear` extension imported for its cells. The examples census renders each help
- * in this process from the built surfaces the binary composes. Nothing is started or deleted.
+ * in this process from the built surfaces the binary composes, and runs both help forms of each
+ * through the binary. Nothing is started or deleted.
  *
  * Run: pnpm smoke:usage-format
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -182,9 +188,9 @@ for (const [args, usage, foreign] of [
     if (unlisted.length) problems.push(`${command}: --${unlisted.join(", --")} is not among the options its help lists`);
     return problems;
   };
-  let covered = 0;
+  const paths: string[][] = [];
   const census = (cmd: Command, path: readonly string[], node: Command | Subcommand): void => {
-    covered++;
+    paths.push([cmd.name, ...path]);
     const examples = node.examples ?? [];
     const problems: string[] = [];
     if (examples.length < 1 || examples.length > 3) problems.push(`declares ${examples.length} examples`);
@@ -205,7 +211,26 @@ for (const [args, usage, foreign] of [
     for (const sub of node.subcommands ?? []) if (!sub.hidden) census(cmd, [...path, sub.name], sub);
   };
   for (const cmd of commands) census(cmd, [], cmd);
-  console.log(`  examples census: ${covered} commands and subcommands`);
+  console.log(`  examples census: ${paths.length} commands and subcommands`);
+
+  // `cotal <path> --help` and `cotal help <path>` reach the help through two routes, the dispatcher's
+  // and the help command's, and print one help. Run a few at a time; each is a process of its own.
+  const binary = (args: string[]) => new Promise<ReturnType<typeof run>>((resolve) => {
+    const child = spawn(process.execPath, [BIN, ...args], { cwd: neutral, env, timeout: 120_000 });
+    let stdout = "", stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+  const helps: [ReturnType<typeof run>, ReturnType<typeof run>][] = [];
+  let next = 0;
+  await Promise.all(Array.from({ length: 6 }, async () => {
+    for (let i = next++; i < paths.length; i = next++) helps[i] = await Promise.all([binary([...paths[i]!, "--help"]), binary(["help", ...paths[i]!])]);
+  }));
+  paths.forEach((path, i) => {
+    const [flag, word] = helps[i]!;
+    check(`cotal ${path.join(" ")} --help prints the same help as cotal help ${path.join(" ")}`, flag.status === word.status && flag.stdout === word.stdout && flag.stderr === word.stderr, { "--help": shown(flag), help: shown(word) });
+  });
 
   // The binary prints the same order, and `manager <verb> --help`, which reads the service command,
   // shows the manager's own examples.

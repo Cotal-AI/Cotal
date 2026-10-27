@@ -4862,7 +4862,9 @@ first, and no other service is started for it. `mgr` is an alias.
 
 `cotal manager <verb>` is `cotal service <verb> manager`: every [`service`](#service) rule applies,
 and its flags and the manager preset's options (`--runtime`, `--roster`, `--name`, `--server`,
-`--console-port`, `--console-host`, `--ws-port`, `--max-sessions`) are taken on the line. The first
+`--console-port`, `--console-host`, `--ws-port`, `--max-sessions`) are taken on the line.
+`cotal help manager <verb>` and `cotal manager <verb> --help` print the verb's help with those
+options. The first
 start saves the space's `manager` service from the preset's defaults and says so on stderr; `cotal
 service show manager` reads it. A start that names another `--runtime` or other option for a
 stopped manager saves it again with that option, and says so. A running one refuses
