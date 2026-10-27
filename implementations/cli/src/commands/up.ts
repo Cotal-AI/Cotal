@@ -3252,10 +3252,10 @@ export async function prepareFreshTeamBoot(file: string, opts: { space: string; 
   if (idpProblem) throw new CommandFailure("refused", "SCHEMA_INVALID", idpProblem, { target: { space: opts.space } });
   const serverProblems = opts.server === undefined ? [] : serverUrlProblems(opts.server, "--server");
   if (serverProblems.length) throw new CommandFailure("refused", "SCHEMA_INVALID", serverProblems.join("; "), { target: { space: opts.space } });
-  const eff = applyUpOverrides(prepared, flags);
+  const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, flags);
   const m = eff.manifest;
   const host = m.broker?.host ?? "127.0.0.1";
-  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, "broker.host", "broker.servers") : (m.broker?.servers ?? DEFAULT_SERVER);
+  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, hostSource, serverSource) : (m.broker?.servers ?? DEFAULT_SERVER);
   const open = m.broker?.auth === false;
   const mode = open ? "open" as const : m.broker?.auth === "user" ? "user" as const : "auth" as const;
   const runtime = m.runtime ?? "pty";
@@ -3285,9 +3285,9 @@ export async function prepareResumeTeamBoot(file: string, opts: { space: string;
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest changed or could not be resolved before startup; nothing was resumed", { target: { path: resolve(file), space: opts.space } }); }
   if (opts.space !== prepared.manifest.space)
     throw new CommandFailure("refused", "CONFLICT", "the team manifest no longer names the selected space; nothing was resumed", { target: { selectedSpace: opts.space, declaredSpace: prepared.manifest.space } });
-  const eff = applyUpOverrides(prepared, { transport: opts.transport, dryRun: false, freshTeamBoot: true });
+  const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, { transport: opts.transport, dryRun: false, freshTeamBoot: true });
   const m = eff.manifest;
-  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, "broker.host", "broker.servers") : (m.broker?.servers ?? DEFAULT_SERVER);
+  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, hostSource, serverSource) : (m.broker?.servers ?? DEFAULT_SERVER);
   const open = m.broker?.auth === false;
   const mode = open ? "open" as const : m.broker?.auth === "user" ? "user" as const : "auth" as const;
   const runtime = m.runtime ?? "pty";
@@ -3395,12 +3395,12 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   }
   // Apply CLI overrides to one effective manifest (flag > manifest > default) so render + seed +
   // broker + launch all agree on the same values.
-  const eff = applyUpOverrides(prepared, opts);
+  const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, opts);
   const m = eff.manifest;
   const host = m.broker?.host ?? "127.0.0.1";
   // Same bind-vs-probe reconciliation as the flag path: a manifest that sets `broker.host` without
   // an explicit `broker.servers` would otherwise bind one address and be probed at another.
-  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, "broker.host", "broker.servers") : (m.broker?.servers ?? DEFAULT_SERVER);
+  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, hostSource, serverSource) : (m.broker?.servers ?? DEFAULT_SERVER);
   assertTlsIntentServed(server, opts.transport, opts.server !== undefined ? "--server" : "the manifest's broker.servers");
   // A --tls-cert broker serves TLS only, so its address says tls://, as a bare up requires of --server.
   if (opts.transport.kind === "tls-required" && server.split(",").some((url) => /^nats:\/\//i.test(url.trim())))
@@ -3671,8 +3671,10 @@ interface UpManifestFlags {
 }
 
 /** Return a copy of the prepared manifest with CLI overrides applied to broker/space/runtime, so the
- *  whole launch (render, seed, broker, manager, launch spec) runs against one effective manifest. */
-function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): PreparedManifest {
+ *  whole launch (render, seed, broker, manager, launch spec) runs against one effective manifest.
+ *  A flag names itself. A value that came from the file keeps that file's key, and a value neither
+ *  supplied is named by the flag that would supply it. */
+function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): { prepared: PreparedManifest; hostSource: string; serverSource: string } {
   const m = prepared.manifest;
   const broker = { ...m.broker };
   if (o.server) broker.servers = o.server;
@@ -3680,12 +3682,16 @@ function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): Prepa
   if (o.open) broker.auth = false;
   if (o.idp) broker.idp = o.idp;
   return {
-    ...prepared,
-    manifest: {
-      ...m,
-      broker: Object.keys(broker).length ? broker : undefined,
-      runtime: (o.runtime as typeof m.runtime) ?? m.runtime,
+    prepared: {
+      ...prepared,
+      manifest: {
+        ...m,
+        broker: Object.keys(broker).length ? broker : undefined,
+        runtime: (o.runtime as typeof m.runtime) ?? m.runtime,
+      },
     },
+    hostSource: !o.host && m.broker?.host !== undefined ? "broker.host" : "--host",
+    serverSource: !o.server && m.broker?.servers !== undefined ? "broker.servers" : "--server",
   };
 }
 
