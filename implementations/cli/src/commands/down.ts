@@ -76,6 +76,7 @@ import {
   deliveryBucket,
   managerBucket,
   presenceBucket,
+  isPresenceRow,
   parsePrincipalKey,
   principalKey,
   standaloneConnectOpts,
@@ -1198,19 +1199,6 @@ async function readPresenceAndLease(space: string, server: string): Promise<{ ro
   } finally {
     await nc.drain().catch(() => {});
   }
-}
-
-/** Whether a decoded presence value carries a `card.id` equal to the KV `key` it was read under,
- *  which the cut matches against the retained principals, and the string `card.name` its refusal
- *  names. A participant may write any value under its own key, so only the key is the identity its
- *  write grant proves. A value that fails refuses the inventory: reading it as absent would drop a
- *  live participant from the unmanaged-endpoints refusal. */
-function isPresenceRow(value: unknown, key: string): value is Presence {
-  if (typeof value !== "object" || value === null) return false;
-  const card = (value as { card?: unknown }).card;
-  if (typeof card !== "object" || card === null) return false;
-  const { id, name } = card as { id?: unknown; name?: unknown };
-  return id === key && typeof name === "string";
 }
 
 /**

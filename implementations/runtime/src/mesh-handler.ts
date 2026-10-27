@@ -38,6 +38,7 @@ import {
   assertSafePattern,
   assertValidChannel,
   presenceBucket,
+  isPresenceRow,
   principalKey,
   liveKvEntries,
   IncompleteKvScan,
@@ -2322,7 +2323,7 @@ export class MeshHandler {
     }
   }
 
-  /** Every live presence row that decodes to a card with a string id and name. Foreign bytes in
+  /** Every live presence row {@link isPresenceRow} accepts under its KV key. Foreign bytes in
    *  the bucket are skipped — a peer's malformed self-publish must not break another agent's name
    *  resolution — and what an ABSENT row means belongs to the caller: `resolveMemberPrincipal`
    *  refuses the join loudly, and `waitDown` reads it as the death it is waiting for. */
@@ -2335,7 +2336,7 @@ export class MeshHandler {
       } catch {
         continue;
       }
-      if (isPresenceRow(row)) rows.push(row);
+      if (isPresenceRow(row, e.key)) rows.push(row);
     }
     return rows;
   }
@@ -3039,16 +3040,6 @@ function isConclavePlan(v: unknown): v is ConclavePlan {
     return typeof r.agent === "string" && typeof r.principal === "string" && typeof r.uid === "string"
       && typeof r.generation === "number" && typeof r.joined === "boolean";
   });
-}
-
-/** Whether a decoded presence value carries the string `card.id` and `card.name` that every
- *  presence reader here matches on or returns. */
-function isPresenceRow(v: unknown): v is Presence {
-  if (typeof v !== "object" || v === null) return false;
-  const card = (v as Record<string, unknown>).card;
-  if (typeof card !== "object" || card === null) return false;
-  const c = card as Record<string, unknown>;
-  return typeof c.id === "string" && typeof c.name === "string";
 }
 
 /** Split an agent handle `<name>#<lifecycleUid>` on its LAST `#` — the uid alphabet

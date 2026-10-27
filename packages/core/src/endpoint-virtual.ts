@@ -83,7 +83,7 @@ import {
   type ServiceStatus,
   type VirtualActivationPolicy,
 } from "./endpoint-service.js";
-import { RECORD_KINDS, recordSpecKey, recordStatusKey, updateRecordEntry, readRecordLeader } from "./endpoint-records.js";
+import { RECORD_KINDS, recordSpecKey, recordStatusKey, updateRecordEntry, readRecordLeader, decodeRecordJson } from "./endpoint-records.js";
 import { assertLifecycleToken, endpointToken, assertPoolToken } from "./endpoint-subjects.js";
 import { spacePrefix, assertInboxConnId } from "./subjects.js";
 
@@ -485,8 +485,6 @@ export interface RestartHistoryEntry {
   epoch: number;
 }
 
-const td = new TextDecoder();
-
 function parseHistory(raw: unknown, what: string): RestartHistoryEntry[] {
   if (raw === undefined) return [];
   if (!Array.isArray(raw) || !raw.every((e) => isRec(e) && uint(e.t) && uint(e.epoch)))
@@ -555,7 +553,7 @@ export async function noteInstanceRestart(
   let prior: ServiceStatus | undefined;
   let expectedStatusRevision = 0;
   if (stored && stored.operation === "PUT") {
-    prior = parseServiceStatus(JSON.parse(td.decode(stored.value)));
+    prior = parseServiceStatus(decodeRecordJson(stored.value, key));
     expectedStatusRevision = stored.revision;
   } else if (stored && stored.operation !== "PUT") {
     throw new EpEnvelopeError("failed-precondition", `the status for ${what} carries a ${stored.operation} marker; supervising over a deletion would resurrect authoritative state (SPEC 13.12)`);
@@ -641,7 +639,7 @@ export async function reconcileEscalation(
   // escalated identity's retirement silently never run. Fail closed (§13.12 retention floor).
   if (stored.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the status for "${args.endpoint}/${args.instanceId}" carries a ${stored.operation} marker; a deletion is never clean absence, an escalated identity must not skip retirement (SPEC 13.12)`);
-  const status = parseServiceStatus(JSON.parse(td.decode(stored.value)));
+  const status = parseServiceStatus(decodeRecordJson(stored.value, key));
   if (status.state !== SERVICE_ESCALATED) return { escalated: false, retired: false, acted: false };
   if (status[RETIRED_MARK_FIELD] !== undefined) return { escalated: true, retired: true, acted: false };
   try {
