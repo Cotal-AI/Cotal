@@ -46,9 +46,10 @@ function laneLog(space: string): DeliveryLog {
   return { out: (line) => console.log(`[${space}] ${line}`), err: (line) => console.error(`[${space}] ${line}`) };
 }
 
-/** Run one multi-space delivery host until a signal ends it. Every space in the manifest must open
- *  at startup: one that cannot is a configuration error naming the space, and no lane is left
- *  running. */
+/** Run one multi-space delivery host until a signal ends it. At startup it serves every space it
+ *  can, names each one it cannot, and retries those, so a fault in one space at a restart keeps no
+ *  other space down. Each lane also answers its space's plane-claim liveness oracle, which an auth
+ *  service restarting after a crash needs before it can reclaim its plane. */
 export async function runDeliveryHost(args: ParsedArgs): Promise<void> {
   const { manifest, server } = validateDeliveryHost(args);
   const v = args.values as Record<string, string | undefined>;
@@ -58,6 +59,7 @@ export async function runDeliveryHost(args: ParsedArgs): Promise<void> {
   const host = await runSpaceHost({
     manifest,
     open: (space) => openDeliveryLane({ space, server, root, rootNamed: v.root !== undefined, tls, log: laneLog(space) }),
+    startup: "servable",
     label: "delivery host",
     entry: "deliver --spaces",
     serving: "serving",
@@ -69,6 +71,7 @@ export async function runDeliveryHost(args: ParsedArgs): Promise<void> {
       }, STOP_BOUND_MS).unref();
     },
   });
-  console.log(`✓ delivery host up (${host.lanes.size} space(s): ${[...host.lanes.keys()].join(", ")}) - one delivery lane per space on ${server}${tls ? " with TLS required" : ""}`);
+  const waiting = host.named.filter((space) => !host.lanes.has(space));
+  console.log(`✓ delivery host up (${host.lanes.size} space(s): ${[...host.lanes.keys()].join(", ")}${waiting.length ? `; retrying ${waiting.join(", ")}` : ""}) - one delivery lane per space on ${server}${tls ? " with TLS required" : ""}`);
   process.exit(await host.ended);
 }

@@ -6,7 +6,7 @@ and reconcile loop are `runSpaceHost` in `packages/workspace/src/space-host.ts`,
 callout host now runs on too. `cotal deliver --spaces <manifest>` is documented under
 [server daemons](../cli.md#server-daemons). SPEC Appendix B was amended in the same change.
 `pnpm smoke:delivery-multi-space` drives three spaces through one process on a live broker. The
-shipped code settles or extends the text below in five places:
+shipped code settles or extends the text below in six places:
 
 - `--shard` and `--shards` refuse with `--spaces`, with `--creds` and `--dev-mint`, rather than
   applying per lane: every lane runs one shard.
@@ -18,6 +18,10 @@ shipped code settles or extends the text below in five places:
   refusal. Both apply to the callout host.
 - A context that closes itself on a lost lease names what it lost. The hosted entry's `unavailable`
   cause carries the same phrase.
+- Startup now serves the spaces it can and retries the rest, as the full auth service host does
+  ([multi-tenant-auth-service.md](multi-tenant-auth-service.md) section 7), so decision 2 and the
+  all-or-nothing text of section 6 no longer hold: one space's fault at a restart keeps no other
+  space's delivery, or the plane-claim oracle its lane answers, down.
 - The suite also proves renewal by an outside party: the stock `remintDaemonCreds` re-signs one
   lane's credential in the root store, and the broker reports that lane's connections presenting it
   before the old one expires, while another lane's connections are untouched.
