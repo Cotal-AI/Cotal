@@ -8021,7 +8021,8 @@ remain unsettled and are not replayed. The full receipt is saved only when both
 channel and agent sequences match the original intent.
 
 A later failure retains earlier channel creates, allocations and joins without
-rollback. Writer-close uncertainty is reported separately from returned native
+rollback. When it created anything, its Next adds `cotal team remove <id> --dry-run`.
+Writer-close uncertainty is reported separately from returned native
 receipts. The finite JSON/plain/rich report distinguishes those receipts from
 current health and task completion. `team show` exposes both native journals,
 including partial channel creates when a later launch did not complete. Inventory,
@@ -8052,7 +8053,9 @@ historical records without inferring current card or broker state. Bare
 `down --dry-run`, `team deploy --dry-run` and both reset previews expose the
 relevant retained additive IDs and unreadable paths. The legacy bare `down`,
 `down --preserve-state`, fresh `team boot` and `reset store` refuse unsettled
-intents and unremoved agent/channel receipts before effects. A complete matched
+intents and unremoved agent/channel receipts before effects. Bare `down` and a later
+`team deploy` name `cotal team remove <id> --dry-run`, then `--yes`, for each deployment that
+blocks them. A complete matched
 static agent-retirement receipt releases only its original deployment's blocker.
 A bare `up` of a stopped controller stack starts it again over a returned channel-only deployment
 made on that stack, and keeps the deployment's records and cards as they are. Any other retained
@@ -8220,6 +8223,20 @@ receipt releases only that deployment's retained blocker. History, grants and re
 the channel stays addressable and no reader exclusivity or complete cleanup is claimed. Repeating a
 completed removal returns its historical receipt without deleting a later same-name card. A new
 card intent records the registry stream's name and creation time.
+
+`team remove <full-deployment-id>` also removes what an unsettled deployment attempt created,
+such as one whose agent exited on launch, when the attempt's own journal records every effect. In
+manifest order, each channel and agent reached its accepted step or was never submitted, and no
+member has a step after one that was not submitted. An accepted agent counts by its native
+allocation, whether or not it joined. Removal then takes the route of a returned deployment of the
+same shape, with the same preview, confirmation and receipts. Each allocated incarnation is retired
+through the original manager by its identity and lifecycle UID, and one the manager already retired
+and cleaned needs no stop. Each card is then deleted at its accepted create revision. Agent
+retirement still needs static auth. The removal is bound to a digest of that journal, which is
+derived on each read and never written, so a journal that changes later no longer matches it. A
+channel or agent submitted with no recorded acceptance, an unreadable record of the attempt or a
+journal with no step leaves the effects unknown. `team remove` then refuses with
+`LIFECYCLE_BLOCKED` and names that step.
 
 `team remove <full-deployment-id>` on an unsettled removal intent reconciles it from native
 observation instead of refusing. `--dry-run` shows each original member's classification, and

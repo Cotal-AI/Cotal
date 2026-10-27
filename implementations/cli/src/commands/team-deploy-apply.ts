@@ -10,6 +10,8 @@ import { loadManifest } from "../lib/manifest/index.js";
 import { additiveChannelAttemptSettled, listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, writeAdditiveChannelReceipt, writeAdditiveChannelStep, writeAdditiveTeamAttempt, type AdditiveChannelReceipt, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { cardsWithoutLiveDelivery, LIVE_DELIVERY_REMEDY, readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
 import { openAdditiveChannelWriter } from "../lib/team-additive-native.js";
+import { shellWord } from "../lib/endpoint-errors.js";
+import { retainedRemovalRemedy } from "../lib/team-text.js";
 import { cotalRoot } from "../lib/paths.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import type { TeamValues } from "./team.js";
@@ -74,7 +76,7 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
     const prior = listAdditiveTeamAttempts(root);
     const returnedIds = new Set(prior.returned.map((row) => row.deploymentId)), retained = retainedAdditiveTeamAttempts(prior);
     if (prior.refused.length || retained.some((row) => !returnedIds.has(row.deploymentId)))
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an additive attempt is unreadable or unsettled; no uncertain operation was retried", { target: { root, space, deploymentIds: prior.valid.map((row) => row.deploymentId), unreadable: prior.refused.map(({ path }) => path) } });
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an additive attempt is unreadable or unsettled; no uncertain operation was retried", { target: { root, space, deploymentIds: prior.valid.map((row) => row.deploymentId), unreadable: prior.refused.map(({ path }) => path) }, remedy: retainedRemovalRemedy(retained.filter((row) => !returnedIds.has(row.deploymentId)).map((row) => row.deploymentId), prior.refused.map(({ path }) => path), `cotal team deploy ${shellWord(file)}`) });
     const matching = retained.filter((row) => row.space === space && row.manifestHash === manifestHash);
     if (matching.length > 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "several retained deployments name this manifest; no ownership was selected", { target: { root, space, deploymentIds: matching.map((row) => row.deploymentId) } });
     const previous = matching[0];

@@ -1,15 +1,16 @@
 import * as prompts from "../lib/prompts.js";
 import { ConfirmationRequired, acquireMaintenanceLock, brokerAddressForDisplay, canonicalRoot, CommandFailure, oneLine, presentationOf, releaseMaintenanceLock, writeResult, type Report } from "@cotal-ai/workspace";
 import { personaCatalog } from "../lib/persona-files.js";
-import { listAdditiveTeamAttempts, type AdditiveAgentReceipt } from "../lib/team-additive-attempt.js";
+import { listAdditiveTeamAttempts, removalOriginal, type AdditiveAgentReceipt, type AdditiveStoppedReceipt } from "../lib/team-additive-attempt.js";
 import { agentOutcomeRows, agentSettlementRows, AGENT_RECONCILE_NOTE, prepareAgentReconcile, prepareAgentRetirement, withInterruptGuard, type AgentReconcileRun, type AgentRetirementRun } from "./team-agent-remove.js";
 import { CARD_SCOPE_NOTE, cardImpactBlocks, cardOutcomeRows, cardSettlementRows, prepareCardReconcile, prepareCardRemoval, RECONCILE_NOTE, type CardReconcileRun, type CardRemovalRun } from "./team-channel-remove.js";
 import { canPrompt } from "./meshes-wizard.js";
 import type { TeamValues } from "./team.js";
 
-type MixedReceipt = AdditiveAgentReceipt & { kind: "additive-team-receipt" };
+type MixedReceipt = (AdditiveAgentReceipt & { kind: "additive-team-receipt" }) | AdditiveStoppedReceipt;
 
-/** Remove a returned static-auth mixed deployment in one guarded operation: retire every original
+/** Remove a returned static-auth mixed deployment, or a stopped attempt that created both cards and
+ * agent allocations, in one guarded operation: retire every original
  * agent incarnation natively, then delete each original unchanged card by revision CAS. Each phase
  * keeps its own journal, and the card journal is valid only after a complete retirement receipt.
  * Any unknown or partial outcome stops immediately; later members stay unattempted and nothing is
@@ -22,9 +23,10 @@ export async function removeMixedTeam(deploymentId: string, values: TeamValues):
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the additive and removal records could not be read; no stop or delete was submitted", { target }); }
   if (inventory.refused.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "unreadable deployment or removal records remain; no removal target was inferred", { target, remedy: "inspect team show <deployment-id> and the listed records before any removal" });
   const original = inventory.valid.find((row) => row.deploymentId === deploymentId);
-  const found = inventory.returned.find((row) => row.deploymentId === deploymentId);
-  if (!original || !found || found.kind !== "additive-team-receipt" || found.authMode !== "auth" || original.authMode !== "auth" || !original.managerInstanceId || !found.createdChannels.length || found.createdChannels.length > 100 || found.createdAgents.length > 100 || found.createdChannels.length !== original.declaredChannels.length)
-    throw new CommandFailure("refused", "UNSUPPORTED", "guarded mixed removal needs a full static-auth returned team receipt with its recorded manager and 1 to 100 cards; open, user-auth, legacy and unsettled deployments were not routed here", { target });
+  const found = removalOriginal(inventory, deploymentId);
+  const mixed = found?.kind === "additive-team-receipt" ? found.createdChannels.length === original?.declaredChannels.length : found?.kind === "additive-stopped-receipt" && found.createdAgents.length > 0;
+  if (!original || !found || (found.kind !== "additive-team-receipt" && found.kind !== "additive-stopped-receipt") || !mixed || found.authMode !== "auth" || original.authMode !== "auth" || !original.managerInstanceId || !found.createdChannels.length || found.createdChannels.length > 100 || found.createdAgents.length > 100)
+    throw new CommandFailure("refused", "UNSUPPORTED", "guarded mixed removal needs a full static-auth returned team receipt, or an unsettled attempt whose journal records both its card creates and agent allocations, with its recorded manager and 1 to 100 cards; open, user-auth and legacy deployments and unknown steps were not routed here", { target });
   if (original.space !== space || canonicalRoot(original.root) !== root) throw new CommandFailure("refused", "CONFLICT", "the deployment belongs to another selected root or space; it was not rebound", { target });
   const receipt = found as MixedReceipt;
   const agentsDone = inventory.removal?.returned.find((row) => row.deploymentId === deploymentId);

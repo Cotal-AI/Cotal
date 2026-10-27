@@ -9,6 +9,8 @@ import { loadManifest } from "../lib/manifest/index.js";
 import { cotalRoot } from "../lib/paths.js";
 import { additiveAgentRequestReceipt, listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, writeAdditiveAgentReceipt, writeAdditiveAgentStep, writeAdditiveChannelStep, writeAdditiveTeamAttempt, type AdditiveAgentReceipt, type AdditiveChannelReceipt, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { openAdditiveChannelWriter } from "../lib/team-additive-native.js";
+import { shellWord } from "../lib/endpoint-errors.js";
+import { retainedRemovalRemedy } from "../lib/team-text.js";
 import { cardsWithoutLiveDelivery, LIVE_DELIVERY_REMEDY, readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { retainedTeamMatches } from "../lib/team-retained.js";
@@ -58,7 +60,8 @@ export async function applyAgentTeam(file: string, values: TeamValues): Promise<
     if (readMaintenanceJournal(root)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a maintenance transition is retained; no additive team effect was submitted", { target });
     const legacy = listLedgerFiles(root, { requireReadable: true }), prior = listAdditiveTeamAttempts(root);
     const returnedIds = new Set(prior.returned.map((row) => row.deploymentId));
-    if (legacy.refused.length || legacy.valid.some(({ ledger }) => ledger.space === space && ledger.manifestHash === manifestHash) || prior.refused.length || retainedAdditiveTeamAttempts(prior).some((row) => !returnedIds.has(row.deploymentId) || row.space === space && row.manifestHash === manifestHash)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an unreadable, unsettled or prior same-manifest deployment is retained; no uncertain effect or reapply was repeated", { target });
+    const blocking = retainedAdditiveTeamAttempts(prior).filter((row) => !returnedIds.has(row.deploymentId) || row.space === space && row.manifestHash === manifestHash).map((row) => row.deploymentId);
+    if (legacy.refused.length || legacy.valid.some(({ ledger }) => ledger.space === space && ledger.manifestHash === manifestHash) || prior.refused.length || blocking.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an unreadable, unsettled or prior same-manifest deployment is retained; no uncertain effect or reapply was repeated", { target: { ...target, deploymentIds: blocking, unreadable: [...legacy.refused, ...prior.refused].map(({ path }) => path) }, ...(blocking.length || prior.refused.length ? { remedy: retainedRemovalRemedy(blocking, prior.refused.map(({ path }) => path), `cotal team deploy ${shellWord(file)}`) } : {}) });
     const boots = listFreshTeamAttempts(root), summaries = listFreshTeamSummaries(root), byId = new Map(summaries.valid.map((row) => [row.deploymentId, row]));
     if (boots.refused.length || summaries.refused.length || boots.valid.some((row) => !freshTeamAttemptSettled(row, byId.get(row.deploymentId)))) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a fresh boot is unsettled or unreadable; team deployment did not infer complete custody", { target });
     // Select once by an attributed read, then obtain a caller instrument for that exact instance.
@@ -145,8 +148,8 @@ export async function applyAgentTeam(file: string, values: TeamValues): Promise<
         { kind: "table" as const, columns: [{ key: "requested", label: "Declared" }, { key: "name", label: "Allocated" }, { key: "uid", label: "Lifecycle" }, { key: "goal", label: "Accepted goal" }], rows: data.acceptedAllocations.filter((row) => !data.createdAgents.some((joined) => joined.request.requestId === row.request.requestId)).map((row) => ({ requested: row.requested, name: row.request.allocation.name, uid: row.request.allocation.lifecycleUid, goal: row.request.goalId })) },
       ] : []),
       ...(data.createdChannels.length ? [{ kind: "table" as const, columns: [{ key: "name", label: "Channel" }, { key: "revision", label: "Returned revision" }], rows: data.createdChannels.map((row) => ({ name: `#${row.name}`, revision: String(row.revision) })) }] : []),
-      { kind: "lines", lines: ["Channel revisions and joined identities are historical native results, not current health, exclusive readers or task completion. Each phase is retained before the next effect. Existing cards and agents were not adopted. Unknown effects are not replayed; completed effects are not rolled back. Mixed/channel and open/user-auth removal remain unsupported; a returned static agent-only team has its own guarded retirement route."] },
+      { kind: "lines", lines: ["Channel revisions and joined identities are historical native results, not current health, exclusive readers or task completion. Each phase is retained before the next effect. Existing cards and agents were not adopted. Unknown effects are not replayed; completed effects are not rolled back. team remove retires static-auth agents and deletes cards for a returned deployment, or for an incomplete one whose journal records every effect."] },
     ] },
-    ...(data.deploymentId ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `cotal team show ${data.deploymentId}`, description: "Inspect original requests, channel creates, allocations and returned joins" }] }] }] : []),
+    ...(data.deploymentId ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `cotal team show ${data.deploymentId}`, description: "Inspect original requests, channel creates, allocations and returned joins" }, ...(!returned && (data.createdChannels.length || data.acceptedAllocations.length) ? [{ command: `cotal team remove ${data.deploymentId} --dry-run`, description: "Preview removing what this attempt created" }] : [])] }] }] : []),
   ] }));
 }

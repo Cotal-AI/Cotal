@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { contractDigest } from "@cotal-ai/core";
 import { canonicalRoot } from "@cotal-ai/workspace";
 import { z } from "zod";
-import type { AdditiveAgentReceipt, AdditiveTeamAttempt, AdditiveTeamReceipt } from "./team-additive-attempt.js";
+import type { AdditiveAgentReceipt, AdditiveRemovalOriginal, AdditiveStoppedReceipt, AdditiveTeamAttempt } from "./team-additive-attempt.js";
 import { publishRemovalRecord as publish, readRemovalRecord as read, removalRecordDirectory as directory } from "./team-removal-record.js";
 
 const ID = /^[a-f0-9]{16}$/;
@@ -34,24 +34,29 @@ const receiptName = (id: string) => `team-remove-returned-${id}.json`;
 const stepName = (id: string, ordinal: number, phase: AgentRemovalStep["phase"]) => `team-remove-step-${id}-${ordinal}-${phase}.json`;
 const STEP_NAME = /^team-remove-step-([a-f0-9]{16})-(0|[1-9][0-9]?)-(submitted|retired)\.json$/;
 
-function originalFor(root: string, id: string, attempts: readonly AdditiveTeamAttempt[], receipts: readonly AdditiveTeamReceipt[]): { attempt: AdditiveTeamAttempt; receipt: AdditiveAgentReceipt } {
+/** The agents a removal retires: a returned agent or mixed receipt, or a stopped attempt's allocations. */
+export type AgentOriginal = AdditiveAgentReceipt | AdditiveStoppedReceipt;
+
+function originalFor(root: string, id: string, attempts: readonly AdditiveTeamAttempt[], receipts: readonly AdditiveRemovalOriginal[]): { attempt: AdditiveTeamAttempt; receipt: AgentOriginal } {
   const attempt = attempts.find((row) => row.deploymentId === id), receipt = receipts.find((row) => row.deploymentId === id);
   // Agent-only, or mixed with its full returned card list; the mixed card phase has its own journal.
+  // A stopped attempt retires the allocations its journal records, whatever its cards.
   const shape = receipt?.kind === "additive-agent-receipt" ? !receipt.createdChannels.length && !attempt?.declaredChannels.length
-    : receipt?.kind === "additive-team-receipt" && receipt.createdChannels.length > 0 && receipt.createdChannels.length <= 100 && receipt.createdChannels.length === attempt?.declaredChannels.length;
-  if (!attempt || !receipt || receipt.kind === "additive-channel-receipt" || !shape || receipt.authMode !== "auth" || !attempt.managerInstanceId || receipt.createdAgents.length > 100 || canonicalRoot(attempt.root) !== canonicalRoot(root)) throw new Error("removal has no matching static agent-only or mixed returned deployment");
+    : receipt?.kind === "additive-team-receipt" ? receipt.createdChannels.length > 0 && receipt.createdChannels.length <= 100 && receipt.createdChannels.length === attempt?.declaredChannels.length
+    : receipt?.kind === "additive-stopped-receipt" && receipt.createdAgents.length > 0;
+  if (!attempt || !receipt || receipt.kind === "additive-channel-receipt" || !shape || receipt.authMode !== "auth" || !attempt.managerInstanceId || receipt.createdAgents.length > 100 || canonicalRoot(attempt.root) !== canonicalRoot(root)) throw new Error("removal has no matching static agent-only, mixed or stopped deployment");
   return { attempt, receipt };
 }
 function matches(intent: AgentRemovalAttempt | AgentRemovalReceipt, original: ReturnType<typeof originalFor>): boolean {
   return intent.root === original.attempt.root && intent.space === original.attempt.space && intent.managerInstanceId === original.attempt.managerInstanceId && intent.originalReceiptDigest === contractDigest(original.receipt);
 }
-function matchesAgent(observation: AgentRetirementObservation, agent: AdditiveAgentReceipt["createdAgents"][number], manager: string): boolean {
+function matchesAgent(observation: AgentRetirementObservation, agent: AgentOriginal["createdAgents"][number], manager: string): boolean {
   return observation.name === agent.name && observation.id === agent.id && observation.lifecycleUid === agent.lifecycleUid && observation.managerInstanceId === manager;
 }
 
 /** Removal history is never authority to stop a name. Only a full original-receipt-bound sequence
  * can release the root's known additive blocker; malformed and orphan records stay blocking. */
-export function readAgentTeamRemovals(root: string, attempts: readonly AdditiveTeamAttempt[], receipts: readonly AdditiveTeamReceipt[]): AgentRemovalInventory {
+export function readAgentTeamRemovals(root: string, attempts: readonly AdditiveTeamAttempt[], receipts: readonly AdditiveRemovalOriginal[]): AgentRemovalInventory {
   const inventory: AgentRemovalInventory = { attempts: [], steps: [], returned: [], refused: [] };
   // `team-channel-remove-*` records belong to the channel removal reader, not this prefix.
   const dir = directory(root), files = readdirSync(dir).filter((name) => name.startsWith("team-remove-") && name.endsWith(".json")).sort();
@@ -95,7 +100,7 @@ export function readAgentTeamRemovals(root: string, attempts: readonly AdditiveT
   return inventory;
 }
 
-export function writeAgentRemovalAttempt(root: string, attempt: AdditiveTeamAttempt, receipt: AdditiveAgentReceipt): AgentRemovalAttempt {
+export function writeAgentRemovalAttempt(root: string, attempt: AdditiveTeamAttempt, receipt: AgentOriginal): AgentRemovalAttempt {
   const original = originalFor(root, attempt.deploymentId, [attempt], [receipt]);
   const value = Intent.parse({ schemaVersion: 1, kind: "additive-agent-removal-attempt", deploymentId: attempt.deploymentId, root: attempt.root, space: attempt.space, managerInstanceId: original.attempt.managerInstanceId, originalReceiptDigest: contractDigest(receipt), createdAt: new Date().toISOString() });
   publish(root, intentName(value.deploymentId), value);
