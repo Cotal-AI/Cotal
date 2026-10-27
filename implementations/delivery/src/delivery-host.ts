@@ -24,7 +24,7 @@ const STOP_BOUND_MS = 10_000;
 const SINGLE_SPACE_FLAGS = ["creds", "dev-mint", "shard", "shards"] as const;
 
 /** Refuse a `--spaces` run that is not one complete host invocation. Nothing is read or dialed yet. */
-export function validateDeliveryHost(args: ParsedArgs): { manifest: string; server: string } {
+function validateDeliveryHost(args: ParsedArgs): { manifest: string; server: string } {
   const v = args.values as Record<string, string | undefined>;
   const manifest = v.spaces;
   if (manifest === undefined) throw new Error("deliver: --spaces <manifest> is required for the delivery host");

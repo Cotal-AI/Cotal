@@ -98,5 +98,5 @@ const deliver = deprecatedDaemonEntry("deliver", daemonDeliver, (args) => args.p
 registry.register(...commands, deliver, nativeIntake, feedbackIntakePreset, feedbackIntakeProcess, nativeDeliveryCommand, deliveryPreset, deliveryService);
 
 export { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, openDeliveryLane, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService, type DeliveryLaneOptions, type DeliveryLog };
-export { runDeliveryHost, validateDeliveryHost } from "./delivery-host.js";
+export { runDeliveryHost } from "./delivery-host.js";
 export { runFeedbackIntake };
