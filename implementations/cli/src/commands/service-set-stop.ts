@@ -9,9 +9,11 @@ import { stackMemberFor } from "../lib/stack-journal.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { nativeImpactView } from "./service-actions.js";
+import { resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
+import { announcePresetTarget, recordedProcessRefusal } from "./service-registry.js";
 
 type Hold = ReturnType<ReturnType<typeof serviceDefinitionStore>["pin"]>;
-interface Member { definition: ServiceDefinitionSnapshot; instance: ServiceInstanceSnapshot; impact?: ServiceAdapterStopPlan }
+interface Member { definition: ServiceDefinitionSnapshot; instance: ServiceInstanceSnapshot; requested: string; impact?: ServiceAdapterStopPlan }
 interface MemberResult {
   name: string;
   instanceId: string;
@@ -70,15 +72,21 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
   if (args.positionals.length < 2 || new Set(args.positionals).size !== args.positionals.length) throw new CommandFailure("refused", "USAGE_INVALID", "a service set needs several distinct definition names");
   const allowed = new Set(["space", "yes", "dry-run", "json", "plain"]);
   if (Object.keys(args.values).some((key) => !allowed.has(key))) throw new CommandFailure("refused", "USAGE_INVALID", "a service set accepts no per-member instance selector or unreviewed stop policy");
-  const { space } = personaCatalog(args.values as { space?: string });
+  const { space, root } = personaCatalog(args.values as { space?: string });
   recordOperationSpace(space);
-  const store = serviceDefinitionStore(space), members: Member[] = [];
-  for (const name of args.positionals) {
-    const definition = store.read(name);
+  const store = serviceDefinitionStore(space), members: Member[] = [], presetTargets: PresetServiceTarget[] = [];
+  for (const requested of args.positionals) {
+    // A preset name reaches the service built on it, as a single named down does.
+    const resolved = resolvePresetService(space, root, requested, "stop", args.values);
+    if (resolved?.recorded) throw recordedProcessRefusal(requested, resolved.recorded, space, "down");
+    const name = resolved?.name ?? requested, definition = store.read(name);
     if (!definition) {
       const stackName = stackMemberFor(space, name);
-      throw new CommandFailure("refused", "TARGET_NOT_FOUND", "one named service has no saved definition in the selected space; no service was stopped", { target: { space, name }, ...(stackName ? { remedy: `this space's controller stack names it ${stackName}; name ${stackName} instead, or run bare cotal down to stop the whole stack` } : {}) });
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${oneLine(name)} matches no saved definition or preset in space ${oneLine(space)}; no service was stopped`, { target: { space, name }, ...(stackName ? { remedy: `this space's controller stack names it ${stackName}; name ${stackName} instead, or run bare cotal down to stop the whole stack` } : {}) });
     }
+    const same = members.find((member) => member.definition.name === name);
+    if (same) throw new CommandFailure("refused", "USAGE_INVALID", `${oneLine(same.requested)} and ${oneLine(requested)} both name ${oneLine(name)}; name each service once, and no service was stopped`, { target: { space, name } });
+    if (resolved) presetTargets.push(resolved);
     const instances = serviceInstances(space, name);
     let selected: ServiceInstanceSnapshot | undefined;
     if (instances.length > 1 && interactive) {
@@ -86,10 +94,11 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
       if (prompts.isCancel(id)) { writeResult(presentation, { command: "down", target: { space, names: args.positionals }, result: { kind: "service-set-stop-cancelled", stopped: false }, noOp: true }, () => ({ sections: [{ title: "Services kept", blocks: [{ kind: "lines", lines: ["No stop was submitted."] }] }] })); return; }
       selected = selectServiceInstance(instances, id);
     } else selected = selectServiceInstance(instances, undefined);
-    members.push({ definition, instance: selected! });
+    members.push({ definition, instance: selected!, requested });
   }
+  for (const resolved of presetTargets) announcePresetTarget(resolved, space, presentation);
   membersStillEligible(members);
-  const target = { space, members: members.map((member) => ({ name: member.definition.name, instanceId: member.instance.name })) };
+  const target = { space, members: members.map((member) => ({ name: member.definition.name, instanceId: member.instance.name, ...(member.requested !== member.definition.name ? { requested: member.requested } : {}) })) };
   const rows: MemberResult[] = members.map((member) => ({ name: member.definition.name, instanceId: member.instance.name, state: "not-attempted", noOp: false, instance: instanceProjection(member.instance), instanceObservation: "selection-before-stop", impact: null }));
   if (args.values["dry-run"]) {
     const preview = rows.map((row): MemberResult => ({ ...row, state: "preview" }));

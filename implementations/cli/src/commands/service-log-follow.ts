@@ -4,6 +4,23 @@ import { observeServiceProcess, serviceInstanceStore, type ServiceInstanceSnapsh
 import { ownedLogSlice, serviceLogSlice } from "../lib/service-process.js";
 import { ownStdoutErrors } from "../lib/stdout-owner.js";
 
+/** Why a follow ended, as a sentence; `name` is what it followed. */
+function followEnd(name: string, reason: string): string {
+  if (reason === "original-process-no-longer-present") return `${name} is no longer running, so the follow ended.`;
+  if (reason === "instance-record-removed") return `The instance record of ${name} was removed, so the follow ended.`;
+  if (reason === "read-failed") return "The log read failed, so the follow ended.";
+  return `The follow ended on ${reason}; ${name} was not changed.`;
+}
+
+/** One follow record as text: a log chunk under its byte range, the end as a sentence, and any other
+ *  record as its type and data. */
+function followText(type: RecordType, data: unknown, name: string): string {
+  if (type === "end") return `${followEnd(oneLine(name), oneLine(String((data as { reason?: unknown }).reason)))}\n`;
+  if (type !== "event") return `${type}: ${oneLine(JSON.stringify(data))}\n`;
+  const item = data as { text?: string; fromOffset?: number; toOffset?: number };
+  return `${oneLine(String(item.fromOffset ?? ""))}-${oneLine(String(item.toOffset ?? ""))}  ${(item.text ?? "").split("\n").map(oneLine).join("\n")}\n`;
+}
+
 /** A read-only file view. Interrupts close the view without signalling a service process. */
 export async function followServiceLog(selected: ServiceInstanceSnapshot, presentation: Presentation, tail: number): Promise<void> {
   const original = selected.record.value;
@@ -21,13 +38,7 @@ export async function followServiceLog(selected: ServiceInstanceSnapshot, presen
   let launchRequestId = original.launchRequestId;
   let availability: "missing" | "available" | undefined;
   const write = async (text: string) => { if (!brokenOutput && !process.stdout.write(text)) await once(process.stdout, "drain", { signal: stopped.signal }); };
-  const record = async (type: RecordType, data: unknown) => {
-    if (presentation === "json") await write(`${JSON.stringify(streamRecord("logs", type, target, data))}\n`);
-    else if (type === "event") {
-      const item = data as { text?: string; fromOffset?: number; toOffset?: number };
-      await write(`${oneLine(String(item.fromOffset ?? ""))}-${oneLine(String(item.toOffset ?? ""))}  ${(item.text ?? "").split("\n").map(oneLine).join("\n")}\n`);
-    } else await write(`${type}: ${oneLine(JSON.stringify(data))}\n`);
-  };
+  const record = async (type: RecordType, data: unknown) => write(presentation === "json" ? `${JSON.stringify(streamRecord("logs", type, target, data))}\n` : followText(type, data, String(target.name)));
   try {
     await record("snapshot", { launchRequestId, scope: "owned private file; direct instance only", tail, maximumReadBytes: 1_048_576, maximumChunkBytes: 16_384, encoding: "utf8-with-replacement", serviceControl: "none" });
     while (!stopped.signal.aborted) {
@@ -78,8 +89,9 @@ export async function followServiceLog(selected: ServiceInstanceSnapshot, presen
 }
 
 /** A read-only view of the log `up` opened for a process it recorded by PID alone, such as its
- *  manager, until that process is gone. Interrupts close the view without signalling the process. */
-export async function followRecordedLog(path: string, pid: number, target: Record<string, unknown>, presentation: Presentation, tail: number): Promise<void> {
+ *  manager, until that process is gone; with no PID, as after it stopped, the view ends once it has
+ *  read the log. Interrupts close the view without signalling the process. */
+export async function followRecordedLog(path: string, pid: number | null, target: Record<string, unknown>, presentation: Presentation, tail: number): Promise<void> {
   const stopped = new AbortController();
   let reason = "view-closed", brokenOutput = false;
   const interrupt = () => { reason = "SIGINT"; process.exitCode = 130; stopped.abort(); };
@@ -90,19 +102,13 @@ export async function followRecordedLog(path: string, pid: number, target: Recor
   let decoder = new TextDecoder("utf-8", { fatal: false });
   let availability: "missing" | "available" | undefined;
   const write = async (text: string) => { if (!brokenOutput && !process.stdout.write(text)) await once(process.stdout, "drain", { signal: stopped.signal }); };
-  const record = async (type: RecordType, data: unknown) => {
-    if (presentation === "json") await write(`${JSON.stringify(streamRecord("logs", type, target, data))}\n`);
-    else if (type === "event") {
-      const item = data as { text?: string; fromOffset?: number; toOffset?: number };
-      await write(`${oneLine(String(item.fromOffset ?? ""))}-${oneLine(String(item.toOffset ?? ""))}  ${(item.text ?? "").split("\n").map(oneLine).join("\n")}\n`);
-    } else await write(`${type}: ${oneLine(JSON.stringify(data))}\n`);
-  };
+  const record = async (type: RecordType, data: unknown) => write(presentation === "json" ? `${JSON.stringify(streamRecord("logs", type, target, data))}\n` : followText(type, data, String(target.name)));
   try {
     await record("snapshot", { pid, path, scope: "the log cotal up opened for this process; no saved service", tail, maximumReadBytes: 1_048_576, maximumChunkBytes: 16_384, encoding: "utf8-with-replacement", serviceControl: "none" });
     while (!stopped.signal.aborted) {
       const slice = ownedLogSlice(path, position, tail);
       if (!slice) {
-        if (availability !== "missing") await record("connection", { state: "log-unavailable", processState: probeLiveness(pid) });
+        if (availability !== "missing") await record("connection", { state: "log-unavailable", processState: pid === null ? "not-recorded" : probeLiveness(pid) });
         availability = "missing";
       } else {
         if (availability !== "available") await record("connection", { state: "log-file-readable", file: slice.file });
@@ -117,7 +123,7 @@ export async function followRecordedLog(path: string, pid: number, target: Recor
         if (slice.bytes.length) await record("event", { file: slice.file, fromOffset: slice.fromOffset, toOffset: slice.toOffset, text: decoder.decode(slice.bytes, { stream: true }), encoding: "utf8-with-replacement" });
         if (slice.toOffset < slice.sizeAtRead) continue;
       }
-      if (probeLiveness(pid) !== "alive") { reason = "original-process-no-longer-present"; break; }
+      if (pid === null || probeLiveness(pid) !== "alive") { reason = "original-process-no-longer-present"; break; }
       await new Promise<void>((resolve) => { const timer = setTimeout(done, 250); function done() { clearTimeout(timer); stopped.signal.removeEventListener("abort", done); resolve(); } stopped.signal.addEventListener("abort", done, { once: true }); });
     }
     const final = decoder.decode();
