@@ -17,7 +17,8 @@
  *  - SIGTERM releases every lane's lease before the process exits.
  *
  * `--measure` instead reports RSS and CPU per space at 1, 4 and 16 lanes in one process against 16
- * single-space processes, under identical control-rail load.
+ * single-space processes, under identical Plane-3 traffic: per space, three members joined durably
+ * to one channel and one of them posting at a fixed rate.
  *
  * Runs the BUILT dist (`pnpm build` first). Needs `nats-server` on PATH.
  * Run: pnpm smoke:delivery-multi-space
@@ -31,7 +32,7 @@ import { connect, credsAuthenticator, NoRespondersError, RequestError, type Nats
 import {
   CotalEndpoint, CONTROL_DELIVERY, DEV_OWNER, MEMBERSHIP_INBOX_PREFIX, composeSpaceAuth, controlServiceSubject, createBrokerAuth,
   createSpaceAccountAuth, deliveryLeaseHolderFor, isReachable, mintConnectionEvictorCreds, mintCreds, mintLifecycleUid,
-  mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams, type SpaceAuth,
+  mintMembershipObserverCreds, newIdentity, provisionAgent, serverConfig, setupSpaceStreams, type CotalMessage, type SpaceAuth,
 } from "@cotal-ai/core";
 import {
   DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, connectionEvictorCredsKey, deliveryCredsKey,
@@ -325,9 +326,52 @@ function sample(pid: number): { rssMb: number; cpuS: number } {
   return { rssMb: procMem(pid).rssMb, cpuS: ticks / 100 };
 }
 
-/** RSS and CPU per space for one shape, under the same offered control-rail load per space. */
+/** Real Plane-3 traffic for one space, built as fanout-load builds it: `count` members provisioned
+ *  through core's onboarding step and joined durably to one channel at connect, each acking its
+ *  durable copies on receipt. The first member posts. */
+async function traffic(i: number, count: number): Promise<{ post(rate: number, seconds: number): Promise<number>; copies(): number; stop(): Promise<void> }> {
+  const space = names[i]!, auth = auths[i]!, channel = "general";
+  const prov = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "provisioner"), channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false, card: { name: "msd-prov", role: "manager", kind: "endpoint" } });
+  prov.on("error", () => {});
+  await prov.start();
+  const members: CotalEndpoint[] = [];
+  let copies = 0;
+  try {
+    for (let k = 0; k < count; k++) {
+      const identity = newIdentity(), uid = mintLifecycleUid();
+      const creds = await provisionAgent(prov, auth, identity, { subscribe: [channel], allowSubscribe: [channel], allowPublish: [channel], role: "default", lifecycleUid: uid });
+      const ep = new CotalEndpoint({ space, servers, creds, lifecycleUid: uid, channels: [channel], card: { id: identity.id, name: `msd-member-${k}`, role: "default", kind: "agent" } });
+      ep.on("error", () => {});
+      ep.on("warning", () => {});
+      ep.on("message", (_m: CotalMessage, d: { durable: boolean; ack(): void }) => { if (d.durable) { copies++; d.ack(); } });
+      await ep.start();
+      members.push(ep);
+    }
+  } finally {
+    await prov.stop();
+  }
+  return {
+    async post(rate, seconds) {
+      let posted = 0;
+      const sends: Promise<void>[] = [];
+      const t0 = Date.now();
+      for (let n = 0; n < rate * seconds; n++) {
+        const due = t0 + (n * 1000) / rate;
+        if (due > Date.now()) await wait(due - Date.now());
+        sends.push(members[0]!.multicast(`msd load #${n}`, { channel }).then(() => { posted++; }, () => {}));
+      }
+      await Promise.allSettled(sends);
+      return posted;
+    },
+    copies: () => copies,
+    async stop() { for (const ep of members) await ep.stop().catch(() => {}); },
+  };
+}
+
+/** RSS and CPU per space for one shape, under the same offered Plane-3 traffic per space. */
 async function measureShape(label: string, spaces: number[], hostShape: boolean, seconds: number, rate: number): Promise<string> {
   const shape: Run[] = [];
+  const launched = Date.now();
   if (hostShape) {
     writeManifest(manifestOf(spaces.map((i) => names[i]!)));
     shape.push(start(["deliver", "--spaces", manifest, "--server", servers]));
@@ -337,27 +381,24 @@ async function measureShape(label: string, spaces: number[], hostShape: boolean,
     for (const run of shape) if (!await until(() => run.text().includes("delivery daemon up") || run.child.exitCode !== null, 300_000)) throw new Error(`${label}: a daemon did not come up`);
   }
   if (shape.some((r) => r.child.exitCode !== null)) throw new Error(`${label}: a process exited: ${shape.map((r) => r.text().slice(-300)).join("\n")}`);
-  const asks = await Promise.all(spaces.map((i) => prober(i)));
-  await wait(5_000); // let start-up settle before the window opens
+  const startup = (Date.now() - launched) / 1000;
+  const loads = await Promise.all(spaces.map((i) => traffic(i, 3)));
+  await wait(5_000); // let start-up and the members' joins settle before the window opens
   const before = shape.map((r) => sample(r.child.pid!));
   const load0 = loadavg()[0]!;
-  let served = 0, offered = 0;
-  const deadline = Date.now() + seconds * 1000;
-  await Promise.all(asks.map(async (ask) => {
-    for (let next = Date.now(); next < deadline; next += 1000 / rate) {
-      if (next > Date.now()) await wait(next - Date.now());
-      offered++;
-      if (await ask().catch(() => false)) served++;
-    }
-  }));
+  const t0 = Date.now();
+  const posted = (await Promise.all(loads.map((l) => l.post(rate, seconds)))).reduce((n, x) => n + x, 0);
+  await wait(5_000); // the daemons' fan-out drains inside the window
+  const window = (Date.now() - t0) / 1000;
   const after = shape.map((r) => sample(r.child.pid!));
+  const copies = loads.reduce((n, l) => n + l.copies(), 0);
   const rss = after.reduce((n, s) => n + s.rssMb, 0);
   const cpu = after.reduce((n, s, k) => n + s.cpuS - before[k]!.cpuS, 0);
+  for (const l of loads) await l.stop();
   for (const run of shape) await killAndAwaitExit(run.child, "SIGTERM", 30_000);
-  for (const nc of callers.splice(0)) await nc.close();
   await wait(2_000);
   const n = spaces.length;
-  return `| ${label} | ${shape.length} | ${rss.toFixed(1)} | ${(rss / n).toFixed(1)} | ${(cpu / seconds * 100).toFixed(1)} | ${(cpu / seconds * 100 / n).toFixed(2)} | ${served}/${offered} | ${load0.toFixed(1)} |`;
+  return `| ${label} | ${shape.length} | ${rss.toFixed(1)} | ${(rss / n).toFixed(1)} | ${(cpu / window * 100).toFixed(1)} | ${(cpu / window * 100 / n).toFixed(2)} | ${posted} | ${copies} | ${startup.toFixed(1)} | ${load0.toFixed(1)} |`;
 }
 
 async function measure(): Promise<void> {
@@ -365,9 +406,9 @@ async function measure(): Promise<void> {
   for (let i = 0; i < names.length; i++) await provision(i);
   const seconds = Number(process.env.COTAL_MSD_SECONDS) || 30, rate = Number(process.env.COTAL_MSD_RATE) || 2;
   const all = names.map((_, i) => i);
-  console.log(`\nMeasured on ${cpus().length} vCPU, Node ${process.version}, ${seconds}s window, ${rate} control requests/s per space.\n`);
-  console.log("| shape | processes | RSS total MB | RSS per space MB | CPU % total | CPU % per space | served | load avg |");
-  console.log("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  console.log(`\nMeasured on ${cpus().length} vCPU, Node ${process.version}, per space: 3 durable members of one channel, one posting ${rate} messages/s for ${seconds}s, CPU over the posting window plus a 5s drain.\n`);
+  console.log("| shape | processes | RSS total MB | RSS per space MB | CPU % total | CPU % per space | posted | durable copies | all serving after s | load avg |");
+  console.log("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   console.log(await measureShape("1 lane, one process", [0], true, seconds, rate));
   console.log(await measureShape("4 lanes, one process", all.slice(0, 4), true, seconds, rate));
   console.log(await measureShape("16 lanes, one process", all, true, seconds, rate));
