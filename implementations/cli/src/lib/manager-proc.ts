@@ -298,8 +298,10 @@ async function awaitManagerUp(space: string, started: ProcessIdentityRecord | { 
     const identity = assertRecordIdentity(started).kind;
     if (identity === "gone" || identity === "mismatch")
       throw new Error(`${manager} exited before it came up. It logged its reason to ${managerLogPath(space)}`);
-    if (parsePid(readPidfile(PID_PATH(space)) ?? "") !== started.pid)
-      throw new Error(`${manager} lost ${PID_PATH(space)} to another process before it came up, so it is not the manager serving the space. Its log is ${managerLogPath(space)}`);
+    const record = PID_PATH(space);
+    const log = managerLogPath(space);
+    if (parsePid(readPidfile(record) ?? "") !== started.pid)
+      throw new Error(`${manager} lost ${record} to another process before it came up, so it is not the manager serving the space. Its log is ${log}`);
     await sleep(200);
   }
 }

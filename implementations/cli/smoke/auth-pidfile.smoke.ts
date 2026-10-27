@@ -117,6 +117,41 @@ try {
   check("CONTROL: a slot this process does claim reads as a running auth service",
     held !== undefined && "fd" in held && authServiceUp(SPACE));
   if (held !== undefined && "fd" in held) closeSync(held.fd);
+
+  // 7. A readiness failure names the record the wait read. A second spelling that appears beside it,
+  //    or the record moving to that spelling, used to make the message resolve the record again: both
+  //    present replaced the readiness reason with the ambiguity error, and a move named the spelling
+  //    that was never read. The reason and the record it waited on survive both.
+  const READY = "probe: the provider never became ready";
+  const canonical = PID_FILE;
+  const legacy = join(tmp, ".cotal", `auth-service.${encodeURIComponent(SPACE)}.pid`);
+  const drive = async (onReady: () => void): Promise<string> => {
+    rmSync(legacy, { force: true });
+    writeFileSync(canonical, String(process.pid));
+    const failing: AuthPrepared = {
+      extraAccounts: [],
+      publicAuth: {},
+      service: { command: "auth-service", ready: async () => { onReady(); throw new Error(READY); } },
+    };
+    try {
+      await ensureAuthService({ space: SPACE, server: "nats://127.0.0.1:1", stateDir: tmp, prepared: failing });
+      return "returned";
+    } catch (e) {
+      return (e as Error).message;
+    } finally {
+      rmSync(legacy, { force: true });
+      rmSync(canonical, { force: true });
+    }
+  };
+  const beside = await drive(() => { writeFileSync(legacy, String(process.pid)); });
+  check("a second spelling appearing during the wait leaves the readiness reason, naming the record that was read",
+    beside.startsWith(`${READY} - the daemon's pid is recorded at ${canonical},`), beside);
+  const moved = await drive(() => { rmSync(canonical); writeFileSync(legacy, String(process.pid)); });
+  check("a record that moves during the wait is still named by the spelling that was read",
+    moved.startsWith(`${READY} - the daemon's pid is recorded at ${canonical},`), moved);
+  const steady = await drive(() => {});
+  check("with one spelling throughout, the readiness failure names that record",
+    steady.startsWith(`${READY} - the daemon's pid is recorded at ${canonical},`), steady);
 } finally {
   process.chdir(prevCwd);
   rmSync(tmp, { recursive: true, force: true });

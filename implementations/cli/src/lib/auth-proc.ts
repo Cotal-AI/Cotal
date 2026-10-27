@@ -189,15 +189,16 @@ function startAuthServiceDetached(space: string, server: string, command: string
 
 /** The pid the readiness wait should bind to, or undefined when none can be named: the pid THIS
  *  call launched (startAuthServiceDetached returns the spawned child's pid, or the live holder a
- *  claimed slot yielded to), else the live pid authServiceUp found in the pidfile. 0 means a
- *  spawn was attempted but nothing was claimed — the wait stays clock-only rather than binding
- *  to a pid nobody can attribute. */
-function authServiceWaitPid(space: string, launched: number | undefined): number | undefined {
-  if (launched !== undefined && launched > 0) return launched;
-  const raw = readPidfile(readPidPath(space));
-  if (raw === undefined) return undefined;
-  const pid = parsePid(raw);
-  return pid !== undefined && probeLiveness(pid) === "alive" ? pid : undefined;
+ *  claimed slot yielded to), else the live pid found in the record. 0 means a spawn was attempted
+ *  but nothing was claimed — the wait stays clock-only rather than binding to a pid nobody can
+ *  attribute. The record is resolved once, here, and the message names that file: resolving it
+ *  again can name a spelling that appeared or moved since, or throw when both are present. */
+function authServiceWaitPid(space: string, launched: number | undefined): { pid: number | undefined; record: string } {
+  const record = readPidPath(space);
+  const raw = readPidfile(record);
+  const recorded = raw === undefined ? undefined : parsePid(raw);
+  if (launched !== undefined && launched > 0) return { pid: launched, record };
+  return { pid: recorded !== undefined && probeLiveness(recorded) === "alive" ? recorded : undefined, record };
 }
 
 /** Make the user-auth service available for a space: start the provider's daemon unless it's
@@ -223,11 +224,11 @@ export async function ensureAuthService(opts: {
     await seedBeforeLaunch();
     launched = startAuthServiceDetached(opts.space, opts.server, opts.prepared.service.command, opts.extraArgs);
   }
-  const pid = authServiceWaitPid(opts.space, launched);
+  const { pid, record } = authServiceWaitPid(opts.space, launched);
   try {
     return await opts.prepared.service.ready({ dir: opts.stateDir, pid });
   } catch (e) {
-    throw new Error(`${e instanceof Error ? e.message : String(e)} - the daemon's pid is recorded at ${readPidPath(opts.space)}, its log is at ${LOG_PATH(opts.space)}`);
+    throw new Error(`${e instanceof Error ? e.message : String(e)} - the daemon's pid is recorded at ${record}, its log is at ${LOG_PATH(opts.space)}`);
   }
 }
 
