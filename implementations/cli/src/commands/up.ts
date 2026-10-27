@@ -4460,11 +4460,13 @@ async function waitReady(server: string, creds?: string, tls = false, log?: stri
     const reachable = await isReachable(server, creds ? { creds } : undefined);
     if (tls) await refuseUntrustedListener(server, creds);
     if (reachable) return true;
-    const next = brokerRecoveryEvidence(log);
+    const { evidence: next, restoring } = brokerRecoveryEvidence(log);
     // Any restore evidence seen during the wait is progress, including evidence already present on
-    // the first probe. Only a later probe with no new evidence counts toward the silent bound.
-    if (next > evidence) {
-      evidence = next;
+    // the first probe. A restore that has started and not finished is progress on every probe, since
+    // the broker writes nothing to its log until it completes; the probe cap bounds that wait. Only a
+    // probe with no new evidence and no restore in flight counts toward the silent bound.
+    if (next > evidence || restoring) {
+      evidence = Math.max(evidence, next);
       silent = 0;
     } else {
       silent++;
@@ -4475,26 +4477,25 @@ async function waitReady(server: string, creds?: string, tls = false, log?: stri
   return false;
 }
 
-/** Bytes plus restore-progress lines in the broker log. A foreground launch inherits the terminal and
- *  has no file to read, so it contributes no evidence and keeps the silent-probe bound. */
-function brokerRecoveryEvidence(log?: string): number {
-  if (!log || log.startsWith("the terminal")) return 0;
+/** Bytes plus completed-restore lines in the broker log, and whether a restore is in flight. A
+ *  foreground launch inherits the terminal and has no file to read, so it contributes no evidence
+ *  and keeps the silent-probe bound. */
+function brokerRecoveryEvidence(log?: string): { evidence: number; restoring: boolean } {
+  const none = { evidence: 0, restoring: false };
+  if (!log || log.startsWith("the terminal")) return none;
   let text = "";
   let size = 0;
   try {
     const stat = statSync(log);
-    if (!stat.isFile()) return 0;
+    if (!stat.isFile()) return none;
     size = stat.size;
     text = readFileSync(log, "utf8");
   } catch {
-    return 0;
+    return none;
   }
   const started = text.match(/Starting restore/g)?.length ?? 0;
   const restored = text.match(/Restored \d/g)?.length ?? 0;
-  // A restore that has started and not finished is evidence, but only for one ten-second window.
-  // After that, growth or a completed restore line must advance it, so a stuck broker goes silent.
-  const pending = started > restored ? Math.floor(Date.now() / 10_000) : 0;
-  return size + restored + pending;
+  return { evidence: size + restored, restoring: started > restored };
 }
 
 /** Node's codes for a certificate chain this client does not trust. */
