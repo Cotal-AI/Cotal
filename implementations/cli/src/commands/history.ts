@@ -47,7 +47,7 @@ const followFlag = { name: "follow", type: "boolean", description: "keep listeni
 export const historyFlags = [...targetFlags, dmsFlag, forceFlag, yesFlag, dryRunFlag, sinceFlag, limitFlag, fromFlag, grepFlag, followFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
 
 export const historySubcommands = [
-  { name: "clear", flagNames: ["space", "server", "creds", "dms", "yes", "dry-run", "json", "plain"], summary: "confirm and purge all retained channel history in the space it targets", usage: "cotal history clear [--dms] [-y|--yes|--dry-run] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
+  { name: "clear", flagNames: ["space", "server", "creds", "dms", "yes", "dry-run", "json", "plain"], summary: "confirm and purge all retained channel history in the space it targets", examples: [{ command: "cotal history clear --dry-run", note: "show what clearing history would delete" }, { command: "cotal history clear --yes", note: "delete the retained channel history" }], usage: "cotal history clear [--dms] [-y|--yes|--dry-run] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
 ] as const satisfies readonly Subcommand[];
 
 /** Complete `clear` and the channels the target space's personas declare, as `send -c` offers, then

@@ -924,8 +924,8 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       const delivery = ensureDefinition(space, "delivery", adapterDefinition(space, STACK_ADAPTER.delivery, { root, creds: credsPath, server }, 40000), root, replace("delivery"));
       await start("delivery", delivery);
     }
-    // A user stack's manager is read and stopped as the invoking user's existing login. Without a
-    // signed-in, granted login it is not attempted; nothing is launched for it.
+    // A user stack's manager is read as the invoking user's existing login. Without a signed-in,
+    // granted login it is not attempted; nothing is launched for it.
     if (!request.noManager && mode === "user") {
       const login = await userLoginState(root, space);
       if (login.state !== "ready") loginBlock = userLoginRequired(space, login);

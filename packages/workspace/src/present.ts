@@ -71,9 +71,6 @@ export interface Section {
 export interface Report {
   /** The resolved mesh, supplied by the operation rather than inferred from ambient selection. */
   readonly space?: string;
-  /** A refusal whose own next step names `cotal up`, so the note under its heading leaves out the
-   *  `cotal up` it names and the report names one. */
-  readonly ownStep?: boolean;
   readonly sections: readonly Section[];
 }
 
@@ -204,6 +201,8 @@ function renderCommands(block: Commands, style: Style, width: number, indent: st
   // A description that would have fewer than 30 columns beside its command goes on the lines under it.
   const stacked = width - indent.length - pad - 2 < 30;
   return block.items.flatMap((item, index) => {
+    // A command with no description is its line alone, with no padding after it.
+    if (!item.description) return [indent + draw(commands[index]!, style).shown];
     const description: Cell = { text: item.description, tone: "hint" };
     // A command is never split, so a copied line is a whole command; one too wide keeps its own line.
     if (stacked) return [
@@ -221,7 +220,7 @@ function renderCommands(block: Commands, style: Style, width: number, indent: st
 /** A report as lines of text, fitted to `width` columns (unbounded when output is not a terminal):
  *  tables fit or become records, and long values and lines wrap at spaces. */
 export function renderReport(report: Report, style: Style, width = Number.POSITIVE_INFINITY): string {
-  const note = report.space ? operationSpaceNote(report.space, report.ownStep !== true) : undefined;
+  const note = report.space ? operationSpaceNote(report.space) : undefined;
   const out: string[] = report.space ? drawWrapped({ text: `Mesh: ${report.space}`, tone: "selected" }, style, width) : [];
   if (note) out.push(...drawWrapped({ text: note, tone: "hint" }, style, width - 2).map((line) => `  ${line}`));
   for (const section of report.sections) {
@@ -338,7 +337,7 @@ export function commandFailureReport(failure: CommandFailure): Report {
     const row = object(item);
     return typeof row?.instanceId === "string" ? [{ name: text(row.name), instanceId: row.instanceId, host: text(row.host, "not reported (started by an older cotal)"), activity: text(row.activity), since: text(row.since) }] : [];
   });
-  return { ...(typeof target?.space === "string" && target.space ? { space: target.space } : {}), ...(failure.remedy !== undefined && /\bcotal up\b/.test(failure.remedy) ? { ownStep: true } : {}), sections: [
+  return { ...(typeof target?.space === "string" && target.space ? { space: target.space } : {}), sections: [
     { title: failure.outcome === "unknown" ? "Outcome unconfirmed" : failure.outcome === "partial" ? "Partly completed" : failure.outcome === "refused" ? "Request refused" : "Request failed", blocks: [{ kind: "lines", lines: [{ text: failure.message, tone: failure.outcome === "unknown" || failure.outcome === "partial" ? "waiting" : "failed" }] }, { kind: "fields", rows: fields }] },
     ...(purges.length ? [{ title: "Acknowledged history changes", blocks: [{ kind: "table" as const, columns: [{ key: "stream", label: "Native stream" }, { key: "purged", label: "Messages purged" }], rows: purges }] }] : []),
     ...(nativeRows.length ? [{ title: "Native target details", blocks: [{ kind: "table" as const, columns: [{ key: "state", label: "State" }, { key: "name", label: "Target" }], rows: nativeRows.slice(0, 100) }, ...(nativeRows.length > 100 ? [{ kind: "lines" as const, lines: [`Showing 100 of ${nativeRows.length} targets; --json retains every row.`] }] : [])] }] : []),

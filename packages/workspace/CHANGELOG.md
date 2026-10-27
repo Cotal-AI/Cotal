@@ -1,5 +1,79 @@
 # @cotal-ai/workspace
 
+## 0.110.0
+
+### Minor Changes
+
+- 927e512: Serve several spaces from one delivery process. `cotal deliver --spaces <manifest> --server <url>` holds one delivery lane per space the manifest names, so a host runs one delivery process instead of one per space. A lane is the daemon `deliver --space` runs, held by the host: it reads its own space's credential from the root, dials on its own connections into that space's account, and holds its own lease, broker watchdog, timer writer and membership feed. One space losing the broker, its credential or its lease closes that lane alone, and the host reopens it every 5 seconds while it fails. A lane writes no pidfile, and its lines carry a `[<space>]` prefix.
+  
+  The host serves every space in the manifest or none, and names the space it could not serve. It rereads the manifest when it changes on disk, on `SIGHUP`, and on a backstop interval, opening or closing the difference; a manifest that does not read or parse whole is reported and the open lanes are kept. `--space` and `--spaces` are alternatives, `--spaces` requires `--server`, and `--creds`, `--dev-mint`, `--shard`, `--shards` and `deliver pending` refuse with it. `deliver --space` is unchanged. The `deliver` deprecation warning now says to keep `cotal deliver` for `--spaces`, which the `delivery` service preset has no form for.
+  
+  The manifest grammar and the reconcile loop move to `@cotal-ai/workspace` as `parseSpaceManifest` and `runSpaceHost`, and the auth callout host runs on them. Its behavior and lines are unchanged, except that a signalled callout host now closes its lanes at once rather than one after another, and closes the lanes it opened before refusing on a manifest directory it cannot watch.
+
+### Patch Changes
+
+- @cotal-ai/core@0.110.0
+
+## 0.109.25
+
+### Patch Changes
+
+- dbfc90b: Every command's help now shows its most common uses. `cotal <command> --help` puts an Examples section right after Usage and Shorthands, before Commands and Options, and each example is a command that works as written with a short note on what it does, such as `cotal spawn -d` to launch an agent through a manager and return. Every command and subcommand `cotal help` lists has one to three. An example's command is never wrapped; its note sits beside it, or under it on a narrow terminal. A command's `examples` entry is now `{ command, note }`; a bare string is still accepted and shows with no note. `cotal manager <verb> --help` shows the manager's own examples.
+- Updated dependencies [dbfc90b]
+  - @cotal-ai/core@0.109.25
+
+## 0.109.24
+
+### Patch Changes
+
+- 0bffcb0: In a folder that holds another space's stopped or prepared stack, bare `cotal` with a prepared or stopped selection labels the selection's `cotal up` as "Start this space" and offers no `cotal spawn`, as it does from any other folder, instead of calling it this folder's space.
+  
+  Bare `cotal` names `cotal up --max-file-store 67108865` or more, as `status` does, for a stopped stack whose recorded file store cap is below the floor, both in its line on what the folder holds and in Start here, instead of a bare `cotal up` that fails on that cap.
+  
+  A refusal in such a folder, as from `ps` or `send` while the selection is stopped, keeps the note under its heading whole, with the `cotal up` that restarts this folder's space, as `status` and the `FOLDER_SPACE_NOT_RUNNING` warning already do.
+- @cotal-ai/core@0.109.24
+
+## 0.109.23
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.23
+
+## 0.109.22
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.22
+
+## 0.109.21
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.21
+
+## 0.109.20
+
+### Patch Changes
+
+- ffeaa32: `cotal manager start` on a user-auth space with no sign-in no longer launches a manager it cannot confirm. On a space the folder hosts, `manager start` and `manager restart` without a signed-in, granted login refuse `AUTH_REQUIRED` (exit 2) under a `Mesh: <space>` heading before anything is saved or launched, and Next names `cotal login`, then the command again. A manager left running without a sign-in stops: in the folder that hosts the space, `cotal manager stop` and `cotal down` read the manager's stop impact from its own local receipt, so the folder's owner needs no sign-in.
+  
+  `cotal supervise` refuses before it connects with exit 2, a `Mesh:` heading and a code, and writes nothing in the folder. A space whose own stack in this folder is stopped names `cotal up` there and, with `--server`, the folder whose `cotal up` started that broker. A user-auth space that another folder hosts names the folder that hosts it.
+  
+  The deprecation notice of `supervise` and the other deprecated daemon entries wraps at the terminal width with each command kept whole. The manager prints its boot inventory once it is up, so a refused start prints no boot line, and the line for no available connector is in plain words.
+- @cotal-ai/core@0.109.20
+
+## 0.109.19
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.19
+
+## 0.109.18
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.18
+
 ## 0.109.17
 
 ### Patch Changes

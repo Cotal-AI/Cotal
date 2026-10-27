@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { registry, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, canonicalRoot, hasUserAuthState, localProcessPath, localProcessVisible, oneLine, parsePid, probeLiveness, readPidfile, type LocalProcess, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
+import { CommandFailure, canonicalRoot, hasUserAuthState, loadManagerInstanceIdentity, localProcessPath, localProcessVisible, oneLine, parsePid, probeLiveness, readPidfile, type LocalProcess, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
@@ -48,14 +48,19 @@ export function recordedPresetProcess(space: string, root: string, preset: Servi
 }
 
 /** A log read of the manager `up` started and recorded by PID alone, once that manager has stopped:
- *  the log it left. With no such log nothing was started here, and the refusal names the file. */
+ *  the log it left. With no such log the refusal names the file. It says the log is gone when a
+ *  pid record of a dead manager, or the instance identity a manager keeps in `root` once it started,
+ *  shows one ran here, and that no manager has been started only when neither does. */
 function stoppedManagerLog(space: string, root: string, requested: string, preset: ServicePreset): PresetServiceTarget {
-  const path = managerLogPath(space, root);
-  if (!existsSync(path)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no manager has been started in space ${oneLine(space)}: there is no manager log at ${path}; nothing was read`, {
-    target: { space, name: requested, path },
-    remedy: "start the stack with cotal up, or the manager alone with cotal manager start",
-  });
-  const record = presetPidRecord(space, root, preset);
+  const path = managerLogPath(space, root), record = presetPidRecord(space, root, preset);
+  if (!existsSync(path)) {
+    const target = { space, name: requested, path };
+    if (record?.liveness === "dead" || loadManagerInstanceIdentity(root, space)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the manager log at ${path} is no longer there; nothing was read`, { target, remedy: "start the stack again with cotal up" });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no manager has been started in space ${oneLine(space)}: there is no manager log at ${path}; nothing was read`, {
+      target,
+      remedy: "start the stack with cotal up, or the manager alone with cotal manager start",
+    });
+  }
   return { requested, name: requested, preset: preset.name, saved: null, stopped: { pid: record?.liveness === "dead" ? record.pid : null, label: record?.label ?? preset.name } };
 }
 

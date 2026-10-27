@@ -27,11 +27,11 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  assertManagerName, authDir, canonicalLocalProcessPath, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, parseSeatCapFlag, publishManagerSpareCapability, readManagerName, readManagerSeatCap, reclaimDeadPreUpgradeRecord, recordManagerName, recordManagerSeatCap, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
+  assertManagerName, authDir, canonicalLocalProcessPath, canonicalRoot, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, parseSeatCapFlag, publishManagerSpareCapability, readManagerName, readManagerSeatCap, reclaimDeadPreUpgradeRecord, recordManagerName, recordManagerSeatCap, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
   c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, untilInputEnds,
   brokerAddressForDisplay, brokerUrlCredentialRefusal, brokerUrlHasUserinfo, CommandFailure, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
-  ConfirmationRequired, findMesh, folderSpace, getCurrent, type MeshEntry, type SeatCap,
+  ConfirmationRequired, findMesh, folderSpace, getCurrent, targetErrorCode, targetErrorSpace, workspaceErrorParts, type MeshEntry, type MeshTargetError, type SeatCap,
   deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY,
 } from "@cotal-ai/workspace";
 import { Manager, rejectionText } from "./manager.js";
@@ -178,7 +178,8 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
         throw new Error(`--server ${ve.server} does not match hosting space "${localSpace}" at ${target.server} - supervise refuses to split its local auth state from its broker`);
       return { space: localSpace, server: target.server, remoteUser: false, tlsRequired: target.tlsRequired, eventsRequired: target.policy?.events === "required", ...(target.policy ? { policy: target.policy } : {}) };
     } catch (error) {
-      if (!isWorkspaceTargetError(error)) throw error;
+      // A space this folder prepared whose stack here is stopped, or not started, is refused as such.
+      if (!isWorkspaceTargetError(error) || error.code === "not-started") throw error;
       return { space: localSpace, server: ve.server ?? DEFAULT_SERVER, remoteUser: false, tlsRequired: false, eventsRequired: false };
     }
   }
@@ -240,6 +241,15 @@ function superviseExecution(v: Values): "runtime" | "none" {
   return v.execution ?? "runtime";
 }
 
+/** Where a manager that the broker trusts starts: the folder that hosts `space`, when the registry
+ *  names one other than `root`, else the folder whose `cotal up` started the broker. */
+function hostFolderStep(space: string, root: string, broker: string): string {
+  const host = findMesh(space);
+  return host !== undefined && host.root !== root
+    ? `start the manager from ${host.root}, the folder that hosts space "${space}": \`cd ${host.root} && cotal manager start\`${host.mode === "user" ? `. A manager on another machine joins a user-auth space as a signed-in participant (\`cotal meshes add\`, then \`cotal login\`) once its host grants the supervise scope` : ""}`
+    : `start the manager from the folder whose cotal up started the broker at ${broker}`;
+}
+
 /** The broker's refusal of the credential a starting manager presented, as a classified refusal:
  *  which credential, which broker, and where a manager that broker trusts starts. A local manager
  *  signs with the space signer of the folder it runs in, so a folder whose signer the broker does
@@ -254,11 +264,27 @@ async function refusedManagerCredential(error: Error, space: string, server: str
   const credential = await getSpaceAuth(workspaceSecretStore(root), space)
     ? `the manager credential this folder's signer for space "${space}" minted (${root})`
     : `a manager with no credential, because this folder holds no signer for space "${space}" (${root})`;
+  return new CommandFailure("refused", "PERMISSION_DENIED", `the broker at ${broker} refused ${credential}, so no manager started`, { target, native, remedy: hostFolderStep(space, root, broker) });
+}
+
+/** A target this folder cannot start a manager for, as the refusal its code and next step name,
+ *  before anything is written or dialed. A space whose own stack here is stopped names how to start
+ *  it, and a broker named with `--server` also gets the folder whose `cotal up` started it. */
+function managerTargetRefusal(error: MeshTargetError, v: Values, root: string): CommandFailure {
+  const server = v.server ?? process.env.COTAL_SERVER;
+  const space = targetErrorSpace(error.details) ?? spaceFor(v, root);
+  const { message, remedy } = workspaceErrorParts({ kind: "target", error });
+  const elsewhere = server === undefined ? undefined : hostFolderStep(space, root, brokerAddressForDisplay(server) ?? "the broker");
+  const next = [remedy, elsewhere].filter((step) => step !== undefined).join(", or ");
+  return new CommandFailure("refused", targetErrorCode(error.code), `${message}, so no manager started`, { target: { space, root }, ...(next ? { remedy: next } : {}) });
+}
+
+/** A user-auth space that another folder hosts, named before this folder writes a manager identity:
+ *  this folder holds no signer for it, so a manager started here would have no credential. */
+function foreignHostRefusal(space: string, root: string, server: string): CommandFailure | undefined {
   const host = findMesh(space);
-  const remedy = host !== undefined && host.root !== root
-    ? `start the manager from ${host.root}, the folder that hosts space "${space}": cd ${host.root} && cotal manager start${host.mode === "user" ? `. A manager on another machine joins a user-auth space as a signed-in participant (cotal meshes add, then cotal login) once its host grants the supervise scope` : ""}`
-    : `start the manager from the folder whose cotal up started the broker at ${broker}`;
-  return new CommandFailure("refused", "PERMISSION_DENIED", `the broker at ${broker} refused ${credential}, so no manager started`, { target, native, remedy });
+  if (host?.mode !== "user" || host.userAuth?.remote === true || hasUserAuthState(root, space) || canonicalRoot(host.root) === canonicalRoot(root)) return undefined;
+  return new CommandFailure("refused", "PERMISSION_DENIED", `this folder holds no signer for user-auth space "${space}" (${root}), so no manager started`, { target: { space, root }, remedy: hostFolderStep(space, root, brokerAddressForDisplay(server) ?? "the broker") });
 }
 
 /** Run a manager daemon in this process (the long-lived supervisor), then block.
@@ -286,10 +312,13 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       throw new Error("execution: none on supervise requires a genuine hosting user-auth root, not a participant registration");
   } catch (e) {
     if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
+    if (isWorkspaceTargetError(e)) throw managerTargetRefusal(e, v, managerRoot);
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
   const { space, server } = target;
+  const foreign = service || target.remoteUser ? undefined : foreignHostRefusal(space, managerRoot, server);
+  if (foreign) throw foreign;
   // Claim before hosted registration/issuance or local endpoint initialization. Starting
   // custody proves only this process; no startup/serving phase exists and no contender is adopted.
   const releaseStartingCustody = service ? claimServicePid({ root: managerRoot, space }, MANAGER_PIDFILE) : undefined;
@@ -1036,8 +1065,8 @@ const managerCommands: Command[] = [
 ];
 
 const maintenance = [
-  { name: "reconcile", source: "reconcile-gate", summary: "repair an owned manager issuance gate from its mesh root" },
-  { name: "seats", source: "seats", summary: "inspect retained local seats; --drain removes only childless records" },
+  { name: "reconcile", source: "reconcile-gate", summary: "repair an owned manager issuance gate from its mesh root", examples: [{ command: "cotal manager reconcile --dry-run", note: "show whether its issuance gate needs repair" }, { command: "cotal manager reconcile --yes", note: "repair it" }] },
+  { name: "seats", source: "seats", summary: "inspect retained local seats; --drain removes only childless records", examples: [{ command: "cotal manager seats", note: "list the seats an earlier manager left" }, { command: "cotal manager seats --drain --dry-run", note: "preview draining the finished seats" }] },
 ].map((mode) => {
   const source = managerCommands.find((command) => command.name === mode.source);
   if (!source) throw new Error(`manager command ${mode.source} is not registered`);
@@ -1052,13 +1081,13 @@ for (const mode of maintenance) for (const flag of mode.command.flags ?? []) {
 
 /** The manager's lifecycle, which the CLI runs as `service <verb> manager` before this group parses. */
 const lifecycle = [
-  { name: "start", summary: "start the manager for this folder's or the selected space; pty runtime and its registered broker by default", usage: "cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--foreground|--dry-run] [--space <s>]" },
-  { name: "stop", summary: "stop it; its agents follow the runtime's default unless --with-agents", usage: "cotal manager stop [--with-agents] [--yes|--dry-run] [--space <s>]" },
-  { name: "restart", summary: "stop it, then start it again", usage: "cotal manager restart [--with-agents] [--yes|--dry-run] [--space <s>]" },
-  { name: "status", summary: "show whether it runs, and its process and endpoint", usage: "cotal manager status [--space <s>]" },
-  { name: "logs", summary: "read what it logged", usage: "cotal manager logs [--tail <n>] [--follow] [--space <s>]" },
-  { name: "install", summary: "start it at login with a systemd user unit", usage: "cotal manager install [--dry-run] [--space <s>]" },
-  { name: "uninstall", summary: "remove that unit", usage: "cotal manager uninstall [--yes|--dry-run] [--space <s>]" },
+  { name: "start", summary: "start the manager for this folder's or the selected space; pty runtime and its registered broker by default", examples: [{ command: "cotal manager start", note: "start it with the pty runtime" }, { command: "cotal manager start --foreground", note: "keep it in this terminal" }, { command: "cotal manager start --name <name>", note: "name it, so commands can pick it with --on" }], usage: "cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--foreground|--dry-run] [--space <s>]" },
+  { name: "stop", summary: "stop it; its agents follow the runtime's default unless --with-agents", examples: [{ command: "cotal manager stop", note: "stop the manager" }, { command: "cotal manager stop --with-agents", note: "stop it and every agent it runs" }], usage: "cotal manager stop [--with-agents] [--yes|--dry-run] [--space <s>]" },
+  { name: "restart", summary: "stop it, then start it again", examples: [{ command: "cotal manager restart", note: "stop the manager, then start it again" }], usage: "cotal manager restart [--with-agents] [--yes|--dry-run] [--space <s>]" },
+  { name: "status", summary: "show whether it runs, and its process and endpoint", examples: [{ command: "cotal manager status", note: "show whether it runs, its process and endpoint" }], usage: "cotal manager status [--space <s>]" },
+  { name: "logs", summary: "read what it logged", examples: [{ command: "cotal manager logs", note: "read what the manager logged" }, { command: "cotal manager logs --follow", note: "keep following it" }], usage: "cotal manager logs [--tail <n>] [--follow] [--space <s>]" },
+  { name: "install", summary: "start it at login with a systemd user unit", examples: [{ command: "cotal manager install", note: "start it at login with a systemd user unit" }, { command: "cotal manager install --dry-run", note: "show the unit it would install" }], usage: "cotal manager install [--dry-run] [--space <s>]" },
+  { name: "uninstall", summary: "remove that unit", examples: [{ command: "cotal manager uninstall", note: "remove its login unit" }], usage: "cotal manager uninstall [--yes|--dry-run] [--space <s>]" },
 ] as const;
 
 function managerInvocation(args: ParsedArgs): { command: Command; args: ParsedArgs } | undefined {
@@ -1084,12 +1113,13 @@ const managerGroup: Command = {
   group: "Services",
   summary: "start, stop and check the manager that runs your agents",
   usage: "cotal manager [start | stop | restart | status | logs | install | uninstall | reconcile | seats] [options]",
+  examples: [{ command: "cotal manager start", note: "start the manager that runs your agents" }, { command: "cotal manager status", note: "check whether it runs" }, { command: "cotal manager logs --follow", note: "follow what it logs" }],
   positionals: "[start | stop | restart | status | logs | install | uninstall | reconcile | seats]",
   outputs: ["json", "plain"],
   flags: [...maintenanceFlags.values()],
   subcommands: [
-    ...lifecycle.map((mode) => ({ name: mode.name, summary: mode.summary, usage: mode.usage, flagNames: ["json", "plain"], outputs: mode.name === "logs" ? ["json", "ndjson", "plain"] as const : ["json", "plain"] as const })),
-    ...maintenance.map((mode) => ({ name: mode.name, summary: mode.summary, flagNames: mode.command.flags?.map((flag) => flag.name), outputs: mode.command.outputs, usage: mode.name === "seats" ? "cotal manager seats [--drain [--yes|--dry-run]] [--json|--plain]" : "cotal manager reconcile [--space <space>] [--server <url>] [--instance <id>] [--yes|--dry-run] [--json|--plain]" })),
+    ...lifecycle.map((mode) => ({ name: mode.name, summary: mode.summary, usage: mode.usage, examples: mode.examples, flagNames: ["json", "plain"], outputs: mode.name === "logs" ? ["json", "ndjson", "plain"] as const : ["json", "plain"] as const })),
+    ...maintenance.map((mode) => ({ name: mode.name, summary: mode.summary, examples: mode.examples, flagNames: mode.command.flags?.map((flag) => flag.name), outputs: mode.command.outputs, usage: mode.name === "seats" ? "cotal manager seats [--drain [--yes|--dry-run]] [--json|--plain]" : "cotal manager reconcile [--space <space>] [--server <url>] [--instance <id>] [--yes|--dry-run] [--json|--plain]" })),
   ],
   reads: true,
   prepareMeshTarget: false,

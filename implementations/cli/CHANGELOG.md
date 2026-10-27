@@ -1,5 +1,89 @@
 # @cotal-ai/cli
 
+## 0.110.0
+
+### Patch Changes
+
+- 8f00cfc: `cotal down` with several names now names a next step when one name matches no saved definition, the one a single named `down` gives: `cotal service` to list the saved definitions, or the web extension for `web`. For a broker name (`nats`, `broker` or `stack-broker`) it names a bare `cotal down`, which stops the broker with the whole stack, instead of `stack-broker`, which a set refuses. On a stack a plain `cotal up` started, `broker` among the names no longer says that no broker has been started.
+  
+  `cotal manager logs` after `cotal down` of a plain `cotal up`, with the manager log removed, now says the log at its path is no longer there and names only `cotal up`, when a pid record of the dead manager or the instance identity a manager keeps in the folder shows one ran. It still refuses `TARGET_NOT_FOUND`, and says no manager has been started, naming `cotal manager start` as well, only when no such record exists.
+- Updated dependencies [927e512]
+  - @cotal-ai/workspace@0.110.0
+  - @cotal-ai/core@0.110.0
+
+## 0.109.25
+
+### Patch Changes
+
+- dbfc90b: Every command's help now shows its most common uses. `cotal <command> --help` puts an Examples section right after Usage and Shorthands, before Commands and Options, and each example is a command that works as written with a short note on what it does, such as `cotal spawn -d` to launch an agent through a manager and return. Every command and subcommand `cotal help` lists has one to three. An example's command is never wrapped; its note sits beside it, or under it on a narrow terminal. A command's `examples` entry is now `{ command, note }`; a bare string is still accepted and shows with no note. `cotal manager <verb> --help` shows the manager's own examples.
+- Updated dependencies [dbfc90b]
+  - @cotal-ai/core@0.109.25
+  - @cotal-ai/workspace@0.109.25
+
+## 0.109.24
+
+### Patch Changes
+
+- 0bffcb0: In a folder that holds another space's stopped or prepared stack, bare `cotal` with a prepared or stopped selection labels the selection's `cotal up` as "Start this space" and offers no `cotal spawn`, as it does from any other folder, instead of calling it this folder's space.
+  
+  Bare `cotal` names `cotal up --max-file-store 67108865` or more, as `status` does, for a stopped stack whose recorded file store cap is below the floor, both in its line on what the folder holds and in Start here, instead of a bare `cotal up` that fails on that cap.
+  
+  A refusal in such a folder, as from `ps` or `send` while the selection is stopped, keeps the note under its heading whole, with the `cotal up` that restarts this folder's space, as `status` and the `FOLDER_SPACE_NOT_RUNNING` warning already do.
+- Updated dependencies [0bffcb0]
+  - @cotal-ai/workspace@0.109.24
+  - @cotal-ai/core@0.109.24
+
+## 0.109.23
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.23
+  - @cotal-ai/workspace@0.109.23
+
+## 0.109.22
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.22
+  - @cotal-ai/workspace@0.109.22
+
+## 0.109.21
+
+### Patch Changes
+
+- d9ec395: `cotal stop <name>`, `cotal attach <name>` and `cotal input <name>` no longer ask which manager to use on a user-auth mesh where several of your managers are live. They read each of those managers, as `ps` does, and run on the one that holds the name without asking. A name that no manager holds is refused `TARGET_NOT_FOUND`, naming the managers searched, when every manager answered. When some did not answer, a terminal is asked among those managers only, and the question says the name was not found on the ones that answered. A name held on more than one manager is asked about among those managers, on any mesh, where it used to go to the first one found. Without a terminal, or with `--json`, these cases refuse with the managers in the envelope and a Next that gives the command again with `--on` for each. `--on` still pins the manager and skips the search, and the spawn question is unchanged.
+- @cotal-ai/core@0.109.21
+  - @cotal-ai/workspace@0.109.21
+
+## 0.109.20
+
+### Patch Changes
+
+- ffeaa32: `cotal manager start` on a user-auth space with no sign-in no longer launches a manager it cannot confirm. On a space the folder hosts, `manager start` and `manager restart` without a signed-in, granted login refuse `AUTH_REQUIRED` (exit 2) under a `Mesh: <space>` heading before anything is saved or launched, and Next names `cotal login`, then the command again. A manager left running without a sign-in stops: in the folder that hosts the space, `cotal manager stop` and `cotal down` read the manager's stop impact from its own local receipt, so the folder's owner needs no sign-in.
+  
+  `cotal supervise` refuses before it connects with exit 2, a `Mesh:` heading and a code, and writes nothing in the folder. A space whose own stack in this folder is stopped names `cotal up` there and, with `--server`, the folder whose `cotal up` started that broker. A user-auth space that another folder hosts names the folder that hosts it.
+  
+  The deprecation notice of `supervise` and the other deprecated daemon entries wraps at the terminal width with each command kept whole. The manager prints its boot inventory once it is up, so a refused start prints no boot line, and the line for no available connector is in plain words.
+- Updated dependencies [ffeaa32]
+  - @cotal-ai/workspace@0.109.20
+  - @cotal-ai/core@0.109.20
+
+## 0.109.19
+
+### Patch Changes
+
+- 29a824d: A foreground `cotal spawn --on <instance>` on a manager from before 0.104.2, which does not report whether its runtime streams a terminal, no longer ends `OPERATION_PARTIAL` on a runtime such as `orca` or `tmux` that has none. The CLI still finds out by attaching, and when the manager refuses that attach because the runtime streams no terminal, the launch ends with the receipt, one line naming the runtime, and exit 0. Such a manager does not mark that refusal, so the CLI accepts it only for a runtime whose provider, registered or installed with this CLI, declares no terminal. Any other attach failure after a successful launch is still partial, exit 4, and now prints the manager's reason as a `Native detail` row (`error.cause.detail` in an envelope). Its Next gives `cotal ps` and `cotal attach` with the real space and manager instance, or the runtime's own session where it streams no terminal, in place of a bare "reattach".
+- @cotal-ai/core@0.109.19
+  - @cotal-ai/workspace@0.109.19
+
+## 0.109.18
+
+### Patch Changes
+
+- d7b0539: `cotal update` now removes group and other write from the folders and files you own in Cotal's config directory (`$XDG_CONFIG_HOME/cotal` or `~/.config/cotal`), as it already did for Cotal's install, and prints `✓ removed group and other write from <n> entries in Cotal's config at <path>`. An earlier seed run under a umask of 0002 left that directory and its extension tree group-writable. Where the private-group proof was unavailable, as under SSSD, the web seed refused them and the update failed after its install repair had run. A group-writable folder above the config directory, such as `~/.config`, is not Cotal's: `update` leaves it unchanged, the seed still refuses it with `chmod g-w <path>` as the next step, and the update still exits nonzero.
+- @cotal-ai/core@0.109.18
+  - @cotal-ai/workspace@0.109.18
+
 ## 0.109.17
 
 ### Patch Changes

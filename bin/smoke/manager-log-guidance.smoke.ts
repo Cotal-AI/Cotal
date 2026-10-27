@@ -46,7 +46,7 @@ check(
 const up = readFileSync(join(REPO, "implementations/cli/src/commands/up.ts"), "utf8");
 check(
   "the up success line derives its logfile guidance",
-  /via manager .* - see \$\{managerLogDisplayPath\(m\.space\)\}/.test(up),
+  /a failed launch and its reason: \$\{managerLogDisplayPath\(m\.space\)\}/.test(up),
 );
 check(
   "no shipped operator message names the pre-segmentation manager logfile",

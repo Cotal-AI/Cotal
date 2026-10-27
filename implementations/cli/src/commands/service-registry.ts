@@ -4,7 +4,7 @@ import * as prompts from "../lib/prompts.js";
 import { parseCommandArgs, registry, type Command, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
-import { presetMaterialPath, presetMissingOptions, presetStartFlags, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
+import { findServicePreset, presetMaterialPath, presetMissingOptions, presetStartFlags, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
 import { forgetRefusedPresetService, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
@@ -16,7 +16,8 @@ import { managerLogPath } from "../lib/manager-proc.js";
 import { serviceInstanceId, serviceInstances, instanceProjection } from "../lib/service-instances.js";
 import { readLocalServiceAttempts } from "../lib/service-census.js";
 import { readOwnedLogTail, readinessAddressSurvivors, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecord, removeStoppedInstanceRecords } from "../lib/service-process.js";
-import { addedDefinitionStep, STACK_DEFINITION } from "../lib/stack-journal.js";
+import { addedDefinitionStep, STACK_ADAPTER, STACK_DEFINITION } from "../lib/stack-journal.js";
+import { assertManagerLogin } from "./stack-user-auth.js";
 import { localRecordName } from "../lib/protected-records.js";
 import { brokerServerProblem, brokerService } from "../lib/broker-service.js";
 
@@ -62,6 +63,15 @@ export function validateServiceArguments(args: ParsedArgs): void {
   if (mode === "add" && (!name || args.values.file === undefined && args.values.preset === undefined && args.values.exec === undefined) && (!canPrompt() || args.values.json)) throw new CommandFailure("refused", "USAGE_INVALID", "scripted service add needs a name and --exec <command>, --preset <preset> or --file <definition.json>; guided input requires an interactive terminal", { remedy: `cotal service add ${name ?? "<name>"} --exec "<command>"` });
 }
 
+/** Whether a start of `name` would launch a manager: its saved definition, or the preset it names,
+ *  runs the manager adapter, and no manager that `up` recorded by PID runs already. */
+function launchesManager(space: string, root: string, name: string, store: ReturnType<typeof serviceDefinitionStore>): boolean {
+  const saved = store.read(name)?.record.value.launch;
+  if ((saved ? saved.type === "adapter" && saved.adapter : findServicePreset(name)?.adapter) !== STACK_ADAPTER.manager) return false;
+  const manager = findServicePreset("manager");
+  return manager === undefined || recordedPresetProcess(space, root, manager) === undefined;
+}
+
 function legacyProcesses(context: LocalProcessContext) {
   return registry.all<LocalProcess>("local-process").filter((provider) => localProcessVisible(provider, context)).map((provider) => {
     try {
@@ -87,6 +97,10 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   const [mode = "list", suppliedName] = args.positionals;
   const target = { space, executionHost: "this-machine" };
   if (["start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode)) {
+    // A user-auth space's manager is read as your signed-in, granted login, so a start without one
+    // is refused here, before a definition is saved or a child launched.
+    if ((mode === "start" || mode === "restart") && launchesManager(space, root, suppliedName!, store))
+      await assertManagerLogin(root, space, commandName === "manager" ? `cotal manager ${mode}` : `cotal service ${mode} ${suppliedName}`);
     const resolved = resolvePresetService(space, root, suppliedName!, mode, args.values);
     if (resolved?.recorded) return mode === "logs" && resolved.preset === "manager" ? recordedManagerLogs(resolved.requested, { ...resolved.recorded, state: "running" }, space, root, args.values, presentation, commandName) : recordedPresetProcessReport(resolved, resolved.recorded, space, mode, presentation, commandName);
     if (resolved?.stopped) return recordedManagerLogs(resolved.requested, { ...resolved.stopped, state: "stopped" }, space, root, args.values, presentation, commandName);

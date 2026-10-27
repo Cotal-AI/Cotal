@@ -1,5 +1,43 @@
 # @cotal-ai/connector-codex
 
+## 0.110.0
+
+No changes in this release.
+
+## 0.109.25
+
+No changes in this release.
+
+## 0.109.24
+
+No changes in this release.
+
+## 0.109.23
+
+No changes in this release.
+
+## 0.109.22
+
+No changes in this release.
+
+## 0.109.21
+
+No changes in this release.
+
+## 0.109.20
+
+No changes in this release.
+
+## 0.109.19
+
+No changes in this release.
+
+## 0.109.18
+
+### Patch Changes
+
+- bc2d2ab: Align the Codex event-holder factory body to one indent, so the start-cursor comment and the statements after it sit in the block they belong to.
+
 ## 0.109.17
 
 No changes in this release.

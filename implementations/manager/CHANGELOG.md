@@ -1,5 +1,88 @@
 # @cotal-ai/manager
 
+## 0.110.0
+
+### Patch Changes
+
+- Updated dependencies [927e512]
+  - @cotal-ai/workspace@0.110.0
+  - @cotal-ai/core@0.110.0
+  - @cotal-ai/seat@0.110.0
+
+## 0.109.25
+
+### Patch Changes
+
+- dbfc90b: Every command's help now shows its most common uses. `cotal <command> --help` puts an Examples section right after Usage and Shorthands, before Commands and Options, and each example is a command that works as written with a short note on what it does, such as `cotal spawn -d` to launch an agent through a manager and return. Every command and subcommand `cotal help` lists has one to three. An example's command is never wrapped; its note sits beside it, or under it on a narrow terminal. A command's `examples` entry is now `{ command, note }`; a bare string is still accepted and shows with no note. `cotal manager <verb> --help` shows the manager's own examples.
+- Updated dependencies [dbfc90b]
+  - @cotal-ai/core@0.109.25
+  - @cotal-ai/workspace@0.109.25
+  - @cotal-ai/seat@0.109.25
+
+## 0.109.24
+
+### Patch Changes
+
+- Updated dependencies [0bffcb0]
+  - @cotal-ai/workspace@0.109.24
+  - @cotal-ai/core@0.109.24
+  - @cotal-ai/seat@0.109.24
+
+## 0.109.23
+
+### Patch Changes
+
+- de2ff92: The manager-start refusal that names the folder hosting the space now quotes its `cd <folder> && cotal manager start` step (and the `cotal meshes add`, `cotal login` steps for a user-auth space) in backticks, so a narrow terminal never breaks a copied command across lines.
+- @cotal-ai/core@0.109.23
+  - @cotal-ai/seat@0.109.23
+  - @cotal-ai/workspace@0.109.23
+
+## 0.109.22
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.22
+  - @cotal-ai/seat@0.109.22
+  - @cotal-ai/workspace@0.109.22
+
+## 0.109.21
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.21
+  - @cotal-ai/seat@0.109.21
+  - @cotal-ai/workspace@0.109.21
+
+## 0.109.20
+
+### Patch Changes
+
+- ffeaa32: `cotal manager start` on a user-auth space with no sign-in no longer launches a manager it cannot confirm. On a space the folder hosts, `manager start` and `manager restart` without a signed-in, granted login refuse `AUTH_REQUIRED` (exit 2) under a `Mesh: <space>` heading before anything is saved or launched, and Next names `cotal login`, then the command again. A manager left running without a sign-in stops: in the folder that hosts the space, `cotal manager stop` and `cotal down` read the manager's stop impact from its own local receipt, so the folder's owner needs no sign-in.
+  
+  `cotal supervise` refuses before it connects with exit 2, a `Mesh:` heading and a code, and writes nothing in the folder. A space whose own stack in this folder is stopped names `cotal up` there and, with `--server`, the folder whose `cotal up` started that broker. A user-auth space that another folder hosts names the folder that hosts it.
+  
+  The deprecation notice of `supervise` and the other deprecated daemon entries wraps at the terminal width with each command kept whole. The manager prints its boot inventory once it is up, so a refused start prints no boot line, and the line for no available connector is in plain words.
+- Updated dependencies [ffeaa32]
+  - @cotal-ai/workspace@0.109.20
+  - @cotal-ai/core@0.109.20
+  - @cotal-ai/seat@0.109.20
+
+## 0.109.19
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.19
+  - @cotal-ai/seat@0.109.19
+  - @cotal-ai/workspace@0.109.19
+
+## 0.109.18
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.18
+  - @cotal-ai/seat@0.109.18
+  - @cotal-ai/workspace@0.109.18
+
 ## 0.109.17
 
 ### Patch Changes

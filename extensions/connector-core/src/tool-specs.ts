@@ -20,10 +20,12 @@ import { buildOrientation, presenceLiveness, renderOrientation, type Orientation
 import { runDocs } from "./docs.js";
 
 /** What a Cotal tool returns: text to show the model, flagged on failure. MCP wraps it in
- *  `content`; the OpenCode plugin returns the string. */
+ *  `content`; the OpenCode plugin returns the string. `structured` is the same answer as data for
+ *  hosts that show a tool's structured content in place of its text, so it repeats the text. */
 export interface ToolResult {
   text: string;
   isError?: boolean;
+  structured?: Record<string, unknown>;
 }
 
 const ok = (text: string): ToolResult => ({ text });
@@ -1192,7 +1194,7 @@ export function cotalToolSpecs(
       name: "cotal_status",
       title: "Cotal: set your status / attention",
       description:
-        "Set your presence status (what you're doing, so peers can see) and/or your attention mode (how much peer traffic interrupts you). Both are optional: pass only the one you want to change; with neither, it reports your current status and attention. A connector that sees your turns also sets status itself, working when a turn starts and idle when it ends, so a status you set holds until your next turn starts.",
+        "Set your presence status (what you're doing, so peers can see) and/or your attention mode (how much peer traffic interrupts you). Both are optional: pass only the one you want to change; with neither, it reports your current status and attention. A connector that sees your turns also sets status itself, working when a turn starts and idle when it ends, so a status you set holds until your next turn starts. This changes presence only and does not complete a workflow turn.",
       schema: {
         status: z
           .enum(["idle", "working", "waiting"])
@@ -1210,7 +1212,7 @@ export function cotalToolSpecs(
       },
       async run(agent, _config, { status, attention, activity }: { status?: PresenceStatus; attention?: "open" | "dnd" | "focus"; activity?: string }) {
         try {
-          if (status) await agent.setStatus(status, activity);
+          if (status) await agent.resetStatus(status, activity);
           else if (activity !== undefined) await agent.setActivity(activity);
           if (attention) await agent.setAttention(attention);
           const lines: string[] = [];
@@ -1396,7 +1398,7 @@ export function cotalToolSpecs(
       name: "cotal_spawn",
       title: "Cotal: spawn a new teammate",
       description:
-        "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal watch` for a live terminal view. The dashboard service is configured and started separately; do not install or launch it implicitly.",
+        "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal watch` for a live terminal view. The dashboard service is configured and started separately; do not install or launch it implicitly. A partial result means the seat started but its requested model pin could not be read back: it names the seat and the `cotal ps --on <manager>` command that shows the pin, and spawning again would start a second agent.",
       schema: {
         name: z.string().describe("Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered with an underscore, e.g. socrates_2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name."),
         instance: z
@@ -1421,7 +1423,7 @@ export function cotalToolSpecs(
           .string()
           .min(1)
           .optional()
-          .describe("Optional model override (e.g. opus, sonnet); it wins over the persona file's model:. The spawn fails if the manager does not record this pin. The result names the recorded model; do not treat a spawn as cross-vendor unless that name matches what you requested."),
+          .describe("Optional model override (e.g. opus, sonnet); it wins over the persona file's model:. The spawn fails if the manager does not record this pin. The result names the recorded model; do not treat a spawn as cross-vendor unless that name matches what you requested. If the pin cannot be read back, the result is partial and the seat still runs."),
         variant: z
           .string()
           .optional()
@@ -1466,7 +1468,10 @@ export function cotalToolSpecs(
           // failed launch, and the caller's retry starts a second agent on the same work.
           const pending = reply.code === "uncertain";
           if (!reply.ok && !pending) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? "manager refused", reply)}`);
-          const d = reply.data as { name?: string; mode?: string; model?: string; actor?: string; executor?: { lifecycleUid: string } } | undefined;
+          const d = reply.data as {
+            name?: string; mode?: string; model?: string; id?: string; actor?: string; executor?: { lifecycleUid: string };
+            pinAudit?: { requested: string; error: string; unreported?: true };
+          } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
           const mode = d?.mode;
           const who = peerLabel({ name: actual, role });
@@ -1474,6 +1479,25 @@ export function cotalToolSpecs(
           // `actual`, not silently address the wrong peer later (the tool result is the only channel).
           const lead = actual !== name ? `"${name}" was taken — spawning ${who} instead` : `Spawning ${who}`;
           const pin = d?.model ? ` recorded model ${JSON.stringify(d.model)}` : "";
+          // The seat launched and only its pin read failed: a partial outcome naming the seat, so the
+          // caller reads the pin where the manager keeps it instead of spawning a second seat.
+          if (d?.pinAudit) {
+            const { requested, error, unreported } = d.pinAudit;
+            const id = d.id ?? d.actor;
+            const manager = d.executor?.lifecycleUid ?? reply.instanceId;
+            const next = `cotal ps --on ${manager}`;
+            const state = pending ? "it has not joined the mesh within its readiness window and may still be booting" : "it joined the mesh";
+            const audit = unreported ? "was not reported by this manager" : "could not be audited";
+            const message = `${lead} (id ${id}, manager ${manager}${mode ? `, runtime ${mode}` : ""}): ${state}, but its model pin ${JSON.stringify(requested)} ${audit} (${error}). ` +
+              `Do not spawn it again: a retry starts a second agent. Next: \`${next}\` shows the seat and the model its manager recorded.`;
+            return {
+              text: message,
+              structured: {
+                status: "partial", name: actual, id, manager, ...(mode ? { runtime: mode } : {}), joined: !pending,
+                model: { requested, audited: false, reported: !unreported, error }, next, message,
+              },
+            };
+          }
           if (pending)
             return ok(`${lead}${pin} (id ${d?.actor}, manager ${d?.executor?.lifecycleUid}), but it did not join the mesh within its readiness window. It may still be booting, so do not spawn it again: a retry starts a second agent. Watch cotal_roster for ${actual}, and cotal_despawn it if it never joins.`);
           return ok(`${lead}${mode ? ` (${mode})` : ""}${pin} — it will appear in the roster shortly.`);

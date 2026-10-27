@@ -170,6 +170,10 @@ try {
     const refusedInstall = envelope(upCotal(["manager", "install", "--dry-run", "--json"])) as LogsEnvelope & { error?: { code?: string; remedy?: string } };
     check("  and so does cotal manager install --dry-run while it runs, with the same advice",
       refusedInstall.outcome === "refused" && refusedInstall.error?.code === "UNSUPPORTED" && refusedInstall.error.remedy === refusedStop.error?.remedy, refusedInstall);
+    const brokerSet = envelope(upCotal(["down", "broker", "delivery", "--dry-run", "--json"])) as LogsEnvelope & { error?: { code?: string; message?: string; remedy?: string } };
+    check("cotal down broker delivery refuses the whole set and names the bare down that stops the broker",
+      brokerSet.outcome === "refused" && brokerSet.error?.code === "TARGET_NOT_FOUND" && brokerSet.error.message === `broker matches no saved definition in space ${UP_SPACE}; no service was stopped`
+        && brokerSet.error.remedy === "a set of names never stops the broker; a bare cotal down stops it with the whole stack", brokerSet);
 
     // A follow is a read-only view: it writes one JSON record per line and ends when down stops the manager.
     const follow = spawn(process.execPath, ["--import", TSX_LOADER, BIN, "manager", "logs", "--follow", "--json", "--tail", "3"], { cwd: upProject, env: upAt.env, stdio: ["ignore", "pipe", "pipe"] });
@@ -204,6 +208,18 @@ try {
       stoppedInstall.outcome === "refused" && stoppedInstall.error?.code === "UNSUPPORTED" && Boolean(stoppedInstall.error.remedy?.includes(`manager start --foreground --space ${UP_SPACE} and KillMode=mixed`)) && Boolean(stoppedInstall.error.remedy?.includes("ExecStart=")), stoppedInstall);
     check("  and says the manager runs through the manager-service adapter, with no doubled service",
       Boolean(stoppedInstall.error?.message?.includes("manager runs through the manager-service adapter, whose stop is a native request")) && !stoppedInstall.error?.message?.includes("service service"), stoppedInstall.error?.message);
+
+    // ---- With the log it left removed, the read says the log is gone ----------------------------
+    const goneLog = stoppedJson.result?.path ?? "";
+    if (isManagerLog(goneLog)) rmSync(goneLog);
+    const gone = upCotal(["manager", "logs"]);
+    const goneJson = envelope(upCotal(["manager", "logs", "--json"])) as LogsEnvelope & { target?: { path?: string }; error?: { code?: string; message?: string; remedy?: string } };
+    check("cotal manager logs with that log removed says the log is gone and names only cotal up",
+      goneJson.outcome === "refused" && goneJson.error?.code === "TARGET_NOT_FOUND" && goneJson.error.message === `the manager log at ${goneLog} is no longer there; nothing was read`
+        && goneJson.error.remedy === "start the stack again with cotal up" && goneJson.target?.path === goneLog, goneJson);
+    check("  and its text says so, with no cotal manager start and no claim that none was started",
+      gone.status === 2 && out(gone).includes("is no longer there; nothing was read") && /Next\s+start the stack again with cotal up\s*$/.test(out(gone))
+        && !out(gone).includes("cotal manager start") && !out(gone).includes("no manager has been started"), out(gone));
   }
 } catch (e) {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);

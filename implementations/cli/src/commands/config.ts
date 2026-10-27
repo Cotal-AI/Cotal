@@ -47,9 +47,9 @@ export const configFlags = [
 ] as const satisfies readonly FlagSpec[];
 
 export const configSubcommands = [
-  { name: "get", flagNames: ["user", "space", "json", "plain"], summary: "show one key's value, where it comes from and what it outranks", usage: "cotal config get <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"], reads: true },
-  { name: "set", flagNames: ["user", "space", "json", "plain"], summary: "save a value for you, or for one space with --space", usage: "cotal config set <key> <value> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
-  { name: "unset", flagNames: ["user", "space", "json", "plain"], summary: "remove a saved value", usage: "cotal config unset <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
+  { name: "get", flagNames: ["user", "space", "json", "plain"], summary: "show one key's value, where it comes from and what it outranks", examples: [{ command: "cotal config get harness", note: "show your default application" }, { command: "cotal config get harness --space <name>", note: "show the value one space uses" }], usage: "cotal config get <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"], reads: true },
+  { name: "set", flagNames: ["user", "space", "json", "plain"], summary: "save a value for you, or for one space with --space", examples: [{ command: "cotal config set harness opencode", note: "make OpenCode your default application" }, { command: "cotal config set persona <persona> --space <name>", note: "set a default persona for one space" }], usage: "cotal config set <key> <value> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
+  { name: "unset", flagNames: ["user", "space", "json", "plain"], summary: "remove a saved value", examples: [{ command: "cotal config unset harness", note: "go back to the default application" }], usage: "cotal config unset <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
 ] as const satisfies readonly Subcommand[];
 
 /** Complete the subcommand, the key, and a value from the closed sets a write checks: color's and the

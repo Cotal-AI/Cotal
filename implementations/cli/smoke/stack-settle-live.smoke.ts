@@ -583,6 +583,10 @@ try {
     const noted = cli(root, "status", "--json");
     check(`with another space selected, the folder note names up --max-file-store ${MIN_FILE_STORE} or more after the failed up, not a bare up`,
       noted.status === 0 && noted.env?.target?.space !== space && folderNote(noted)?.message === `this folder holds the stopped space "${space}"; restart it with cotal up --max-file-store ${MIN_FILE_STORE} or more`, { ...shown(noted), target: noted.env?.target, note: folderNote(noted) });
+    // Bare `cotal` there names the same up in its own line on what the folder holds, and never a bare one.
+    const entry = cli(root);
+    check(`bare cotal there names up --max-file-store ${MIN_FILE_STORE} or more in its folder note, and no bare up as this folder's start`,
+      entry.status === 0 && entry.stdout.includes(`\n${folderNote(noted)?.message}\n`) && !/^ {2}cotal up +Start this folder's space$/m.test(entry.stdout), { ...shown(entry), stdout: entry.stdout.slice(0, 1200) });
     const floor = cli(root, "up", "--no-manager", "--max-file-store", String(MIN_FILE_STORE), "--json");
     track(space);
     check(`up --max-file-store ${MIN_FILE_STORE} starts the stack`, floor.status === 0, shown(floor));
@@ -931,10 +935,18 @@ try {
         && JSON.stringify(previewMembers.map((member) => [member.name, member.requested])) === JSON.stringify([["stack-delivery", "delivery"], ["stack-manager", "manager"]]), shown(setPreview));
     const setManager = runningPidOf(space, "stack-manager"), setDelivery = runningPidOf(space, "stack-delivery");
     const unknown = cli(root, "down", "stack-manager", "nats", "--space", space, "--yes", "--json");
-    check("a name in the set that matches no saved definition or preset refuses the whole set, naming it and the stack- member",
+    check("a broker name in the set that matches no saved definition or preset refuses the whole set and names the bare down, not stack-broker",
       unknown.status === 2 && unknown.env?.error?.code === "TARGET_NOT_FOUND" && unknown.env.target?.name === "nats"
         && unknown.env.error.message === `nats matches no saved definition or preset in space ${space}; no service was stopped`
-        && Boolean(unknown.env.error.remedy?.includes("name stack-broker instead")) && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), shown(unknown));
+        && unknown.env.error.remedy === "a set of names never stops the broker; a bare cotal down stops it with the whole stack"
+        && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), shown(unknown));
+    const unknownOne = cli(root, "down", "nosuch", "--space", space, "--dry-run", "--json");
+    const unknownSet = cli(root, "down", "nosuch", "delivery", "--space", space, "--yes", "--json");
+    check("any other name in the set that matches nothing refuses the whole set with the step a single named down names",
+      unknownSet.status === 2 && unknownSet.env?.error?.code === "TARGET_NOT_FOUND" && unknownSet.env.target?.name === "nosuch"
+        && unknownSet.env.error.message === `nosuch matches no saved definition or preset in space ${space}; no service was stopped`
+        && unknownSet.env.error.remedy === "list this space's saved definitions with cotal service" && unknownSet.env.error.remedy === unknownOne.env?.error?.remedy
+        && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), { set: shown(unknownSet), one: shown(unknownOne) });
     const setStop = cli(root, "down", "manager", "delivery", "--space", space, "--yes", "--json");
     const stopMembers = (setStop.env?.target?.members ?? []) as { name: string; requested?: string }[];
     check("down manager delivery --yes stops stack-manager and stack-delivery, and its target keeps each requested name",

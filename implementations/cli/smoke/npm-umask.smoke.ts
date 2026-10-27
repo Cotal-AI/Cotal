@@ -106,6 +106,7 @@ try {
       assert.equal(statSync(path).mode & 0o777, mode, `${path.slice(install.length) || "the install root"} is 0${mode.toString(8)} after the repair`);
     assert.equal(statSync(join(outside, "target")).mode & 0o777, 0o666, "a link in the install is not followed");
     assert.equal(repairInstallModes(install), 0, "a repaired install has nothing left to change");
+    assert.equal(repairInstallModes(join(install, "missing")), 0, "a missing root, such as a config folder no command has written yet, has nothing to repair");
   } finally {
     rmSync(install, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });

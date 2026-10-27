@@ -1,5 +1,82 @@
 # @cotal-ai/runtime
 
+## 0.110.0
+
+### Patch Changes
+
+- Updated dependencies [927e512]
+  - @cotal-ai/workspace@0.110.0
+  - @cotal-ai/core@0.110.0
+  - @cotal-ai/lang@0.110.0
+
+## 0.109.25
+
+### Patch Changes
+
+- dbfc90b: Every command's help now shows its most common uses. `cotal <command> --help` puts an Examples section right after Usage and Shorthands, before Commands and Options, and each example is a command that works as written with a short note on what it does, such as `cotal spawn -d` to launch an agent through a manager and return. Every command and subcommand `cotal help` lists has one to three. An example's command is never wrapped; its note sits beside it, or under it on a narrow terminal. A command's `examples` entry is now `{ command, note }`; a bare string is still accepted and shows with no note. `cotal manager <verb> --help` shows the manager's own examples.
+- Updated dependencies [dbfc90b]
+  - @cotal-ai/core@0.109.25
+  - @cotal-ai/workspace@0.109.25
+  - @cotal-ai/lang@0.109.25
+
+## 0.109.24
+
+### Patch Changes
+
+- Updated dependencies [0bffcb0]
+  - @cotal-ai/workspace@0.109.24
+  - @cotal-ai/core@0.109.24
+  - @cotal-ai/lang@0.109.24
+
+## 0.109.23
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.23
+  - @cotal-ai/lang@0.109.23
+  - @cotal-ai/workspace@0.109.23
+
+## 0.109.22
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.22
+  - @cotal-ai/lang@0.109.22
+  - @cotal-ai/workspace@0.109.22
+
+## 0.109.21
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.21
+  - @cotal-ai/lang@0.109.21
+  - @cotal-ai/workspace@0.109.21
+
+## 0.109.20
+
+### Patch Changes
+
+- Updated dependencies [ffeaa32]
+  - @cotal-ai/workspace@0.109.20
+  - @cotal-ai/core@0.109.20
+  - @cotal-ai/lang@0.109.20
+
+## 0.109.19
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.19
+  - @cotal-ai/lang@0.109.19
+  - @cotal-ai/workspace@0.109.19
+
+## 0.109.18
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.18
+  - @cotal-ai/lang@0.109.18
+  - @cotal-ai/workspace@0.109.18
+
 ## 0.109.17
 
 ### Patch Changes
