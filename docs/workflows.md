@@ -779,7 +779,20 @@ One hosted run may name one placement instance; a program naming several is refu
 widening one run credential across hosts. Placement is accepted only from an object-literal spawn
 option bag whose `endpoint` and `instanceId` are string literals. A computed option bag, a computed
 placement field, or a spread in either object refuses at `run-start`. The option argument may be
-absent, and an object-literal bag without placement is accepted.
+absent, and an object-literal bag without placement is accepted when it names no `cwd`.
+A spawn that names `cwd` must also name `placement`, because that directory belongs to one host.
+Without placement it refuses with L4000 before submitting a spawn. Read the manager instance with
+`cotal ps`, then put its full instance ID into the program as a literal:
+
+```js
+const worker = await spawn("worker", {
+  placement: { endpoint: "manager", instanceId: "abcdefghijklmnopqrstuvwxyz" },
+  cwd: "/home/operator/project"
+})
+```
+
+Replace both example values with the manager instance and an existing absolute directory on that
+manager's host. No manager is chosen by class anycast for this spawn.
 A turn handoff across worktrees is the L4004 described above. Recovery keeps these honest: a resumed run
 reseeds its roster, holders and handoff memos from its own journal, and the driver re-issues any
 recorded-but-undischarged cancellation at adoption, before the engine performs a new step, so a
