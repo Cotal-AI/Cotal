@@ -1,5 +1,14 @@
 # @cotal-ai/cli
 
+## 0.109.10
+
+### Patch Changes
+
+- e9f4793: The broker record and the user-auth pidfile template each have one name. `@cotal-ai/workspace` exports `NATS_PIDFILE`, and `cotal up`, the nats descriptor, `cotal status`, the broker service, the controller-stack checks and the `clean` sweep all take the broker record from it. The sweep takes the user-auth record from `AUTH_PIDFILE`. Renaming either constant moves every site that writes or reads that record.
+- Updated dependencies [e9f4793]
+  - @cotal-ai/workspace@0.109.10
+  - @cotal-ai/core@0.109.10
+
 ## 0.109.9
 
 ### Patch Changes

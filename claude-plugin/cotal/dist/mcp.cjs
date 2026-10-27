@@ -75528,10 +75528,10 @@ async function submitFeedback(input, options = {}) {
 var import_node_child_process3 = require("node:child_process");
 
 // ../connector-core/dist/docs-bundle.generated.js
-var DOCS_VERSION = "0.109.9";
+var DOCS_VERSION = "0.109.10";
 function loadDocsBundle() {
   return {
-    "version": "0.109.9",
+    "version": "0.109.10",
     "generatedFrom": "docs/*.md + SPEC.md + spec/cotal-lang.md + spec/cotal.schema.json",
     "pages": [
       {
