@@ -11,8 +11,9 @@
  *     The manager used to refuse this as `unknown runtime` because its process had imported only
  *     its own runtime.
  *  3. an installed provider that is not reachable, an official runtime that is not installed, and
- *     a name nobody provides are refused by the manager with the same wording the CLI's own lookup
- *     uses, the official one naming its `cotal ext add` package.
+ *     a name nobody provides are refused DEPENDENCY_UNAVAILABLE before the launch is sent, because
+ *     `--on` names this root's own manager. The remedy is the CLI's own lookup wording, the official
+ *     one naming its `cotal ext add` package.
  *  4. `cotal ext remove` of the runtime while the manager runs refuses the NEXT seat that names
  *     it; the seat already on it is still listed and still stops through its cached backend.
  *
@@ -61,7 +62,7 @@ const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 /** The one JSON envelope a `--json` command wrote on stdout, or undefined. */
-const envelope = (stdout: string): { outcome?: string; result?: Record<string, unknown> | null; error?: { code?: string; message?: string } } | undefined => {
+const envelope = (stdout: string): { outcome?: string; result?: Record<string, unknown> | null; error?: { code?: string; message?: string; remedy?: string } } | undefined => {
   const line = stdout.split("\n").find((l) => l.startsWith("{\"schemaVersion\""));
   try { return line ? JSON.parse(line) : undefined; } catch { return undefined; }
 };
@@ -169,23 +170,26 @@ try {
   const rows = (census?.result?.items ?? []) as { name: string; mode: string }[];
   ok("ps lists both seats on their own runtimes", rows.some((r) => r.name === "extseat" && r.mode === "seat-fixture") && rows.some((r) => r.name === "ptyseat" && r.mode === "pty"), rows);
 
-  // 3. refusals, phrased as the CLI's own lookup phrases them.
+  // 3. refusals before the launch is sent, the remedy phrased as the CLI's own lookup phrases it.
+  const PREFLIGHT = "the requested runtime did not pass preflight on this machine, where the selected manager runs; nothing was launched";
+  const preflightRefused = (reply: ReturnType<typeof envelope>, remedy: string) =>
+    reply?.outcome === "refused" && reply.error?.code === "DEPENDENCY_UNAVAILABLE" && reply.error.message === PREFLIGHT && reply.error.remedy === remedy;
   const unreachable = envelope(cli("spawn", "default", "-d", "--on", on, "--agent", "e2e", "--no-events", "--runtime", "seat-fixture-unreachable", "--name", "none1", "--json").stdout);
   ok("an installed provider that is not reachable is refused by name, and nothing launches",
-    unreachable?.outcome === "refused" && unreachable.error?.code === "LIFECYCLE_BLOCKED" && unreachable.error.message === "seat-fixture-unreachable runtime requested but it is not reachable", unreachable);
+    preflightRefused(unreachable, "seat-fixture-unreachable runtime requested but it is not reachable"), unreachable);
   const official = envelope(cli("spawn", "default", "-d", "--on", on, "--agent", "e2e", "--no-events", "--runtime", "tmux", "--name", "none2", "--json").stdout);
   ok("an official runtime that is not installed is refused naming its package",
-    official?.outcome === "refused" && official.error?.code === "LIFECYCLE_BLOCKED" && official.error.message === "no installed extension provides runtime \"tmux\" - install it with `cotal ext add @cotal-ai/tmux`", official);
+    preflightRefused(official, "no installed extension provides runtime \"tmux\" - install it with `cotal ext add @cotal-ai/tmux`"), official);
   const unknown = envelope(cli("spawn", "default", "-d", "--on", on, "--agent", "e2e", "--no-events", "--runtime", "nosuch", "--name", "none3", "--json").stdout);
   ok("a runtime nobody provides is refused as unknown, listing the known names",
-    unknown?.outcome === "refused" && unknown.error?.code === "LIFECYCLE_BLOCKED" && unknown.error.message === "unknown runtime \"nosuch\" (known: pty, orca, tmux, cmux, herdr) - install a provider with `cotal ext add <npm-package>`, or check the name", unknown);
+    preflightRefused(unknown, "unknown runtime \"nosuch\" (known: pty, orca, tmux, cmux, herdr) - install a provider with `cotal ext add <npm-package>`, or check the name"), unknown);
 
   // 4. a live remove is honored for the next seat; the seat already on the runtime keeps it.
   const removed = cli("ext", "remove", "cotal-ext-seat-runtime");
   ok("the runtime extension is removed while the manager runs", removed.status === 0, removed.stderr.slice(-400));
   const late = envelope(cli("spawn", "default", "-d", "--on", on, "--agent", "e2e", "--no-events", "--runtime", "seat-fixture", "--name", "late", "--json").stdout);
   ok("after the remove, the next seat naming that runtime is refused even though the manager imported it earlier",
-    late?.outcome === "refused" && late.error?.code === "LIFECYCLE_BLOCKED" && late.error.message === "unknown runtime \"seat-fixture\" (known: pty, orca, tmux, cmux, herdr) - install a provider with `cotal ext add <npm-package>`, or check the name", late);
+    preflightRefused(late, "unknown runtime \"seat-fixture\" (known: pty, orca, tmux, cmux, herdr) - install a provider with `cotal ext add <npm-package>`, or check the name"), late);
   const still = (envelope(cli("ps", "--json").stdout)?.result?.items ?? []) as { name: string; mode: string }[];
   ok("the seat already on the removed runtime is still listed on it", still.some((r) => r.name === "extseat" && r.mode === "seat-fixture"), still);
   const stopExt = cli("stop", "extseat", "--on", on);
