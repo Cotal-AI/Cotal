@@ -15,7 +15,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { createSuite } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, createSuite } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -35,6 +35,8 @@ function sandbox(shell = "/bin/bash") {
   roots.push(home);
   const xdg = join(home, ".config");
   const run = (args: string[], extraEnv: Record<string, string> = {}) => {
+    // No down runs here, and this sandbox records no anchor, so the guard refuses one.
+    assertSmokeSandboxDown(undefined, args, { cwd: home });
     const r = spawnSync(process.execPath, [BIN, ...args], {
       cwd: home,
       env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", SHELL: shell, ...extraEnv },

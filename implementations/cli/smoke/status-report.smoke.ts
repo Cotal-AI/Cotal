@@ -18,7 +18,7 @@ import { connect } from "node:net";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { createSuite, freePort } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, createSuite, freePort } from "@cotal-ai/smoke-kit";
 import { acquireMaintenanceLock, beginMaintenanceCut, findMesh, recordMesh, releaseMaintenanceLock, renderReport, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { statusView } from "../src/commands/status.js";
 import { restoreNextStep } from "../src/lib/restore.js";
@@ -64,6 +64,8 @@ function sandbox() {
   roots.push(home);
   mkdirSync(join(home, ".cotal"));
   const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) => {
+    // No down runs here, and this sandbox records no anchor, so the guard refuses one.
+    assertSmokeSandboxDown(undefined, args, { cwd });
     const r = spawnSync(process.execPath, [BIN, ...args], {
       cwd,
       env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
