@@ -1,0 +1,3 @@
+# Issued-authority rows end at their generation horizon plus the margin, and a removed key
+# re-created later is refused before the store is read (#4026).
+smoke:issued-retention:live

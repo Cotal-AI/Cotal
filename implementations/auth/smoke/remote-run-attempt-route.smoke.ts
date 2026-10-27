@@ -166,10 +166,10 @@ try {
     return { status: res.status, body: data as Record<string, unknown> };
   };
 
-  const newRun = () => `run-${Buffer.from(mintGeneration().slice(0, 16)).toString("hex").slice(0, 32)}`;
+  const newRun = () => `run-${Buffer.from(mintGeneration(Math.floor(Date.now() / 1000) + 172_800).slice(8, 24)).toString("hex").slice(0, 32)}`;
   const admit = async (runId: string, inst = instanceId) => createRunAdmission(admissions, {
     version: 1, space: SPACE, endpoint: "manager", runId, instanceId: inst,
-    caller: { owner: httpOwner, actor: "alice", uid: mintLifecycleUid(), generation: mintGeneration() } as never,
+    caller: { owner: httpOwner, actor: "alice", uid: mintLifecycleUid(), generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800) } as never,
     ceiling: { publish: { allow: { mode: "none" }, deny: [] }, subscribe: { allow: { mode: "none" }, deny: [] } },
     provenance: { kind: "operator", by: "suite", reason: "fixture" }, admittedAt: Date.now(),
   });
@@ -346,7 +346,7 @@ try {
 
   // 9. Answer operator for waiting checkpoint, serving a caller with a live issuance, returns closed
   // response with JWT, authenticating to broker. The host reads the pause off the run's journal.
-  const cpToken = `cp-${mintGeneration()}`;
+  const cpToken = `cp-${mintGeneration(Math.floor(Date.now() / 1000) + 172_800)}`;
   const journalAt = Date.now();
   await jetstream(nc).publish(wfjSubject(SPACE, first), JSON.stringify({ v: 1, kind: "activation", run: first, n: 0, holder: "h", fencingToken: 1, epoch: 1, replayedTo: 0, at: journalAt }));
   await jetstream(nc).publish(wfjSubject(SPACE, first), JSON.stringify({ v: 1, kind: "step", run: first, n: 1, at: journalAt, entry: {

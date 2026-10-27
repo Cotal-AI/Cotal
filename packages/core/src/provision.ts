@@ -97,7 +97,7 @@ import { parseServiceConnectionBinding, type ServiceConnectionBinding } from "./
 import { SERVICE_ACCESS_TTL_SECONDS } from "./service-authority-limits.js";
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, hardenedAuthorityStreamNames, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, assertGeneration, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
-import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef } from "./issued-authority.js";
+import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, issuedHorizon, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef } from "./issued-authority.js";
 import { admissionBucket, admissionKey, revocationKey } from "./run-admission.js";
 import { runSubmissionKey } from "./run-submission.js";
 import { runDriverGrants, runMediatorGrants, runOperatorGrants, type RunDriverGrantArgs, type RunOperatorGrantArgs } from "./run-driver-grants.js";
@@ -1050,7 +1050,7 @@ export async function mintCreds(
 }
 
 /** The SPEC 13.15 issuance fence: an issuing mint persists the ceiling it is handing out BEFORE
- *  the material is returned. The evidence is the minted permission set itself (deny rules
+ *  the material is returned, and the material expires by its generation's horizon. The evidence is the minted permission set itself (deny rules
  *  included), imported from the same object the JWT was encoded from, so the record and the
  *  credential cannot disagree. `sources` name the gates the issuance depends on; an issuance bound
  *  to none (a one-shot instrument) carries the credential's own expiry as its liveness. A renewal
@@ -1072,14 +1072,16 @@ async function releaseIssuance(
   if (!seam) throw new Error(`mintCreds: an issued "${profile}" mint requires opts.issuance (the evidence store seam); the material is released only after its evidence is durable (SPEC 13.15)`);
   if (!pr.lifecycleUid) throw new Error("mintCreds: an issuance is lifecycle-keyed; mint with opts.lifecycleUid");
   const ref: IssuedAuthorityRef = { space, owner: pr.owner, actor: pr.actor, uid: pr.lifecycleUid, generation: opts.issued.generation };
+  // Every credential minted on a generation ends by its horizon: past it the generation authorizes
+  // nothing and its rows may be gone, so material outliving it would ride a dead binding.
+  if (exp === undefined || exp > issuedHorizon(ref.generation))
+    throw new Error(`mintCreds: an issued credential must expire by its generation's horizon ${issuedHorizon(ref.generation)} (SPEC 13.15)`);
   const permissions = importNativeSubjectPermissions(perms);
   if (seam.mode === "renew") {
     await seam.store.confirm(ref, permissions);
     await seam.finalize?.(credentialId);
     return;
   }
-  if (seam.sources.length === 0 && exp === undefined)
-    throw new Error("mintCreds: an issuance bound to no source gate must be a bounded credential; nothing else can end its liveness (SPEC 13.15)");
   const prepared = await seam.store.stage({
     version: 1,
     ref,

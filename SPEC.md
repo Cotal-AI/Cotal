@@ -4945,8 +4945,8 @@ Per-space resources, created at space setup (`STREAM.CREATE` remains denied to a
 | (sessions: core-only, no stream) | `cotal.<space>.eps.>` | never captured; bounded in-memory window |
 | `cotal_records_<space>` KV | records: the §13.7 core-kind key grammars (`svc`, `signer`, `handle`, `contracts`, `goal`, `cp`, `lease`, `lifecycle`, `govern`, `uid`, `policy`, `oblig`, and the §14 kinds `run`, `answer`, `notice`, `migration`) | per-key CAS; `.spec`/`.status`-split keys EXCEPT the unsplit atomic keys `lifecycle.<owner>.<actor>`, `govern.<endpoint>`, `uid.<lifecycleUid>`, `policy.<endpoint>.<digest-hex>`, and `oblig.>` (§13.1/§13.7/§13.8/§13.9); `allow_direct=true`, but the heads and every fencing read are leader-served `STREAM.MSG.GET` (§13.9 read service). **No age retention on authority keys:** `lifecycle` heads, `govern`, `uid` reservations, `policy` versions, and `oblig` rows are NEVER-DELETED (no grant permits DEL/PURGE; an age-evicted reservation would reopen UID reuse, an evicted obligation would orphan accepted work); a deletion marker on any of them refuses loudly as corruption, never as absence. **Shape is proved at bind, not assumed:** the stream MUST be primary (never a mirror/sourced copy) and MUST carry no bucket-wide silent-eviction limit (no `max_age`, no finite `max_msgs`/`max_bytes`: under `DiscardOld` a finite global limit evicts a prior authority key's latest row the moment an unrelated key is written); every trusted consumer of this store (the minting authority, the mapping reader, the mediator) verifies exactly this via `STREAM.INFO` when it binds and refuses to serve otherwise |
 | `cotal_auth_<space>` KV | the credential ledger (`cred.<lifecycleUid>.<credentialId>` + issuance gates `gate.<lifecycleUid>` + the disjoint endpoint families `epgate.<endpoint>.<instanceId>` / `epcred.<endpoint>.<instanceId>.<credentialId>` + the staging family `stage.>` + source gates `srcgate.<issuerKeyId>.<id>` + lineage index `bysrc.…` + native-key issuance evidence `natkey.<userNkey>`, §13.1) + session ledger (`session.<sessionId>`, §13.6) | trusted auth path ONLY; no agent, endpoint, observer, admin, or host profile holds any grant (§13.9 matrix); **`allow_direct=false`** (every fence is a leader-served revision-pinned CAS write; Direct Get's follower/mirror reads would defeat read-your-writes, §13.1); CAS + monotonic states. **No bucket-wide age retention:** `gate.`, `epgate.`, `srcgate.`, and `session.` authority keys persist until their lifecycle/handle/session is explicitly terminal (an age-evicted `open` gate would silently reopen minting, or drop a `frozen`/`retired` fence); only `cred.`/`epcred.`/`bysrc.` rows carry a per-key TTL bounded by the credential TTL (NATS per-key message TTL, ≥ 2.12), never a bucket MaxAge; `stage.` rows follow their operation's retention, never a ledger row's. **Shape is proved at bind** (the records-store rule above, plus `allow_direct=false`): primary, un-mirrored, no bucket `max_age`, no finite `max_msgs`/`max_bytes`; the trusted auth path verifies this via `STREAM.INFO` when it binds and refuses to serve otherwise |
-| `cotal_issued_<space>` KV | issued-authority evidence (§13.15): `v1.<owner>.<actor>.<uid>.<generation>` (immutable evidence), `attempt.v1.…` (the one-field attempt row), `bysource.v1.<sha256>.…` (the reverse index from a source gate to the issuances depending on it) | Limits, file storage, no age eviction, **`allow_direct=false`** (every read is a fence); create-only evidence, revision-CAS attempt; never deleted while the issuance or anything admitted under it is resumable. Immutability is BROKER-ENFORCED the way the EPC store's is: `allow_rollup_hdrs=false, deny_delete=true, deny_purge=true`, set once at creation and verified by every provisioner that binds, so a holder of the issuer's own key row cannot replace evidence or empty the bucket with a `Nats-Rollup` header, a message delete, or a purge |
-| `cotal_accepted_<space>` KV | accepted rows (§13.15): `accepted.v1.<acceptedToken>`, one per issuance, written by the issuer at release | Limits, file storage, `allow_direct=true`: the client's per-key `DIRECT.GET` is the discovery read; create-only, with the same three broker-enforced flags as the evidence store |
+| `cotal_issued_<space>` KV | issued-authority evidence (§13.15): `v1.<owner>.<actor>.<uid>.<generation>` (immutable evidence), `attempt.v1.…` (the one-field attempt row), `bysource.v1.<sha256>.…` (the reverse index from a source gate to the issuances depending on it) | Limits, file storage, no stream-wide age eviction, **`allow_direct=false`** (every read is a fence); create-only evidence, revision-CAS attempt. **Bounded by per-message TTL:** `allow_msg_ttl=true` and no subject delete markers; each row carries its own TTL to its generation's horizon plus the retention margin (§13.15), and nothing else removes it, so no row goes while its generation can authorize anything (a run admitted under it keeps its ceiling in its admission, §14.8). A store without `allow_msg_ttl` predates bounded retention: every binder refuses it, and it is recreated, never adopted. Immutability is BROKER-ENFORCED the way the EPC store's is: `allow_rollup_hdrs=false, deny_delete=true, deny_purge=true`, set once at creation and verified by every provisioner that binds, so a holder of the issuer's own key row cannot replace evidence or empty the bucket with a `Nats-Rollup` header, a message delete, or a purge |
+| `cotal_accepted_<space>` KV | accepted rows (§13.15): `accepted.v1.<acceptedToken>`, one per issuance, written by the issuer at release | Limits, file storage, `allow_direct=true`: the client's per-key `DIRECT.GET` is the discovery read; create-only, with the same three broker-enforced flags and the same per-message TTL retention as the evidence store: a row lives until the horizon of the generation it names plus the retention margin |
 | `cotal_admission_<space>` KV | run admissions and revocations (§14.8): `admission.v1.<endpoint>.<runId>`, `revoked.v1.<endpoint>.<runId>` | Limits, file storage, no age eviction, `allow_direct=false`; both keys create-only and the marker permanent, BROKER-ENFORCED by `allow_rollup_hdrs=false, deny_delete=true, deny_purge=true` (a run-admitter's own key row admits no `Nats-Rollup` replacement of the admission, and no purge empties another run's row); retained while the run, its program, its journal or its lineage is resumable |
 | `EPC_<space>` stream | `cotal.<space>.epc.>` (content-addressed contract artifacts, one per digest subject, §13.7) | Limits, no age eviction (artifacts are permanent); create-only mediated publication (`Nats-Expected-Last-Subject-Sequence: 0`); `allow_direct=true` (the subject-scoped last-by-subject read IS the fetch path; non-fencing, verify-on-read); permanence is BROKER-ENFORCED: `deny_delete=true, deny_purge=true` (the broker rejects the message-delete and purge APIs even from a stream-API-holding principal). Permanence is the COMBINATION of these flags, the retention floor's no-early-removal rule (below: the flags alone stop delete/purge but not age eviction or a whole-stream teardown), verify-on-read pinning WHAT a subject carries, and the stream-management surface held by no profile (§13.9); no single flag makes deletion structurally impossible |
 
@@ -4961,7 +4961,8 @@ conforming alternative that erases it while `MaxAge` still passes: a finite
 rollup/compaction, or a retention-policy change; for these families finite count/byte
 limits MUST fail loud or `DiscardNew` rather than evict protected history, and message TTL
 and rollup MUST be disabled on protected subjects (a per-key TTL is permitted only on
-non-protected keys, e.g. the auth bucket's `cred.`/`bysrc.` index rows above, never on a
+non-protected keys, e.g. the auth bucket's `cred.`/`bysrc.` index rows above and the
+issued-authority rows, whose TTL ends after their generation's horizon (§13.15), never on a
 protected fact, head, or gate). NO principal, including operator, setup, and system tooling,
 not only §13.9 profiles, may `MSG.DELETE`/`PURGE`, `STREAM.DELETE`, or issue a
 `STREAM.UPDATE` that weakens any of these limits; the never-deleted heads and gates carry
@@ -5150,9 +5151,12 @@ the ceiling as the issuer accepted it, immutable, and bound to the request by th
 than by anything the caller or a mutable ledger says. This section defines that binding.
 
 **The reference.** An issued authority is `{ space, owner, actor, uid, generation }`: the
-caller triple plus a **generation**, 32 lowercase hex characters of issuer-chosen entropy (at
-least 128 bits). A generation is an identifier, never a bearer secret. It is chosen by the
-issuer, never by the client, and is never reused: a reference is created once or refused.
+caller triple plus a **generation**, 32 lowercase hex characters. The first 8 are the
+generation's **horizon**, the unix second at and after which it authorizes nothing, in big-endian
+hex; the last 24 are issuer-chosen entropy (96 bits). A generation is an identifier, never a
+bearer secret. It is chosen by the issuer, never by the client, and is never reused: a reference
+is created once or refused. The horizon rides the generation, so the broker pins it on the
+request subject with the rest of the rail, and nothing written to a store can move it.
 
 **The rail.** An issued credential's request-publish and reply-subscribe rows ride the
 versioned rail (§13.2), with its generation pinned literally beside its triple. A request
@@ -5165,12 +5169,13 @@ caller establishes no binding.
 where `permissions` is the credential's final effective permission ceiling (publish and
 subscribe, each an explicit `all`, `none` or `patterns` allow plus a deny list, imported from the
 native permission fragment so an omitted list can never read as a narrow one) and `sources` are
-the gate coordinates the issuance depends on. Issuance is `prepare → release`: the evidence and
+the gate coordinates the issuance depends on. `expiresAt`, when present, is no later than the
+generation's horizon. Issuance is `prepare → release`: the evidence and
 a `prepared` attempt row are written create-only, the issuer performs its own finalization, and
 the attempt row is CAS-advanced to `active` at the revision the prepare observed. A prepare that
 loses its create is refused; a release whose CAS loses is `aborted`. The evidence store is
 append-only at the broker (§13.12: unlimited per-key history, no rollup header, no message delete,
-no purge), and the evidence and source-index rows are read as the FIRST message on their key, so a
+no purge; a row ends only by its own TTL, below), and the evidence and source-index rows are read as the FIRST message on their key, so a
 later write on the same key by a holder of the issuer's bucket-wide row is inert to every
 resolver; only the attempt row advances, by CAS. The issuer also writes the
 **accepted row** (`cotal_accepted_<space>`, keyed by a token the launching party chose) naming the
@@ -5178,15 +5183,33 @@ reference, create-only. A client learns which generation it was bound under by r
 row over a per-key `DIRECT.GET` grant its ceiling carries; it never trusts what it proposed or
 what a file says, and it refuses a row naming another owner, actor or lifecycle.
 
+**Retention.** Every row of a generation in either store (its evidence, each attempt state, each
+source-index row and its accepted row) is written with a per-message TTL (`Nats-TTL`) that keeps
+it until the generation's horizon plus a retention margin of 60 seconds, and no longer. Nothing
+else removes it. No resolution, renewal or retirement reads or writes a generation's keys at or
+after its horizon; it refuses the generation as expired first. A key the broker removed, and
+anything later written on it, is therefore never read as that generation's row. The margin
+covers the clock difference between a writer, the broker and a reader. It need not cover how long
+a resolution takes, because the horizon is checked again after the last read. A credential minted
+on a generation by a static issuer (a static incarnation's credential, an operator instrument)
+expires no later than the horizon. A static incarnation's generation has a horizon 30 days after
+its issuance; each renewal of its credential is capped at it, none is minted at or after it, and
+the incarnation is respawned to continue. A run admitted under a generation keeps its ceiling in
+its admission (§14.8), so removing the generation's rows after the horizon ends no run.
+
 **Renewal.** A renewal of an issued credential keeps its generation only when the ceiling being
 minted is byte-identical (RFC 8785) to the recorded evidence; a changed ceiling is refused as a
 renewal and is a fresh issuance on a fresh generation, which the client adopts only through a
 new connection. Refreshing a credential file never switches the generation of an already
-connected transport.
+connected transport. A renewal at or after the generation's horizon is refused before the store is
+read.
 
 **Resolution.** A host that admits an effect under an issued authority resolves it: the
-evidence exists, the attempt row is `active`, the evidence is unexpired, every source is live,
-and a second read of the attempt row returns the same revision. Any other outcome refuses. The
+generation is before its horizon, the evidence exists, the attempt row is `active`, the evidence
+is unexpired, every source is live, a second read of the attempt row returns the same revision,
+and the generation is still before its horizon after that read. Any other outcome refuses. A
+retirement of a generation at or past its horizon writes nothing, since every reader already
+refuses it. The
 one source shape this revision issues against is a static incarnation's credential ledger family
 (`cred.<lifecycleUid>` on `cotal_auth_<space>`), whose liveness is its issuance gate not being
 `retired`; a lifecycle terminal retires every issuance indexed to that family
@@ -5202,7 +5225,7 @@ grant. A missing, malformed, foreign-owner or no-run parent grants no issuance. 
 view, signer or authority door is added, and ordinary command grants still derive from signed
 `act.scope`, contained against the current child row. The issued view carries the per-key
 accepted-row read beside its instance-pinned rows. It chooses
-the generation, persists evidence whose permissions are the set it signs and whose one source is
+the generation, whose horizon is the bearer's expiry, persists evidence whose permissions are the set it signs and whose one source is
 that row, `{ space, bucket: "cotal_actors_<space>", key: "actor.<owner>.<actor>.<lifecycleUid>" }`,
 releases it, and writes the accepted row, all before it returns the JWT. The accepted token is the
 first 32 lowercase hex characters of SHA-256 over `"cotal.accepted.v1\0"` followed by the
@@ -5211,8 +5234,8 @@ read from a request body. The source is live while the auth service's actor ledg
 that owner and actor carrying that lifecycle UID; a revoked row, or a re-grant under another UID, is
 a dead source at the next resolution. Only the auth service attests this shape; every other host
 refuses it as a coordinate it cannot attest. A reconnect under the same nonce finds the existing
-accepted row. When the row names the same triple and the ceiling being minted is byte-identical to
-the recorded evidence, the callout renews that generation; otherwise it refuses the connect, and the
+accepted row. When the row names the same triple, the generation is before its horizon, and the
+ceiling being minted is byte-identical to the recorded evidence, the callout renews that generation; otherwise it refuses the connect, and the
 client adopts a fresh generation only through a new connection under a new nonce. A managed
 issuance's single source is the child's own actor row and lifecycle, not its parent. A managed seat
 missing either eligibility predicate keeps the legacy manager-caller mint for ordinary commands,
@@ -5233,7 +5256,7 @@ enrollment. The existing fixed manager actors, public nkeys and registration pro
 The host MUST cap every returned credential at the assignment expiry and refuse issuance after the
 assignment ends. The supervisor and executor registration ceilings MUST be persisted through the
 existing issued evidence and accepted-row stores before material is returned, with expiry as their
-recorded lifetime. The recorded permission set MUST be byte-identical to the native permission set
+recorded lifetime and as their generation's horizon. The recorded permission set MUST be byte-identical to the native permission set
 signed by the authority plane at issuance and every renewal. Renewal MUST resolve and confirm the
 original ceiling and MUST NOT widen it. These JWTs are signed by the authority plane, not the
 user-token callout. These registration
@@ -6668,6 +6691,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-27 | **Issued-authority rows are bounded by their generation's horizon (§13.12, §13.15).** The two issued-authority stores held every issuance forever, so their size was the cumulative number of exchanges. A generation now carries its horizon in its first 8 hex digits, and its last 24 are 96 bits of issuer entropy, so the 32-hex grammar and every grant are unchanged. Every row of a generation in either store carries a per-message TTL to its horizon plus a 60-second margin, and both stores set `allow_msg_ttl` with no subject delete markers; `deny_delete`, `deny_purge` and the per-key shapes are unchanged. Every resolution, renewal and retirement refuses a generation at or past its horizon before it reads the store, and resolution checks the horizon again after its last read, so a removed key re-created later is never read. Horizons: the bearer expiry for a user-auth issuance, the credential expiry for an operator instrument, the assignment expiry for a platform supervisor duty, and 30 days after issuance for a static incarnation, whose renewals are capped at it. A store created before this revision is refused at bind and recreated. **Breaking pre-1.0 authority change: minor.** |
 | 2026-10-26 | **An operator instrument reads its pinned manager's `resolve-cwd` (§13.2, Appendix B), additive.** The folder question a managed launch asks had no caller that could make its check on a static mesh: `resolve-cwd` was carried by a `spawn` holder's `manager-caller` view and by no operator instrument, so every folder typed at that question was refused at the broker. Both instrument tiers now carry it on the instance their mint pins, beside the `spawn` row of the same `manager.spawn` capability class. The standing agent `spawn` set is unchanged, and no class, scatter or other-instance row is added. |
 | 2026-10-26 | **One callout process MAY serve several spaces (§10, Appendix B), additive.** A space's callout requests are served inside that space's dedicated auth account, so a responder holds one subscription per auth account it serves. One process may hold one subscription and one set of signing keys per space it serves. A response for a space must be signed only with that space's keys, and a bearer must be validated only against the issuer and audience of the space whose request it arrived on. Connect-limit buckets are per space, so a connect to one space never spends another's allowance. A callout-only replica is one space's membership of its queue group, and one process may hold several, one `issuer` session each. |
 | 2026-10-26 | **A held `issuer` session for user-auth issuance (§13.9, §13.15).** An auth service, and each callout-only replica on its own, may hold one `issuer` session per account, space and authority-plane lifetime for the user-auth issuance its callout performs, in place of one session per connect. It keeps the five-minute expiry and is replaced before it expires. It never reconnects, and it is closed and drained on a fence, a shutdown or a loss. Each issuance still makes its own reads and writes, and a write in flight at a loss is never sent again. Retirement at a lifecycle terminal and every other issuance window stay one-shot. The `issuer` principal is no longer one-shot only. |

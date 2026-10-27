@@ -127,6 +127,8 @@ import {
   standaloneConnectOpts,
   rawDigest,
   STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC,
+  STATIC_GENERATION_HORIZON_SEC,
+  issuedHorizon,
   newArtifactSigner,
   RotatingSigner,
   generationAnchor,
@@ -6625,13 +6627,15 @@ export class Manager {
         // (NOT the supervisor's long-lived endpoint), so the DM/DLV consumer-create surface exists only
         // for the provisioning window, never as a standing grant on the always-on daemon (residual 2).
         // F5(b): the credential is BOUNDED (`expiresAt`) — the manager push-renews it ahead of expiry.
-        const exp = Math.floor(Date.now() / 1000) + MANAGED_STATIC_TTL_SEC;
+        const now = Math.floor(Date.now() / 1000);
+        const exp = now + MANAGED_STATIC_TTL_SEC;
         // The credential is an ISSUANCE (SPEC 13.15): its caller rails carry a fresh generation
         // and its ceiling is recorded as evidence bound to this incarnation's ledger family. The
         // §13.1 ledger append (ledger BEFORE materialization) is the release's finalizer, so the
         // evidence activates only once the row exists, and the row exists only after the evidence
         // was staged. The agent learns the generation by reading the accepted row under its token.
-        issued = { generation: mintGeneration(), acceptedToken: mintAcceptedToken() };
+        // The generation's horizon bounds every renewal of this incarnation's credential.
+        issued = { generation: mintGeneration(now + STATIC_GENERATION_HORIZON_SEC), acceptedToken: mintAcceptedToken() };
         const issuedAgent = { name, id: identity.id, lifecycleUid };
         const creds = await this.withIssuer((i) =>
           this.withProvisioner((prov) =>
@@ -10579,12 +10583,18 @@ export class Manager {
   }
 
   private async driveManagedStaticCredRenewal(a: ManagedAgent): Promise<void> {
-    const exp = Math.floor(Date.now() / 1000) + MANAGED_STATIC_TTL_SEC;
     // The SAME permission scope the spawn minted (recorded on the managed row): allowSubscribe/
     // allowPublish/role/capabilities are the JWT-shaping inputs; `subscribe` (the active read
     // set) shapes durable membership only and is not a mint input.
     if (!a.issued)
       throw new Error(`renewManagedStaticCred: ${a.name} carries no issuance; a static credential minted before SPEC 13.15 is not renewed under an unbound generation - respawn the agent`);
+    // A renewal never outlives the generation's horizon, and none is minted at or past it: the
+    // generation then authorizes nothing and its rows are being removed (SPEC 13.15).
+    const now = Math.floor(Date.now() / 1000);
+    const horizon = issuedHorizon(a.issued.generation);
+    if (now >= horizon)
+      throw new Error(`renewManagedStaticCred: ${a.name}'s issued generation reached its horizon ${new Date(horizon * 1000).toISOString()} (${STATIC_GENERATION_HORIZON_SEC / 86_400} days after its spawn) and is not renewed - respawn the agent (rotation instead of this cap: Cotal-AI/Cotal#4942)`);
+    const exp = Math.min(now + MANAGED_STATIC_TTL_SEC, horizon);
     // A RENEWAL keeps the generation (SPEC 13.15): the same JWT-shaping inputs produce the same
     // ceiling, which `confirm` verifies against the recorded evidence before the ledger append. A
     // changed ceiling is refused there: that is a fresh issuance on a new connection, never a renewal.
@@ -10607,7 +10617,7 @@ export class Manager {
     await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath, this.space), credsPath);
     // The record pins the credential's digest, so it follows the re-signed file.
     this.refreshSeatRecord(a);
-    console.error(`managed cred renewal ${a.name}: re-signed for the same identity (exp +${MANAGED_STATIC_TTL_SEC}s); the agent endpoint's source re-read adopts it`);
+    console.error(`managed cred renewal ${a.name}: re-signed for the same identity (exp +${exp - now}s); the agent endpoint's source re-read adopts it`);
   }
 
   /** The Unit B reconciliation (F3 "no active orphan"): ensure the authority stores, then sweep

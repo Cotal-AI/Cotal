@@ -6,6 +6,7 @@ import {
   ROOT,
   accountRevocations,
   assertLifecycleToken,
+  credentialLifetime,
   credsClaims,
   credsProblem,
   inspectCredHealth,
@@ -491,7 +492,7 @@ function exitOnRefusal(e: unknown): never {
  * Mint one control-caller instrument for a target the caller already resolved. It is an ISSUANCE
  * (SPEC 13.15): its rails carry a fresh generation, and its ceiling is recorded before the material
  * exists. It depends on no lifecycle gate, so its evidence carries the credential's own five-minute
- * expiry as its liveness. Nothing here reads the registry or the `use` selection, so a caller that
+ * expiry as its liveness, and that expiry is the generation's horizon. Nothing here reads the registry or the `use` selection, so a caller that
  * pinned its target keeps minting against that target after either one changes.
  *
  * `instanceId` pins THIS one-shot instrument to that manager instance, so it is issued the exact
@@ -507,11 +508,15 @@ export async function mintControlInstrument(
 ): Promise<{ creds: string; epCaller: IssuedCaller }> {
   const identity = newIdentity();
   const uid = mintLifecycleUid();
-  const issued = { generation: mintGeneration(), acceptedToken: mintAcceptedToken() };
+  const profile = tier === "admin" ? "control-caller-admin" : "control-caller-privileged";
+  // The instrument's expiry is its generation's horizon, so it is fixed before either exists.
+  const expiresAt = Math.floor(Date.now() / 1000) + credentialLifetime(profile).defaultTtlSeconds!;
+  const issued = { generation: mintGeneration(expiresAt), acceptedToken: mintAcceptedToken() };
   const pinned = instanceId !== undefined ? instancePinnedInstrumentCapabilities(tier, instanceId) : undefined;
   const creds = await withIssuerSession({ servers: target.server, space: target.space, auth: target.auth, tls: target.tlsRequired }, (s) =>
-    mintCreds(target.auth, identity, tier === "admin" ? "control-caller-admin" : "control-caller-privileged", {
+    mintCreds(target.auth, identity, profile, {
       lifecycleUid: uid,
+      expiresAt,
       ...(pinned ? { endpointCapabilities: pinned } : {}),
       issued,
       issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] },

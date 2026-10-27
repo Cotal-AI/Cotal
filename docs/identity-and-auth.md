@@ -112,9 +112,9 @@ host that acts on a caller's behalf (a workflow run, [workflows](workflows.md)) 
 the issuer, not from a ledger that may have changed since. So a static agent credential is an
 **issuance** ([SPEC §13.15](../SPEC.md#1315-issued-authority)): before the material is handed
 out, the issuer records the credential's final permission ceiling, as evidence keyed by a fresh
-**generation**, in `cotal_issued_<space>`. That store is append-only at the broker and the
-evidence is read as the first message on its key, so nothing written later on the same key, by
-anyone, changes what a resolver sees. The credential's endpoint rows then ride a versioned
+**generation**, in `cotal_issued_<space>`. That store is append-only at the broker until a row's
+own TTL ends it, and the evidence is read as the first message on its key, so nothing written later
+on the same key, by anyone, changes what a resolver sees. The credential's endpoint rows then ride a versioned
 rail, `cotal.<space>.ep.v1.…`, with that generation pinned beside the caller triple, so the
 broker binds every request to the ceiling the issuer accepted. The legacy `ep.` rail and the
 `ep.v1.` rail are disjoint subject spaces; a credential holds rows on one of them, and every
@@ -126,6 +126,25 @@ what the file says. A renewal keeps the generation only while the ceiling is byt
 evidence; a changed scope is a fresh issuance on a fresh generation, adopted by a new connection.
 A static agent's evidence names its credential ledger family as the source it depends on, and the
 lifecycle terminal that retires that family retires its issuances with it.
+
+Issued rows do not last forever. A generation carries its **horizon**, the second from which it
+authorizes nothing: the bearer's expiry for a user-auth `manager-caller` view, the instrument's
+five-minute expiry for a control-caller instrument, the assignment expiry for a platform
+supervisor, and 30 days after spawn for a static agent. Every row of a generation in both stores
+is written with a NATS per-message TTL that removes it 60 seconds after the horizon, so the stores
+hold the generations that can still be used, not every exchange ever made. Every host refuses a
+generation at or after its horizon before it reads the store, so a row the broker removed, and
+anything written on its key since, is never read. A static agent's credential renewals stop at its
+horizon, and the agent is then respawned; rotating it onto a new generation instead is
+[#4942](https://github.com/Cotal-AI/Cotal/issues/4942). On a user-auth space the auth service is
+the only issuer, so that cap does not apply there.
+
+A space whose issued stores were created before this retention existed is refused by every service
+that binds them, with the remedy in the error. Stop the space's auth service, its callout replicas
+and every manager, back up both streams with `nats stream backup`, remove them with
+`nats stream rm`, and start the new release, which recreates them. The streams are
+`KV_cotal_issued_<space>` and `KV_cotal_accepted_<space>`. Generations issued before the upgrade
+refuse afterwards, and static agents started before it are respawned.
 
 The manager, `cotal spawn`, and the CLI's control-caller instruments all mint through an `issuer`
 session. The deployer instrument does not: it is the one instrument with no default expiry, and an
