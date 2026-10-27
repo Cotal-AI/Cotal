@@ -155,8 +155,8 @@ check("status --components refuses the target and probes no default broker", /ta
       (r.envelope?.warnings ?? []).some((w) => w.code === "FOLDER_SPACE_NOT_RUNNING" && w.message === HELD), shown(r));
   }
   // The selection's broker is down, so a read refuses. sel07 was added by hand, so its Next names no
-  // `cotal up` and the heading keeps this folder's. A selection an `up` started names `cotal up` in its
-  // own folder as its Next, so the heading leaves this folder's out. Either way the refusal names one.
+  // `cotal up`. A selection an `up` started names `cotal up` in its own folder as its Next. Either way
+  // the heading keeps this folder's note whole, with the `cotal up` that restarts this folder's space.
   const once = (r: ReturnType<typeof run>) => r.status === 2 && (r.stderr.match(/cotal up/g) ?? []).length === 1;
   const manualRefusal = run(["who"]);
   check("a refusal whose Next names no cotal up keeps this folder's under the heading, so it names one",
@@ -168,8 +168,8 @@ check("status --components refuses the target and probes no default broker", /ta
   const upRefusal = run(["who"]);
   check("rig: sel07 is selected again", run(["use", "sel07"], other).status === 0);
   rmSync(upRecord);
-  check("a refusal whose Next names cotal up in the selection's folder leaves this folder's out of the heading, so it names one",
-    once(upRefusal) && upRefusal.stderr.includes(`Mesh: sel08\n  this folder holds the stopped space "la07"\n`) && upRefusal.stderr.includes("Next\n  run `cotal up` there to restart"), shown(upRefusal));
+  check("a refusal whose Next names cotal up in the selection's folder keeps this folder's whole under the heading",
+    upRefusal.status === 2 && upRefusal.stderr.includes(`Mesh: sel08\n  ${HELD}\n`) && upRefusal.stderr.includes("Next\n  run `cotal up` there to restart"), shown(upRefusal));
   const selectedStatus = run(["status", "--json"]), selectedText = run(["status"]);
   check("status there reports the selection, with this folder's stopped space and its up under the heading",
     selectedStatus.envelope?.target?.space === "sel07" && selectedText.stdout.includes(`Mesh: sel07\n  ${HELD}`), shown(selectedText));

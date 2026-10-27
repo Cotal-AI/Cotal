@@ -52,12 +52,18 @@ broker. When this folder's own records show the stack of its registered space st
 run there target, as for a prepared folder. Otherwise, when that folder's space is not the selection,
 it adds that the folder's space applies while it runs and the selected space applies outside the
 folder and while it is stopped. When the folder holds a space that is prepared, or whose stack is
-stopped, it names what it holds. In a copy or a moved folder, which holds the records of a stack that
+stopped, it names what it holds and the `cotal up` that starts it, as the note under a command's
+`Mesh:` heading there does. In a copy or a moved folder, which holds the records of a stack that
 runs from another folder, it says what the folder holds: a copy of a controller stack, a legacy
 root's records and the folder that space is registered for, or records moved from their recorded
 folder. It ends that line with the step the commands there name. It points a prepared space to the `cotal up` that starts it, with
 `--root <dir>` when the space is prepared in another folder and `<dir>` quoted when a shell would
-split it, and a machine with no space to `cotal setup`. With spaces on the machine but none selected
+split it, and a machine with no space to `cotal setup`. While the space it names is prepared or
+stopped, that `cotal up` is its first step and it offers no `cotal spawn`, in any folder. Otherwise,
+in a folder that holds another space, its first step is that folder's own `cotal up`, which it says
+starts this folder's space, and `cotal spawn` follows. Each `cotal up` it names reads
+`cotal up --max-file-store 67108865 or more` when that stopped stack recorded a file store cap below
+67108865, as `status` says, because a bare `up` fails on that cap. With spaces on the machine but none selected
 or in this folder, it names `cotal use <name>` and `cotal space` instead. Every command generates its own help, usage, and shell completion from its declared
 flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. A word after the
 command that names none of its subcommands refuses with `--help` too, as `cotal help` and the command
@@ -2958,9 +2964,9 @@ included, says the selection applies outside the folder. A space `cotal space cr
 and no `cotal up` started, and one whose stack there is stopped, is the target of the commands about
 the folder itself only: `cotal up`, `cotal down`, `cotal space show` and the folder part of
 `cotal status`. Every other command run there targets the selection, and the note under its `Mesh:`
-heading says what this folder holds and the `cotal up` that starts it. A refusal whose own next step
-names `cotal up`, as for a selection whose stack is stopped, leaves that `cotal up` out of the note,
-so it names one. `--json` carries the same note in
+heading says what this folder holds and the `cotal up` that starts it. A refusal there keeps that
+note whole, as for a selection whose stack is stopped, which names its own `cotal up` under Next.
+`--json` carries the same note in
 `warnings` as `FOLDER_SPACE_NOT_RUNNING`, whose `target` names the folder's `space`, its `state`
 (`prepared` or `stopped`), its `root` and the `selected` space, and `cotal chat`, which prints no
 heading, names the selection it joins with that note on stderr. `cotal space show` there calls a

@@ -174,7 +174,7 @@ export function isCommandFailure(e: unknown): e is CommandFailure {
 /** The space one command run resolved, as {@link recordOperationSpace} set it, the note
  *  {@link recordOperationSpaceNote} recorded on how it was chosen, and the warnings
  *  {@link recordOperationWarning} recorded. `quiet` keeps those warnings off stderr. */
-export interface OperationScope { space?: string; spaceNote?: { space: string; text: string; step?: string }; warnings?: OutputWarning[]; quiet?: boolean }
+export interface OperationScope { space?: string; spaceNote?: { space: string; text: string }; warnings?: OutputWarning[]; quiet?: boolean }
 
 // Kept on a global key so two copies of this module share one scope, as the failure brand does.
 const operationScope = ((globalThis as { [key: symbol]: unknown })[Symbol.for("cotal.operationScope")] ??= new AsyncLocalStorage<OperationScope>()) as AsyncLocalStorage<OperationScope>;
@@ -194,19 +194,16 @@ export function recordOperationSpace(space: string): void {
 }
 
 /** Record how this command's operation chose `space`, for its `Mesh:` heading to show under the
- *  name, with the `step` it names, which a refusal whose own next step names the same command leaves
- *  out. Outside
- *  {@link runOperation} it does nothing. */
-export function recordOperationSpaceNote(space: string, text: string, step?: string): void {
+ *  name. Outside {@link runOperation} it does nothing. */
+export function recordOperationSpaceNote(space: string, text: string): void {
   const scope = operationScope.getStore();
-  if (scope) scope.spaceNote = { space, text, ...(step === undefined ? {} : { step }) };
+  if (scope) scope.spaceNote = { space, text };
 }
 
-/** The note this run recorded for `space`, if any, with its step unless `step` is false. */
-export function operationSpaceNote(space: string, step = true): string | undefined {
+/** The note this run recorded for `space`, if any. */
+export function operationSpaceNote(space: string): string | undefined {
   const note = operationScope.getStore()?.spaceNote;
-  if (note?.space !== space) return undefined;
-  return step && note.step !== undefined ? `${note.text}; ${note.step}` : note.text;
+  return note?.space === space ? note.text : undefined;
 }
 
 /** Record a warning about what this command's operation resolved. It is printed on stderr at once,
