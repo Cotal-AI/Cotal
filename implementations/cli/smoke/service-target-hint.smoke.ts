@@ -125,14 +125,15 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const l = join(home, "l"), path = join(home, "printer.json");
   mkdirSync(l);
   writeFileSync(path, JSON.stringify({ schemaVersion: 1, space: "sl", launch: { type: "process", executable: "/bin/sh", args: ["-c", "echo tick; exec sleep 300"], cwd: l }, readiness: { type: "process", timeoutMs: 5000 } }));
-  const started = run(["space", "create", "sl"], l).status === 0 && run(["service", "add", "printer", "--file", path], l).status === 0 ? run(["service", "start", "printer", "--json"], l) : undefined;
+  // sa stays selected, and a prepared folder's service commands target the selection, so each names sl.
+  const started = run(["space", "create", "sl"], l).status === 0 && run(["service", "add", "printer", "--file", path, "--space", "sl"], l).status === 0 ? run(["service", "start", "printer", "--space", "sl", "--json"], l) : undefined;
   let instanceId: string | undefined;
   try { instanceId = (JSON.parse(started?.stdout ?? "") as { result?: { instanceId?: string } }).result?.instanceId; } catch { instanceId = undefined; }
   const log = join(home, ".cotal", "services", Buffer.from("sl").toString("hex"), "instances", `${Buffer.from(instanceId ?? "").toString("hex")}.log`);
   check("rig: a started process service writes its log", started?.status === 0 && existsSync(log), started && shown(started));
   try {
     chmodSync(log, 0o000);
-    const closed = run(["service", "logs", "printer", "--json"], l);
+    const closed = run(["service", "logs", "printer", "--space", "sl", "--json"], l);
     let closedEnvelope: { outcome?: string; error?: { code?: string; message?: string; remedy?: string } } | undefined;
     try { closedEnvelope = JSON.parse(closed.stdout) as typeof closedEnvelope; } catch { closedEnvelope = undefined; }
     const step = `chmod u+rw ${log}`;
@@ -140,17 +141,17 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
       closed.status === 2 && closedEnvelope?.outcome === "refused" && closedEnvelope.error?.code === "PERMISSION_DENIED" && closedEnvelope.error.message === `the log ${log} cannot be read by this account (EACCES); nothing was read or changed` && closedEnvelope.error.remedy === `make it readable by you, for example with ${step}`, shown(closed));
     // --follow used to end OPERATION_FAILED, exit 5, "the bounded private log read failed", with no
     // file, cause or step.
-    const followed = run(["service", "logs", "printer", "--follow", "--json"], l);
+    const followed = run(["service", "logs", "printer", "--follow", "--space", "sl", "--json"], l);
     let records: { type?: string; data?: { code?: string; message?: string; remedy?: string; reason?: string } }[] = [];
     try { records = followed.stdout.trim().split("\n").map((line) => JSON.parse(line) as (typeof records)[number]); } catch { records = []; }
     const failed = records.find((r) => r.type === "error")?.data;
     check("logs --follow on it ends with one PERMISSION_DENIED error record naming the log, cause and chmod u+rw, exit 2",
       followed.status === 2 && failed?.code === "PERMISSION_DENIED" && failed.message === closedEnvelope?.error?.message && failed.remedy === closedEnvelope?.error?.remedy && records.at(-1)?.type === "end" && records.at(-1)?.data?.reason === "read-failed", shown(followed));
-    const opened = spawnSync("sh", ["-c", step], { cwd: l, encoding: "utf8" }), reread = run(["service", "logs", "printer"], l);
+    const opened = spawnSync("sh", ["-c", step], { cwd: l, encoding: "utf8" }), reread = run(["service", "logs", "printer", "--space", "sl"], l);
     check("running that step reads the log again", opened.status === 0 && reread.status === 0 && reread.stdout.includes("tick"), shown(reread));
   } finally {
     if (existsSync(log)) chmodSync(log, 0o600);
-    const stopped = run(["service", "stop", "printer", "--yes"], l);
+    const stopped = run(["service", "stop", "printer", "--space", "sl", "--yes"], l);
     check("the fixture's process service is stopped", stopped.status === 0, shown(stopped));
   }
 }
