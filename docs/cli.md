@@ -3683,7 +3683,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--detach`, `-d` | off | Launch through a manager, wait until the agent joins, and return without attaching (reattach with `cotal attach`) |
 | `--foreground` | on without `-d` or `--on` | Run the application in this terminal, as a spawn without `-d` or `--on` does; kept for scripts. Its exit, or the terminal's, may end the agent. Refuses `--detach`, `--creds`, `--on`, `--restarts`, and `--json` or `--plain` except with `--dry-run` |
 | `--on <instance>` | none | Launch through one manager instance and attach to the agent, or with `-d` return once it joins. Takes the instance id (the whole id, as `ps` prints it), or on a user-auth mesh a manager's name or host, as [`ps`](#managed-seats) takes them. Refused with `--foreground` and when empty. On a static or open mesh an id that names no running manager is refused `TARGET_NOT_FOUND` before anything is sent, naming the managers that run, or `TARGET_UNAVAILABLE` as an unpinned launch is when none runs. A pinned manager that does not answer is refused `TARGET_UNAVAILABLE`, exit 2, after the reply deadline, because the launch was never sent |
-| `--runtime <name>` | the serving manager's runtime | The terminal runtime for this one managed seat (`pty`, or an installed extension such as `tmux`). It needs `-d` or `--on`. A spawn in this terminal refuses it, because that spawn has no manager runtime to choose. An unknown or unreachable runtime refuses the launch and starts nothing. Other seats on that manager keep the runtime they already have |
+| `--runtime <name>` | the serving manager's runtime | The terminal runtime for this one managed seat (`pty`, or an installed extension such as `tmux`). It needs `-d` or `--on`. A spawn in this terminal refuses it, because that spawn has no manager runtime to choose. `auto` is refused `USAGE_INVALID` before anything is sent. Which host checks any other name is described below this table. Other seats on that manager keep the runtime they already have |
 | `--restarts <n>`, `--restart-window <ms>` | none | Managed launches only, with `-d` or `--on`, and given together: the manager restarts the agent at most `<n>` times within `<ms>`. Each must be a positive integer |
 | `--live-only` | off | A spawn in this terminal only: skip the durable backstop |
 | `--enrollment-file <private-file>` | none | With `--space`, for a spawn in this terminal: a private file holding one seat's enrollment URL (see above) |
@@ -3693,8 +3693,15 @@ there it runs the enrollment consumer above without redeeming anything. See
 
 `spawn` refuses `--allow-stale` with "manifest deployment options belong to cotal team deploy <file>, not spawn".
 `--runtime` is a per-seat choice on a managed launch. Omitted, the seat uses the runtime that manager
-was started with. A named runtime that is not installed or not reachable is refused, and the manager
-does not substitute `pty`. `auto` is refused too: it chooses the manager's runtime, not one seat.
+was started with. `auto` names a manager's own runtime, so it is refused for one seat. Any other
+runtime has to be installed and reachable on the host the manager runs on, and the CLI can check
+that only when that host is this machine. When the launch can reach only this root's own manager,
+because `--on` names it or it is the only manager running, the CLI resolves the runtime through the
+installed-extension lookup `up --runtime` uses. An unknown, uninstalled or unreachable runtime is
+then refused `DEPENDENCY_UNAVAILABLE`, exit 2, before the launch is sent, and for a known runtime
+the remedy names its `cotal ext add` package. A launch that may reach a manager on another host
+sends the name unchanged. That manager refuses a runtime it cannot run, the CLI reports
+`LIFECYCLE_BLOCKED`, and nothing starts. No manager substitutes `pty`.
 
 Each session uses its connector's **event plane** by default: a stream of structured events
 describing what the agent did, rather than the prose it wrote, on a channel of its own. The channel is named after
@@ -5487,8 +5494,10 @@ one document whose `result.items` are `{name, state, package, reachable, error}`
 `built-in`, `installed` or `not-installed` and `reachable` null when the provider was not asked. An installed provider
 whose package fails to load is shown with its error and makes the read `partial` (exit 4). The command
 reads this machine only, so its `target` is null. Selecting an unknown or uninstalled runtime
-via `up --runtime <name>` or `spawn --runtime <name>` fails loud and, for a known one, points at the exact `cotal ext add`
-package. `up --runtime` chooses the runtime every seat uses unless that seat names its own. `spawn --runtime`
+via `up --runtime <name>` fails loud and, for a known one, points at the exact `cotal ext add`
+package. `spawn --runtime <name>` refuses the same way when the launch goes to this root's own
+manager. A launch that may reach a manager on another host leaves the check to that manager, as
+[`spawn`](#spawn) describes. `up --runtime` chooses the runtime every seat uses unless that seat names its own. `spawn --runtime`
 chooses the runtime of that one managed seat, and the manager keeps every other seat where it is. There is no silent fallback to `pty`.
 
 ## seats
@@ -8764,8 +8773,12 @@ whether the recorded brokers answer to choose its space, as in a folder whose re
 be stopped, the preview reads the same without signing in, so it names the space the launch uses. The managed preview
 shows the request and exits 0 with `completeness` `not-checked`, because the manager resolves the
 persona, harness and working directory on its own host at launch. It does not substitute the
-caller's files. With `--foreground`, the preview resolves the local persona, harness precedence and
-physical working directory. Binary, login, model-policy and live authority checks are labeled not
+caller's files. A named `--runtime` is checked on this machine only, through the lookup the launch
+uses: `result.requested.runtime` names it, and `result.runtimeCheck` gives the `host` it was checked
+on, whether it is `available` there, and the `error` when it is not. A runtime this machine cannot
+run is a `RUNTIME_UNAVAILABLE` warning, because a manager on another host checks its own.
+`--runtime auto` is refused as the launch refuses it. With `--foreground`, the preview resolves the
+local persona, harness precedence and physical working directory. Binary, login, model-policy and live authority checks are labeled not
 performed. Both previews say where the persona came from: `--file`, the command line, a preference
 or the default. A harness that names no connector this workstation knows is a `HARNESS_UNKNOWN`
 warning, or the `PREFERENCE_INVALID` warning `config` gives when only `COTAL_DEFAULT_AGENT` chose

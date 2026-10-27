@@ -68,6 +68,7 @@ import {
   launchFlags,
   findMesh,
   getSpaceAuth,
+  loadManagerInstanceIdentity,
   materializeSecretToFile,
   mergeLaunchOptions,
   parseLaunchOptions,
@@ -119,7 +120,7 @@ import { protectedCredentialReference, readLocalRecordSource } from "../lib/prot
 import { attachSeat } from "./agents.js";
 import { AgentAlreadyRunning, heldAnswer, settleHeldName } from "../lib/held-name.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { extensionNames, materializeExtension } from "../ext-loader.js";
+import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
 import { claimManagedHandoff, holdsManagedHandoff, managedHandoffRefusal } from "../managed-handoff.js";
 import {
   checkDialPolicy,
@@ -442,6 +443,8 @@ export function validateSpawnArguments(args: ParsedArgs): void {
   if (values["allow-stale"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "manifest deployment options belong to cotal team deploy <file>, not spawn");
   if (values.runtime !== undefined && !values.runtime.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--runtime cannot be empty");
   if (values.runtime !== undefined && direct) throw new CommandFailure("refused", "USAGE_INVALID", "--runtime chooses the runtime of one managed seat; a spawn in this terminal has no manager runtime to choose", { remedy: "add -d, or --on <instance>, to launch it through a manager" });
+  // Every manager refuses `auto` for one seat, so it is refused here on any host.
+  if (values.runtime?.trim() === "auto") throw new CommandFailure("refused", "USAGE_INVALID", "--runtime auto chooses a manager's own runtime, not the runtime of one seat", { remedy: "omit --runtime to use the serving manager's runtime" });
   if (values["enrollment-file"] !== undefined && !values.space) throw new CommandFailure("refused", "USAGE_INVALID", "--enrollment-file requires an explicit --space");
   if (values["enrollment-file"] !== undefined && !direct) throw new CommandFailure("refused", "UNSUPPORTED", "this native enrollment path runs one foreground seat. It does not substitute for managed enrollment authority");
   if (values["enrollment-file"] !== undefined && (internal || values.detach || values.creds !== undefined || values.on !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "choose one foreground enrollment source without a manager pin, credential override or internal handoff");
@@ -518,6 +521,26 @@ function refuseUnmintableNameOrExit(name: string, userMode: boolean): void {
     stderrLine("✗ ", `${refusal}`, c.red);
     process.exit(1);
   }
+}
+
+/** Whether a managed launch can reach only this root's own manager: the instance it names, or else
+ *  the only one the registry lists, is the one recorded under the target's root. An unread registry
+ *  or an unreadable record proves nothing, and the launch then goes to whichever manager serves it. */
+export function launchServedHere(t: { space: string; root?: string }, serving: string | undefined, live: readonly string[] | undefined): boolean {
+  if (t.root === undefined) return false;
+  let here: string | undefined;
+  try { here = loadManagerInstanceIdentity(t.root, t.space)?.instanceId; } catch { return false; }
+  if (here === undefined) return false;
+  return serving !== undefined ? serving === here : live?.length === 1 && live[0] === here;
+}
+
+/** A runtime this root's own manager cannot launch on is refused before the launch is sent, through
+ *  the installed-extension lookup `up --runtime` uses. A manager on another host reads that host's
+ *  extensions, so a launch that may reach one sends the name and that manager decides. */
+async function refuseRuntimeHere(runtime: string, t: { space: string; root?: string }, serving: string | undefined, live: readonly string[] | undefined): Promise<void> {
+  if (!launchServedHere(t, serving, live)) return;
+  try { await preflightRuntime(runtime); }
+  catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the requested runtime did not pass preflight on this machine, where the selected manager runs; nothing was launched", { target: { space: t.space, managerInstanceId: serving ?? live?.[0] ?? null, runtime }, remedy: error instanceof Error ? error.message : "inspect the selected runtime provider" }); }
 }
 
 export interface ManagedLaunchResult {
@@ -666,9 +689,10 @@ export async function launchManagedPersona(
   if (eventsRequired && events === false) {
     throw new CommandFailure("refused", "PERMISSION_DENIED", `space "${t.space}" requires the event plane by registration policy; no launch was submitted`);
   }
-  if (on === undefined && !t.auth.bearer) await refuseWithoutLiveManager(t.space, t.server, t.auth, { space: t.space, managerInstanceId: null, managerEpoch: null }, "launch an agent");
+  const live = on === undefined && !t.auth.bearer ? await refuseWithoutLiveManager(t.space, t.server, t.auth, { space: t.space, managerInstanceId: null, managerEpoch: null }, "launch an agent") : undefined;
   // A pin the registry does not list is refused at once; only a registered manager is waited on.
   if (on !== undefined && !t.auth.bearer) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
+  if (values.runtime !== undefined) await refuseRuntimeHere(values.runtime.trim(), t, on ?? t.auth.managerInstanceId, live);
   const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space: t.space, preferences: cachedPreferences() });
   const managerConfigRef = values.config ?? (personaFrom !== undefined ? ref : undefined);
   const defaultAgent = callerHarness(t.space);
