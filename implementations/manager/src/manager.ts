@@ -5946,7 +5946,7 @@ export class Manager {
       const harness = this.launchHarness(connector);
       if ("refusal" in harness) return { agent: connector.name, supported: true, models: [], error: harness.refusal };
       try {
-        const catalog = await connector.listModels({ refresh });
+        const catalog = await connector.listModels({ refresh, resolvedBinaries: harness.binaries });
         return { agent: connector.name, supported: catalog.unavailable === undefined, ...catalog };
       } catch (e) {
         return { agent: connector.name, supported: true, models: [], error: rejectionText(e) };

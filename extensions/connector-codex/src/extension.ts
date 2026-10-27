@@ -11,7 +11,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
+import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 
 /** The bundled host loop (self-contained — core + connector-core inlined, see package.json's
@@ -43,8 +43,12 @@ interface CodexModelEntry {
 
 /** Query the model catalog over a short-lived `codex app-server` (`model/list` — there is no
  *  `codex models` subcommand). Times out rather than hanging the manager's selector UI. */
-async function listCodexModels(): Promise<ModelCatalog> {
-  const child = spawn("codex", ["app-server"], { env: discoveryEnv(), stdio: ["pipe", "pipe", "ignore"] });
+async function listCodexModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
+  // The file a launch runs: the operator pin, then the path boot resolved, then the bare name. The
+  // pin is read here because discoveryEnv strips every COTAL_* key, which is what keeps a catalog
+  // probe from looking like a managed seat. A later PATH change cannot pick a different file.
+  const bin = process.env.COTAL_CODEX_BIN?.trim() || opts.resolvedBinaries?.codex || "codex";
+  const child = spawn(bin, ["app-server"], { env: discoveryEnv(), stdio: ["pipe", "pipe", "ignore"] });
   const kill = (): void => {
     try {
       child.kill("SIGKILL");
