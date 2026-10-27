@@ -1451,8 +1451,11 @@ preset, as in [`service`](#service), so `cotal down manager` stops `stack-manage
 names the member and the name you gave as `requested`. Several names in one `down` resolve each the
 same way, so `cotal down manager delivery` stops `stack-manager` and `stack-delivery`, and each
 member of the target carries its own `requested`. A name that is no preset, such as `nats`,
-refuses `TARGET_NOT_FOUND` there and names the `stack-` member to use. Among several names it
-refuses the whole set, so no service stops. A stop of `stack-broker` refuses
+refuses `TARGET_NOT_FOUND` there and names the `stack-` member to use, and a name with no member
+names `cotal service`, which lists the saved definitions. Among several names such a name refuses
+the whole set with the same next step, so no service stops. A set never stops the broker, so for
+`nats`, `broker` or `stack-broker` the set's refusal names a bare `cotal down`, which stops the
+broker with the whole stack. A stop of `stack-broker` refuses
 `LIFECYCLE_BLOCKED` while a legacy daemon record under the root may front a process, or another
 service instance of the space is live or unresolved. For those instances it names bare `cotal down`,
 or `cotal service stop <name> --instance <id> --space <space> --yes` for each one. When one of them
@@ -4879,7 +4882,10 @@ opened for it, `<root>/.cotal/manager.<spaceKey>.log`, and changes nothing. It t
 gone. After `cotal down` stops that manager, `logs` still reads the log it left: the text says the
 manager is stopped, with its PID while its record still names one, and names `cotal up` under Next,
 and `--json` carries `recordedProcess` with `state` set to `stopped`. With no such log, `logs`
-refuses `TARGET_NOT_FOUND`, naming the file and `cotal up`. `cotal service logs stack-manager` reads
+refuses `TARGET_NOT_FOUND` and names the file. If the folder's records show a manager ran there (a
+PID record that names a dead manager, or the instance identity a manager keeps once it starts), the
+refusal says the log is no longer there and names only `cotal up`. Otherwise it says no manager has
+been started and names `cotal up` or `cotal manager start`. `cotal service logs stack-manager` reads
 the same file when no `stack-manager` is saved. A
 manager that `cotal supervise` runs in a terminal writes to that terminal instead. `stop`, `install`
 and the other verbs refuse it while it runs, because no saved service owns it; it stops with its

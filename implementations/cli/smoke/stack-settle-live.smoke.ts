@@ -935,10 +935,18 @@ try {
         && JSON.stringify(previewMembers.map((member) => [member.name, member.requested])) === JSON.stringify([["stack-delivery", "delivery"], ["stack-manager", "manager"]]), shown(setPreview));
     const setManager = runningPidOf(space, "stack-manager"), setDelivery = runningPidOf(space, "stack-delivery");
     const unknown = cli(root, "down", "stack-manager", "nats", "--space", space, "--yes", "--json");
-    check("a name in the set that matches no saved definition or preset refuses the whole set, naming it and the stack- member",
+    check("a broker name in the set that matches no saved definition or preset refuses the whole set and names the bare down, not stack-broker",
       unknown.status === 2 && unknown.env?.error?.code === "TARGET_NOT_FOUND" && unknown.env.target?.name === "nats"
         && unknown.env.error.message === `nats matches no saved definition or preset in space ${space}; no service was stopped`
-        && Boolean(unknown.env.error.remedy?.includes("name stack-broker instead")) && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), shown(unknown));
+        && unknown.env.error.remedy === "a set of names never stops the broker; a bare cotal down stops it with the whole stack"
+        && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), shown(unknown));
+    const unknownOne = cli(root, "down", "nosuch", "--space", space, "--dry-run", "--json");
+    const unknownSet = cli(root, "down", "nosuch", "delivery", "--space", space, "--yes", "--json");
+    check("any other name in the set that matches nothing refuses the whole set with the step a single named down names",
+      unknownSet.status === 2 && unknownSet.env?.error?.code === "TARGET_NOT_FOUND" && unknownSet.env.target?.name === "nosuch"
+        && unknownSet.env.error.message === `nosuch matches no saved definition or preset in space ${space}; no service was stopped`
+        && unknownSet.env.error.remedy === "list this space's saved definitions with cotal service" && unknownSet.env.error.remedy === unknownOne.env?.error?.remedy
+        && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), { set: shown(unknownSet), one: shown(unknownOne) });
     const setStop = cli(root, "down", "manager", "delivery", "--space", space, "--yes", "--json");
     const stopMembers = (setStop.env?.target?.members ?? []) as { name: string; requested?: string }[];
     check("down manager delivery --yes stops stack-manager and stack-delivery, and its target keeps each requested name",
