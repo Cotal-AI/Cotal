@@ -4,6 +4,7 @@ import { listSpaces, deleteSpace, type SpaceAuth, type SpaceInfo } from "@cotal-
 import { findMesh, getSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { agentColor } from "./theme.js";
 import { Confirm } from "./Confirm.js";
+import { useListCursor } from "./useListCursor.js";
 
 /** The trust material of a space this host registered as a static-auth mesh on `server`. Deleting a
  *  space needs a teardown that names each of its resume transfer streams, and a carried `--creds`
@@ -40,7 +41,6 @@ export function SpacePicker({
 
   const [spaces, setSpaces] = useState<SpaceInfo[] | null>(null); // null = loading
   const [error, setError] = useState<string | undefined>();
-  const [sel, setSel] = useState(0);
   const [nonce, setNonce] = useState(0); // bump to re-enumerate
   const [del, setDel] = useState<SpaceInfo | null>(null); // space pending deletion
 
@@ -61,15 +61,15 @@ export function SpacePicker({
   }, [server, creds, nonce]);
 
   const list = spaces ?? [];
-  const selClamped = Math.min(sel, Math.max(0, list.length - 1));
+  const { index: selClamped, up, down } = useListCursor(list.length);
 
   useInput(
     (input, key) => {
       if (input === "q") return exit();
       if (input === "r") return setNonce((n) => n + 1);
       if (input === "D" && canWrite && list.length) return setDel(list[selClamped]);
-      if (key.upArrow || input === "k") return setSel((v) => Math.max(0, v - 1));
-      if (key.downArrow || input === "j") return setSel((v) => Math.min(list.length - 1, v + 1));
+      if (key.upArrow || input === "k") return up();
+      if (key.downArrow || input === "j") return down();
       if (key.return && list.length) return onSelect(list[selClamped].space);
     },
     { isActive: !del }, // the Confirm overlay owns input while a deletion is pending

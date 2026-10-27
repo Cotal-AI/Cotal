@@ -1,0 +1,2 @@
+# Built console cursor navigation, including space discovery on an owned loopback broker.
+smoke:console-cursor

@@ -61,6 +61,10 @@ Press Enter on a selected agent or message to open its detail card. On a short t
 the card is clipped at the bottom rather than squeezing its rows together. Enlarge the
 terminal to see the rest, or press any key to close the card.
 
+List selections stay within the current rows when a list shrinks or empties. Empty-list key
+presses do not leave a negative selection when rows arrive. The topology swimlane follows new traffic
+while the last row is selected; moving up pauses that following until you return to the end.
+
 **Operator control.** Watching stays read-only, but the console can also drive the
 [manager](architecture.md#manager-supervision). The observer endpoint never carries
 control: each action is one call through the same per-action path `cotal stop`, `cotal ps`, and
