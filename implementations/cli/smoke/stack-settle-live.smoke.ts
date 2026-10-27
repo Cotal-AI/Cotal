@@ -583,6 +583,10 @@ try {
     const noted = cli(root, "status", "--json");
     check(`with another space selected, the folder note names up --max-file-store ${MIN_FILE_STORE} or more after the failed up, not a bare up`,
       noted.status === 0 && noted.env?.target?.space !== space && folderNote(noted)?.message === `this folder holds the stopped space "${space}"; restart it with cotal up --max-file-store ${MIN_FILE_STORE} or more`, { ...shown(noted), target: noted.env?.target, note: folderNote(noted) });
+    // Bare `cotal` there names the same up in its own line on what the folder holds, and never a bare one.
+    const entry = cli(root);
+    check(`bare cotal there names up --max-file-store ${MIN_FILE_STORE} or more in its folder note, and no bare up as this folder's start`,
+      entry.status === 0 && entry.stdout.includes(`\n${folderNote(noted)?.message}\n`) && !/^ {2}cotal up +Start this folder's space$/m.test(entry.stdout), { ...shown(entry), stdout: entry.stdout.slice(0, 1200) });
     const floor = cli(root, "up", "--no-manager", "--max-file-store", String(MIN_FILE_STORE), "--json");
     track(space);
     check(`up --max-file-store ${MIN_FILE_STORE} starts the stack`, floor.status === 0, shown(floor));

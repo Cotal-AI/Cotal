@@ -4,7 +4,7 @@
  * connects, writes, seeds or imports an extension.
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, loadMeshes, loadPreparedSpaces, localeIsUtf8, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, heldSpaceNote, loadMeshes, loadPreparedSpaces, localeIsUtf8, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, renderReport, resolvePreference, terminalWidth, upCommand, wrapWords, type Section } from "@cotal-ai/workspace";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
@@ -166,7 +166,8 @@ export function printEntry(commands: readonly Command[], listing = false): void 
   let start: string | undefined;
   // The `up` that starts this folder's space, when commands here target the selection instead.
   let folderStart: string | undefined;
-  // What this folder holds that is not running, when a command here targets the selection instead.
+  // What this folder holds that is not running, and the `up` that starts it, when a command here
+  // targets the selection instead.
   let folderHeld: string | undefined;
   // What a copy or a moved folder holds, with the step the commands here refuse with.
   let elsewhere: string | undefined;
@@ -196,8 +197,10 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     if (holds) elsewhere = `${holds}; ${records!.stackRemedy}`;
     space = folder ?? selected ?? (preparedHere && canonicalRoot(preparedHere.root) === canonicalRoot(held!.root) ? held!.space : undefined);
     if (selected && folder !== undefined && folder !== selected) outside = selected;
+    // The same `up` the note under a command's heading names, with `--root` from another folder.
+    const upAt = (dir: string, name: string): string => upCommand(dir, name, ...(canonicalRoot(dir) === canonicalRoot(root) ? [] : ["--root", shellWord(dir)]));
     if (held) {
-      const up = canonicalRoot(held.root) === canonicalRoot(root) ? "cotal up" : `cotal up --root ${shellWord(held.root)}`;
+      const up = upAt(held.root, held.space);
       if (held.space === space) start = up;
       else folderStart = up;
     }
@@ -208,8 +211,11 @@ export function printEntry(commands: readonly Command[], listing = false): void 
       const preferences = cachedPreferences();
       const harness = resolvePreference("harness", { space, preferences }).value;
       context = [space, mesh ? mesh.origin === "catalog" || mesh.origin === "manual" ? "registered" : "local" : here ? "prepared here" : prepared ? "prepared" : "not recorded", harness ? `default agent ${harness}` : "no default application"].join(" · ");
-      if (prepared) start = here ? "cotal up" : `cotal up --root ${shellWord(prepared.root)}`;
-      if (held && held.space !== space) folderHeld = `this folder holds the ${held.state} space "${held.space}"`;
+      if (prepared) start = upAt(prepared.root, space);
+      if (held && held.space !== space) {
+        const { text, step } = heldSpaceNote(held);
+        folderHeld = `${text}; ${step}`;
+      }
     } else anySpace = loadMeshes().length > 0 || loadPreparedSpaces().length > 0;
   } catch {
     unreadable = true;
