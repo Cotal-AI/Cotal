@@ -43,6 +43,7 @@ export {
   commitMigration,
   migrationSeats,
   MigrationNotAdmissible,
+  type MigrationPlane,
   type MigrateRequest,
   type MigrateReport,
   type MigrateOrphan,

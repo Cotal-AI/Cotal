@@ -29,12 +29,19 @@
  * branch deliberately did not invent it. The migration is durable and readable; the run record does
  * not yet name its source.
  */
+import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import {
+  chatStream,
+  EpEnvelopeError,
   listRunNoticesForRun,
-  runMigrationId,
-  writeRunMigration,
   markRunMigrationApplied,
+  readCheckpointSpec,
+  readCheckpointStatus,
+  resumeCheckpoint,
+  runMigrationId,
+  waitConsumerName,
+  writeRunMigration,
   type RunMigrationSpecValue,
 } from "@cotal-ai/core";
 import {
@@ -53,6 +60,7 @@ import {
   type RunPins,
 } from "@cotal-ai/lang";
 import { assertPlanningVersion, inspectCompiled } from "./inspect-compiled.js";
+import { pauseTokens } from "./pause-tokens.js";
 
 /** What the caller decided to override, and therefore what the record has to say they decided. */
 export interface MigrateOverrides {
@@ -277,6 +285,13 @@ export async function migrateRun(req: MigrateRequest): Promise<MigrateReport> {
  * An `--adopt` override is honoured by the driver that next runs the program: the migration's kept
  * spawn rows are what its handler hands to the next spawn of that persona ({@link migrationSeats}).
  *
+ * A pending orphan's pauses are ended here too, before the migration is filed. The row says nothing
+ * outlives the step, and that is true of a settled one. A pending `sleep`, `wait`, `ask` or
+ * `waitUntil` still owns the pauses {@link pauseTokens} names, and a `wait` still owns its consumer.
+ * The commit claims each pause and deletes that consumer, so the row is true of a pending orphan as
+ * well. A caller that commits such a report without the journal and the plane is refused, rather
+ * than filing a row the commit did not make true.
+ *
  * What is still NOT here, stated rather than implied: the run's pinned program hash does not
  * advance, because `RunSpecValue` carries no program hash to advance — that pin is declared and
  * unbuilt, and this branch does not invent it. The migration is durable and readable; the run
@@ -288,6 +303,7 @@ export async function commitMigration(
   report: MigrateReport,
   driver: string,
   seats?: { entries: readonly JournalEntry[]; handler: { discharge(entries: readonly JournalEntry[]): Promise<unknown> } },
+  plane?: MigrationPlane,
 ): Promise<{ migrationId: string; created: boolean; released: readonly string[] }> {
   if (!report.admissible) {
     throw new MigrationNotAdmissible(report);
@@ -301,6 +317,14 @@ export async function commitMigration(
   if (seats === undefined && report.overrides.some((o) => o.startsWith("--release ")))
     throw new Error(`migration of run ${report.run} releases a seat, and a commit with no journal and no discharger cannot tear one down; nothing was written`);
   if (release.length > 0) await seats!.handler.discharge(release);
+  // A pending orphan's pauses are the same kind of act. The row says nothing outlives the step, so
+  // the commit ends them before it files that row. A report with such an orphan and no plane is
+  // refused for the same reason a release without a discharger is: the record would state an act
+  // nobody performed.
+  const orphans = seats === undefined ? [] : pendingPauseOrphans(seats.entries, report);
+  if (plane === undefined && orphans.length > 0)
+    throw new Error(`migration of run ${report.run} orphans a step that still holds a pause, and a commit with no plane cannot end one; nothing was written`);
+  if (plane !== undefined) for (const entry of orphans) await endOrphanPause(plane, endpoint, entry);
   const content: Omit<RunMigrationSpecValue, "at"> = {
     v: 1,
     run: report.run,
@@ -352,6 +376,68 @@ function recordedOverrides(o: MigrateOverrides | undefined): string[] {
   for (const h of o.adopt ?? []) out.push(`--adopt ${h}`);
   for (const h of o.release ?? []) out.push(`--release ${h}`);
   return out;
+}
+
+/** The plane a commit ends an orphaned pause on: the records, the timer plane, and the chat stream. */
+export interface MigrationPlane {
+  readonly kv: KV;
+  readonly js: JetStreamClient;
+  readonly jsm: JetStreamManager;
+  readonly space: string;
+  readonly now: () => number;
+}
+
+/**
+ * The pending orphans whose pauses the commit ends: every orphaned entry that is still pending and
+ * owns a token. A settled orphan owns nothing live, so the row was already true of it. The latest
+ * record of a step wins, because the journal the caller hands over is the append log.
+ */
+function pendingPauseOrphans(
+  entries: readonly JournalEntry[],
+  report: { readonly orphans: readonly { readonly step: string }[] },
+): JournalEntry[] {
+  const last = new Map<string, JournalEntry>();
+  for (const entry of entries) last.set(journalEntryKeyString(entry), entry);
+  const owed = new Set(report.orphans.map((o) => o.step));
+  return [...last.values()].filter((entry) =>
+    entry.state === "pending" && owed.has(journalEntryKeyString(entry)) && pauseTokens(entry).length > 0);
+}
+
+/**
+ * End one orphaned step's pauses.
+ *
+ * Each token the step owns is claimed with no answer, so its armed schedule cannot fire into a run
+ * that moved on. A pause that is not waiting is already over, and a claim that loses to the deadline
+ * finds the pause settled, which is the same ending. A `wait` then loses its consumer: a cancelled
+ * wait replays as cancelled and nothing will read its position. A consumer that was never created, or
+ * is already gone, is the same fact.
+ */
+async function endOrphanPause(plane: MigrationPlane, endpoint: string, entry: JournalEntry): Promise<void> {
+  for (const token of pauseTokens(entry)) await claimOrphanPause(plane, endpoint, token);
+  if (entry.kind !== "wait" || entry.requestId === undefined) return;
+  try {
+    await plane.jsm.consumers.delete(chatStream(plane.space), waitConsumerName(entry.requestId));
+  } catch { /* never created, or already deleted — nothing is held either way */ }
+}
+
+/** Claim one waiting pause with no answer. A pause that is not waiting, or that settles under the
+ *  claim, is already over. Anything else is the broker, and a commit that could not end the pause
+ *  must not file a row that says nothing outlives it. */
+async function claimOrphanPause(plane: MigrationPlane, endpoint: string, token: string): Promise<void> {
+  const ref = { endpoint, token };
+  const status = await readCheckpointStatus(plane.kv, ref);
+  if (status?.value.state !== "waiting") return;
+  const spec = await readCheckpointSpec(plane.kv, ref);
+  if (spec === undefined) return;
+  try {
+    await resumeCheckpoint(plane.kv, plane.js, plane.jsm, plane.space, {
+      ref, presenter: spec.holder, now: plane.now(),
+    });
+  } catch (e) {
+    const settledAlready = e instanceof EpEnvelopeError
+      && (e.code === "conflict" || e.code === "failed-precondition");
+    if (!settledAlready) throw e;
+  }
 }
 
 /** The agent a settled `spawn` entry produced (`<name>#<lifecycleUid>`), or nothing: a spawn that

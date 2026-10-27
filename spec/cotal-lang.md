@@ -1112,7 +1112,7 @@ never looks up are **orphans**, and what happens to each depends on what it did:
 
 | Orphaned kind | Verdict |
 | --- | --- |
-| `sleep`, `wait`, `monitor`, `ask` | ignored: nothing outlives it |
+| `sleep`, `wait`, `monitor`, `ask` | ignored: nothing outlives it. A pending one still holds its pauses, and a `wait` its consumer; the commit ends them before the record is filed. A settled one holds nothing |
 | `waitUntil` | ignored, settled or pending: it holds no agent, membership or decision, and its recorded observations stay in the journal |
 | `turn` | kept: the agent already spoke; the record stays and the migration says the source no longer accounts for it |
 | `notify` | ignored if its notice was carried by the addressee's next turn; else **rejected** (L5013) |
@@ -1322,3 +1322,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-10-20 | Clarification with no change in meaning: §6.1 lists `spawn`'s `cwd` and `placement`, and §6.4 states that each is hashed only when the option bag carries it, `placement` as `{ endpoint, instanceId }`. A spawn that omits both keeps its six-key hash. The reference has hashed this way since lang 0.50.0. |
 | 2026-10-24 | An effect `once` does not admit, called in its body or in a function the body calls by name, is refused by the validator with L2033 (§7.8), and L4028 stays the run's refusal of one the validator could not see. Measured before it: `once(async () => { await sleep("1s") })`, directly and through a named helper, passed `validate` and a hosted start and then failed every run with L4028. |
 | 2026-10-24 | A literal that is not a duration, written where the language reads one, is refused by the validator with L2034 (§4.6). Measured before it: `sleep("5")`, `sleep(5000)`, `sleep("1.5s")`, `sleep("")`, a `checkpoint` `timeout` of `"PT5M"`, a `waitUntil` `every` of `"1.5s"` and `duration("5")` passed `validate` and a hosted start, and each run then failed when it reached the call. |
+| 2026-10-27 | The `sleep`, `wait`, `monitor` and `ask` orphan row says the commit ends a pending orphan's pauses, and a `wait`'s consumer, before the record is filed (§11.2). The row said nothing outlives the step, and that was true of a settled one only: a pending one still held its pauses, and a committed migration left them armed. |
