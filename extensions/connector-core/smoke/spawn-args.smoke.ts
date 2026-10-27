@@ -10,11 +10,20 @@
  * #972: a requested `model` that the manager does not record is a refusal, not a successful spawn on
  * the harness default. The mock inspect is the attestation; a spawn that never inspects cannot tell
  * a landed pin from a dropped one.
+ *
+ * A launch that stands while only its pin read fails is a partial outcome: the seat, its id, its
+ * manager and runtime, the unaudited pin and `cotal ps --on <manager>`, in the text and in the
+ * structured content the MCP renderer sends. A refusal there read as "nothing was spawned", and the
+ * caller's retry started a second seat on the same work.
  */
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { MeshAgent, SPAWN_TIMEOUT_MS } from "../src/agent.js";
 import { cotalToolSpecs } from "../src/tool-specs.js";
+import { registerCotalTools } from "../src/tools.js";
 import type { AgentConfig } from "../src/config.js";
-import { describeEndpoint } from "@cotal-ai/core";
+import { describeEndpoint, EpEnvelopeError, EP_UNANSWERED } from "@cotal-ai/core";
 
 let failures = 0, checks = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -212,7 +221,112 @@ check(
   toolReply,
 );
 
-const EXPECTED_CHECKS = 37;
+// A launch that stands with only its pin read failed. Static mode, so the real managerInvoke turns
+// each thrown failure into the reply the audit reads, and the answering manager rides the reply.
+const MANAGER = "mmmmmmmmmmmmmmmmmmmmmmmmmm";
+const PIN = "grok-4.6";
+const launched = { ok: true, data: { name: "rev", id: "u_x.rev", agent: "claude", mode: "orca", lifecycleUid: "llllllllllllllllllllllllll" } };
+type Structured = {
+  status?: string; name?: string; id?: string; manager?: string; runtime?: string; joined?: boolean; next?: string; message?: string;
+  model?: { requested?: string; audited?: boolean; reported?: boolean; error?: string };
+};
+type Result = { text: string; isError?: boolean; structured?: Structured };
+
+/** `spawn` answers `spawned` from MANAGER; `inspect` throws `failure`. */
+function auditFails(agent: MeshAgent, failure: unknown, spawned: Record<string, unknown> = launched): MeshAgent {
+  (agent as unknown as InvokeEp).ep = {
+    invokeService: (endpoint, command) => command === "inspect"
+      ? Promise.reject(failure)
+      : Promise.resolve({ reply: spawned, responder: { endpoint, instanceId: MANAGER, epoch: 0 } }),
+    principal: { owner: "local", actor: "caller" },
+  };
+  (agent as unknown as { _connected: boolean })._connected = true;
+  return agent;
+}
+const spawnWith = async (failure: unknown, spawned?: Record<string, unknown>) =>
+  await spawnTool!.run(auditFails(new MeshAgent(cfg), failure, spawned), cfg, { name: "rev", model: PIN }) as Result;
+const silence = new EpEnvelopeError("deadline-exceeded", "no reply to manager.inspect within the 10000ms budget (SPEC 13.5)", [{ kind: EP_UNANSWERED, endpoint: "manager", command: "inspect" }]);
+
+// The hosted failure: the pin read's own connection timed out, and the transport said only "timeout".
+const timedOut = await auditFails(new MeshAgent(cfg), new Error("timeout")).spawn("rev", "reviewer", { model: PIN });
+const timedOutData = timedOut.data as { model?: string; pinAudit?: { requested?: string; error?: string; unreported?: true } } | undefined;
+check(
+  "a launch whose pin read timed out stands, with the failed audit beside it and no pin in its place",
+  timedOut.ok === true && timedOutData?.pinAudit?.requested === PIN && timedOutData.pinAudit.error === "timeout" && timedOutData.pinAudit.unreported === undefined && timedOutData.model === undefined,
+  timedOut,
+);
+
+const partial = await spawnWith(new Error("timeout"));
+check(
+  "cotal_spawn reports it as a partial outcome naming the seat, its id, manager and runtime, and the next step",
+  partial.isError !== true && !/Couldn't spawn/.test(partial.text) && /it joined the mesh/.test(partial.text) && partial.text.includes("(id u_x.rev, manager " + MANAGER + ", runtime orca)")
+    && partial.text.includes(`model pin "${PIN}" could not be audited (timeout)`) && /Do not spawn it again/.test(partial.text) && partial.text.includes("Next: `cotal ps --on " + MANAGER + "`"),
+  partial,
+);
+const st = partial.structured;
+check(
+  "the partial's structured payload carries the same facts and the whole message",
+  st?.status === "partial" && st.name === "rev" && st.id === "u_x.rev" && st.manager === MANAGER && st.runtime === "orca" && st.joined === true
+    && st.model?.requested === PIN && st.model.audited === false && st.model.reported === true && st.model.error === "timeout"
+    && st.next === `cotal ps --on ${MANAGER}` && st.message === partial.text,
+  st,
+);
+
+const silent = await spawnWith(silence);
+check(
+  "a manager that did not answer the pin read within its budget leaves the pin unaudited",
+  silent.isError !== true && /could not be audited \(no reply to manager\.inspect within the 10000ms budget/.test(silent.text) && silent.structured?.model?.reported === true,
+  silent,
+);
+
+const unserved = await spawnWith(new EpEnvelopeError("not-found", `command "inspect" is not in manager's visible surface; describe lists spawn`));
+check(
+  "a manager with no inspect for this caller did not report the pin, and the result says so",
+  unserved.isError !== true && unserved.text.includes(`model pin "${PIN}" was not reported by this manager (not-found: command "inspect"`) && unserved.structured?.model?.reported === false,
+  unserved,
+);
+
+const unanswered = await spawnWith(new EpEnvelopeError("unavailable", "no responder for manager.inspect (SPEC 13.5)", [{ kind: EP_UNANSWERED, endpoint: "manager", command: "inspect" }], "not-executed"));
+check(
+  "a pin read no responder took is not reported by this manager either",
+  unanswered.isError !== true && /was not reported by this manager/.test(unanswered.text) && unanswered.structured?.model?.reported === false,
+  unanswered,
+);
+
+const accepted = { name: "rev", owner: "u_x", actor: "rev", uid: "uuuuuuuuuuuuuuuuuuuuuuuuuu", goalId: "g", fingerprint: "f", executor: { lifecycleUid: MANAGER, epoch: 0 } };
+const booting = await spawnWith(new Error("timeout"), { id: "g", ok: false, error: { code: "uncertain", message: "rev did not join within its readiness window" }, data: accepted });
+check(
+  "a launch still booting with its pin unaudited is the same partial, marked as not joined",
+  booting.isError !== true && /has not joined the mesh within its readiness window/.test(booting.text) && booting.text.includes(`(id rev, manager ${MANAGER})`)
+    && booting.structured?.joined === false && booting.structured.manager === MANAGER && !("runtime" in booting.structured),
+  booting,
+);
+
+const refused = await spawnWith(new Error("timeout"), { id: "g", ok: false, error: { code: "failed-precondition", message: `no persona "rev"` } });
+check(
+  "a launch the manager refused keeps the refusal shape even when the pin read also fails",
+  refused.isError === true && /^Couldn't spawn rev: no persona "rev"/.test(refused.text) && refused.structured === undefined,
+  refused,
+);
+check("a spawn whose pin was audited carries no structured payload", toolReply?.isError !== true && (toolReply as Result | undefined)?.structured === undefined, toolReply);
+
+// The Claude Code renderer: hosts that show structured content see the partial there.
+const mcp = new McpServer({ name: "spawn-args", version: "0.0.0" });
+registerCotalTools(mcp, auditFails(new MeshAgent(cfg), new Error("timeout")), cfg, "smoke");
+const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+const client = new Client({ name: "spawn-args-client", version: "0.0.0" });
+await Promise.all([client.connect(clientTransport), mcp.connect(serverTransport)]);
+const viaMcp = await client.callTool({ name: "cotal_spawn", arguments: { name: "rev", model: PIN } });
+const mcpStructured = viaMcp.structuredContent as Structured | undefined;
+const mcpText = viaMcp.content as Array<{ type: string; text: string }>;
+check(
+  "the MCP renderer sends the partial as structured content, with its JSON as text too",
+  viaMcp.isError !== true && mcpStructured?.status === "partial" && mcpStructured.message === mcpText[0]?.text && mcpText[1]?.text === JSON.stringify(mcpStructured),
+  viaMcp,
+);
+await client.close();
+
+const EXPECTED_CHECKS = 47;
 if (checks !== EXPECTED_CHECKS) {
   failures++;
   console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);
