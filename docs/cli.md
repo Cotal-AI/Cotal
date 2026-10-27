@@ -1402,8 +1402,11 @@ same selection, confirmation, reservation, native manager-impact and stop contro
 `--dry-run`, `--space`, `--json` and `--plain` keep that controller's meanings; structured receipts
 name `down` while retaining the service-stop result and actual identity. Unknown definitions do not
 fall back to legacy component pidfiles. A controller stack names its members `stack-broker`,
-`stack-auth`, `stack-delivery` and `stack-manager`; a legacy name such as `manager` refuses
-`TARGET_NOT_FOUND` there and names the `stack-` member to use. A stop of `stack-broker` refuses
+`stack-auth`, `stack-delivery` and `stack-manager`. A preset name reaches the member built on that
+preset, as in [`service`](#service), so `cotal down manager` stops `stack-manager` and
+`cotal down delivery` stops `stack-delivery` through the service stop, and the receipt's target
+names the member and the name you gave as `requested`. A name that is no preset, such as `nats`,
+refuses `TARGET_NOT_FOUND` there and names the `stack-` member to use. A stop of `stack-broker` refuses
 `LIFECYCLE_BLOCKED` while a legacy daemon record under the root may front a process, or another
 service instance of the space is live or unresolved. For those instances it names bare `cotal down`,
 or `cotal service stop <name> --instance <id> --space <space> --yes` for each one. When one of them
