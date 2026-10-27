@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.111.1
+
+### Patch Changes
+
+- 60cb0de: Bare `cotal down` refuses while a manager or delivery daemon has no pidfile and is still renewing its lease, instead of stopping the broker under it or reporting that nothing is running.
+- 23ac8a6: Three help examples now run as written. The `persona create` example passes `--subscribe ""`, which a persona made from a prompt needs, and the usage marks `--subscribe` required with `--prompt` or `--from`. The `space add` examples pass `--root <dir>`, which they need outside a project. The `completion uninstall` example's note says it removes the completion file for your shell, the one `SHELL` names. A usage refusal now shows the help `--help` prints for the same words, so a refused `persona create` shows the `persona create` help instead of the `persona` help.
+- 23ac8a6: `cotal manager <verb> --help` and `cotal help manager <verb>` now print one help: the verb's own summary, usage and examples, with the options the command takes. `--help` showed the service command's summary, and `help manager <verb>` listed only `--json` and `--plain` under Options while its usage named `--foreground` and `--name`. `cotal ext seed --help` prints the `ext seed` help instead of the `ext` help.
+- @cotal-ai/core@0.111.1
+  - @cotal-ai/workspace@0.111.1
+
 ## 0.111.0
 
 ### Patch Changes
