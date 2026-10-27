@@ -1473,7 +1473,8 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           return { credentials };
         },
       });
-      if (holder.supervisorExpiresAt !== undefined) {
+      const supervisorExpiresAt = holder.supervisorExpiresAt;
+      if (supervisorExpiresAt !== undefined) {
         await withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, async (session) => {
           for (const duty of ["supervisor", "executor"] as const) {
             const credential = material.credentials[duty];
@@ -1486,8 +1487,8 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             const acceptedToken = supervisorAcceptedToken(owner, holder.request.instanceId, holder.request.managerLifecycleUid, duty);
             const existing = await supervisorGeneration(session, space, owner, holder.request.instanceId, holder.request.managerLifecycleUid, duty);
             if (existing === undefined) {
-              const ref = { space, owner, actor, uid: holder.request.managerLifecycleUid, generation: mintGeneration() };
-              const prepared = await session.store.stage({ version: 1, ref, sources: [], permissions, expiresAt: holder.supervisorExpiresAt });
+              const ref = { space, owner, actor, uid: holder.request.managerLifecycleUid, generation: mintGeneration(supervisorExpiresAt) };
+              const prepared = await session.store.stage({ version: 1, ref, sources: [], permissions, expiresAt: supervisorExpiresAt });
               await session.store.release(prepared, async () => {});
               await writeAcceptedRow(session.accepted, acceptedToken, ref);
             } else {

@@ -13,7 +13,8 @@
  *     retired incarnation's principal is refused; an unknown principal is not claimed.
  *  3. F5(b) renewal: the manager push-remints the SAME identity with a fresh bounded exp — a
  *     second ledger row appears, the file re-signs for the same nkey — and renewal REFUSES once
- *     the lifecycle is terminalizing.
+ *     the lifecycle is terminalizing. On a clock moved forward, a renewal shortly before the
+ *     generation's 30-day horizon is capped at it, and none is minted at it (SPEC 13.15).
  *  4. TERMINAL (F1, the (b2) order): despawn drives freeze -> head retiring -> B1 revoke (ALL
  *     ledger rows, incl. renewals) -> cleanup -> gate retired (op-pinned) -> head retired ->
  *     slot retired -> alias free; the retiring hold gates same-name reuse meanwhile.
@@ -29,7 +30,7 @@
  * Run: pnpm smoke:static-lifecycle   (needs nats-server + node on PATH; boots its own broker)
  */
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -55,7 +56,9 @@ import {
   gateObserve,
   inspectCredHealth,
   idFromCreds,
+  issuedHorizon,
   STANDING_RENEWABLE_TTL_SEC,
+  STATIC_GENERATION_HORIZON_SEC,
   type Connector,
   type LaunchSpec,
   type AgentHandle,
@@ -96,7 +99,7 @@ let ran = 0;
  * when a `check` is deliberately added or removed, because completeness is something only this
  * suite knows, so it has to be the thing that says it.
  */
-const EXPECTED_CHECKS = 42;
+const EXPECTED_CHECKS = 45;
 function check(label: string, cond: boolean, extra?: unknown): void {
   console.log(`${cond ? "✓" : "✗"} ${label}${cond ? "" : ` — ${JSON.stringify(extra) ?? ""}`}`);
   ran++;
@@ -347,6 +350,24 @@ try {
   check("renewal REFUSES once terminalizing (no mint after the terminal begins)", renewRefused);
   managedA.terminalizing = false;
 
+  // The generation's horizon (SPEC 13.15), on this process's clock moved forward to it.
+  const horizonA = issuedHorizon((managedA as unknown as { issued: { generation: string } }).issued.generation);
+  const untilHorizon = horizonA - Math.floor(Date.now() / 1000);
+  check("A's generation horizon is 30 days after its spawn", untilHorizon <= STATIC_GENERATION_HORIZON_SEC && untilHorizon > STATIC_GENERATION_HORIZON_SEC - 300, untilHorizon);
+  const realNow = Date.now;
+  let refusal = "";
+  try {
+    Date.now = () => (horizonA - 600) * 1000;
+    await M.renewManagedStaticCred(managedA);
+    const capped = credsPathA ? readFileSync(credsPathA, "utf8") : "";
+    check("a renewal ten minutes before the horizon is capped at it", inspectCredHealth(capped, horizonA - 600).exp === horizonA, inspectCredHealth(capped, horizonA - 600));
+    Date.now = () => horizonA * 1000;
+    await M.renewManagedStaticCred(managedA).catch((e: unknown) => { refusal = e instanceof Error ? e.message : String(e); });
+  } finally {
+    Date.now = realNow;
+  }
+  check("no renewal is minted at the horizon, and the refusal says to respawn (#4942)", /reached its horizon .* respawn the agent .*#4942/.test(refusal), refusal);
+
   // ── 4. Terminal (F1) ───────────────────────────────────────────────────────
   M.freeSlot(managedA, false, "process-exit");
   check("the name is HELD pending the static retirement (freeSlot -> retiring hold)", M.retiring.has("worker"));
@@ -356,7 +377,7 @@ try {
   const s4 = await readState("worker", idA, uidA);
   check("gate is terminally RETIRED under the retirement op (op-pinned recovery coordinate)", s4.gate?.state === "retired" && s4.gate?.op?.opId === retireOpId(uidA), s4.gate);
   check("head is RETIRED (terminal tail: gate first, head LAST)", s4.head?.state === "retired" && s4.head?.lifecycleUid === uidA, s4.head);
-  check("ALL ledger rows (root + renewal) are REVOKED — B1 covers renewals", s4.credRows.length === 2 && s4.credRows.every((r) => r.state === "revoked"), s4.credRows.map((r) => r.state));
+  check("ALL ledger rows (root + both renewals) are REVOKED — B1 covers renewals", s4.credRows.length === 3 && s4.credRows.every((r) => r.state === "revoked"), s4.credRows.map((r) => r.state));
   check("slot is RETIRED", s4.slot?.phase === "retired", s4.slot);
   check("A's creds file is gone (cleanup ran inside the barrier)", credsPathA !== undefined && !existsSync(credsPathA));
   check("the RETIRED principal is now refused at the control surface (F5(a))", typeof M.lifecycleMembershipRefusal(principalA) === "string");

@@ -30,7 +30,7 @@ const check = (name: string, condition: unknown): void => {
 async function client() {
   const identity = core.newIdentity();
   const uid = core.mintLifecycleUid();
-  const issued = { generation: core.mintGeneration(), acceptedToken: core.mintAcceptedToken() };
+  const issued = { generation: core.mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: core.mintAcceptedToken() };
   const caller = { owner: core.DEV_OWNER, actor: identity.id, uid, generation: issued.generation } as import("@cotal-ai/core").EpCaller;
   const creds = await core.withIssuerSession({ servers: broker.servers, space, auth, tls: false }, session =>
     core.mintCreds(auth, identity, "agent", { lifecycleUid: uid, capabilities: ["run"], expiresInSeconds: 300, issued,
@@ -38,7 +38,7 @@ async function client() {
   const nc = await connect({ servers: broker.servers, ...core.standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   connections.push(nc);
   const discovered = await core.resolveService(nc, space, "manager", caller, { deadlineMs: 10_000 });
-  const pinnedIssued = { generation: core.mintGeneration(), acceptedToken: core.mintAcceptedToken() };
+  const pinnedIssued = { generation: core.mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: core.mintAcceptedToken() };
   const pinnedCaller = { ...caller, generation: pinnedIssued.generation } as import("@cotal-ai/core").EpCaller;
   const pinnedCreds = await core.withIssuerSession({ servers: broker.servers, space, auth, tls: false }, session =>
     core.mintCreds(auth, identity, "agent", { lifecycleUid: uid, capabilities: ["run"], expiresInSeconds: 300, issued: pinnedIssued,

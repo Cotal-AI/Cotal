@@ -13,7 +13,7 @@ import { dialerFor } from "./endpoint.js";
 import { epAuthBucket } from "./endpoint-binding.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { issuanceGateKey, parseIssuanceGate } from "./lifecycle-state.js";
-import { acceptedBucket, issuedBucket, openIssuedStore, type IssuedSourceRef, type IssuedStore } from "./issued-authority.js";
+import { bindIssuedStores, type IssuedSourceRef, type IssuedStore } from "./issued-authority.js";
 import { credsClaims, newIdentity } from "./identity.js";
 import { credentialLifetime, mintCreds, type SpaceAuth } from "./provision.js";
 import { armRenewal, renewalDeadlineMs } from "./renewal.js";
@@ -44,8 +44,7 @@ async function openIssuerSession(args: IssuerSessionArgs, opts: { name?: string;
   try {
     const kvm = new Kvm(nc);
     const jsm = await jetstreamManager(nc);
-    const store = openIssuedStore(await kvm.open(issuedBucket(args.space)), jsm, args.space);
-    const accepted = await kvm.open(acceptedBucket(args.space));
+    const { store, accepted } = await bindIssuedStores(kvm, jsm, args.space);
     const auth = epAuthBucket(args.space);
     const sourceIsLive = async (source: IssuedSourceRef): Promise<boolean> => {
       const m = /^cred\.([a-z0-9]{26,32})$/.exec(source.key);

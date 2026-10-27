@@ -36,7 +36,7 @@ try {
   const base = { v: 1 as const, kind: "manager-run-submission" as const, space, actor: "cli", instanceId,
     managerLifecycleUid: mintLifecycleUid(), accountPublicKey, processEpoch: epoch, identities };
   const registrationProof = remoteManagerCurrentRegistrationProof(proofSecret, owner, base, gate);
-  const caller = { owner, actor: "alice", uid: mintLifecycleUid(), generation: mintGeneration() };
+  const caller = { owner, actor: "alice", uid: mintLifecycleUid(), generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800) };
   const source: IssuedSourceRef = { space, bucket: "owned_fixture", key: "live" }; let live = true;
   const prepared = await issued.stage({ version: 1, ref: { space, ...caller }, sources: [source], permissions: {
     publish: { allow: { mode: "patterns", patterns: [`cotal.${space}.ep.v1.inst.manager.${instanceId}.*.${owner}.alice.>`] }, deny: [] },

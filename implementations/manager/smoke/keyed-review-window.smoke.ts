@@ -54,7 +54,7 @@ try {
   await manager.start();
   const identity = core.newIdentity();
   const uid = core.mintLifecycleUid();
-  const issued = { generation: core.mintGeneration(), acceptedToken: core.mintAcceptedToken() };
+  const issued = { generation: core.mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: core.mintAcceptedToken() };
   const caller = { owner: core.DEV_OWNER, actor: identity.id, uid, generation: issued.generation } as import("@cotal-ai/core").EpCaller;
   const creds = await core.withIssuerSession({ servers, space, auth, tls: false }, (session) => core.mintCreds(auth, identity, "agent", {
     lifecycleUid: uid, capabilities: ["run"], expiresInSeconds: 300, issued,
@@ -63,7 +63,7 @@ try {
   nc = await connect({ servers, ...core.standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   const any = await core.resolveService(nc, space, "manager", caller, { deadlineMs: 10_000 });
   await nc.close();
-  const pinnedIssued = { generation: core.mintGeneration(), acceptedToken: core.mintAcceptedToken() };
+  const pinnedIssued = { generation: core.mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: core.mintAcceptedToken() };
   Object.assign(caller, { generation: pinnedIssued.generation });
   const pinnedCreds = await core.withIssuerSession({ servers, space, auth, tls: false }, (session) => core.mintCreds(auth, identity, "manager-caller", {
     lifecycleUid: uid, managerInstanceId: any.responder.instanceId, capabilities: ["run"], expiresInSeconds: 300, issued: pinnedIssued,
@@ -90,7 +90,7 @@ try {
   };
   const overBudget = await rawKeyed(nc, service, caller, 600_000);
   const overTimer = await rawKeyed(nc, service, caller, 2_147_483_648 + 10_000);
-  const longIssued = { generation: core.mintGeneration(), acceptedToken: core.mintAcceptedToken() };
+  const longIssued = { generation: core.mintGeneration(Math.floor(Date.now() / 1000) + 31 * 86_400), acceptedToken: core.mintAcceptedToken() };
   const longCaller = { ...caller, generation: longIssued.generation } as import("@cotal-ai/core").EpCaller;
   let farExpiry: unknown;
   try {

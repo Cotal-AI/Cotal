@@ -30,7 +30,7 @@ try {
   const jsm = await jetstreamManager(nc), kvm = new Kvm(nc), space = "keyed-store";
   await ensureAdmissionStore(jsm, kvm, space);
   const kv = await kvm.open(admissionBucket(space));
-  const caller: EpCaller & { generation: string } = { owner: DEV_OWNER, actor: "caller", uid: mintLifecycleUid(), generation: mintGeneration() };
+  const caller: EpCaller & { generation: string } = { owner: DEV_OWNER, actor: "caller", uid: mintLifecycleUid(), generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800) };
   const endpoint = "manager", instanceId = mintLifecycleUid(), processEpoch = 4;
   const admission = (): RunAdmission => ({ version: 1, space, endpoint, runId: newSubmissionRunId(), instanceId, caller,
     ceiling: { publish: { allow: { mode: "none" }, deny: [] }, subscribe: { allow: { mode: "none" }, deny: [] } }, admittedAt: Date.now(),
@@ -51,7 +51,7 @@ try {
   check("same key changed semantic fingerprint conflicts without replacement");
   const other: EpCaller = { ...caller, uid: mintLifecycleUid() };
   assert.equal((await read(id, other)).state, "unbound");
-  await assert.rejects(read(id, { ...caller, generation: mintGeneration() } as EpCaller));
+  await assert.rejects(read(id, { ...caller, generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800) } as EpCaller));
   await assert.rejects(read(id, caller, processEpoch + 1));
   check("caller lifecycle namespace, generation and exact epoch confinement");
   const put = kv.put;

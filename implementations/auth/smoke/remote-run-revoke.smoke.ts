@@ -82,7 +82,7 @@ try {
   const proof = remoteManagerCurrentRegistrationProof(auth.account.signingSeed, owner, base, gate);
   const liveUid = mintLifecycleUid();
   await epKv.put(issuanceGateKey(liveUid), new TextEncoder().encode(JSON.stringify({ lifecycleUid: liveUid, state: "open", generation: 1 })));
-  const caller = { space: SPACE, owner, actor: "cli", uid: mintLifecycleUid(), generation: mintGeneration() };
+  const caller = { space: SPACE, owner, actor: "cli", uid: mintLifecycleUid(), generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800) };
   const prepared = await issued.stage({ version: 1, ref: caller, sources: [{ space: SPACE, bucket: epAuthBucket(SPACE), key: `cred.${liveUid}` }], permissions: {
     publish: { allow: { mode: "patterns", patterns: [`cotal.${SPACE}.ep.v1.inst.manager.*.run-start.${owner}.cli.>`] }, deny: [] },
     subscribe: { allow: { mode: "patterns", patterns: [chatSubject(SPACE, "*", "*", "build")] }, deny: [] },

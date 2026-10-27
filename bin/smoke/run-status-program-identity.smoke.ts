@@ -80,7 +80,7 @@ try {
 
   const identity = core.newIdentity();
   const uid = core.mintLifecycleUid();
-  const issued = { generation: core.mintGeneration(), acceptedToken: core.mintAcceptedToken() };
+  const issued = { generation: core.mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: core.mintAcceptedToken() };
   const caller = { owner: core.DEV_OWNER, actor: identity.id, uid, generation: issued.generation } as EpCaller;
   const creds = await core.withIssuerSession({ servers, space, auth, tls: false }, (session) => core.mintCreds(auth, identity, "agent", {
     lifecycleUid: uid, capabilities: ["run"], expiresInSeconds: 600, issued,
