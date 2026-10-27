@@ -746,46 +746,44 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
 }
 
 /**
- * Connect as the logged-in user on a user-auth mesh. **No profile/role argument** — there is no
- * instrument mint on this path; ledger scope is the grant and `epCaller` comes from the bearer
- * principal. Prefer this over `connectOrExit(..., someRole)` whenever the caller already knows
- * (or has just learned) the mesh is user-mode: a dummy role is a value that is meaningless today
- * and wrong the day this path starts consulting it.
+ * Connect as the logged-in user on a user-auth mesh, throwing {@link ConnectRefusal} on every
+ * refusal. **No profile/role argument** — there is no instrument mint on this path; ledger scope
+ * is the grant and `epCaller` comes from the bearer principal. Prefer this over
+ * `connectOrThrow(..., someRole)` whenever the caller already knows (or has just learned) the mesh
+ * is user-mode: a dummy role is a value that is meaningless today and wrong the day this path
+ * starts consulting it.
  *
  * If this function is ever changed to accept or consult a {@link Profile}, every caller is wrong.
+ * {@link connectUserControlOrExit} is this plus the printing and the exit, so the two forms say
+ * the same sentence.
  */
+export async function connectUserControlOrThrow(flags: ConnectFlags): Promise<Connection> {
+  if (flags.creds)
+    throw new ConnectRefusal(
+      "✗ the user-mode control path does not take --creds (that is the static/raw instrument path via connectOrExit)",
+      undefined,
+      { code: "UNSUPPORTED" },
+    );
+  const target = await resolveTargetOrThrow(flags);
+  if (target.mode !== "user")
+    throw new ConnectRefusal(
+      `✗ the user-mode control path requires a user-auth mesh (resolved mode is "${target.mode}") - use connectOrExit with an instrument profile on static/open meshes`,
+      undefined,
+      { code: "UNSUPPORTED" },
+    );
+  return userConnectOrThrow(target);
+}
+
+/** {@link connectUserControlOrThrow} with the exiting disposition: the form a command wants, where
+ *  a refusal is the end of the command. A caller that must record a refusal before it fails, such
+ *  as `up`'s same-principal resume, which degrades its maintenance journal with the reason, calls
+ *  the throwing form. */
 export async function connectUserControlOrExit(flags: ConnectFlags): Promise<Connection> {
-  if (flags.creds) {
-    console.error(
-      c.red(
-        "✗ connectUserControlOrExit is the user-mode control path - it does not take --creds (that is the static/raw instrument path via connectOrExit)",
-      ),
-    );
-    process.exit(1);
-  }
-  const target = await resolveTargetOrExit({ server: flags.server, space: flags.space, offline: flags.offline });
-  if (target.mode !== "user") {
-    console.error(
-      c.red(
-        `✗ connectUserControlOrExit requires a user-auth mesh (resolved mode is "${target.mode}") - use connectOrExit with an instrument profile on static/open meshes`,
-      ),
-    );
-    process.exit(1);
-  }
   try {
-    return await userConnectOrThrow(target);
+    return await connectUserControlOrThrow(flags);
   } catch (e) {
     exitOnRefusal(e);
   }
-}
-
-/** {@link connectUserControlOrExit} for a caller that must record a refusal before it fails, such
- *  as `up`'s same-principal resume, which degrades its maintenance journal with the reason. */
-export async function connectUserControlOrThrow(flags: ResolveFlags): Promise<Connection> {
-  const target = await resolveTargetOrThrow(flags);
-  if (target.mode !== "user")
-    throw new ConnectRefusal(`✗ connectUserControlOrThrow requires a user-auth mesh (resolved mode is "${target.mode}")`, undefined, { code: "UNSUPPORTED" });
-  return userConnectOrThrow(target);
 }
 
 /** The user-mode connect: resolve the space's auth provider from the registry (composition-root
