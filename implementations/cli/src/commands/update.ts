@@ -1,10 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, type OutputWarning,
+  CommandFailure, jsonFlag, plainFlag, presentationOf, protectedLocalDirectory, renderReport, terminalWidth, writeResult, type OutputWarning,
   cmdSpawnSpec,
   beginGlobalUpdateChild,
   claimGlobalNpmUpdateLock,
@@ -129,9 +129,18 @@ const runtime: UpdateRuntime = {
 export async function update(args: ParsedArgs, rt: UpdateRuntime = runtime): Promise<void> {
   validateUpdateArguments(args);
   if (args.values.check === true) return checkUpdate(args, rt);
+  // A folder above the config folder is not one this command repairs. Refuse it before the mode
+  // repair and before seeding, so a refusal writes nothing and does not replace the binary.
+  try {
+    assertConfigAncestorProtected();
+  } catch (e) {
+    rt.err(c.red(`✗ config folder protection: ${refusal(e)}`));
+    process.exitCode = 1;
+    return;
+  }
   // Removing group and other write from Cotal's install and config folder changes nothing a running
   // manager reads, so their modes are repaired before the continuity check rather than only when the
-  // reconcile is allowed to run. A folder above them is not Cotal's, so the seed still refuses it.
+  // reconcile is allowed to run.
   const install = launcherInstallRoot();
   for (const { what, root } of [...(install ? [{ what: "install", root: install }] : []), { what: "config", root: globalConfigDir() }]) {
     const repaired = repairInstallModes(root);
@@ -525,6 +534,22 @@ function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok:
   }
 }
 
+
+/** The nearest existing directory of the config folder. Seeding creates the folder itself, but a
+ *  group-writable ancestor above it is outside the folders update repairs. */
+function assertConfigAncestorProtected(): void {
+  let path = globalConfigDir();
+  // The config folder itself is repaired below. Only a folder above it is outside that repair.
+  if (existsSync(path)) path = dirname(path);
+  while (!existsSync(path)) {
+    const parent = dirname(path);
+    if (parent === path) return;
+    path = parent;
+  }
+  if (!statSync(path).isDirectory()) return;
+  protectedLocalDirectory(path, "the Cotal config folder");
+}
+
 async function upgradeAndReconcile(targetVersion: string, current: string, rt: UpdateRuntime, target: Record<string, unknown>): Promise<number> {
   try {
     if (await rt.reportRunningManager(target) === "legacy") return 1;
@@ -541,6 +566,16 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   const root = rootResult.stdout.trim();
   if (!root || /[\r\n]/.test(root)) {
     rt.err(c.red(`✗ npm returned an invalid global root: ${JSON.stringify(rootResult.stdout)}`));
+    return 1;
+  }
+
+  // Seeding writes under the config folder after this install. An ancestor outside that folder,
+  // such as a group-writable XDG config parent, is not repaired and still refuses. Check it now,
+  // before npm replaces the binary, so a refusal leaves the installed generation unchanged.
+  try {
+    assertConfigAncestorProtected();
+  } catch (e) {
+    rt.err(c.red(`✗ config folder protection: ${refusal(e)}`));
     return 1;
   }
 

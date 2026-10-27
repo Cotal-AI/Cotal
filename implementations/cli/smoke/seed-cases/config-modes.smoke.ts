@@ -41,13 +41,13 @@ try {
     // XDG_CONFIG_HOME itself is a folder the operator chose, not one Cotal manages.
     chmodSync(cfg, 0o775);
     const run = cotal(cfg, ["update"], env);
-    check("config modes: update still fails when a folder above the config folder is group-writable", run.status === 1 && run.stderr.includes(`✗ built-in connectors: failed to seed connector "web"`), run.stderr);
-    check("config modes: Cotal's own folders below it are still repaired", run.stdout.includes(repairLine(cfg)) && tree.every((path) => mode(path) === 0o755), run.stdout);
+    check("config modes: update refuses a group-writable folder above the config folder before replacing the binary", run.status === 1 && run.stderr.includes("✗ config folder protection:"), run.stderr);
+    check("config modes: the refusal does not seed or repair after the binary would have moved", !run.stderr.includes("failed to seed") && !run.stdout.includes(repairLine(cfg)), run.stdout + run.stderr);
     check("config modes: the folder Cotal does not manage stays group-writable", mode(cfg) === 0o775, mode(cfg));
-    // The check reads the physical path, and the reason after the colon names what this host lacks.
+    // The check reads the physical path. The ancestor is outside the folders update repairs.
     const physical = realpathSync(cfg);
-    check("config modes: the refusal names that folder alone, with chmod g-w as its next step",
-      run.stderr.includes(`the path is not protected against other local writers: ${physical} is group-writable and the private-group proof is unavailable: `) && run.stderr.includes(`Next\n  chmod g-w ${physical}\n`),
+    check("config modes: the refusal names that folder",
+      run.stderr.includes(`the Cotal config folder is not protected against other local writers: ${physical} is group-writable`),
       run.stderr);
   }
 } finally {
