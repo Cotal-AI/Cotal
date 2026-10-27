@@ -1,11 +1,12 @@
 /** Process record paths name evidence, never the computed location of an absent record. */
 import { strict as nodeAssert } from "node:assert";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   canonicalLocalProcessPath, commandIsCotalDelivery, DELIVERY_PIDFILE, localProcessPath,
-  MANAGER_PIDFILE, readProcessRecord,
+  MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, readProcessRecord,
 } from "@cotal-ai/workspace";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { assertManagerRecordReplaceable, managerRecordState } from "../src/lib/manager-proc.js";
@@ -97,6 +98,35 @@ try {
 const directory = join(root, "directory.pid");
 mkdirSync(directory);
 assert.throws(() => readProcessRecord(directory, () => true, unexpectedProbe, unexpectedCommand), (error: Error) => error.message.includes(directory));
+// A cutover names one root and uses it for the record, its marker, and the stop. Another
+// folder's marker neither hides the selected marker nor waives an unmarked manager there.
+const otherRoot = join(root, "other");
+mkdirSync(join(otherRoot, ".cotal"), { recursive: true });
+const fixture = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000000)", "supervise"], { stdio: "ignore" });
+try {
+  const fixturePid = fixture.pid;
+  assert.equal(typeof fixturePid, "number");
+  const pidFile = canonicalLocalProcessPath(MANAGER_PIDFILE, emptyContext);
+  const markerFile = canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, emptyContext);
+  const otherMarker = canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, { root: otherRoot, space: context.space });
+  writeFileSync(pidFile, `${fixturePid}\n`);
+  writeFileSync(markerFile, `${fixturePid}\n`);
+  process.chdir(otherRoot);
+  await stopOldHostingManagerIfPresent(() => "alive", context.space, emptyRoot);
+  assert.equal(existsSync(pidFile), true);
+  assert.equal(existsSync(markerFile), true);
+  assert.equal(readdirSync(join(otherRoot, ".cotal")).length, 0);
+  rmSync(markerFile);
+  writeFileSync(otherMarker, `${fixturePid}\n`);
+  await stopOldHostingManagerIfPresent(() => "alive", context.space, emptyRoot);
+  assert.equal(existsSync(pidFile), false);
+  assert.equal(existsSync(markerFile), false);
+  assert.equal(existsSync(otherMarker), true);
+} finally {
+  fixture.kill();
+  process.chdir(previousCwd);
+}
+
 console.log("PASS: absent records omit paths, non-absent records retain evidence, read errors throw");
 console.log(`Retained fixtures: ${root}`);
 emitSentinel({ passed: counted.cells(), failed: 0 });

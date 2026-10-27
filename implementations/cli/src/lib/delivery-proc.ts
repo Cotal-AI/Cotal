@@ -118,13 +118,14 @@ function oldHostingManagerVerdict(
   record: ProcessRecord,
   space: string,
   probe: LivenessProbe,
+  root: string,
 ): "stop-it" | "proceed" | "indeterminate" {
   if (record.state === "unknown" || record.state === "unattributable") return "indeterminate";
   if (record.state !== "alive") return "proceed"; // dead or absent: nothing is hosting Plane 3
   // Alive: the marker decides, for the pid this record attributed. A delivery-aware manager removes its
   // marker just before it exits, so a missing marker on a pid that has died since was that exit.
   const pid = record.pid!;
-  return managerHasDeliveryMarker(pid, space) || probe(pid) === "dead" ? "proceed" : "stop-it";
+  return managerHasDeliveryMarker(pid, space, root) || probe(pid) === "dead" ? "proceed" : "stop-it";
 }
 
 /** Cutover preflight — the FIRST action, BEFORE the daemon can bind: stop any old Plane-3-hosting
@@ -139,7 +140,7 @@ export async function stopOldHostingManagerIfPresent(
   // exit and a start replaces it, so a second read can find it gone or holding other content.
   const record = managerRecordState(space, root, { probe });
   if (record.state === "absent") return;
-  const verdict = oldHostingManagerVerdict(record, space, probe);
+  const verdict = oldHostingManagerVerdict(record, space, probe, root);
   // FIRST action, before any mint/write/start, so the refusal actually fences the daemon.
   if (verdict === "indeterminate") {
     const p = record.path;
@@ -163,11 +164,11 @@ export async function stopOldHostingManagerIfPresent(
     // start beside a manager still bound to Plane 3. A false result means the judged record changed
     // or disappeared, not that this manager stopped. Refuse rather than treating a successor's marker
     // as proof that the predecessor released Plane 3, and leave the successor's artifacts untouched.
-    if (!await stopManager(space, { pid: record.pid }))
+    if (!await stopManager(space, { pid: record.pid, root }))
       throw new Error(
         `the manager record changed or disappeared during the delivery cutover preflight (judged pid ${record.pid}); refusing to start the daemon. Retry once the manager restart has completed.`,
       );
-    clearManagerArtifacts(space);
+    clearManagerArtifacts(space, root);
   }
 }
 
@@ -251,7 +252,8 @@ export async function ensureDelivery(
   if (!hasAuth()) return { running: false }; // open dev mode — no daemon, agents are live-only
 
   const space = o.space ?? folderSpace();
-  if (oldHostingManagerVerdict(managerRecordState(space, cotalRoot(), { probe }), space, probe) === "stop-it") {
+  const root = cotalRoot();
+  if (oldHostingManagerVerdict(managerRecordState(space, root, { probe }), space, probe, root) === "stop-it") {
     console.error(
       "✗ delivery: an old Plane-3-hosting manager is still live (no delivery-aware marker). Refusing to start the daemon - run `cotal down` first, then retry.",
     );

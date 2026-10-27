@@ -77,8 +77,8 @@ const PID_PATH = (space: string = folderSpace(), root: string = cotalRoot()): st
  *  manager that still calls `startPlane3` — the delivery preflight stops it before the daemon binds, so an
  *  old hosting manager never double-binds `fanout`/`reader` against the new daemon. Per-space and
  *  READ-resolving, exactly like the pidfile it is a sibling of. */
-const DELIVERY_AWARE_MARKER = (space: string = folderSpace()): string =>
-  localProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx(space));
+const DELIVERY_AWARE_MARKER = (space: string = folderSpace(), root: string = cotalRoot()): string =>
+  localProcessPath(MANAGER_DELIVERY_AWARE_MARKER, { root, space });
 
 /** The seams a test injects. Production passes nothing and gets the real probe and command reader.
  *  Both modules take this object last, after the space (and root) the record is about. */
@@ -159,10 +159,10 @@ export function supervisorMayServe(space: string): boolean {
  *  than the one the caller judged. Fail-closed: the marker stores the pid it was written for, and a
  *  stale marker left by a crash, a mismatch, or an unparseable file all read as NOT delivery-aware, so
  *  a live old hosting manager can't be mistaken for non-hosting and the delivery preflight stops it. */
-export function managerHasDeliveryMarker(pid: number, space: string = folderSpace()): boolean {
+export function managerHasDeliveryMarker(pid: number, space: string = folderSpace(), root: string = cotalRoot()): boolean {
   let markerPid: number;
   try {
-    markerPid = Number(readFileSync(DELIVERY_AWARE_MARKER(space), "utf8").trim());
+    markerPid = Number(readFileSync(DELIVERY_AWARE_MARKER(space, root), "utf8").trim());
   } catch (e) {
     // A manager removes its marker on exit, so it can be gone by the time it is read.
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
@@ -370,14 +370,14 @@ export const MANAGER_PROCESS = {
  *  component stopped, and every other caller through {@link clearManagerArtifacts}. */
 export async function stopManager(
   space: string = folderSpace(),
-  { withAgents = false, pid }: { withAgents?: boolean; pid?: number } = {},
+  { withAgents = false, pid, root = cotalRoot() }: { withAgents?: boolean; pid?: number; root?: string } = {},
 ): Promise<boolean> {
-  const context = ctx(space);
+  const context = { root, space };
   let spared: SpareSeatRow[] | undefined;
   let spareSeats: ManagerSpareSeats | undefined;
   let legacyManagerSpareUnverified = false;
   if (!withAgents) {
-    const pin = verifyIdentityPin(PID_PATH(space));
+    const pin = verifyIdentityPin(PID_PATH(space, root));
     if (pin.kind === "legacy") legacyManagerSpareUnverified = true;
     else if (pin.kind === "match") spared = await listManagerSeatsForSpare(context);
   }
@@ -408,6 +408,6 @@ export async function stopManager(
 }
 
 /** Remove the records that die with the space's manager process, once a stop outside `down` returned. */
-export function clearManagerArtifacts(space: string): void {
-  for (const artifact of MANAGER_PROCESS.artifacts) rmSync(localProcessPath(artifact, ctx(space)), { force: true });
+export function clearManagerArtifacts(space: string, root: string = cotalRoot()): void {
+  for (const artifact of MANAGER_PROCESS.artifacts) rmSync(localProcessPath(artifact, { root, space }), { force: true });
 }
