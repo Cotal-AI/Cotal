@@ -2631,17 +2631,27 @@ export class CotalEndpoint extends EventEmitter {
    *  PEER's reply lane (`ctl.delivery.<victim>.reply.<n>`) and turn the responder into a confused
    *  deputy — the broker does NOT permission-check the requester's embedded reply subject. With it, a
    *  reply is published only when `m.reply` is under the AUTHENTICATED request subject
-   *  (`${m.subject}.reply.…`), binding the reply to the broker-policed sender token. */
+   *  (`${m.subject}.reply.…`), binding the reply to the broker-policed sender token.
+   *
+   *  Requests are answered one at a time, in arrival order. A request `concurrent` accepts is answered
+   *  in its own time instead: it waits for none of the requests in front of it, including one still
+   *  running, and holds up none behind it. Only for a request that shares no state with the service's
+   *  other requests. */
   serveControl(
     service: string,
     handler: (req: ControlRequest) => Promise<ControlReply> | ControlReply,
-    opts: { boundReply?: boolean } = {},
+    opts: { boundReply?: boolean; concurrent?: (req: ControlRequest) => boolean } = {},
   ): import("@nats-io/transport-node").Subscription {
     if (!this.nc) throw new Error("endpoint not started");
     const sub = this.nc.subscribe(controlServiceSubject(this.space, service, "*", "*"), {
       queue: service,
     });
     this.subs.push(sub);
+    const inOwnTime = opts.concurrent;
+    // With `concurrent`, the in-order requests are answered one after another on this chain, and the
+    // reading below never waits on it, so a request answered in its own time is read and answered
+    // while an in-order one is still running.
+    let inOrder: Promise<void> = Promise.resolve();
     void (async () => {
       for await (const m of sub) {
         // Sender-bound reply guard (confused-deputy fix): never respond to a reply target outside the
@@ -2650,47 +2660,64 @@ export class CotalEndpoint extends EventEmitter {
           this.emit("error", new Error(`rejected ${service} request on ${m.subject}: reply target "${m.reply ?? "(none)"}" is not under the sender's own reply subtree`));
           continue;
         }
-        let body: string;
-        try {
-          let reply: ControlReply;
-          const req = m.json<ControlRequest>();
-          // Authenticity guard (fail closed): control is the most privileged surface
-          // (start/stop). The sender is encoded in the subject (ctl.<svc>.<sender>), which
-          // the server policed who could publish; the payload `from` is advisory and must
-          // match. Reject before the handler acts on a request claiming a forged sender.
-          const parsed = parseSubject(m.subject);
-          if (!parsed || req.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) {
-            this.emit(
-              "error",
-              new Error(
-                `rejected control request on ${m.subject}: from ${req.from?.id ?? "(none)"} ` +
-                  `does not match subject sender ${parsed?.sender ?? "(unparseable)"}`,
-              ),
-            );
-            reply = { ok: false, error: "sender mismatch - request rejected" };
-          } else {
-            reply = await handler(req);
-          }
-          body = JSON.stringify(reply);
-        } catch (e) {
-          body = JSON.stringify({ ok: false, error: (e as Error).message } satisfies ControlReply);
+        const answer = () => this.answerControl(service, handler, m);
+        if (inOwnTime === undefined) {
+          await answer();
+          continue;
         }
-        try {
-          m.respond(body);
-        } catch (e) {
-          // `respond` signals a missing reply inbox by returning false; it throws when the reply exceeds the
-          // broker's `max_payload`. Silence would leave the caller a bare timeout it cannot tell apart from
-          // a dead service.
-          const refused: ControlReply = { ok: false, error: `the ${service} reply is ${Buffer.byteLength(body)} bytes and was not published: ${(e as Error).message}` };
-          try {
-            m.respond(JSON.stringify(refused));
-          } catch (err) {
-            this.emit("error", new Error(`could not answer ${service} request on ${m.subject}: ${refused.error}, and the refusal failed too: ${(err as Error).message}`));
-          }
-        }
+        let own = false;
+        try { own = inOwnTime(m.json<ControlRequest>()); } catch { /* unreadable: answered in order, as a refusal */ }
+        if (own) void answer().catch((e) => this.emit("error", e as Error));
+        else inOrder = inOrder.then(answer).catch((e) => { this.emit("error", e as Error); });
       }
     })().catch((e) => this.emit("error", e as Error));
     return sub;
+  }
+
+  /** Answer one control request for {@link serveControl}: the sender guard, the handler, and the reply. */
+  private async answerControl(
+    service: string,
+    handler: (req: ControlRequest) => Promise<ControlReply> | ControlReply,
+    m: import("@nats-io/transport-node").Msg,
+  ): Promise<void> {
+    let body: string;
+    try {
+      let reply: ControlReply;
+      const req = m.json<ControlRequest>();
+      // Authenticity guard (fail closed): control is the most privileged surface
+      // (start/stop). The sender is encoded in the subject (ctl.<svc>.<sender>), which
+      // the server policed who could publish; the payload `from` is advisory and must
+      // match. Reject before the handler acts on a request claiming a forged sender.
+      const parsed = parseSubject(m.subject);
+      if (!parsed || req.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) {
+        this.emit(
+          "error",
+          new Error(
+            `rejected control request on ${m.subject}: from ${req.from?.id ?? "(none)"} ` +
+              `does not match subject sender ${parsed?.sender ?? "(unparseable)"}`,
+          ),
+        );
+        reply = { ok: false, error: "sender mismatch - request rejected" };
+      } else {
+        reply = await handler(req);
+      }
+      body = JSON.stringify(reply);
+    } catch (e) {
+      body = JSON.stringify({ ok: false, error: (e as Error).message } satisfies ControlReply);
+    }
+    try {
+      m.respond(body);
+    } catch (e) {
+      // `respond` signals a missing reply inbox by returning false; it throws when the reply exceeds the
+      // broker's `max_payload`. Silence would leave the caller a bare timeout it cannot tell apart from
+      // a dead service.
+      const refused: ControlReply = { ok: false, error: `the ${service} reply is ${Buffer.byteLength(body)} bytes and was not published: ${(e as Error).message}` };
+      try {
+        m.respond(JSON.stringify(refused));
+      } catch (err) {
+        this.emit("error", new Error(`could not answer ${service} request on ${m.subject}: ${refused.error}, and the refusal failed too: ${(err as Error).message}`));
+      }
+    }
   }
 
   /** Send a control request to a service and await its reply (client side). Like {@link requestDelivery},
@@ -5610,7 +5637,13 @@ export class CotalEndpoint extends EventEmitter {
       const i = this.subs.indexOf(this.deliveryAdminServeSub);
       if (i >= 0) this.subs.splice(i, 1);
     }
-    this.deliveryAdminServeSub = this.serveControl(CONTROL_DELIVERY_ADMIN, (req) => this.handleDeliveryAdmin(req), { boundReply: true });
+    // The membership inventory is read-only and shares nothing with the other admin commands, so it
+    // does not queue behind them. In a mass stop each retirement's inventory followed every other
+    // seat's `evictPrincipal` on this rail and missed its 5 s deadline (#4965).
+    this.deliveryAdminServeSub = this.serveControl(CONTROL_DELIVERY_ADMIN, (req) => this.handleDeliveryAdmin(req), {
+      boundReply: true,
+      concurrent: (req) => req.op === "lifecycleMemberships",
+    });
   }
 
   // ---- the peer-readable liveness surface (#1577) --------------------------
