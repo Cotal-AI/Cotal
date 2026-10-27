@@ -12,6 +12,13 @@ import { c } from "../ui.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+let signalled: LocalProcess | undefined;
+
+/** The component this process has signalled to stop and not yet seen exit, while its stop waits. */
+export function stopInFlight(): LocalProcess | undefined {
+  return signalled;
+}
+
 export function processRecorded(component: LocalProcess, context: LocalProcessContext): boolean {
   return existsSync(localProcessPath(component.pidFile, context)) || (component.artifacts ?? []).map((artifact) => localProcessPath(artifact, context)).some(existsSync);
 }
@@ -193,6 +200,7 @@ export async function stopLocalProcess(
       }
       throw new Error(`could not ${cooperative ? "request cooperative shutdown for" : "signal"} ${component.label} (pid ${pid}) (${(e as NodeJS.ErrnoException).code ?? (cooperative ? (e as Error).message : "unknown error")}) - refusing to report it stopped or remove its record; stop it manually`);
     }
+    signalled = component;
     // Wait for CONFIRMED death (ESRCH), escalating to SIGKILL; `unknown`/`alive` both keep us
     // waiting, and if death is never confirmed the record is preserved (never deleted on a guess).
     // Cooperative authentication can spend fifteen seconds reading the stopper's native identity;
@@ -210,6 +218,7 @@ export async function stopLocalProcess(
     console.log(c.green(`✓ stopped ${component.label} (pid ${pid})`));
     return true;
   } finally {
+    signalled = undefined;
     // Remove the pidfile ONLY when we confirmed a clean stop: `stopped` is set exclusively on an
     // ESRCH-proven death (already-gone, or a confirmed exit). Every other exit from the try above is
     // a throw that must PRESERVE the record - an unattributable pidfile, a process we could not

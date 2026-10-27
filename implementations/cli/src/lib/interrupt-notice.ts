@@ -36,12 +36,32 @@ export async function releaseStartupNotice(): Promise<void> {
  *  with that signal's code. The interrupted command's own cleanup does not run, so the notice names
  *  what it left and the command that recovers it. It takes over a startup notice the command kept. */
 export function noticeOnInterrupt(notice: () => string): () => void {
-  const handler = (signal: InterruptSignal) => {
+  return noticeBetweenSteps(notice, () => false).release;
+}
+
+/** As {@link noticeOnInterrupt}, for a command whose steps each report as they end. A signal that
+ *  lands while `inStep()` holds waits for `between()`, which the command awaits once that step has
+ *  ended and reported, and which then writes the notice and exits. A second signal ends it at once. */
+export function noticeBetweenSteps(notice: () => string, inStep: () => boolean): { between(): Promise<void>; release(): void } {
+  let pending: InterruptSignal | undefined;
+  const exit = (signal: InterruptSignal): never => {
     let text: string;
     try { text = notice(); } catch { text = "Interrupted. cotal status shows what this root holds."; }
     exitInterrupted(signal, text);
   };
+  const handler = (signal: InterruptSignal) => {
+    if (pending === undefined && inStep()) pending = signal;
+    else exit(signal);
+  };
   for (const signal of INTERRUPT_SIGNALS) process.on(signal, handler);
   handOverStartupNotice();
-  return () => { for (const signal of INTERRUPT_SIGNALS) process.off(signal, handler); };
+  return {
+    // A signal that arrived during synchronous work is dispatched only when the loop polls, so
+    // `between` gives it the two turns the startup release does before it reads `pending`.
+    between: async () => {
+      for (let turn = 0; turn < 2; turn++) await new Promise((resolve) => setImmediate(resolve));
+      if (pending !== undefined) exit(pending);
+    },
+    release: () => { for (const signal of INTERRUPT_SIGNALS) process.off(signal, handler); },
+  };
 }

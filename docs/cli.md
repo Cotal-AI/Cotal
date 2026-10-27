@@ -778,7 +778,12 @@ writes all of it again. A bare `down` interrupted the same way exits with the sa
 the members still running; `cotal down --yes` finishes the stop. When it had signalled a member that
 had not yet exited, it also names that stop's request: `cotal down --yes` stops the member again
 while it runs, and once it has exited, `cotal down --abandon-stop <request-id> --yes` finishes the
-stop. Any command interrupted while the CLI is still loading, before the command begins, exits with
+stop. A bare `down` on the retained launcher, whose stop lines name each process and its pid, stops
+one member at a time. A signal that lands while a member's stop is in flight lets that stop finish
+and print its line first. The `down` then exits with the same codes and names the members it
+stopped and those still running, and `cotal down --yes` finishes the stop. A second signal ends it
+at once and names the member whose stop is not confirmed, which `cotal down --yes` stops again
+while it runs. Any command interrupted while the CLI is still loading, before the command begins, exits with
 the same codes and says it did nothing. `up` keeps that notice until its own takes over, so no moment
 of a detached start exits without one.
 

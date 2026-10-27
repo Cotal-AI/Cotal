@@ -99,10 +99,11 @@ import { askManager, resolveControlTarget } from "../lib/control.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { captureSeatCheckpoint } from "../lib/seat-capture.js";
-import { processRecorded, stopLocalProcess } from "../lib/local-process-stop.js";
+import { processRecorded, stopInFlight, stopLocalProcess } from "../lib/local-process-stop.js";
 import { stopManager } from "../lib/manager-proc.js";
 import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
 import { controllerStackRecorded, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
+import { noticeBetweenSteps } from "../lib/interrupt-notice.js";
 import { goneRootDown, goneRootStackDown, validateGoneRootDownArguments } from "./stack-gone.js";
 import { readStackJournal, recordedProcessLine } from "../lib/stack-journal.js";
 import { restoreNextStep } from "../lib/restore.js";
@@ -539,6 +540,13 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   let folderContext: LocalProcessContext | undefined;
   const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: resolveRuntimeSpace(process.cwd()) });
   refuseUncontainedRecords(selected, folderCtx());
+  // A signal ends the stop where it is, and the notice names the members it stopped and those still
+  // running. One that lands after a member was signalled waits for that member's exit, so its stop is
+  // reported first; a second one ends the stop at once and names that member. Once every member is
+  // stopped, the cleanup below finishes first.
+  const stopped: string[] = [];
+  let cleaning = false, cleaned = false;
+  const interrupt = noticeBetweenSteps(() => legacyStopInterruptNotice(selected, folderCtx(), stopped, stopInFlight(), cleaned), () => cleaning || stopInFlight() !== undefined);
   // The stop's lines follow the space they stop, as every other report of down begins.
   console.log(`${renderReport({ space: guarded.space, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
   // Every dry run returned or was refused above, so from here on this is the whole-stack stop of
@@ -547,7 +555,9 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   let any = false;
   let allStopped = true;
   for (const component of selected) {
-    any = processRecorded(component, folderCtx()) || any;
+    await interrupt.between();
+    const recorded = processRecorded(component, folderCtx());
+    any = recorded || any;
     if (component.stopLast && !allStopped) {
       stderrLine("✗ ", `not stopping ${component.label} because an earlier component did not stop`, c.red);
       continue;
@@ -557,6 +567,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
       if (component.name === "manager") await stopManager(context.space, { withAgents: values["with-agents"] });
       else if (component.name === "delivery") await stopDelivery(context.space, { preserveCredentials: true });
       else await stopLocalProcess(component, context);
+      if (recorded) stopped.push(component.label);
     } catch (e) {
       allStopped = false;
       stderrLine("✗ ", `${(e as Error).message}`, c.red);
@@ -564,9 +575,12 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   }
   if (!allStopped) {
     stderrLine("✗ ", "not cleanly stopped - keeping artifacts and the registry entry", c.red);
+    await interrupt.between();
+    interrupt.release();
     process.exitCode = 1;
     return;
   }
+  cleaning = true;
 
   if (selected.some((component) => component.name === "delivery"))
     await removeDeliveryCredentials(folderCtx().space);
@@ -604,11 +618,28 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     rmSync(join(root, ".cotal", "run"), { recursive: true, force: true });
     removeMeshesByRoot(root, undefined, localMeshesForRoot(root).find(keepsRegistration)?.space);
   }
+  cleaning = false;
+  cleaned = true;
+  await interrupt.between();
+  interrupt.release();
   if (!any) {
     console.error(c.red("Nothing running for the local stack (no recorded pidfiles)."));
     process.exit(1);
   }
   console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: "Start it again" }] }] }] }, "rich", terminalWidth(process.stdout))}`);
+}
+
+/** What an interrupted bare down of a legacy stack left: the members it stopped, the ones still
+ *  running, and the down that finishes the stop. `cut` is a member a second signal left signalled
+ *  with its exit not confirmed. */
+function legacyStopInterruptNotice(members: readonly LocalProcess[], context: LocalProcessContext, stopped: readonly string[], cut: LocalProcess | undefined, cleaned: boolean): string {
+  const running = members.filter((member) => processAlive(member, context)).map((member) => member.label);
+  const done = stopped.length ? `${stopped.join(", ")} ${stopped.length === 1 ? "was" : "were"} stopped` : "no member was stopped";
+  const left = running.length ? `${running.join(", ")} ${running.length === 1 ? "is" : "are"} still running` : "no member is running";
+  const head = `Interrupted while stopping the stack in ${canonicalRoot(context.root)}; ${done}, and ${left}.`;
+  if (cut) return `${head} The stop of ${cut.label} is not confirmed. Run cotal down --yes to finish the stop.`;
+  if (running.length) return `${head} Run cotal down --yes to finish the stop.`;
+  return cleaned ? `${head} Run cotal up to start it again.` : `${head} Run cotal down --yes to finish its cleanup.`;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

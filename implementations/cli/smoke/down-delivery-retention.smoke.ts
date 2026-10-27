@@ -28,6 +28,8 @@ try {
     namedExports: {
       // Record inventory is the process boundary, not the credential-cleanup rule under test.
       processRecorded: () => true,
+      // The fixture signals nothing, so no stop is ever waiting on an exit.
+      stopInFlight: () => undefined,
       stopLocalProcess: async (component: LocalProcess, context: LocalProcessContext) => {
         assert.equal(context.root, root);
         calls.push(component.name);
