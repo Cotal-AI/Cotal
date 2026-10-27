@@ -164,8 +164,8 @@ export function spaceFromSegment(name: string): string | undefined {
 
 /** The SPACE-SCOPED user-auth state dir (`<root>/.cotal/auth/space.<hex>`) — the one layout fact
  *  the workstation layer owns about user auth: the auth provider persists its material under this
- *  dir (opaque to us), and its EXISTENCE marks the space as user-auth-enabled on disk. Keyed by
- *  {@link spaceSegment} so two case-differing tenants can never share one state dir and no space
+ *  dir (opaque to us). A regular provider pin inside the real directory marks user-auth state.
+ *  Keyed by {@link spaceSegment} so two case-differing tenants can never share one state dir and no space
  *  name can alias a reserved sibling of the auth dir. Fails loud on a degenerate space — BEFORE
  *  any caller can mutate at an aliased path.
  *
@@ -247,7 +247,9 @@ const USER_AUTH_MARKER_FILES = ["idp.json", "callout.json"] as const;
 function pathHasUserAuthMarker(dir: string): boolean {
   let st;
   try {
-    st = statSync(dir);
+    // lstat, like {@link authRecordStat}: a symlink is not a state dir this module wrote, and
+    // following it would count material this module cannot vouch for.
+    st = lstatSync(dir);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw e;
@@ -257,10 +259,11 @@ function pathHasUserAuthMarker(dir: string): boolean {
   // failure (EACCES, ELOOP, EIO, …) to `false`, which reads a REAL but momentarily unreadable
   // user-auth state dir as "static mode" — and a caller like `mint` then writes static admin creds
   // onto a user-auth space. Only ENOENT means "this pin is absent"; anything else is uncertainty
-  // about a trust marker, and uncertainty fails CLOSED (loud), never open.
+  // about a trust marker, and uncertainty fails CLOSED (loud), never open. The entry itself must be
+  // a regular file: a symlink, directory, or other non-regular entry is not a pin.
   return USER_AUTH_MARKER_FILES.some((f) => {
     try {
-      return statSync(join(dir, f)).isFile();
+      return lstatSync(join(dir, f)).isFile();
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
       throw e;

@@ -173,6 +173,10 @@ The first enable pins the space to that IdP. A later `--idp` naming a different 
 because the IdP is part of every derived owner. Two first enables that race on one state dir leave
 one pin: the other caller adopts it when it names the same IdP and is refused when it does not.
 
+Local user-auth detection requires a regular `idp.json` or `callout.json` file inside a real
+space state directory. Symlinks at the directory or either pin do not count as user-auth state.
+Missing pins are absent; other filesystem errors stop detection rather than infer static mode.
+
 **The flow.** Each person runs `cotal login --idp <url>` once per machine. The IdP URL, the JWKS
 URL pinned from it and the catalog link below must use HTTPS. Plain HTTP is accepted only on a
 loopback IP literal such as `127.0.0.1`, never on `localhost`, whose resolution would choose the
