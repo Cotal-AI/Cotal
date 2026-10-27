@@ -646,6 +646,15 @@ export class CotalEndpoint extends EventEmitter {
    *  {@link armDeliveryControl}; tracked so the stale one is dropped on reconnect. */
   private deliveryServeSub?: import("@nats-io/transport-node").Subscription;
   private deliveryAdminServeSub?: import("@nats-io/transport-node").Subscription;
+  /** The lifecycles whose membership inventory this daemon has been asked for, as principal to uids
+   *  (#4965). A durable join or leave bound to one of them is refused, so no row of a retiring lifecycle
+   *  is written after its inventory read starts. An entry goes when a later inventory for the same
+   *  principal finds its ACL row retired; an alias that never retires again keeps its one entry until
+   *  the daemon restarts. */
+  private readonly retiringLifecycles = new Map<string, Set<string>>();
+  /** The durable joins and leaves running now, by `<principal>/<lifecycleUid>`: the writes an
+   *  inventory of that lifecycle waits for before it reads. */
+  private readonly membershipWrites = new Map<string, Set<Promise<unknown>>>();
   /** True once {@link quiescePlane3} has stopped serving this shard pending an ownership answer.
    *  Guards {@link armPlane3} so a RECONNECT cannot silently resume serving mid-question. */
   private plane3Quiesced = false;
@@ -5408,8 +5417,29 @@ export class CotalEndpoint extends EventEmitter {
       return { ok: false, error: `durableJoin: no read ACL on record for ${caller} (not provisioned for durable delivery)` };
     if (!channelInAllow(acl.allowSubscribe, channel))
       return { ok: false, error: `channel "${channel}" is not within your read ACL [${acl.allowSubscribe.join(", ")}]` };
-    try { return { ok: true, data: await this.durableJoinFor(caller, channel, acl.lifecycleUid) }; }
+    const uid = acl.lifecycleUid;
+    try { return { ok: true, data: await this.membershipWrite(caller, uid, () => this.durableJoinFor(caller, channel, uid)) }; }
     catch (e) { return { ok: false, error: (e as Error).message }; }
+  }
+
+  /** Run one durable join or leave that writes `principal`'s rows of `lifecycleUid`, refused once that
+   *  lifecycle's inventory has been asked for ({@link retiringLifecycles}). The check and the
+   *  registration have no await between them, so an inventory either finds this write running and
+   *  waits for it, or this write finds the inventory's mark and is refused. */
+  private async membershipWrite<T>(principal: string, lifecycleUid: string, write: () => Promise<T>): Promise<T> {
+    if (this.retiringLifecycles.get(principal)?.has(lifecycleUid))
+      throw new Error(`lifecycle ${lifecycleUid} of ${principal} is retiring: its membership inventory was requested, so its durable memberships no longer change`);
+    const key = `${principal}/${lifecycleUid}`;
+    const running = write();
+    let writes = this.membershipWrites.get(key);
+    if (writes === undefined) this.membershipWrites.set(key, (writes = new Set()));
+    writes.add(running);
+    try {
+      return await running;
+    } finally {
+      writes.delete(running);
+      if (writes.size === 0) this.membershipWrites.delete(key);
+    }
   }
 
   /** LEAVE must NOT require current-ACL coverage. Leave fires precisely when the ACL was narrowed/revoked
@@ -5436,7 +5466,8 @@ export class CotalEndpoint extends EventEmitter {
     catch (e) { return { ok: false, error: (e as Error).message }; }
     const existing = await readMember(await this.membersRegistry(), channel, caller, uid);
     if (!existing) return { ok: true, data: { channel, alreadyLeft: true } }; // nothing to tombstone — idempotent
-    try { await this.durableLeaveFor(caller, channel, uid, args.generation); }
+    const generation = args.generation;
+    try { await this.membershipWrite(caller, uid, () => this.durableLeaveFor(caller, channel, uid, generation)); }
     catch (e) { return { ok: false, error: (e as Error).message }; }
     return { ok: true, data: { channel } };
   }
@@ -5952,6 +5983,17 @@ export class CotalEndpoint extends EventEmitter {
       const uid = typeof req.args?.lifecycleUid === "string" ? req.args.lifecycleUid : "";
       if (!parsePrincipalKey(principal)) return { ok: false, error: "lifecycleMemberships: a principal (owner.actor dot-form) is required" };
       try { assertLifecycleToken(uid); } catch (e) { return { ok: false, error: `lifecycleMemberships: ${(e as Error).message}` }; }
+      // The lifecycle is retiring, so its memberships stop changing here (#4965): a join or leave bound
+      // to it is refused from now on, and the read starts after the ones already running have finished.
+      // A row they write is then in the read; nothing it misses can be written afterwards.
+      let marked = this.retiringLifecycles.get(principal);
+      if (marked === undefined) this.retiringLifecycles.set(principal, (marked = new Set()));
+      // An earlier lifecycle of this principal whose ACL row is retired can bind no join or leave any
+      // more, so its mark goes. A failed read keeps the mark, which only ever refuses.
+      for (const earlier of [...marked])
+        if (earlier !== uid && await aclRetired(await this.aclRegistry(), principal, earlier).catch(() => false)) marked.delete(earlier);
+      marked.add(uid);
+      await Promise.allSettled(this.membershipWrites.get(`${principal}/${uid}`) ?? []);
       try {
         const channels = await listLifecycleMemberChannels(await this.membersRegistry(), principal, uid);
         return { ok: true, data: { complete: true, channels } };

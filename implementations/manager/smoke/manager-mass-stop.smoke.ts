@@ -7,10 +7,12 @@
  * mass stop lost many of them: dials past the broker's 2 s auth timeout, inventories past 5 s behind
  * the other seats' evictions. A lost retirement keeps the seat's membership rows. This suite counts:
  *   - with one eviction held open on the daemon, exactly RETIREMENT_CONCURRENCY (8) evictions are
- *     requested: the rest wait for a slot;
+ *     requested: the rest wait for a slot, and a chat session's terminal and a static reconcile's
+ *     terminal wait for the same slots;
  *   - every seat's inventory is requested only after its own eviction returned
- *     (static-lifecycle.ts: `evictAndAudit` is awaited before `cleanupStaticSlotOnce`), so no row of
- *     that lifecycle can be written after the inventory's pass begins;
+ *     (static-lifecycle.ts: `evictAndAudit` is awaited before `cleanupStaticSlotOnce`). The eviction
+ *     does not settle a join or leave the daemon is already running; the daemon's per-lifecycle fence
+ *     does, and `smoke:lifecycle-inventory-concurrency` counts it;
  *   - after the stop, 0 membership rows of the retired lifecycles remain on the broker, including the
  *     ones on a wildcard-granted channel only the inventory can name, and no retirement reports its
  *     inventory as incomplete.
@@ -26,7 +28,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, renam
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  CONTROL_DELIVERY_ADMIN, controlServiceSubject, createSpaceAuth, liveKvEntries, mintCreds, newIdentity, openMembersRegistry,
+  CONTROL_DELIVERY_ADMIN, controlServiceSubject, createSpaceAuth, DEV_OWNER, liveKvEntries, mintCreds, mintLifecycleUid, newIdentity, openMembersRegistry,
   parseMemberKey, registry, setupSpaceStreams, type Connector, type ControlReply, type ControlRequest, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { MeshAgent, configFromEnv } from "@cotal-ai/connector-core";
@@ -147,6 +149,22 @@ try {
   check(`every seat holds its two membership rows before the stop (${SEATS * 2})`,
     before.length === SEATS * 2 && uids.size === SEATS && before.filter((r) => r.channel === "lane.a").length === SEATS, { rows: before.length, lifecycles: uids.size });
 
+  // A chat session's terminal and a static reconcile's terminal take the same slots. The terminal is
+  // stubbed for two lifecycles that exist only here, so these count when each one enters it.
+  const m = manager as unknown as {
+    driveStaticRetirement: (a: { lifecycleUid: string }, ...rest: unknown[]) => Promise<void>;
+    chatTerminal(s: { alias: string; actor: string; lifecycleUid: string }): Promise<void>;
+    attemptStaticReconcile(key: string, item: object, row: object): Promise<{ succeeded: boolean }>;
+  };
+  const chatUid = mintLifecycleUid(), reconcileUid = mintLifecycleUid();
+  const otherEntered = new Map<string, number>();
+  const drive = m.driveStaticRetirement.bind(m);
+  m.driveStaticRetirement = (a, ...rest) => {
+    if (a.lifecycleUid !== chatUid && a.lifecycleUid !== reconcileUid) return drive(a, ...rest);
+    otherEntered.set(a.lifecycleUid, Date.now());
+    return Promise.resolve();
+  };
+
   // Stop with the first eviction held open on the daemon.
   const lines: string[] = [];
   const log = console.error;
@@ -162,11 +180,22 @@ try {
   for (let i = 0; i < 300 && evictions() < BOUND; i++) await wait(100);
   await wait(3000);
   const inFlight = evictions();
+  const reconcileRow = { owner: DEV_OWNER, alias: "reconcile-witness", actor: newIdentity().id, lifecycleUid: reconcileUid, phase: "retiring" };
+  const chatDone = m.chatTerminal({ alias: "chat_witness", actor: newIdentity().id, lifecycleUid: chatUid }).then(() => "retired", (e: Error) => e.message);
+  const reconcileDone = m.attemptStaticReconcile("reconcile-witness", { ...reconcileRow, attempts: 0, maxAttempts: 1, disposition: "retrying" }, reconcileRow);
+  await wait(500);
+  const enteredWhileHeld = otherEntered.size;
+  const releasedAt = Date.now();
   releaseEviction();
   let stopError: string | undefined;
   await stopping.catch((e: Error) => { stopError = e.message; });
   console.error = log;
   check(`with one eviction held open, ${BOUND} evictions were requested and the other ${SEATS - BOUND} retirements waited`, inFlight === BOUND, { inFlight });
+  check("with every slot taken, a chat session's terminal and a static reconcile's terminal waited for a slot", enteredWhileHeld === 0, { enteredWhileHeld });
+  const [chatOutcome, reconcileOutcome] = await Promise.all([chatDone, reconcileDone]);
+  check("both entered their terminal once the held eviction freed slots, and completed",
+    otherEntered.size === 2 && [...otherEntered.values()].every((t) => t >= releasedAt) && chatOutcome === "retired" && reconcileOutcome.succeeded,
+    { entered: otherEntered.size, chatOutcome, reconcileOutcome });
   check("the stop completed", stopError === undefined, stopError);
 
   const sent = published.slice(railStart);

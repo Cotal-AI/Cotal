@@ -4924,7 +4924,8 @@ export class Manager {
     return flight;
   }
 
-  /** Run one retirement in a {@link RETIREMENT_CONCURRENCY} slot, oldest first. No retirement awaits
+  /** Run one retirement in a {@link RETIREMENT_CONCURRENCY} slot, oldest first: a seat's deprovision, a
+   *  chat session's terminal and a static reconcile's terminal all take one. No retirement awaits
    *  another, so the bounded pool cannot deadlock. */
   private async withRetirementSlot<T>(run: () => Promise<T>): Promise<T> {
     if (this.retirementsRunning < RETIREMENT_CONCURRENCY) this.retirementsRunning++;
@@ -10536,7 +10537,7 @@ export class Manager {
   private chatTerminal(s: { alias: string; actor: string; lifecycleUid: string; channels?: readonly string[] }): Promise<void> {
     let flight = this.chatRetirements.get(s.lifecycleUid);
     if (!flight) {
-      flight = this.driveStaticRetirement({ id: s.actor, name: s.alias, lifecycleUid: s.lifecycleUid, secretPaths: {}, ...(s.channels ? { launch: { allowSubscribe: s.channels } } : {}) }, true)
+      flight = this.withRetirementSlot(() => this.driveStaticRetirement({ id: s.actor, name: s.alias, lifecycleUid: s.lifecycleUid, secretPaths: {}, ...(s.channels ? { launch: { allowSubscribe: s.channels } } : {}) }, true))
         .then(() => this.chatExpiry.forget(s.lifecycleUid))
         .finally(() => this.chatRetirements.delete(s.lifecycleUid));
       this.chatRetirements.set(s.lifecycleUid, flight);
@@ -10798,7 +10799,7 @@ export class Manager {
       console.error(`static reconcile terminal alias=${row.alias} phase=${row.phase} uid=${row.lifecycleUid} attempt=${item.attempts}/${item.maxAttempts}`);
       let deprovision: DeprovisionResourceAccounting | undefined;
       try {
-        await this.driveStaticRetirement({ id: row.actor, name: row.alias, lifecycleUid: row.lifecycleUid, runtime: row.runtime }, true, (accounting) => { deprovision = accounting; });
+        await this.withRetirementSlot(() => this.driveStaticRetirement({ id: row.actor, name: row.alias, lifecycleUid: row.lifecycleUid, runtime: row.runtime }, true, (accounting) => { deprovision = accounting; }));
         if (item.attempts === 1) {
           this.staticReconcileItems.delete(key);
         } else {
