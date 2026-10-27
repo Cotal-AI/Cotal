@@ -17,7 +17,7 @@ import {
   mintLifecycleUid,
   parseDelegatedUserIntentRequest,
   parseRemoteDelegatedUserIntentExecutionRequest,
-  remoteManagerActors,
+  remoteManagerServePrincipal,
   resolveReadAcl,
   type DelegatedUserIntentAdmission,
   type DelegatedUserIntentRequest,
@@ -177,7 +177,7 @@ export async function authorizeDelegatedUserIntentAdmission(
   const parent = `${args.owner}.${r.actor}`;
   const assignment = await observe("assignment", () => args.observeAssignment(args.space, args.accountPublicKey));
   const gate = await observe("manager gate", () => args.observeManagerGate(r.instanceId));
-  const servePrincipal = `${args.platformOwner}.${remoteManagerActors(r.instanceId).serve}`;
+  const servePrincipal = remoteManagerServePrincipal(args.platformOwner, r.instanceId);
   let bound: Pick<DelegatedUserIntentRecord, "managerLifecycleUid" | "assignmentRevision" | "serveEpoch">;
   if (r.intent.operation === "launch") {
     if (!isCurrentAssignment(assignment, args.space, args.accountPublicKey, r.instanceId))
@@ -305,7 +305,7 @@ export async function authorizeDelegatedUserIntentExecution(
       assignment.assignmentRevision !== rec.assignmentRevision || assignment.lifecycleUid !== rec.managerLifecycleUid)
     throw new EpEnvelopeError("permission-denied", "platform control assignment no longer names the intent's instance, lifecycle or revision");
   const gate = await observe("manager gate", () => args.observeManagerGate(r.instanceId));
-  const servePrincipal = `${args.platformOwner}.${remoteManagerActors(r.instanceId).serve}`;
+  const servePrincipal = remoteManagerServePrincipal(args.platformOwner, r.instanceId);
   if (gate && gate.principal !== servePrincipal)
     throw new EpEnvelopeError("permission-denied", `manager gate belongs to ${gate.principal}, not serve principal ${servePrincipal}`);
   if (!gate || gate.state !== "open")

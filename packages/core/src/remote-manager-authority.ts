@@ -2,7 +2,7 @@ import { fromPublic } from "@nats-io/nkeys";
 import { rawDigest, canonicalJson } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-error.js";
 import { isAccountNkey, isUserNkey } from "./identity.js";
-import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken } from "./subjects.js";
+import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, principalKey } from "./subjects.js";
 
 /** The manager-service authority operations. The request type and the host parser both read this
  *  list, so an operation added here is admitted by the parser too. */
@@ -442,6 +442,13 @@ export function remoteManagerActors(instanceId: string): RemoteManagerActors {
     goalWriter: `manager_goal_${instanceId}`,
     sessionLedger: `manager_session_${instanceId}`,
   };
+}
+
+/** The serve principal of one remote manager instance: the owner joined to the serve actor
+ * {@link remoteManagerActors} derives from the instance id. Both tokens go through
+ * {@link principalKey}, so a caller cannot hand-join an owner that token grammar refuses. */
+export function remoteManagerServePrincipal(owner: string, instanceId: string): string {
+  return principalKey(owner, remoteManagerActors(instanceId).serve).key;
 }
 
 /** Deterministic proof binding one remote Manager lifecycle to its owner, identities, and artifacts.

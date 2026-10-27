@@ -5,6 +5,7 @@ import {
   assertPrincipalOwnerToken,
   assertValidOwnerToken,
   remoteManagerActors,
+  remoteManagerServePrincipal,
   parseRemoteManagerEnvelope,
   type RemoteRetainedAgentValidationRequest,
   type RemoteRetainedAgentValidationResult,
@@ -102,11 +103,10 @@ export async function authorizeRemoteRetainedAgentValidation(
   requireManagerAuthorityHolder(args, r.instanceId, 'manager retained-agent validation needs scope "supervise"; spawn/admin do not imply it');
   if (r.target.owner !== args.owner)
     throw new EpEnvelopeError("permission-denied", `manager retained-agent validation may target only its authenticated owner ${args.owner}, not ${r.target.owner}`);
-  const actors = remoteManagerActors(r.instanceId);
   const gate = await args.observeManagerGate(r.instanceId);
   if (!gate || gate.state !== "open")
     throw new EpEnvelopeError("failed-precondition", `manager retained-agent validation found no current open manager gate for instance ${r.instanceId}`);
-  const servePrincipal = `${args.owner}.${actors.serve}`;
+  const servePrincipal = remoteManagerServePrincipal(args.owner, r.instanceId);
   if (gate.principal !== servePrincipal)
     throw new EpEnvelopeError("permission-denied", `manager retained-agent validation gate belongs to ${gate.principal}, not the server-derived serve principal ${servePrincipal}`);
   if (gate.processEpoch !== r.serveEpoch)
