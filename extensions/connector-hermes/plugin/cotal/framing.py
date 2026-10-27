@@ -24,10 +24,11 @@ import re
 # U+2028, U+2029 and U+0085 survive JSON transport intact and a Unicode-aware renderer breaks on
 # them, so a rule that held only for "\n" would be a rule whose truth depends on the reader.
 _LINE_BREAK = re.compile("\r\n?|[\n\v\f\u0085\u2028\u2029]")
-# The line breaks above, plus BOTH brackets. The closing one ends the attribution this code opened;
-# the opening one starts a fresh frame inside it, and a reader that takes the innermost pair reads
-# the forged attribution rather than the real one. The measured forgery used both, so both go.
-_UNSAFE_IN_ATTRIBUTION = re.compile("[\r\n\v\f\u0085\u2028\u2029\\[\\]]+")
+# The controls, line and paragraph separators, and BOTH brackets that frameField removes. The
+# closing bracket ends the attribution this code opened and the opening one starts a fresh frame
+# inside it. ESC and the other controls reach the terminal as commands. Nothing narrower, because
+# this sidecar cannot call the TypeScript helper and a class it drops comes back on this side.
+_UNSAFE_IN_ATTRIBUTION = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029\[\]]+")
 
 
 def attribution_safe(value: object) -> str:
