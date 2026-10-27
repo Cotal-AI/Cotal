@@ -582,7 +582,9 @@ async function previewBoot(file: string, values: TeamValues): Promise<void> {
     localState = { controlDir, recordedSpaces: controlDir === "real" ? localMeshesForRoot(root).map((entry) => entry.space) : [],
       maintenance: controlDir === "real" ? readMaintenanceJournal(root)?.state ?? "none-recorded" : "not-checked",
       possibleProcesses: controlDir === "real" ? liveMeshProcesses(root, space) : [],
-      managerRecord: manager ? manager.state === "absent" ? { state: manager.state, pid: null } : { state: manager.state, pid: manager.pid ?? null, path: manager.path } : null };
+      managerRecord: manager == null || manager.state === "absent" || manager.state === "unattributable"
+        ? (manager == null ? null : { state: manager.state, pid: null, ...(manager.state === "absent" ? {} : { path: manager.path }) })
+        : { state: manager.state, pid: manager.pid, path: manager.path } };
     serviceCensus = readLocalServiceCensus(space);
     additiveRecords = controlDir === "real" ? listLedgerFiles(root, { requireReadable: true }) : { valid: [], refused: [] };
     additiveAttempts = controlDir === "real" ? listAdditiveTeamAttempts(root) : { valid: [], steps: [], agentSteps: [], returned: [], stopped: [], refused: [] };

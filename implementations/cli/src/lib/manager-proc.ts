@@ -103,7 +103,9 @@ export function managerLiveness(
 export function describeManagerRecord(r: ProcessRecord): string {
   if (r.state === "absent") return "no manager pid recorded";
   if (r.state === "unattributable") return `the manager pidfile holds content that is not a pid`;
-  const who = r.command !== undefined ? ` running \`${r.command}\`` : "";
+  const who = r.state === "alive" || r.state === "foreign"
+    ? (r.command !== undefined ? ` running \`${r.command}\`` : "")
+    : "";
   return `recorded manager pid ${String(r.pid)} is ${r.state}${who}`;
 }
 

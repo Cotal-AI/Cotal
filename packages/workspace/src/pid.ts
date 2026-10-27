@@ -265,20 +265,17 @@ export function commandIsCotalDelivery(command: string): boolean {
  *  from `kill(pid, 0)` alone that reads as a healthy component forever. */
 export type ProcessRecordState = "alive" | "dead" | "unknown" | "absent" | "unattributable" | "foreign";
 
-/** A process record with the evidence behind its verdict. Missing and empty records are `absent`
- *  and carry no evidence fields. Other states keep the path read, so a refusal never resolves it again. */
-export type ProcessRecord = { state: "absent" } | {
-  state: Exclude<ProcessRecordState, "absent">;
-  /** The file this verdict read. A refusal names it rather than resolving the record again: a second
-   *  resolution can pick a record migrated since the read, or throw on one that appeared beside it. */
-  path: string;
-  /** The recorded pid, when the file held one. */
-  pid?: number;
-  /** The record's content, when it is not a pid (present on `unattributable`). */
-  content?: string;
-  /** The live process's command line, when it was readable (present on `alive` and `foreign`). */
-  command?: string;
-};
+/** A process record with the evidence behind its verdict. Narrow on `state` before reading a field:
+ *  an `absent` record carries none, a `dead` or `unknown` record carries the pid it probed, an
+ *  `unattributable` record carries the content that was not a pid, and an `alive` or `foreign` record
+ *  carries the pid and the command line when that line was readable. Every non-absent state keeps the
+ *  path of the file read, so a refusal names that file rather than resolving the record again: a second
+ *  resolution can pick a record migrated since the read, or throw on one that appeared beside it. */
+export type ProcessRecord =
+  | { state: "absent" }
+  | { state: "dead" | "unknown"; path: string; pid: number }
+  | { state: "unattributable"; path: string; content: string }
+  | { state: "alive" | "foreign"; path: string; pid: number; command?: string };
 
 /** Read + attribute one process record, so every component decides on the same evidence by the
  *  same rule; only `isOwnCommand` differs between them.

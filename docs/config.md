@@ -430,7 +430,10 @@ This is what lets `cotal status` and `cotal down` work in a folder whose mesh ru
 A record, or a `.cotal` listing, that exists but cannot be read is reported as that read error
 rather than read as absent. A process record's read error names the record's path.
 An `absent` process record has no `path`, whether its file is missing or empty. Every other
-state carries the path of the file read, including a pre-segmentation spelling.
+state carries the path of the file read, including a pre-segmentation spelling. A `dead` or
+`unknown` record also carries the pid it probed, an `unattributable` record the content that
+was not a pid, and an `alive` or `foreign` record the pid and, when the command line was
+readable, that line. Narrow the record by `state` before reading any of those fields.
 
 ### Machine files
 
