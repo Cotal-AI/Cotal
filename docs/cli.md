@@ -7610,7 +7610,9 @@ Every multi-space host, this one, the full auth service host below and `deliver 
 manifest does not name. The file holds `{"version": 1, "sha256": "<hex>"}`, the SHA-256 of the
 manifest bytes it applied, and is replaced through a rename. To stop serving one space, remove it
 from every manifest that names it and wait until each host's `<manifest>.applied` names the manifest
-you wrote; from then on no lane for that space is left in those processes. A host writes it before
+you wrote; from then on no lane for that space is left in those processes. A lane that does not
+confirm its close holds the acknowledgment back, and the host retries that close every 5 seconds
+without opening the space again until it does. A host writes it before
 it opens any lane at startup, and refuses to start when it cannot. A host whose last space you remove
 is stopped instead, since a manifest names at least one space.
 

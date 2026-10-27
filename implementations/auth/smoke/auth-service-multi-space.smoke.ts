@@ -16,7 +16,7 @@
  * after that space has no listener, discovery file, connection or callout responder left, while the
  * other space keeps exchanging and connecting; SIGTERM closes every lane.
  *
- * `--measure` instead reports RSS per space for 1, 4 and 16 lanes in one process against 16
+ * `--measure` instead reports RSS in MiB per space for 1, 4 and 16 lanes in one process against 16
  * single-space processes, all idle.
  *
  * Run: pnpm smoke:auth-service-multi-space [--measure]   (nats-server on PATH, or NATS_SERVER_BIN)
@@ -59,7 +59,7 @@ if (process.argv[2] === "__daemon-auth-service") {
   const MEASURE_LANES = [1, 4, 16];
   const SPACE_COUNT = MEASURE ? Math.max(...MEASURE_LANES) : 3;
   /** Every cell below that runs. A suite that skipped one fails here rather than passing short. */
-  const EXPECTED_CHECKS = 47;
+  const EXPECTED_CHECKS = 49;
 
   const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
   const until = async (test: () => boolean | Promise<boolean>, message: string, ms = 90_000) => {
@@ -73,6 +73,7 @@ if (process.argv[2] === "__daemon-auth-service") {
     passed++;
     console.log(`  ✓ ${name}${detail === undefined ? "" : ` ${JSON.stringify(detail)}`}`);
   };
+  /** Resident set size in MiB. */
   const rssMb = (pid: number): number => {
     const m = /VmRSS:\s+(\d+) kB/.exec(readFileSync(`/proc/${pid}/status`, "utf8"));
     if (!m) throw new Error(`no VmRSS for pid ${pid}`);
@@ -241,7 +242,7 @@ if (process.argv[2] === "__daemon-auth-service") {
       record(`${spaces.length} single-space processes`, labels.map((l) => daemons.get(l)!.child.pid!), spaces.length);
       for (const label of labels) await stopDaemon(label);
       console.log("");
-      console.log("| shape | processes | spaces | RSS total (MB) | RSS per space (MB) | host loadavg |");
+      console.log("| shape | processes | spaces | RSS total (MiB) | RSS per space (MiB) | host loadavg |");
       console.log("| --- | --- | --- | --- | --- | --- |");
       for (const r of table) console.log(`| ${r.shape} | ${r.procs} | ${r.lanes} | ${r.rssMb} | ${(r.rssMb / r.lanes).toFixed(1)} | ${r.loadavg} |`);
       console.log("");
@@ -392,6 +393,27 @@ if (process.argv[2] === "__daemon-auth-service") {
       await traffic;
       check("space A kept exchanging and connecting across B's removal", duringAttempts >= 5 && duringOk === duringAttempts, { ok: duringOk, attempts: duringAttempts });
       check("space A's queue group still has both of its members", (await calloutMembers(A.name)).length === 2);
+
+      // ---- a discovery path the lane cannot write or remove leaves nothing serving --------------------
+      // A non-empty directory where C's auth-service.json goes: removing it at C's close fails, and
+      // writing it at C's next open fails. Either way the acknowledgment must still mean nothing
+      // serves C, so no context may survive outside the host's lanes.
+      const servingC = async () => !(await refused(`http://127.0.0.1:${portC}/health`)) || (await laneConnections(C.name)).length > 0;
+      const blockC = join(userAuthStateDir(root, C.name), "auth-service.json");
+      rmSync(blockC, { force: true });
+      mkdirSync(blockC);
+      writeFileSync(join(blockC, "held"), "");
+      const onlyA = { version: 2, spaces: [{ space: A.name, exchangePublicPort: portA2, exchangeTrustedProxy: true }] };
+      const closeSha = writeManifest(manifestPath, onlyA);
+      await until(() => applied(manifestPath) === closeSha, `the removal of C was not acknowledged: ${host.text().slice(-600)}`);
+      check("a lane whose discovery file cannot be removed still closes before the removal is acknowledged", !(await servingC()), host.text().slice(-300));
+      const reopenMark = host.text().length;
+      writeManifest(manifestPath, { version: 2, spaces: [...onlyA.spaces, { space: C.name, exchangePublicPort: portC }] });
+      await until(() => host.text().slice(reopenMark).includes(`space "${C.name}" could not be served`), `C's open did not fail: ${host.text().slice(-600)}`);
+      const retireSha = writeManifest(manifestPath, onlyA);
+      await until(() => applied(manifestPath) === retireSha, `the second removal of C was not acknowledged: ${host.text().slice(-600)}`);
+      check("a lane whose discovery file cannot be written leaves no context serving once removed", !(await servingC()), host.text().slice(reopenMark, reopenMark + 400));
+      rmSync(blockC, { recursive: true, force: true });
 
       // ---- the manifest grammar -----------------------------------------------------------------------
       for (const [why, text] of [

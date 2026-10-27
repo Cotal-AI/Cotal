@@ -2425,15 +2425,26 @@ async function openAuthServiceLane(o: {
     log,
   });
   const { url, publicUrl, cap } = started.handle;
-  saveAuthServiceInfo(dir, { url, pid: process.pid, cap, ...(publicUrl !== undefined ? { publicUrl } : {}) });
+  try {
+    saveAuthServiceInfo(dir, { url, pid: process.pid, cap, ...(publicUrl !== undefined ? { publicUrl } : {}) });
+  } catch (e) {
+    // A lane the host never received would keep serving, untracked, past any removal.
+    await started.handle.close().catch(() => started.abandon());
+    throw e;
+  }
   log(`✓ auth service lane up (space ${space}) - exchange/JWKS at ${url}${publicUrl !== undefined ? `, public exchange at ${publicUrl}` : ""}`);
 
   let settle!: (what: string) => void;
   const lost = new Promise<string>((r) => { settle = r; });
   let ending: Promise<void> | undefined;
   const end = (what: string): Promise<void> => ending ??= (async () => {
-    // Before the claim is released, so a successor that wins it never has its file removed here.
-    clearAuthServiceInfo(dir);
+    // Before the claim is released, so a successor that wins it never has its file removed here. A
+    // file that cannot be removed never keeps the lane serving: the close below runs either way.
+    try {
+      clearAuthServiceInfo(dir);
+    } catch (e) {
+      log(`✗ auth-service: could not remove its auth-service.json (${e instanceof Error ? e.message : String(e)}) - closing the lane anyway`);
+    }
     try {
       await started.handle.close();
     } catch (e) {

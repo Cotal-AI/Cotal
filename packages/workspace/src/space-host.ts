@@ -61,7 +61,8 @@ export interface SpaceLane {
   /** Settles with what this lane lost once it stops serving, by {@link close} or by a loss. It never
    *  rejects: a holder distinguishes the two by whether it asked for the close. */
   readonly lost: Promise<string>;
-  /** Stop serving and release everything the lane holds. Safe to call more than once. */
+  /** Stop serving and release everything the lane holds. Safe to call more than once. A rejection
+   *  says the lane may still serve: the host then acknowledges nothing until a later close resolves. */
   close(): Promise<void>;
 }
 
@@ -184,6 +185,9 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
   const lanes = new Map<string, SpaceLane>();
   /** Each live lane's settings as JSON, which a changed entry no longer matches. */
   const opened = new Map<string, string>();
+  /** Lanes taken out of service whose close rejected. Each may still serve, so while any is here
+   *  no acknowledgment is written and its space is not opened again; every pass retries its close. */
+  const unclosed = new Map<string, SpaceLane>();
   let stopping = false;
 
   const settingsOf = (wanted: SpaceManifest | SpaceSettingsManifest<S>, space: string): S =>
@@ -214,7 +218,7 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
   const openWanted = async (wanted: SpaceManifest | SpaceSettingsManifest<S>): Promise<void> => {
     let failed = false;
     for (const space of wanted.spaces) {
-      if (lanes.has(space) || stopping) continue;
+      if (lanes.has(space) || unclosed.has(space) || stopping) continue;
       try {
         await open(space, settingsOf(wanted, space));
         log(`${label}: space "${space}" opened - ${lanes.size} lane(s) up`);
@@ -229,7 +233,8 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
   // ---- the acknowledgment ------------------------------------------------------------------------
   // Sound because passes are serialized and each reads the manifest afresh: a pass that read an
   // older manifest and is still opening a removed space is followed by one that closes it before
-  // it acknowledges, and nothing opens a space except a pass whose own manifest names it.
+  // it acknowledges, nothing opens a space except a pass whose own manifest names it, and no pass
+  // acknowledges while a lane whose close rejected may still serve.
   const appliedPath = `${manifestPath}.applied`;
   let acknowledged: string | undefined;
   /** Record that every space the manifest with this digest does not name has no lane. Written
@@ -275,6 +280,10 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
         }
         const wanted = read.manifest;
         const want = new Set(wanted.spaces);
+        for (const [space, lane] of [...unclosed]) {
+          if (stopping) continue;
+          if (await closeLane(space, lane)) log(`${label}: space "${space}" closed its lane on a retry`);
+        }
         for (const [space, lane] of [...lanes]) {
           if (stopping) continue;
           const changed = want.has(space) && opened.get(space) !== (JSON.stringify(settingsOf(wanted, space)) ?? "");
@@ -282,16 +291,20 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
           // Out of the map before the close, so this lane's `lost` reads as the removal it is.
           lanes.delete(space);
           opened.delete(space);
-          await lane.close().catch(() => {});
+          if (!(await closeLane(space, lane))) continue;
           log(changed
             ? `${label}: space "${space}" changed its settings - closed its lane to reopen it; ${lanes.size} lane(s) up`
             : `${label}: space "${space}" left the manifest - closed its lane; ${lanes.size} lane(s) up`);
         }
         if (stopping) return;
-        try {
-          acknowledge(read.sha256);
-        } catch (e) {
-          log(`✗ ${label}: could not write ${appliedPath} (${e instanceof Error ? e.message : String(e)}) - a writer waiting on it keeps waiting; retrying on the next pass`);
+        if (unclosed.size === 0) {
+          try {
+            acknowledge(read.sha256);
+          } catch (e) {
+            log(`✗ ${label}: could not write ${appliedPath} (${e instanceof Error ? e.message : String(e)}) - a writer waiting on it keeps waiting; retrying on the next pass`);
+          }
+        } else {
+          schedule(REOPEN_WAIT_SECONDS);
         }
         await openWanted(wanted);
       } while (pending && !stopping);
@@ -300,10 +313,28 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
     }
   };
 
+  /** Close a lane already out of the map. A close that rejects keeps the lane in `unclosed`, which
+   *  holds back every acknowledgment until a later pass closes it. */
+  const closeLane = async (space: string, lane: SpaceLane): Promise<boolean> => {
+    try {
+      await lane.close();
+      unclosed.delete(space);
+      return true;
+    } catch (e) {
+      unclosed.set(space, lane);
+      log(`✗ ${label}: space "${space}" did not confirm its lane closed (${e instanceof Error ? e.message : String(e)}) - acknowledging nothing until it does; retrying in ${REOPEN_WAIT_SECONDS}s`);
+      return false;
+    }
+  };
+
+  /** Close every lane at once. Each leaves the maps before its close, so its `lost` reads as the
+   *  deliberate close it is and never schedules a reconcile that would open it again. */
   const closeAll = async (): Promise<void> => {
-    await Promise.all([...lanes.values()].map((lane) => lane.close().catch(() => {})));
+    const all = [...lanes.values(), ...unclosed.values()];
     lanes.clear();
     opened.clear();
+    unclosed.clear();
+    await Promise.all(all.map((lane) => lane.close().catch(() => {})));
   };
 
   // ---- startup ----------------------------------------------------------------------------------
