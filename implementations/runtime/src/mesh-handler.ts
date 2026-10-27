@@ -1160,8 +1160,7 @@ export class MeshHandler {
       ? undefined
       : { endpoint: this.binding.endpoint, token: ctx.requestId };
     if (primary !== undefined) await this.arm(primary, this.now() + parseDuration(req.timeout!));
-    let lapsedSince: number | undefined;
-    let lastReadAt = 0;
+    const watch: DeathWatch = {};
     const decided = async (): Promise<boolean> => ctx.signal.cancelled || (await this.expired(primary)) !== undefined;
     for (;;) {
       if (ctx.signal.cancelled) {
@@ -1170,33 +1169,11 @@ export class MeshHandler {
       }
       const ended = await this.expired(primary);
       if (ended !== undefined) return null;
-      let rows: readonly Presence[];
-      const readAt = this.now();
-      try {
-        rows = await this.presenceRows();
-      } catch (e) {
-        // `liveKvEntries` REFUSES a pass cut short mid-scan instead of returning a partial view —
-        // and a partial view is exactly what must not decide a death. Its own contract says retry,
-        // so the next poll is the retry; a link that stays down keeps surfacing here rather than
-        // as a false DOWN, and the deadline above still ends the wait.
-        if (e instanceof IncompleteKvScan) {
-          await delay(WAIT_POLL_MS);
-          continue;
-        }
-        throw e;
+      const reason = await this.presenceDeath(name, uid, watch, decided);
+      if (reason !== undefined) {
+        if (primary !== undefined) await this.cancelTimer(primary);
+        return { agent: ev.agent, reason, at: this.now() };
       }
-      if (!rows.some((p) => p.card.name === name && p.lifecycleUid === uid)) {
-        const reason = rows.some((p) => p.card.name === name) ? "superseded" : "lapsed";
-        lapsedSince = lapseWindow(lapsedSince, lastReadAt, this.now());
-        if (reason === "superseded" || readAt - lapsedSince >= LAPSE_CONFIRM_MS) {
-          if (reason === "lapsed" && !(await this.lapseStands(name, uid, decided))) lapsedSince = undefined;
-          else {
-            if (primary !== undefined) await this.cancelTimer(primary);
-            return { agent: ev.agent, reason, at: this.now() };
-          }
-        }
-      } else lapsedSince = undefined;
-      lastReadAt = readAt;
       await delay(WAIT_POLL_MS);
     }
   }
@@ -1687,8 +1664,7 @@ export class MeshHandler {
     await this.arm(primary, deadlineAt);
 
     const actx = await this.actionCtx();
-    let lapsedSince: number | undefined;
-    let lastReadAt = 0;
+    const watch: DeathWatch = {};
     const decided = async (): Promise<boolean> =>
       ctx.signal.cancelled || (await readGoalResult(actx, ref)) !== undefined || (await this.expired(primary)) !== undefined;
     try {
@@ -1706,26 +1682,11 @@ export class MeshHandler {
         const ended = await this.expired(primary);
         if (ended !== undefined)
           throw new EffectError("L4003", "turn-deadline", `turn(${name}#${uid}) deadline elapsed before a yield`);
-        let rows: readonly Presence[];
-        const readAt = this.now();
-        try {
-          rows = await this.presenceRows();
-        } catch (e) {
-          if (e instanceof IncompleteKvScan) { await delay(WAIT_POLL_MS); continue; }
-          throw e;
+        const reason = await this.presenceDeath(name, uid, watch, decided);
+        if (reason !== undefined) {
+          await this.cancelTimer(primary);
+          throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down (${reason}) before a yield`);
         }
-        if (!rows.some((pr) => pr.card.name === name && pr.lifecycleUid === uid)) {
-          const reason = rows.some((pr) => pr.card.name === name) ? "superseded" : "lapsed";
-          lapsedSince = lapseWindow(lapsedSince, lastReadAt, this.now());
-          if (reason === "superseded" || readAt - lapsedSince >= LAPSE_CONFIRM_MS) {
-            if (reason === "lapsed" && !(await this.lapseStands(name, uid, decided))) lapsedSince = undefined;
-            else {
-              await this.cancelTimer(primary);
-              throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down (${reason}) before a yield`);
-            }
-          }
-        } else lapsedSince = undefined;
-        lastReadAt = readAt;
         await delay(WAIT_POLL_MS);
       }
     } catch (e) {
@@ -2340,6 +2301,44 @@ export class MeshHandler {
     return rows;
   }
 
+  /** One poll of the presence death watch `wait(down)` and `turn` share. `undefined` means this
+   *  incarnation is still live, or a lapse has not yet stood for {@link LAPSE_CONFIRM_MS}. A missing
+   *  incarnation is `"superseded"` when a live row holds the name and `"lapsed"` when nothing does.
+   *  `watch` is the caller's own window, written here and read on the next poll. An incomplete scan
+   *  decides nothing and returns `undefined`; every other read failure is raised. */
+  private async presenceDeath(
+    name: string,
+    uid: string,
+    watch: DeathWatch,
+    decided: () => Promise<boolean>,
+  ): Promise<"superseded" | "lapsed" | undefined> {
+    let rows: readonly Presence[];
+    const readAt = this.now();
+    try {
+      rows = await this.presenceRows();
+    } catch (e) {
+      // `liveKvEntries` REFUSES a pass cut short mid-scan instead of returning a partial view —
+      // and a partial view is exactly what must not decide a death. Its own contract says retry,
+      // so the next poll is the retry; a link that stays down keeps surfacing here rather than
+      // as a false DOWN, and the caller's deadline still ends the wait.
+      if (e instanceof IncompleteKvScan) return undefined;
+      throw e;
+    }
+    if (!rows.some((p) => p.card.name === name && p.lifecycleUid === uid)) {
+      const reason = rows.some((p) => p.card.name === name) ? "superseded" : "lapsed";
+      watch.lapsedSince = lapseWindow(watch.lapsedSince, watch.lastReadAt ?? 0, this.now());
+      if (reason === "superseded" || readAt - watch.lapsedSince >= LAPSE_CONFIRM_MS) {
+        if (reason === "lapsed" && !(await this.lapseStands(name, uid, decided))) watch.lapsedSince = undefined;
+        else {
+          watch.lastReadAt = readAt;
+          return reason;
+        }
+      }
+    } else watch.lapsedSince = undefined;
+    watch.lastReadAt = readAt;
+    return undefined;
+  }
+
   /** Whether a lapse of `name#uid` confirmed from presence stands as the death, asked of the manager
    *  first. A lapse is only the seat's heartbeats going quiet: on a loaded host a live seat's presence
    *  writer stalls past {@link LAPSE_CONFIRM_MS} while its process goes on working (#2807), and the
@@ -2726,6 +2725,8 @@ const PRESENCE_GAP_MS = 6_000;
  *  read began within {@link PRESENCE_GAP_MS}, otherwise this read opens a new one. */
 const lapseWindow = (lapsedSince: number | undefined, lastReadAt: number, now: number): number =>
   lapsedSince === undefined || now - lastReadAt > PRESENCE_GAP_MS ? now : lapsedSince;
+/** One caller's window across polls of the presence death watch. */
+interface DeathWatch { lapsedSince?: number; lastReadAt?: number }
 /** The budgets this host meters for an agent, read from the spawn's `permits` record. */
 type AgentPermits = { turns?: number; wallClockMs?: number };
 /** The seat an ask is told to: its roster identity and address.
