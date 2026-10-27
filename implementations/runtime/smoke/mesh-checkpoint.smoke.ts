@@ -39,6 +39,8 @@ import {
   resumeCheckpoint,
   mintCheckpoint,
   activateRun,
+  createRunSpec,
+  readRunRecord,
   checkpointAnswerId,
   eptReqStreamName,
   eptStreamName,
@@ -56,6 +58,7 @@ import {
   rearmOutstandingPauses,
   startRun,
 } from "../src/index.js";
+import { resolvePins, WALKER_LANGUAGE_VERSION } from "@cotal-ai/lang";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -374,8 +377,21 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
   try {
     await resolveCheckpoint(deps, { runId: RUN, stepKey: STEP, by: "dave", value: "again", now: NOW + 1_050 });
   } catch (e) { early = e; }
+  c("the built journal without a run record is refused as no-run",
+    early instanceof CheckpointNotOpen && early.why === "no-run", early);
+  c("and the no-run refusal files no answer record",
+    (await readCheckpointAnswer(kv, EP, TOKEN, checkpointAnswerId({ token: TOKEN, by: "dave", value: "again" }))) === undefined);
+  // A real driver creates this record before the pending entry. Build that prerequisite too.
+  await createRunSpec(kv, EP, RUN, {
+    pins: resolvePins({ runId: RUN }, NOW, WALKER_LANGUAGE_VERSION), createdAt: NOW,
+  });
+  c("the settled-window fixture has a durable run record", (await readRunRecord(kv, EP, RUN)) !== undefined);
+  early = undefined;
+  try {
+    await resolveCheckpoint(deps, { runId: RUN, stepKey: STEP, by: "dave", value: "again", now: NOW + 1_050 });
+  } catch (e) { early = e; }
   c("an answer to a pause that settled before its step was recorded is refused as settled",
-    early instanceof CheckpointNotOpen && early.why === "settled", (early as Error)?.message?.slice(0, 70));
+    early instanceof CheckpointNotOpen && early.why === "settled", early);
   c("and it files no answer record",
     (await readCheckpointAnswer(kv, EP, TOKEN, checkpointAnswerId({ token: TOKEN, by: "dave", value: "again" }))) === undefined);
 
