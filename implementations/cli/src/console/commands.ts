@@ -52,17 +52,20 @@ export interface ConsoleCommand {
 /** The reply's error, or a generic word: the status line has one row. */
 const why = (r: ManagerReply): string => r.error ?? "failed";
 
-/** One managed-agent row as `:status` prints it. Two facts, printed as two facts, the way
- *  `cotal ps` prints them: `status` is the PROCESS the manager runs and `mesh` is that seat's
- *  presence, and they disagree in the common failure (running for days, offline on the mesh).
+/** A managed seat's presence word as the console prints it, in `:status` and the palette alike.
  *
  *  Presence `working` is the one word that needs qualifying. It records that the seat said it was
  *  working, never that anyone observed progress, so it reaches the reader as `working · progress
  *  unknown` here exactly as it does from `cotal ps`, the roster, and the connector's orientation.
  *  A bare `working` would claim an observation the manager never made. */
+export const meshWord = (a: Pick<ManagedRow, "mesh">): string => a.mesh === "working" ? "working · progress unknown" : a.mesh;
+
+/** One managed-agent row as `:status` prints it. Two facts, printed as two facts, the way
+ *  `cotal ps` prints them: `status` is the PROCESS the manager runs and `mesh` is that seat's
+ *  presence ({@link meshWord}), and they disagree in the common failure (running for days, offline
+ *  on the mesh). */
 export function formatManagedRow(a: ManagedRow): string {
-  const mesh = a.mesh === "working" ? "working · progress unknown" : a.mesh;
-  return `${peerLabel(a)} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${mesh} · up ${Math.round(a.uptimeMs / 60000)}m`;
+  return `${peerLabel(a)} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${meshWord(a)} · up ${Math.round(a.uptimeMs / 60000)}m`;
 }
 
 /** Resolve an agent/endpoint name (with or without a leading @) to its instance id. Fail-loud:

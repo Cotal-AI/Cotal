@@ -112,6 +112,17 @@ for (const command of ["status", "call", "msg", "ask", "delchan"]) {
     assert.equal(runs.length, 1, `${command} runs once after the required selections`);
   });
 }
+// A managed seat whose presence is working is qualified as `:status` qualifies it: the seat only
+// said it was working, and the manager observed no progress.
+await scenario("status ", async () => {
+  await screen("busy_seat");
+  const row = frame.split("\n").find((line) => line.includes("busy_seat")) ?? "";
+  assert.ok(row.includes("mesh working · progress unknown") && !/mesh working(?! · progress unknown)/.test(row), `A working managed seat's suggestion says progress unknown; saw: ${row}`);
+  assert.ok(frame.split("\n").some((line) => line.includes("managed_only") && line.includes("mesh offline") && !line.includes("progress unknown")), "Every other presence word passes through unqualified");
+}, async () => ({ ok: true, silent: [], failed: [], answered: [], rows: [
+  { name: "managed_only", id: "managed-id", agent: "opencode", mode: "pty", status: "running", mesh: "offline", uptimeMs: 0 },
+  { name: "busy_seat", id: "busy-id", agent: "claude", mode: "pty", status: "running", mesh: "working", uptimeMs: 0 },
+] }));
 await scenario("attach ", async () => {
   await screen("manager unavailable");
   assert.ok(!frame.includes("@alice"), "A failed manager read is shown without a presence-derived replacement list");
