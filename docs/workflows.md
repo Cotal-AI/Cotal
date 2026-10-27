@@ -712,8 +712,9 @@ pulls when a notice arrives, when it first connects, and after a reconnect while
 so an idle seat sends no requests ([SPEC §14.3](../SPEC.md#143-the-run-record)). The payload the seat reads names the run and the
 step and carries the rendered run context, plus any pending notices addressed to it, which the
 turn consumes. The seat yields through `cotal_yield` (`done`, `blocked`, or `handoff` with an
-addressee), and ending its host turn yields `done` for every turn it was shown. A `handoff` names
-another seat the same run spawned: the next `turn` in the same scope to that seat records the
+addressee), and ending its host turn yields `done` for every turn it was shown. A
+`cotal_status` call changes presence only, including when it sets `idle`. It does not yield a turn.
+A `handoff` names another seat the same run spawned: the next `turn` in the same scope to that seat records the
 link, a handoff to a name the run never spawned is the catchable L4005, and one to a seat bound
 to a different worktree is L4004. The deadline elapsing before any yield is the catchable L4003:
 the acceptance names the instant, the manager's goal-bound hold denies at it, and the run arms its
