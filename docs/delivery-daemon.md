@@ -94,7 +94,9 @@ exception: the `lifecycleMemberships` inventory a retirement reads before it del
 agent's membership rows. That request is answered without waiting for the others, so a manager stop
 that retires many seats does not queue each inventory behind the other seats' evictions. Inventories
 that arrive together share one read of the members bucket, and each one's read begins after it
-arrived.
+arrived. From the moment the daemon takes a lifecycle's inventory request, it refuses every durable
+join and leave of that lifecycle, and it starts the read only after the ones already running have
+finished. A row of the retiring lifecycle is then either in the inventory or never written.
 
 A reply on the `ctl.delivery` or `ctl.delivery-admin` rail that is larger than the broker's
 `max_payload` cannot be published. The daemon answers that request with a refusal giving the reply's

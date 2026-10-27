@@ -11,7 +11,12 @@
  *   - 50 concurrent inventories served by 2 passes over the bucket;
  *   - an answer from a pass that began after its request: a row written while a pass ran is in the
  *     answer to a request sent after it;
- *   - a pass that fails refuses every request that waited on it, and none reads as an empty list.
+ *   - a pass that fails refuses every request that waited on it, and none reads as an empty list;
+ *   - a lifecycle's memberships stop changing once its inventory is asked for, with the seats still
+ *     connected: a join already running is waited for and listed, a join that was queued on the
+ *     daemon's serial `ctl.delivery` rail before the inventory and runs after it is refused, and so are
+ *     later joins and leaves, while other lifecycles still join. After the real deprovisioner purges
+ *     the listed keys, the lifecycle has 0 rows on the broker.
  *
  * Run: pnpm smoke:lifecycle-inventory-concurrency (needs nats-server on PATH)
  */
@@ -19,8 +24,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  CotalEndpoint, createSpaceAuth, DEV_OWNER, memberKey, mintCreds, mintLifecycleUid, newIdentity, openMembersRegistry,
-  setupSpaceStreams, type ControlReply, type ControlRequest,
+  CotalEndpoint, createSpaceAuth, deprovisionAgent, DEV_OWNER, listMembers, memberKey, mintCreds, mintLifecycleUid, newIdentity,
+  openMembersRegistry, principalKey, provisionAgent, setupSpaceStreams, type ControlReply, type ControlRequest,
 } from "@cotal-ai/core";
 import { workspaceSecretStore } from "@cotal-ai/workspace";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -39,6 +44,7 @@ const broker = await bootBroker(auth);
 const ws = mkdtempSync(join(tmpdir(), "invconc-"));
 let daemon: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 let caller: CotalEndpoint | undefined;
+const endpoints: CotalEndpoint[] = [];
 let writer: Awaited<ReturnType<typeof connect>> | undefined;
 try {
   await setupSpaceStreams({ servers: broker.servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
@@ -153,10 +159,95 @@ try {
   check("no refused inventory carries a channel list", refused.every((r) => r.data === undefined), refused.find((r) => r.data !== undefined));
   const after = await inventory(seats[2]);
   check("the next inventory after a failed pass reads the bucket again", exact(after, seats[2].expected), after);
+
+  // 4. A lifecycle's memberships stop changing once its inventory is asked for. The seats stay
+  //    connected, as a user-mode seat's bearer can be until the auth plane evicts it.
+  const prov = new CotalEndpoint({ space, servers: broker.servers, creds: await mintCreds(auth, newIdentity(), "provisioner"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "prov", role: "manager", kind: "endpoint" } });
+  endpoints.push(prov);
+  prov.on("error", () => {});
+  await prov.start();
+  const seat = async (name: string, id = newIdentity()) => {
+    const uid = mintLifecycleUid();
+    const creds = await provisionAgent(prov, auth, id, { subscribe: ["lane.a"], allowSubscribe: ["lane.>"], lifecycleUid: uid });
+    const ep = new CotalEndpoint({ space, servers: broker.servers, creds, channels: [], consume: false, lifecycleUid: uid, watchPresence: false, registerPresence: false, card: { id: id.id, name, role: "agent", kind: "agent" } });
+    endpoints.push(ep);
+    ep.on("error", () => {});
+    await ep.start();
+    return { id, uid, ep, principal: principalKey(DEV_OWNER, id.id).key };
+  };
+  type Seat = Awaited<ReturnType<typeof seat>>;
+  const rowsOf = async (s: Seat) => (await listMembers(kv, { owner: s.principal })).filter((r) => r.lifecycleUid === s.uid);
+  const outcome = (p: Promise<unknown>) => p.then(() => "ok", (e: Error) => e.message);
+  // Hold the daemon's next durable join at its start, after the ACL authorized it.
+  const dj = daemon.ep as unknown as { durableJoinFor(owner: string, channel: string, uid: string): Promise<unknown>; deliveryServeSub: { getPending(): number }; retiringLifecycles: Map<string, Set<string>> };
+  const joinFor = dj.durableJoinFor.bind(dj);
+  let joinHeld: { entered: () => void; release: Promise<void> } | undefined;
+  dj.durableJoinFor = async (owner, channel, uid) => {
+    const h = joinHeld;
+    joinHeld = undefined;
+    if (h) { h.entered(); await h.release; }
+    return joinFor(owner, channel, uid);
+  };
+  const holdJoin = () => {
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { joinHeld = { entered: resolve, release: new Promise((r) => { release = r; }) }; });
+    return { entered, release: () => release() };
+  };
+
+  const a = await seat("seat-a");
+  const aJoined = await a.ep.durableJoinChannel("lane.a");
+  const running = holdJoin();
+  const runningJoin = outcome(a.ep.durableJoinChannel("lane.b"));
+  await running.entered;
+  let answered = false;
+  const waited = inventory({ principal: a.principal, uid: a.uid }, 30_000).finally(() => { answered = true; });
+  await wait(1000);
+  check("an inventory does not read while a join of its lifecycle authorized before it is still running", !answered);
+  running.release();
+  const [joined, listing] = await Promise.all([runningJoin, waited]);
+  check("that join completes and its row is in the inventory's answer", joined === "ok" && exact(listing, ["lane.a", "lane.b"]), { joined, listing });
+  const lateJoin = await outcome(a.ep.durableJoinChannel("lane.c"));
+  const lateLeave = await outcome(a.ep.durableLeaveChannel("lane.a", aJoined.generation));
+  check("a join of the lifecycle sent after its inventory is refused as retiring", /is retiring/.test(lateJoin), lateJoin);
+  check("a leave of the lifecycle sent after its inventory is refused as retiring", /is retiring/.test(lateLeave), lateLeave);
+  const aRows = await rowsOf(a);
+  check("the broker holds the lifecycle's 2 listed rows unchanged: no lane.c row, lane.a not tombstoned",
+    aRows.map((r) => r.channel).sort().join() === "lane.a,lane.b" && aRows.every((r) => r.leaveCursor === undefined), aRows);
+
+  // A join queued on the serial ctl.delivery rail before the inventory, and run after it.
+  const b = await seat("seat-b"), c = await seat("seat-c");
+  const blocking = holdJoin();
+  const bJoin = outcome(b.ep.durableJoinChannel("lane.a"));
+  await blocking.entered;
+  const cJoin = outcome(c.ep.durableJoinChannel("lane.a"));
+  for (let i = 0; i < 100 && dj.deliveryServeSub.getPending() < 1; i++) await wait(50);
+  const queued = dj.deliveryServeSub.getPending();
+  const cListing = await inventory({ principal: c.principal, uid: c.uid });
+  blocking.release();
+  const [bOutcome, cOutcome] = await Promise.all([bJoin, cJoin]);
+  check("with a join queued behind a running one, the inventory of the queued join's lifecycle answers an empty list",
+    queued === 1 && exact(cListing, []), { queued, cListing });
+  check("the queued join runs after the inventory and is refused as retiring, while the other lifecycle's join completes",
+    /is retiring/.test(cOutcome) && bOutcome === "ok", { cOutcome, bOutcome });
+  check("the broker holds 0 rows of the queued join's lifecycle and 1 of the other", (await rowsOf(c)).length === 0 && (await rowsOf(b)).length === 1);
+
+  // The real deprovisioner purges the listed keys and retires the ACL row: nothing of the lifecycle stays.
+  const listed = (listing.data as { channels: string[] }).channels;
+  const dpv = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: a.id.id, lifecycleUid: a.uid, memberChannels: listed } });
+  await deprovisionAgent({ servers: broker.servers, space, targetId: a.id.id, lifecycleUid: a.uid, memberChannels: listed, creds: dpv });
+  check("after the deprovisioner purged the listed keys, the retired lifecycle has 0 rows on the broker", (await rowsOf(a)).length === 0, await rowsOf(a));
+  // The alias's next lifecycle retires in turn: its inventory drops the mark of the earlier one.
+  const a2 = await seat("seat-a", a.id);
+  await a2.ep.durableJoinChannel("lane.a");
+  const a2Listing = await inventory({ principal: a2.principal, uid: a2.uid });
+  const marks = [...(dj.retiringLifecycles.get(a.principal) ?? [])];
+  check("the next lifecycle's inventory lists its row and keeps only its own mark for the alias",
+    exact(a2Listing, ["lane.a"]) && marks.length === 1 && marks[0] === a2.uid, { a2Listing, marks });
 } catch (e) {
   check(`suite ran without throwing: ${(e as Error).stack ?? (e as Error).message}`, false);
 } finally {
   await caller?.stop().catch(() => {});
+  for (const ep of endpoints) await ep.stop().catch(() => {});
   await writer?.close().catch(() => {});
   await daemon?.stop().catch(() => {});
   await broker.stop();
