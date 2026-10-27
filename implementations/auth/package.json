@@ -57,7 +57,8 @@
     "jose": "^6.2.3",
     "@nats-io/jetstream": "^3.4.0",
     "@nats-io/kv": "^3.4.0",
-    "@clack/prompts": "^1.0.0"
+    "@clack/prompts": "^1.0.0",
+    "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
     "@cotal-ai/smoke-kit": "workspace:*",

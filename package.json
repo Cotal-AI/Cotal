@@ -715,6 +715,7 @@
     "smoke:connect-limit:auth": "tsx implementations/auth/smoke/connect-limit.smoke.ts",
     "smoke:callout-multi-tenant:auth": "tsx implementations/auth/smoke/callout-multi-tenant.smoke.ts",
     "smoke:callout-shape": "tsx implementations/auth/smoke/callout-shape.smoke.ts",
+    "smoke:callout-xkey": "tsx implementations/auth/smoke/callout-xkey.smoke.ts",
     "smoke:user-auth-launch:live": "tsx implementations/auth/smoke/user-auth-launch.smoke.ts",
     "smoke:remote-exchange:live": "tsx implementations/auth/smoke/remote-exchange.smoke.ts",
     "smoke:interactive-manager-options": "tsx implementations/auth/smoke/interactive-manager-options.smoke.ts",
