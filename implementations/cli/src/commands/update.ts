@@ -134,7 +134,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = runtime): Pro
   try {
     assertConfigAncestorProtected();
   } catch (e) {
-    rt.err(c.red(`✗ config folder protection: ${refusal(e)}`));
+    rt.err(c.red(`✗ config folder protection: ${protectionFailure(e)}`));
     process.exitCode = 1;
     return;
   }
@@ -387,6 +387,14 @@ function refusal(e: unknown): string {
     : message(e);
 }
 
+/** The protection error plus its remedy. `refusal` keeps the sentence; the Next step is the
+ *  chmod the operator runs, and dropping it leaves the refusal without a way to fix the folder. */
+function protectionFailure(e: unknown): string {
+  const text = refusal(e);
+  const remedy = e instanceof CommandFailure ? e.remedy : undefined;
+  return remedy === undefined ? text : `${text}\n\nNext\n  ${remedy}`;
+}
+
 /** The running meshes an `ambiguous-target` named, or undefined when this refusal names none to act
  *  on (several tenants on one root, an unreadable account record) and so stands. */
 function runningSpaces(e: unknown): string[] | undefined {
@@ -575,7 +583,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   try {
     assertConfigAncestorProtected();
   } catch (e) {
-    rt.err(c.red(`✗ config folder protection: ${refusal(e)}`));
+    rt.err(c.red(`✗ config folder protection: ${protectionFailure(e)}`));
     return 1;
   }
 
