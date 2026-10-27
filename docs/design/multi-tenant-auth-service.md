@@ -215,10 +215,10 @@ Rejected: all-or-none for the full primary, for the reasons above. The argument 
 manifest should be loud" is met by the per-space lines; it does not need every other tenant to go
 down with it.
 
-The callout and delivery hosts keep all-or-none in this change. The shared loop takes the startup
-policy as an option. The same reasoning applies to the delivery host, whose lanes answer the oracle
-this host's restarts depend on: one bad tenant at a restart could hold every tenant's auth down
-through it. Switching the delivery host to servable startup is a follow-up change.
+The callout host keeps all-or-none. The shared loop takes the startup policy as an option. The same
+reasoning applies to the delivery host, whose lanes answer the oracle this host's restarts depend on:
+one bad tenant at a restart could hold every tenant's auth down through it. The delivery host moved
+to servable startup in the change after this one.
 
 ## 8. Per-space failure isolation
 

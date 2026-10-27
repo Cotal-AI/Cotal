@@ -4,8 +4,8 @@
  * root the way Cotal Cloud runs the daemon (cwd at the root, no `--creds`).
  *
  * What it proves, each from the broker rather than from the host's own report:
- *  - the `--spaces` refusals, and the all-or-nothing startup that names the space it cannot serve and
- *    leaves no lease behind;
+ *  - the `--spaces` refusals, and a startup that serves the spaces it can while it names and retries
+ *    the one it cannot;
  *  - each space's control rail answers through its own lane, each lease row is held by that space's
  *    own delivery identity, and a CONNZ sweep of each account lists only that space's identities;
  *  - an outside party re-signing one lane's credential in the root store is adopted by that lane
@@ -208,14 +208,17 @@ async function suite(): Promise<void> {
   const inspectA = await inspector(0), inspectB = await inspector(1), inspectD = await inspector(3);
   const lease = (ep: CotalEndpoint) => ep.readDeliveryLease(0);
 
-  // ---- startup is all or nothing ----------------------------------------------------------------
+  // ---- startup serves the spaces it can and retries the rest -------------------------------------
   writeManifest(manifestOf([A, C]));
   {
     const run = start(["deliver", "--spaces", manifest, "--server", servers]);
-    const code = await Promise.race([run.exited, wait(90_000).then(() => "timeout" as const)]);
-    check("a manifest naming an unserviceable space refuses startup with a non-zero exit", typeof code === "number" && code !== 0, { code, out: run.text().slice(-600) });
-    check("the refusal names that space and says no lane was left running", run.text().includes(`deliver --spaces: space "${C}" could not be served`) && run.text().includes("no lane was left running"), run.text().slice(-600));
-    check("the lane that had opened released its lease before the exit", (await lease(inspectA)) === undefined);
+    check("a manifest naming an unserviceable space starts the host serving the others and names the one it retries",
+      await until(() => run.text().includes("✓ delivery host up") || run.child.exitCode !== null, 120_000) && run.text().includes(`✓ delivery host up (1 space(s): ${A}; retrying ${C})`), run.text().slice(-800));
+    check("the unserviceable space is reported by name with its reason and retried",
+      await until(() => run.text().split(`delivery host: space "${C}" could not be served (`).length > 2, 30_000), run.text().slice(-800));
+    check("the space that opened serves while the other is retried", (await lease(inspectA))?.ready === true);
+    await killAndAwaitExit(run.child, "SIGTERM");
+    check("SIGTERM released the open lane's lease", (await lease(inspectA)) === undefined);
   }
 
   // ---- three lanes in one process ---------------------------------------------------------------
