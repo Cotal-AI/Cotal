@@ -212,10 +212,7 @@ export function printEntry(commands: readonly Command[], listing = false): void 
       const harness = resolvePreference("harness", { space, preferences }).value;
       context = [space, mesh ? mesh.origin === "catalog" || mesh.origin === "manual" ? "registered" : "local" : here ? "prepared here" : prepared ? "prepared" : "not recorded", harness ? `default agent ${harness}` : "no default application"].join(" · ");
       if (prepared) start = upAt(prepared.root, space);
-      if (held && held.space !== space) {
-        const { text, step } = heldSpaceNote(held);
-        folderHeld = `${text}; ${step}`;
-      }
+      if (held && held.space !== space) folderHeld = heldSpaceNote(held);
     } else anySpace = loadMeshes().length > 0 || loadPreparedSpaces().length > 0;
   } catch {
     unreadable = true;

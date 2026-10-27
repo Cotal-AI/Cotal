@@ -279,17 +279,24 @@ const QUESTION = "Which one?";
   check("bare cotal there, whose records hold no broker pidfile, leads with the selection, names the stopped space and offers its up",
     leadsWithSelection(entryStopped), shown(entryStopped));
   // A prepared selection is started by its own `up`, so the entry screen there names that one as this
-  // space's start and offers no spawn, as it does away from any project.
+  // space's start and offers no spawn, as it does away from any project. ps and send there refuse
+  // for it, naming that `up` under Next, and still name zeta's under their heading.
   const eta = join(home, "eta");
   mkdirSync(join(eta, ".cotal"), { recursive: true });
   recordPreparedSpace({ space: "eta", root: eta, ts: new Date(0).toISOString() });
   setCurrent("eta");
   const entryPrepared = run([], zetaRoot), entryPreparedAway = run([]);
+  const refusedPs = run(["ps"], zetaRoot), refusedPsJson = run(["ps", "--json"], zetaRoot), refusedSend = run(["send", "-c", "general", "hi"], zetaRoot);
   setCurrent("alpha");
   removePreparedSpace("eta");
   const startsEta = (r: ReturnType<typeof run>) => r.status === 0 && /^eta · prepared · /m.test(r.stdout) && r.stdout.includes(`\nStart here\n  cotal up --root ${eta}  Start this space\n`) && !r.stdout.includes("cotal spawn");
   check("with a prepared selection, bare cotal there names the selection's up as this space's start and offers no spawn, as away from any project",
     startsEta(entryPrepared) && entryPrepared.stdout.includes(`this folder holds the stopped space "zeta"`) && startsEta(entryPreparedAway), { here: shown(entryPrepared), away: shown(entryPreparedAway) });
+  const wholeNote = (r: ReturnType<typeof run>) => r.status === 2 && new RegExp(`^Mesh: eta\n {2}${STOPPED}$`, "m").test(r.stdout + r.stderr) && (r.stdout + r.stderr).includes(`\nNext\n  start it with \`cotal up\` in ${eta}`);
+  check("ps and send there refuse for the prepared selection, naming its up under Next and zeta's whole note under the heading, as ps --json's warning does",
+    wholeNote(refusedPs) && wholeNote(refusedSend) && envelope(refusedPsJson)?.error?.code === "TARGET_UNAVAILABLE" &&
+      envelope(refusedPsJson)?.warnings?.some((w: { code: string; message: string }) => w.code === "FOLDER_SPACE_NOT_RUNNING" && w.message === STOPPED) === true,
+    { ps: shown(refusedPs), send: shown(refusedSend), json: shown(refusedPsJson) });
   // A stopped stack that recorded a file store cap below the floor fails a bare `up`, so the entry
   // screen names the `up --max-file-store` the note under a command's heading names, both for this
   // folder's space and for a selection prepared and capped the same way.
