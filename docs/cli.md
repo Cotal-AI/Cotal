@@ -4509,7 +4509,7 @@ concludes nothing.
   When none of your managers answers, or none is live, `ps` lists your agents as presence shows
   them, read-only, with their state, application and host, and exits 0. It says that no manager
   answered, and its Next starts one: bare `cotal up` on the root of the space's own stack, as for a
-  static stack above, and `cotal supervise` anywhere else. `--on` and `--slots` keep refusing
+  static stack above, and `cotal manager start` anywhere else. `--on` and `--slots` keep refusing
   `TARGET_UNAVAILABLE`, exit 2, when their manager does not answer. Your ledger row needs the `admin` scope to
   reach `ps` at all; `spawn` alone is refused by the broker (the ep tier boundary). A broker-refused
   read keeps that refusal and adds the documented scope requirement and `cotal auth grants` remedy.

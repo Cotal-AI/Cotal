@@ -651,7 +651,8 @@ try {
 
   // L: with the space selected by `cotal use`, a bare `cotal supervise` from a folder that neither
   // hosts nor registers it starts a manager for that space on the pty runtime, in the root the space
-  // is registered at, and prints no deprecation line. Its own ps answers.
+  // is registered at, and prints the deprecation line that names `cotal manager start`. Its own ps
+  // answers.
   const selected = await caller("use", space);
   must("L: the caller selects the space", selected.code === 0, selected);
   const elsewhere = scratch("bare-cwd");
@@ -662,8 +663,8 @@ try {
   bare.stdout?.on("data", (chunk: Buffer) => { bareOut += chunk.toString(); });
   bare.stderr?.on("data", (chunk: Buffer) => { bareOut += chunk.toString(); });
   for (let i = 0; i < 1_200 && !/✓ manager up/.test(bareOut) && bare.exitCode === null; i++) await sleep(100);
-  ok("L: a bare supervise on the selected hosted space starts a manager there on the pty runtime, with no deprecation line",
-    new RegExp(`✓ manager up \\(space ${space} · [^)]*pty\\)`).test(bareOut) && !/deprecated/.test(bareOut), bareOut.slice(-900));
+  ok("L: a bare supervise on the selected hosted space starts a manager there on the pty runtime, and its deprecation line names cotal manager start",
+    new RegExp(`✓ manager up \\(space ${space} · [^)]*pty\\)`).test(bareOut) && /! cotal supervise is deprecated[^\n]*Use cotal manager start/.test(bareOut), bareOut.slice(0, 900));
   const bareId = /✓ manager up/.test(bareOut) ? loadOrCreateRemoteManagerIdentity(callerRoot, space).instanceId : undefined;
   const bareFolder = readdirSync(elsewhere);
   ok("L: it keeps its records in the space's registered root, not the folder it was started from", bareId !== undefined && bareFolder.length === 0, { bareId, bareFolder });
@@ -695,7 +696,7 @@ try {
   // exits 0. The registrations the exchange still counts do not answer.
   const none = await caller("ps", "--space", space);
   ok("J: with no manager answering, ps lists the agents presence shows, says so, and exits 0",
-    none.code === 0 && /No manager answered/.test(none.out) && none.out.includes("cotal supervise") && !/PERMISSION_DENIED|Authorization Violation|timeout/i.test(none.out + none.err), none);
+    none.code === 0 && /No manager answered/.test(none.out) && none.out.includes("cotal manager start") && !/PERMISSION_DENIED|Authorization Violation|timeout/i.test(none.out + none.err), none);
 
   await teardown();
   const remainingArtifacts = [brokerStore, root, home, xdg, ...releaseRoots].filter((path) => existsSync(path)).length;
