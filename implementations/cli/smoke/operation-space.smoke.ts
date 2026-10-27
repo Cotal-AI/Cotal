@@ -13,13 +13,15 @@
  * saved keeps its draft and names it, a malformed `--on` names the command to rerun, and no create
  * takes the seeded default's launch name. Removing the seeded default says so, and a launch preview
  * refuses a missing persona as the launch does. A managed preview exits 0, and both previews name
- * the persona's source in words and warn about an unknown harness. No broker is started.
+ * the persona's source in words and warn about an unknown harness. A managed preview names its
+ * `--runtime` and what this host said about it, and `--runtime auto` is refused before anything is
+ * resolved. No broker is started.
  *
  * Run: pnpm smoke:operation-space
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { agentFilePath } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -210,6 +212,36 @@ check("a direct preview of an unknown --harness exits 0 with a HARNESS_UNKNOWN w
 const fromEnv = outcome(spawnSync(process.execPath, [BIN, "spawn", "--file", "pv.md", "--dry-run", "--plain"], { cwd: root, env: { ...env, COTAL_DEFAULT_AGENT: "nosuch" }, encoding: "utf8", timeout: 120_000 }));
 check("a harness only COTAL_DEFAULT_AGENT chose gets the warning config gives",
   fromEnv.status === 0 && fromEnv.stderr.includes('! COTAL_DEFAULT_AGENT: no harness "nosuch"') && fromEnv.stdout.includes("a persona file (--file)"), shown(fromEnv));
+
+// A managed preview names the runtime it asks for and what this host said about it. This sandbox has
+// no runtime extension installed, so only the built-in pty is available here.
+interface RuntimePreview { result?: { requested?: { runtime?: string | null }; runtimeCheck?: { host?: string; available?: boolean; error?: string | null } | null }; warnings?: { code: string }[] }
+const previewRuntime = (...words: string[]) => { const r = cotal("spawn", "-d", "--dry-run", "--json", ...words); return { r, p: r.envelope as unknown as RuntimePreview | undefined }; };
+const unknownRuntime = previewRuntime("--runtime", "nosuch");
+check("a managed preview of an unknown --runtime exits 0, carries it, and says this host cannot run it",
+  unknownRuntime.r.status === 0 && unknownRuntime.p?.result?.requested?.runtime === "nosuch" && unknownRuntime.p.result.runtimeCheck?.host === hostname()
+    && unknownRuntime.p.result.runtimeCheck.available === false && unknownRuntime.p.result.runtimeCheck.error?.startsWith('unknown runtime "nosuch" (known: pty, orca, tmux, cmux, herdr)') === true
+    && same(unknownRuntime.p.warnings?.map((w) => w.code), ["RUNTIME_UNAVAILABLE"]), shown(unknownRuntime.r));
+const uninstalledRuntime = previewRuntime("--runtime", "tmux");
+check("a known runtime that is not installed here names its cotal ext add package",
+  uninstalledRuntime.r.status === 0 && uninstalledRuntime.p?.result?.runtimeCheck?.available === false
+    && uninstalledRuntime.p.result.runtimeCheck.error === 'no installed extension provides runtime "tmux" - install it with `cotal ext add @cotal-ai/tmux`', shown(uninstalledRuntime.r));
+const builtInRuntime = previewRuntime("--runtime", "pty");
+check("the built-in pty is available here, with no warning",
+  builtInRuntime.r.status === 0 && builtInRuntime.p?.result?.requested?.runtime === "pty" && builtInRuntime.p.result.runtimeCheck?.available === true
+    && builtInRuntime.p.result.runtimeCheck.error === null && same(builtInRuntime.p.warnings, []), shown(builtInRuntime.r));
+const noRuntime = previewRuntime();
+check("without --runtime the preview names none and checks none",
+  noRuntime.r.status === 0 && noRuntime.p?.result?.requested?.runtime === null && noRuntime.p.result.runtimeCheck === null, shown(noRuntime.r));
+const runtimeText = cotal("spawn", "-d", "--dry-run", "--plain", "--runtime", "nosuch");
+check("the plain preview shows the runtime and where it was checked, and warns",
+  runtimeText.status === 0 && runtimeText.stdout.includes(`Runtime:                   nosuch - not available on ${hostname()}; a manager on another host checks its own`)
+    && runtimeText.stderr.includes('! unknown runtime "nosuch"'), shown(runtimeText));
+for (const mode of [["--dry-run"], []]) {
+  const auto = cotal("spawn", "-d", "--json", "--runtime", "auto", ...mode);
+  check(`--runtime auto is refused USAGE_INVALID ${mode.length ? "by the preview" : "before a launch resolves any target"}`,
+    auto.status === 1 && auto.envelope?.error?.code === "USAGE_INVALID" && auto.envelope.error.message === "--runtime auto chooses a manager's own runtime, not the runtime of one seat", shown(auto));
+}
 
 finish();
 process.exit(process.exitCode ?? 0);

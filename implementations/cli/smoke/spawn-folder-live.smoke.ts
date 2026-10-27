@@ -16,6 +16,9 @@
  *     asked, and a pty spawn against a stopped mesh is refused `TARGET_UNAVAILABLE` the same way.
  *  E. the question's loop over the REAL check: a typed folder is the one the manager resolved, and
  *     one it cannot use is shown with its reason and asked again with the text left to edit.
+ *  F. `spawn -d --runtime` to this root's own manager, pinned or the only one running, refuses an
+ *     unknown or uninstalled runtime `DEPENDENCY_UNAVAILABLE` before the launch is sent, a runtime
+ *     this host can run is still sent, and a launch that may reach another manager is left to it.
  *
  * COTAL_HOME and the project root are sandboxed, the broker runs on an isolated port, and teardown
  * is `cotal down` only, so a co-running stack is untouched. Needs `nats-server` on PATH, and a
@@ -61,6 +64,7 @@ process.env.XDG_CONFIG_HOME = configDir;
 process.chdir(root);
 const { askManager, resolveControlTarget } = await import("../src/lib/control.js");
 const { askManagerFolder, managerSelection } = await import("../src/lib/manager-choice.js");
+const { launchServedHere } = await import("../src/commands/spawn.js");
 
 const { check, finish } = createSuite();
 const cli = (...args: string[]) => {
@@ -127,6 +131,36 @@ try {
   const unknown = await pty(["spawn", "default", "-d", "--on", "krudqi08ilzx2viqeh8sv34ygs1surr"]);
   check("an --on that names no running manager is refused TARGET_NOT_FOUND with no question asked",
     unknown.code === 2 && unknown.out.includes("TARGET_NOT_FOUND") && !/should the agent work in/.test(unknown.out), unknown);
+
+  // ── F. a runtime this root's own manager cannot run is refused before the launch is sent ──
+  // "Managed launch" is printed just before the request goes out, and a sent request has a requestId.
+  // This sandbox installs no runtime extension and no connector, so a sent launch is refused for its
+  // connector and starts nothing.
+  const launch = (...args: string[]) => {
+    const r = cli("spawn", "default", "-d", "--json", ...args);
+    let envelope: { target?: Record<string, unknown> | null; error?: { code?: string; remedy?: string } } | undefined;
+    try { envelope = JSON.parse(r.stdout) as typeof envelope; } catch { envelope = undefined; }
+    return { status: r.status, stderr: r.stderr.slice(0, 600), envelope, sent: r.stderr.includes("Managed launch") };
+  };
+  const pinnedUnknown = launch("--on", on, "--runtime", "nosuch");
+  check("a launch pinned to this root's manager with an unknown runtime is refused DEPENDENCY_UNAVAILABLE before it is sent",
+    pinnedUnknown.status === 2 && pinnedUnknown.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE"
+    && pinnedUnknown.envelope.error.remedy?.startsWith('unknown runtime "nosuch" (known: pty, orca, tmux, cmux, herdr)') === true
+    && !pinnedUnknown.sent && pinnedUnknown.envelope.target?.requestId === undefined, pinnedUnknown);
+  const unpinnedMissing = launch("--runtime", "tmux");
+  check("an unpinned launch whose only manager is this root's names the package of an uninstalled runtime, before it is sent",
+    unpinnedMissing.status === 2 && unpinnedMissing.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE"
+    && unpinnedMissing.envelope.error.remedy === 'no installed extension provides runtime "tmux" - install it with `cotal ext add @cotal-ai/tmux`'
+    && !unpinnedMissing.sent && unpinnedMissing.envelope.target?.managerInstanceId === on, unpinnedMissing);
+  const builtIn = launch("--on", on, "--runtime", "pty");
+  check("a runtime this host can run is still sent to the manager",
+    builtIn.sent && typeof builtIn.envelope?.target?.requestId === "string", builtIn);
+  const here = { space: SPACE, root };
+  check("the local check applies to this root's own manager, pinned or the only one running",
+    launchServedHere(here, on, undefined) && launchServedHere(here, undefined, [on]));
+  check("a launch that may reach another manager, or that has no root, is left to the manager that serves it",
+    !launchServedHere(here, "krudqi08ilzx2viqeh8sv34ygs1surr", undefined) && !launchServedHere(here, undefined, [on, "krudqi08ilzx2viqeh8sv34ygs1surr"])
+    && !launchServedHere(here, undefined, undefined) && !launchServedHere({ space: SPACE }, on, undefined));
 
   // ── E. the question's loop over the real check ──
   const typed = async (steps: [RegExp, string][]) => {
