@@ -62,8 +62,9 @@ split it, and a machine with no space to `cotal setup`. While the space it names
 stopped, that `cotal up` is its first step and it offers no `cotal spawn`, in any folder. Otherwise,
 in a folder that holds another space, its first step is that folder's own `cotal up`, which it says
 starts this folder's space, and `cotal spawn` follows. Each `cotal up` it names reads
-`cotal up --max-file-store 67108865 or more` when that stopped stack recorded a file store cap below
-67108865, as `status` says, because a bare `up` fails on that cap. With spaces on the machine but none selected
+`cotal up --max-file-store 67108865`, with a label saying a store cap of 67108865 or more, when that
+stopped stack recorded a file store cap below 67108865, as `status` says, because a bare `up` fails on
+that cap; the command runs as written. With spaces on the machine but none selected
 or in this folder, it names `cotal use <name>` and `cotal space` instead. Every command generates its own help, usage, and shell completion from its declared
 flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. A word after the
 command that names none of its subcommands refuses with `--help` too, as `cotal help` and the command
@@ -259,7 +260,8 @@ starts under the text it continues. A labeled value with a word too wide to fit 
 such as an identity, starts on the line under the label. A word wider than the line, such as a path,
 keeps a line of its own and is never split. A command wraps as one word, so a copied line never holds
 part of one: a command under Next, and a command a sentence names in backticks after other words,
-from its `cotal` to its closing backtick, whatever words its arguments are. A command that holds a
+from its `cotal` (or the `cd` that precedes it) to its closing backtick, whatever words its arguments
+are. A command that holds a
 backtick itself, as a quoted path can, is named between double backticks, as Markdown writes such code,
 and wraps whole to the matching pair. A line that starts with a command, such as a usage line, wraps at
 its spaces. Help wraps the same way, including the title of `cotal help`.
