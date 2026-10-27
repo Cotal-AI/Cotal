@@ -629,8 +629,18 @@ export async function ensureIssuedStores(jsm: JetStreamManager, kvm: Kvm, space:
 function issuedStoreUpgradeRemedy(space: string): string {
   const [issued, accepted] = issuedStoreStreamNames(space);
   return `stop every issuer and resolver of space ${space} (the auth service and its callout replicas, and every manager), `
-    + `back up and then delete the streams ${issued} and ${accepted} (\`nats stream backup <stream> <dir>\`, then \`nats stream rm <stream>\`), `
-    + "then start this release, which recreates both; every generation issued before the upgrade refuses afterwards";
+    + "then start the space once with `--recreate-issued-stores <backup-dir>` added to the `cotal up` that starts it (an embedder calls removeIssuedStoresBeforeRetention), "
+    + `which backs up ${issued} and ${accepted} to <backup-dir> and recreates both; every generation issued before the upgrade refuses afterwards`;
+}
+
+/** The store check's refusal of an issued-authority store created before bounded retention. Its
+ *  class tells it apart from every other store fault, so a caller can refuse with its remedy instead
+ *  of reporting an unknown outcome. */
+export class IssuedStoreBeforeRetentionError extends Error {
+  constructor(readonly space: string, readonly bucket: string, message: string) {
+    super(message);
+    this.name = "IssuedStoreBeforeRetentionError";
+  }
 }
 
 /** Pure native issued/accepted-store invariant checks. The bucket must belong to this space;
@@ -640,7 +650,7 @@ export function assertIssuedStoreConfig(cfg: StreamConfig, space: string, bucket
   if (!definition) throw new Error("issued-store verification requires a native issued/accepted bucket of the selected space");
   const direct = definition.createOptions.allow_direct, shape = definition.hardenAfterCreate;
   if (cfg.allow_msg_ttl !== true)
-    throw new Error(`the issued-authority store ${bucket} was created before bounded retention (allow_msg_ttl is off), so none of its rows is ever removed; it is never adopted - ${issuedStoreUpgradeRemedy(space)} (SPEC 13.15)`);
+    throw new IssuedStoreBeforeRetentionError(space, bucket, `the issued-authority store ${bucket} was created before bounded retention (allow_msg_ttl is off), so none of its rows is ever removed; it is never adopted - ${issuedStoreUpgradeRemedy(space)} (SPEC 13.15)`);
   if ((cfg.subject_delete_marker_ttl ?? 0) !== 0)
     throw new Error(`the issued-authority store ${bucket} writes subject delete markers; a removed row leaves nothing behind in an issued store - reprovision it (SPEC 13.15)`);
   if (cfg.allow_direct !== direct || cfg.storage !== "file" || (cfg.max_age ?? 0) !== 0 || (cfg.max_msgs ?? -1) > 0 || (cfg.max_bytes ?? -1) > 0

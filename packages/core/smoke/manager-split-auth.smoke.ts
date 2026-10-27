@@ -407,7 +407,7 @@ try {
   check("read a DM body (MSG.NEXT) DENIED", await tryPublish(cpCreds, dmRead, cp.id) === "denied");
   check("publish chat DENIED", await tryPublish(cpCreds, chatSubject(space, DEV_OWNER, cp.id, "general"), cp.id) === "denied");
 
-  console.log("teardown (down -f — the SOLE STREAM.DELETE holder; reads + admin-control + delete, no body read):");
+  console.log("teardown (down -f — the space-wide STREAM.DELETE holder; reads + admin-control + delete, no body read):");
   check("STREAM.DELETE the chat stream ALLOWED", await tryPublish(tdCreds, `$JS.API.STREAM.DELETE.${CHAT}`, td.id) === "allowed");
   check("STREAM.DELETE an endpoint record-ingress stream ALLOWED", await tryPublish(tdCreds, `$JS.API.STREAM.DELETE.${EPR}`, td.id) === "allowed");
   check("STREAM.DELETE the manager bucket ALLOWED (all base streams)", await tryPublish(tdCreds, `$JS.API.STREAM.DELETE.${MGRKV}`, td.id) === "allowed");

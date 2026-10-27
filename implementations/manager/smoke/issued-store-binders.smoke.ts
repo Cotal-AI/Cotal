@@ -5,7 +5,7 @@
  * issuance window.
  *
  *  1. Stores created before bounded retention (no `allow_msg_ttl`) are refused by each binder with
- *     the backup, remove and recreate remedy, before its callback runs, and are left unchanged.
+ *     the `up --recreate-issued-stores` remedy, before its callback runs, and are left unchanged.
  *  2. The operator's remedy (remove both streams, start the release) makes each binder bind.
  *  3. A pre-upgrade accepted store next to a current evidence store is refused by name.
  *
@@ -78,14 +78,14 @@ try {
     await check(`${name} refuses stores created before bounded retention with the remedy, before its callback runs`, async () => {
       let ran = false;
       await assert.rejects(() => bind(async () => { ran = true; }),
-        new RegExp(`store ${issuedBucket(space)} was created before bounded retention.*nats stream backup.*nats stream rm`));
+        new RegExp(`store ${issuedBucket(space)} was created before bounded retention.*--recreate-issued-stores <backup-dir>\` added to the \`cotal up\` that starts it`));
       assert.equal(ran, false, "the callback ran");
       assert.equal(await ttlOn(issuedStream), false, "the refusal changed the evidence store");
       assert.equal(await ttlOn(acceptedStream), false, "the refusal changed the accepted store");
     });
   }
 
-  // The operator's remedy: remove both streams (after `nats stream backup`), then start the release.
+  // The streams removed, as the recreate step leaves them, then the release creates both again.
   for (const stream of [issuedStream, acceptedStream]) await teardown.jsm.streams.delete(stream);
   await ensureIssuedStores(provisioner.jsm, provisioner.kvm, space);
   for (const [name, bind] of binders) {

@@ -34,6 +34,120 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Multi-space delivery startup after 0.112.0
+
+`cotal deliver --spaces <manifest>` now starts with the spaces it can serve. It names each space it
+cannot serve with the reason and retries that space every 5 seconds. Up to 0.111.x the host exited
+nonzero unless every space in the manifest opened, so one space whose lease another daemon still
+held, or whose credential was missing, kept every other space's delivery down.
+
+A supervisor, health check or script that read that nonzero exit as "a space could not open" no
+longer sees it: the host stays up. Read its ready line, which names the spaces it retries, or its
+per-space lines:
+
+```
+✓ delivery host up (1 space(s): <s>; retrying <s>) - one delivery lane per space on <server>
+✗ delivery host: space "<s>" could not be served (<reason>) - retrying in 5s
+```
+
+A manifest that does not read or parse whole still refuses startup. Nothing has to change before
+the upgrade unless something relied on the old exit.
+
+## Writable manifest directory for multi-space hosts after 0.112.0
+
+Every multi-space host now writes `<manifest>.applied` beside its manifest before it opens any lane,
+and refuses to start when it cannot. That covers `auth-service --spaces`, `auth-service
+--callout-only --spaces` and `deliver --spaces`, the last two of which never wrote there before. A
+manifest kept in a directory the host's user cannot write, such as a read-only mount or a folder
+another user owns, now stops the host at startup with nothing opened:
+
+```
+✗ deliver --spaces: cannot write <manifest>.applied (EACCES: permission denied, ...) - no lane was opened
+```
+
+### Before the upgrade
+
+- Give each host's user write access to the directory that holds its manifest, or move the
+  manifest into a directory that user can write and point the unit at the new path.
+- The file holds `{"version": 1, "sha256": "<hex>"}`, the SHA-256 of the manifest the host
+  applied. A tool that stops one space by removing it from the manifest can wait for that hash
+  ([server daemons](cli.md#server-daemons)).
+
+## Issued-authority stores after 0.111.0
+
+0.111.0 bounds the two issued-authority stores of every space, `KV_cotal_issued_<space>` and
+`KV_cotal_accepted_<space>`: each row now ends at its generation's horizon. A store an earlier
+release created keeps every row forever, so every issuer and resolver of the space refuses it and
+the space does not start. This cannot be made automatic. Each space's two stores are backed up,
+deleted and created again once, and every generation issued before that is refused afterwards.
+
+0.111.0 and 0.112.0 name `nats stream backup` and `nats stream rm` for this, and no credential
+those releases mint can run either command. From 0.113.0 `cotal up --recreate-issued-stores
+<backup-dir>` does it. Upgrade a mesh that ran 0.110.x or earlier straight to 0.113.0 or later.
+
+**A rollback after this step does not restore the old stores with stock tools.** Read
+[Rolling back](#rolling-back-the-issued-authority-stores) before you start.
+
+### Before the upgrade
+
+- Pick a backup directory for each space that does not exist yet, inside one that does. The step
+  creates it.
+- Copy the connector seed store and the extensions folder, `seed` and `extensions` in the operator
+  config directory (`~/.config/cotal` by default). The first start of the new release migrates the
+  seed store, and an older release refuses to run over the migrated one.
+- Plan to respawn every static agent a manager runs. Its credential's generation is refused after
+  the step, so its renewals stop.
+
+### The upgrade
+
+1. Stop every issuer and resolver of the space: its stack (`cotal down` from the root), its auth
+   service and every callout replica you started yourself.
+2. Install the new release.
+3. Start the space once with `--recreate-issued-stores <backup-dir>` added to the `cotal up` that
+   starts it, for example `cotal up --space <space> --recreate-issued-stores <backup-dir>` (with
+   `--user-auth` and the other flags that space starts with). Before any issuer starts, it backs up
+   each store created before 0.111.0, checks each backup against its stream, deletes those stores
+   and creates both again:
+
+   ```
+   → backed up KV_cotal_issued_<space> (<n> messages) to <backup-dir>/KV_cotal_issued_<space>, then deleted it
+   → backed up KV_cotal_accepted_<space> (<n> messages) to <backup-dir>/KV_cotal_accepted_<space>, then deleted it
+   ```
+
+4. Remove the flag from any unit or script that starts the space. A later start with it refuses
+   `CONFLICT`, since neither store predates bounded retention any more.
+5. Start the callout replicas and other issuers again, and respawn the static agents.
+
+A space your own composition provisions, rather than `cotal up`, runs the same step through
+`removeIssuedStoresBeforeRetention` ([Embedding](embedding.md#issued-authority-stores-from-before-01110)).
+
+### What refuses
+
+- Without the flag, `cotal up` refuses `CONFLICT` (exit 2), names the store, and stops the broker
+  it started. 0.111.0 and 0.112.0 report the same refusal as `OPERATION_UNKNOWN` (exit 3); nothing
+  is left running in either case.
+- The flag refuses `USAGE_INVALID` when the backup directory exists or its parent does not, or with
+  `-f` or `--restore`, and `LIFECYCLE_BLOCKED` while the stack runs or the root has a maintenance
+  attempt to recover. It runs only on a broker that start launches, before any issuer.
+- A backup that does not match its stream's message count and last sequence means an issuer is
+  still writing. Nothing is deleted. Stop it and run the start again with a new backup directory.
+
+### The backup
+
+Each store gets `<backup-dir>/<stream>/backup.json` and `stream.tar.s2`, the layout
+`nats stream backup` writes, so `nats stream restore` reads it. The directories are 0700 and the
+files 0600. Keep them private: they hold the issued-authority evidence of the space.
+
+### Rolling back the issued-authority stores
+
+- 0.110.0 starts on the stores the step created, and its `cotal ps` works there. Restore the seed
+  store and extensions copies first, or it refuses to run.
+- Rows an earlier release writes while rolled back carry no TTL, so the broker never removes them.
+  A later upgrade does not recreate the stores again, because their shape is already current.
+- Putting the backed-up stores back needs a credential that holds `STREAM.RESTORE` on them for
+  `nats stream restore`, and no stock command mints one. A rollback to the stores as they were before
+  the upgrade is not supported with stock tools.
+
 ## Starting the manager by name after 0.105.0
 
 `cotal manager start` starts the manager for this folder's or the selected space, with the pty

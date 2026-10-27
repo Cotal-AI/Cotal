@@ -79,7 +79,8 @@ export interface StackUpNative {
   /** `userAuth` asks the native `authSetup` user arm (`prepareServer`) and must return its private
    *  `user` material; any other mode must return none. */
   prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; authTimeout?: number; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { creds: string; wsPort: number }; user?: StackUserPrepared; confPath: string; bin: string; source: "path" | "bundled"; version: string | null; seedFile?: unknown; authTimeout?: number }>;
-  initializeStreams(server: string, space: string, setup: { creds: string } | undefined, seedFile: unknown): Promise<void>;
+  /** `recreateIssuedStores` is the `--recreate-issued-stores` backup directory, for a fresh broker only. */
+  initializeStreams(server: string, space: string, setup: { creds: string } | undefined, seedFile: unknown, recreateIssuedStores?: string): Promise<void>;
   /** On a broker the stack reuses, create the space's streams again when every one of them is gone,
    *  as after `cotal space delete`, and say whether it did. */
   recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: StackMode; channels?: string; seed?: unknown }): Promise<boolean>;
@@ -165,6 +166,10 @@ export interface StackUpRequest {
    *  the broker is prepared, so the broker this start launches loads the successor. Only a stopped
    *  static-auth or user-auth stack takes it. */
   rotateSys?: boolean;
+  /** `--recreate-issued-stores`: the new backup directory the fresh broker's stream setup backs up
+   *  the space's pre-retention issued-authority stores into before it creates them again. Only a
+   *  stopped stack takes it, since the step must run before any issuer of the space. */
+  recreateIssuedStores?: string;
 }
 
 /** The domain outcome of a successful whole-stack start, for a caller that renders its own receipt.
@@ -731,6 +736,10 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const trust = await getSpaceAuth(workspaceSecretStore(root), space);
     if (!trust?.operator.seed) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", trust ? "this root holds the space's trust without the broker operator seed, so it cannot rotate the system account; nothing was started" : "this stack has no system account yet, so nothing was rotated or started", { target: { root, space }, remedy: trust ? "run the rotation where the broker trust record lives" : `run bare cotal up from ${root}; a first start mints the $SYS creds` });
   }
+  if (request.recreateIssuedStores !== undefined) {
+    const running = STACK_ROLES.flatMap((role) => serviceInstances(space, STACK_DEFINITION[role])).filter((row) => observeServiceProcess(row.record.value) === "running");
+    if (running.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this stack has running members, and the issued-authority stores are recreated only on a fresh broker start, before any issuer runs; nothing was changed", { target: { root, space, instances: running.map((row) => row.name) }, remedy: `stop the stack with cotal down --yes from ${root}, then run cotal up --recreate-issued-stores <backup-dir> again` });
+  }
   // Check provider inputs before preparation or a journal write. A supplied IdP is always checked,
   // including a live refresh; only an unpinned first enable probes JWKS. Preparation checks again.
   if (mode === "user") {
@@ -860,7 +869,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       // The broker's own stream and registry setup, on the native space path, after it serves.
       failedRole = "broker";
       failedStage = "broker-streams";
-      await native.initializeStreams(server, space, prepared.setup, prepared.seedFile);
+      await native.initializeStreams(server, space, prepared.setup, prepared.seedFile, request.recreateIssuedStores);
       failedStage = "broker-registration";
       // A user registration is recorded here, before its auth service exists, because the native
       // auth-service child resolves a registered user target. It carries only the prepared trust
@@ -960,6 +969,15 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     // later up would reuse it and fail the same way. It is stopped again here, so the next up starts
     // a fresh broker, and the run is a failure whose cause its log names.
     const unserved = failedStage === "broker-streams" && startedBroker ? await stopUnservedBroker(space, startedBroker.definition, startedBroker.id) : undefined;
+    // A refusal from the stream setup, such as issued-authority stores created before bounded
+    // retention, stays a refusal: the broker it ran on is stopped again and nothing else started.
+    const refusal = unserved && isCommandFailure(error) && error.outcome === "refused" ? error : undefined;
+    if (unserved && refusal) {
+      mark("broker", { state: "stopped", code: refusal.code });
+      for (const row of journal.members.filter((member) => member.state === "planned")) mark(row.role, { state: "not-attempted" });
+      settle("refused");
+      throw new CommandFailure("refused", refusal.code, refusal.message, { target: { root, space, operation: journal.operation.id, members: journal.members }, changed: [instanceProjection(unserved.stopped)], ...(refusal.remedy ? { remedy: refusal.remedy } : {}) });
+    }
     if (unserved) {
       mark("broker", { state: "stopped", code: "OPERATION_FAILED" });
       for (const row of journal.members.filter((member) => member.state === "planned")) mark(row.role, { state: "not-attempted" });

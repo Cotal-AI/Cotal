@@ -1161,6 +1161,35 @@ on a multi-space root rather than scoping to one tenant, and the per-space lifec
 remaining multi-space operator layer. See
 [Known gaps](#hosted-composition-gaps).
 
+## Issued-authority stores from before 0.111.0
+
+A space whose `KV_cotal_issued_<space>` and `KV_cotal_accepted_<space>` were created before
+0.111.0 is refused by every issuer and resolver that binds them. `cotal up
+--recreate-issued-stores` fixes the spaces `cotal up` starts. For a space your own composition
+provisions, stop its issuers and resolvers (auth service, callout replicas, managers) and run the
+same step yourself:
+
+```ts
+import { connect } from "@nats-io/transport-node";
+import { mintCreds, newIdentity, removeIssuedStoresBeforeRetention, setupSpaceStreams, standaloneConnectOpts } from "@cotal-ai/core";
+const identity = newIdentity();
+const inboxPrefix = `_INBOX_${identity.id}`;           // the one inbox the credential may receive on
+const creds = await mintCreds(auth, identity, "issued-store-recreate"); // one-shot, 30 minutes
+const nc = await connect({ servers: brokerUrl, ...standaloneConnectOpts({ creds, tls: false }), inboxPrefix });
+try {
+  // backupDir must not exist yet; it is created 0700 with a `nats stream backup` layout per stream
+  await removeIssuedStoresBeforeRetention(nc, { space, backupDir, inboxPrefix });
+} finally { await nc.drain(); }
+await setupSpaceStreams({ servers: brokerUrl, space, creds: provisionerCreds }); // creates both again
+```
+
+The credential can read, snapshot and delete those two streams and nothing else. The step backs
+up every store that predates bounded retention, checks each backup against its stream's message
+count and last sequence, and deletes nothing unless every check passes. It throws
+`IssuedStoreRecreateRefusal` before writing anything when neither store predates bounded
+retention. The order, the refusals and what a rollback can do are in
+[Upgrading](UPGRADING.md#issued-authority-stores-after-01110).
+
 ## Hazardous provisioning primitives
 
 `mintCreds`, the full `Profile`/`CredentialKind` matrix, `createSpaceAuth`, and `stripSpaceAuth` are
