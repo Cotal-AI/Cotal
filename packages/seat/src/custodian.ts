@@ -39,6 +39,7 @@ export interface CustodianLaunch {
   confirm?: string;
   confirmBefore?: readonly import("./startup-confirm.js").StartupReply[];
   confirmReady?: readonly string[];
+  confirmBlockers?: readonly import("./startup-confirm.js").StartupBlocker[];
   /** Who started this custodian: the launcher's run marker, carried so a census can attribute an
    *  orphan to its run without walking `/proc/*\/cwd` (#1648). */
   run?: string;
@@ -92,8 +93,8 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   let proc: pty.IPty;
   try {
     // Built before the child exists, so a prompt that cannot match starts nothing.
-    if ((launch.confirmBefore?.length || launch.confirmReady?.length) && launch.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
-    confirmGate = launch.confirm === undefined ? undefined : new StartupConfirmGate(launch.confirm, launch.confirmBefore, launch.confirmReady);
+    if ((launch.confirmBefore?.length || launch.confirmReady?.length || launch.confirmBlockers?.length) && launch.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
+    confirmGate = launch.confirm === undefined ? undefined : new StartupConfirmGate(launch.confirm, launch.confirmBefore, launch.confirmReady, launch.confirmBlockers);
     proc = pty.spawn(launch.command, launch.args, {
       name: "xterm-256color",
       cols: DEFAULT_COLS,

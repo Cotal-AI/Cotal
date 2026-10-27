@@ -20,17 +20,27 @@ export interface StartupReply {
   optional?: boolean;
 }
 
+/** A native startup screen the watch never answers, such as a harness's first-run setup or a safety
+ * warning only its user may accept. No key is sent while one is on screen. When the startup bound
+ * ends with one on screen, the failure names its `reason` instead of the prompt that did not appear. */
+export interface StartupBlocker {
+  prompt: string;
+  reason: string;
+}
+
 /** The seat package repeats this small matcher because it has no core dependency. Both operate on
  * current screen snapshots, never scrollback accumulated from an earlier dialog. */
 export class StartupConfirmSequence {
   readonly #final: string;
   readonly #before: { prompt: string; key: "Down" | "Enter"; optional: boolean }[];
   readonly #ready: string[];
+  readonly #blockers: { prompt: string; reason: string }[];
+  #blocked: string | undefined;
   #step = 0;
   #seen: number | undefined;
   #readySeen = false;
   #done = false;
-  constructor(prompt: string, before: readonly StartupReply[] = [], ready: readonly string[] = []) {
+  constructor(prompt: string, before: readonly StartupReply[] = [], ready: readonly string[] = [], blockers: readonly StartupBlocker[] = []) {
     this.#final = normalizeConfirmText(prompt);
     if (!this.#final) throw new Error("startup confirmation prompt is empty after ANSI and whitespace normalization");
     if (!Array.isArray(before) || before.length > 8) throw new Error("invalid startup choices");
@@ -47,6 +57,18 @@ export class StartupConfirmSequence {
       if (!normalized) throw new Error("invalid startup ready text");
       return normalized;
     });
+    if (!Array.isArray(blockers) || blockers.length > 8) throw new Error("invalid startup blockers");
+    this.#blockers = blockers.map((blocker) => {
+      if (!blocker || typeof blocker.prompt !== "string" || blocker.prompt.length > 1024
+        || typeof blocker.reason !== "string" || !blocker.reason.trim() || blocker.reason.length > 1024) throw new Error("invalid startup blocker");
+      const normalized = blocker.prompt.split(/\r?\n/).map(normalizeConfirmText).filter(Boolean).join("\n");
+      if (!normalized) throw new Error("startup blocker prompt is empty after normalization");
+      return { prompt: normalized, reason: blocker.reason };
+    });
+  }
+  /** The reason of the declared blocker on the last screen read, if one was there. */
+  get blocked(): string | undefined {
+    return this.#blocked;
   }
   /** The key to press, if any; `done` ends the watch. */
   observe(screen: string): { key?: "Down" | "Enter"; done: boolean } | undefined {
@@ -56,6 +78,9 @@ export class StartupConfirmSequence {
       const expected = prompt.split("\n");
       return lines.some((_, start) => expected.every((line, offset) => lines[start + offset] === line));
     };
+    // A blocker is left for the startup bound to end, so a person at the pane can still answer it.
+    this.#blocked = this.#blockers.find((blocker) => matches(blocker.prompt))?.reason;
+    if (this.#blocked !== undefined) { this.#seen = undefined; this.#readySeen = false; return undefined; }
     // An optional choice that is not on screen does not block the choice after it. Answering a
     // later choice passes over the optional ones before it for good.
     let index = this.#step;
@@ -100,16 +125,19 @@ export interface ConfirmPane {
   fail(message: string): void;
 }
 
-/** Honor {@link LaunchSpec.confirm}, its optional preceding choices and its ready texts within one
- * startup bound. No key is sent for an unrelated dialog, after exit, or once the watch is done. */
-export function confirmWatch(prompt: string, before: readonly StartupReply[] = [], ready: readonly string[] = []): (pane: ConfirmPane) => void {
+/** Honor {@link LaunchSpec.confirm}, its optional preceding choices, its ready texts and its blockers
+ * within one startup bound. No key is sent for an unrelated dialog, after exit, or once the watch is done. */
+export function confirmWatch(prompt: string, before: readonly StartupReply[] = [], ready: readonly string[] = [], blockers: readonly StartupBlocker[] = []): (pane: ConfirmPane) => void {
   // Validate before a runtime starts a child, but allocate mutable state per watch.
-  new StartupConfirmSequence(prompt, before, ready);
+  new StartupConfirmSequence(prompt, before, ready, blockers);
   return (pane) => {
-    const sequence = new StartupConfirmSequence(prompt, before, ready);
+    const sequence = new StartupConfirmSequence(prompt, before, ready, blockers);
     const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
     const poll = (): void => {
-      let failure = `Cotal startup confirmation failed: prompt ${JSON.stringify(prompt)} did not appear within ${CONFIRM_TIMEOUT_MS}ms.`;
+      const blocked = sequence.blocked;
+      let failure = blocked === undefined
+        ? `Cotal startup confirmation failed: prompt ${JSON.stringify(prompt)} did not appear within ${CONFIRM_TIMEOUT_MS}ms.`
+        : `Cotal startup confirmation failed: ${blocked}`;
       try {
         if (Date.now() < deadline) {
           const screen = pane.read();

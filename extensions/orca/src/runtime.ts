@@ -96,8 +96,8 @@ export class OrcaRuntime implements Runtime {
     let cachedWorktree: boolean;
     let launcher: PrivateLauncher;
     try {
-      if ((spec.confirmBefore?.length || spec.confirmReady?.length) && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
-      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore, spec.confirmReady);
+      if ((spec.confirmBefore?.length || spec.confirmReady?.length || spec.confirmBlockers?.length) && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
+      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers);
       cwdKey = realpathSync(cwd);
       const cached = this.#worktrees.get(cwdKey);
       cachedWorktree = !!cached;

@@ -54,6 +54,18 @@ cotal watch --space main               # watch the live mesh in the terminal
 cotal down                             # stop the whole mesh
 ```
 
+`up -f` returns once the broker and manager are up; the agents' launch is still pending and it
+does not wait for them to join. `cotal ps` lists the agents that run. If it does not list one, the
+manager's log under `.cotal/` names why its launch failed.
+
+Each `claude` agent above is launched by the manager, so nobody answers Claude Code's own first-run
+screens. Before the first `up -f`, run `claude` once in a terminal as the same user, pick a text
+style and log in. The agents run in Bypass Permissions mode, which Claude asks each user to accept
+once and Cotal never accepts for you. Keep Claude's normal prompts by giving each agent
+`launchOptions: {permission-mode: default}` and answering the tool prompts that need permission at
+its terminal, or accept the mode yourself with `claude --permission-mode bypassPermissions`
+([Quickstart](getting-started.md#before-the-manager-launches-claude-code)).
+
 If `main` is already registered at another root, pick an unused space name in the manifest and
 `space create` command. Preparation never takes over that registration. If this folder already
 holds the matching local space, skip `space create`. Native `up -f` records a fresh boot

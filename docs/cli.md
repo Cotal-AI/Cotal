@@ -6864,7 +6864,10 @@ cotal team remove <deployment-id>   # retire a returned deployment
 cotal topology view -f cotal.yaml   # validate + view the access graph, change nothing
 ```
 
-`up -f` brings up a new broker and applies the manifest. When the manifest's space is already
+`up -f` brings up a new broker and applies the manifest. It returns once the broker and manager are
+up; the manager then launches the agents one at a time, and `up -f` does not wait for them to join.
+Its launch line says so and names `cotal ps --space <space>`, which lists the agents that run, and
+the manager's log, where a failed launch is recorded with its reason. When the manifest's space is already
 running from the same folder, it exits 1 and names `cotal team deploy <file>`, which adds all-new
 channels and agents, and `cotal down` before another `up -f`. On a root that holds a stack preserved by
 `down --preserve-state`, it refuses `LIFECYCLE_BLOCKED` (exit 2) and starts nothing; bare

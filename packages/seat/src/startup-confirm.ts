@@ -40,17 +40,21 @@ export class StartupConfirmMatcher {
 }
 
 export interface StartupReply { prompt: string; key: "Down" | "Enter"; optional?: boolean }
+/** A native startup screen the watch never answers; see core's StartupBlocker. */
+export interface StartupBlocker { prompt: string; reason: string }
 
 /** Mirrors core's screen-based startup sequence without introducing a seat-to-core dependency. */
 export class StartupConfirmSequence {
   readonly #final: string;
   readonly #before: { prompt: string; key: "Down" | "Enter"; optional: boolean }[];
   readonly #ready: string[];
+  readonly #blockers: { prompt: string; reason: string }[];
+  #blocked: string | undefined;
   #step = 0;
   #seen: number | undefined;
   #readySeen = false;
   #done = false;
-  constructor(prompt: string, before: readonly StartupReply[] = [], ready: readonly string[] = []) {
+  constructor(prompt: string, before: readonly StartupReply[] = [], ready: readonly string[] = [], blockers: readonly StartupBlocker[] = []) {
     this.#final = normalizeConfirmText(prompt);
     if (!this.#final) throw new Error("startup confirmation prompt is empty after ANSI and whitespace normalization");
     if (!Array.isArray(before) || before.length > 8) throw new Error("invalid startup choices");
@@ -67,6 +71,18 @@ export class StartupConfirmSequence {
       if (!normalized) throw new Error("invalid startup ready text");
       return normalized;
     });
+    if (!Array.isArray(blockers) || blockers.length > 8) throw new Error("invalid startup blockers");
+    this.#blockers = blockers.map((blocker) => {
+      if (!blocker || typeof blocker.prompt !== "string" || blocker.prompt.length > 1024
+        || typeof blocker.reason !== "string" || !blocker.reason.trim() || blocker.reason.length > 1024) throw new Error("invalid startup blocker");
+      const normalized = blocker.prompt.split(/\r?\n/).map(normalizeConfirmText).filter(Boolean).join("\n");
+      if (!normalized) throw new Error("startup blocker prompt is empty after normalization");
+      return { prompt: normalized, reason: blocker.reason };
+    });
+  }
+  /** The reason of the declared blocker on the last screen read, if one was there. */
+  get blocked(): string | undefined {
+    return this.#blocked;
   }
   /** The key to press, if any; `done` ends the watch. */
   observe(screen: string): { key?: "Down" | "Enter"; done: boolean } | undefined {
@@ -76,6 +92,8 @@ export class StartupConfirmSequence {
       const expected = prompt.split("\n");
       return lines.some((_, start) => expected.every((line, offset) => lines[start + offset] === line));
     };
+    this.#blocked = this.#blockers.find((blocker) => matches(blocker.prompt))?.reason;
+    if (this.#blocked !== undefined) { this.#seen = undefined; this.#readySeen = false; return undefined; }
     let index = this.#step;
     while (this.#before[index]?.optional && !matches(this.#before[index].prompt)) index++;
     const step = this.#before[index];
@@ -101,8 +119,10 @@ export class StartupConfirmSequence {
   }
 }
 
-export function unmatchedConfirmMessage(prompt: string, timeoutMs: number): string {
-  return `Cotal startup confirmation failed: prompt ${JSON.stringify(prompt)} did not appear within ${timeoutMs}ms.`;
+export function unmatchedConfirmMessage(prompt: string, timeoutMs: number, blocked?: string): string {
+  return blocked === undefined
+    ? `Cotal startup confirmation failed: prompt ${JSON.stringify(prompt)} did not appear within ${timeoutMs}ms.`
+    : `Cotal startup confirmation failed: ${blocked}`;
 }
 
 /** What a runtime does for a {@link StartupConfirmGate} whose prompt never appeared. */
@@ -126,10 +146,10 @@ export class StartupConfirmGate {
 
   /** Throws for a prompt that can never match, so a runtime refuses it before it starts a child.
    * Choices and ready texts are read from the screen; a bare prompt is matched in the output. */
-  constructor(prompt: string, before: readonly StartupReply[] = [], ready: readonly string[] = []) {
+  constructor(prompt: string, before: readonly StartupReply[] = [], ready: readonly string[] = [], blockers: readonly StartupBlocker[] = []) {
     this.matcher = new StartupConfirmMatcher(prompt);
-    const sequence = new StartupConfirmSequence(prompt, before, ready);
-    this.sequence = before.length || ready.length ? sequence : undefined;
+    const sequence = new StartupConfirmSequence(prompt, before, ready, blockers);
+    this.sequence = before.length || ready.length || blockers.length ? sequence : undefined;
   }
 
   /** The failure becomes the exit's diagnostic, because a TUI may never show it where an operator looks. */
@@ -144,7 +164,7 @@ export class StartupConfirmGate {
       failure.stop();
     };
     const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
-    this.timer = setTimeout(() => fail(unmatchedConfirmMessage(this.matcher.prompt, CONFIRM_TIMEOUT_MS)), CONFIRM_TIMEOUT_MS);
+    this.timer = setTimeout(() => fail(unmatchedConfirmMessage(this.matcher.prompt, CONFIRM_TIMEOUT_MS, this.sequence?.blocked)), CONFIRM_TIMEOUT_MS);
     if (this.sequence) {
       if (!pane) { fail("Cotal startup confirmation failed: this runtime has no screen-based startup choices."); return; }
       const poll = (): void => {

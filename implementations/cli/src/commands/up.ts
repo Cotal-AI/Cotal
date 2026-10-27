@@ -3618,7 +3618,10 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     console.log(c.dim(`  broker-only (--no-manager): no manager started on this host - run \`cotal supervise --space ${m.space} --server ${server}\` from a manager host to manage agents`));
   } else if (controlPlane) {
     // U6: on a user mesh the agents run under the OPERATOR's identity — say whose they are.
-    console.log(c.green(`✓ launching ${eff.agents.length} agent(s)`) + c.dim(` via manager (${runtime})${owner ? ` as you (owner ${owner})` : ""} - see ${managerLogDisplayPath(m.space)}`));
+    // The manager launches them after this command returns, so nothing here knows whether one joined:
+    // no success mark, and name where the outcome shows.
+    console.log(`  launch pending: the manager (${runtime}) starts ${eff.agents.length} agent(s)${owner ? ` as you (owner ${owner})` : ""} after this returns; up -f does not wait for them to join`);
+    console.log(c.dim(`  who joined: cotal ps --space ${m.space}   ·   a failed launch and its reason: ${managerLogDisplayPath(m.space)}`));
   } else {
     stderrLine("✗ ", `${eff.agents.length} agent(s) NOT launched - the control plane did not come up (see above)`, c.red);
   }
