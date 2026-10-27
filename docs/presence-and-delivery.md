@@ -65,7 +65,10 @@ it and never interprets it. Readers reject a row whose `card.id` does not match 
 `card.name` or `status` is missing or has the wrong type, whose `ts` is not a finite number, whose
 `card.role`, `activity` or `attention` is present and not a string, or whose `condition` is present and
 is not an object with a string `code`, such as `null`, a bare string or an object with no `code`. They
-report that rejection through the recoverable warning path. A kept row whose `ts` is missing or text
+report that rejection through the recoverable warning path. `setActivity`, `setCondition`,
+`setAttention`, and `setStatus` when it carries an activity, throw a `TypeError` naming the field
+before they change local state, using that same check, so a caller that passed an object keeps the
+previous row instead of publishing one every reader drops. A kept row whose `ts` is missing or text
 such as `"nope"` would never read as stale, so it would stay live after its key expired. A kept object such as
 `{"toString":null,"valueOf":null}` in a printed field would throw when converted and fail every
 reader's roster.

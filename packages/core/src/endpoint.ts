@@ -3111,6 +3111,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   async setActivity(activity: string): Promise<void> {
+    assertPresenceString("activity", activity);
     if (activity !== this.activity) this.statusSince = this.activitySince = Date.now();
     this.activity = activity;
     await this.publishPresence();
@@ -3119,6 +3120,7 @@ export class CotalEndpoint extends EventEmitter {
   /** Set the status, and with `activity` the activity line too, in one presence write, so no peer sees
    *  the new activity beside the old status. */
   async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
+    if (activity !== undefined) assertPresenceString("activity", activity);
     if (activity !== undefined && activity !== this.activity) this.statusSince = this.activitySince = Date.now();
     if (activity !== undefined) this.activity = activity;
     if (status !== this.status) this.statusSince = Date.now();
@@ -3134,6 +3136,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Publish a harness-reported condition, or clear it. Core stores the relay without interpretation. */
   async setCondition(condition: PresenceCondition | null): Promise<void> {
+    if (condition !== null) assertPresenceCondition(condition);
     this.condition = condition ?? undefined;
     this.conditionRevision++;
     await this.publishPresence();
@@ -3142,6 +3145,7 @@ export class CotalEndpoint extends EventEmitter {
   /** Publish the agent's global attention mode into presence (advisory observability). Mirror only —
    *  delivery decisions stay in the connector's authoritative state. */
   async setAttention(attention: AttentionMode): Promise<void> {
+    assertPresenceString("attention", attention);
     this.attentionMode = attention;
     await this.publishPresence();
   }
@@ -7821,15 +7825,42 @@ const PRESENCE_STATUSES: Record<PresenceStatus, true> = { idle: true, waiting: t
  *  left to the KV-key check, which rejects anything but the key string. */
 function isUsablePresence(value: unknown): value is Presence {
   return isRecord(value) && isRecord(value.card) && typeof value.card.name === "string" &&
-    isOptionalString(value.card.role) &&
+    presenceStringField(value.card.role) === undefined &&
     typeof value.status === "string" && Object.hasOwn(PRESENCE_STATUSES, value.status) &&
     typeof value.ts === "number" && Number.isFinite(value.ts) &&
-    isOptionalString(value.activity) && isOptionalString(value.attention) &&
-    (value.condition === undefined || (isRecord(value.condition) && typeof value.condition.code === "string"));
+    presenceStringField(value.activity) === undefined && presenceStringField(value.attention) === undefined &&
+    presenceConditionProblem(value.condition) === undefined;
 }
 
-function isOptionalString(value: unknown): boolean {
-  return value === undefined || typeof value === "string";
+/** A display field SPEC §6 types as an optional string. Absent is fine. Present and not a string
+ *  names the field, so the writer that is about to publish it and the reader that would drop the
+ *  row refuse the same value. */
+function presenceStringField(value: unknown): string | undefined {
+  return value === undefined || typeof value === "string" ? undefined : "not a string";
+}
+
+/** `condition` is absent, or an object whose `code` is a string (SPEC §6). Anything else names why
+ *  a reader drops the row. */
+function presenceConditionProblem(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) return "not an object";
+  if (typeof value.code !== "string") return "code is not a string";
+  return undefined;
+}
+
+/** Throw before a setter stores a display value the reader would drop. The error names the field.
+ *  No coercion: a caller that passed an object keeps the previous row. */
+function assertPresenceString(field: string, value: unknown): void {
+  const problem = presenceStringField(value);
+  if (problem !== undefined) throw new TypeError(`presence ${field} is ${problem}`);
+}
+
+function assertPresenceCondition(value: unknown): void {
+  const problem = presenceConditionProblem(value);
+  if (problem === undefined) return;
+  if (problem === "code is not a string") throw new TypeError("presence condition.code is not a string");
+  if (problem === "not an object") throw new TypeError("presence condition is not an object");
+  throw new TypeError(`presence condition ${problem}`);
 }
 
 /** Shallow-equal two per-channel-mode maps (presence dedup): a change must re-emit, so an attention

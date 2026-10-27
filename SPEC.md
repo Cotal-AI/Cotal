@@ -389,6 +389,9 @@ Readers MUST drop a record whose `card.id` differs from its KV key, whose `card.
 `card.role`, `activity` or `attention` is present and not a string, or whose `condition` is present
 and is not an object with a string `code`, and SHOULD report the rejection on their recoverable
 diagnostic path. A `condition` of `null`, a bare string or an object with no `code` is dropped.
+A writer MUST apply that same check in `setActivity`, `setCondition`, `setAttention`,
+and in `setStatus` when it carries an activity, and MUST throw a `TypeError` naming the field before
+changing local state. No coercion.
 A reader that kept a record whose `ts` is missing or text such as `"nope"` could not age it past the liveness window, so it would
 show its peer live after the key expired. Readers print the string fields as text, and an object
 such as `{"toString":null,"valueOf":null}` throws when converted, so one kept row would fail every
@@ -6668,6 +6671,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-27 | **A presence writer refuses a display value readers drop (§6), additive.** `setActivity`, `setCondition`, `setAttention`, and `setStatus` when it carries an activity, apply the reader check for `activity`, `attention` and `condition` and throw a `TypeError` naming the field before they change local state. A caller that passed an object keeps its previous row. No coercion. A reader still drops a row another writer stored. |
 | 2026-10-26 | **An operator instrument reads its pinned manager's `resolve-cwd` (§13.2, Appendix B), additive.** The folder question a managed launch asks had no caller that could make its check on a static mesh: `resolve-cwd` was carried by a `spawn` holder's `manager-caller` view and by no operator instrument, so every folder typed at that question was refused at the broker. Both instrument tiers now carry it on the instance their mint pins, beside the `spawn` row of the same `manager.spawn` capability class. The standing agent `spawn` set is unchanged, and no class, scatter or other-instance row is added. |
 | 2026-10-26 | **One callout process MAY serve several spaces (§10, Appendix B), additive.** A space's callout requests are served inside that space's dedicated auth account, so a responder holds one subscription per auth account it serves. One process may hold one subscription and one set of signing keys per space it serves. A response for a space must be signed only with that space's keys, and a bearer must be validated only against the issuer and audience of the space whose request it arrived on. Connect-limit buckets are per space, so a connect to one space never spends another's allowance. A callout-only replica is one space's membership of its queue group, and one process may hold several, one `issuer` session each. |
 | 2026-10-26 | **A held `issuer` session for user-auth issuance (§13.9, §13.15).** An auth service, and each callout-only replica on its own, may hold one `issuer` session per account, space and authority-plane lifetime for the user-auth issuance its callout performs, in place of one session per connect. It keeps the five-minute expiry and is replaced before it expires. It never reconnects, and it is closed and drained on a fence, a shutdown or a loss. Each issuance still makes its own reads and writes, and a write in flight at a loss is never sent again. Retirement at a lifecycle terminal and every other issuance window stay one-shot. The `issuer` principal is no longer one-shot only. |
