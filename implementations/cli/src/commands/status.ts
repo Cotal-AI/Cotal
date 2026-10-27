@@ -34,7 +34,9 @@ import {
   isCommandFailure,
   readMaintenanceJournal,
   recordsElsewhereError,
+  recordsElsewhereText,
   restoreRolledBackRuns,
+  targetErrorSpace,
   type RolledBackRun,
   brokerAddressForDisplay,
   canonicalRoot,
@@ -344,6 +346,9 @@ type SelectedResult =
       message: string;
       space?: string;
       root?: string;
+      /** In a copy or a moved folder, the folder its records were recorded at, and `space` the space
+       *  they name, which the commands run here refuse on. */
+      recordedRoot?: string;
       /** A stopped stack's recorded file store cap, when it is below {@link MIN_FILE_STORE}. */
       storeCap?: number;
     }
@@ -1202,9 +1207,13 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
     const d = e.details;
     const storeCap = e.code === "not-started" ? d.stopped?.storeCap : undefined;
+    // A copy or a moved folder is reported under the space its records name, as the commands run here
+    // refuse under it, and says what the folder holds; Next gives the step they name.
+    const elsewhere = e.code === "not-started" ? recordsElsewhereText(d) : undefined;
     const result: SelectedResult = {
-      resolved: false, code: e.code, message,
+      resolved: false, code: e.code, message: elsewhere ?? message,
       ...(e.code === "not-started" && d.space !== undefined && d.root !== undefined && !d.rootMissing ? { space: d.space, root: d.root } : {}),
+      ...(elsewhere !== undefined ? { space: targetErrorSpace(d)!, recordedRoot: d.recordedRoot! } : {}),
       ...(storeCap !== undefined && storeCap < MIN_FILE_STORE ? { storeCap } : {}),
     };
     // A start in a root whose broker store this account cannot write fails there, so its next step is
@@ -1744,8 +1753,9 @@ function spaceStateCell(r: StatusResult, entry: StatusResult["meshes"]["items"][
  */
 function spacesOverview(r: StatusResult, wide: boolean): Section {
   const blocks: Section["blocks"][number][] = [];
-  // The space this report is for: the target it resolved, else the selection it could not resolve.
-  const reported = r.selected.resolved ? r.selected.space : r.meshes.current;
+  // The space this report is for: the target it resolved or the space it is about, else the selection
+  // it could not resolve.
+  const reported = r.selected.space ?? r.meshes.current;
   const row = (entry: StatusResult["meshes"]["items"][number]) => ({
     space: entry.space === reported ? cell(`→ ${entry.space}`, "selected") : entry.space,
     state: spaceStateCell(r, entry),
@@ -1792,7 +1802,7 @@ function folderTargeted(r: StatusResult): boolean {
 
 function selectedOverview(r: StatusResult): Section | undefined {
   const s = r.selected;
-  const title = folderTargeted(r) ? "This folder's space" : "Selected space";
+  const title = !s.resolved && s.recordedRoot !== undefined ? "This folder" : folderTargeted(r) ? "This folder's space" : "Selected space";
   // Nothing running or selected is a state to start from, so it does not carry the mark of a live connection.
   if (!s.resolved) return { title, blocks: [
     { kind: "lines", lines: [stateCell(s.message, NOTHING_SELECTED.has(s.code) ? "hint" : "failed")] },
