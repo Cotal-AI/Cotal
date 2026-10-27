@@ -571,6 +571,8 @@ export class MeshAgent extends EventEmitter {
    *  call's puts start only after the earlier call's have settled. A rejected write must not
    *  poison the chain: the tail is swallowed and the next write still runs. */
   private presenceChain: Promise<void> = Promise.resolve();
+  /** Host lifecycle status is independent of presence-only updates such as cotal_status. */
+  private turnStatus: PresenceStatus | undefined;
 
   /** An explicit env scopes launch metadata and bearer subprocesses. Omitted preserves process inheritance. */
   constructor(config: AgentConfig, env?: NodeJS.ProcessEnv, options: MeshAgentOptions = {}) {
@@ -2826,7 +2828,7 @@ export class MeshAgent extends EventEmitter {
   async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
     await this.inOrder(async () => {
     await this.requireConnected();
-    const prev = this._status;
+    const prev = this.turnStatus;
     try {
       if (prev !== "working" && status === "working") await this.ep.setCondition(null);
       await this.publishStatus(status, activity);
@@ -2835,6 +2837,7 @@ export class MeshAgent extends EventEmitter {
       // assigning before the writes meant one failed publish (which every adapter swallows) left
       // `_status` idle with no boundary run, and the next real turn end saw no transition at all.
       this._status = status;
+      this.turnStatus = status;
       // The turn relay's boundary: an adapter funnels its turn-end through this transition (Stop
       // hooks set idle), so the automatic `done` yield and the immediate re-poll live here once
       // instead of per connector. `waiting` is not a boundary — a seat blocked on a permission has

@@ -291,7 +291,9 @@ shows those messages without clearing them.
 
 A run turn rides the message that starts a Cotal-owned turn. It counts as shown once the Harness
 accepts that message, so the seat can `cotal_yield` it during the turn that carries it. A send the
-Harness never accepts leaves it unshown, and the next turn carries it again.
+Harness never accepts leaves it unshown, and the next turn carries it again. The connector finishes
+the previous turn's terminal status write before it accepts another goal, so that earlier idle cannot
+complete a goal the next native turn is still processing.
 
 ## Model limits
 

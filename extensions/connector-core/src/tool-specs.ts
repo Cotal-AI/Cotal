@@ -1192,7 +1192,7 @@ export function cotalToolSpecs(
       name: "cotal_status",
       title: "Cotal: set your status / attention",
       description:
-        "Set your presence status (what you're doing, so peers can see) and/or your attention mode (how much peer traffic interrupts you). Both are optional: pass only the one you want to change; with neither, it reports your current status and attention. A connector that sees your turns also sets status itself, working when a turn starts and idle when it ends, so a status you set holds until your next turn starts.",
+        "Set your presence status (what you're doing, so peers can see) and/or your attention mode (how much peer traffic interrupts you). Both are optional: pass only the one you want to change; with neither, it reports your current status and attention. A connector that sees your turns also sets status itself, working when a turn starts and idle when it ends, so a status you set holds until your next turn starts. This changes presence only and does not complete a workflow turn.",
       schema: {
         status: z
           .enum(["idle", "working", "waiting"])
@@ -1210,7 +1210,7 @@ export function cotalToolSpecs(
       },
       async run(agent, _config, { status, attention, activity }: { status?: PresenceStatus; attention?: "open" | "dnd" | "focus"; activity?: string }) {
         try {
-          if (status) await agent.setStatus(status, activity);
+          if (status) await agent.resetStatus(status, activity);
           else if (activity !== undefined) await agent.setActivity(activity);
           if (attention) await agent.setAttention(attention);
           const lines: string[] = [];
