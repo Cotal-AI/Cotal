@@ -1,5 +1,14 @@
 # @cotal-ai/manager
 
+## 0.109.23
+
+### Patch Changes
+
+- de2ff92: The manager-start refusal that names the folder hosting the space now quotes its `cd <folder> && cotal manager start` step (and the `cotal meshes add`, `cotal login` steps for a user-auth space) in backticks, so a narrow terminal never breaks a copied command across lines.
+- @cotal-ai/core@0.109.23
+  - @cotal-ai/seat@0.109.23
+  - @cotal-ai/workspace@0.109.23
+
 ## 0.109.22
 
 ### Patch Changes
