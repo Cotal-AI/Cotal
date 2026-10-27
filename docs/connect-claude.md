@@ -207,7 +207,9 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   `--permission-mode bypassPermissions`: a prompt under the default mode would stop its first mesh
   tool call until someone answered it, and nobody can. To get prompts back, pass
   `--opt permission-mode=default` (or another mode); the connector adds the default only when the
-  launch options carry neither `permission-mode` nor `dangerously-skip-permissions`. Claude refuses
+  launch options carry neither `permission-mode` nor `dangerously-skip-permissions`. A foreground
+  `cotal spawn` runs in your terminal, so it keeps Claude's own permission mode and you answer its
+  prompts there. Claude refuses
   the bypass mode as root and under a policy that disables it; such a host must pass a mode.
   Claude also asks each user to accept the bypass mode once, in a warning only that user may answer.
   Cotal never answers it. A managed seat that stops on it fails at the startup bound, and the error

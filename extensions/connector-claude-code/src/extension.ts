@@ -330,9 +330,11 @@ export const claudeConnector: Connector = {
     // is gated by the spawn capability itself; every `claude` flag is forwarded verbatim.
     // A managed seat has no human at its terminal, so a permission prompt under the default mode
     // is a prompt nobody answers: the seat's first mesh tool call stalled there and it looked dead
-    // to its peers. Bypass is the default; an operator who wants prompts back passes
+    // to its peers. Bypass is the default for a managed seat, which the manager marks with `cwd`. A
+    // foreground launch runs in the operator's terminal and keeps Claude's own mode, so the operator
+    // answers its prompts there. An operator who wants another mode passes
     // `--opt permission-mode=<mode>`, and either permission flag in the passthrough wins.
-    if (!passthrough.some(([k]) => k === "permission-mode" || k === "dangerously-skip-permissions"))
+    if (opts.cwd && !passthrough.some(([k]) => k === "permission-mode" || k === "dangerously-skip-permissions"))
       args.push("--permission-mode", "bypassPermissions");
     for (const [k, val] of passthrough) {
       if (val === "") args.push(`--${k}`);
