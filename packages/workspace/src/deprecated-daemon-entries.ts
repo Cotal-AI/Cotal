@@ -21,6 +21,16 @@ export const DEPRECATED_MANAGER_ENTRY = "supervise";
  *  to keep `supervise` for it, not pointed at a replacement that would drop the flag. */
 export const SUPERVISE_ONLY_FLAGS = ["execution", "spawn", "seat-cap", "resume-attempt", "resume-commit-token", "resume-commit-file", "resume-commit-sha256"] as const;
 
+/** The `deliver` flags the `delivery` service preset has no form for yet: the preset starts one
+ *  space's daemon, and `--spaces` serves several from one process. */
+export const DELIVER_ONLY_FLAGS = ["spaces"] as const;
+
+/** Per entry, the flags its replacement has no form for. */
+const ENTRY_ONLY_FLAGS: Partial<Record<keyof typeof DEPRECATED_DAEMON_PRESETS | typeof DEPRECATED_MANAGER_ENTRY, readonly string[]>> = {
+  [DEPRECATED_MANAGER_ENTRY]: SUPERVISE_ONLY_FLAGS,
+  deliver: DELIVER_ONLY_FLAGS,
+};
+
 /** The hidden twin `up` launches for each deprecated entry it still starts, and the manager's daemon
  *  entry. A twin is the entry's own declaration and runner without the warning, so only a persisted
  *  caller sees the warning. */
@@ -37,7 +47,10 @@ export type DeprecatedDaemonEntry = keyof typeof DEPRECATED_DAEMON_PRESETS | typ
  *  release; the entry keeps its argv, behavior and exit code. `kept` names the flags of this run the
  *  replacement has no form for, so the line says to keep the entry for them instead. */
 export function deprecatedDaemonEntryWarning(entry: DeprecatedDaemonEntry, kept: readonly string[] = []): string {
-  if (kept.length) return `! \`cotal ${entry}\` is deprecated and will be removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}. \`cotal manager start\` has no ${kept.map((flag) => `--${flag}`).join(", ")} yet, so keep \`cotal ${entry}\` for this run until it does.`;
+  if (kept.length) {
+    const lacking = entry === DEPRECATED_MANAGER_ENTRY ? "cotal manager start" : entry === "deliver pending" ? "cotal pending" : `cotal service start ${DEPRECATED_DAEMON_PRESETS[entry]}`;
+    return `! \`cotal ${entry}\` is deprecated and will be removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}. \`${lacking}\` has no ${kept.map((flag) => `--${flag}`).join(", ")} yet, so keep \`cotal ${entry}\` for this run until it does.`;
+  }
   const replacement = entry === "deliver pending"
     ? "`cotal pending <agent>`"
     : entry === DEPRECATED_MANAGER_ENTRY
@@ -69,8 +82,10 @@ export function deprecatedDaemonEntry(
   warning: (args: ParsedArgs) => DeprecatedDaemonEntry = () => entry,
 ): Command {
   return { ...twin, name: entry, summary: deprecatedDaemonEntrySummary(entry, twin.summary), run: (args) => {
-    const kept = entry === DEPRECATED_MANAGER_ENTRY ? SUPERVISE_ONLY_FLAGS.filter((flag) => args.values[flag] !== undefined) : [];
-    warnDeprecatedDaemonEntry(warning(args), kept);
+    const shown = warning(args);
+    // A mode with its own replacement, such as `deliver pending`, keeps nothing of the entry's.
+    const kept = shown === entry ? (ENTRY_ONLY_FLAGS[entry] ?? []).filter((flag) => args.values[flag] !== undefined) : [];
+    warnDeprecatedDaemonEntry(shown, kept);
     return twin.run(args);
   } };
 }
