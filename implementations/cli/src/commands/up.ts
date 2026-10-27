@@ -2047,9 +2047,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   if (values.detach) {
     // A `backup restore` owns its own receipt: the native launcher's progress lines stay off stdout.
     const quietRestore = restored !== undefined && restoreSinks.has(restored.attemptId);
-    // The receipt names its space before the launch prints anything, as every report does.
+    // The receipt names its space before the launch prints anything, as every report does. A start that
+    // refuses the space reports that on stderr under its own `Mesh:` heading, so those checks run
+    // first; the launch below repeats them and finds them settled.
     const receiptSpace = values.space ?? folderSpace();
     const unnamed = values.space === undefined && unnamedDefault(cotalRoot(), receiptSpace);
+    refuseStartOverUserState(Boolean(values.open), wantUser, receiptSpace);
+    await claimSpace(receiptSpace, server, cotalRoot());
     if (!quietRestore) console.log(`${renderReport({ space: receiptSpace, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
     const { pid, executable, authService, controlPlane, delivery, manager } = await startMeshDetached({
       transport,

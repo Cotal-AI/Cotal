@@ -52,7 +52,10 @@ broker. When this folder's own records show the stack of its registered space st
 run there target, as for a prepared folder. Otherwise, when that folder's space is not the selection,
 it adds that the folder's space applies while it runs and the selected space applies outside the
 folder and while it is stopped. When the folder holds a space that is prepared, or whose stack is
-stopped, it names what it holds. It points a prepared space to the `cotal up` that starts it, with
+stopped, it names what it holds. In a copy or a moved folder, which holds the records of a stack that
+runs from another folder, it says what the folder holds: a copy of a controller stack, a legacy
+root's records and the folder that space is registered for, or records moved from their recorded
+folder. It ends that line with the step the commands there name. It points a prepared space to the `cotal up` that starts it, with
 `--root <dir>` when the space is prepared in another folder and `<dir>` quoted when a shell would
 split it, and a machine with no space to `cotal setup`. With spaces on the machine but none selected
 or in this folder, it names `cotal use <name>` and `cotal space` instead. Every command generates its own help, usage, and shell completion from its declared
@@ -714,7 +717,9 @@ host and run [`manager start`](#manager) against the remote broker; see
 [Run a mesh](run-a-mesh.md). `cotal up --detach` prints `✓ running in the background:` with
 `manager` listed (pidfile liveness, not a teardown boundary); with `--no-manager` the line lists
 only what actually started. Its receipt begins with `Mesh: <space>` and ends with a Next that names
-`cotal spawn` when a manager runs, and the stop. With no `--space`, in a new project, it also says
+`cotal spawn` when a manager runs, and the stop. A start refused for its space, such as one at
+another address of a space that runs from this project or one whose name another folder holds,
+prints no receipt: its refusal names the space under its own `Mesh:` heading on stderr. With no `--space`, in a new project, it also says
 that the space is named after the folder. For a stack an earlier release started in
 the machine home, the line names `cotal down --preserve-state`,
 because bare `down` refuses the home stack. With `--no-manager` it names `cotal up` first, because
@@ -934,7 +939,9 @@ told the same, and it can adopt the copy only after the original's stack is stop
 folder no longer holds its journal. When this machine records neither the space nor an instance of
 its stack, as on another machine, moving back would not start it, so a moved folder is told only to
 adopt the journal with `space create --adopt`. `status`, `send` and `history` there name the same
-next step. `clean store` and `clean all` there refuse `TARGET_UNAVAILABLE`, exit 2, naming the
+next step. `status` there reports under the journal's space, as the reads there refuse under it, and
+says the folder holds a copy of that space or its records moved from the recorded folder. Bare
+`cotal` says the same, with that step. `clean store` and `clean all` there refuse `TARGET_UNAVAILABLE`, exit 2, naming the
 recorded folder, and remove nothing, so `status` there does not offer `clean store`.
 Commands that reach a static-auth space from a moved folder, such as `send`, `history`, `ps` and
 `service stop`, refuse the same way. `status` there says the folder was moved and names the way back
@@ -968,7 +975,10 @@ when it no longer exists, to move this folder back there first. A bare `up` or `
 stack of its own, so a bare `up` does not take the name over from that folder. When that folder no
 longer exists and the space's broker does not answer, the `up` refusal also names
 `cotal up --space <space>`, which takes the name over to run the stack from this folder.
-`clean store` and `clean all` there refuse `TARGET_UNAVAILABLE`, exit 2, as the reads do, and
+`status` there reports under that space and says the folder holds its records, naming the folder it
+is registered for, or that the folder was moved from there. A copy and the folder a later `up` took
+the name over from hold the same records, so both read that way. Bare `cotal` says the same, with
+the step the reads name. `clean store` and `clean all` there refuse `TARGET_UNAVAILABLE`, exit 2, as the reads do, and
 remove nothing, so `status` there does not offer `clean store`. A legacy root whose space this machine registers for no folder keeps its own
 `cotal up`, which starts it again at the address its last start configured.
 
@@ -3350,7 +3360,11 @@ folder. `--json` names it in `target.space` and in `meshes.folder`, which `cotal
 as `folder`. In the folder of a space that is prepared or stopped, `status` reports the selection
 instead, and the line under its heading names what the folder holds and the `cotal up` that starts
 it; `meshes.folder` is then `null`. A folder whose stack is half started or half stopped, with a
-member still running, counts as a running space's folder here. `status` is a read-only report in this order: this machine
+member still running, counts as a running space's folder here. In a copy or a moved folder, where the commands refuse under the
+space the folder's records name, `status` reports that space under its `Mesh:` heading, marks it in the
+Spaces list when it is registered, and says what the folder holds in a `This folder` section, with the step those commands
+name under Next. `--json` names that space in `target.space` and `selected.space`, and the recorded
+folder in `selected.recordedRoot`. `status` is a read-only report in this order: this machine
 (the installed `cotal-ai` version, NATS and each named integration), the installed extensions and
 their versions, this folder's `.cotal/`, the recorded meshes, the selected mesh (its connection, the
 delivery responder, its channels and membership feed), then the hints. It lists no roster; `cotal ps`

@@ -20,6 +20,10 @@
  * space, and otherwise says the folder's space applies while it runs. An `up` cut off before it
  * registered the space leaves its broker running: that folder stays the target with another space
  * selected, and `status` there names it half started with `down --yes` first, until `down` stops it.
+ * A refused `up --server` at another address from a running project's subfolder heads its refusal
+ * with `Mesh:` once, on stderr. In a copy of that project, with another space selected, `status`
+ * reports under the copied space as the reads there refuse under it, and it and bare `cotal` say what
+ * the folder holds.
  *
  * Needs `nats-server` on PATH. Linux and macOS run the terminal cells under a pty, Windows under ConPTY.
  *
@@ -321,6 +325,45 @@ const QUESTION = "Which one?";
       shownAway.status === 2 && envelope(shownAway)?.error?.code === "TARGET_NOT_FOUND" && getCurrent() === undefined,
     { here: shown(shownUnselected), text: shown(shownUnselectedText), away: shown(shownAway) });
   removePreparedSpace("delta");
+}
+
+// ── A legacy project that runs, started again at another address, and a copy of it ──────────────────────
+{
+  // omega's stack runs at A from its own root, which holds the static-auth records the retained
+  // launcher writes there.
+  const omega = join(home, "omega"), key = Buffer.from("omega").toString("hex");
+  mkdirSync(join(omega, ".cotal", "auth"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(omega, ".cotal", "auth", "server.conf"), `host: 127.0.0.1\nport: ${new URL(A).port}\n`, { mode: 0o600 });
+  writeFileSync(join(omega, ".cotal", "auth", `account.${key}.json`), JSON.stringify({ space: "omega", account: { pub: "P", jwt: "J", signingSeed: "S", signingPub: "SP" } }) + "\n", { mode: 0o600 });
+  recordMesh({ space: "omega", server: A, root: omega, mode: "auth", origin: "up", ts: new Date(0).toISOString() });
+  const inner = join(omega, "inner");
+  mkdirSync(inner);
+  const other = `nats://127.0.0.1:${await freePort()}`;
+  const again = run(["up", "--server", other], inner);
+  // A start that did not refuse is stopped again, so no broker it started outlives the suite.
+  if (again.status !== 2) run(["down"], omega);
+  check("up --server at another address in a running project's subfolder refuses CONFLICT and heads it with Mesh: once, on stderr with the refusal",
+    again.status === 2 && again.stderr.includes(`space "omega" already runs from this project at ${A}, and this start names ${other}; nothing was started`) &&
+      again.stdout === "" && (again.stderr.match(/^Mesh: omega$/gm) ?? []).length === 1, shown(again));
+  // A copy of the running project holds its records, so with another space selected the reads there
+  // refuse under omega. status reports under omega too, and bare cotal, which reads no broker, says
+  // what the folder holds with the step the reads name.
+  const copy = `${omega}-copy`, recorded = realpathSync(omega);
+  spawnSync("cp", ["-a", omega, copy]);
+  const holds = `this folder holds the records of "omega", which is registered for ${recorded}`, step = `use the stack from ${recorded}, where "omega" is registered`;
+  setCurrent("alpha");
+  const ps = run(["ps"], copy), entry = run([], copy), status = run(["status"], copy), statusJson = envelope(run(["status", "--json"], copy));
+  clearCurrent();
+  check("in a copy of it bare cotal leads with the selection and says what the folder holds, with the step the reads name",
+    entry.status === 0 && /^alpha · /m.test(entry.stdout) && entry.stdout.includes(`\n${holds}; ${step}\n`), shown(entry));
+  check("status there heads with omega as ps there does, marks omega, and says what the folder holds in a This folder section with the same step",
+    ps.status === 2 && /^Mesh: omega$/m.test(ps.stderr) && status.status === 0 && /^Mesh: omega$/m.test(status.stdout) && /^ {2}→ omega\b/m.test(status.stdout) && !/→ alpha/.test(status.stdout) &&
+      /^This folder$/m.test(status.stdout) && !/^Selected space/m.test(status.stdout) && status.stdout.includes(` ${holds}\n`) && status.stdout.includes(`\n  ${step}\n`) &&
+      statusJson?.target?.space === "omega" && statusJson?.result?.selected?.recordedRoot === recorded && statusJson?.result?.selected?.message === holds,
+    { ps: shown(ps), text: status.stdout.slice(0, 1400), json: statusJson?.result?.selected });
+  removeMesh("omega");
+  rmSync(copy, { recursive: true, force: true });
+  rmSync(omega, { recursive: true, force: true });
 }
 
 // ── A manifest's space is its target ────────────────────────────────────────────────────────────────
