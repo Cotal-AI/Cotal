@@ -1466,9 +1466,12 @@ same way, so `cotal down manager delivery` stops `stack-manager` and `stack-deli
 member of the target carries its own `requested`. A name that is no preset, such as `nats`,
 refuses `TARGET_NOT_FOUND` there and names the `stack-` member to use, and a name with no member
 names `cotal service`, which lists the saved definitions. Among several names such a name refuses
-the whole set with the same next step, so no service stops. A set never stops the broker, so for
-`nats`, `broker` or `stack-broker` the set's refusal names a bare `cotal down`, which stops the
-broker with the whole stack. A stop of `stack-broker` refuses
+the whole set with the same next step, so no service stops. A set never stops the broker, so
+`nats`, `broker` and `stack-broker` each refuse the whole set `TARGET_NOT_FOUND` before any member
+resolves, with the same message for each name. The next step is a bare `cotal down`, which stops
+the broker with the whole stack. A saved service of your own named `nats` or `broker` is that
+service. A set that names another saved service running a broker refuses `UNSUPPORTED` and names
+that service's own stop. A stop of `stack-broker` refuses
 `LIFECYCLE_BLOCKED` while a legacy daemon record under the root may front a process, or another
 service instance of the space is live or unresolved. For those instances it names bare `cotal down`,
 or `cotal service stop <name> --instance <id> --space <space> --yes` for each one. When one of them

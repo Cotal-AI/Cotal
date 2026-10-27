@@ -762,7 +762,7 @@ export function preflightProcessServiceStop(definition: ServiceDefinitionSnapsho
     return;
   }
   if (value.nativeStopRequired) throw new CommandFailure("refused", "UNSUPPORTED", "a selected instance requires its original native stop policy; a set stop cannot replace it with process signals");
-  if (value.kernelStopRequired || declared?.declaration.stop === "kernel-exit") throw new CommandFailure("refused", "UNSUPPORTED", "a selected broker requires its exact kernel-exit stop and dependant scope; a named service set does not integrate that policy, so no service was stopped", { remedy: "stop the broker alone with cotal service stop <name> --instance <full-id> after its dependants are stopped" });
+  if (value.kernelStopRequired || declared?.declaration.stop === "kernel-exit") throw new CommandFailure("refused", "UNSUPPORTED", `${oneLine(definition.name)} runs a broker, which a set of names never stops; no service was stopped`, { remedy: `stop the services that use it, then the broker alone with cotal service stop ${definition.name} --instance ${selected.name} --space ${value.space} --yes` });
   if (gone(state)) return;
   if (state !== "running" || !value.process) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a selected service process is foreign, unreadable or unresolved; no service was stopped");
   const command = readProcessCommand(value.process.pid);
