@@ -329,7 +329,7 @@ if (process.argv[2] === "__daemon-auth-service") {
       // ---- startup refusals -----------------------------------------------------------------------
       writeManifest([spaces[0].name, spaces[1].name]);
       for (const [why, args, expect] of [
-        ["--spaces without --callout-only", ["--spaces", manifestPath], "requires --callout-only"],
+        ["--spaces without --callout-only (the full host) on a version 1 manifest", ["--spaces", manifestPath], "version must be 2"],
         ["--space with --spaces", ["--callout-only", "--space", spaces[0].name, "--spaces", manifestPath], "are alternatives"],
       ] as Array<[string, string[], string]>) {
         const refused = startDaemon(`refused:${why}`, args);

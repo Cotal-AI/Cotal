@@ -25,10 +25,15 @@ export const SUPERVISE_ONLY_FLAGS = ["execution", "spawn", "seat-cap", "resume-a
  *  space's daemon, and `--spaces` serves several from one process. */
 export const DELIVER_ONLY_FLAGS = ["spaces"] as const;
 
+/** The `auth-service` flags the `auth-service` service preset has no form for yet: the preset starts
+ *  one space's service, and `--spaces` serves several from one process. */
+export const AUTH_SERVICE_ONLY_FLAGS = ["spaces"] as const;
+
 /** Per entry, the flags its replacement has no form for. */
 const ENTRY_ONLY_FLAGS: Partial<Record<keyof typeof DEPRECATED_DAEMON_PRESETS | typeof DEPRECATED_MANAGER_ENTRY, readonly string[]>> = {
   [DEPRECATED_MANAGER_ENTRY]: SUPERVISE_ONLY_FLAGS,
   deliver: DELIVER_ONLY_FLAGS,
+  "auth-service": AUTH_SERVICE_ONLY_FLAGS,
 };
 
 /** The hidden twin `up` launches for each deprecated entry it still starts, and the manager's daemon

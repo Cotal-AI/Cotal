@@ -714,6 +714,7 @@
     "smoke:callout-deny:auth": "tsx implementations/auth/smoke/callout-deny.smoke.ts",
     "smoke:connect-limit:auth": "tsx implementations/auth/smoke/connect-limit.smoke.ts",
     "smoke:callout-multi-tenant:auth": "tsx implementations/auth/smoke/callout-multi-tenant.smoke.ts",
+    "smoke:auth-service-multi-space:auth": "tsx implementations/auth/smoke/auth-service-multi-space.smoke.ts",
     "smoke:callout-shape": "tsx implementations/auth/smoke/callout-shape.smoke.ts",
     "smoke:user-auth-launch:live": "tsx implementations/auth/smoke/user-auth-launch.smoke.ts",
     "smoke:remote-exchange:live": "tsx implementations/auth/smoke/remote-exchange.smoke.ts",

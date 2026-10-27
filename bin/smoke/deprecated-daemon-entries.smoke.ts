@@ -166,6 +166,20 @@ for (const [entry, twinName] of Object.entries(DAEMON_ENTRY_TWINS) as [keyof typ
     seen === args && count(printed.err, deprecatedDaemonEntryWarning(DEPRECATED_MANAGER_ENTRY, ["execution", "spawn"])) === 1 && !printed.err.includes("Use `cotal manager start`"), printed.err);
 }
 
+// An auth-service run serving several spaces keeps that caller on the entry: the preset runs one.
+{
+  const command = registry.resolve<Command>("command", "auth-service");
+  const twin = registry.all<Command>("command").find((row) => row.name === DAEMON_ENTRY_TWINS["auth-service"])!;
+  const args = parseCommandArgs(command, ["--spaces", join(root, "spaces.json"), "--server", SERVER]);
+  const run = twin.run;
+  let seen: unknown;
+  twin.run = async (received) => { seen = received; };
+  const printed = await captured(() => command.run(args)).finally(() => { twin.run = run; });
+  check("auth-service --spaces warns once that the auth-service preset has no --spaces, then runs __daemon-auth-service",
+    seen === args && count(printed.err, deprecatedDaemonEntryWarning("auth-service", ["spaces"])) === 1
+      && printed.err.includes("`cotal service start auth-service` has no --spaces yet, so keep `cotal auth-service` for this run") && !printed.err.includes("Use `cotal service start"), printed.err);
+}
+
 // ---- Each registered entry prints it when its pre-cut line runs --------------------------------
 const env: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(env)) if (key.startsWith("COTAL_") || key === "INVOCATION_ID") delete env[key];
