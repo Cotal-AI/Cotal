@@ -52,7 +52,7 @@ import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
-import { addExtension } from "./ext.js";
+import { addExtension, ExtensionInstallInterrupted } from "./ext.js";
 import { canPrompt } from "./meshes-wizard.js";
 import type { ManagedLaunchResult } from "./spawn.js";
 import type { SetupStackStartResult } from "./setup-start.js";
@@ -722,6 +722,7 @@ async function setUpRuntimes(
         // With --json or --plain, stdout carries the result alone.
         await addExtension(`${r.package}@${cliVersion()}`, r.package, false, narrate ? console.log : (line) => console.error(line));
       } catch (e) {
+        if (e instanceof ExtensionInstallInterrupted) throw e;
         const error = (e as Error).message;
         rows.push({ ...row, selected: true, state: "left-out", reachable: null, error });
         problems.push({ message: `the ${r.name} runtime did not install (${error.split("\n")[0]})`, remedy: "fix it, then run the same setup again" });

@@ -6895,6 +6895,9 @@ as they are. `remove` and `list` manage them. The `@cotal-ai/web` dashboard is t
 canonical service preset and local-process example. Installed packages and their location are described in
 [config](config.md). When a package needs an export its linked `@cotal-ai/*` peer does not have,
 `add` rolls back and names which install is behind, as a later load of an installed one does.
+SIGINT or SIGTERM during `add` rolls the prefix back the same way when the install had not
+committed, releases the extension lock, and exits 130. It does not print `✓ added` for an install
+it rolled back.
 
 Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix is a cotal-owned npm
 root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`,

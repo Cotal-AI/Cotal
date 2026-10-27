@@ -60,6 +60,7 @@ import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printCommandHelp, printHelpPath, printEntry } from "./help.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
+import { ExtensionInstallInterrupted } from "./commands/ext.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
 import { metadataPositionals } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
@@ -740,6 +741,9 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     if (await pinPickedManager(e, cmd, parsed, argv)) {
       try { await execute(); return; } catch (again) { e = again; }
     }
+    // An interrupted `ext add` has already restored the prefix and released its lock in addExtension's
+    // finally. Exit 130 here, including when the retried command was the one interrupted.
+    if (e instanceof ExtensionInstallInterrupted) process.exit(130);
     recordTelemetryError(e);
     const mode = parsed.positionals[0];
     const json = structured(cmd, mode) && parsed.values.json === true;

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { registry, type Command, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
+import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type ExtensionsManifest, type InstalledExtension, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { assertExtensionServiceInstancesStopped } from "../lib/service-instances.js";
 import { cotalRoot } from "../lib/paths.js";
@@ -141,6 +141,17 @@ function linkExtensionPeers(packages: string[], operationPkg: string): void {
     provenance.wrote(`${link.peer} link (${link.owner} → this CLI's copy)`, link.destination);
 }
 
+/** SIGINT or SIGTERM arrived while `ext add` was installing. `addExtension` throws this after it
+ *  has restored the prefix, and its own `finally` releases the mutation lock. The command runner
+ *  exits 130. Exiting inside the transaction would skip that `finally` and force the cleanup to be
+ *  repeated at the exit. */
+export class ExtensionInstallInterrupted extends Error {
+  constructor() {
+    super("extension install interrupted");
+    this.name = "ExtensionInstallInterrupted";
+  }
+}
+
 /** `cotal ext add <spec>`: install one extension into the operator prefix and record what it provides.
  *  `announce` takes the closing `✓ added` line; `cotal setup` sends it to stderr when stdout carries
  *  a result. */
@@ -174,13 +185,24 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
       writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`, { flag: "wx", mode: 0o644 });
       provenance.wrote("extensions prefix", join(dir, "package.json"));
     }
-    await addTransaction();
+    await addTransaction({ pkg, resolved, dir, seeding, announce });
   } finally {
     if (seeding) clearChildMarker();
     releaseMutation();
   }
+}
 
-  async function addTransaction(): Promise<void> {
+/** Install `pkg` from `resolved` and commit the manifest, or restore the prefix snapshot once.
+ *  SIGINT/SIGTERM become {@link ExtensionInstallInterrupted} so the caller exits only after
+ *  `addExtension` has released the mutation lock. */
+async function addTransaction(input: {
+  pkg: string;
+  resolved: string;
+  dir: string;
+  seeding: boolean;
+  announce: (line: string) => void;
+}): Promise<void> {
+  const { pkg, resolved, dir, seeding, announce } = input;
   // Validate/read workstation state before npm can mutate the prefix; this snapshot also drives the
   // final replacement entry so the manifest and installed tree commit as one logical transaction.
   const manifest = loadExtensionsManifest();
@@ -199,11 +221,11 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
     rmSync(extensionPackageDir(pkg), { recursive: true, force: true });
   }
 
+  // Set once the manifest and tree are the installed result. A throw while removing the rollback
+  // snapshot must not put the previous tree back over a commit that already landed.
   let committed = false;
-  let restored = false;
   const restore = async (): Promise<void> => {
-    if (restored || committed) return;
-    restored = true;
+    if (committed) return;
     if (rollbackDir) {
       rmSync(dir, { recursive: true, force: true });
       renameSync(rollbackDir, dir);
@@ -220,24 +242,35 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   process.once("SIGINT", interrupted);
   process.once("SIGTERM", interrupted);
   try {
-    await installCandidate();
-    if (wasInterrupted) throw new Error("extension install interrupted");
+    const entry = await installCandidate({ pkg, resolved, dir, manifest, seeding });
+    if (wasInterrupted) throw new ExtensionInstallInterrupted();
     committed = true;
     if (rollbackRoot) rmSync(rollbackRoot, { recursive: true, force: true });
+    announce(c.green(`✓ added ${entry.pkg}@${entry.version}`) + c.dim(` - provides: ${(entry.provides ?? []).map((ext) => `${ext.kind}:${ext.name}`).join(", ")}`));
+    if (!entry.serviceMetadata && (entry.servicePresets?.length || entry.localProcesses?.some((component) => component.service !== undefined)))
+      announce(c.dim(`  its services cannot run on this platform: protected workstation file access is not available in this release`));
   } catch (e) {
     await restore();
-    if (wasInterrupted) {
-      if (seeding) clearChildMarker();
-      releaseMutation();
-      process.exit(130);
-    }
     throw e;
   } finally {
     process.removeListener("SIGINT", interrupted);
     process.removeListener("SIGTERM", interrupted);
   }
+}
 
-  async function installCandidate(): Promise<void> {
+/** Install one candidate into the prefix and return the manifest entry. The caller commits by
+ *  dropping the rollback snapshot, then announces. A failure throws so the caller restores once. */
+async function installCandidate(input: {
+  pkg: string;
+  resolved: string;
+  dir: string;
+  manifest: ExtensionsManifest;
+  seeding: boolean;
+}): Promise<InstalledExtension> {
+  const { pkg, resolved, dir, manifest, seeding } = input;
+  function fail(why: string): never {
+    throw new Error(`${pkg} ${why}`);
+  }
   console.error(c.dim(`installing ${resolved} into ${dir} …`));
   // --legacy-peer-deps: never auto-install the peer'd core from the registry — the add ALWAYS
   // links the running binary's copy below (one core instance is the whole point).
@@ -245,18 +278,18 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   // realpath would escape the prefix and Node could no longer resolve the linked core from it.
   const r = await npm(["install", "--save", "--no-audit", "--no-fund", "--legacy-peer-deps", "--install-links", resolved], dir);
   if (r.status !== 0) {
-    fail(pkg, `npm install failed:\n${r.output.split("\n").slice(-8).join("\n")}`);
+    fail(`npm install failed:\n${r.output.split("\n").slice(-8).join("\n")}`);
   }
 
   // The spec's package must now be a prefix dependency — anything else is a failed install.
-  let deps: Record<string, string>;
+  let deps: Record<string, string> = {};
   try {
     deps = (JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { dependencies?: Record<string, string> }).dependencies ?? {};
   } catch (e) {
-    fail(pkg, `left unreadable prefix metadata: ${(e as Error).message}`);
+    fail(`left unreadable prefix metadata: ${(e as Error).message}`);
   }
   if (!deps[pkg]) {
-    fail(pkg, `npm install succeeded but it is not among the prefix dependencies - remove and retry`);
+    fail(`npm install succeeded but it is not among the prefix dependencies - remove and retry`);
   }
   const pkgDir = extensionPackageDir(pkg);
   let pkgMeta: {
@@ -267,10 +300,11 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   try {
     pkgMeta = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
   } catch (e) {
-    fail(pkg, `has unreadable package metadata: ${(e as Error).message}`);
+    fail(`has unreadable package metadata: ${(e as Error).message}`);
   }
-  if (typeof pkgMeta.version !== "string" || !pkgMeta.version) {
-    fail(pkg, `declares no "version" - the manifest pins an extension's version and every load checks the installed package against it`);
+  const version = pkgMeta.version;
+  if (typeof version !== "string" || !version) {
+    fail(`declares no "version" - the manifest pins an extension's version and every load checks the installed package against it`);
   }
 
   // Shared @cotal-ai/* packages must be PEER dependencies — a regular dependency vendors a second
@@ -278,32 +312,31 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   // any other shared package would silently drift from the binary's. Fail with the exact reason.
   const vendored = Object.keys(pkgMeta.dependencies ?? {}).filter((d) => d.startsWith("@cotal-ai/"));
   if (vendored.length) {
-    fail(pkg, `declares ${vendored.join(", ")} as a regular dependency - shared @cotal-ai/* packages must be peerDependencies, or the extension runs its own copy (core's would swallow its command registrations; any other's drifts from this CLI's)`);
+    fail(`declares ${vendored.join(", ")} as a regular dependency - shared @cotal-ai/* packages must be peerDependencies, or the extension runs its own copy (core's would swallow its command registrations; any other's drifts from this CLI's)`);
   }
   if (!pkgMeta.peerDependencies?.["@cotal-ai/core"]) {
-    fail(pkg, `does not declare @cotal-ai/core as a peerDependency - a cotal CLI extension must (its extension objects register into core's registry)`);
+    fail(`does not declare @cotal-ai/core as a peerDependency - a cotal CLI extension must (its extension objects register into core's registry)`);
   }
   // npm mutates the shared prefix, so restore every package's private shared-peer links, not only
   // the candidate's. All extensions resolve the exact same host package instances.
   try {
     linkExtensionPeers([...manifest.extensions.filter((entry) => entry.pkg !== pkg).map((entry) => entry.pkg), pkg], pkg);
   } catch (e) {
-    fail(pkg, (e as Error).message);
+    fail((e as Error).message);
   }
 
   // Import once; every registration must LAND IN OUR REGISTRY. Runtime-only and other provider
   // packages are first-class extensions too; commands are only the display/dispatch subset.
   const before = new Set(registry.all().map((ext) => `${ext.kind}:${ext.name}`));
-  const version = pkgMeta.version;
   await importExtensionEntry(pkg, version, "the add was rolled back; replace this build");
   const contributed = registry.all().filter((ext) => !before.has(`${ext.kind}:${ext.name}`));
   if (!contributed.length) {
-    fail(pkg, `imported cleanly but registered no extensions in THIS CLI's registry - if it bundles its own @cotal-ai/core, make core a peerDependency`);
+    fail(`imported cleanly but registered no extensions in THIS CLI's registry - if it bundles its own @cotal-ai/core, make core a peerDependency`);
   }
   // `cotal` is reserved (the binary's own name — there is no runtime alias anymore); a connector must
   // never claim it, or `--agent cotal` would be ambiguous with the CLI.
   const reserved = contributed.find((ext) => ext.kind === "connector" && RESERVED_CONNECTOR_NAMES.includes(ext.name));
-  if (reserved) fail(pkg, `contributes connector "${reserved.name}", which is a reserved name - a connector cannot be named ${RESERVED_CONNECTOR_NAMES.join(", ")}`);
+  if (reserved) fail(`contributes connector "${reserved.name}", which is a reserved name - a connector cannot be named ${RESERVED_CONNECTOR_NAMES.join(", ")}`);
 
   // Builtin collisions can't happen here (registry.register throws on a duplicate name or alias,
   // surfacing as failed-to-import above, naming the extension). OTHER installed extensions are
@@ -315,14 +348,14 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
         e.pkg !== pkg && extensionProvides(e).some((ref) => ref.kind === provided.kind && providedWords(ref).includes(word)),
       );
       if (other) {
-        fail(pkg, `contributes ${provided.kind} "${word}", already provided by installed extension ${other.pkg}@${other.version} - two extensions cannot claim one registry name or alias; \`cotal ext remove ${other.pkg}\` first if you want this one`);
+        fail(`contributes ${provided.kind} "${word}", already provided by installed extension ${other.pkg}@${other.version} - two extensions cannot claim one registry name or alias; \`cotal ext remove ${other.pkg}\` first if you want this one`);
       }
     }
   }
   const commands = contributed.filter((ext): ext is Command => ext.kind === "command");
   // The dispatcher resolves a seeded package's commands before its first seed, from the declared list.
   const mismatch = seeding ? seededCommandsMismatch(pkg, commands) : undefined;
-  if (mismatch) fail(pkg, mismatch);
+  if (mismatch) fail(mismatch);
   const connectors = contributed.filter((ext): ext is Connector => ext.kind === "connector");
   const localProcesses = contributed.filter((ext): ext is LocalProcess => ext.kind === "local-process");
   const servicePresets = contributed.filter((ext): ext is ServicePreset => ext.kind === "service-preset").map(cacheServicePreset);
@@ -341,18 +374,10 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   try {
     saveExtensionsManifest({ extensions: [...manifest.extensions.filter((e) => e.pkg !== pkg), entry] });
   } catch (e) {
-    fail(pkg, `could not update the extensions manifest: ${(e as Error).message}`);
+    fail(`could not update the extensions manifest: ${(e as Error).message}`);
   }
   provenance.wrote(`extensions manifest (+${pkg}@${version})`, extensionsManifestPath());
-  announce(c.green(`✓ added ${pkg}@${version}`) + c.dim(` - provides: ${contributed.map((ext) => `${ext.kind}:${ext.name}`).join(", ")}`));
-  if (!entry.serviceMetadata && (servicePresets.length || localProcesses.some((component) => component.service !== undefined)))
-    announce(c.dim(`  its services cannot run on this platform: protected workstation file access is not available in this release`));
-  }
-
-  function fail(p: string, why: string): never {
-    throw new Error(`${p} ${why}`);
-  }
-  }
+  return entry;
 }
 
 /** The package NAME a spec installs, known BEFORE npm runs: a path spec reads its package.json;
