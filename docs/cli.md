@@ -5324,8 +5324,8 @@ A definition starts only in the root it was added in. One a forgotten space of t
 another folder refuses `start`, `restart` and `install` `CONFLICT` (exit 2) before anything launches.
 The refusal names the root it was added in and `cotal service remove <name> --space <space> --yes`,
 which forgets it so you can add it again for this project. Bare `service` marks it `inherited from
-<root>` in its `Added in` column, and `--json` gives each definition its `root` and a `rootMatch` of
-`this-root`, `inherited` or `not-recorded`. A definition an earlier release saved has no recorded
+<root>` in its `State` column and names that `remove` as its Next, and `--json` gives each
+definition its `root` and a `rootMatch` of `this-root`, `inherited` or `not-recorded`. A definition an earlier release saved has no recorded
 root: it starts as before and is listed as `root not recorded`, as are a controller stack's own
 member definitions.
 

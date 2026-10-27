@@ -267,6 +267,11 @@ function serviceRows(space: string, root: string, catalog: readonly ServicePrese
     const own = instances.filter((instance) => instance.definition === row.name);
     const state = own.some((instance) => instance.observedProcess === "running") ? "running" : own.length ? "stopped" : "not started";
     const action = state === "running" ? "status" : "start";
+    // One a forgotten space of this name left in another root does not start here; forgetting it is the step.
+    if (state !== "running" && definitionRootMatch(row.record.value, root) === "inherited") {
+      rows.push({ name: row.name, preset, definition: row.name, state: `inherited from ${row.record.value.root}`, needs: [], next: `cotal service remove ${row.name} --space ${space} --yes` });
+      continue;
+    }
     rows.push({ name: row.name, preset, definition: row.name, state, needs: [], next: preset === "manager" && managers === 1 ? `cotal manager ${action}` : `cotal service ${action} ${row.name}` });
   }
   for (const preset of catalog) {
