@@ -1,5 +1,9 @@
 # @cotal-ai/lang
 
+## 0.109.7
+
+No changes in this release.
+
 ## 0.109.6
 
 No changes in this release.
