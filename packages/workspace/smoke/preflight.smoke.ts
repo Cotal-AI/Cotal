@@ -377,6 +377,30 @@ check("unreachable copy for a registered mesh names `cotal meshes rm`, not `cota
   const m = preflightMessage("unreachable", manualT, false);
   return m.includes("cotal meshes rm theirs") && !m.includes("cotal up");
 })(), preflightMessage("unreachable", manualT, false));
+// A user-mode target never reaches preflightTarget, so this arm has to throw the same refusal.
+{
+  const userBase = { ...T, mode: "user" as const, space: "hosted", root: "/tmp/hosted-root" };
+  const manualUser = await preflightOrThrow({ ...userBase, origin: "manual" }).then(() => undefined, (e: unknown) => e);
+  check("user-mode preflight of a hand-registered mesh refuses through the shared unreachable sentence",
+    manualUser instanceof ConnectRefusal && manualUser.kind === "transient" && manualUser.code === "TARGET_UNAVAILABLE"
+      && manualUser.rendered === preflightMessage("unreachable", { ...userBase, origin: "manual" }, false)
+      && manualUser.rendered.includes("cotal meshes rm hosted") && !manualUser.rendered.includes("cotal up"),
+    manualUser instanceof ConnectRefusal ? manualUser.rendered : String(manualUser));
+  const upUser = await preflightOrThrow({ ...userBase, origin: "up" }).then(() => undefined, (e: unknown) => e);
+  check("user-mode preflight of an up record still names `cotal up` at the recorded root",
+    upUser instanceof ConnectRefusal && upUser.rendered === preflightMessage("unreachable", { ...userBase, origin: "up" }, false)
+      && upUser.rendered.includes(`no mesh running at ${DEAD}`) && upUser.rendered.includes("run `cotal up` there to restart"),
+    upUser instanceof ConnectRefusal ? upUser.rendered : String(upUser));
+  const { createServer } = await import("node:net");
+  const live = createServer((sock) => {
+    sock.on("error", () => { /* the probe closes its own socket */ });
+    sock.end('INFO {"server_id":"live-user","version":"2.12.12","proto":1,"max_payload":1048576,"auth_required":true}\r\n');
+  });
+  const liveServer = await new Promise<string>((resolve) => live.listen(0, "127.0.0.1", () => resolve(`nats://127.0.0.1:${(live.address() as { port: number }).port}`)));
+  const reached = await preflightOrThrow({ ...userBase, origin: "manual", server: liveServer }).then(() => "ok", (e: unknown) => e);
+  check("control: a user-mode broker that answers the liveness probe is not refused", reached === "ok", String(reached));
+  await new Promise<void>((r) => live.close(() => r()));
+}
 check("stale-auth-root copy claims a removal only when one happened", (() => {
   const kept = renderWorkspaceError({ kind: "target", error: new MeshTargetError("stale-auth-root", "x", { space: "theirs", root: "/tmp/p3", found: "other", removed: false }) });
   const gone = renderWorkspaceError({ kind: "target", error: new MeshTargetError("stale-auth-root", "x", { space: "ours", root: "/tmp/p3", found: "other", removed: true }) });
