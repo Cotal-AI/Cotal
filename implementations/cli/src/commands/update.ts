@@ -7,9 +7,11 @@ import {
   CommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, type OutputWarning,
   cmdSpawnSpec,
   beginGlobalUpdateChild,
+  bindExtensionPeers,
   claimGlobalNpmUpdateLock,
   launcherInstallRoot,
   loadExtensionsManifest,
+  provenance,
   SEEDED_EXTENSIONS,
   type InstalledExtension,
   targetFlags,
@@ -20,6 +22,7 @@ import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes, withInstallUmask } from "../lib/install-umask.js";
 import { cliVersion } from "../lib/version.js";
 import { runSeed, compareSemver } from "../seed/reconcile.js";
+import { operatorInstallDiffers } from "../seed/verify.js";
 import { seedWriterKind } from "../seed/paths.js";
 import { refreshConnectorInstalls } from "./setup.js";
 import { c } from "../ui.js";
@@ -70,6 +73,8 @@ export interface UpdateRuntime {
   refreshConnectors(): Promise<readonly string[]>;
   reportRunningManager(target: Record<string, unknown>): Promise<"none" | "legacy">;
   extensions(): readonly InstalledExtension[];
+  /** Why a first-party extension still needs its reinstall at `generation`, or undefined once it is kept. */
+  verifyExtension(entry: InstalledExtension, generation: string): string | undefined;
   claimUpdatePass(): () => void;
   claimGlobalUpdate(root: string): () => void;
   selfArgv(): string[];
@@ -112,6 +117,7 @@ const runtime: UpdateRuntime = {
   },
   reportRunningManager: (target) => reportRunningManagers(target),
   extensions: () => loadExtensionsManifest().extensions,
+  verifyExtension: verifyCurrentExtension,
   claimUpdatePass: () => claimExtensionUpdatePass(),
   claimGlobalUpdate: (root) => claimGlobalNpmUpdateLock(root),
   selfArgv,
@@ -284,6 +290,19 @@ async function reconcileCurrent(
         rt.out(c.dim(`${entry.pkg}@${entry.version} - not auto-updated in v1 (recorded spec: ${entry.spec})`));
         continue;
       }
+      let differs: string | undefined;
+      try {
+        differs = rt.verifyExtension(entry, current);
+      } catch (e) {
+        rt.err(c.red(`✗ ${entry.pkg}: ${message(e)}`));
+        ok = false;
+        continue;
+      }
+      if (differs === undefined) {
+        rt.out(c.green(`✓ verified ${entry.pkg}@${current}`) + c.dim(` - current generation (recorded spec: ${entry.spec})`));
+        continue;
+      }
+      rt.err(c.dim(`${entry.pkg}: ${differs}; reinstalling`));
       const spec = `${entry.pkg}@${current}`;
       const [bin, ...argv] = rt.selfArgv();
       const env: NodeJS.ProcessEnv = {
@@ -315,6 +334,17 @@ async function reconcileCurrent(
     if (result.stderr) rt.stderr(result.stderr);
     if (result.stdout) rt.stdout(result.stdout);
   }
+}
+
+/** Keep a first-party extension that npm's record in the prefix proves installed at `generation`,
+ *  rebinding its shared peers to this binary's copies as its reinstall would; otherwise say why it
+ *  still needs that reinstall. The update pass calls it under its own claim, so it needs no child. */
+export function verifyCurrentExtension(entry: InstalledExtension, generation: string): string | undefined {
+  const differs = operatorInstallDiffers(entry, generation);
+  if (differs !== undefined) return differs;
+  for (const link of bindExtensionPeers([entry.pkg], entry.pkg))
+    provenance.wrote(`${link.peer} link (${link.owner} → this CLI's copy)`, link.destination);
+  return undefined;
 }
 
 /** The "no mesh running" target refusal: no recorded mesh on this machine, or every recorded mesh
