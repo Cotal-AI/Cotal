@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
 import { peerLabel } from "@cotal-ai/core";
 import type { DmMessage, DmThread, DmPeer } from "../../view/mesh-view.js";
-import { agentColor, STATUS, fmtTime, wrapText } from "./theme.js";
+import { agentColor, STATUS, fmtTime, wrapText, sidePaneSize } from "./theme.js";
 import type { FocusId } from "../mesh.js";
 
 type PRow = { kind: "peer"; pi: number } | { kind: "conv"; pi: number; ci: number };
@@ -93,8 +93,10 @@ export function Dm({
     { isActive: peers.isFocused && !blocked },
   );
 
-  const tRows = threadRows(conv, Math.max(8, (narrow ? width : width - peerPaneW(width, narrow)) - 4 - 3));
-  const tRoom = Math.max(1, (narrow ? height - peerPaneH(height) : height) - 3);
+  const peerBox = sidePaneSize(width, height, narrow);
+  const threadBox = narrow ? { w: width, h: height - peerBox.h } : { w: width - peerBox.w, h: height };
+  const tRows = threadRows(conv, Math.max(8, threadBox.w - 4 - 3));
+  const tRoom = Math.max(1, threadBox.h - 3);
   const maxUp = Math.max(0, tRows.length - tRoom);
   useInput(
     (input, key) => {
@@ -123,11 +125,6 @@ export function Dm({
         <Text dimColor>no direct messages</Text>
       </Box>
     );
-
-  const pW = peerPaneW(width, narrow);
-  const pH = peerPaneH(height);
-  const peerBox = narrow ? { w: width, h: pH } : { w: pW, h: height };
-  const threadBox = narrow ? { w: width, h: height - pH } : { w: width - pW, h: height };
 
   const flat = flattenPeers(dms, peerClamped);
   const selFlat = flat.findIndex((r) =>
@@ -233,12 +230,4 @@ export function Dm({
       </Box>
     </Box>
   );
-}
-
-// Pane geometry — mirrors app.tsx's wide/narrow split so the lens reads like the main view.
-function peerPaneW(width: number, narrow: boolean): number {
-  return narrow ? width : Math.min(36, Math.max(24, Math.floor(width * 0.3)));
-}
-function peerPaneH(height: number): number {
-  return Math.min(8, Math.max(3, Math.floor(height * 0.35)));
 }
