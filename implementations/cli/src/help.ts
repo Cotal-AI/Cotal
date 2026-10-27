@@ -4,7 +4,7 @@
  * connects, writes, seeds or imports an extension.
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, getCurrent, loadMeshes, loadPreparedSpaces, localeIsUtf8, plainPunctuation, readMesh, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, loadMeshes, loadPreparedSpaces, localeIsUtf8, plainPunctuation, readMesh, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
@@ -177,9 +177,11 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     // A command run here targets the space this folder has registered over the selection while it
     // runs, as it does with nothing selected. A space prepared here, or one whose stack here is
     // stopped, is not the target of anything but `up`, so it is named as this folder's `up` rather
-    // than as the space.
-    const folder = folderSpace(process.cwd());
-    const held = folder === undefined ? folderSpaceHeld(process.cwd()) : undefined;
+    // than as the space. A registered one is named so when this folder's records show its stack
+    // stopped, since help reads no broker.
+    const stopped = selected ? folderSpaceStopped(process.cwd(), selected) : undefined;
+    const folder = stopped ? undefined : folderSpace(process.cwd());
+    const held = folder === undefined ? stopped ?? folderSpaceHeld(process.cwd()) : undefined;
     // With nothing selected no selection takes its place, so a command here targets the space this
     // folder prepared, and it leads.
     const preparedHere = selected || !held ? undefined : findPreparedSpace(held.space);

@@ -33,6 +33,7 @@ import {
   authDir,
   isCommandFailure,
   readMaintenanceJournal,
+  recordsElsewhereError,
   restoreRolledBackRuns,
   type RolledBackRun,
   brokerAddressForDisplay,
@@ -892,7 +893,10 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   // stack's. Clean store refuses there with the step the journal's refusal names.
   let copiedStack = false;
   if (!controllerStack) try { copiedStack = journalRecordedElsewhere(root)?.journal.space === space; } catch { copiedStack = false; }
-  const storedState = !controllerStack && !elsewhere && !copiedStack && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
+  // A legacy root keeps no journal, so its space registered for another folder says the same.
+  let legacyElsewhere = false;
+  if (!controllerStack && !elsewhere && !copiedStack) try { legacyElsewhere = recordsElsewhereError(root) !== undefined; } catch { legacyElsewhere = false; }
+  const storedState = !controllerStack && !elsewhere && !copiedStack && !legacyElsewhere && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
   // While a maintenance journal holds the store, clean store refuses, so it is not offered.
   let maintained = false;
   try { maintained = readMaintenanceJournal(root) !== undefined; } catch { maintained = true; }

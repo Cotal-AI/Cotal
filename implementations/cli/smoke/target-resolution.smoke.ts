@@ -15,7 +15,9 @@
  * its `--json` as a `FOLDER_SPACE_NOT_RUNNING` warning and `chat` beside the selection it joins.
  * `space show`, which is about the folder, still shows what it holds, and calls a registered space
  * whose broker does not answer stopped. `spawn -d --dry-run` there previews the space `spawn -d`
- * launches on, and bare `cotal`, which reads no broker, says the folder's space applies while it runs.
+ * launches on. Bare `cotal` reads no broker: where the folder's own records show its stack stopped, as
+ * after `cotal down`, it leads with the selection and names what the folder holds, as for a prepared
+ * space, and otherwise says the folder's space applies while it runs.
  *
  * Needs `nats-server` on PATH. Linux and macOS run the terminal cells under a pty, Windows under ConPTY.
  *
@@ -256,8 +258,36 @@ const QUESTION = "Which one?";
   check("space show there calls zeta this folder's stopped space, and in a running folder space's root this folder's space",
     /^Mesh: zeta\n {2}this folder's stopped space; commands here target the selected space "alpha" until it runs$/m.test(shownStopped.stdout) &&
       /^Mesh: beta\n {2}this folder's space; the selected space "alpha" applies outside it$/m.test(shownRunning.stdout), { stopped: shown(shownStopped), running: shown(shownRunning) });
-  check("bare cotal there says this folder's space applies while it runs and the selection otherwise",
-    entryStopped.status === 0 && entryStopped.stdout.includes(`this folder's space while it runs; the selected space "alpha" applies outside it and while it is stopped`), shown(entryStopped));
+  // zeta's root holds no broker pidfile, as the retained launcher's `down` leaves it, so its own
+  // records show the stack stopped and the entry screen names the selection, as a prepared folder's does.
+  const leadsWithSelection = (r: ReturnType<typeof run>) => r.status === 0 && /^alpha · /m.test(r.stdout) && r.stdout.includes(`this folder holds the stopped space "zeta"`) &&
+    /^Start here\n {2}cotal up +Start this folder's space$/m.test(r.stdout) && !/^zeta · /m.test(r.stdout);
+  const appliesWhileItRuns = (r: ReturnType<typeof run>) => r.status === 0 && /^zeta · /m.test(r.stdout) &&
+    r.stdout.includes(`this folder's space while it runs; the selected space "alpha" applies outside it and while it is stopped`);
+  check("bare cotal there, whose records hold no broker pidfile, leads with the selection, names the stopped space and offers its up",
+    leadsWithSelection(entryStopped), shown(entryStopped));
+  // A pidfile naming a live process does not show it stopped, and help reads no broker, so it says when
+  // the folder's space applies; one naming a process that is gone does.
+  const pidfile = join(zetaRoot, ".cotal", "nats.pid");
+  writeFileSync(pidfile, `${process.pid}\n`);
+  const entryLive = run([], zetaRoot);
+  const gone = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout;
+  writeFileSync(pidfile, `${gone}\n`);
+  const entryCrashed = run([], zetaRoot);
+  rmSync(pidfile);
+  check("bare cotal there with a broker pidfile naming a live process says this folder's space applies while it runs and the selection otherwise",
+    appliesWhileItRuns(entryLive), shown(entryLive));
+  check("bare cotal there with a broker pidfile naming a process that is gone leads with the selection", leadsWithSelection(entryCrashed), shown(entryCrashed));
+  // A controller stack's journal shows it stopped only when its last whole-stack operation is a
+  // completed down; after a completed up it may still run.
+  const stackJournal = (kind: string) => writeFileSync(join(zetaRoot, ".cotal", "stack-controller.json"), JSON.stringify({ schemaVersion: 1, kind: "cotal-stack-controller", root: realpathSync(zetaRoot), space: "zeta", server: "nats://127.0.0.1:1", mode: "open", members: [], operation: { id: "op-1", kind, phase: "completed", recordedAt: new Date(0).toISOString(), withAgents: false }, updatedAt: new Date(0).toISOString() }) + "\n");
+  stackJournal("down");
+  const entryDown = run([], zetaRoot);
+  stackJournal("up");
+  const entryUp = run([], zetaRoot);
+  rmSync(join(zetaRoot, ".cotal", "stack-controller.json"));
+  check("bare cotal in a controller root whose journal records a completed down leads with the selection, and after a completed up says when the folder's space applies",
+    leadsWithSelection(entryDown) && appliesWhileItRuns(entryUp), { down: shown(entryDown), up: shown(entryUp) });
   // status and the listing read the folder's broker, so a stopped one is not this folder's target
   // there; in a running folder space's root it is. `use` reads no broker and says when it applies.
   const statusStopped = run(["status", "--json"], zetaRoot), listStopped = run(["space", "--json"], zetaRoot), listStoppedText = run(["space"], zetaRoot), listRunning = run(["space", "--json"], join(home, "beta")), useStopped = run(["use"], zetaRoot);

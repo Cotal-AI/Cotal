@@ -39,6 +39,7 @@ import {
   workspaceErrorParts,
   spaceRootTarget,
   targetErrorCode,
+  targetErrorSpace,
   terminalWidth,
   userCotalDir,
   type OperationScope,
@@ -759,7 +760,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       if (isConnectRefusal(e)) failureExit(cmd, inOperationSpace(await choice(e.failure()), scope.space), json, parsed.values.plain === true, scope);
       if (isWorkspaceTargetError(e)) {
         const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
-        const target = spaceRootTarget(e.details);
+        const target = spaceRootTarget({ root: e.details.root, space: targetErrorSpace(e.details) });
         failureExit(cmd, inOperationSpace(new CommandFailure("refused", targetErrorCode(e.code), message, { ...(remedy ? { remedy } : {}), ...(target ? { target } : {}) }), scope.space), json, parsed.values.plain === true, scope);
       }
       // A registry record or directory it could not read is refused by its file, as `space` reports

@@ -579,6 +579,33 @@ export function legacyStackElsewhere(root: string, space: string): { recordedRoo
   return { recordedRoot, remedy: existsSync(recordedRoot) ? `use the stack from ${recordedRoot}, where "${space}" is registered` : movedRootRemedy(recordedRoot) };
 }
 
+/** Why the records the folder `root` holds are not its own to act on: they are those of a stack that
+ *  runs from another folder, as a copy, a moved folder and one whose name a later `up` took over keep
+ *  them. It is the `not-started` refusal a command that resolves its target there gets, so a command
+ *  that acts on the folder's own records, such as `clean store`, names the same folder and step.
+ *  Undefined for a folder whose records are its own, and for one that holds none. */
+export function recordsElsewhereError(root: string): MeshTargetError | undefined {
+  const stack = stackRecord(root);
+  if (stack !== undefined)
+    return stack.recordedRoot !== undefined && stack.stackRemedy !== undefined && stack.home === undefined
+      ? new MeshTargetError("not-started", `the stack journal in ${root} was recorded at ${stack.recordedRoot}`, { root, ...stack })
+      : undefined;
+  const retained = retainedLegacyBroker(root);
+  // A tenant count this cannot read cannot say the space runs elsewhere, as for legacyStackElsewhere.
+  let named: string | undefined;
+  try { named = retained === undefined || retained.open ? undefined : soleSpaceOf(authDir(root)); } catch { return undefined; }
+  const elsewhere = named === undefined ? undefined : legacyStackElsewhere(root, named);
+  return elsewhere && new MeshTargetError("not-started", `the mesh "${named}" in ${root} is registered for ${elsewhere.recordedRoot}`, { root, server: retained!.server, lastRun: true, stackSpace: named, recordedRoot: elsewhere.recordedRoot, stackRemedy: elsewhere.remedy });
+}
+
+/** The space a target failure concerns, which its report heads with `Mesh:` and its envelope carries
+ *  as `target.space`: the space it names, or, in a folder holding the records of a stack that runs
+ *  from another folder, the space those records name, as `up` and `down` there name it. That one is
+ *  kept out of `details.space`, which callers read as a prepared space. */
+export function targetErrorSpace(details: MeshTargetErrorDetails): string | undefined {
+  return details.space ?? (details.recordedRoot !== undefined && details.stackRemedy !== undefined && details.home === undefined ? details.stackSpace : undefined);
+}
+
 /** What the project root `cwd` is in holds, none outside a project: the spaces it has REGISTERED (a
  *  `cotal up` wrote the registration and no `cotal down` has removed it, so each may still be
  *  running), and the space it has prepared and never started. */
@@ -702,6 +729,39 @@ export function folderSpaceHeld(cwd: string): { space: string; root: string; sta
   if (!folder || folder.registered.length) return undefined;
   const held = heldSpace(folder);
   return held === undefined ? undefined : { ...held, root: folder.root };
+}
+
+/** The one space REGISTERED at the root of the project folder `cwd` is in, when it is not the selection
+ *  `current` and the folder's own records show its stack stopped, read without dialing its broker:
+ *  its stack journal's last whole-stack operation is a completed `down`, or, for a root the retained
+ *  launcher started, no broker pidfile names a live process, as after its `down` or a crash. A
+ *  controller stack writes no broker pidfile, so where its journal records anything else, as a running
+ *  stack's does, the pidfile is not read. Commands
+ *  here then target the selection, and bare `cotal`, which reads no broker, names it with what the
+ *  folder holds. Undefined where the records do not show that, as for a controller stack whose members
+ *  ended without a `down`, and for a space registered by hand or by a catalog, whose broker this
+ *  machine does not start. */
+export function folderSpaceStopped(cwd: string, current: string): { space: string; root: string; state: "stopped" } | undefined {
+  const folder = folderSpaces(cwd, loadMeshes());
+  const space = folder?.registered.length === 1 ? folder.registered[0]! : undefined;
+  if (!folder || space === undefined || space === current) return undefined;
+  const origin = findMesh(space)?.origin;
+  if (origin === "manual" || origin === "catalog") return undefined;
+  try {
+    const path = stackJournalPath(folder.root), file = lstatSync(path, { throwIfNoEntry: false });
+    let stopped: boolean;
+    if (file !== undefined) {
+      if (!file.isFile() || file.size > 64 * 1024) return undefined;
+      const journal = JSON.parse(readFileSync(path, "utf8")) as { space?: unknown; root?: unknown; operation?: { kind?: unknown; phase?: unknown } } | null;
+      stopped = journal?.space === space && journal.root === canonicalRoot(folder.root) && journal.operation?.kind === "down" && journal.operation.phase === "completed";
+    } else {
+      const pid = readPidfile(localProcessPath("nats.pid", { root: folder.root, space }));
+      stopped = pid === undefined || parsePid(pid) !== undefined && probeLiveness(parsePid(pid)!) === "dead";
+    }
+    return stopped ? { space, root: folder.root, state: "stopped" } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The one space REGISTERED at the root of the project folder `cwd` is in, which a command without

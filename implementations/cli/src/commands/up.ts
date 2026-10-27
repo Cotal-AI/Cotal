@@ -184,6 +184,7 @@ import {
   connectUserControlOrThrow,
   userViewAuth,
   recordOperationSpace,
+  recordsElsewhereError,
   recordOperationWarning,
   retainSystemSigningSeed,
   restoreLeftOut,
@@ -1466,6 +1467,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // A named space this machine runs from another folder is refused before anything is written here,
   // and in every presentation, since the launcher below has no structured receipt.
   if (!values.file && values.space !== undefined) await refuseRunningElsewhere(values.space, meshRoot);
+  // A bare one in a folder holding the records of a space registered for another folder does not take
+  // that name over, as `down` there does not stop it.
+  if (!values.file && values.space === undefined) await refuseRecordsElsewhere(meshRoot);
   if (values.json || values.plain) {
     // `up -f` always takes the retained launcher, so the controller route is no remedy there. Its
     // manifest is checked first, so a manifest that does not validate gets its own refusal.
@@ -4809,6 +4813,22 @@ async function refuseRunningElsewhere(space: string, root: string): Promise<void
   let controller = false;
   try { controller = readStackJournal(owner.root)?.journal.space === space; } catch { /* named with the legacy stop */ }
   throw new CommandFailure("refused", "CONFLICT", `space "${space}" runs at ${owner.server}, started in ${owner.root}, so up did not start it again`, { target: { space, root: owner.root, server: owner.server }, remedy: `use it from here with --space ${space}, or stop it with cotal down${controller ? " --yes" : ""} in ${owner.root}` });
+}
+
+/** Refuses a bare `up` in a folder holding the records of a space this machine registers for another
+ *  folder, as a copy, a moved folder and one whose name a later `up` took over keep them. The retained
+ *  launcher writes no stack journal, so this is that launcher's form of the journal's refusal: it
+ *  names that folder and the step reads there name. When that folder is gone and its broker does not
+ *  answer, it also names the `--space` that takes the name over to run the stack from this folder. */
+async function refuseRecordsElsewhere(root: string): Promise<void> {
+  const records = recordsElsewhereError(root)?.details;
+  if (!records?.lastRun || records.stackSpace === undefined || records.recordedRoot === undefined || records.stackRemedy === undefined) return;
+  const space = records.stackSpace;
+  const takeover = !existsSync(records.recordedRoot) && !(await isReachable(findMesh(space)?.server ?? records.server ?? DEFAULT_SERVER));
+  throw new CommandFailure("refused", "CONFLICT", `this folder holds the records of "${space}", which is registered for ${records.recordedRoot}, not for this folder, so up did not start it here`, {
+    target: { root, space, recordedRoot: records.recordedRoot },
+    remedy: takeover ? `${records.stackRemedy}; or, to run it from this folder, take the name over with cotal up --space ${space}` : records.stackRemedy,
+  });
 }
 
 /** The channels files one `up` has read, by path. It reads its seed when it checks the flags, when it

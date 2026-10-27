@@ -47,10 +47,12 @@ connectors after an old executable rebuilt them, run the verified newer absolute
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
 the space this folder has registered, else the selected space, else, with nothing selected, the space
 this folder prepared, and lists common commands. It reads no
-broker, so when that folder's space is not the selection, it adds that the folder's space applies
-while it runs and the selected space applies outside the folder and while it is stopped. When the
-folder holds a space that is prepared, or whose stack is stopped with no registration, it names what
-it holds. It points a prepared space to the `cotal up` that starts it, with
+broker. When this folder's own records show the stack of its registered space stopped, as after
+`cotal down` there, and another space is selected, it names the selected space, which the commands
+run there target, as for a prepared folder. Otherwise, when that folder's space is not the selection,
+it adds that the folder's space applies while it runs and the selected space applies outside the
+folder and while it is stopped. When the folder holds a space that is prepared, or whose stack is
+stopped, it names what it holds. It points a prepared space to the `cotal up` that starts it, with
 `--root <dir>` when the space is prepared in another folder and `<dir>` quoted when a shell would
 split it, and a machine with no space to `cotal setup`. With spaces on the machine but none selected
 or in this folder, it names `cotal use <name>` and `cotal space` instead. Every command generates its own help, usage, and shell completion from its declared
@@ -744,7 +746,9 @@ like any root that cannot be read. A root counts as gone only when it no longer 
 directory. A readable root with no maintenance journal also gives up its name. Each of these
 refusals ends `refused` with exit 2, on a controller stack and on the retained launcher, and shows
 its reason and the next step, such as `cotal meshes rm <space>` for a root that is not an absolute
-path.
+path. A bare `up` in a copy or a moved folder, which holds that space's records, leaves the name
+with the folder it is registered for: it refuses `CONFLICT` and names that folder, as the stack
+journal section below describes.
 
 A foreground `up` holds the root's maintenance lock only while it starts the stack. A bare
 `cotal down` from another terminal can then stop the stack; the foreground `up` sees the completed
@@ -930,7 +934,8 @@ told the same, and it can adopt the copy only after the original's stack is stop
 folder no longer holds its journal. When this machine records neither the space nor an instance of
 its stack, as on another machine, moving back would not start it, so a moved folder is told only to
 adopt the journal with `space create --adopt`. `status`, `send` and `history` there name the same
-next step. `clean store` refuses in a moved folder or a copy, so `status` there does not offer it.
+next step. `clean store` and `clean all` there refuse `TARGET_UNAVAILABLE`, exit 2, naming the
+recorded folder, and remove nothing, so `status` there does not offer `clean store`.
 Commands that reach a static-auth space from a moved folder, such as `send`, `history`, `ps` and
 `service stop`, refuse the same way. `status` there says the folder was moved and names the way back
 as its next step. The broker names a store inside the project folder relative to that folder and
@@ -958,9 +963,13 @@ A project the legacy launcher started writes no journal, so a copy of one, the f
 took its name over from, and one moved away from its recorded path are recognized from the
 registration instead. While this machine registers that space for another folder, reads there refuse
 `TARGET_UNAVAILABLE`, exit 2, and name that folder, with another space selected too: the next step is to use the stack from it, or,
-when it no longer exists, to move this folder back there first. A bare `down` there refuses
+when it no longer exists, to move this folder back there first. A bare `up` or `down` there refuses
 `CONFLICT`, exit 2, and names the same step, because the folder holds the space's records and no
-stack of its own. A legacy root whose space this machine registers for no folder keeps its own
+stack of its own, so a bare `up` does not take the name over from that folder. When that folder no
+longer exists and the space's broker does not answer, the `up` refusal also names
+`cotal up --space <space>`, which takes the name over to run the stack from this folder.
+`clean store` and `clean all` there refuse `TARGET_UNAVAILABLE`, exit 2, as the reads do, and
+remove nothing, so `status` there does not offer `clean store`. A legacy root whose space this machine registers for no folder keeps its own
 `cotal up`, which starts it again at the address its last start configured.
 
 A journal that is not valid JSON, as an interrupted write or a full disk can leave it, makes `up`,
@@ -1968,6 +1977,11 @@ anything reads through it: `CONFLICT`, exit 2, naming the link and where it lead
 folder above it. When the link leads to this folder's own records, moved away and linked back, the
 Next names moving them back, as [up](#up) does.
 
+In a copy, in a folder moved away from its recorded path, and in the folder a later `up` took its
+space's name over from, the store may hold that space's only history. There `store` and `all`, and
+both dry runs, refuse `TARGET_UNAVAILABLE`, exit 2, before the liveness checks, naming the folder
+the stack runs from and the step the commands that read there name, and remove nothing.
+
 `--dry-run` runs the same checks as `store` or `all` and prints `would remove <path>` for each
 store, credential, record and registration the command would remove, then removes nothing and takes
 no maintenance lock. A check that would refuse the command refuses its dry run the same way.
@@ -2925,6 +2939,8 @@ registered folder space whose broker does not answer this folder's stopped space
 the records of a stack that runs from another folder or under another Cotal home, as a copy, a moved
 folder or one whose space name a later `up` took over, is not released to the selection: commands
 there refuse `TARGET_UNAVAILABLE` and name that folder or home, as they do with nothing selected.
+For a stack that runs from another folder, the refusal heads with `Mesh: <space>` and carries
+`target.space`, naming the space this folder's records name, as `up` and `down` there do.
 Inside a project whose root
 has several running spaces, none of them the selection, the command targets the selection. Before it
 acts, it warns on stderr and in its JSON `warnings` with `SELECTION_NOT_FOLDER_SPACE`, naming those
