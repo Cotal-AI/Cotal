@@ -4896,8 +4896,9 @@ cotal supervise [--execution runtime|none] [--runtime <name>] [--space <s>] [--s
 
 `supervise` runs a manager in this terminal until Ctrl-C. It is deprecated, hidden from help and
 completion, and removed in `1.0.0`, with the other [deprecated daemon
-entries](UPGRADING.md#deprecated-daemon-entries): every run prints one stderr line naming
-`cotal manager start`, and `cotal manager start --foreground` for a terminal or a unit. A run given
+entries](UPGRADING.md#deprecated-daemon-entries): every run prints one stderr warning naming
+`cotal manager start`, and `cotal manager start --foreground` for a terminal or a unit. On a
+terminal it wraps like any other warning. A run given
 `--execution`, `--spawn`, `--seat-cap` or a resume flag, which `manager start` does not take yet,
 says to keep `supervise` for that run instead. It keeps its flags and its run for existing units,
 scripts and containers. The manager that `cotal up` starts
@@ -4939,6 +4940,8 @@ unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. Wi
 on the class rail, an unpinned spawn is refused and names the agent application to add. A partial
 inventory keeps the class rail and names `--on` on a harness refusal, because sibling
 inventories are not readable from the serve credential. See [control surface](control-surface.md#instance-routing).
+The manager prints what its boot inventory found once it is up, so a start that is refused prints
+no boot line.
 
 Use `--execution none` only for a fresh control instance in an existing hosting user-auth root.
 It requires that space's signing trust, provider pin and user-mode mesh record, without remote

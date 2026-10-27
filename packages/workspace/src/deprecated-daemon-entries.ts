@@ -1,5 +1,6 @@
 import type { Command, ParsedArgs } from "@cotal-ai/core";
 import { c } from "./colors.js";
+import { terminalWidth, wrapWords } from "./text-wrap.js";
 
 /** The release that removes the deprecated daemon entries. One value for all four, recorded under
  *  "Deprecated daemon entries" in docs/UPGRADING.md. */
@@ -36,13 +37,13 @@ export type DeprecatedDaemonEntry = keyof typeof DEPRECATED_DAEMON_PRESETS | typ
  *  release; the entry keeps its argv, behavior and exit code. `kept` names the flags of this run the
  *  replacement has no form for, so the line says to keep the entry for them instead. */
 export function deprecatedDaemonEntryWarning(entry: DeprecatedDaemonEntry, kept: readonly string[] = []): string {
-  if (kept.length) return `! cotal ${entry} is deprecated and will be removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}. cotal manager start has no ${kept.map((flag) => `--${flag}`).join(", ")} yet, so keep cotal ${entry} for this run until it does.`;
+  if (kept.length) return `! \`cotal ${entry}\` is deprecated and will be removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}. \`cotal manager start\` has no ${kept.map((flag) => `--${flag}`).join(", ")} yet, so keep \`cotal ${entry}\` for this run until it does.`;
   const replacement = entry === "deliver pending"
-    ? "cotal pending <agent>"
+    ? "`cotal pending <agent>`"
     : entry === DEPRECATED_MANAGER_ENTRY
-      ? "cotal manager start, or cotal manager start --foreground to keep it in this terminal"
-      : `cotal service start ${DEPRECATED_DAEMON_PRESETS[entry]}, which names any option it needs`;
-  return `! cotal ${entry} is deprecated and will be removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}. Use ${replacement}.`;
+      ? "`cotal manager start`, or `cotal manager start --foreground` to keep it in this terminal"
+      : `\`cotal service start ${DEPRECATED_DAEMON_PRESETS[entry]}\`, which names any option it needs`;
+  return `! \`cotal ${entry}\` is deprecated and will be removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}. Use ${replacement}.`;
 }
 
 /** The summary the entry's own help shows: marked deprecated, with its removal release and the
@@ -52,9 +53,11 @@ export function deprecatedDaemonEntrySummary(entry: keyof typeof DEPRECATED_DAEM
   return `(deprecated, removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}; use ${use}) ${summary}`;
 }
 
-/** Print {@link deprecatedDaemonEntryWarning} to stderr, leaving stdout to the entry itself. */
+/** Print {@link deprecatedDaemonEntryWarning} to stderr, leaving stdout to the entry itself. On a
+ *  terminal it wraps like any other warning, each continuation line under its text. */
 export function warnDeprecatedDaemonEntry(entry: DeprecatedDaemonEntry, kept: readonly string[] = []): void {
-  console.error(c.yellow(deprecatedDaemonEntryWarning(entry, kept)));
+  const [first = "", ...rest] = wrapWords(deprecatedDaemonEntryWarning(entry, kept), terminalWidth(process.stderr) - 2);
+  console.error(c.yellow([first, ...rest.map((line) => `  ${line}`)].join("\n")));
 }
 
 /** The deprecated public entry over its hidden twin: the twin's declaration under the entry's name,
