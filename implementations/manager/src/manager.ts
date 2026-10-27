@@ -270,6 +270,15 @@ const SESSION_RESTART_WINDOW_MS = 120_000;
  *  `.catch`. Generous over the helper's 5s connect timeout to allow the two consumer-deletes + ACL purge
  *  + drain on a healthy-but-slow broker. */
 const DEPROVISION_TIMEOUT_MS = 15_000;
+/** At most this many retirements run at once (#4965). A retirement dials up to four fresh broker
+ *  connections in turn and queues an eviction and an inventory on the delivery daemon's admin rail,
+ *  each against a fixed deadline. A stop that started all 50 seats' retirements together lost most of
+ *  them: on a shared 12-core host at load 41-58, 9 to 46 of 50 dials hit the broker's 2 s auth
+ *  timeout, and up to 26 inventories waited past 5 s behind the other seats' evictions. Measured there
+ *  at load about 51, 50 dials from one process: 35 failed when all ran at once, none at 16 (median
+ *  1.9 s, near the 2 s limit), none at 8 with the shortest total (3.7 s, against 4.8 s at 4). At 8,
+ *  one manager queues at most 8 evictions on the daemon, about 3 s of its work at that load. */
+const RETIREMENT_CONCURRENCY = 8;
 /** The delivery-admin `reloadCreds` request bound — STRICTLY GREATER than the daemon's internal
  * per-component preflight bound (4s each, run in parallel) so a slow or refused proof returns the
  * daemon's STRUCTURED per-component failure, never a client-side timeout that the catch below would
@@ -1575,6 +1584,10 @@ export class Manager {
    *  delete the SUCCESSOR's standing authority. Keyed by (name, uid) so a later same-name lifecycle
    *  gets its own flight; a fresh trigger after settle re-drives only if the hold still stands. */
   private deprovisioningFlight = new Map<string, Promise<void>>();
+  /** Retirements holding one of the {@link RETIREMENT_CONCURRENCY} slots. */
+  private retirementsRunning = 0;
+  /** Retirements waiting for a slot, oldest first. */
+  private readonly retirementQueue: Array<() => void> = [];
   private readonly attach: AttachEndpoint;
   private ep!: CotalEndpoint;
   /** Space trust material when the mesh runs in auth mode (`.cotal/auth` present);
@@ -4904,11 +4917,26 @@ export class Manager {
     const key = JSON.stringify([a.name, a.lifecycleUid]); // ASCII-safe, delimiter-collision-free
     const inflight = this.deprovisioningFlight.get(key);
     if (inflight) return inflight;
-    const flight = this.driveDeprovision(a).finally(() => {
+    const flight = this.withRetirementSlot(() => this.driveDeprovision(a)).finally(() => {
       if (this.deprovisioningFlight.get(key) === flight) this.deprovisioningFlight.delete(key);
     });
     this.deprovisioningFlight.set(key, flight);
     return flight;
+  }
+
+  /** Run one retirement in a {@link RETIREMENT_CONCURRENCY} slot, oldest first. No retirement awaits
+   *  another, so the bounded pool cannot deadlock. */
+  private async withRetirementSlot<T>(run: () => Promise<T>): Promise<T> {
+    if (this.retirementsRunning < RETIREMENT_CONCURRENCY) this.retirementsRunning++;
+    else await new Promise<void>((resolve) => this.retirementQueue.push(resolve));
+    try {
+      return await run();
+    } finally {
+      // Hand the slot to the oldest waiter, or give it back.
+      const next = this.retirementQueue.shift();
+      if (next) next();
+      else this.retirementsRunning--;
+    }
   }
 
   /** The actual footprint teardown (wrapped by {@link deprovision}'s single-flight). */

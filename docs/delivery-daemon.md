@@ -89,6 +89,13 @@ is still connecting, and nothing is sent after it. A daemon that answers fails t
 it refuses or its reply cannot be read. One that stays silent for the whole wait fails it, and the
 manager log names the rail.
 
+The daemon answers `ctl.delivery-admin` requests one at a time, in the order they arrive, with one
+exception: the `lifecycleMemberships` inventory a retirement reads before it deletes the retired
+agent's membership rows. That request is answered without waiting for the others, so a manager stop
+that retires many seats does not queue each inventory behind the other seats' evictions. Inventories
+that arrive together share one read of the members bucket, and each one's read begins after it
+arrived.
+
 A reply on the `ctl.delivery` or `ctl.delivery-admin` rail that is larger than the broker's
 `max_payload` cannot be published. The daemon answers that request with a refusal giving the reply's
 size in bytes, so the caller fails at once and does not wait out its timeout.

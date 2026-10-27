@@ -1749,7 +1749,8 @@ When the manager had no managed agents, it prints no report. When they cannot be
 example on a user-auth mesh with no login on this machine, it prints
 `could not list managed agents (<reason>)` and the stop continues.
 The built-in pty runtime keeps each PTY inside the manager process, so those seats cannot outlive
-it: every manager stop stops and deprovisions them, and `down` reports them as stopped. Every manager
+it: every manager stop stops and deprovisions them, and `down` reports them as stopped. A manager
+retires at most 8 seats at a time, and the rest wait their turn. Every manager
 stop the CLI makes runs this one path: `down`, Ctrl-C on a foreground `cotal up`, the teardown after
 that `up`'s broker exits, the leftover-manager stop before `cotal up -f`, and the delivery cutover.
 Each holds the manager's stop reservation, so a second stop while one is in flight is refused,

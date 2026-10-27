@@ -58,8 +58,9 @@ export async function bootDeliveryDaemon(opts: {
    *  renews; the fixture's own smoke shortens it to observe renewal without waiting a TTL. */
   renewIntervalMs?: number;
   /** Observe each eviction the rail is about to execute (the principals it was asked to evict), for
-   *  a suite that asserts its path reached the rail. The shipped executor still runs. */
-  onEvict?: (principals: readonly string[]) => void;
+   *  a suite that asserts its path reached the rail. The shipped executor runs once it settles, so a
+   *  suite can also hold an eviction open on the rail. */
+  onEvict?: (principals: readonly string[]) => void | Promise<void>;
 }): Promise<DeliveryDaemon> {
   const { space, servers, auth, reloadStoreIdentity } = opts;
   // The $SYS pair the eviction executor connects with: an observer that can CONNZ-scan the account
@@ -84,15 +85,15 @@ export async function bootDeliveryDaemon(opts: {
   await ep.start();
   const dlvRevision = await ep.acquireDeliveryLease(0);
   await ep.startPlane3((owner, lifecycleUid) => ep.aclForOwner(owner, lifecycleUid), {
-    evictPrincipal: (principal) => {
-      opts.onEvict?.([principal]);
+    evictPrincipal: async (principal) => {
+      await opts.onEvict?.([principal]);
       return evictDeniedPrincipalWithCreds({
         servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
         options: { maxVerifyRounds: 12 },
       });
     },
-    evictPrincipals: (principals) => {
-      opts.onEvict?.(principals);
+    evictPrincipals: async (principals) => {
+      await opts.onEvict?.(principals);
       return evictDeniedPrincipalsWithCreds({
         servers, observerCreds, evictorCreds, accountId: auth.account.pub, principals,
         options: { maxVerifyRounds: 12 },
