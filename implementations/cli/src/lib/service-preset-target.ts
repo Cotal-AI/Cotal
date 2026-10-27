@@ -67,7 +67,8 @@ function ambiguous(space: string, requested: string, rows: readonly ServiceDefin
 /** Resolve a preset name given to a service action to the one definition of this space it means.
  *  A saved definition of that exact name always wins and is returned as itself. Otherwise a start
  *  with no definition saves one from the preset's defaults and the options it named; a start of an
- *  existing, stopped one with other options saves it again. Undefined when the name is no preset. */
+ *  existing, stopped one with other options saves it again. A log read of `stack-manager` with no
+ *  such definition reaches the manager `up` recorded by PID. Undefined when the name is no preset. */
 export function resolvePresetService(space: string, root: string, requested: string, mode: string, values: ParsedArgs["values"]): PresetServiceTarget | undefined {
   const store = serviceDefinitionStore(space, addedDefinitionStep);
   const exact = store.read(requested);
@@ -80,7 +81,12 @@ export function resolvePresetService(space: string, root: string, requested: str
     if (launch.type !== "adapter" || launch.adapter !== preset!.adapter) throw new CommandFailure("refused", "USAGE_INVALID", `${requested} is a saved service of your own, not the ${requested} preset; its options are fixed when it is added`, { target: { space, name: requested }, remedy: `cotal service start ${requested}` });
     return redefine(space, root, preset!, exact, requested, options, values);
   }
-  if (!preset) return undefined;
+  if (!preset) {
+    // `up`'s retained launcher saves no stack-manager, so for a log read that name means the manager it started.
+    const manager = mode === "logs" && requested === STACK_DEFINITION.manager ? findServicePreset("manager") : undefined;
+    const recorded = manager && recordedPresetProcess(space, root, manager);
+    return recorded ? { requested, name: requested, preset: manager.name, saved: null, recorded } : undefined;
+  }
   const rows = presetDefinitions(space, root, preset);
   const live = rows.filter((row) => running(space, row.name));
   const chosen = live.length === 1 ? live[0] : live.length > 1 ? undefined : rows.length === 1 ? rows[0] : undefined;

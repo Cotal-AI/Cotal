@@ -4798,9 +4798,13 @@ not `manager`. So after `cotal up`, `cotal manager status` and `cotal manager st
 stack's manager, and `cotal manager start` reports it running and starts no second one. Two saved
 manager services in one space refuse `TARGET_AMBIGUOUS`, naming each with its `cotal service`
 command. A manager that `cotal up` or `cotal supervise` started without a saved service is reported
-by `start` and `status` with its PID, and starts nothing beside it. `stop` and the other verbs refuse
-it, because no saved service owns it; it stops with its stack through `cotal down`, or where
-`cotal supervise` runs it.
+by `start` and `status` with its PID, and starts nothing beside it. `logs` reads the log `cotal up`
+opened for it, `<root>/.cotal/manager.<spaceKey>.log`, and changes nothing. It takes `--tail`,
+`--follow` and `--json` as a service's `logs` does, and a follow ends when that manager's process is
+gone. `cotal service logs stack-manager` reads the same file when no `stack-manager` is saved. A
+manager that `cotal supervise` runs in a terminal writes to that terminal instead. `stop`, `install`
+and the other verbs refuse it, because no saved service owns it; it stops with its stack through
+`cotal down`, or where `cotal supervise` runs it.
 
 `--foreground` keeps the manager in this terminal until Ctrl-C, which stops it through its native
 stop. A unit or container you write that runs a manager uses `cotal manager start --foreground`.
