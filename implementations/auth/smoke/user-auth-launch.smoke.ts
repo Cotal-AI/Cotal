@@ -17,6 +17,9 @@
  *   E. recovery: a crashed (SIGKILLed) auth service surfaces the exact `cotal up` recovery on a
  *      user connect, a refresh `cotal up` on the RUNNING broker heals it, and a cross-mode flag
  *      (`up --open` on the user mesh) is refused loudly.
+ *   E3. `cotal supervise` from another root that holds its own signer for the space is refused as a
+ *      refusal: a `Mesh:` heading, PERMISSION_DENIED, the refused credential and broker, and a Next
+ *      naming the folder that hosts the space. No bare `Authorization Violation` line.
  *   F. `cotal down` stops the auth service (space-scoped pid) with the broker; re-`up` WITHOUT
  *      --user-auth on a user-enabled root is refused fail-closed.
  *   G. `clean all`, and `reset space` on a stopped controller stack, name the IdP trust and the
@@ -31,7 +34,7 @@ import type { AddressInfo } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { jwt } from "better-auth/plugins/jwt";
@@ -91,13 +94,13 @@ const CLAUDE = join(import.meta.dirname, "..", "..", "..", "extensions", "connec
 /** Run the REAL binary (built dist through bin/cotal.ts) in the sandboxed workspace. ASYNC on
  *  purpose: a sync child would block this process's event loop — and the in-process IdP with it —
  *  deadlocking any subprocess step that calls back into the IdP (the user-mode send does). */
-function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string> } = {}): Promise<{ status: number | null; out: string }> {
+function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string>; sandbox?: SmokeSandboxAnchor } = {}): Promise<{ status: number | null; out: string }> {
   return new Promise((resolvePromise) => {
     const options = {
       cwd: opts.cwd ?? root,
       env: { ...childEnv, ...(opts.env ?? {}) },
     };
-    assertSmokeSandboxDown(sandbox, args, options);
+    assertSmokeSandboxDown(opts.sandbox ?? sandbox, args, options);
     const child = spawn(TSX, [BIN, ...args], options);
     let out = "";
     child.stdout.on("data", (d: Buffer) => { out += d.toString(); });
@@ -143,6 +146,8 @@ async function approve(userCode: string): Promise<void> {
 }
 
 let witnessNc: Awaited<ReturnType<typeof connect>> | undefined;
+// E3's second root, with its own home, so `finally` can stop and remove it.
+let other: { root: string; home: string; env: Record<string, string>; sandbox: SmokeSandboxAnchor } | undefined;
 try {
   // ---------- A. up --user-auth ----------
   console.log("A) cotal up --user-auth --idp <real IdP> --auth-timeout 3 --detach");
@@ -642,6 +647,29 @@ try {
   const reHeal = await cotal(["up", "--user-auth", "--idp", base, "--server", SERVER, "--space", SPACE]);
   check("after the wedge is cleared a plain re-up heals the service", reHeal.status === 0 && reHeal.out.includes("user-auth service up"), reHeal.out);
 
+  // ---------- E3. a manager from another root's signer is refused as a refusal ----------
+  console.log("E3) supervise from another root with its own signer for the space: a refusal naming the credential, the broker and the next step");
+  // A second root starts the same space on its own broker under its own home, then stops. It keeps a
+  // signer for SPACE that the running broker on SERVER does not trust.
+  {
+    const otherRoot = mkdtempSync(join(tmpdir(), "cotal-ua-other-root-"));
+    const otherHome = mkdtempSync(join(tmpdir(), "cotal-ua-other-home-"));
+    const env = { COTAL_HOME: otherHome, XDG_CONFIG_HOME: join(otherHome, "xdg") };
+    other = { root: otherRoot, home: otherHome, env, sandbox: recordSmokeSandbox({ root: otherRoot, cotalHome: otherHome, xdgConfigHome: env.XDG_CONFIG_HOME }) };
+    const otherUp = await cotal(["up", "--user-auth", "--idp", base, "--detach", "--server", `nats://127.0.0.1:${await pickFreePort()}`, "--space", SPACE], { cwd: otherRoot, env });
+    check("the second root starts the same space on its own broker", otherUp.status === 0, otherUp.out);
+    const otherDown = await cotal(["down"], { cwd: otherRoot, env, sandbox: other.sandbox });
+    check("…and stops it, keeping its own signer", otherDown.status === 0 && existsSync(join(otherRoot, ".cotal", "auth")), otherDown.out);
+    const refused = await cotal(["supervise", "--space", SPACE, "--server", SERVER], { cwd: otherRoot });
+    const text = plain(refused.out);
+    check("supervise from that root exits 2 under a Mesh: heading with code PERMISSION_DENIED, keeping the broker's words as the native detail",
+      refused.status === 2 && text.includes(`Mesh: ${SPACE}\n`) && text.includes("Request refused") && field(refused.out, "Code", "PERMISSION_DENIED") && field(refused.out, "Native detail", "Authorization Violation") && !text.includes("✗ Authorization Violation"), refused.out);
+    check("the message names the refused credential, its root, and the broker",
+      text.includes(`the broker at ${SERVER} refused the manager credential this folder's signer for space "${SPACE}" minted (${otherRoot}), so no manager started`), refused.out);
+    check("Next starts the manager from the folder that hosts the space, and names the participant sign-in",
+      /\nNext\n/.test(text) && text.includes(`start the manager from ${root}, the folder that hosts space "${SPACE}": cd ${root} && cotal manager start`) && text.includes("(cotal meshes add, then cotal login)"), refused.out);
+  }
+
 
   // ---------- F. down + fail-closed re-up ----------
   console.log("F) down stops the auth service; re-up without --user-auth is refused");
@@ -704,6 +732,11 @@ try {
   try { await witnessNc?.close(); } catch { /* */ }
   await cotal(["down"], { timeoutMs: 30_000 }); // idempotent — kills by ITS OWN pid files only
   await cotal(["down", "--yes"], { timeoutMs: 30_000 }); // the controller stack of G, if it is still up
+  if (other) {
+    await cotal(["down"], { cwd: other.root, env: other.env, sandbox: other.sandbox, timeoutMs: 30_000 }); // E3's second root, if it is still up
+    rmSync(other.home, { recursive: true, force: true });
+    rmSync(other.root, { recursive: true, force: true });
+  }
   idpSrv.close();
   rmSync(home, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
