@@ -1226,7 +1226,10 @@ static or borrowed caller.
 The manager requires an existing signed-in, granted CLI login. First enable can therefore start
 the other members and return partial `OPERATION_PARTIAL` with native cause `AUTH_REQUIRED`, while
 leaving the manager unattempted. Sign in with `cotal login`, obtain the required grant, then run
-bare `cotal up` to continue that known partial operation. `--no-manager` omits that member and its
+bare `cotal up` to continue that known partial operation. `cotal manager start` refuses the same
+way, with `AUTH_REQUIRED` and exit 2, before it saves or launches anything. Stopping the manager
+needs no sign-in in the folder that hosts the space: `cotal down` and `cotal manager stop` read its
+stop impact from the manager's own local receipt. `--no-manager` omits that member and its
 login requirement. Unknown outcomes are never continued or replayed. Public exchange faces and
 TLS-required or remote user-auth brokers still require the retained native route.
 
@@ -4831,6 +4834,12 @@ service show manager` reads it. A start that names another `--runtime` or other 
 stopped manager saves it again with that option, and says so. A running one refuses
 `LIFECYCLE_BLOCKED` and names `cotal manager stop` first.
 
+On a user-auth space this folder hosts, `start` and `restart` need your signed-in, granted login,
+as `cotal up` does for its manager. Without one they refuse `AUTH_REQUIRED` (exit 2) before
+anything is saved or launched, and Next names `cotal login`, then the command again. `stop` and
+`cotal down` need no sign-in there: the broker, the records and the process belong to this folder,
+so the stop reads the manager's own local receipt.
+
 The manager these verbs act on is the space's one manager service: `manager` when `cotal manager
 start` saved it, or `stack-manager` when `cotal up` did. Stderr names the saved service when it is
 not `manager`. So after `cotal up`, `cotal manager status` and `cotal manager stop` act on the
@@ -4887,8 +4896,9 @@ cotal supervise [--execution runtime|none] [--runtime <name>] [--space <s>] [--s
 
 `supervise` runs a manager in this terminal until Ctrl-C. It is deprecated, hidden from help and
 completion, and removed in `1.0.0`, with the other [deprecated daemon
-entries](UPGRADING.md#deprecated-daemon-entries): every run prints one stderr line naming
-`cotal manager start`, and `cotal manager start --foreground` for a terminal or a unit. A run given
+entries](UPGRADING.md#deprecated-daemon-entries): every run prints one stderr warning naming
+`cotal manager start`, and `cotal manager start --foreground` for a terminal or a unit. On a
+terminal it wraps like any other warning. A run given
 `--execution`, `--spawn`, `--seat-cap` or a resume flag, which `manager start` does not take yet,
 says to keep `supervise` for that run instead. It keeps its flags and its run for existing units,
 scripts and containers. The manager that `cotal up` starts
@@ -4930,6 +4940,8 @@ unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. Wi
 on the class rail, an unpinned spawn is refused and names the agent application to add. A partial
 inventory keeps the class rail and names `--on` on a harness refusal, because sibling
 inventories are not readable from the serve credential. See [control surface](control-surface.md#instance-routing).
+The manager prints what its boot inventory found once it is up, so a start that is refused prints
+no boot line.
 
 Use `--execution none` only for a fresh control instance in an existing hosting user-auth root.
 It requires that space's signing trust, provider pin and user-mode mesh record, without remote
@@ -4954,7 +4966,11 @@ provider that rejects with `null` or a string still gets its refusal line and ex
 When the broker refuses the credential the manager presents, such as one this folder's signer
 minted for a space another folder hosts, `supervise` exits 2 with a `PERMISSION_DENIED` refusal
 under a `Mesh:` heading that names the credential and the broker, and its Next names the folder
-that hosts the space.
+that hosts the space. Before it connects, `supervise` refuses the same way, with exit 2 under a
+`Mesh:` heading, and writes nothing in this folder. A space whose own stack in this folder is
+stopped or not started gets `TARGET_UNAVAILABLE` and `cotal up` there, and with `--server` also the
+folder whose `cotal up` started that broker. A user-auth space that another folder hosts gets
+`PERMISSION_DENIED` and the folder that hosts it.
 
 On a normal `SIGINT`/`SIGTERM`, the manager stops every seat and requires the selected runtime to
 prove the seat is gone before it releases the manager lease or service registration. A stop that
@@ -8690,8 +8706,9 @@ counts that blocked its preflight, without exposing other owners' agent rows. Ow
 visibility requires the stack operator or an authorized admin-scoped caller; the command never
 substitutes one. On a user-auth space, the refusal's next step is the whole-row
 `cotal actor grant` that adds `admin` to your current grant, as the auth plane prints it from the
-ledger row; after it, `cotal down` stops the stack. No stop policy is accepted while any blocker
-remains. This is
+ledger row. A stop in the folder that hosts the space reads the manager's own local receipt
+instead, so its owner stops the whole manager without that scope or a sign-in. No stop policy is
+accepted while any blocker remains. This is
 an observation at the reported time, not a reservation, permission to stop or a guarantee that the
 set cannot change. Older managers can omit it; the native service adapter refuses when the
 required process/lifecycle correlation is absent. Generic process launch/stop still refuses managers.
@@ -8728,7 +8745,8 @@ lifecycle UID. It preserves the invoking managed-seat caller, registered root/br
 TLS. Missing caller support refuses without an operator substitution. The completed status read's
 own admission is excluded from stop impact; other admitted work remains counted.
 
-An open mesh uses the pinned child's private request-bound local observation. Its service, launch,
+An open mesh uses the pinned child's private request-bound local observation, and so does a stop
+in the folder that hosts a user-auth space. Its service, launch,
 request and both process creation identities must match, and its registration must match the
 launch identity. Output labels this a child-local receipt, not a broker-attributed endpoint
 response. A retained stop handoff blocks readiness adoption on either route instead of treating
