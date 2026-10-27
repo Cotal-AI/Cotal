@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { JetStreamApiError } from "@nats-io/jetstream";
 import { CotalEndpoint, mintCreds, newIdentity } from "@cotal-ai/core";
-import { CommandFailure, boundedValue, loadMeshes, localProcessPath, oneLine, type MeshTarget } from "@cotal-ai/workspace";
+import { CommandFailure, boundedValue, loadMeshes, localProcessPath, NATS_PIDFILE, oneLine, type MeshTarget } from "@cotal-ai/workspace";
 import { pidfileState } from "../commands/down.js";
 import { shellWord } from "./endpoint-errors.js";
 import { readOwnedLogTail, readServiceLog } from "./service-process.js";
@@ -106,7 +106,7 @@ export function brokerStoreWrite(root: string, space: string): StoreWriteObserva
       const row = serviceInstances(space).map(instanceProjection).find((item) => item.definition === STACK_DEFINITION.broker && item.observedProcess === "running");
       if (row?.pid) broker = { pid: row.pid, read: () => readServiceLog(space, row.instanceId, 20_000) };
     } else {
-      const record = pidfileState(localProcessPath("nats.pid", { root, space }));
+      const record = pidfileState(localProcessPath(NATS_PIDFILE, { root, space }));
       if (record.liveness === "alive" && record.pid) broker = { pid: record.pid, read: () => readOwnedLogTail(join(root, ".cotal", "nats.log"), 20_000) };
     }
   } catch {

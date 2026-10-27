@@ -23,6 +23,7 @@ import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 import { mkSecretDir, type SecretStore } from "@cotal-ai/core";
 import { accountInventory, authDir, spaceSegment } from "./auth-paths.js";
+import { NATS_PIDFILE } from "./local-process.js";
 import { CommandFailure } from "./output.js";
 import { renewalRecordPath } from "./renewal-path.js";
 
@@ -55,7 +56,7 @@ export function cotalDir(root: string): string {
 export const RESERVED_COTAL_CHILDREN: readonly string[] = [
   "agents", "auth", "auth-service.json", "broker-policy.json", "channels.json", "config.json",
   "connection-evictor.creds", "delivery.creds", "maintenance", "manifests", "membership.json",
-  "membership-observer.creds", "membership-rw.creds", "meshes", "nats", "nats.log", "nats.pid",
+  "membership-observer.creds", "membership-rw.creds", "meshes", "nats", "nats.log", NATS_PIDFILE,
   "setup.log",
 ];
 

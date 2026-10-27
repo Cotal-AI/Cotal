@@ -3,7 +3,7 @@ import "./lib/broker-service.js";
 import "./service-unit.js";
 import { registry, type Command } from "@cotal-ai/core";
 import {
-  CommandFailure, credentialMintFlags, jsonFlag, plainFlag, presentationOf, serverFlag, spaceFlag, targetFlags, validateCredentialMintArguments, validateCredentialRevokeArguments,
+  CommandFailure, credentialMintFlags, jsonFlag, NATS_PIDFILE, plainFlag, presentationOf, serverFlag, spaceFlag, targetFlags, validateCredentialMintArguments, validateCredentialRevokeArguments,
   type CredentialAction, type LocalProcess,
 } from "@cotal-ai/workspace";
 import { MANAGER_PROCESS } from "./lib/manager-proc.js";
@@ -868,7 +868,7 @@ const baseProcesses: LocalProcess[] = [
     name: "nats",
     label: "nats-server",
     order: 100,
-    pidFile: "nats.pid",
+    pidFile: NATS_PIDFILE,
     stopLast: true,
     clearsMesh: true,
   },

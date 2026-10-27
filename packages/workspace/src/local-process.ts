@@ -63,6 +63,11 @@ export const MANAGER_PIDFILE = "manager.{space}.pid";
 /** The native user-auth daemon custody slot, per space. */
 export const AUTH_PIDFILE = "auth-service.{space}.pid";
 
+/** `.cotal/nats.pid` — the broker this root started. Root-scoped: one root runs one broker, and the
+ *  name is not a `{space}` template. The CLI writes it from `cotal up` and reads it from `cotal down`,
+ *  `cotal status` and the clean sweep, so the name lives here where a rename reaches every one of them. */
+export const NATS_PIDFILE = "nats.pid";
+
 /** The stop reservation beside a resolved pidfile: whoever holds it is the one process stopping that
  *  record, and a manager reads it to bind a `--with-agents` intent to the exact stop attempt. */
 export const stopReservationPath = (pidPath: string): string => `${pidPath}.stopping`;

@@ -191,6 +191,7 @@ import {
   SPACE_NAME_MAX,
   spaceNameTooLong,
   MIN_FILE_STORE,
+  NATS_PIDFILE,
   exitCode,
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
@@ -2222,7 +2223,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // so a later `cotal spawn` doesn't try to join a dead mesh.
   child.on("exit", async (code, signal) => {
     if (failedListeners.has(child)) return;
-    removePidPair(cotalPath("nats.pid"), String(child.pid));
+    removePidPair(cotalPath(NATS_PIDFILE), String(child.pid));
     // One teardown at a time: a stop started while another is in flight is refused the reservation
     // that one holds, so wait for a Ctrl-C teardown already running instead of racing it.
     await teardown;
@@ -2517,7 +2518,7 @@ async function stopFailedListener(child: ChildProcess, published = true): Promis
     if (!await waitForChildExit(child, 5_000))
       throw new Error(`nats-server process ${child.pid ?? "unknown"} did not exit after SIGKILL`);
   }
-  if (published) removePidPair(cotalPath("nats.pid"), String(child.pid));
+  if (published) removePidPair(cotalPath(NATS_PIDFILE), String(child.pid));
 }
 
 function bindSpawnedRestoreListener(prepared: PreparedRestore, pid: number, startedAt: string, heldLock?: MaintenanceLock): void {
@@ -2612,7 +2613,7 @@ async function proveBoundListener(
   } catch {
     throw new Error(`${label} listener process ownership is not live and local`);
   }
-  const pidPath = join(attempt.root, ".cotal", "nats.pid");
+  const pidPath = join(attempt.root, ".cotal", NATS_PIDFILE);
   let exactPidFile = false;
   try {
     const stat = lstatSync(pidPath);
@@ -3761,7 +3762,7 @@ async function startDeliveryWithBroker(
 async function recordSpawnedListener(child: ChildProcess, startedAt: string, bound?: DetachOpts["boundListener"]): Promise<void> {
   if (!child.pid) throw new Error("nats-server spawned with no pid");
   try {
-    writePidPair(cotalPath("nats.pid"), child.pid); // #969/#1238: publish the pair by rename, never torn
+    writePidPair(cotalPath(NATS_PIDFILE), child.pid); // #969/#1238: publish the pair by rename, never torn
   } catch (error) {
     // The entry at `nats.pid` may be the one that refused the publish (a directory there fails the
     // rename), so it is left as found: unrecording would read it and throw over this error.
@@ -5371,7 +5372,7 @@ async function authSetup(
  * its own claim machinery. This is specifically the precondition for retiring an authority.
  */
 async function assertRootBrokerStopped(root: string): Promise<void> {
-  const pidPath = join(root, ".cotal", "nats.pid");
+  const pidPath = join(root, ".cotal", NATS_PIDFILE);
   if (existsSync(pidPath)) {
     let raw: string;
     try {
