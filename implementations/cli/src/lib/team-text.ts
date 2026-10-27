@@ -29,6 +29,16 @@ export function teamText(value: string): string {
   return TEAM_TEXT[value] ?? value.replaceAll("-", " ");
 }
 
+/** The way past retained additive deployments that block another command: preview and apply the
+ *  removal of each, which names any step that keeps one unknown, then repeat `next`. */
+export function retainedRemovalRemedy(deploymentIds: readonly string[], unreadable: readonly string[], next: string): string {
+  return [
+    ...deploymentIds.map((id) => `preview the removal of ${id} with \`cotal team remove ${id} --dry-run\`, then apply it with \`cotal team remove ${id} --yes\``),
+    ...unreadable.map((path) => `repair or inspect the unreadable record ${path}`),
+    `then run \`${next}\` again`,
+  ].join("; ");
+}
+
 /** How the team reports name an auth mode, as the stack's member table does. */
 export function authModeText(mode: string | null | undefined): string {
   if (mode === null || mode === undefined) return "not recorded";

@@ -93,6 +93,7 @@ import { downManifest } from "./down-manifest.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
+import { retainedRemovalRemedy } from "../lib/team-text.js";
 import { service, serviceComplete, validateServiceArguments } from "./service-registry.js";
 import { stopNamedServiceSet } from "./service-set-stop.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
@@ -418,7 +419,7 @@ function guardLegacyBareDown(): { space: string } {
   try { additiveAttempts = listAdditiveTeamAttempts(root); }
   catch (error) { if (isCommandFailure(error)) throw error; throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the additive attempt inventory could not be read; bare down did not infer an empty resource set", { target: scoped }); }
   if (retainedAdditiveTeamAttempts(additiveAttempts).length || additiveAttempts.refused.length)
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an additive attempt or returned additive deployment remains under this root; legacy bare down did not adopt its resources", { target: { ...scoped, deploymentIds: retainedAdditiveTeamAttempts(additiveAttempts).map((attempt) => attempt.deploymentId), unreadable: additiveAttempts.refused.map(({ path }) => path) } });
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an additive attempt or returned additive deployment remains under this root; legacy bare down did not adopt its resources", { target: { ...scoped, deploymentIds: retainedAdditiveTeamAttempts(additiveAttempts).map((attempt) => attempt.deploymentId), unreadable: additiveAttempts.refused.map(({ path }) => path) }, remedy: retainedRemovalRemedy(retainedAdditiveTeamAttempts(additiveAttempts).map((attempt) => attempt.deploymentId), additiveAttempts.refused.map(({ path }) => path), "cotal down") });
   let attempts: ReturnType<typeof listFreshTeamAttempts>, summaries: ReturnType<typeof listFreshTeamSummaries>;
   try { attempts = listFreshTeamAttempts(root); summaries = listFreshTeamSummaries(root); }
   catch (error) { if (isCommandFailure(error)) throw error; throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "fresh boot attempt or summary records could not be read; bare down did not infer stop authority", { target: scoped }); }

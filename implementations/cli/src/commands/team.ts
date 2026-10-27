@@ -6,7 +6,7 @@ import { formatIssue, loadManifest, ManifestError, type PreparedManifest } from 
 import { UnusableFile } from "../lib/unusable-file.js";
 import { findLedgerByRun, listLedgerFiles, type MeshLedger } from "../lib/manifest/ledger.js";
 import { findFreshTeamAttempt, findFreshTeamSummary, freshTeamAttemptSettled, freshTeamSummaryRecordedElsewhere, listFreshTeamAttempts, listFreshTeamSummaries, type FreshTeamSummary } from "../lib/team-fresh.js";
-import { additiveTeamRecordedState, findAdditiveTeamAttempt, listAdditiveTeamAttempts, removedAdditiveDeploymentIds } from "../lib/team-additive-attempt.js";
+import { additiveTeamRecordedState, findAdditiveTeamAttempt, listAdditiveTeamAttempts, removedAdditiveDeploymentIds, stoppedAttemptEffects, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { cardsWithoutLiveDelivery, inspectTeamDeployment, LIVE_DELIVERY_REMEDY, readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
 import { managerRecordState } from "../lib/manager-proc.js";
@@ -230,7 +230,7 @@ export async function team(args: ParsedArgs): Promise<void> {
         const caveat = removalReceipt ? "All original static agent incarnations have matched native retired slot/head and cleanup receipts. Current alias holders are not rechecked, and the receipt authorizes no further stop." : agentReceipt ? "Declared channel creates and native launch joins have matching historical receipts. Current health, readers and permission to remove an incarnation are not established." : "The original intent and steps do not settle every channel create and launch. A missing acceptance or terminal does not authorize another submission.";
         const data = { ...additiveAttempt, server: brokerAddressForDisplay(additiveAttempt.server) ?? "not displayable", kind: mixed ? "additive-mixed-deployment" : "additive-agent-deployment", recordedState: additiveTeamRecordedState(additiveAttempt, inventory), agentSteps, steps, removalReceipt, removalAttempt, removalSteps, cardRemoval, remainingRemovalPhase: !removalAttempt ? null : !removalReceipt ? "agent-retirement" : mixed && !cardRemoval?.receipt ? "card-removal" : null, receipt: agentReceipt ? { ...agentReceipt, server: brokerAddressForDisplay(agentReceipt.server) ?? "not displayable" } : null, unreadableSteps: [...new Set([...unreadableSteps, ...inventory.refused.filter(({ path }) => basename(path).startsWith(`team-deploy-agent-step-${subject}-`) || basename(path).startsWith("team-remove-") && basename(path).includes(subject!) || basename(path).startsWith("team-channel-remove-") && basename(path).includes(subject!)).map(({ path }) => path)])], currentState: "not-rechecked" };
         writeResult(presentationOf(values), { command: "team", target: { space: data.space, root: data.root, deploymentId: data.deploymentId }, result: data, completeness: "partial" }, (row): Report => ({ sections: [
-          { title: agentReceipt ? "Returned additive team" : "Unsettled additive team", blocks: [{ kind: "fields", rows: [["Deployment", row.deploymentId], ["Root", row.root], ["Manager", row.managerInstanceId ?? "not recorded"], ["Recorded state", teamText(row.recordedState)], ["Requested agents", String(row.requestedAgents.length)], ["Joined receipts", row.receipt ? String(row.receipt.createdAgents.length) : "incomplete"], ["Declared channels", String(row.declaredChannels.length)], ["Channel create receipts", row.receipt ? String(row.receipt.createdChannels.length) : "incomplete"], ["Current state", row.currentState]] }] },
+          { title: agentReceipt ? "Returned additive team" : row.recordedState === "removal-returned" ? "Removed incomplete additive team" : "Unsettled additive team", blocks: [{ kind: "fields", rows: [["Deployment", row.deploymentId], ["Root", row.root], ["Manager", row.managerInstanceId ?? "not recorded"], ["Recorded state", teamText(row.recordedState)], ["Requested agents", String(row.requestedAgents.length)], ["Joined receipts", row.receipt ? String(row.receipt.createdAgents.length) : "incomplete"], ["Declared channels", String(row.declaredChannels.length)], ["Channel create receipts", row.receipt ? String(row.receipt.createdChannels.length) : "incomplete"], ["Current state", row.currentState]] }] },
           ...(row.receipt ? [{ title: "Original joined identities", blocks: [{ kind: "table" as const, columns: [{ key: "requested", label: "Declared" }, { key: "name", label: "Allocated" }, { key: "id", label: "Identity" }, { key: "goal", label: "Accepted goal" }], rows: row.receipt.createdAgents.slice(0, 100).map((agent) => ({ requested: agent.requested, name: agent.name, id: agent.id, goal: agent.request.goalId })) }, ...(row.receipt.createdAgents.length > 100 ? [{ kind: "lines" as const, lines: ["Additional joined identities are in JSON."] }] : [])] }] : [{ title: "Native launch journal", blocks: [{ kind: "table" as const, columns: [{ key: "name", label: "Declared" }, { key: "phase", label: "Phase" }, { key: "request", label: "Original request" }, { key: "goal", label: "Accepted goal" }], rows: row.agentSteps.slice(0, 100).map((step) => ({ name: step.name, phase: step.phase, request: step.requestId, goal: step.request?.goalId ?? "not returned" })) }, { kind: "lines" as const, lines: [...(row.agentSteps.length > 100 ? ["Additional native steps are in JSON."] : []), "Do not retry an unknown launch or infer a fresh incarnation from a reused name."] }] }]),
           ...(row.declaredChannels.length ? [{ title: row.receipt ? "Created channel receipts" : "Native channel journal", blocks: [{ kind: "table" as const, columns: [{ key: "name", label: "Channel" }, { key: "phase", label: "Phase" }, { key: "revision", label: "Returned revision" }], rows: row.receipt ? row.receipt.createdChannels.slice(0, 100).map((channel) => ({ name: `#${channel.name}`, phase: "accepted", revision: String(channel.revision) })) : row.steps.slice(0, 100).map((step) => ({ name: `#${step.name}`, phase: step.phase, revision: step.phase === "accepted" ? String(step.revision) : "not returned" })) }, { kind: "lines" as const, lines: [...((row.receipt ? row.receipt.createdChannels.length : row.steps.length) > 100 ? ["Additional channel records are in JSON."] : []), "Returned revisions do not prove current cards or exclusive readers."] }] }] : []),
           ...(row.removalAttempt ? [{ title: row.removalReceipt ? "Recorded native retirements" : "Unsettled removal journal", blocks: [{ kind: "fields" as const, rows: [["Full removal receipt", row.removalReceipt ? "recorded" : "not confirmed"], ["Original-receipt binding", row.removalAttempt.originalReceiptDigest]] as const }, { kind: "table" as const, columns: [{ key: "name", label: "Original agent" }, { key: "phase", label: "Observation" }, { key: "request", label: "Stop request" }, { key: "revisions", label: "Slot / head revisions" }], rows: row.removalSteps.map((step) => ({ name: step.phase === "retired" ? step.observation.name : row.receipt?.createdAgents[step.ordinal]?.name ?? row.requestedAgents[step.ordinal] ?? "not recorded", phase: step.phase === "retired" ? "native retired and cleaned" : "stop submitted; outcome not implied", request: step.requestId ?? "already retired before stop", revisions: step.phase === "retired" ? `${step.observation.slotRevision} / ${step.observation.headRevision}` : "not confirmed" })) }, { kind: "lines" as const, lines: ["Only a complete matched retirement receipt releases this deployment's known additive blocker. An incomplete intent is not retry authority; stop acceptance is not retirement."] }] }] : []),
@@ -404,19 +404,36 @@ async function nativeRemovalImpact(root: string, ledger: MeshLedger) {
   }
 }
 
+/** What a removal of `attempt` covers. A returned deployment is shaped by its intent. With no returned
+ *  receipt, what the journal proves the attempt created picks the route, and a journal that leaves an
+ *  effect unknown refuses, naming that step. */
+function removalShape(root: string, attempt: AdditiveTeamAttempt): { agents: number; channels: number } {
+  const deploymentId = attempt.deploymentId, target = { root, deploymentId };
+  let inventory: ReturnType<typeof listAdditiveTeamAttempts>;
+  try { inventory = listAdditiveTeamAttempts(root); }
+  catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the additive attempt steps and receipts could not be read; no removal scope was inferred", { target }); }
+  if (inventory.returned.some((row) => row.deploymentId === deploymentId)) return { agents: attempt.requestedAgents.length, channels: attempt.declaredChannels.length };
+  const stopped = inventory.stopped.find((row) => row.deploymentId === deploymentId);
+  if (stopped) return { agents: stopped.createdAgents.length, channels: stopped.createdChannels.length };
+  const found = stoppedAttemptEffects(attempt, inventory.steps, inventory.agentSteps);
+  const why = inventory.refused.some((row) => row.path.includes(deploymentId)) ? "a record of this attempt is unreadable" : "unknown" in found ? found.unknown : "its records changed during this read";
+  throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this additive ID retains an unsettled attempt whose effects are not all recorded (${why}); team remove cannot infer which resources it created`, { target, remedy: `inspect cotal team show ${deploymentId} and the original native target; no effect was retried or removed` });
+}
+
 async function previewRemove(deploymentId: string, values: TeamValues): Promise<void> {
   if (values["dry-run"] !== true) {
-    // The original intent picks the route; each route revalidates its own returned receipt.
+    // The original intent picks the route; each route revalidates its own returned or stopped receipt.
     let routed: ReturnType<typeof findAdditiveTeamAttempt>;
     const catalog = personaCatalog(values);
     try { routed = findAdditiveTeamAttempt(catalog.root, deploymentId); }
     catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the additive attempt for this ID is unreadable; no removal route was inferred", { target: { deploymentId } }); }
     if (!routed) { const missing = unknownDeployment(catalog.root, catalog.space, deploymentId); if (missing) throw missing; }
-    if (routed && !routed.requestedAgents.length && routed.declaredChannels.length) {
+    const shape = routed ? removalShape(catalog.root, routed) : { agents: 0, channels: 0 };
+    if (routed && !shape.agents && shape.channels) {
       const { removeChannelTeam } = await import("./team-channel-remove.js");
       return removeChannelTeam(deploymentId, values);
     }
-    if (routed && routed.requestedAgents.length && routed.declaredChannels.length) {
+    if (routed && shape.agents && shape.channels) {
       const { removeMixedTeam } = await import("./team-mixed-remove.js");
       return removeMixedTeam(deploymentId, values);
     }
@@ -458,7 +475,10 @@ async function previewRemove(deploymentId: string, values: TeamValues): Promise<
       const { removeChannelTeam } = await import("./team-channel-remove.js");
       return removeChannelTeam(deploymentId, values);
     }
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this additive ID retains an unsettled attempt; team remove cannot infer which resources it created", { target: { root: catalog.root, deploymentId }, remedy: "inspect team show <deployment-id> and the original native target; no effect was retried or removed" });
+    if (attempt.space !== catalog.space) throw new CommandFailure("refused", "CONFLICT", "this unsettled additive attempt belongs to another selected space; it was not rebound", { target: { recordedSpace: attempt.space, selectedSpace: catalog.space, deploymentId } });
+    const shape = removalShape(catalog.root, attempt);
+    const route = shape.agents && shape.channels ? (await import("./team-mixed-remove.js")).removeMixedTeam : shape.agents ? (await import("./team-agent-remove.js")).removeAgentTeam : (await import("./team-channel-remove.js")).removeChannelTeam;
+    return route(deploymentId, values);
   }
   let found: ReturnType<typeof findLedgerByRun>;
   try { found = findLedgerByRun(catalog.root, deploymentId); }
@@ -565,7 +585,7 @@ async function previewBoot(file: string, values: TeamValues): Promise<void> {
       managerRecord: manager ? manager.state === "absent" ? { state: manager.state, pid: null } : { state: manager.state, pid: manager.pid ?? null, path: manager.path } : null };
     serviceCensus = readLocalServiceCensus(space);
     additiveRecords = controlDir === "real" ? listLedgerFiles(root, { requireReadable: true }) : { valid: [], refused: [] };
-    additiveAttempts = controlDir === "real" ? listAdditiveTeamAttempts(root) : { valid: [], steps: [], agentSteps: [], returned: [], refused: [] };
+    additiveAttempts = controlDir === "real" ? listAdditiveTeamAttempts(root) : { valid: [], steps: [], agentSteps: [], returned: [], stopped: [], refused: [] };
     bootAttempts = controlDir === "real" ? listFreshTeamAttempts(root) : { valid: [], refused: [] };
     bootSummaries = controlDir === "real" ? listFreshTeamSummaries(root) : { valid: [], refused: [], elsewhere: [] };
   } catch (error) {

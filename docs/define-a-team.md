@@ -148,17 +148,19 @@ recorded root. An additive ledger created by the older `spawn -f` path still use
 agents and channels. A new `team deploy` saves its own attempt and returned
 channel revisions or native agent allocation/join receipt; the old `down -f`
 ledger route cannot remove those resources. ID-only `team remove` retires a returned
-static agent-only deployment through its original manager with exact-incarnation guards
-and native retirement/cleanup receipts. An unsettled attempt is not retried. Other removal
-effects remain unsupported, and the legacy-ledger preview authorizes no teardown.
+static deployment's agents through its original manager with exact-incarnation guards
+and native retirement/cleanup receipts, then deletes its cards at their create revisions.
+When a launch fails partway, the same `team remove <id>` removes what the attempt's journal
+records it created, and `team deploy` names it as the next step. An unsettled attempt is
+never retried, and the legacy-ledger preview authorizes no teardown.
 
 ## Manifest ownership
 
 The additive details below describe the retained native ledger engine. The
 new channel-only, agent and mixed `team deploy` paths do not use that legacy ledger. Their
 create-only intent and returned receipt are separate. Only a complete matched
-static agent-only removal receipt releases that deployment's known additive blocker;
-its original history remains. Channel and mixed removal remain unavailable.
+removal receipt releases that deployment's known additive blocker; its original history
+remains.
 
 The rule: **`up -f` owns the whole space; an additive deploy owns only what it created.** Cotal
 only ever tears down what it owns; foreign actors on a shared mesh are never touched.

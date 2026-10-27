@@ -3,14 +3,14 @@ import * as prompts from "../lib/prompts.js";
 import { DEV_OWNER, contractDigest } from "@cotal-ai/core";
 import { ConfirmationRequired, acquireMaintenanceLock, canonicalRoot, CommandFailure, findMesh, oneLine, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report } from "@cotal-ai/workspace";
 import { askManager, managerFailure, resolveControlTarget } from "../lib/control.js";
-import { listAdditiveTeamAttempts, type AdditiveAgentReceipt, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
-import { writeAgentRemovalAttempt, writeAgentRemovalReceipt, writeAgentRemovalStep, type AgentRemovalAttempt, type AgentRemovalStep, type AgentRetirementObservation } from "../lib/team-agent-removal.js";
+import { listAdditiveTeamAttempts, removalOriginal, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
+import { writeAgentRemovalAttempt, writeAgentRemovalReceipt, writeAgentRemovalStep, type AgentOriginal, type AgentRemovalAttempt, type AgentRemovalStep, type AgentRetirementObservation } from "../lib/team-agent-removal.js";
 import { classifyAgent, type AgentSettlement, type SlotRow } from "../lib/team-removal-reconcile.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { canPrompt } from "./meshes-wizard.js";
 import type { TeamValues } from "./team.js";
 
-type Agent = AdditiveAgentReceipt["createdAgents"][number];
+type Agent = AgentOriginal["createdAgents"][number];
 interface Slot {
   name: string; owner: string; actor: string; slotLifecycleUid: string; slotPhase: string;
   cleanupComplete?: boolean; slotRevision: number; headState?: string; headLifecycleUid?: string;
@@ -23,7 +23,7 @@ export interface AgentRetirementRun { intentAttempted: boolean; returned: boolea
  * reads the pinned original manager's slots; `execute` runs only under the caller's maintenance lock.
  * A stop acknowledgement never settles removal: every original UID must reach a native retired
  * slot/head with confirmed cleanup, and an unconfirmed outcome stops the sequence without replay. */
-export async function prepareAgentRetirement(input: { root: string; space: string; deploymentId: string; original: AdditiveTeamAttempt; receipt: AdditiveAgentReceipt }) {
+export async function prepareAgentRetirement(input: { root: string; space: string; deploymentId: string; original: AdditiveTeamAttempt; receipt: AgentOriginal }) {
   const { root, space, deploymentId, original, receipt } = input, target = { root, space, deploymentId };
   if (original.authMode !== "auth" || !original.managerInstanceId) throw new CommandFailure("refused", "UNSUPPORTED", "native agent retirement needs a static-auth deployment with its recorded manager", { target });
   const manager = original.managerInstanceId, digest = contractDigest(receipt);
@@ -34,7 +34,7 @@ export async function prepareAgentRetirement(input: { root: string; space: strin
   const unchanged = () => {
     if (JSON.stringify(findMesh(space)) !== JSON.stringify(selected)) throw new CommandFailure("refused", "CONFLICT", "the selected registration changed; no later stop was submitted", { target });
     const current = listAdditiveTeamAttempts(root);
-    const now = current.returned.find((row) => row.deploymentId === deploymentId);
+    const now = removalOriginal(current, deploymentId);
     if (current.refused.length || !now || contractDigest(now) !== digest || JSON.stringify(current.valid.find((row) => row.deploymentId === deploymentId)) !== JSON.stringify(original)) throw new CommandFailure("refused", "CONFLICT", "the original intent, returned receipt or removal records changed; no later stop was submitted", { target });
   };
   const readSlots = async (agents: readonly Agent[]) => {
@@ -118,7 +118,7 @@ export async function prepareAgentRetirement(input: { root: string; space: strin
 }
 
 /** One row per original incarnation: its native retirement, stop or unattempted state. */
-export function agentOutcomeRows(receipt: AdditiveAgentReceipt, run: Pick<AgentRetirementRun, "retired" | "stops">) {
+export function agentOutcomeRows(receipt: AgentOriginal, run: Pick<AgentRetirementRun, "retired" | "stops">) {
   return receipt.createdAgents.map((agent) => ({ name: agent.name, uid: agent.lifecycleUid, state: run.retired.some((row) => row.lifecycleUid === agent.lifecycleUid) ? "native retired and cleaned" : run.stops.find((row) => row.lifecycleUid === agent.lifecycleUid)?.notExecuted ? "stop refused; not executed" : run.stops.find((row) => row.lifecycleUid === agent.lifecycleUid)?.acknowledged ? "stop acknowledged; retirement unconfirmed" : run.stops.some((row) => row.lifecycleUid === agent.lifecycleUid) ? "stop outcome unknown" : "not attempted" }));
 }
 
@@ -130,7 +130,7 @@ export interface AgentReconcileRun { recorded: AgentSettlement[]; settlements: A
  * target. An unconfirmed stop settles only when the original UID's slot and head are retired with
  * cleanup complete. A live original, a successor under the alias, or an in-flight terminal stays
  * open. Never-submitted incarnations are reported unattempted and are not continued. */
-export async function prepareAgentReconcile(input: { root: string; space: string; deploymentId: string; original: AdditiveTeamAttempt; receipt: AdditiveAgentReceipt; intent: AgentRemovalAttempt }) {
+export async function prepareAgentReconcile(input: { root: string; space: string; deploymentId: string; original: AdditiveTeamAttempt; receipt: AgentOriginal; intent: AgentRemovalAttempt }) {
   const { root, space, deploymentId, original, receipt, intent } = input, target = { root, space, deploymentId };
   if (original.authMode !== "auth" || !original.managerInstanceId) throw new CommandFailure("refused", "UNSUPPORTED", "retirement reconciliation needs a static-auth deployment with its recorded manager; open and user-auth managers keep no durable slot projection", { target });
   const manager = original.managerInstanceId, digest = contractDigest(receipt);
@@ -142,7 +142,7 @@ export async function prepareAgentReconcile(input: { root: string; space: string
   const intentText = JSON.stringify(intent);
   const unchanged = () => {
     if (JSON.stringify(findMesh(space)) !== JSON.stringify(selected)) throw new CommandFailure("refused", "CONFLICT", "the selected registration changed; nothing further was recorded", { target });
-    const current = listAdditiveTeamAttempts(root), now = current.returned.find((row) => row.deploymentId === deploymentId);
+    const current = listAdditiveTeamAttempts(root), now = removalOriginal(current, deploymentId);
     if (current.refused.length || !now || contractDigest(now) !== digest || JSON.stringify(current.valid.find((row) => row.deploymentId === deploymentId)) !== JSON.stringify(original) || JSON.stringify(current.removal?.attempts.find((row) => row.deploymentId === deploymentId)) !== intentText || current.removal?.returned.some((row) => row.deploymentId === deploymentId)) throw new CommandFailure("refused", "CONFLICT", "the original deployment, its removal intent or its removal records changed; nothing further was recorded", { target });
     return current.removal!.steps.filter((row) => row.deploymentId === deploymentId);
   };
@@ -198,7 +198,7 @@ export function agentSettlementRows(settlements: readonly AgentSettlement[]) {
 export const AGENT_RECONCILE_NOTE = "Reconciliation records only the original manager's durable retired slot and head for the original lifecycle UID, with cleanup complete. Process absence settles nothing. No stop was sent or retried, and never-submitted incarnations stay unattempted. An unsettled intent stays blocking.";
 
 /** Settle an unsettled static agent-only retirement intent from native slot observation. */
-async function reconcileAgentTeam(input: { root: string; space: string; deploymentId: string; original: AdditiveTeamAttempt; receipt: AdditiveAgentReceipt; intent: AgentRemovalAttempt; values: TeamValues }): Promise<void> {
+async function reconcileAgentTeam(input: { root: string; space: string; deploymentId: string; original: AdditiveTeamAttempt; receipt: AgentOriginal; intent: AgentRemovalAttempt; values: TeamValues }): Promise<void> {
   const { root, space, deploymentId, original, receipt, intent, values } = input, target = { root, space, deploymentId };
   const phase = await prepareAgentReconcile({ root, space, deploymentId, original, receipt, intent });
   const preview = { kind: "agent-team-removal-reconcile-preview" as const, deploymentId, managerInstanceId: phase.manager, agents: phase.settlements, recordable: phase.settlements.filter((row) => row.state === "record").length, effectAttempted: false as const, continuationOffered: false as const };
@@ -237,14 +237,15 @@ export async function withInterruptGuard<T>(fn: (signal: AbortSignal) => Promise
   finally { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); }
 }
 
-/** Remove only a returned static agent-only deployment. */
+/** Remove a returned static agent-only deployment, or the agent allocations of a stopped attempt. */
 export async function removeAgentTeam(deploymentId: string, values: TeamValues): Promise<void> {
   const catalog = personaCatalog(values), root = canonicalRoot(catalog.root), space = catalog.space;
   const target = { root, space, deploymentId };
   const inventory = listAdditiveTeamAttempts(root), original = inventory.valid.find((row) => row.deploymentId === deploymentId);
-  const receipt = inventory.returned.find((row) => row.deploymentId === deploymentId);
+  const receipt = removalOriginal(inventory, deploymentId);
   if (inventory.refused.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "unreadable deployment or removal records remain; no stop target was inferred", { target });
-  if (!original || !receipt || receipt.kind !== "additive-agent-receipt" || original.authMode !== "auth" || receipt.createdChannels.length || original.declaredChannels.length || !original.managerInstanceId || receipt.createdAgents.length > 100) throw new CommandFailure("refused", "UNSUPPORTED", "guarded removal currently needs a full static agent-only returned receipt; mixed/channel, open/user-auth, legacy and unsettled deployments were not routed through a weaker stop", { target });
+  const agentOnly = receipt?.kind === "additive-agent-receipt" ? !original?.declaredChannels.length : receipt?.kind === "additive-stopped-receipt" && receipt.createdAgents.length > 0;
+  if (!original || !receipt || receipt.kind === "additive-channel-receipt" || !agentOnly || original.authMode !== "auth" || receipt.createdChannels.length || !original.managerInstanceId || receipt.createdAgents.length > 100) throw new CommandFailure("refused", "UNSUPPORTED", "guarded removal currently needs a static agent-only returned receipt, or an unsettled attempt whose journal records only agent allocations; mixed/channel, open/user-auth and legacy deployments and unknown steps were not routed through a weaker stop", { target });
   if (original.space !== space || canonicalRoot(original.root) !== root) throw new CommandFailure("refused", "CONFLICT", "the deployment belongs to another selected root or space; no identity was rebound", { target });
   const manager = original.managerInstanceId;
   const prior = inventory.removal?.returned.find((row) => row.deploymentId === deploymentId);

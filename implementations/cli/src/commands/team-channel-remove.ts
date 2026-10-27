@@ -4,7 +4,7 @@ import { ConfirmationRequired, brokerAddressForDisplay, canonicalRoot, CommandFa
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { readStackJournal } from "../lib/stack-journal.js";
 import { personaCatalog } from "../lib/persona-files.js";
-import { listAdditiveTeamAttempts, removedAdditiveDeploymentIds, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
+import { listAdditiveTeamAttempts, removalOriginal, removedAdditiveDeploymentIds, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { CARD_TERMINAL_PHASES, openChannelCardRegistry, readChannelMemberImpact, writeChannelRemovalAttempt, writeChannelRemovalReceipt, writeChannelRemovalStep, type CardObservation, type CardReceipt, type ChannelRemovalAttempt, type ChannelRemovalStep, type RemovedChannel } from "../lib/team-channel-removal.js";
 import { classifyCard, removedCard, type CardSettlement } from "../lib/team-removal-reconcile.js";
 import { listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
@@ -82,7 +82,7 @@ export async function prepareCardRemoval(input: { root: string; space: string; d
   const digest = contractDigest(receipt);
   const unchanged = () => {
     if (JSON.stringify(findMesh(space)) !== JSON.stringify(selected)) throw new CommandFailure("refused", "CONFLICT", "the selected registration changed; no later card delete was submitted", { target });
-    const current = listAdditiveTeamAttempts(root), now = current.returned.find((row) => row.deploymentId === deploymentId);
+    const current = listAdditiveTeamAttempts(root), now = removalOriginal(current, deploymentId);
     if (current.refused.length || !now || contractDigest(now) !== digest || JSON.stringify(current.valid.find((row) => row.deploymentId === deploymentId)) !== JSON.stringify(original)) throw new CommandFailure("refused", "CONFLICT", "the original intent, returned receipt or removal records changed; no later card delete was submitted", { target });
   };
   let registry: Registry;
@@ -189,7 +189,7 @@ export async function prepareCardReconcile(input: { root: string; space: string;
   const digest = contractDigest(receipt), intentText = JSON.stringify(intent);
   const unchanged = () => {
     if (JSON.stringify(findMesh(space)) !== JSON.stringify(selected)) throw new CommandFailure("refused", "CONFLICT", "the selected registration changed; nothing further was recorded", { target });
-    const current = listAdditiveTeamAttempts(root), now = current.returned.find((row) => row.deploymentId === deploymentId);
+    const current = listAdditiveTeamAttempts(root), now = removalOriginal(current, deploymentId);
     if (current.refused.length || !now || contractDigest(now) !== digest || JSON.stringify(current.valid.find((row) => row.deploymentId === deploymentId)) !== JSON.stringify(original) || JSON.stringify(current.channelRemoval?.attempts.find((row) => row.deploymentId === deploymentId)) !== intentText || current.channelRemoval?.returned.some((row) => row.deploymentId === deploymentId)) throw new CommandFailure("refused", "CONFLICT", "the original deployment, its removal intent or its removal records changed; nothing further was recorded", { target });
     return current.channelRemoval!.steps.filter((row) => row.deploymentId === deploymentId);
   };
@@ -303,7 +303,7 @@ function reconcileView(data: { deploymentId: string; cards: CardSettlement[]; re
   ] }] };
 }
 
-/** Remove only the cards of a returned channel-only deployment. */
+/** Remove the cards of a returned channel-only deployment, or of a stopped attempt that created only cards. */
 export async function removeChannelTeam(deploymentId: string, values: TeamValues): Promise<void> {
   const catalog = personaCatalog(values), root = canonicalRoot(catalog.root), space = catalog.space;
   const target = { root, space, deploymentId };
@@ -312,8 +312,9 @@ export async function removeChannelTeam(deploymentId: string, values: TeamValues
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the additive and removal records could not be read; no card was deleted", { target }); }
   if (inventory.refused.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "unreadable deployment or removal records remain; no card target was inferred", { target, remedy: "inspect team show <deployment-id> and the listed records before any removal" });
   const original = inventory.valid.find((row) => row.deploymentId === deploymentId);
-  const receipt = inventory.returned.find((row) => row.deploymentId === deploymentId);
-  if (!original || !receipt || receipt.kind !== "additive-channel-receipt" || original.requestedAgents.length || !receipt.createdChannels.length || receipt.createdChannels.length > 100) throw new CommandFailure("refused", "UNSUPPORTED", "guarded card removal needs one full returned channel-only receipt with at most 100 cards; mixed, agent, legacy and unsettled deployments were not routed here", { target });
+  const receipt = removalOriginal(inventory, deploymentId);
+  const channelOnly = receipt?.kind === "additive-channel-receipt" ? !original?.requestedAgents.length : receipt?.kind === "additive-stopped-receipt" && !receipt.createdAgents.length;
+  if (!original || !receipt || (receipt.kind !== "additive-channel-receipt" && receipt.kind !== "additive-stopped-receipt") || !channelOnly || !receipt.createdChannels.length || receipt.createdChannels.length > 100) throw new CommandFailure("refused", "UNSUPPORTED", "guarded card removal needs one full returned channel-only receipt, or an unsettled attempt whose journal records only card creates, with at most 100 cards; mixed, agent and legacy deployments and unknown steps were not routed here", { target });
   if (original.space !== space || canonicalRoot(original.root) !== root) throw new CommandFailure("refused", "CONFLICT", "the deployment belongs to another selected root or space; it was not rebound", { target });
   const prior = inventory.channelRemoval?.returned.find((row) => row.deploymentId === deploymentId);
   if (prior) {
