@@ -60,8 +60,6 @@ export const SCHEMA_PROFILE = Object.freeze({
   // the line.
   /** Digest-reference chain depth (root → member → member …). */
   maxRefChain: 32,
-  /** Compile budget per closure, ms. */
-  compileBudgetMs: 100,
   /** Bounded pattern complexity: max characters of any `pattern` / `patternProperties` regex. */
   maxPatternChars: 256,
   /** Per-value validation budget at the serving boundary, ms (§13.8 reference). REPORTED on the
