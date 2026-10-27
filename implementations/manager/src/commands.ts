@@ -246,7 +246,7 @@ function superviseExecution(v: Values): "runtime" | "none" {
 function hostFolderStep(space: string, root: string, broker: string): string {
   const host = findMesh(space);
   return host !== undefined && host.root !== root
-    ? `start the manager from ${host.root}, the folder that hosts space "${space}": cd ${host.root} && cotal manager start${host.mode === "user" ? `. A manager on another machine joins a user-auth space as a signed-in participant (cotal meshes add, then cotal login) once its host grants the supervise scope` : ""}`
+    ? `start the manager from ${host.root}, the folder that hosts space "${space}": \`cd ${host.root} && cotal manager start\`${host.mode === "user" ? `. A manager on another machine joins a user-auth space as a signed-in participant (\`cotal meshes add\`, then \`cotal login\`) once its host grants the supervise scope` : ""}`
     : `start the manager from the folder whose cotal up started the broker at ${broker}`;
 }
 

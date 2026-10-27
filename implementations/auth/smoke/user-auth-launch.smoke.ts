@@ -675,7 +675,7 @@ try {
     check("the message names the refused credential, its root, and the broker",
       text.includes(`the broker at ${SERVER} refused the manager credential this folder's signer for space "${SPACE}" minted (${otherRoot}), so no manager started`), refused.out);
     check("Next starts the manager from the folder that hosts the space, and names the participant sign-in",
-      /\nNext\n/.test(text) && text.includes(`start the manager from ${root}, the folder that hosts space "${SPACE}": cd ${root} && cotal manager start`) && text.includes("(cotal meshes add, then cotal login)"), refused.out);
+      /\nNext\n/.test(text) && text.includes(`start the manager from ${root}, the folder that hosts space "${SPACE}": \`cd ${root} && cotal manager start\``) && text.includes("(`cotal meshes add`, then `cotal login`)"), refused.out);
   }
 
   // ---------- E4. a second root: manager start, its owner's stop, and pre-connect refusals ----------
@@ -733,7 +733,7 @@ try {
     const elsewhere = await cotal(["supervise", "--space", SPACE, "--server", SERVER], { cwd: second.bare });
     check("supervise from a folder with no records names the folder that hosts the space, and writes nothing there",
       elsewhere.status === 2 && plain(elsewhere.out).includes(`Mesh: ${SPACE}\n`) && preConnect(elsewhere.out, "PERMISSION_DENIED") &&
-        plain(elsewhere.out).includes(`start the manager from ${root}, the folder that hosts space "${SPACE}": cd ${root} && cotal manager start`) &&
+        plain(elsewhere.out).includes(`start the manager from ${root}, the folder that hosts space "${SPACE}": \`cd ${root} && cotal manager start\``) &&
         !plain(elsewhere.out).includes("cotal down") && !existsSync(join(second.bare, ".cotal")), elsewhere.out);
     const RT = `${SPACE}-rt`;
     const root3 = await prepare(RT);
