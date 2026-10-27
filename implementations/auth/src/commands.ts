@@ -493,7 +493,7 @@ const authCommands: Command[] = [
     name: "__daemon-auth-service",
     hidden: true,
     group: "Manager",
-    summary: "run the user-auth service daemon - NATS auth callout + token exchange/JWKS --space <s> --server <url> [--port <n>] [--callout-only [--spaces <manifest>]]",
+    summary: "run the user-auth service daemon - NATS auth callout + token exchange/JWKS --space <s> --server <url> [--port <n>] [--callout-only], or --spaces <manifest> for several spaces in one process",
     flags: [...authServiceFlags, authCalloutOnlyFlag, authSpacesFlag],
     prepareMeshTarget: false,
     run: (args) => legibly(() => runAuthService(args)),

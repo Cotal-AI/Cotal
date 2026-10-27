@@ -7564,6 +7564,7 @@ cotal deliver --spaces <manifest> --server <url> [--root <dir>]
 cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy] [--advertised-server <url>] [--agent-provisioning-url <https://…>] [--auth-timeout <seconds>]
 cotal auth-service --space <s> --server <url> --callout-only [--auth-timeout <seconds>]
 cotal auth-service --server <url> --callout-only --spaces <manifest> [--auth-timeout <seconds>]
+cotal auth-service --server <url> --spaces <manifest> [--auth-timeout <seconds>] [--service-endpoints]
 cotal service add intake --preset feedback-intake --space <s> --root <absolute-root> --keys <private-keys.json> --creds <private-creds>
 cotal service start intake --space <s>
 ```
@@ -7585,9 +7586,9 @@ it exits non-zero when it loses a store connection or the broker. Give it the sa
 as the full service, the value the broker config renders.
 See [callout replicas](identity-and-auth.md#per-user-authentication).
 
-`--spaces` serves several spaces from one callout process, one lane each, and stands in for
-`--space`. The two are alternatives: naming both refuses, and `--spaces` without `--callout-only`
-refuses. The manifest is a JSON file holding the spaces this process serves:
+`--callout-only --spaces` serves several spaces from one callout process, one lane each, and stands
+in for `--space`. The two are alternatives: naming both refuses. The manifest is a JSON file holding
+the spaces this process serves:
 
 ```json
 { "version": 1, "spaces": ["<s>", "<s>"] }
@@ -7607,6 +7608,49 @@ and opens or closes the difference. Write a replacement and rename it into place
 does not read or parse whole is reported and the lanes already open are kept. A lane that loses its
 store connection or the broker closes on its own and the other lanes keep answering; the host
 reopens it, retrying every 5 seconds while it fails.
+
+Every multi-space host, this one, the full auth service host below and `deliver --spaces`, writes
+`<manifest>.applied` beside its manifest once a reread has closed the lane of every space the
+manifest does not name. The file holds `{"version": 1, "sha256": "<hex>"}`, the SHA-256 of the
+manifest bytes it applied, and is replaced through a rename. To stop serving one space, remove it
+from every manifest that names it and wait until each host's `<manifest>.applied` names the manifest
+you wrote; from then on no lane for that space is left in those processes. A lane that does not
+confirm its close holds the acknowledgment back, and the host retries that close every 5 seconds
+without opening the space again until it does. A host writes it before
+it opens any lane at startup, and refuses to start when it cannot. A host whose last space you remove
+is stopped instead, since a manifest names at least one space.
+
+`--spaces` without `--callout-only` serves several spaces from one process as their full auth
+service, one lane each: the callout, the authority plane, the loopback exchange and JWKS, and the
+public face. A lane is the service `auth-service --space` runs, with the same refusals and its own
+plane claim, connections, connect limits and capability. Each lane writes its space's own
+`auth-service.json`, naming the host's pid, on a loopback port of its own. The manifest is version 2,
+one object per space, carrying that space's public face under the names of the flags it replaces:
+
+```json
+{ "version": 2, "spaces": [
+  { "space": "<s>", "exchangePublicPort": 7451, "exchangeTrustedProxy": true },
+  { "space": "<s>" }
+] }
+```
+
+An entry takes `exchangePublicPort`, `exchangePublicUrl`, `exchangeTrustedProxy`, `advertisedServer`
+and `agentProvisioningUrl`, with the rules of the flags: the last four need `exchangePublicPort`.
+An entry without `exchangePublicPort` has no public face. Two spaces naming one port, a version
+other than 2 and any refusal of the version 1 grammar refuse the whole manifest. `--port` and the
+public-face flags refuse with `--spaces`; `--server`, `--auth-timeout` and `--service-endpoints`
+apply to every lane. A changed entry closes that space's lane and opens it again on its new settings.
+
+At startup this host serves every space it can, names each one it cannot with the reason, and retries
+those every 5 seconds; its ready line counts the spaces serving against the spaces named. A space
+whose plane another process still holds opens once that process stops, so you can move spaces off
+one process each by starting the host on all of them and then stopping the old processes. A fence or
+a lost broker connection closes that space's lane alone, and the host reopens it. The lines of a lane
+carry a `[<space>]` prefix. A lane writes no `.cotal/auth-service.<key>.pid`; the host is stopped by
+its supervisor, and on SIGTERM or SIGINT it closes every lane and exits 0. An embedder passes its
+secret store to `runAuthService(args, store)` with `spaces` in `args` as it does for one space. The
+`auth-service` service preset runs one space, so `auth-service --spaces` still prints the deprecation
+warning saying to keep the entry for `--spaces`.
 
 `deliver` runs the server-side Plane-3 delivery daemon: the durable backstop and membership/ACL
 authority. It is auth-mode-only and single-instance (`--shard`/`--shards` accept only `N=1`);

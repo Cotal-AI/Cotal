@@ -928,7 +928,10 @@ and re-binds the connection into the data account. A space's callout requests ar
 space's dedicated auth account, so a responder holds one subscription per auth account it serves. One
 process MAY serve several spaces, holding one such subscription and one set of signing keys per
 space; a response for a space MUST be signed only with that space's keys, and a bearer MUST be
-validated only against the issuer and audience of the space whose request it arrived on. The owner-token *derivation* (how a bearer maps to
+validated only against the issuer and audience of the space whose request it arrived on. A process
+MAY likewise serve several spaces' exchange and JWKS, as one full auth service per space: each
+space's exchange MUST be served on listeners of that space's own and mint only from that space's
+keys and ledger, and each space keeps its own authority plane (§13.13). The owner-token *derivation* (how a bearer maps to
 an owner token) is a pluggable identity adapter (any OIDC/IdP via a thin bridge), not fixed by this
 contract; the callout *mechanism* and the resulting grants are. From v0.4 every minted connection also carries its **lifecycle UID** (§13.1): the manager
 mints it for managed agents at provision, and the callout/exchange attaches it as a claim at
@@ -5000,7 +5003,8 @@ messages appear on `.fire` carrying `(timerId, generation)`.
 ### 13.13 Plane ownership (the sealed-scanner claim)
 
 At most ONE authority plane per space may hold the sealed scanners (§13.9's seventh-round
-seal). The scanners' serialization is process-local, so two same-space auth processes would
+seal). One process MAY hold the planes of several spaces, each with its own
+claim row, scanner connections and fence; the exclusion below is per space. The scanners' serialization is process-local, so two same-space auth processes would
 interleave the literal enumeration consumers' critical sections and return PARTIAL
 enumerations: a drain declares quiescence over undrained obligations and the retirement
 frontiers close over live work. The exclusion is broker-visible, not host-local:
@@ -5075,7 +5079,8 @@ frontiers close over live work. The exclusion is broker-visible, not host-local:
   authority plane: scan exposure is invalidated immediately, the sibling closes, every
   authority operation (connect authorization, credential mint) refuses from that moment, and
   the service goes DOWN loud rather than serving from a half-dead plane a successor may be
-  reclaiming; a still-live sibling correctly blocks a successor until it is closed or proven
+  reclaiming (in a process serving several spaces, that space's service goes down and the
+  others' planes are unaffected); a still-live sibling correctly blocks a successor until it is closed or proven
   absent.
 - **Clean close.** Scan-capable clients close FIRST, then the row CASes `held → released`
   (never released while either scanner can still act), then the barrier. A crash leaves
@@ -6617,7 +6622,8 @@ single-function profiles, each granting only the verbs its function needs and no
   callout-only replica on its own, MAY hold one `issuer` session per account, space and
   authority-plane lifetime for the user-auth issuance its callout performs. A callout-only replica
   is one space's membership of that space's callout queue group, and one process MAY hold several,
-  one session each. That session is private to its host and never shared across accounts or
+  one session each; a process serving several spaces as their full auth service likewise holds one
+  session per space. That session is private to its host and never shared across accounts or
   spaces. Its credential keeps the profile's five-minute
   expiry and is replaced with freshly minted credentials before it expires. Its connection never
   reconnects: it is closed and drained on a fence, a shutdown or a loss, and the next issuance dials
@@ -6695,6 +6701,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-27 | **One auth service process MAY serve several spaces in full (§10, §13.13, Appendix B), additive.** One process may serve several spaces' exchange and JWKS as one full auth service per space. Each space's exchange is served on listeners of its own and mints only from that space's keys and ledger; each space keeps its own authority plane, claim row, scanner connections and fence, and a fence downs that space's service alone. Such a process holds one `issuer` session per space, never shared across spaces or accounts. |
 | 2026-10-27 | **Issued-authority rows are bounded by their generation's horizon (§13.12, §13.15).** The two issued-authority stores held every issuance forever, so their size was the cumulative number of exchanges. A generation now carries its horizon in its first 8 hex digits, and its last 24 are 96 bits of issuer entropy, so the 32-hex grammar is unchanged. The `issuer` gains only `STREAM.INFO` on the accepted store, so every issuer and resolver verifies both stores' shape when it binds. Every row of a generation in either store carries a per-message TTL to its horizon plus a 60-second margin, and both stores set `allow_msg_ttl` with no subject delete markers; `deny_delete`, `deny_purge` and the per-key shapes are unchanged. Every resolution, renewal and retirement refuses a generation at or past its horizon before it reads the store, and resolution checks the horizon again after its last read, so a removed key re-created later is never read. Horizons: the bearer expiry for a user-auth issuance, the credential expiry for an operator instrument, the assignment expiry for a platform supervisor duty, and 30 days after issuance for a static incarnation, whose renewals are capped at it. A store created before this revision is refused at bind and recreated. **Breaking pre-1.0 authority change: minor.** |
 | 2026-10-27 | **One delivery process MAY serve several spaces (Appendix B), additive.** One process may hold the `delivery` role for several spaces as one lane per space. Each lane presents only its own space's `delivery` credential on its own connections and holds its own delivery lease, Plane-3 bindings and `$SYS` scan target, never shared across spaces or accounts. The single-flight lease, its responder verdicts and the admin commands apply per lane unchanged. |
 | 2026-10-26 | **An operator instrument reads its pinned manager's `resolve-cwd` (§13.2, Appendix B), additive.** The folder question a managed launch asks had no caller that could make its check on a static mesh: `resolve-cwd` was carried by a `spawn` holder's `manager-caller` view and by no operator instrument, so every folder typed at that question was refused at the broker. Both instrument tiers now carry it on the instance their mint pins, beside the `spawn` row of the same `manager.spawn` capability class. The standing agent `spawn` set is unchanged, and no class, scatter or other-instance row is added. |

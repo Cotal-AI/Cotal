@@ -315,7 +315,7 @@ ordinary lazy path checks again after its five-second capability window, so an I
 Link for an existing login without making the person sign in again.
 
 **One auth service per space** hosts both halves: the NATS auth callout and the token
-exchange. Its default HTTP listener remains loopback-only and requires the per-start capability
+exchange. One process may host the services of several spaces, one lane each (below). Its default HTTP listener remains loopback-only and requires the per-start capability
 stored in the owner-only `auth-service.json` file. An operator may add a second listener with
 `cotal up --user-auth ... --exchange-public-port <port> --exchange-public-url https://auth.example`.
 That listener still binds `127.0.0.1`; put a reverse proxy in front of it and terminate TLS there.
@@ -480,6 +480,15 @@ request: a lane's callout connection authenticates as its space's auth account, 
 is a disjoint subject namespace, so another space's request cannot be delivered on it. See
 [`auth-service`](cli.md#server-daemons) for the manifest and how a space is added or removed while
 the process runs.
+
+The full auth service can be hosted the same way. `cotal auth-service --spaces <manifest>`, without
+`--callout-only`, holds one full service per space in one process: each lane holds its space's plane
+claim, callout, connections, connect limits and capability, and serves that space's exchange and JWKS
+on listeners of its own, so one space's request never reaches another space's keys. A fence or a lost
+broker connection stops that space's lane alone. Callout replica hosts listing the same spaces add
+event loops for connect bursts, since one process answers callouts on one thread. Removing a space
+from every host's manifest and waiting for each host's `<manifest>.applied` stops all minting and
+connect authorization for it while the other spaces keep serving.
 
 ### Connect limits
 
