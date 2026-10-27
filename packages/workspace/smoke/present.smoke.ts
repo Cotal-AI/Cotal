@@ -153,6 +153,11 @@ check("a command whose argument is a word of prose stays whole",
 const spacedPath = wrapWords("add them to the running stack with `cotal team deploy '/srv/proj/data from s3/team.yaml'`, or stop it", 56);
 check("a quoted path inside a command is never split",
   JSON.stringify(spacedPath) === JSON.stringify(["add them to the running stack with", "`cotal team deploy '/srv/proj/data from s3/team.yaml'`,", "or stop it"]), spacedPath);
+// A step that changes folder first starts with `cd`; it is one word to its closing backtick too. It
+// used to break inside "cotal manager start" at 80 columns.
+const cdStep = wrapWords("start the manager from /tmp/rig-0123456789/proj/rt, the folder that hosts space \"rt\": `cd /tmp/rig-0123456789/proj/rt && cotal manager start`", 78);
+check("a command that starts with cd wraps as one word, to its closing backtick",
+  JSON.stringify(cdStep) === JSON.stringify(["start the manager from /tmp/rig-0123456789/proj/rt, the folder that hosts", "space \"rt\": `cd /tmp/rig-0123456789/proj/rt && cotal manager start`"]), cdStep);
 // A path can hold a backtick. Such a command goes between double backticks, as Markdown writes it, and
 // wraps whole to the matching pair. The path's own backtick used to close it and split the path.
 check("a command names itself between backticks, or between a longer run when it holds one",

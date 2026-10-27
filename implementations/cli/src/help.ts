@@ -4,7 +4,7 @@
  * connects, writes, seeds or imports an extension.
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, heldSpaceNote, loadMeshes, loadPreparedSpaces, localeIsUtf8, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, renderReport, resolvePreference, terminalWidth, upCommand, wrapWords, type Section } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, heldSpaceNote, loadMeshes, loadPreparedSpaces, localeIsUtf8, MIN_FILE_STORE, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, renderReport, resolvePreference, terminalWidth, upCommand, wrapWords, type Section } from "@cotal-ai/workspace";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
@@ -149,6 +149,12 @@ export function printCommandList(commands: readonly Command[]): void {
   console.log(out);
 }
 
+/** The words a Start here label adds beside an `up` that names `--max-file-store`: the command runs as
+ *  written, and the label says the cap it names is the least that works. */
+function capLabel(up: string): string {
+  return up.includes("--max-file-store") ? ` with a store cap of ${MIN_FILE_STORE} or more` : "";
+}
+
 /** The approved compact entry screen. Its context comes from local records only. With `listing`, the
  *  command groups follow it, so it leaves out the lines that point to them. */
 export function printEntry(commands: readonly Command[], listing = false): void {
@@ -232,7 +238,7 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     // A folder's `up` starts THAT folder's space, not the one commands here target, so it is named
     // as the folder's. The selection keeps its own first action: its `up` while it is prepared or
     // stopped, else spawn.
-    ...(start ? [["up", start, "Start this space"] as [string, string, string]] : folderStart ? [["up", folderStart, "Start this folder's space"] as [string, string, string]] : []),
+    ...(start ? [["up", start, `Start this space${capLabel(start)}`] as [string, string, string]] : folderStart ? [["up", folderStart, `Start this folder's space${capLabel(folderStart)}`] as [string, string, string]] : []),
     ...(start ? [] : [["spawn", "cotal spawn", "Open your default agent"] as [string, string, string]]),
     ["setup", "cotal setup", "Review setup and defaults"],
     ["use", "cotal use", "Choose another space"],

@@ -758,14 +758,20 @@ function noteFolderSpaceHeld(folder: { root: string; registered: readonly string
 
 /** What a folder holds that is not running, and the step that starts it with {@link upCommand}. */
 export function heldSpaceNote(held: { space: string; root: string; state: "prepared" | "stopped" }): string {
-  return `this folder holds the ${held.state} space "${held.space}"; ${held.state === "prepared" ? "start" : "restart"} it with ${upCommand(held.root, held.space)}`;
+  return `this folder holds the ${held.state} space "${held.space}"; ${held.state === "prepared" ? "start" : "restart"} it with ${upCommand(held.root, held.space)}${upNeedsCap(held.root, held.space) ? " or more" : ""}`;
+}
+
+/** Whether a bare `cotal up` of `space` at `root` fails on the file store cap its stopped stack
+ *  recorded ({@link capBelowFloor}), so {@link upCommand} names `--max-file-store` at the floor. */
+export function upNeedsCap(root: string, space: string): boolean {
+  return capBelowFloor(stoppedStack(root, space)?.storeCap);
 }
 
 /** The `cotal up` that starts `space`'s stack at `root`, with `args`, such as a `--root`, after `up`:
- *  with `--max-file-store` at the floor when its stopped stack recorded a cap a bare `up` fails on
- *  ({@link capBelowFloor}). */
+ *  with `--max-file-store` at the floor when {@link upNeedsCap}. It runs as written; a note that
+ *  names it says "or more" after it, and a step's label says so beside it. */
 export function upCommand(root: string, space: string, ...args: string[]): string {
-  return ["cotal up", ...args, ...(capBelowFloor(stoppedStack(root, space)?.storeCap) ? [`--max-file-store ${MIN_FILE_STORE} or more`] : [])].join(" ");
+  return ["cotal up", ...args, ...(upNeedsCap(root, space) ? [`--max-file-store ${MIN_FILE_STORE}`] : [])].join(" ");
 }
 
 /** The space a folder holds that is not running: the one it prepared, the one its stopped stack is

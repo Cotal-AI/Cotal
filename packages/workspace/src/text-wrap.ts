@@ -16,14 +16,15 @@ export function codeSpan(command: string): string {
 }
 
 /** `text` split at spaces into the words {@link wrapWords} breaks between. A command a sentence
- *  names in backticks after other words, from its `cotal` to the next run of as many backticks as
- *  opened it, is one word, so no line holds part of it, whatever words its arguments are. A line
- *  that starts with a command, as a usage line or a code line does, wraps at its spaces. */
+ *  names in backticks after other words, from its `cotal` (or the `cd` that precedes it) to the next
+ *  run of as many backticks as opened it, is one word, so no line holds part of it, whatever words
+ *  its arguments are. A line that starts with a command, as a usage line or a code line does, wraps
+ *  at its spaces. */
 function wrapUnits(text: string): string[] {
   const parts = text.split(" "), words: string[] = [];
   for (let i = 0; i < parts.length; i++) {
     let end = i;
-    const open = i > 0 ? /^[("']*(`+)(cotal|pnpm|npx)$/.exec(parts[i]!) : null;
+    const open = i > 0 ? /^[("']*(`+)(cotal|pnpm|npx|cd)$/.exec(parts[i]!) : null;
     if (open) {
       const fence = new RegExp(`(?<!\`)\`{${open[1]!.length}}(?!\`)`);
       const close = parts.findIndex((part, j) => j > i && fence.test(part));
