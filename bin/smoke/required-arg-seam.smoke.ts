@@ -483,8 +483,12 @@ const SEAMS: Seam[] = [
   // one smoke-side connection in connector-core/smoke/manager-connect-deadline, which states `tls: false`.
   // 321/244 -> 328/251: turn notices add three setup connections in connector-core/smoke/idle-seat-connects
   // and four in connector-core/smoke/turn-notice; each dials a loopback broker its suite starts and
-  // states `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 328, untypecheckedSites: 251 },
+  // states `tls: false`. 328/251 -> 332/255: the RAM profiles of the load harnesses (0dd04e838) add
+  // one provisioning connection each in delivery/smoke/fanout-load and core/smoke/seat-idle-load,
+  // and the recorded program's hash on run-status (2b59b432f) adds a driver and a reader connection
+  // in bin/smoke/run-status-program-identity. Each dials a plaintext loopback broker its suite
+  // starts and states `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 332, untypecheckedSites: 255 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
