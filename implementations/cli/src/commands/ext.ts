@@ -191,7 +191,7 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   const rollbackRoot = updating ? mkdtempSync(join(dirname(dir), ".extensions.rollback-")) : undefined;
   const stageRoot = staging ? mkdtempSync(join(dirname(dir), ".extensions.stage-")) : undefined;
   const rollbackDir = rollbackRoot ? join(rollbackRoot, "extensions") : undefined;
-  const stageDir = stageRoot ? join(stageRoot, "extensions") : undefined;
+  const stageDir = stageRoot ? join(stageRoot, "cotal", "extensions") : undefined;
   if (stageDir) {
     mkdirSync(stageDir, { recursive: true });
     writeFileSync(join(stageDir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`);
@@ -207,6 +207,8 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
     rmSync(extensionPackageDir(pkg), { recursive: true, force: true });
   }
 
+  const liveDir = extensionsDir();
+  const configHome = process.env.XDG_CONFIG_HOME;
   let committed = false;
   let restored = false;
   const restore = async (): Promise<void> => {
@@ -230,15 +232,35 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   process.once("SIGINT", interrupted);
   process.once("SIGTERM", interrupted);
   try {
-    await installCandidate();
+    // The existing writer lock remains held while workspace helpers resolve into the stage.
+    if (stageRoot) process.env.XDG_CONFIG_HOME = stageRoot;
+    try {
+      await installCandidate();
+    } finally {
+      if (configHome === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = configHome;
+    }
     if (wasInterrupted) throw new Error("extension install interrupted");
-    committed = true;
     if (stageDir) {
-      cpSync(join(stageDir, "node_modules", ...pkg.split("/")), extensionPackageDir(pkg), { recursive: true });
-      const stagedManifest = join(stageDir, "extensions.json");
-      if (existsSync(stagedManifest)) copyFileSync(stagedManifest, extensionsManifestPath());
+      // npm records local specs relative to its prefix. Preserve their meaning after promotion.
+      type NpmMetadata = { dependencies?: Record<string, string>; packages?: Record<string, { dependencies?: Record<string, string> }> };
+      const metadata = (file: string, base = stageDir): NpmMetadata => JSON.parse(readFileSync(file, "utf8"), (_key, value: unknown) =>
+        typeof value === "string" && value.startsWith("file:") ? "file:" + resolve(base, value.slice(5)) : value);
+      const livePackage = metadata(join(liveDir, "package.json"), liveDir);
+      const stagedPackage = metadata(join(stageDir, "package.json"));
+      const dependencies = { ...livePackage.dependencies, ...stagedPackage.dependencies };
+      const lockPath = join(liveDir, "package-lock.json");
+      const liveLock = existsSync(lockPath) ? metadata(lockPath, liveDir) : {};
+      const stagedLock = metadata(join(stageDir, "package-lock.json"));
+      cpSync(join(stageDir, "node_modules"), join(liveDir, "node_modules"), { recursive: true, verbatimSymlinks: true });
+      writeFileSync(join(liveDir, "package.json"), JSON.stringify({ ...livePackage, dependencies }, null, 2) + "\n");
+      writeFileSync(lockPath, JSON.stringify({ ...liveLock, ...stagedLock,
+        packages: { ...liveLock.packages, ...stagedLock.packages, "": { ...stagedLock.packages?.[""], dependencies } },
+      }, null, 2) + "\n");
+      copyFileSync(join(stageDir, "extensions.json"), extensionsManifestPath());
       rmSync(stageRoot!, { recursive: true, force: true });
     }
+    committed = true;
     if (rollbackRoot) rmSync(rollbackRoot, { recursive: true, force: true });
   } catch (e) {
     await restore();
@@ -302,7 +324,7 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   // npm mutates the shared prefix, so restore every package's private shared-peer links, not only
   // the candidate's. All extensions resolve the exact same host package instances.
   try {
-    linkExtensionPeers([...manifest.extensions.filter((entry) => entry.pkg !== pkg).map((entry) => entry.pkg), pkg], pkg);
+    linkExtensionPeers(stageDir ? [pkg] : [...manifest.extensions.filter((entry) => entry.pkg !== pkg).map((entry) => entry.pkg), pkg], pkg);
   } catch (e) {
     fail(pkg, (e as Error).message);
   }

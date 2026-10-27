@@ -186,6 +186,9 @@ delivery daemon, plus any operator-installed extensions. Hidden entries such as 
 runtimes, service presets and local process lifecycle descriptors. The `web` dashboard and
 optional manager runtimes ship this way. A `@cotal-ai/*` package named without a version installs
 this cotal's version, as `setup` and `update` do; a version or tag you name is installed as given.
+A new third-party extension is installed and validated in a temporary prefix before it is added
+to the live installation. A refused new add leaves installed package links and the three prefix
+manifests unchanged, and removes its temporary prefix.
 
 ## Structured output
 
