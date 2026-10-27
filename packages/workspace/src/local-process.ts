@@ -40,9 +40,11 @@ export interface LocalProcess extends Extension, ServiceAdapterHooks {
   readonly clearsMesh?: boolean;
   /** Hide this process from status unless the selected mesh uses per-user auth. */
   readonly visibleWhen?: "user-auth";
-  /** Whether a live process's command line is this process's. A stop never signals a live pid this
-   *  rejects: the record outlived its process and the pid was reused, so the stale record is cleared.
-   *  A function cannot be cached for an installed extension, so only this CLI's own processes set it. */
+  /** Whether a live process's command line is this process's. A stop consults it once, and only for a
+   *  record with no identity pin: a pin that names another start refuses first and keeps the record,
+   *  for every component. When this rejects a readable command, the stop never signals that pid. The
+   *  record outlived its process and the pid was reused, so the stale record is cleared. A function
+   *  cannot be cached for an installed extension, so only this CLI's own processes set it. */
   readonly isOwnCommand?: (command: string) => boolean;
 }
 
