@@ -512,6 +512,9 @@ importers:
       jose:
         specifier: ^6.2.3
         version: 6.2.3
+      tweetnacl:
+        specifier: ^1.0.3
+        version: 1.0.3
     devDependencies:
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
