@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, 
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Command, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
+import type { Command, CommandExample, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
 import { globalConfigDir } from "@cotal-ai/core";
 import { inspectLock } from "./advisory-lock.js";
 import { globalConfigDirProblem } from "./cotal-config.js";
@@ -39,7 +39,7 @@ export interface CachedCommand {
   readonly positionals?: string;
   readonly subcommands?: readonly Subcommand[];
   readonly outputs?: readonly OutputMode[];
-  readonly examples?: readonly string[];
+  readonly examples?: readonly CommandExample[];
   /** The bare command opts out of connector seeding before materialization. */
   readonly reads?: true;
 }

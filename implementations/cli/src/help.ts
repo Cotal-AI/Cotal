@@ -251,10 +251,11 @@ export function printEntry(commands: readonly Command[], listing = false): void 
   console.log(renderReport({ sections }, "rich", width));
 }
 
-/** One command's help, or one subcommand's when `sub` is given: summary, usage, aliases,
- *  subcommands, flags, structured outputs and examples, all from the declared specs. Each line goes
- *  to `out`, which a usage refusal points at stderr, wrapped to `width`; the usage breaks only where
- *  {@link usageLines} allows, and examples are never wrapped, so each stays one line to copy. */
+/** One command's help, or one subcommand's when `sub` is given: summary, usage, aliases, examples,
+ *  subcommands, flags and structured outputs, all from the declared specs. Each line goes to `out`,
+ *  which a usage refusal points at stderr, wrapped to `width`; the usage breaks only where
+ *  {@link usageLines} allows, and an example's command is never wrapped, so each stays one line to
+ *  copy, with its note beside it or under it. */
 export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: string) => void = console.log, width = terminalWidth(process.stdout)): void {
   const path = sub ? `${cmd.name} ${sub.name}` : cmd.name;
   const selected = sub ?? cmd;
@@ -266,6 +267,8 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
     { title: "Usage", blocks: [{ kind: "lines", lines: usage.split("\n").flatMap((form) => usageLines(usageTokens(form), width - 2)).map((text) => ({ text, tone: "command" as const })) }] },
   ];
   if (selected.aliases?.length) sections.push({ title: "Shorthands", blocks: [{ kind: "lines", lines: [{ text: selected.aliases.map((alias) => `cotal ${sub ? `${cmd.name} ${sub.name.split(" ").slice(0, -1).map((word) => word + " ").join("")}` : ""}${alias}`).join(" · "), tone: "command" }] }] });
+  const examples = selected.examples ?? [];
+  if (examples.length) sections.push({ title: "Examples", blocks: [{ kind: "commands", items: examples.map((example) => typeof example === "string" ? { command: example, description: "" } : { command: example.command, description: example.note }) }] });
   const subs = (sub ? sub.subcommands ?? [] : cmd.subcommands ?? []).filter((item) => !item.hidden);
   if (subs.length) sections.push({ title: "Commands", blocks: [{ kind: "commands", items: subs.map((item) => ({ command: label(item), description: item.summary })) }] });
   const flagNames = selected.flagNames;
@@ -277,11 +280,6 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
   const outputs = selected.outputs ?? [];
   if (outputs.length) sections.push({ blocks: [{ kind: "lines", lines: [{ text: `Structured output: ${outputs.join(", ")}`, tone: "hint" }] }] });
   out(renderReport({ sections }, "rich", width));
-  const examples = selected.examples ?? [];
-  if (examples.length) {
-    out(`\n${c.bold("Examples")}`);
-    for (const example of examples) out(`  ${c.blue(example)}`);
-  }
 }
 
 /** Resolve only declared literal metadata. Neither aliases nor nesting import provider code. */

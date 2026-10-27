@@ -154,7 +154,8 @@ try {
 
   // A usage too wide for its line breaks after its own ` | ` alternatives first, and a group too wide
   // takes lines of its own and breaks the same way inside. A word never leaves its argument.
-  // Examples are never wrapped, so each stays one line to copy, and setup's fit stops before them.
+  // An example's command is never wrapped, so each stays one line to copy, and setup's fit leaves out
+  // those lines alone; their notes and every other section still fit.
   const helpAt = async (argv: string[], cols: number) => {
     const pty = cotalPty(argv, { cwd: home, env, cols, rows: 200 });
     ptys.push(pty);
@@ -162,7 +163,9 @@ try {
     await until(() => s.exitCode !== undefined);
     const all = lines(s.text());
     const examples = all.indexOf("Examples");
-    return { exitCode: s.exitCode, all, shown: (examples === -1 ? all : all.slice(0, examples)).join("\n") };
+    const end = all.findIndex((line, i) => examples !== -1 && i > examples && /^\S/.test(line));
+    const example = (i: number) => examples !== -1 && i > examples && (end === -1 || i < end) && all[i]!.startsWith("  cotal ");
+    return { exitCode: s.exitCode, all, shown: all.filter((_, i) => !example(i)).join("\n") };
   };
   const send = await helpAt(["help", "send"], 60);
   check("cotal help send on a 60-column terminal fits every line", send.exitCode === 0 && fit(send.all.join("\n"), 60).length === 0 && send.all.length > 10, fit(send.all.join("\n"), 60));
@@ -183,7 +186,7 @@ try {
   const setup80 = await helpAt(["help", "setup"], 80);
   check("cotal help setup on an 80-column terminal fits every line, its examples included", setup80.exitCode === 0 && fit(setup80.all.join("\n"), 80).length === 0 && setup80.all.includes("Examples"), fit(setup80.all.join("\n"), 80));
   const setup = await helpAt(["help", "setup"], 40);
-  check("cotal help setup on a 40-column terminal fits every line before its examples", setup.exitCode === 0 && fit(setup.shown, 40).length === 0 && lines(setup.shown).length > 10, fit(setup.shown, 40));
+  check("cotal help setup on a 40-column terminal fits every line but its example commands", setup.exitCode === 0 && fit(setup.shown, 40).length === 0 && lines(setup.shown).length > 10, fit(setup.shown, 40));
   check(
     "on 40 columns cotal help setup breaks a nested group after its own alternative",
     usageOf(setup.all).join("\n") === [
@@ -202,7 +205,7 @@ try {
   // A compact `|`, as in `<persona.md>|--prompt`, is a break point too: the line ends right after it
   // and the next starts with the following option, with no space added or lost.
   const persona = await helpAt(["help", "persona"], 40);
-  check("cotal help persona on a 40-column terminal fits every line", persona.exitCode === 0 && fit(persona.all.join("\n"), 40).length === 0 && persona.all.length > 10, fit(persona.all.join("\n"), 40));
+  check("cotal help persona on a 40-column terminal fits every line but its example commands", persona.exitCode === 0 && fit(persona.shown, 40).length === 0 && persona.all.length > 10, fit(persona.shown, 40));
   check(
     "on 40 columns cotal help persona breaks a compact group after its own |",
     usageOf(persona.all).join("\n") === [

@@ -1,4 +1,4 @@
-import { registry, type Command, type ParsedArgs } from "@cotal-ai/core";
+import { findSubcommand, registry, type Command, type ParsedArgs } from "@cotal-ai/core";
 import { servicePresetCommand } from "../lib/service-presets.js";
 import { service } from "./service-registry.js";
 
@@ -43,7 +43,7 @@ export function managerServiceCommand(manager: Command, argv: readonly string[])
   const cmd: Command = {
     ...augmented, name: "manager", aliases: manager.aliases, group: manager.group, summary: manager.summary,
     usage: usage[verb], positionals: "<start | stop | restart | status | logs | install | uninstall>",
-    subcommands: augmented.subcommands?.filter((sub) => sub.name === verb).map((sub) => ({ ...sub, usage: usage[verb], flagNames: sub.flagNames?.filter((flag) => flag !== "file" && flag !== "preset" && flag !== "new-instance") })),
+    subcommands: augmented.subcommands?.filter((sub) => sub.name === verb).map((sub) => ({ ...sub, usage: usage[verb], examples: findSubcommand(manager, verb)?.examples, flagNames: sub.flagNames?.filter((flag) => flag !== "file" && flag !== "preset" && flag !== "new-instance") })),
     validate: (args) => augmented.validate?.(withName(args)),
     run: (args) => augmented.run(withName(args)),
   };
