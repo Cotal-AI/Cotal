@@ -13,7 +13,7 @@ import { isConcreteChannel, channelInAllow, AmbiguousPeerError, peerLabel, asser
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
-import { attributionSafe, fmtBody, fmtItem, fmtFrom } from "./framing.js";
+import { attributionSafe, fmtItem, fmtFrom } from "./framing.js";
 import { isAuthed, type AgentConfig } from "./config.js";
 import { submitFeedback, type FeedbackInput } from "./feedback.js";
 import { buildOrientation, presenceLiveness, renderOrientation, type OrientationTool } from "./orientation.js";
