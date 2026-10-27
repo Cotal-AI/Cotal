@@ -157,7 +157,7 @@ export async function stopLocalProcess(
     if (identity.kind === "legacy") {
       if (cooperative) throw new Error(`${component.label} has no creation identity for cooperative shutdown; stop it with its original supervisor`);
       console.error(identityLegacyWarning(component.label, pidPath));
-    } else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal(component.label, pidPath, identity);
+    } else if (identity.kind !== "match" && identity.kind !== "gone" && identity.kind !== "no-pid") throw identityUncertaintyRefusal(component.label, pidPath, identity);
     // The beforeSignal hook authorizes an action against a LIVE exact process. A pinned record whose
     // process is already ESRCH-gone needs no spare capability or destructive intent because no signal
     // will be sent. Clear that stale record directly, preserving the hook's documented placement
