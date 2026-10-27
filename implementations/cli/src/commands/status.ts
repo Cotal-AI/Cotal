@@ -50,6 +50,7 @@ import {
   meshesForRoot,
   resolveReadsLiveness,
   MIN_FILE_STORE,
+  capBelowFloor,
   stoppedStack,
   unsettledStackOperation,
   hasUserAuthState,
@@ -1214,7 +1215,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       resolved: false, code: e.code, message: elsewhere ?? message,
       ...(e.code === "not-started" && d.space !== undefined && d.root !== undefined && !d.rootMissing ? { space: d.space, root: d.root } : {}),
       ...(elsewhere !== undefined ? { space: targetErrorSpace(d)!, recordedRoot: d.recordedRoot! } : {}),
-      ...(storeCap !== undefined && storeCap < MIN_FILE_STORE ? { storeCap } : {}),
+      ...(capBelowFloor(storeCap) ? { storeCap } : {}),
     };
     // A start in a root whose broker store this account cannot write fails there, so its next step is
     // the store's, as `up` names it.

@@ -167,6 +167,12 @@ export interface MeshTargetErrorDetails {
  *  of the cap is unreserved, so a cap equal to the reservation fails every later stream with 10047. */
 export const MIN_FILE_STORE = MEMBERSHIP_MAX_BYTES + 1;
 
+/** Whether a stopped stack's recorded file store cap is below {@link MIN_FILE_STORE}, so a bare
+ *  `cotal up` fails on it and the step that starts the stack names `--max-file-store` at the floor. */
+export function capBelowFloor(cap: number | undefined): cap is number {
+  return cap !== undefined && cap < MIN_FILE_STORE;
+}
+
 const WORKSPACE_TARGET_ERROR = "cotal:workspace:mesh-target-error";
 
 /**
@@ -739,14 +745,16 @@ export function noteFolderSpaceShown(space: string, state: "prepared" | "stopped
 }
 
 /** Say under the run's `Mesh: <current>` heading that this folder holds a space that is not running,
- *  so the selection is the target here, and name the `cotal up` that starts it. A refusal whose own
- *  next step names `cotal up` leaves this one out, so it names one. An envelope carries the same note
- *  as a `FOLDER_SPACE_NOT_RUNNING` warning, which stderr does not repeat. A folder that holds none
- *  says nothing. */
+ *  so the selection is the target here, and name the `cotal up` that starts it: with
+ *  `--max-file-store` at the floor when its stopped stack recorded a cap a bare `up` fails on
+ *  ({@link capBelowFloor}). A refusal whose own next step names `cotal up` leaves this one out, so it
+ *  names one. An envelope carries the same note as a `FOLDER_SPACE_NOT_RUNNING` warning, which stderr
+ *  does not repeat. A folder that holds none says nothing. */
 function noteFolderSpaceHeld(folder: { root: string; registered: readonly string[]; prepared?: string }, current: string): void {
   const held = heldSpace(folder);
   if (!held) return;
-  const text = `this folder holds the ${held.state} space "${held.space}"`, step = `${held.state === "prepared" ? "start" : "restart"} it with cotal up`;
+  const up = held.state === "stopped" && capBelowFloor(stoppedStack(folder.root, held.space)?.storeCap) ? `cotal up --max-file-store ${MIN_FILE_STORE} or more` : "cotal up";
+  const text = `this folder holds the ${held.state} space "${held.space}"`, step = `${held.state === "prepared" ? "start" : "restart"} it with ${up}`;
   recordOperationSpaceNote(current, text, step);
   recordOperationWarning({ code: "FOLDER_SPACE_NOT_RUNNING", target: { space: held.space, state: held.state, root: folder.root, selected: current }, message: `${text}; ${step}` }, { echo: false });
 }
