@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { registry, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, canonicalRoot, hasUserAuthState, localProcessPath, localProcessVisible, oneLine, parsePid, probeLiveness, readPidfile, type LocalProcess, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
@@ -7,6 +8,7 @@ import { findServicePreset, presetStartFlags, servicePresetDefinition } from "./
 import { selfArgv } from "./self-exec.js";
 import { removableServiceInstances, removeStoppedInstanceRecords } from "./service-process.js";
 import { addedDefinitionStep, STACK_DEFINITION } from "./stack-journal.js";
+import { managerLogPath } from "./manager-proc.js";
 
 /** A preset name a service command resolved to the definition it acts on. `saved` says what this
  *  command saved first: a definition from the preset's defaults, or one saved again with the
@@ -19,11 +21,15 @@ export interface PresetServiceTarget {
   /** A process of the preset's name that `up` or a daemon entry started and recorded by PID alone,
    *  with no saved service: the service controller does not own it and starts none beside it. */
   readonly recorded?: { readonly pid: number; readonly label: string };
+  /** That manager once it has stopped, for a log read of the log it left. Its PID is kept while its
+   *  record still names the dead process. */
+  readonly stopped?: { readonly pid: number | null; readonly label: string };
 }
 
-/** The live PID record a local process of the preset's own name keeps in `root`, if any. A record
- *  that cannot be read is left to the adapter, which refuses an unresolved one at launch. */
-export function recordedPresetProcess(space: string, root: string, preset: ServicePreset): { pid: number; label: string } | undefined {
+/** The PID record a local process of the preset's own name keeps in `root`, if any, with whether its
+ *  process is alive. A record that cannot be read is left to the adapter, which refuses an unresolved
+ *  one at launch. */
+function presetPidRecord(space: string, root: string, preset: ServicePreset): { pid: number; label: string; liveness: ReturnType<typeof probeLiveness> } | undefined {
   const provider = registry.all<LocalProcess>("local-process").find((row) => row.name === preset.name && row.pidFile !== undefined);
   if (!provider) return undefined;
   try {
@@ -31,8 +37,26 @@ export function recordedPresetProcess(space: string, root: string, preset: Servi
     if (!localProcessVisible(provider, context)) return undefined;
     const raw = readPidfile(localProcessPath(provider.pidFile, context));
     const pid = raw === undefined ? undefined : parsePid(raw);
-    return pid !== undefined && probeLiveness(pid) === "alive" ? { pid, label: provider.label } : undefined;
+    return pid === undefined ? undefined : { pid, label: provider.label, liveness: probeLiveness(pid) };
   } catch { return undefined; }
+}
+
+/** The live PID record a local process of the preset's own name keeps in `root`, if any. */
+export function recordedPresetProcess(space: string, root: string, preset: ServicePreset): { pid: number; label: string } | undefined {
+  const record = presetPidRecord(space, root, preset);
+  return record?.liveness === "alive" ? { pid: record.pid, label: record.label } : undefined;
+}
+
+/** A log read of the manager `up` started and recorded by PID alone, once that manager has stopped:
+ *  the log it left. With no such log nothing was started here, and the refusal names the file. */
+function stoppedManagerLog(space: string, root: string, requested: string, preset: ServicePreset): PresetServiceTarget {
+  const path = managerLogPath(space, root);
+  if (!existsSync(path)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no manager has been started in space ${oneLine(space)}: there is no manager log at ${path}; nothing was read`, {
+    target: { space, name: requested, path },
+    remedy: "start the stack with cotal up, or the manager alone with cotal manager start",
+  });
+  const record = presetPidRecord(space, root, preset);
+  return { requested, name: requested, preset: preset.name, saved: null, stopped: { pid: record?.liveness === "dead" ? record.pid : null, label: record?.label ?? preset.name } };
 }
 
 const isStackDefinition = (name: string) => (Object.values(STACK_DEFINITION) as string[]).includes(name);
@@ -67,8 +91,9 @@ function ambiguous(space: string, requested: string, rows: readonly ServiceDefin
 /** Resolve a preset name given to a service action to the one definition of this space it means.
  *  A saved definition of that exact name always wins and is returned as itself. Otherwise a start
  *  with no definition saves one from the preset's defaults and the options it named; a start of an
- *  existing, stopped one with other options saves it again. A log read of `stack-manager` with no
- *  such definition reaches the manager `up` recorded by PID. Undefined when the name is no preset. */
+ *  existing, stopped one with other options saves it again. A log read of `manager` or `stack-manager`
+ *  with no such definition reaches the manager `up` recorded by PID, or the log it left once it
+ *  stopped. Undefined when the name is no preset. */
 export function resolvePresetService(space: string, root: string, requested: string, mode: string, values: ParsedArgs["values"]): PresetServiceTarget | undefined {
   const store = serviceDefinitionStore(space, addedDefinitionStep);
   const exact = store.read(requested);
@@ -84,8 +109,9 @@ export function resolvePresetService(space: string, root: string, requested: str
   if (!preset) {
     // `up`'s retained launcher saves no stack-manager, so for a log read that name means the manager it started.
     const manager = mode === "logs" && requested === STACK_DEFINITION.manager ? findServicePreset("manager") : undefined;
-    const recorded = manager && recordedPresetProcess(space, root, manager);
-    return recorded ? { requested, name: requested, preset: manager.name, saved: null, recorded } : undefined;
+    if (!manager) return undefined;
+    const recorded = recordedPresetProcess(space, root, manager);
+    return recorded ? { requested, name: requested, preset: manager.name, saved: null, recorded } : stoppedManagerLog(space, root, requested, manager);
   }
   const rows = presetDefinitions(space, root, preset);
   const live = rows.filter((row) => running(space, row.name));
@@ -94,6 +120,7 @@ export function resolvePresetService(space: string, root: string, requested: str
   if (chosen) return options.length ? redefine(space, root, preset, chosen, requested, options, values) : { requested, name: chosen.name, preset: preset.name, saved: null };
   const recorded = recordedPresetProcess(space, root, preset);
   if (recorded) return { requested, name: requested, preset: preset.name, saved: null, recorded };
+  if (mode === "logs" && requested === "manager") return stoppedManagerLog(space, root, requested, preset);
   if (mode === "install") throw adapterInstallRefusal(space, requested, preset.adapter, {}, requested === "manager" ? "manager" : undefined, { space, name: requested });
   if (mode !== "start") throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no ${requested} has been started in space ${oneLine(space)}; nothing was ${mode === "status" || mode === "logs" ? "read" : "changed"}`, {
     target: { space, name: requested },
@@ -148,7 +175,7 @@ export function adapterInstallRefusal(space: string, name: string, adapter: stri
   let entry = "cotal";
   try { entry = selfArgv().join(" "); } catch { /* the bare name stands for an unverified entry */ }
   const foreground = command === "manager" ? "manager start --foreground" : `service start ${name} --foreground`;
-  return new CommandFailure("refused", "UNSUPPORTED", `${command === "manager" ? "cotal manager install" : `cotal service install ${name}`} is not supported yet: a Cotal-written unit runs only a direct-process service, and ${name} is a ${adapter} service whose stop is ${declaration.stop === "native" ? "a native request" : "its own"}; nothing was installed or allocated`, {
+  return new CommandFailure("refused", "UNSUPPORTED", `${command === "manager" ? "cotal manager install" : `cotal service install ${name}`} is not supported yet: a Cotal-written unit runs only a direct-process service, and ${name} runs through the ${adapter} adapter, whose stop is ${declaration.stop === "native" ? "a native request" : "its own"}; nothing was installed or allocated`, {
     target,
     remedy: declaration.capabilities.foreground
       ? `run it from your own systemd user unit with ExecStart=${entry} ${foreground} --space ${space} and KillMode=mixed${command === "manager" ? ", or keep an existing unit on cotal supervise for now" : ""}`

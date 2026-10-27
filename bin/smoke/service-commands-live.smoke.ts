@@ -6,8 +6,11 @@
  * runs refuses; `stop` stops it. A program of your own is added with one `service add --exec`, then
  * started, read and stopped by its name. In a sandbox of its own, the manager a plain `cotal up`
  * starts has no saved service: `manager logs` and `service logs stack-manager` read its log, a
- * `--follow --json` writes one record per line and ends when `cotal down` stops it, and `manager stop`
- * and `install` still refuse it.
+ * `--follow --json` writes one record per line and ends when `cotal down` stops it, a plain `--follow`
+ * ends with a sentence instead of a JSON line, and `manager stop` and `install --dry-run` still refuse
+ * it with the stack advice. After that `down`, `manager logs` reads the log it left, marked stopped
+ * with `cotal up` next, and `install --dry-run` names the `ExecStart=` line. A plain follow of your
+ * own service ends with a sentence too.
  *
  * Linux only: the native manager child is Linux-only. Every directory is a sandbox this suite
  * removes; teardown stops what still runs, then `cotal down` stops the stack it started.
@@ -45,12 +48,24 @@ function cotal(args: string[], timeout = 180_000, at = { root, env, anchor }) {
 const upHome = mkdtempSync(join(tmpdir(), "cotal-service-commands-live-uphome-"));
 const upRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}service-commands-uproot-`));
 const upXdg = join(upHome, "xdg");
-for (const dir of [join(upRoot, ".cotal"), join(upHome, ".cotal"), upXdg]) mkdirSync(dir, { recursive: true, mode: 0o700 });
-const upAt = { root: upRoot, env: { ...env, HOME: upHome, USERPROFILE: upHome, COTAL_HOME: join(upHome, ".cotal"), XDG_CONFIG_HOME: upXdg }, anchor: recordSmokeSandbox({ root: upRoot, cotalHome: join(upHome, ".cotal"), xdgConfigHome: upXdg }) };
+// The project folder is named after its space, so `down` keeps the space registered and a read after
+// it still reaches this folder.
 const UP_SPACE = "servicecommandsup";
+const upProject = join(upRoot, UP_SPACE);
+for (const dir of [join(upProject, ".cotal"), join(upHome, ".cotal"), upXdg]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+const upAt = { root: upProject, env: { ...env, HOME: upHome, USERPROFILE: upHome, COTAL_HOME: join(upHome, ".cotal"), XDG_CONFIG_HOME: upXdg }, anchor: recordSmokeSandbox({ root: upProject, cotalHome: join(upHome, ".cotal"), xdgConfigHome: upXdg }) };
 const UP_SERVER = `nats://127.0.0.1:${await freePort()}`;
 const upCotal = (args: string[]) => cotal(args, 180_000, upAt);
 const out = (run: ReturnType<typeof cotal>) => `${run.stdout ?? ""}${run.stderr ?? ""}`;
+/** A plain `logs --follow` in `at`, read until it exits. */
+function followText(args: string[], at = { root, env }) {
+  const child = spawn(process.execPath, ["--import", TSX_LOADER, BIN, ...args, "--follow"], { cwd: at.root, env: at.env, stdio: ["ignore", "pipe", "pipe"] });
+  const view = { text: "", exit: new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code))), child };
+  child.stdout.setEncoding("utf8").on("data", (chunk: string) => { view.text += chunk; });
+  return view;
+}
+/** The last line a follow wrote. */
+const lastLine = (text: string) => text.trim().split("\n").at(-1) ?? "";
 type Row = { name: string; preset: string | null; definition: string | null; state: string; needs: string[]; next: string };
 /** `cotal service --json`: the services rows and the saved definition names. */
 function inventory(): { services: Row[]; definitions: string[]; running: string[] } {
@@ -117,9 +132,15 @@ try {
     let helloLogs = cotal(["service", "logs", "hello"]);
     for (let i = 0; i < 20 && !out(helloLogs).includes("hello big world"); i++) { await sleep(500); helloLogs = cotal(["service", "logs", "hello"]); }
     check("service logs hello shows what it printed, with its quoted argument as one word", helloLogs.status === 0 && out(helloLogs).includes("hello big world"), out(helloLogs));
+    const helloFollow = followText(["service", "logs", "hello"]);
+    for (let i = 0; i < 40 && !helloFollow.text.includes("hello big world"); i++) await sleep(250);
     const helloStop = cotal(["service", "stop", "hello", "--yes"]);
     helloUp = helloStop.status !== 0;
     check("service stop hello stops it", helloStop.status === 0 && !inventory().running.includes("hello"), out(helloStop));
+    const helloCode = await Promise.race([helloFollow.exit, sleep(15_000).then(() => "timeout" as const)]);
+    if (helloCode === "timeout") helloFollow.child.kill("SIGINT");
+    check("  and a plain service logs hello --follow ends with a sentence, not a raw end record",
+      helloCode === 0 && lastLine(helloFollow.text) === "hello is no longer running, so the follow ended." && !/^end: /m.test(helloFollow.text), { helloCode, text: helloFollow.text });
 
     const stop = cotal(["manager", "stop", "--yes"]);
     managerUp = stop.status !== 0;
@@ -131,12 +152,12 @@ try {
     const plainUp = upCotal(["up", "--detach", "--open", "--space", UP_SPACE, "--server", UP_SERVER]);
     upStackUp = plainUp.status === 0;
     check("a plain cotal up starts a stack with its manager", upStackUp, out(plainUp));
-    const isManagerLog = (path = "") => dirname(path) === join(realpathSync(upRoot), ".cotal") && /^manager\.[0-9a-f]+\.log$/.test(basename(path));
+    const isManagerLog = (path = "") => dirname(path) === join(realpathSync(upProject), ".cotal") && /^manager\.[0-9a-f]+\.log$/.test(basename(path));
     let upLogs = upCotal(["manager", "logs"]);
     for (let i = 0; i < 30 && !out(upLogs).includes("manager up"); i++) { await sleep(500); upLogs = upCotal(["manager", "logs"]); }
     check("cotal manager logs reads the log of the manager up started, exit 0",
       upLogs.status === 0 && out(upLogs).includes("Manager log tail") && out(upLogs).includes("manager up") && !out(upLogs).includes("UNSUPPORTED"), out(upLogs));
-    type LogsEnvelope = { outcome?: string; result?: { kind?: string; lines?: string[]; path?: string; recordedProcess?: { savedService?: boolean } } };
+    type LogsEnvelope = { outcome?: string; result?: { kind?: string; lines?: string[]; path?: string; recordedProcess?: { savedService?: boolean; state?: string } } };
     const envelope = (run: ReturnType<typeof cotal>): LogsEnvelope => { try { return JSON.parse(run.stdout) as LogsEnvelope; } catch { return {}; } };
     const json = envelope(upCotal(["manager", "logs", "--json", "--tail", "5"]));
     check("  and --json returns its records from <root>/.cotal/manager.<spaceKey>.log, with no saved service",
@@ -146,11 +167,13 @@ try {
     const refusedStop = envelope(upCotal(["manager", "stop", "--yes", "--json"])) as LogsEnvelope & { error?: { code?: string; remedy?: string } };
     check("cotal manager stop still refuses it UNSUPPORTED with the stack advice",
       refusedStop.outcome === "refused" && refusedStop.error?.code === "UNSUPPORTED" && refusedStop.error.remedy === "it stops with its stack through cotal down, or where cotal supervise runs it", refusedStop);
-    const refusedInstall = envelope(upCotal(["manager", "install", "--json"])) as LogsEnvelope & { error?: { code?: string } };
-    check("  and so does cotal manager install", refusedInstall.outcome === "refused" && refusedInstall.error?.code === "UNSUPPORTED", refusedInstall);
+    const refusedInstall = envelope(upCotal(["manager", "install", "--dry-run", "--json"])) as LogsEnvelope & { error?: { code?: string; remedy?: string } };
+    check("  and so does cotal manager install --dry-run while it runs, with the same advice",
+      refusedInstall.outcome === "refused" && refusedInstall.error?.code === "UNSUPPORTED" && refusedInstall.error.remedy === refusedStop.error?.remedy, refusedInstall);
 
     // A follow is a read-only view: it writes one JSON record per line and ends when down stops the manager.
-    const follow = spawn(process.execPath, ["--import", TSX_LOADER, BIN, "manager", "logs", "--follow", "--json", "--tail", "3"], { cwd: upRoot, env: upAt.env, stdio: ["ignore", "pipe", "pipe"] });
+    const follow = spawn(process.execPath, ["--import", TSX_LOADER, BIN, "manager", "logs", "--follow", "--json", "--tail", "3"], { cwd: upProject, env: upAt.env, stdio: ["ignore", "pipe", "pipe"] });
+    const textFollow = followText(["manager", "logs", "--tail", "3"], upAt);
     let followed = "";
     follow.stdout.setEncoding("utf8").on("data", (chunk: string) => { followed += chunk; });
     const followExit = new Promise<number | null>((resolve) => follow.on("exit", (code) => resolve(code)));
@@ -164,6 +187,23 @@ try {
     check("cotal manager logs --follow --json writes one logs record per line: a snapshot, its events, then an end",
       records.length >= 3 && records.every((row) => row.stream === "logs") && records[0]?.type === "snapshot" && records.some((row) => row.type === "event") && records.at(-1)?.type === "end", followed);
     check("  and it ends with exit 0 once that manager's process is gone", code === 0 && records.at(-1)?.data?.reason === "original-process-no-longer-present", { code, last: records.at(-1) });
+    const textCode = await Promise.race([textFollow.exit, sleep(15_000).then(() => "timeout" as const)]);
+    if (textCode === "timeout") textFollow.child.kill("SIGINT");
+    check("a plain cotal manager logs --follow ends with a sentence, not a raw end record",
+      textCode === 0 && lastLine(textFollow.text) === "manager is no longer running, so the follow ended." && !/^end: /m.test(textFollow.text), { textCode, text: textFollow.text });
+
+    // ---- After down: the log it left, and install names the unit line ---------------------------
+    const stoppedLogs = upCotal(["manager", "logs", "--tail", "3"]);
+    check("cotal manager logs after down reads the log it left, marked stopped, with cotal up next",
+      stoppedLogs.status === 0 && out(stoppedLogs).includes("Manager log tail, from a stopped manager") && /State:\s+stopped/.test(out(stoppedLogs)) && /Next\s+cotal up\s/.test(out(stoppedLogs)), out(stoppedLogs));
+    const stoppedJson = envelope(upCotal(["manager", "logs", "--json", "--tail", "3"]));
+    check("  and --json carries recordedProcess in the stopped state, from the same file",
+      stoppedJson.outcome === "ok" && stoppedJson.result?.recordedProcess?.state === "stopped" && stoppedJson.result.recordedProcess.savedService === false && stoppedJson.result.path === json.result?.path && stoppedJson.result.lines?.length === 3, stoppedJson);
+    const stoppedInstall = envelope(upCotal(["manager", "install", "--dry-run", "--json"])) as LogsEnvelope & { error?: { code?: string; message?: string; remedy?: string } };
+    check("cotal manager install --dry-run after down names the ExecStart= line of a unit of your own",
+      stoppedInstall.outcome === "refused" && stoppedInstall.error?.code === "UNSUPPORTED" && Boolean(stoppedInstall.error.remedy?.includes(`manager start --foreground --space ${UP_SPACE} and KillMode=mixed`)) && Boolean(stoppedInstall.error.remedy?.includes("ExecStart=")), stoppedInstall);
+    check("  and says the manager runs through the manager-service adapter, with no doubled service",
+      Boolean(stoppedInstall.error?.message?.includes("manager runs through the manager-service adapter, whose stop is a native request")) && !stoppedInstall.error?.message?.includes("service service"), stoppedInstall.error?.message);
   }
 } catch (e) {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);

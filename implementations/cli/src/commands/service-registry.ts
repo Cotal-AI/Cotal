@@ -88,7 +88,8 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   const target = { space, executionHost: "this-machine" };
   if (["start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode)) {
     const resolved = resolvePresetService(space, root, suppliedName!, mode, args.values);
-    if (resolved?.recorded) return mode === "logs" && resolved.preset === "manager" ? recordedManagerLogs(resolved.requested, resolved.recorded, space, root, args.values, presentation, commandName) : recordedPresetProcessReport(resolved, resolved.recorded, space, mode, presentation, commandName);
+    if (resolved?.recorded) return mode === "logs" && resolved.preset === "manager" ? recordedManagerLogs(resolved.requested, { ...resolved.recorded, state: "running" }, space, root, args.values, presentation, commandName) : recordedPresetProcessReport(resolved, resolved.recorded, space, mode, presentation, commandName);
+    if (resolved?.stopped) return recordedManagerLogs(resolved.requested, { ...resolved.stopped, state: "stopped" }, space, root, args.values, presentation, commandName);
     if (resolved) announcePresetTarget(resolved, space, presentation);
     if (resolved?.saved === null && mode === "start" && args.values["dry-run"] && !store.read(resolved.name)) return previewPresetStart(resolved, space, root, args, presentation, commandName);
     try { return await serviceAction(resolved ? { ...args, positionals: [mode, resolved.name] } : args, space, root, commandName, resolved); }
@@ -328,17 +329,18 @@ export function recordedProcessRefusal(name: string, recorded: { pid: number; la
 }
 
 /** The log `up` opened for the manager it started with no saved service, read as `service logs`
- *  reads a service's. A read changes nothing, so it needs no control of the manager. */
-async function recordedManagerLogs(name: string, recorded: { pid: number; label: string }, space: string, root: string, values: ParsedArgs["values"], presentation: ReturnType<typeof presentationOf>, commandName: string): Promise<void> {
+ *  reads a service's, while that manager runs or after it stopped. A read changes nothing, so it
+ *  needs no control of the manager. */
+async function recordedManagerLogs(name: string, recorded: { pid: number | null; label: string; state: "running" | "stopped" }, space: string, root: string, values: ParsedArgs["values"], presentation: ReturnType<typeof presentationOf>, commandName: string): Promise<void> {
   const target = { space, name, executionHost: "this-machine", pid: recorded.pid };
   const path = managerLogPath(space, root), tail = values.tail === undefined ? 100 : Number(values.tail);
   if (values.follow) return followRecordedLog(path, recorded.pid, target, presentation, tail);
-  const log = readOwnedLogTail(path, tail);
-  writeResult(presentation, { command: commandName, target, result: { kind: "service-logs", name, recordedProcess: { pid: recorded.pid, label: recorded.label, startedBy: "cotal up or cotal supervise", savedService: false }, ...log, encoding: "utf8-with-replacement", collection: "the manager's output, in the log cotal up opened for it" }, ...(log.omittedBytes && log.lines.length < tail ? { completeness: "partial" as const, partial: { message: "The 16 MiB bounded read holds fewer lines than the requested tail; earlier bytes were omitted." } } : {}) }, (result): Report => ({ sections: [{ title: "Manager log tail", blocks: [
-    { kind: "fields", rows: [["Space", space], ["PID", String(recorded.pid)], ["Started by", "cotal up or cotal supervise, not as a saved service"], ["Log", path]] },
+  const log = readOwnedLogTail(path, tail), stopped = recorded.state === "stopped";
+  writeResult(presentation, { command: commandName, target, result: { kind: "service-logs", name, recordedProcess: { pid: recorded.pid, label: recorded.label, state: recorded.state, startedBy: "cotal up or cotal supervise", savedService: false }, ...log, encoding: "utf8-with-replacement", collection: "the manager's output, in the log cotal up opened for it" }, ...(log.omittedBytes && log.lines.length < tail ? { completeness: "partial" as const, partial: { message: "The 16 MiB bounded read holds fewer lines than the requested tail; earlier bytes were omitted." } } : {}) }, (result): Report => ({ sections: [{ title: stopped ? "Manager log tail, from a stopped manager" : "Manager log tail", blocks: [
+    { kind: "fields", rows: [["Space", space], ["State", recorded.state], ["PID", recorded.pid === null ? "no longer recorded" : stopped ? `${recorded.pid}, no longer running` : String(recorded.pid)], ["Started by", "cotal up or cotal supervise, not as a saved service"], ["Log", path]] },
     { kind: "lines", lines: result.lines.length ? result.lines : ["No captured log lines in this bounded read."] },
     { kind: "lines", lines: [{ text: "A manager that cotal supervise runs in a terminal writes there instead. Its output may contain secrets. This is a local authorized read, not a secret-redacted log or an upload.", tone: "hint" }] },
-  ] }] }));
+  ] }, ...(stopped ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: "cotal up", description: "Start the stack again" }] }] }] : [])] }));
 }
 
 /** A dry-run start of a preset no definition exists for yet: what the real start would save, from

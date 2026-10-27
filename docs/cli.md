@@ -4830,16 +4830,21 @@ command. A manager that `cotal up` or `cotal supervise` started without a saved 
 by `start` and `status` with its PID, and starts nothing beside it. `logs` reads the log `cotal up`
 opened for it, `<root>/.cotal/manager.<spaceKey>.log`, and changes nothing. It takes `--tail`,
 `--follow` and `--json` as a service's `logs` does, and a follow ends when that manager's process is
-gone. `cotal service logs stack-manager` reads the same file when no `stack-manager` is saved. A
+gone. After `cotal down` stops that manager, `logs` still reads the log it left: the text says the
+manager is stopped, with its PID while its record still names one, and names `cotal up` under Next,
+and `--json` carries `recordedProcess` with `state` set to `stopped`. With no such log, `logs`
+refuses `TARGET_NOT_FOUND`, naming the file and `cotal up`. `cotal service logs stack-manager` reads
+the same file when no `stack-manager` is saved. A
 manager that `cotal supervise` runs in a terminal writes to that terminal instead. `stop`, `install`
-and the other verbs refuse it, because no saved service owns it; it stops with its stack through
-`cotal down`, or where `cotal supervise` runs it.
+and the other verbs refuse it while it runs, because no saved service owns it; it stops with its
+stack through `cotal down`, or where `cotal supervise` runs it.
 
 `--foreground` keeps the manager in this terminal until Ctrl-C, which stops it through its native
 stop. A unit or container you write that runs a manager uses `cotal manager start --foreground`.
-`cotal manager install` refuses `UNSUPPORTED` in this release, whether or not a manager was started,
-because a Cotal-written unit runs only a direct-process service. It names the `ExecStart=` line for
-a unit of your own instead.
+`cotal manager install` refuses `UNSUPPORTED` in this release, because a Cotal-written unit runs
+only a direct-process service. It names the `ExecStart=` line for a unit of your own instead, whether
+or not a manager was started, with one exception: while a manager that `cotal up` started with no
+saved service runs, `install` refuses it as `stop` does and names `cotal down`.
 
 `manager start` and `manager restart` run the first-run connector seed, as `cotal supervise` does,
 so a fresh machine or container has its connectors before the manager boots; `status`, `logs`,
@@ -5229,7 +5234,8 @@ those flags named, and takes them on the start line: `cotal service start web --
 start refused before anything launched forgets the definition it saved. A preset name acts on the
 space's one service built on that preset, so after `cotal up` the name `delivery` reaches
 `stack-delivery`. The manager has its own [`manager`](#manager) commands. `--json` writes one envelope for every form,
-and `logs --follow --json` writes one record per line. `logs` refuses a log file this account
+and `logs --follow --json` writes one record per line. Without `--json`, a follow's last line says
+in a sentence why it ended. `logs` refuses a log file this account
 cannot read with `PERMISSION_DENIED` (exit 2), naming the file and `chmod u+rw`, quoted when a
 shell would split the path. The failed read changes no permissions or service state. With `--follow`
 the refusal is the stream's `error` record, which carries that step as `remedy`, and the stream ends.
