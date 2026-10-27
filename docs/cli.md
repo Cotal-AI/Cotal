@@ -559,10 +559,12 @@ there is no custody on this machine to preserve, and a `legacy` verdict still co
 manager this machine read. A stopped mesh that this machine runs, chosen with `--space` or by running
 inside its project, has no running manager either when no `cotal supervise` process on this machine
 may be serving its space and nothing listens at its recorded broker address, so the read is skipped
-there too. That is the cold path past a `legacy` verdict: `cotal down`, then `cotal update`. A space
-prepared on this machine that never started, whether this folder's, selected or named, has no broker
-and no manager, so it is named and skipped the same way; a stopped or unsettled one is read as
-above. Any other selected mesh whose manager cannot be read is still a refusal: a named space that is not
+there too. A controller stack that completed ordinary `cotal down` is eligible after its retained
+service records prove every process gone. Missing instance records, live or unresolved processes,
+and an unfinished down still refuse. That is the cold path past a `legacy` verdict: `cotal down`,
+then `cotal update`. A space prepared on this machine that never started, whether this folder's,
+selected or named, has no broker and no manager, so it is named and skipped the same way. Any other
+selected mesh whose manager cannot be read is still a refusal: a named space that is not
 recorded, a mesh registered with `cotal meshes add`, a `--server` override, a `cotal supervise`
 process still running from any folder whose command line names that space or no space, or a broker
 address where anything accepts the connection or the dial does not finish in time. With several
