@@ -127,7 +127,6 @@ import {
   checkDialPolicy,
   checkEnforcement,
   checkServer,
-  checkUserBundle,
   persistRemoteUserEntry,
   probeEnforcement,
   tlsIntent,
@@ -135,6 +134,7 @@ import {
   verifyUserExchange,
   type UserBundle,
 } from "./meshes-add.js";
+import { checkBundleDocument } from "@cotal-ai/workspace";
 
 const ENROLLMENT_URL_ENV = "COTAL_ENROLLMENT_URL";
 const ENROLLMENT_FILE_ENV = "COTAL_ENROLLMENT_FILE";
@@ -220,14 +220,14 @@ export function checkEnrollmentBundle(raw: unknown, actor: string): { bundle: En
   if (hasStock) {
     if ([o.server, o.tlsRequired, o.userAuth].some((v) => v === undefined))
       throw new Error("the enrollment bundle's stock mesh fields must include server, tlsRequired, and userAuth together");
-    const checked = checkUserBundle(JSON.stringify({
+    const checked = checkBundleDocument({
       space: o.space,
       server: o.server,
       tlsRequired: o.tlsRequired,
       userAuth: o.userAuth,
       policy: (o as { policy?: unknown }).policy,
       sentinelCreds: material.material.sentinelCreds,
-    }));
+    });
     if (!checked.ok) throw new Error(checked.message.replace(/^✗\s*/, ""));
     stock = checked.value;
     if (stock.userAuth.idp.url !== idp.url || stock.userAuth.idp.issuer !== idp.issuer || stock.userAuth.idp.audience !== idp.audience)

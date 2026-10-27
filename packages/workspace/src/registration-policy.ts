@@ -51,7 +51,7 @@ export async function checkDiscoveryDocument(res: Response): Promise<Check<UserB
   return checkBundleDocument(doc);
 }
 
-function checkBundleDocument(parsed: unknown): Check<UserBundle> {
+export function checkBundleDocument(parsed: unknown): Check<UserBundle> {
   const doc = parsed as Partial<UserBundle> & { userAuth?: unknown };
   if (doc === null || typeof doc !== "object") return bad("✗ the user-auth bundle must be a JSON object");
   if (typeof doc.space !== "string" || !doc.space) return bad("✗ the user-auth bundle names no space");
