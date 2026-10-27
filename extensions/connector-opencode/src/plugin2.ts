@@ -290,12 +290,15 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   }
 
   /** Whether an execution event is a replay: at or before `mark`, by default the last turn's end, in
-   *  the same session's durable log. 2.x gives every execution event that position, so one without it cannot be told
-   *  from a replay and is refused. */
+   *  the same session's durable log. 2.x gives every execution event that position. One that is missing,
+   *  or whose aggregate is not a non-empty string or whose sequence is not a finite number, cannot be
+   *  ordered, so it is refused the same way a missing position is. */
   function replayed(ev: OpenCode2Event, mark = ended): boolean {
     const at = ev.durable;
-    if (!at) log(`${ev.type} carries no durable log position; ignored`);
-    return !at || (at.aggregateID === mark?.aggregateID && at.seq <= mark.seq);
+    const seq = at?.seq;
+    const ordered = typeof at?.aggregateID === "string" && at.aggregateID.length > 0 && typeof seq === "number" && Number.isFinite(seq);
+    if (!ordered) log(`${ev.type} carries no durable log position; ignored`);
+    return !ordered || (at.aggregateID === mark?.aggregateID && seq <= mark.seq);
   }
 
   /** A turn ended: release `execution`, settle the batch it carried, then drive whatever waited
