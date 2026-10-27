@@ -18,7 +18,8 @@
  *
  * A process definition whose envRefs read a variable the environment does not set refuses its start
  * before anything launches, naming that variable and the child variable it feeds, and `service show`
- * lists the references by name.
+ * lists the references by name. A process service started with the usage telemetry opt-outs, an
+ * intake and `CI` receives them.
  *
  * A bare executable name is looked up on `add`'s PATH and saved as the absolute path found, so a
  * start under another PATH runs that same file. A PATH with a relative or empty entry refuses the
@@ -301,6 +302,20 @@ check("service remove of a stack member's definition refuses UNSUPPORTED, exit 2
   const stopped = run(["service", "stop", "httpsvc", "--instance", String(id), "--space", "b1", "--yes"]);
   check("following it stops the process, exit 0", stopped.status === 0 && stopped.envelope?.outcome === "ok", shown(stopped));
   check("rig: the definition is forgotten", run(["service", "remove", "httpsvc", "--space", "b1", "--yes"]).status === 0);
+}
+
+// A process service started with the usage telemetry opt-outs, an intake and CI: they reach it, so a
+// `cotal` command it runs reports, or stays off, as the start that launched it does.
+{
+  const file = join(home, "envsvc.json"), dump = join(home, "envsvc.env");
+  writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: "/bin/sh", args: ["-c", `env > ${dump}; exec sleep 60`], cwd: root }, readiness: { type: "process", timeoutMs: 1500 } }));
+  check("rig: a process definition that records its environment is saved", run(["service", "add", "envsvc", "--file", file, "--space", "b1"]).status === 0);
+  const telemetry = { DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", COTAL_TELEMETRY_DISABLED: "1", COTAL_TELEMETRY_URL: "http://intake.invalid/v1/telemetry", CI: "true" };
+  const started = run(["service", "start", "envsvc", "--space", "b1"], telemetry);
+  const lines = existsSync(dump) ? readFileSync(dump, "utf8").split("\n") : [];
+  const dropped = Object.entries(telemetry).filter(([k, v]) => !lines.includes(`${k}=${v}`)).map(([k]) => k);
+  check("the service child receives the usage telemetry opt-outs, the intake and CI", started.status === 0 && lines.length > 0 && dropped.length === 0, { start: shown(started), dropped });
+  check("rig: the environment service is stopped and forgotten", run(["service", "stop", "envsvc", "--space", "b1", "--yes"]).status === 0 && run(["service", "remove", "envsvc", "--space", "b1", "--yes"]).status === 0);
 }
 
 // A process service that answers its own HTTP readiness with a status, as a Node child on a free port.

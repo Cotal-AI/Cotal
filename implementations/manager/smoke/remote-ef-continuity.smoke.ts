@@ -301,6 +301,8 @@ try {
     COTAL_HOME: homeDir,
     XDG_CONFIG_HOME: xdgDir,
     COTAL_SKIP_CONNECTOR_SEED: "1",
+    DO_NOT_TRACK: "1",
+    COTAL_TELEMETRY: "off",
     ...(process.env.EF_PUBLIC_AUTHORITY === "1" ? { EF_PUBLIC_AUTHORITY: "1" } : {}),
   };
 

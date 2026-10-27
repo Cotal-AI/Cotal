@@ -225,6 +225,12 @@ function eventsAtExit(registry: Registry, p: Pending, code: number, now: Date): 
   return bodies;
 }
 
+/** Whether `CI` marks a CI run: set to anything but `0` or `false`, which is how a script of the
+ *  operator's own says it is not one. */
+function inCi(value: string | undefined): boolean {
+  return value !== undefined && !["", "0", "false"].includes(value.trim().toLowerCase());
+}
+
 function base(p: Pending) {
   return {
     v: 1 as const,
@@ -234,7 +240,7 @@ function base(p: Pending) {
     os: process.platform,
     arch: process.arch,
     node: Number.parseInt(process.versions.node, 10),
-    ci: Boolean(process.env.CI),
+    ci: inCi(process.env.CI),
   };
 }
 

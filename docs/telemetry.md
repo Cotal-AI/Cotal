@@ -29,12 +29,26 @@ environment forces `off`, `cotal telemetry <level>` saves nothing and creates no
 `no-op` with an `ENVIRONMENT_OPT_OUT` warning. Otherwise `cotal telemetry <level>` is a `no-op` only
 when the file already holds that level, so the run that creates the file reports `ok`.
 
+These variables, `COTAL_TELEMETRY_URL` and `CI` reach the processes Cotal starts from the environment
+that sets them: the daemons, the services `cotal service start` launches and the agents a manager
+spawns. A `cotal` command one of them runs therefore reports, or stays off, as the command that
+started it would. A seat a running manager launches carries the manager's environment, not that of
+the `cotal spawn` that asked for it, and a service your login starts after `cotal service install`
+carries its unit's. `cotal telemetry off` is in the file every one of them reads.
+
 The settings live in the OS user's own Cotal directory, `~/.cotal/telemetry.json`
 (`%LOCALAPPDATA%\Cotal\telemetry.json` on Windows), mode `0600`: the level, a random install id
 (uuid v4), the file's creation time, and the times of the one-time notice and the last install
 event. `COTAL_HOME` does not move this file, so every workspace one person runs under their own
-account reports the same install id. An invalid file is not replaced: a command that reads
-telemetry settings refuses with `SCHEMA_INVALID`. Environment opt-outs bypass that read.
+account reports the same install id, across upgrades and git worktrees too. An invalid file is not
+replaced: a command that reads telemetry settings refuses with `SCHEMA_INVALID`. Environment
+opt-outs bypass that read. Deleting the file resets the install id: the next command creates a new
+one.
+
+A home without the file gets a new install id on its first command, so the id cannot persist where
+the home does not: a new OS user, a fresh CI runner, a container whose home is not on a volume. An
+image build that runs a `cotal` command bakes its file, and one install id, into every container
+started from the image, so run those commands with `DO_NOT_TRACK=1`, as `deploy/docker` does.
 
 <a id="never-sent"></a>
 
@@ -88,13 +102,13 @@ a later terminal run still shows it. An environment-selected level does not trig
 | `os` | string | `process.platform`. |
 | `arch` | string | `process.arch`. |
 | `node` | integer | The Node major version. |
-| `ci` | boolean | Whether `CI` is set. |
+| `ci` | boolean | Whether `CI` is set to anything but `0` or `false`. |
 
 At `regular` the event also carries:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `account` | string or `null` | A sha256 hash of the IdP URL and subject id of the home's cached sign-in, cut to 32 hex characters, so one person counts once across machines; with several sign-ins, the first by IdP URL. `null` without a sign-in. |
+| `account` | string or `null` | A sha256 hash of the IdP URL and subject id of the home's cached sign-in, cut to 32 hex characters, so one person counts once across machines; with several sign-ins, the first by IdP URL. `null` without a sign-in. It is read as the command starts, so a `login` reports the sign-in cached before it and a `logout` the one it removes. |
 | `subcommand` | string or `null` | The registered subcommand the first positional names (`ext add`, `daemon status`), never a user value. |
 | `flags` | string array, at most 32 | Flag names as typed (`--json`, `-j`, `--server`), values stripped; an unknown flag counts by name. |
 | `errorCode` | string or `null` | The typed code of a refusal or failure (`USAGE_INVALID`, `AUTH_REQUIRED`, `OPERATION_PARTIAL`); `null` on success or when the exit carried no code. |
