@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, constants, fchmodSync, fstatSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fchmodSync, fstatSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -87,20 +87,32 @@ export function bootToken(): string | undefined {
   }
 }
 
-/** The Linux process start token: `/proc/<pid>/stat` field 22 (starttime, in clock ticks since
- *  boot), parsed after the final `)` because comm may hold spaces and parentheses. A zombie still
- *  reports it, so a child that exited before its custodian reaped it is still readable. Undefined
- *  when the pid has no `/proc` entry. */
-export function processStartToken(pid: number): string | undefined {
+/** The fields of `/proc/<pid>/stat` after comm, or undefined when the pid has no entry or the line has
+ *  no comm terminator. comm may hold spaces and parentheses, so only the final `)` is structural, and
+ *  a line without one is not sliced from inside the pid. Field 0 is state, 1 is ppid, 2 is pgrp, and
+ *  19 is starttime. */
+export function processStatFields(pid: number): string[] | undefined {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     const after = stat.lastIndexOf(") ");
     if (after < 0) return undefined;
-    const token = stat.slice(after + 2).split(" ")[19];
-    return token || undefined;
+    return stat.slice(after + 2).trim().split(/\s+/);
   } catch {
     return undefined;
   }
+}
+
+/** The Linux process start token: `/proc/<pid>/stat` field 22 (starttime, in clock ticks since
+ *  boot). A zombie still reports it. Undefined when the pid has no readable stat line. */
+export function processStartToken(pid: number): string | undefined {
+  return processStatFields(pid)?.[19] || undefined;
+}
+
+/** Whether `pid` is a zombie, or has no `/proc` entry. A stat line with no comm terminator is neither:
+ *  the process is still there and its state was not read. */
+function childGone(pid: number): boolean {
+  const state = processStatFields(pid)?.[0];
+  return state === "Z" || (state === undefined && !existsSync(`/proc/${pid}`));
 }
 
 export function writeRecord(path: string, record: SeatRecord): void {

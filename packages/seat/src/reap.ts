@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { discardSeatArtifacts } from "./artifacts.js";
-import { bootToken, exitPath, isSeatId, processStartToken, readRecord, recordPath, type SeatRecord } from "./record.js";
+import { bootToken, exitPath, isSeatId, processStartToken, processStatFields, readRecord, recordPath, type SeatRecord } from "./record.js";
 import { RUN_MARKER_FLAG } from "./launcher.js";
 import { unsupportedTransport, type SeatExit } from "./protocol.js";
 
@@ -42,15 +42,8 @@ export function identityVerdict(pid: number, start: string): "live" | "gone" {
 }
 
 function processGroupOf(pid: number): number | undefined {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const after = stat.lastIndexOf(") ");
-    if (after < 0) return undefined;
-    const pgrp = Number(stat.slice(after + 2).split(" ")[2]);
-    return Number.isInteger(pgrp) ? pgrp : undefined;
-  } catch {
-    return undefined;
-  }
+  const pgrp = Number(processStatFields(pid)?.[2]);
+  return Number.isInteger(pgrp) ? pgrp : undefined;
 }
 
 /** Every live pid whose process group is `pgid`. Bounded by the process table; read once per poll. */

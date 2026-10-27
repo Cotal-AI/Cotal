@@ -22,7 +22,7 @@ import {
   type ServerMessage,
 } from "./protocol.js";
 import { ConnectorDiagnosticReader } from "./diagnostic.js";
-import { RECORD_VERSION, appendPrivate, bootToken, exitPath, processStartToken, writePrivate, writeRecord, type SeatRecord } from "./record.js";
+import { RECORD_VERSION, appendPrivate, bootToken, childGone, exitPath, processStartToken, writePrivate, writeRecord, type SeatRecord } from "./record.js";
 import { StartupConfirmGate } from "./startup-confirm.js";
 
 export interface CustodianLaunch {
@@ -167,15 +167,6 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     waiters.clear();
   };
 
-  const childGone = (): boolean => {
-    try {
-      const stat = readFileSync(`/proc/${proc.pid}/stat`, "utf8");
-      return (stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[0] ?? "") === "Z";
-    } catch {
-      return true;
-    }
-  };
-
   /**
    * Mark a child that /proc shows gone as exited WITHOUT a status, but only once node-pty has had
    * time to report the status itself. node-pty reports an exit only when the pty closes, and when a
@@ -184,7 +175,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
    */
   let goneSince: number | undefined;
   const markGone = (): void => {
-    if (!alive || !childGone()) return;
+    if (!alive || !childGone(proc.pid)) return;
     goneSince ??= Date.now();
     if (Date.now() - goneSince >= EXIT_STATUS_GRACE_MS) markExited({});
   };

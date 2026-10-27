@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discardSeatArtifacts } from "./artifacts.js";
-import { assertSeatId, capabilityToken, recordPath, seatId, socketPath, writePrivate, type SeatRecord, readRecord } from "./record.js";
+import { assertSeatId, capabilityToken, processStatFields, recordPath, seatId, socketPath, writePrivate, type SeatRecord, readRecord } from "./record.js";
 import { unattendedMs, assertSocketPathFits, unsupportedTransport } from "./protocol.js";
 
 export interface SeatLaunchSpec {
@@ -55,15 +55,11 @@ function custodianEntry(): string {
  */
 export const RUN_MARKER_FLAG = "--cotal-run";
 
-/** This process's parent, from `/proc/<pid>/stat` field 4. Undefined when the pid is gone. */
+/** This process's parent, from `/proc/<pid>/stat` field 4. Undefined when the pid is gone or its stat
+ *  line has no comm terminator. */
 function parentOf(pid: number): number | undefined {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const ppid = Number(stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[1]);
-    return Number.isInteger(ppid) && ppid > 1 ? ppid : undefined;
-  } catch {
-    return undefined;
-  }
+  const ppid = Number(processStatFields(pid)?.[1]);
+  return Number.isInteger(ppid) && ppid > 1 ? ppid : undefined;
 }
 
 /**
@@ -122,13 +118,8 @@ export function runMarkerOf(pid: number): string | undefined {
 
 function pidLive(pid: number | undefined): boolean {
   if (typeof pid !== "number" || pid <= 0) return false;
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const state = stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[0];
-    return state !== "Z";
-  } catch {
-    return false;
-  }
+  const state = processStatFields(pid)?.[0];
+  return state !== undefined && state !== "Z";
 }
 
 export function launchSeat(opts: LaunchSeatOpts): SeatRecord {
