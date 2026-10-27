@@ -573,6 +573,11 @@ try {
     check("status then says the stack is stopped after a failed up, shows the recorded cap and names up --max-file-store at the floor, not a bare up",
       capped.status === 0 && Boolean(cappedSelected?.message?.includes(`"${space}" is stopped; its last operation, cotal up, failed`)) && cappedSelected?.storeCap === MIN_FILE_STORE - 1
         && ((capped.env?.result?.hints ?? []) as string[]).some((hint) => hint.startsWith(`start it with \`cotal up --max-file-store ${MIN_FILE_STORE}\` or more in `)), shown(capped));
+    // With another space selected, the note on what this folder holds names the up that starts it.
+    const folderNote = (run: Run) => run.env?.warnings?.find((warning) => warning.code === "FOLDER_SPACE_NOT_RUNNING" && warning.target?.space === space);
+    const noted = cli(root, "status", "--json");
+    check(`with another space selected, the folder note names up --max-file-store ${MIN_FILE_STORE} or more after the failed up, not a bare up`,
+      noted.status === 0 && noted.env?.target?.space !== space && folderNote(noted)?.message === `this folder holds the stopped space "${space}"; restart it with cotal up --max-file-store ${MIN_FILE_STORE} or more`, { ...shown(noted), target: noted.env?.target, note: folderNote(noted) });
     const floor = cli(root, "up", "--no-manager", "--max-file-store", String(MIN_FILE_STORE), "--json");
     track(space);
     check(`up --max-file-store ${MIN_FILE_STORE} starts the stack`, floor.status === 0, shown(floor));
@@ -582,6 +587,9 @@ try {
     check("status then says the stack is stopped after a completed down, not prepared but not started, and names a bare up",
       stoppedStatus.status === 0 && Boolean(stoppedSelected?.message?.includes(`"${space}" is stopped; its last operation, cotal down, completed`)) && stoppedSelected?.storeCap === undefined
         && ((stoppedStatus.env?.result?.hints ?? []) as string[]).some((hint) => hint.startsWith("start it again with `cotal up` in ")), shown(stoppedStatus));
+    const notedDown = cli(root, "status", "--json");
+    check("with another space selected, the folder note names a bare up after a completed down whose cap is at the floor",
+      notedDown.status === 0 && notedDown.env?.target?.space !== space && folderNote(notedDown)?.message === `this folder holds the stopped space "${space}"; restart it with cotal up`, { ...shown(notedDown), target: notedDown.env?.target, note: folderNote(notedDown) });
   }
 
   // 3f. A space over its file store cap. The broker refuses every write and stores nothing.

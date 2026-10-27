@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { MeshSnapshot } from "../../view/mesh-view.js";
-import { COMMANDS } from "../commands.js";
+import { COMMANDS, meshWord } from "../commands.js";
 import { Modal } from "./Modal.js";
 import type { PsReply } from "../control.js";
 import { useListCursor } from "./useListCursor.js";
@@ -52,7 +52,7 @@ function suggest(query: string, snap: MeshSnapshot, managed: PsReply | undefined
     if (command === "attach" || command === "status") {
       items = managed?.ok ? managed.rows
         .filter((row) => row.name.toLowerCase().startsWith(q))
-        .map((row) => ({ value: row.name, label: row.name, summary: `${row.agent} · ${row.status} · mesh ${row.mesh}`, run: true })) : [];
+        .map((row) => ({ value: row.name, label: row.name, summary: `${row.agent} · ${row.status} · mesh ${meshWord(row)}`, run: true })) : [];
       hint = !managed ? "Loading managed agents…" : !managed.ok ? managed.error : managed.rows.length ? "No matching managed agents" : "No managed agents available";
     } else if (command === "dm" || command === "call") {
       items = agents(); hint = peers.length ? "No matching agents or endpoints" : "No agents or endpoints available";

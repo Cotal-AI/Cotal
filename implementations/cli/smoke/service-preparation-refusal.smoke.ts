@@ -608,6 +608,8 @@ if (process.getuid?.() !== 0) {
   check("the other folder's space lists it as inherited, with the root it was added in", inherited?.root === rootA && inherited.rootMatch === "inherited", inherited);
   const text = spawnSync(process.execPath, [BIN, "service", "--space", "inh"], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
   check("  and its text marks it inherited from that root", text.status === 0 && text.stdout.includes(`inherited from ${rootA}`), text.stdout.slice(-1500));
+  const tickRow = text.stdout.split("\n").find((line) => /^\s+tick\s/.test(line));
+  check("  and its Next names the service remove that forgets it, not a start that refuses", tickRow?.includes("cotal service remove tick --space inh --yes") === true && !tickRow.includes("service start"), tickRow);
   for (const [mode, extra] of [["start", []], ["restart", ["--yes"]], ["install", ["--dry-run"]]] as const) {
     const r = run(["service", mode, "tick", "--space", "inh", ...extra]);
     check(`${mode} of it refuses CONFLICT, exit 2, naming that root and service remove`,

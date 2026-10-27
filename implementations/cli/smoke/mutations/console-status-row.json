@@ -11,11 +11,11 @@
     {
       "name": "S1 presence `working` reaches the operator as a bare word",
       "file": "implementations/cli/src/console/commands.ts",
-      "find": "  const mesh = a.mesh === \"working\" ? \"working · progress unknown\" : a.mesh;",
-      "replace": "  const mesh = a.mesh;",
+      "find": "export const meshWord = (a: Pick<ManagedRow, \"mesh\">): string => a.mesh === \"working\" ? \"working · progress unknown\" : a.mesh;",
+      "replace": "export const meshWord = (a: Pick<ManagedRow, \"mesh\">): string => a.mesh;",
       "expectRed": "a working seat renders `mesh working · progress unknown`",
       "cell": "a working seat renders `mesh working · progress unknown`",
-      "note": "`working` alone claims progress the manager never reported; the qualifier is the whole point of the row."
+      "note": "`working` alone claims progress the manager never reported; the qualifier is the whole point of the row. Re-anchored when the qualifier moved into meshWord, which the palette's managed-seat row shares."
     },
     {
       "name": "S2 the row drops the role from its name/role label",

@@ -1,7 +1,7 @@
 {
   "expected": {
-    "total": 727,
-    "honest-text": 37,
+    "total": 728,
+    "honest-text": 38,
     "presence-only-glyph/count": 57,
     "command-ack": 11,
     "non-render/control": 622
@@ -1122,12 +1122,23 @@
     {
       "path": "implementations/cli/src/console/commands.ts",
       "kind": "derived-output",
-      "anchor": "`${peerLabel(a)} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${mesh} · up ${Math.round(a.uptimeMs / 60000)}m`",
+      "anchor": "`${peerLabel(a)} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${meshWord(a)} · up ${Math.round(a.uptimeMs / 60000)}m`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/smoke/console-status-row.smoke.ts",
         "anchor": "check(\"a working seat renders `mesh working · progress unknown`\", working.includes(\"mesh working · progress unknown\"), working);"
+      }
+    },
+    {
+      "path": "implementations/cli/src/console/ui/CommandPalette.tsx",
+      "kind": "derived-output",
+      "anchor": "`${row.agent} · ${row.status} · mesh ${meshWord(row)}`",
+      "class": "honest-text",
+      "rationale": "Palette managed-seat suggestion for status and attach: the mesh word goes through meshWord, the helper :status uses, so a working seat reads working · progress unknown.",
+      "proof": {
+        "path": "implementations/cli/smoke/console-palette.smoke.tsx",
+        "anchor": "assert.ok(row.includes(\"mesh working · progress unknown\")"
       }
     },
     {
