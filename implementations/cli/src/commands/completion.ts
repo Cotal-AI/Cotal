@@ -20,13 +20,15 @@ import { changeCompletion, completionOwnership, completionPaths as stubPaths, co
 import { SCRIPTS, LOAD_NOW } from "../lib/completion-scripts.js";
 
 /**
- * Shell completion, the standard two-layer way (Cobra/Click/clap): a thin per-shell stub —
- * printed to stdout by `cotal completion script <shell>`, installed once — that forwards each <TAB>
- * to the hidden `cotal __complete` dispatcher. The dispatcher returns live candidates, so
- * completion sees real data (your personas) that a static script never could.
+ * Shell completion, the standard two-layer way (Cobra/Click/clap): a thin per-shell stub,
+ * printed to stdout by `cotal completion script <shell>`, and installed by
+ * `cotal completion install`, that forwards each <TAB> to the hidden `cotal __complete`
+ * dispatcher. The dispatcher returns live candidates, so completion sees real data (your
+ * personas) that a static script never could.
  *
- * The stub is installed once; the protocol between it and `__complete` is line-oriented and
- * tolerant (unknown lines are ignored), so it can grow without anyone re-installing the stub.
+ * The protocol between the stub and `__complete` is line-oriented and tolerant (unknown lines
+ * are ignored), so a stub can stay in place while the protocol grows. `install` still refreshes
+ * a recorded stub whose bytes differ from this version, and leaves one that already matches.
  *
  *   cotal completion                            # which shells have the stub, and whether it is current
  *   cotal completion script <shell>             # print the stub to stdout
