@@ -443,7 +443,15 @@ const QUESTION = "Which one?";
     const flagged = run(["up", "-f", "one.yaml", "--server", `${A},${A}`, "--dry-run"], fresh);
     check("up -f --dry-run with two --server entries refuses, exit 1, naming --server",
       flagged.status === 1 && flagged.stdout === "" && /--server names more than one broker address, and up -f binds a single broker address/.test(flagged.stderr) && /pass one --server address/.test(flagged.stderr) && !/Usage|Options|Invalid URL/.test(flagged.stderr) && entries() === "one.yaml,two.yaml", shown(flagged));
+    writeFileSync(join(fresh, "trail.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: gamma\nbroker: { servers: "${A},," }\nchannels: {}\n`);
+    const trailing = run(["up", "-f", "trail.yaml", "--dry-run"], fresh);
+    check("up -f --dry-run with a trailing empty broker.servers entry refuses, exit 1, naming broker.servers",
+      trailing.status === 1 && trailing.stdout === "" && /broker\.servers names more than one broker address, and up -f binds a single broker address/.test(trailing.stderr) && /set broker\.servers in .*trail\.yaml to one address/.test(trailing.stderr) && !/Usage|Options|Invalid URL/.test(trailing.stderr) && entries() === "one.yaml,trail.yaml,two.yaml", shown(trailing));
+    const leading = run(["up", "-f", "one.yaml", "--server", `, ${A}`, "--dry-run"], fresh);
+    check("up -f --dry-run with a leading empty --server entry refuses, exit 1, naming --server",
+      leading.status === 1 && leading.stdout === "" && /--server names more than one broker address, and up -f binds a single broker address/.test(leading.stderr) && /pass one --server address/.test(leading.stderr) && !/Usage|Options|Invalid URL/.test(leading.stderr) && entries() === "one.yaml,trail.yaml,two.yaml", shown(leading));
     rmSync(join(fresh, "one.yaml"));
+    rmSync(join(fresh, "trail.yaml"));
     rmSync(join(fresh, "two.yaml"));
     writeFileSync(join(fresh, "list.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: gamma\nbroker: { servers: ["${A}"] }\nchannels: {}\n`);
     const invalid = run(["up", "-f", "list.yaml"], fresh);

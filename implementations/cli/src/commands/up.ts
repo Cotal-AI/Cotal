@@ -3337,11 +3337,13 @@ export function controllerStackNative(): StackUpNative {
 
 /** `up -f` creates one broker, so its effective address is one URL. A comma-separated list is a
  *  connect target (the shared resolver and `topology view` accept it) and cannot be a bind address.
- *  Refused before any parse, naming `source` (`broker.servers` or `--server`). A fresh team boot
- *  throws, because that path reports through the outcome table; the ordinary path prints the same
- *  sentence and exits 1, as the URL-shape check just above it does. */
+ *  An empty entry is still a comma-separated list: dropping it and handing the raw string to a
+ *  single-URL parse is the failure this refuses. Refused before any parse, naming `source`
+ *  (`broker.servers` or `--server`). A fresh team boot throws, because that path reports through
+ *  the outcome table; the ordinary path prints the same sentence and exits 1, as the URL-shape
+ *  check just above it does. */
 function refuseMultiBrokerBind(servers: string | undefined, source: string, space: string, file: string, fresh: boolean): void {
-  if (servers === undefined || servers.split(",").filter((entry) => entry.trim()).length <= 1) return;
+  if (servers === undefined || !servers.includes(",")) return;
   const message = `${source} names more than one broker address, and up -f binds a single broker address; nothing was started or written`;
   const remedy = source === "--server" ? "pass one --server address" : `set broker.servers in ${file} to one address`;
   if (fresh) throw new CommandFailure("refused", "USAGE_INVALID", message, { target: { space, source }, remedy });
