@@ -171,7 +171,7 @@ function recordableError(e: EffectError, kind: string): { readonly error: EntryE
  * L4028: an effect kind `once` does not admit (spec/cotal-lang.md §7.8), refused before its entry
  * begins, so no handler method is called and a resume reaches the same refusal.
  */
-function notHoldable(kind: EffectKind, path: readonly ScopeFrame[]): RuntimeFault {
+function notHoldable(kind: EffectKind | ScopeKind, path: readonly ScopeFrame[]): RuntimeFault {
   return new RuntimeFault(
     "L4028",
     `\`${kind}\` runs inside \`once\` at ${scopePathString(path)}, and \`once\` admits only \`ask\`: a resume could not hold any other kind without dispatching it again or losing run state it builds. Move the \`${kind}\` outside the \`once\` that wraps the write.`,
@@ -1348,11 +1348,12 @@ export async function performScope(
 ): Promise<unknown> {
   // A scope that calls the handler is an effect `once` does not admit, for the same reason the
   // effect path refuses one: a resume would call that method again at the same key. The trait says
-  // which scopes do, so a new dispatching kind is refused here without a second literal. The kind
-  // the message names is the scope's own effect kind, which is what `notHoldable` records.
+  // which scopes do, so a new dispatching kind is refused here without a second literal, and without
+  // a lookup of a same-named effect kind. That lookup can be null while the trait is true, and
+  // requiring it would admit the scope the trait says calls the handler. The message names the
+  // scope's own effect kind when it has one, and the scope kind when it does not.
   const dispatches = scopeTraits(scopeKey.kind)?.dispatches === true;
-  const scopeEffect = PRIMITIVES[scopeKey.kind]?.kind ?? null;
-  if (dispatches && scopeEffect !== null && atMostOnce(scopeKey.scope)) throw notHoldable(scopeEffect, scopeKey.scope);
+  if (dispatches && atMostOnce(scopeKey.scope)) throw notHoldable(PRIMITIVES[scopeKey.kind]?.kind ?? scopeKey.kind, scopeKey.scope);
   const inputHash = digest(
     subject === undefined
       ? { kind: scopeKey.kind, name: scopeKey.name }
