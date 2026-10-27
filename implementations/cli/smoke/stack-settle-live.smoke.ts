@@ -69,8 +69,10 @@
  *     killed under a live manager, `down` refuses before any stop
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
  *     it, `up` then `down` stop both. While the broker is live, its refusal of a seat's credential
- *     is kept as it is. `down manager` stops `stack-manager` through the service stop and `up`
- *     starts it again; the broker stop then names its stack members. Under umask
+ *     is kept as it is. `down delivery manager --dry-run` previews both stack members, a set naming
+ *     `nats` refuses whole with a message that names it, and `down manager delivery --yes` stops both
+ *     with each requested name in its target. `down manager` stops `stack-manager` through the service
+ *     stop and `up` starts it again; the broker stop then names its stack members. Under umask
  *     0002 the delivery-aware marker is 0600. After a clean down, a group-writable `.cotal/auth`
  *     makes `reset space --dry-run` name it and its repair. A `down` after every member crashed
  *     exits 0 and keeps the delivery credential, and the reset preview then names `cotal up` and
@@ -238,6 +240,9 @@ const until = async (cond: () => boolean, ms: number) => {
 const pidOf = (space: string, definition: string): number | null => {
   try { return serviceInstances(space, definition)[0]?.record.value.process?.pid ?? null; } catch { return null; }
 };
+/** The pid of a stack definition's running instance, beside any stopped one an earlier stop left. */
+const runningPidOf = (space: string, definition: string): number | null =>
+  serviceInstances(space, definition).find((row) => observeServiceProcess(row.record.value) === "running")?.record.value.process?.pid ?? null;
 const track = (space: string) => {
   for (const definition of ["stack-broker", "stack-auth", "stack-delivery", "stack-manager"]) {
     const pid = pidOf(space, definition);
@@ -918,9 +923,32 @@ try {
     check("the delivery-aware marker is 0600 under umask 0002", (statSync(marker).mode & 0o777) === 0o600, (statSync(marker).mode & 0o777).toString(8));
     check("the marker is a regular file, not a link", lstatSync(marker).isFile(), lstatSync(marker).isSymbolicLink());
 
+    // Several names in one down resolve each preset name to its member, whichever comes first.
+    const setPreview = cli(root, "down", "delivery", "manager", "--space", space, "--dry-run", "--json");
+    const previewMembers = (setPreview.env?.target?.members ?? []) as { name: string; requested?: string }[];
+    check("down delivery manager --dry-run previews stack-delivery and stack-manager, each with its requested name",
+      setPreview.status === 0 && setPreview.env?.result?.kind === "service-set-stop-preview"
+        && JSON.stringify(previewMembers.map((member) => [member.name, member.requested])) === JSON.stringify([["stack-delivery", "delivery"], ["stack-manager", "manager"]]), shown(setPreview));
+    const setManager = runningPidOf(space, "stack-manager"), setDelivery = runningPidOf(space, "stack-delivery");
+    const unknown = cli(root, "down", "stack-manager", "nats", "--space", space, "--yes", "--json");
+    check("a name in the set that matches no saved definition or preset refuses the whole set, naming it and the stack- member",
+      unknown.status === 2 && unknown.env?.error?.code === "TARGET_NOT_FOUND" && unknown.env.target?.name === "nats"
+        && unknown.env.error.message === `nats matches no saved definition or preset in space ${space}; no service was stopped`
+        && Boolean(unknown.env.error.remedy?.includes("name stack-broker instead")) && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), shown(unknown));
+    const setStop = cli(root, "down", "manager", "delivery", "--space", space, "--yes", "--json");
+    const stopMembers = (setStop.env?.target?.members ?? []) as { name: string; requested?: string }[];
+    check("down manager delivery --yes stops stack-manager and stack-delivery, and its target keeps each requested name",
+      setStop.status === 0 && setStop.env?.outcome === "ok" && setStop.env.result?.kind === "service-set-stop"
+        && JSON.stringify(stopMembers.map((member) => [member.name, member.requested])) === JSON.stringify([["stack-manager", "manager"], ["stack-delivery", "delivery"]])
+        && gone(space, "stack-manager") && gone(space, "stack-delivery"), shown(setStop));
+    const setRestarted = cli(root, "up", "--json");
+    const restartedPids = ["stack-manager", "stack-delivery"].map((definition) => runningPidOf(space, definition));
+    for (const pid of restartedPids) if (pid !== null) owned.add(pid);
+    check("up starts both again", setRestarted.status === 0 && restartedPids.every((pid) => pid !== null), shown(setRestarted));
+
     // A named stop resolves the selected space, and an earlier section's stopped space stays selected.
     // `manager` is a preset name, so it reaches the stack's own member through the service stop.
-    const firstManager = pidOf(space, "stack-manager");
+    const firstManager = runningPidOf(space, "stack-manager");
     const presetName = cli(root, "down", "manager", "--space", space, "--yes", "--json");
     check("down manager on a controller stack stops stack-manager through the service stop and names it",
       presetName.status === 0 && presetName.env?.outcome === "ok" && presetName.env.result?.kind === "service-stop" && presetName.env.target?.requested === "manager" && presetName.env.target?.name === "stack-manager"
@@ -992,7 +1020,7 @@ try {
     const again = cli(root, "up", "--json");
     track(space);
     check("bare up starts the stack again", again.status === 0, shown(again));
-    const members = ["stack-broker", "stack-delivery", "stack-manager"].map((definition) => pidOf(space, definition));
+    const members = ["stack-broker", "stack-delivery", "stack-manager"].map((definition) => runningPidOf(space, definition));
     for (const pid of members) if (pid !== null) process.kill(pid, "SIGKILL");
     await until(() => members.every((pid) => pid === null || !alive(pid)), 10_000);
     const settled = cli(root, "down", "--yes", "--json");

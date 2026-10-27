@@ -296,7 +296,7 @@ function serviceRows(space: string, root: string, catalog: readonly ServicePrese
 
 /** Say on stderr which saved service a preset name acts on, and what this command saved for it,
  *  before the action's own report. JSON carries the same in its target and result. */
-function announcePresetTarget(resolved: PresetServiceTarget, space: string, presentation: ReturnType<typeof presentationOf>): void {
+export function announcePresetTarget(resolved: PresetServiceTarget, space: string, presentation: ReturnType<typeof presentationOf>): void {
   if (presentation === "json") return;
   const notes: string[] = [];
   if (resolved.name !== resolved.requested) notes.push(`${resolved.requested} in space ${space} is the saved service ${resolved.name}${resolved.name.startsWith("stack-") ? ", which cotal up started" : ""}`);
@@ -312,11 +312,19 @@ function announcePresetTarget(resolved: PresetServiceTarget, space: string, pres
 function recordedPresetProcessReport(resolved: PresetServiceTarget, recorded: { pid: number; label: string }, space: string, mode: string, presentation: ReturnType<typeof presentationOf>, commandName: string): void {
   const target = { space, name: resolved.requested, executionHost: "this-machine", pid: recorded.pid };
   const stop = "it stops with its stack through cotal down, or where cotal supervise runs it";
-  if (mode !== "start" && mode !== "status") throw new CommandFailure("refused", "UNSUPPORTED", `the ${recorded.label} running in space ${oneLine(space)} (pid ${recorded.pid}) was started by cotal up or cotal supervise, not as a saved service, so ${commandName} ${mode} does not control it; nothing was changed`, { target, remedy: stop });
+  if (mode !== "start" && mode !== "status") throw recordedProcessRefusal(resolved.requested, recorded, space, `${commandName} ${mode}`);
   writeResult(presentation, { command: commandName, target, result: { kind: mode === "start" ? "service-start" : "service-status", name: resolved.requested, preset: resolved.preset, recordedProcess: { pid: recorded.pid, label: recorded.label, startedBy: "cotal up or cotal supervise", savedService: false }, started: false }, noOp: mode === "start" }, (): Report => ({ sections: [
     { title: mode === "start" ? `The ${recorded.label} is already running; nothing was started` : `The ${recorded.label} is running`, blocks: [{ kind: "fields", rows: [["Space", space], ["PID", String(recorded.pid)], ["Started by", "cotal up or cotal supervise, not as a saved service"], ["Stop", stop]] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal status", description: "See it with the rest of this space" }, { command: "cotal ps", description: "List the agents it runs" }] }] },
   ] }));
+}
+
+/** Why `action` refuses a preset's process recorded by PID alone: no saved service owns it. */
+export function recordedProcessRefusal(name: string, recorded: { pid: number; label: string }, space: string, action: string): CommandFailure {
+  return new CommandFailure("refused", "UNSUPPORTED", `the ${recorded.label} running in space ${oneLine(space)} (pid ${recorded.pid}) was started by cotal up or cotal supervise, not as a saved service, so ${action} does not control it; nothing was changed`, {
+    target: { space, name, executionHost: "this-machine", pid: recorded.pid },
+    remedy: "it stops with its stack through cotal down, or where cotal supervise runs it",
+  });
 }
 
 /** The log `up` opened for the manager it started with no saved service, read as `service logs`
