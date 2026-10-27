@@ -65,6 +65,19 @@ itself do (exit 1), rather than print the command's help. A subcommand's help gi
 usage, from `cotal` through its arguments, and lists only the options that subcommand takes.
 `-v` is not a version flag.
 
+A command's help shows its summary, then Usage, Shorthands when it has any, Examples, its
+subcommands under Commands, Options, and the structured output it supports. Every command and
+subcommand `cotal help` lists has one to three examples, the most common use first. Each is a
+command that works as written, with a note on what it does. A value in angle brackets, such as
+`<persona>`, is one you fill in. `cotal help spawn` shows:
+
+```text
+Examples
+  cotal spawn                              run an agent in this terminal
+  cotal spawn -d                           launch through a manager and return
+  cotal spawn <persona> -p "review PR 12"  start a persona with a task
+```
+
 Some commands have short aliases, listed in `cotal help` and under Shorthands in each
 command's help: `sp` (spawn), `a` (attach), `s` (status), `r` (run), `x` (ext), `h` (history),
 `t` (team), `p` (persona), `ch` (channel), `w` (watch), `ep` (endpoint), `mgr` (manager), `svc` and
@@ -260,10 +273,11 @@ its own ` | ` or compact `|` alternatives first. A group too wide for the line, 
 `(--to/-t <agent> | --channel/-c <channel> | --role/-r <role>)`, takes lines of its own and breaks
 the same way inside, and so does a group nested in it. A group that fits, such as
 `[--json|--plain]`, stays whole. Only a single option with its argument that is wider than the line
-breaks at its spaces. Examples are not wrapped, so each stays one line to copy.
+breaks at its spaces. An example's command is not wrapped, so each stays one line to copy.
 
 When the flag names leave their descriptions fewer than 30 columns, each description goes on the
-lines under its flag. A report's list of commands follows the same 30-column rule. Below 48 columns,
+lines under its flag. A report's list of commands, and the notes beside a help's examples, follow
+the same 30-column rule. Below 48 columns,
 a record puts each label on a line of its own with its value under it. Output to a pipe or a file is
 never wrapped.
 
