@@ -4432,7 +4432,10 @@ address that instance directly. This happens by default; you do not need `--on`.
 answers and none hosts the name, `stop`, `attach` and `input` refuse `TARGET_NOT_FOUND` (exit 2)
 before anything is sent, as they do with `--on`, naming the managers that answered, with `cotal ps`
 as Next. When an instance did not answer for itself, the seat may run there, so they refuse
-`TARGET_UNAVAILABLE` (exit 2) and name that instance. `--json` carries either refusal.
+`TARGET_UNAVAILABLE` (exit 2) and name that instance. When more than one instance runs the name,
+they refuse `TARGET_AMBIGUOUS` (exit 2) and name each of them. `--json` carries each refusal. On a
+terminal the last two ask instead, listing only the managers that hold the name or did not answer,
+and the refusal's Next gives the command again with `--on` for each.
 
 `--on <instance>` remains the override, for when you already know where the seat lives or the
 lookup itself is degraded. On a static or open mesh, `stop --on`, `attach --on` and `input --on`
@@ -4455,8 +4458,12 @@ instance id otherwise. The code stays
 exited, the refusal says to start one with [`manager start`](#manager); the command is not sent to the local manager.
 
 `ps` and `status <agent>` do not refuse: they read each of your live managers, as the user-auth
-mode below describes. On a terminal, `spawn -d`, `stop`, `attach`, `input`, `models` and `persona`
-ask instead of refusing. Every manager the exchange counts is one of yours in the space the command
+mode below describes. `stop`, `attach` and `input` with an agent name read them the same way and
+run on the manager that holds the name, without asking. A name held on several of them, or found on
+none that answered, is settled as on a static mesh above, among those managers only, and a manager
+whose read fails counts as one that did not answer. A name every manager answered without is
+refused `TARGET_NOT_FOUND`, naming the managers searched. On a terminal, `spawn -d`, `models` and
+`persona` ask instead of refusing. Every manager the exchange counts is one of yours in the space the command
 resolved, from the folder or `--space`, so the question lists those managers with the most recently
 started first, and that one is the default. The command then runs on the manager you pick, as the
 Next would run it. The question and a `Manager chosen` receipt, with the manager, its instance id
