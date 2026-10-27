@@ -21,7 +21,7 @@ const check = (name: string, condition: boolean, detail?: unknown): void => {
   checks++;
   console.log(`PASS ${name}`);
 };
-const tool = (path: string, args: string[]) => execFileSync(path, args, { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
+const tool = (path: string, args: string[]) => execFileSync(path, args, { encoding: "utf8", env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), LC_ALL: "C" } }).trim();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 try {
   const self = native.processInfo(process.pid);

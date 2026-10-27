@@ -839,7 +839,7 @@ console.log("E) hostile-IdP responses");
   // Asynchronous, so this process's sign-out server can answer the child.
   const cli = (...args: string[]) => new Promise<{ status: number | null; envelope?: { outcome?: string; result?: { serverRevoked?: boolean; localLoginCleared?: boolean } | null; error?: { code?: string; remedy?: string } }; stderr: string }>((done) => {
     execFile(process.execPath, ["--import", import.meta.resolve("tsx"), join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts"), "logout", "--idp", soBase, "--json", ...args],
-      { env: { ...process.env, HOME: logoutHome, COTAL_HOME: logoutHome, XDG_CONFIG_HOME: join(logoutHome, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 60_000 },
+      { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: logoutHome, COTAL_HOME: logoutHome, XDG_CONFIG_HOME: join(logoutHome, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 60_000 },
       (error, stdout, stderr) => {
         let envelope;
         try { envelope = JSON.parse(stdout); } catch { envelope = undefined; }

@@ -58,7 +58,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   const store = workspaceSecretStore(root);
   const human = "isolated-connect-space-human";
   const authority = await startApprovalAuthority({ home, human });
-  const childEnv = { ...process.env, COTAL_HOME: home, NODE_EXTRA_CA_CERTS: authority.caFile };
+  const childEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), NODE_EXTRA_CA_CERTS: authority.caFile };
   const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end('{"keys":[]}'); });
   await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
   const idpUrl = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}/auth`;
