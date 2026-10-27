@@ -606,6 +606,20 @@ export function targetErrorSpace(details: MeshTargetErrorDetails): string | unde
   return details.space ?? (details.recordedRoot !== undefined && details.stackRemedy !== undefined && details.home === undefined ? details.stackSpace : undefined);
 }
 
+/** What a folder holding the records of a stack that runs from another folder holds, for the reports
+ *  that name it rather than refuse there, `status` and bare `cotal`: a copy, whose recorded folder still
+ *  holds that stack, or a folder moved from there, as `up` there tells them apart. A legacy root's copy
+ *  and the folder a later `up` took its name over from hold the same records, so they are named as `up`
+ *  and `down` there name them. Undefined for any other target failure, and for a `.cotal` that is a link. */
+export function recordsElsewhereText(details: MeshTargetErrorDetails): string | undefined {
+  const space = details.space === undefined ? targetErrorSpace(details) : undefined;
+  const { root, recordedRoot } = details;
+  if (space === undefined || recordedRoot === undefined || root === undefined || cotalDirLink(root) !== undefined) return undefined;
+  const moved = details.lastRun ? !existsSync(recordedRoot) : recordsMovedTo(recordedRoot, root) || !existsSync(stackJournalPath(recordedRoot));
+  if (moved) return `this folder holds the records of "${space}" and was moved from ${recordedRoot}`;
+  return details.lastRun ? `this folder holds the records of "${space}", which is registered for ${recordedRoot}` : `this folder holds a copy of "${space}" from ${recordedRoot}`;
+}
+
 /** What the project root `cwd` is in holds, none outside a project: the spaces it has REGISTERED (a
  *  `cotal up` wrote the registration and no `cotal down` has removed it, so each may still be
  *  running), and the space it has prepared and never started. */

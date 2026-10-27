@@ -4,7 +4,7 @@
  * connects, writes, seeds or imports an extension.
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, loadMeshes, loadPreparedSpaces, localeIsUtf8, plainPunctuation, readMesh, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, loadMeshes, loadPreparedSpaces, localeIsUtf8, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
@@ -166,6 +166,8 @@ export function printEntry(commands: readonly Command[], listing = false): void 
   let start: string | undefined;
   // What this folder holds that is not running, when a command here targets the selection instead.
   let folderHeld: string | undefined;
+  // What a copy or a moved folder holds, with the step the commands here refuse with.
+  let elsewhere: string | undefined;
   let unreadable = false;
   // Setup is the first step only on a machine with no space at all.
   let anySpace = false;
@@ -185,6 +187,11 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     // With nothing selected no selection takes its place, so a command here targets the space this
     // folder prepared, and it leads.
     const preparedHere = selected || !held ? undefined : findPreparedSpace(held.space);
+    // A copy or a moved folder holds the records of a stack that runs from another folder, so the
+    // commands here refuse, with the selection too, and name that folder.
+    const records = recordsElsewhereError(root)?.details;
+    const holds = records && recordsElsewhereText(records);
+    if (holds) elsewhere = `${holds}; ${records!.stackRemedy}`;
     space = folder ?? selected ?? (preparedHere && canonicalRoot(preparedHere.root) === canonicalRoot(held!.root) ? held!.space : undefined);
     if (selected && folder !== undefined && folder !== selected) outside = selected;
     if (held) start = canonicalRoot(held.root) === canonicalRoot(root) ? "cotal up" : `cotal up --root ${shellWord(held.root)}`;
@@ -207,8 +214,10 @@ export function printEntry(commands: readonly Command[], listing = false): void 
   else if (context) sections.push({ blocks: [{ kind: "lines", lines: [{ text: context, tone: "hint" },
     // Help reads no broker, so it cannot tell whether this folder's space runs; it says when it applies.
     ...(outside ? [{ text: `this folder's space while it runs; the selected space "${outside}" applies outside it and while it is stopped`, tone: "hint" } as const] : []),
-    ...(folderHeld ? [{ text: folderHeld, tone: "hint" } as const] : [])] }] });
-  else sections.push({ blocks: [{ kind: "lines", lines: ["No space is selected.", { text: anySpace ? "Select one with `cotal use <name>`; `cotal space` lists them." : "Set up a local space, or connect to a self-hosted one.", tone: "hint" }] }] });
+    ...(folderHeld ? [{ text: folderHeld, tone: "hint" } as const] : []),
+    ...(elsewhere ? [{ text: elsewhere, tone: "hint" } as const] : [])] }] });
+  else sections.push({ blocks: [{ kind: "lines", lines: ["No space is selected.", { text: anySpace ? "Select one with `cotal use <name>`; `cotal space` lists them." : "Set up a local space, or connect to a self-hosted one.", tone: "hint" },
+    ...(elsewhere ? [{ text: elsewhere, tone: "hint" } as const] : [])] }] });
   sections.push({ title: "Usage", blocks: [{ kind: "lines", lines: [{ text: "cotal <command> [options]", tone: "command" }] }] });
   sections.push(actions("Start here", space ? [
     // A folder's `up` starts THAT folder's space, not the one commands here target, so it is named

@@ -702,7 +702,8 @@ if (process.platform !== "win32") {
 // A copy of a legacy project, the folder a later `up` took the name over from, and one moved away
 // from its recorded path all hold the space's records with no registration of their own. Status read
 // them as a folder whose own stack was merely stopped and offered `cotal up` here, which refuses the
-// name or takes it over. It now names the registered folder and the step that reaches it.
+// name or takes it over. It now names the registered folder and the step that reaches it, under the
+// space the folder's records name.
 {
   const { home, run } = sandbox();
   const key = Buffer.from("st01").toString("hex");
@@ -717,8 +718,9 @@ if (process.platform !== "win32") {
   finally { if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome; }
   const json = run(["status", "--json"]);
   const selected = json.envelope?.result?.selected;
+  // It reports under st01, as the reads there refuse under it, and says what the folder holds.
   check("status in a folder whose space is registered elsewhere names that folder, not this one's own cotal up",
-    (selected as { message?: string } | undefined)?.message === `the mesh "st01" in ${home} last ran at nats://127.0.0.1:24716, and "st01" is registered for ${holder}, not for this folder`, shown(json));
+    json.envelope?.target?.space === "st01" && (selected as { message?: string } | undefined)?.message === `this folder holds the records of "st01", which is registered for ${holder}`, shown(json));
   check("its Next is the step that reaches the stack there, and offers no plain cotal up here",
     (json.envelope?.result?.hints ?? []).includes(`use the stack from ${holder}, where "st01" is registered`) && !(json.envelope?.result?.hints ?? []).some((hint) => hint === `start it again with \`cotal up\` in ${home}`), json.envelope?.result?.hints);
 }
