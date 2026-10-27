@@ -9,10 +9,8 @@ on:
 permissions:
   contents: read
 
-# Serialization is per job, not per run: the version-pr and publish jobs each hold their own queue,
-# so a publication waits only for the previous upload, tags and release, not for the install check
-# that follows them. One publication's twenty-five-minute install check used to hold the next
-# publication past its ten-minute target.
+# Version preparation has its own queue. Only staged releases hold the publisher through
+# installation and latest promotion. Direct verification runs outside that queue.
 
 # The CLI runs for real in these jobs; its usage telemetry would count our runners as users.
 # DO_NOT_TRACK also reaches the suites that drop every COTAL_ variable from a child's env.
@@ -25,18 +23,44 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       mode: ${{ steps.select.outputs.mode }}
-      plan: ${{ steps.select.outputs.publish-plan-artifact-id }}
+      staged: ${{ steps.release-mode.outputs.staged }}
+      plan: ${{ steps.staged-plan.outputs.artifact-id || steps.select.outputs.publish-plan-artifact-id }}
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - uses: pnpm/action-setup@v6.0.8
+        with:
+          cache: true
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm --filter cotal-monorepo install --frozen-lockfile --ignore-scripts
+      - name: Freeze release mode
+        id: release-mode
+        env:
+          STAGED_RELEASE: ${{ vars.COTAL_STAGED_RELEASE == 'true' }}
+        run: printf 'staged=%s\n' "$STAGED_RELEASE" >> "$GITHUB_OUTPUT"
       - uses: changesets/action/select-mode@v2.1.2
         id: select
+      # Direct publication is the default. Enable only after the publisher owner confirms
+      # independent dist-tag authority. v2.1.2 carries staging tags in its versioned plan schema.
+      - uses: actions/download-artifact@v4
+        if: steps.select.outputs.mode == 'publish' && github.event_name == 'workflow_dispatch' && steps.release-mode.outputs.staged == 'true'
+        with:
+          artifact-ids: ${{ steps.select.outputs.publish-plan-artifact-id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/selected-plan
+      - name: Stage the complete publish plan
+        if: steps.select.outputs.mode == 'publish' && github.event_name == 'workflow_dispatch' && steps.release-mode.outputs.staged == 'true'
+        run: node scripts/stage-release-plan.mjs stage "$RUNNER_TEMP/selected-plan/publish-plan.json" "$RUNNER_TEMP/publish-plan.json"
+      - uses: actions/upload-artifact@v4
+        id: staged-plan
+        if: steps.select.outputs.mode == 'publish' && github.event_name == 'workflow_dispatch' && steps.release-mode.outputs.staged == 'true'
+        with:
+          name: staged-publish-plan
+          path: ${{ runner.temp }}/publish-plan.json
+          if-no-files-found: error
       - name: Require versioned packages before publication
         if: github.event_name == 'workflow_dispatch' && steps.select.outputs.mode == 'version'
         run: |
@@ -60,6 +84,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/action-setup@v6.0.8
+        with:
+          cache: true
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -88,11 +114,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: pnpm/action-setup@v6.0.8
+        with:
+          cache: true
       - uses: actions/setup-node@v6
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - run: pnpm --filter @cotal-ai/seat build
+      - run: pnpm --filter @cotal-ai/seat build:native
       - uses: actions/upload-artifact@v4
         with:
           name: seat-native-${{ matrix.arch }}
@@ -116,11 +144,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: pnpm/action-setup@v6.0.8
+        with:
+          cache: true
       - uses: actions/setup-node@v6
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - run: pnpm build
+      - run: pnpm --filter '!./examples/**' -r build
       - uses: actions/download-artifact@v4
         with:
           pattern: '*-native-*'
@@ -142,7 +172,7 @@ jobs:
           publish-plan-artifact-id: ${{ needs.select.outputs.plan }}
 
   publish:
-    needs: pack
+    needs: [select, pack]
     runs-on: ubuntu-latest
     environment: npm-publish
     concurrency:
@@ -151,6 +181,7 @@ jobs:
       queue: max
     outputs:
       published: ${{ steps.publish.outputs.published }}
+      staged: ${{ needs.select.outputs.staged }}
     permissions:
       contents: write
       actions: read
@@ -160,10 +191,20 @@ jobs:
         with:
           persist-credentials: false
       - uses: pnpm/action-setup@v6.0.8
+        with:
+          cache: true
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm --filter cotal-monorepo install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.pack.outputs.artifact }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/packed
+      - name: Validate the packed closure and promotion order
+        if: needs.select.outputs.staged == 'true'
+        run: node scripts/stage-release-plan.mjs check "$RUNNER_TEMP/packed/publish-plan.json" > "$RUNNER_TEMP/promote-specs.txt"
       # One GitHub Release per version, not one per package: the fixed group publishes every package
       # at the same version, so per-package releases are the same change listed many times over.
       - uses: changesets/action/publish@v2.1.2
@@ -173,11 +214,19 @@ jobs:
           create-github-releases: false
           push-git-tags: true
 
-  # Outside the publish queue on purpose: this observes the registry and must not delay the next
-  # publication. The GitHub Release, and the announcement it fires, come after this job's install
-  # check, so nothing names a version the normal installer cannot yet resolve (0.103.1 was announced
-  # five minutes before `npm view cotal-ai@0.103.1` answered). A version that never installs before
-  # the deadline fails this job and gets no Release; the packages are on the registry either way.
+      - name: Verify published closure and registry installation
+        if: steps.publish.outputs.published == 'true' && needs.select.outputs.staged == 'true'
+        run: |
+          version=$(node --print "require('./bin/package.json').version")
+          node scripts/verify-publish-closure.mjs "$version"
+          node scripts/verify-release-installable.mjs "$version" --closure --deadline-ms=1500000 --poll-interval-ms=5000
+      - name: Promote verified packages to latest
+        if: steps.publish.outputs.published == 'true' && needs.select.outputs.staged == 'true'
+        run: |
+          while IFS= read -r spec; do
+            npm dist-tag add "$spec" latest
+          done < "$RUNNER_TEMP/promote-specs.txt"
+
   verify-install:
     needs: publish
     if: needs.publish.outputs.published == 'true'
@@ -189,10 +238,12 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - name: Verify the published CLI installs and runs
+      - name: Verify direct closure and registry installation
+        if: needs.publish.outputs.staged != 'true'
         run: |
           version=$(node --print "require('./bin/package.json').version")
-          node scripts/verify-release-installable.mjs "$version" --deadline-ms=1500000
+          node scripts/verify-publish-closure.mjs "$version"
+          node scripts/verify-release-installable.mjs "$version" --closure --deadline-ms=1500000 --poll-interval-ms=5000
       # The notes lead with the changeset summaries (what changed, as written in the package
       # changelogs) and end with GitHub's generated list of merged PRs since the previous version
       # release, which .github/release.yml keeps the version PR out of. GH_PAT rather than the job
