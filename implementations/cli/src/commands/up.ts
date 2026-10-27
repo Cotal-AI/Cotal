@@ -3814,7 +3814,7 @@ async function awaitSpawnedListener(l: {
   const { child, server, space } = l;
   let facts: BrokerFacts;
   try {
-    if (!(await waitReady(server, l.creds, l.tls))) throw exitedBeforeReady(l) ?? new Error(`nats-server did not become reachable at ${server} - see ${l.log}`);
+    if (!(await waitReady(server, l.creds, l.tls, l.log))) throw exitedBeforeReady(l) ?? new Error(`nats-server did not become reachable at ${server} - see ${l.log}`);
     facts = await brokerVersion(server, space, l.creds);
   } catch (e) {
     await stopFailedListener(child);
@@ -4450,15 +4450,51 @@ function seedPersonaAfterUp(root: string, quiet = false): void {
   if (written && !quiet) console.log(c.dim(`  wrote ${written.what}: ${written.path}`));
 }
 
-async function waitReady(server: string, creds?: string, tls = false): Promise<boolean> {
-  for (let i = 0; i < 50; i++) {
-    // An open listener answers the plaintext probe before any handshake, so TLS is checked either way.
+async function waitReady(server: string, creds?: string, tls = false, log?: string): Promise<boolean> {
+  // Fifty silent probes is the bound for a broker that is not advancing. A listener that is up, or a
+  // broker log that keeps growing or recording a JetStream restore, is evidence the process is still
+  // recovering, so the wait continues instead of stopping it at a fixed count.
+  let evidence = 0;
+  let silent = 0;
+  for (let i = 0; silent < 50; i++) {
     const reachable = await isReachable(server, creds ? { creds } : undefined);
     if (tls) await refuseUntrustedListener(server, creds);
     if (reachable) return true;
+    const next = brokerRecoveryEvidence(log);
+    // Any restore evidence seen during the wait is progress, including evidence already present on
+    // the first probe. Only a later probe with no new evidence counts toward the silent bound.
+    if (next > evidence) {
+      evidence = next;
+      silent = 0;
+    } else {
+      silent++;
+    }
+    if (i >= 1_500) return false;
     await new Promise((r) => setTimeout(r, 200));
   }
   return false;
+}
+
+/** Bytes plus restore-progress lines in the broker log. A foreground launch inherits the terminal and
+ *  has no file to read, so it contributes no evidence and keeps the silent-probe bound. */
+function brokerRecoveryEvidence(log?: string): number {
+  if (!log || log.startsWith("the terminal")) return 0;
+  let text = "";
+  let size = 0;
+  try {
+    const stat = statSync(log);
+    if (!stat.isFile()) return 0;
+    size = stat.size;
+    text = readFileSync(log, "utf8");
+  } catch {
+    return 0;
+  }
+  const started = text.match(/Starting restore/g)?.length ?? 0;
+  const restored = text.match(/Restored \d/g)?.length ?? 0;
+  // A restore that has started and not finished is evidence, but only for one ten-second window.
+  // After that, growth or a completed restore line must advance it, so a stuck broker goes silent.
+  const pending = started > restored ? Math.floor(Date.now() / 10_000) : 0;
+  return size + restored + pending;
 }
 
 /** Node's codes for a certificate chain this client does not trust. */
