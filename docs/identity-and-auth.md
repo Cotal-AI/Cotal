@@ -141,10 +141,12 @@ the only issuer, so that cap does not apply there.
 
 A space whose issued stores were created before this retention existed is refused by every service
 that binds them, with the remedy in the error. Stop the space's auth service, its callout replicas
-and every manager, back up both streams with `nats stream backup`, remove them with
-`nats stream rm`, and start the new release, which recreates them. The streams are
-`KV_cotal_issued_<space>` and `KV_cotal_accepted_<space>`. Generations issued before the upgrade
-refuse afterwards, and static agents started before it are respawned.
+and every manager, then start the space with `cotal up --space <space> --recreate-issued-stores
+<backup-dir>`. It backs up `KV_cotal_issued_<space>` and `KV_cotal_accepted_<space>` into
+`<backup-dir>`, deletes them, and the start creates them again in the current shape. An embedder
+whose spaces `cotal up` does not start runs the same step ([Embedding](embedding.md)). Generations
+issued before the upgrade refuse afterwards, and static agents started before it are respawned. The
+order and the rollback limits are in [Upgrading](UPGRADING.md#issued-authority-stores-after-01110).
 
 The manager, `cotal spawn`, and the CLI's control-caller instruments all mint through an `issuer`
 session. The deployer instrument does not: it is the one instrument with no default expiry, and an

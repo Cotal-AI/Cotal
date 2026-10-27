@@ -37,6 +37,9 @@ import {
   mintMembershipObserverCreds,
   newIdentity,
   setupSpaceStreams,
+  removeIssuedStoresBeforeRetention,
+  IssuedStoreBeforeRetentionError,
+  IssuedStoreRecreateRefusal,
   reconcileSpaceTtls,
   ttlBuckets,
   standaloneConnectOpts,
@@ -371,6 +374,7 @@ export const upFlags: FlagSpec[] = [
   { name: "service-endpoints", type: "boolean", description: "with --user-auth: the auth service also hosts service endpoints (the registration door and the owner-decision host route)" },
   { name: "agent-provisioning-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the deployment's remote agent-provisioning endpoint the public bundle advertises" },
   { name: "rotate-sys", type: "boolean", description: "renew the expired/expiring $SYS creds by rotating the system account (agents, data and creds survive; needs a stopped mesh)" },
+  { name: "recreate-issued-stores", type: "string", value: "<backup-dir>", description: "back up this space's issued-authority stores created before 0.111.0 into a new <backup-dir>, delete them and create them again (needs a stopped stack and every other issuer of the space stopped)" },
   { name: "detach", type: "boolean", short: "d", description: "run in the background (the default; stop with cotal down)" },
   { name: "foreground", type: "boolean", description: "keep a non-manifest native stack in this terminal; -f currently refuses" },
   { name: "runtime", type: "string", value: "<name>", description: "agent runtime for the mesh manager (default pty; extension runtimes are explicit-only, see `cotal runtimes`); with -f overrides the manifest's runtime" },
@@ -394,10 +398,18 @@ export function upComplete(argv: string[]): CompletionResult {
     return { items: ["pty", ...extensionNames("runtime")].filter((v, i, a) => a.indexOf(v) === i).map((value) => ({ value })), directive: "nofiles" };
   if (flag?.name === "restore-only")
     return { items: [{ value: "registry" }], directive: "nofiles" };
-  if (flag && ["root", "restore", "file", "channels", "tls-cert", "tls-key", "store-dir"].includes(flag.name)) return { items: [], directive: "default" };
+  if (flag && ["root", "restore", "recreate-issued-stores", "file", "channels", "tls-cert", "tls-key", "store-dir"].includes(flag.name)) return { items: [], directive: "default" };
   if (flag) return { items: [], directive: "nofiles" };
   const items = upFlags.map((f) => ({ value: `--${f.name}`, description: f.description }));
   return { items, directive: items.length ? "nofiles" : "default" };
+}
+
+/** `--recreate-issued-stores <backup-dir>` names a directory the step creates, so it must not exist
+ *  and its parent must. Checked before anything starts; the step checks again when it creates it. */
+function assertIssuedBackupDirArgument(raw: string): void {
+  const dir = resolve(raw);
+  const problem = !raw.trim() ? "is empty" : existsSync(dir) ? `${dir} already exists` : !existsSync(dirname(dir)) ? `${dirname(dir)} does not exist` : undefined;
+  if (problem) throw new CommandFailure("refused", "USAGE_INVALID", `--recreate-issued-stores names a new backup directory, and ${problem}; nothing was started`, { target: { backupDir: dir }, remedy: "name a directory that does not exist yet, inside one that does" });
 }
 
 /** Launch intent is checked by the kernel before seed or effect preparation. A recovery
@@ -458,6 +470,10 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (!args.values.restore && (restoreOnly !== undefined || args.values["accept-missing-source"] === true)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore-only and --accept-missing-source require --restore <dir>");
   if (args.values.restore && (args.values.file !== undefined || args.values.channels !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --file/-f or --channels");
   if (args.values.restore && args.values["rotate-sys"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --rotate-sys", { remedy: "restore the space and verify it first, then rotate: cotal down, then cotal up --rotate-sys" });
+  if (args.values["recreate-issued-stores"] !== undefined) {
+    if (args.values.file !== undefined || args.values.restore !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--recreate-issued-stores cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}; nothing was started`, { remedy: "run cotal up --space <space> --recreate-issued-stores <backup-dir> on its own first" });
+    assertIssuedBackupDirArgument(String(args.values["recreate-issued-stores"]));
+  }
   if (args.values.root !== undefined) preparedUpRoot(String(args.values.root));
   else if (!(args.values.file && args.values["dry-run"] === true)) {
     const inheritedRoot = inheritedMachineHomeRoot();
@@ -893,7 +909,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     server?: string; "store-dir"?: string; "max-file-store"?: string; "auth-timeout"?: string; space?: string; root?: string; open?: boolean; "user-auth"?: boolean; "service-endpoints"?: boolean; idp?: string;
     "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
     channels?: string; detach?: boolean; foreground?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
-    restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean;
+    restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean; "recreate-issued-stores"?: string;
     "accept-stale-checkpoint"?: boolean;
     "tls-cert"?: string; "tls-key"?: string;
     "max-sessions"?: string;
@@ -1001,6 +1017,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // `up` that has already begun adopting a maintenance attempt.
     if (values["rotate-sys"] && readMaintenanceJournal(root))
       throw new Error("--rotate-sys is refused while this root has a maintenance attempt to recover - finish or roll back that attempt (`cotal up` alone recovers it), then `cotal down` and `cotal up --rotate-sys`");
+    if (values["recreate-issued-stores"] !== undefined && readMaintenanceJournal(root))
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--recreate-issued-stores needs a fresh broker start, and this root has a maintenance attempt to recover; nothing was started", { target: { root }, remedy: "finish or roll back that attempt first (cotal up alone recovers it)" });
     // Raised here for the stronger reason the journal itself carries: a pending maintenance attempt
     // means the store is mid-recovery, and a broker-only boot over it is wrong with or without the
     // manager half. The manager half is why the FLAG specifically cannot apply. A settled active
@@ -1453,7 +1471,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         try {
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
           if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
-          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
+          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
         } finally { releaseMaintenanceLock(stackLock); }
       };
       if (values.foreground) await holdForegroundStack(meshRoot, start);
@@ -1747,6 +1765,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         );
         process.exit(1);
       }
+      if (values["recreate-issued-stores"] !== undefined)
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `mesh "${held.space}" is already running at ${server}, and its issued-authority stores are recreated only on a fresh broker start, before any issuer runs; nothing was changed`, { target: { space: held.space }, remedy: "stop the stack first, then run cotal up --recreate-issued-stores <backup-dir> again" });
       // `--foreground` asks this terminal to hold the stack's lifetime, but this branch starts
       // nothing here: it used to print `✓ already running`, restart a missing manager detached and
       // exit 0. A service unit relying on `--foreground` read that exit as the stack ending, stopped
@@ -2066,6 +2086,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       open: values.open,
       userAuth: wantUser ? { idpUrl: values.idp } : undefined,
       rotateSys: values["rotate-sys"],
+      ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}),
       publicExchange,
       channels: values.channels,
       // The RAW flag, not the loopback-defaulted `host` above: `startMeshDetached` applies the same
@@ -2327,6 +2348,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     };
     const { authService, controlPlane } = await serveReadyListener({
       child, server, space, storeDir, setup, seedFile, transport,
+      ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}),
       host: values.host,
       maxSessions,
       maxFileStore,
@@ -3326,7 +3348,7 @@ export function controllerStackNative(): StackUpNative {
       const prepared = await prepareBrokerStart({ transport: opts.transport, server: opts.server, space: opts.space, ...(opts.open ? { open: true } : {}), ...(opts.userAuth ? { userAuth: opts.userAuth } : {}), ...(opts.host ? { host: opts.host } : {}), ...(opts.storeDir ? { storeDir: opts.storeDir } : {}), ...(opts.existingStore ? { existingStore: opts.existingStore } : {}), ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}), ...(opts.authTimeout !== undefined ? { authTimeout: opts.authTimeout } : {}), ...(opts.seed !== undefined ? { seed: opts.seed as ChannelRegistryFile } : opts.channels ? { channels: opts.channels } : {}), quietBoot: true });
       return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { creds: prepared.setup.creds, wsPort: prepared.setup.wsPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile, ...(prepared.setup?.authTimeout !== undefined ? { authTimeout: prepared.setup.authTimeout } : {}) };
     },
-    initializeStreams: (server, space, setup, seedFile) => postStart(server, space, setup, seedFile as ChannelRegistryFile | undefined),
+    initializeStreams: (server, space, setup, seedFile, recreateIssuedStores) => postStart(server, space, setup, seedFile as ChannelRegistryFile | undefined, recreateIssuedStores),
     recreateDeletedStreams: ({ seed, ...opts }) => recreateDeletedStreams({ ...opts, ...(seed !== undefined ? { seed: seed as ChannelRegistryFile } : {}) }),
     recordMesh: (entry) => recordOurMesh({ ...entry, ts: new Date().toISOString() }, "started", true),
     commitTransport: (root, chosen, authTimeout) => commitTransportPolicy(root, chosen, true, undefined, authTimeout),
@@ -3860,6 +3882,8 @@ async function serveReadyListener(l: {
   storeDir: string;
   setup?: Awaited<ReturnType<typeof authSetup>>;
   seedFile?: ChannelRegistryFile;
+  /** `--recreate-issued-stores`: the new backup directory the fresh boot's stream setup uses. */
+  recreateIssuedStores?: string;
   transport: BrokerTransport;
   /** The raw `--host` flag, so the record can tell an operator's address from the loopback default. */
   host?: string;
@@ -3878,7 +3902,7 @@ async function serveReadyListener(l: {
   if (l.resumeAttempt) await recreateMemoryBuckets(server, space, setup);
   else {
     try {
-      await postStart(server, space, setup, l.seedFile);
+      await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores);
     } catch (e) {
       await stopFailedListener(child);
       throw e;
@@ -3970,6 +3994,9 @@ export interface DetachOpts {
    *  creds against the successor. Only this boot (and the foreground one) may set it: rotation is
    *  complete only when the broker it starts is the one carrying the rewritten config. */
   rotateSys?: boolean;
+  /** `--recreate-issued-stores`: back up and delete the space's pre-retention issued-authority stores
+   *  into this new directory before the fresh boot's stream setup creates them again. */
+  recreateIssuedStores?: string;
   channels?: string;
   host?: string;
   /** Channel-registry seed in memory (the `cotal up -f` manifest path), used instead of reading a
@@ -4084,6 +4111,7 @@ export async function startMeshDetached(
   await awaitSpawnedListener({ child, executable: { path: bin, source, version }, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: logPath, boundListener: opts.boundListener });
   const { authService, controlPlane } = await serveReadyListener({
     child, server, space, storeDir, setup, seedFile, transport,
+    ...(opts.recreateIssuedStores !== undefined ? { recreateIssuedStores: opts.recreateIssuedStores } : {}),
     host: opts.host,
     maxSessions: opts.maxSessions,
     maxFileStore: opts.maxFileStore,
@@ -4710,8 +4738,17 @@ async function postStart(
   space: string,
   setup?: { creds: string },
   seedFile?: ChannelRegistryFile,
+  recreateIssuedStores?: string,
 ): Promise<void> {
-  await setupSpaceStreams({ servers: server, space, creds: setup?.creds });
+  if (recreateIssuedStores !== undefined) await recreateIssuedStoresBeforeSetup(server, space, setup !== undefined, recreateIssuedStores);
+  try {
+    await setupSpaceStreams({ servers: server, space, creds: setup?.creds });
+  } catch (error) {
+    // Nothing of the stack runs yet, and the caller stops this broker again, so this is a refusal.
+    if (error instanceof IssuedStoreBeforeRetentionError)
+      throw new CommandFailure("refused", "CONFLICT", error.message, { target: { space, store: error.bucket }, remedy: `stop every other issuer and resolver of space ${space}, then add --recreate-issued-stores <backup-dir> to the cotal up that starts it` });
+    throw error;
+  }
   if (seedFile) {
     await seedChannelRegistry({ servers: server, space, creds: setup?.creds, file: seedFile });
   }
@@ -4725,6 +4762,36 @@ async function postStart(
     creds: setup?.creds,
     deliveryClass: setup ? "durable" : "live",
   });
+}
+
+/** `--recreate-issued-stores`: on the broker this boot just started, before any issuer or resolver
+ *  of the space runs, back up and delete the space's issued-authority stores created before bounded
+ *  retention, so the stream setup that follows creates them in the current shape. It runs the core
+ *  step an embedder runs, on a one-shot `issued-store-recreate` credential minted from the root's
+ *  trust; an open space uses its bare connection, as stream setup does. */
+async function recreateIssuedStoresBeforeSetup(server: string, space: string, authenticated: boolean, backupDir: string): Promise<void> {
+  let creds: string | undefined;
+  let inboxPrefix = "_INBOX";
+  if (authenticated) {
+    const auth = await getSpaceAuth(workspaceSecretStore(cotalRoot()), space);
+    if (!auth) throw new Error(`space "${space}" has no trust material under ${authDir(cotalRoot())}; its issued-authority stores were not touched`);
+    const identity = newIdentity();
+    creds = await mintCreds(auth, identity, "issued-store-recreate");
+    inboxPrefix = `_INBOX_${identity.id}`;
+  }
+  const nc = await dialerFor(server)({ servers: server, ...standaloneConnectOpts({ creds, tls: false }), inboxPrefix });
+  let removed;
+  try {
+    removed = await removeIssuedStoresBeforeRetention(nc, { space, backupDir, inboxPrefix });
+  } catch (error) {
+    if (error instanceof IssuedStoreRecreateRefusal)
+      throw new CommandFailure("refused", error.reason === "nothing-to-recreate" ? "CONFLICT" : "USAGE_INVALID", error.message, { target: { space, backupDir }, remedy: error.reason === "nothing-to-recreate" ? "start the space without --recreate-issued-stores" : "name a directory that does not exist yet, inside one that does" });
+    throw error;
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
+  for (const store of removed) console.log(`→ backed up ${store.stream} (${store.messages} messages) to ${store.backup}, then deleted it`);
+  console.log(c.dim("• the issued-authority stores are created again in the current shape; every generation issued before the upgrade is refused from now on"));
 }
 
 /** A resume or restore skips `postStart` because the preserved store already holds every canonical

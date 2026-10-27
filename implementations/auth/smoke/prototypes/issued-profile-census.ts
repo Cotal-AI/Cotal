@@ -58,7 +58,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     restore: () => one("restore", { restore: { operation: "initiate", stream: `CHAT_${space}` } }),
     delivery: () => one("delivery"), "membership-rw": () => one("membership-rw"),
     probe: () => one("probe"), "channel-writer": () => one("channel-writer"), "channel-purger": () => one("channel-purger"),
-    teardown: () => one("teardown"),
+    teardown: () => one("teardown"), "issued-store-recreate": () => one("issued-store-recreate"),
     "control-caller-privileged": () => one("control-caller-privileged"),
     "control-caller-admin": () => one("control-caller-admin"),
     deployer() { one("deployer"); one("deployer", { controlTier: "privileged" }, "privileged-tier"); },
@@ -252,7 +252,7 @@ export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "o
  */
 export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
   "supervisor", "operator", "provisioner", "deprovisioner", "admin", "purger", "probe", "delivery",
-  "teardown", "channel-writer", "channel-purger", "membership-rw", "deployer", "goal-writer",
+  "teardown", "issued-store-recreate", "channel-writer", "channel-purger", "membership-rw", "deployer", "goal-writer",
   "session-ledger", "session-serving", "run-mediator", "run-operator", "remote-manager",
   "lifecycle-executor", "endpoint-serve-executor", "endpoint-serve", "control-caller-privileged",
   "control-caller-admin", "backup", "restore", "endpoint-evictor", "retirement-requester",
