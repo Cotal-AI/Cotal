@@ -2,7 +2,7 @@ import {
   dialerFor, invokeCommand, issuedUserCaller, resolveService, standaloneConnectOpts,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, assertRecordIdentity, canonicalRoot, observeServiceStartup,
+  CommandFailure, assertRecordIdentity, canonicalRoot, hasUserAuthState, observeServiceStartup,
   readServiceIdentity, readServiceStopRequest, requestServiceObservation, resolveControlTarget,
   resolveNativeServiceTarget, resolveSeatControlTarget, serviceMetadataDigest,
   type NativeServiceIdentity, type ServiceAdapterContext, type ServiceAdapterNativeEvidence,
@@ -31,10 +31,12 @@ function localImpact(input: unknown): ManagerStopImpact | undefined {
   return input as unknown as ManagerStopImpact;
 }
 
-/** Open spaces have no authenticated caller. The pinned child answers one request-bound local
- *  receipt with its own registration, which must equal the PID-bound launch identity. This is
- *  same-UID custody evidence, never an attributed endpoint response. */
-async function observeOpenManager(context: ManagerObservationContext, native: NativeServiceIdentity): Promise<ManagerServiceEvidence | undefined> {
+/** Open spaces have no authenticated caller, and a stop in the folder that hosts a user-auth space
+ *  needs none: the broker, the records and the process are that folder's own. The pinned child
+ *  answers one request-bound local receipt with its own registration, which must equal the
+ *  PID-bound launch identity. This is same-UID custody evidence, never an attributed endpoint
+ *  response. */
+async function observeLocalManager(context: ManagerObservationContext, native: NativeServiceIdentity): Promise<ManagerServiceEvidence | undefined> {
   const answer = await requestServiceObservation(context, context.process, { timeoutMs: 3000, signal: context.signal });
   if (!answer) return undefined;
   const payload = answer.payload;
@@ -48,8 +50,9 @@ async function observeOpenManager(context: ManagerObservationContext, native: Na
 
 /** A fresh instance-pinned native read as the invoking caller. Neither a managed seat nor an
  *  owner-filtered response is replaced by a wider operator/admin identity. An open space uses
- *  the pinned child's local receipt instead and says so in `evidence`. */
-export async function observeManagerService(context: ManagerObservationContext): Promise<ManagerServiceEvidence | undefined> {
+ *  the pinned child's local receipt instead and says so in `evidence`, and so does a `stop` in
+ *  the folder that hosts a user-auth space, so its owner stops it with or without a sign-in. */
+export async function observeManagerService(context: ManagerObservationContext, { stop = false }: { stop?: boolean } = {}): Promise<ManagerServiceEvidence | undefined> {
   context.signal.throwIfAborted();
   const root = context.options.root, server = context.options.server;
   if (typeof root !== "string" || server !== undefined && typeof server !== "string") throw new CommandFailure("refused", "SCHEMA_INVALID", "the manager service observation has no explicit registered root and broker");
@@ -58,7 +61,7 @@ export async function observeManagerService(context: ManagerObservationContext):
   if (!binding) return undefined;
   if (binding.native.endpoint !== MANAGER_ENDPOINT) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the protected launch binding names a different native endpoint; no class was substituted");
   if (observeServiceStartup(context, "manager-serving").state !== "ready") return undefined;
-  if (selected.mode === "open") return observeOpenManager(context, binding.native);
+  if (selected.mode === "open" || stop && selected.mode === "user" && hasUserAuthState(selected.root, selected.space, { readOnly: true })) return observeLocalManager(context, binding.native);
   const flags = { space: selected.space, server: selected.server };
   const seat = await resolveSeatControlTarget(flags, binding.native.instanceId);
   const markedSeat = ["COTAL_NAME", "COTAL_ID", "COTAL_LIFECYCLE_UID", "COTAL_ACCEPTED_TOKEN"].some((key) => Boolean(process.env[key]));

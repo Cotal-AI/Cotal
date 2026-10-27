@@ -20,6 +20,9 @@
  *   E3. `cotal supervise` from another root that holds its own signer for the space is refused as a
  *      refusal: a `Mesh:` heading, PERMISSION_DENIED, the refused credential and broker, and a Next
  *      naming the folder that hosts the space. No bare `Authorization Violation` line.
+ *   E4. A prepared second root of the same space under its own home: `manager start` with no sign-in
+ *      is refused AUTH_REQUIRED before anything is saved; a manager left running after a sign-out is
+ *      stopped by the folder's owner through `manager stop` and `down`.
  *   F. `cotal down` stops the auth service (space-scoped pid) with the broker; re-`up` WITHOUT
  *      --user-auth on a user-enabled root is refused fail-closed.
  *   G. `clean all`, and `reset space` on a stopped controller stack, name the IdP trust and the
@@ -148,6 +151,8 @@ async function approve(userCode: string): Promise<void> {
 let witnessNc: Awaited<ReturnType<typeof connect>> | undefined;
 // E3's second root, with its own home, so `finally` can stop and remove it.
 let other: { root: string; home: string; env: Record<string, string>; sandbox: SmokeSandboxAnchor } | undefined;
+// E4's home and its prepared roots, likewise.
+let second: { home: string; env: Record<string, string>; roots: { root: string; sandbox: SmokeSandboxAnchor }[] } | undefined;
 try {
   // ---------- A. up --user-auth ----------
   console.log("A) cotal up --user-auth --idp <real IdP> --auth-timeout 3 --detach");
@@ -670,6 +675,48 @@ try {
       /\nNext\n/.test(text) && text.includes(`start the manager from ${root}, the folder that hosts space "${SPACE}": cd ${root} && cotal manager start`) && text.includes("(cotal meshes add, then cotal login)"), refused.out);
   }
 
+  // ---------- E4. a second root: manager start and its owner's stop ----------
+  console.log("E4) a second root's manager start needs a sign-in, and its owner stops a manager left running without one");
+  {
+    const home2 = mkdtempSync(join(tmpdir(), "cotal-ua-second-home-"));
+    const env = { COTAL_HOME: home2, XDG_CONFIG_HOME: join(home2, "xdg") };
+    second = { home: home2, env, roots: [] };
+    const prepare = async (space: string): Promise<string> => {
+      const at = mkdtempSync(join(tmpdir(), "cotal-ua-second-root-"));
+      const created = await cotal(["space", "create", space, "--root", at], { cwd: at, env });
+      check(`space create prepares ${space} in a second root under its own home`, created.status === 0, created.out);
+      second!.roots.push({ root: at, sandbox: recordSmokeSandbox({ root: at, cotalHome: home2, xdgConfigHome: env.XDG_CONFIG_HOME }) });
+      return at;
+    };
+    const root2 = await prepare(SPACE);
+    const sandbox2 = second.roots[0]!.sandbox;
+    const managerPid = join(root2, ".cotal", `manager.${spaceKey(SPACE)}.pid`);
+    const up2 = await cotal(["up", "-d", "--user-auth", "--idp", base, "--server", `nats://127.0.0.1:${await pickFreePort()}`], { cwd: root2, env });
+    check("with no sign-in, up starts the other members and names cotal login first",
+      up2.status === 4 && field(up2.out, "Native code", "AUTH_REQUIRED") && plain(up2.out).includes(`\nNext\n  cotal login --idp ${base}, then`), up2.out);
+    const refusedStart = await cotal(["manager", "start"], { cwd: root2, env });
+    const refusedText = plain(refusedStart.out);
+    check("manager start with no sign-in exits 2 under a Mesh: heading with AUTH_REQUIRED, and Next signs in, then starts it",
+      refusedStart.status === 2 && refusedText.includes(`Mesh: ${SPACE}\n`) && field(refusedStart.out, "Code", "AUTH_REQUIRED") && refusedText.includes(`cotal login --idp ${base}, then cotal manager start`), refusedStart.out);
+    const shown = await cotal(["service", "show", "manager"], { cwd: root2, env });
+    check("…before anything was saved or launched",
+      !refusedText.includes("saved manager") && !refusedText.includes("forgot manager") && shown.status === 2 && field(shown.out, "Code", "TARGET_NOT_FOUND") && !existsSync(managerPid), { start: refusedStart.out, show: shown.out });
+    // A manager started while signed in keeps running after a sign-out, as one the old start left.
+    const { sub: sub2 } = await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+    const grant2 = await cotal(["actor", "grant", "cli", "--sub", sub2, "--full"], { cwd: root2, env });
+    check("the second root grants its signed-in CLI", grant2.status === 0, grant2.out);
+    const started = await cotal(["manager", "start"], { cwd: root2, env });
+    check("signed in and granted, manager start starts it", started.status === 0 && existsSync(managerPid), started.out);
+    const pid2 = Number(readFileSync(managerPid, "utf8").trim());
+    deleteIdpSession(home2, base);
+    const blocked = await cotal(["down", "--yes"], { cwd: root2, env, sandbox: sandbox2 });
+    check("signed out, down names the manager's own stop first", blocked.status === 2 && field(blocked.out, "Code", "LIFECYCLE_BLOCKED") && plain(blocked.out).includes("cotal svc stop manager --instance"), blocked.out);
+    const stopped = await cotal(["manager", "stop", "--yes"], { cwd: root2, env });
+    check("signed out, the folder's owner stops it with manager stop, reading the manager's own local receipt",
+      stopped.status === 0 && plain(stopped.out).includes("Service stopped") && plain(stopped.out).includes("the pinned child's own local receipt") && !stopped.out.includes("AUTH_REQUIRED") && await until(() => { try { process.kill(pid2, 0); return false; } catch { return true; } }), stopped.out);
+    const down2 = await cotal(["down", "--yes"], { cwd: root2, env, sandbox: sandbox2 });
+    check("…and down then stops the stack", down2.status === 0, down2.out);
+  }
 
   // ---------- F. down + fail-closed re-up ----------
   console.log("F) down stops the auth service; re-up without --user-auth is refused");
@@ -736,6 +783,13 @@ try {
     await cotal(["down"], { cwd: other.root, env: other.env, sandbox: other.sandbox, timeoutMs: 30_000 }); // E3's second root, if it is still up
     rmSync(other.home, { recursive: true, force: true });
     rmSync(other.root, { recursive: true, force: true });
+  }
+  if (second) {
+    for (const { root: at, sandbox: anchor } of second.roots) {
+      await cotal(["down", "--yes"], { cwd: at, env: second.env, sandbox: anchor, timeoutMs: 30_000 }); // E4's roots, if still up
+      rmSync(at, { recursive: true, force: true });
+    }
+    rmSync(second.home, { recursive: true, force: true });
   }
   idpSrv.close();
   rmSync(home, { recursive: true, force: true });
