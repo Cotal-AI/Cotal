@@ -1,5 +1,13 @@
 # @cotal-ai/cli
 
+## 0.109.15
+
+### Patch Changes
+
+- 3f8ed22: Allow update to reconcile connectors and operator extensions after a controller stack completes ordinary down, while refusing live or unresolved processes and broker listeners.
+- @cotal-ai/core@0.109.15
+  - @cotal-ai/workspace@0.109.15
+
 ## 0.109.14
 
 ### Patch Changes
