@@ -603,6 +603,14 @@ folders and files you own in Cotal's install root, without following links. An i
 it set its own umask, run under a umask of 0002, left that tree group-writable. Running the installer
 again repairs it the same way.
 
+`update` also removes group and other write from the folders and files you own in Cotal's config
+directory, `$XDG_CONFIG_HOME/cotal` or `~/.config/cotal`, which holds the extension prefix and the
+seed store. An earlier seed run under a umask of 0002 left those folders group-writable, and the web
+seed's check for other local writers refused them. Each repair prints how many entries it changed
+and where. A folder above the config directory, such as `~/.config`, is not Cotal's, so `update`
+leaves it as it is. The seed still refuses it and names `chmod g-w <path>` as the next step, and
+`update` exits nonzero.
+
 Third-party extensions are listed with their installed version and recorded spec but are not
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
 a future follow-up. A failed connector/extension install, npm metadata check, or requested global
@@ -6916,9 +6924,10 @@ root kept **separate** from npm's own global tree. These packages never show up 
 prints only the path, for scripts. The versions shown are the manifest pin recorded at add time.
 On POSIX, cotal creates a missing Cotal config directory with mode `0700`, even with a
 group-writable umask, whichever command writes there first. The extension writer creates a missing
-install prefix with mode `0755` and its `package.json` with mode `0644`. Its npm children start with 022 added to your umask. Existing directory
-permissions are not changed. Completion still refuses a pre-existing writable ancestor rather than
-weakening its shell-file ownership checks.
+install prefix with mode `0755` and its `package.json` with mode `0644`. Its npm children start with 022 added to your umask. The
+extension writer leaves existing directory permissions as they are, and [`update`](#update) removes
+group and other write from the config directory and everything you own under it. Completion still refuses a pre-existing writable ancestor
+rather than weakening its shell-file ownership checks.
 
 Bare `ext --json` (or `ext list --json`) writes one JSON document: `result.root` is the install
 prefix and `result.items` holds one row per installed extension with `pkg`, `version`, `spec` (what

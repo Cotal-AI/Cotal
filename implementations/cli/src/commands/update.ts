@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { FlagSpec, ParsedArgs } from "@cotal-ai/core";
+import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, type OutputWarning,
   cmdSpawnSpec,
@@ -129,11 +129,14 @@ const runtime: UpdateRuntime = {
 export async function update(args: ParsedArgs, rt: UpdateRuntime = runtime): Promise<void> {
   validateUpdateArguments(args);
   if (args.values.check === true) return checkUpdate(args, rt);
-  // The installer's own tree changes nothing a running manager reads, so its modes are repaired
-  // before the continuity check rather than only when the reconcile is allowed to run.
+  // Removing group and other write from Cotal's install and config folder changes nothing a running
+  // manager reads, so their modes are repaired before the continuity check rather than only when the
+  // reconcile is allowed to run. A folder above them is not Cotal's, so the seed still refuses it.
   const install = launcherInstallRoot();
-  const repaired = install ? repairInstallModes(install) : 0;
-  if (repaired) rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's install at ${install}`));
+  for (const { what, root } of [...(install ? [{ what: "install", root: install }] : []), { what: "config", root: globalConfigDir() }]) {
+    const repaired = repairInstallModes(root);
+    if (repaired) rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's ${what} at ${root}`));
+  }
   const code = await executeUpdate(Boolean(args.values.self), rt, args.values);
   if (code !== 0) process.exitCode = code;
 }

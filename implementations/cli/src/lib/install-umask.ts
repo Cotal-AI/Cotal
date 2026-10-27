@@ -16,15 +16,17 @@ export function withInstallUmask<T>(spawn: () => T): T {
 }
 
 /** Remove group and other write from every folder and file under `root` this account owns, without
- *  following a link, and return how many changed. An installer from before its 022 umask, run under
- *  a umask of 0002, left the install group-writable, and a folder another account can write makes
- *  the protected-path rule refuse what is under it, such as the runtime Node selected as a handler. */
+ *  following a link, and return how many changed; a missing `root` changes nothing. An installer from
+ *  before its 022 umask, or a seed run before its npm children got one, left Cotal's install or its
+ *  config folder group-writable under a umask of 0002, and a folder another account can write makes
+ *  the protected-path rule refuse what is under it, such as the runtime Node selected as a handler or
+ *  a seeded extension. */
 export function repairInstallModes(root: string): number {
   if (process.platform === "win32") return 0;
   let changed = 0;
   const walk = (path: string): void => {
-    const stat = lstatSync(path);
-    if (stat.isSymbolicLink() || stat.uid !== process.getuid!()) return;
+    const stat = lstatSync(path, { throwIfNoEntry: false });
+    if (!stat || stat.isSymbolicLink() || stat.uid !== process.getuid!()) return;
     if ((stat.mode & 0o022) !== 0 && (stat.isDirectory() || stat.isFile())) {
       chmodSync(path, stat.mode & 0o7755);
       changed++;
