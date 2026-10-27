@@ -124,5 +124,13 @@ test("actual workflow promotion shell uses ordinary npm, stops on error and does
     writeFileSync(capture, "");
     assert.equal(spawnSync("bash", ["-e", "-c", `false\n${script}`], { env }).status, 1);
     assert.equal(readFileSync(capture, "utf8"), "");
+    writeFileSync(join(scratch, "bin/npm"), `#!${process.execPath}\nconst fs=require("node:fs");fs.appendFileSync(${JSON.stringify(capture)},process.argv.slice(2).join(" ")+"\\n");console.error("npm error code ETARGET");process.exit(1);\n`, { mode: 0o755 });
+    const verifier = join(root, "scripts/verify-release-installable.mjs");
+    const refused = spawnSync("bash", ["-e", "-c", `"${process.execPath}" "${verifier}" 1.2.3 --closure --deadline-ms=200 --poll-interval-ms=1\n${script}`], { env: { ...env, TMPDIR: scratch }, encoding: "utf8", timeout: 5_000 });
+    assert.equal(refused.status, 1, refused.stderr + refused.stdout);
+    assert.match(refused.stdout, /VERDICT: NOT INSTALLABLE/);
+    const calls = readFileSync(capture, "utf8");
+    assert.match(calls, /install --prefer-online/);
+    assert(!calls.includes("dist-tag"), "actual verifier refusal must leave every latest tag untouched");
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
