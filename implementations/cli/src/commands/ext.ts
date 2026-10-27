@@ -192,7 +192,7 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   }
 }
 
-/** Install `pkg` from `resolved` and commit the manifest, or restore the prefix snapshot once.
+/** Install `pkg` from `resolved` and commit the manifest, or restore the prefix once.
  *  SIGINT/SIGTERM become {@link ExtensionInstallInterrupted} so the caller exits only after
  *  `addExtension` has released the mutation lock. */
 async function addTransaction(input: {
@@ -232,6 +232,7 @@ async function addTransaction(input: {
       rmSync(rollbackRoot!, { recursive: true, force: true });
     } else {
       await npm(["remove", "--no-audit", "--no-fund", pkg], dir);
+      saveExtensionsManifest(manifest);
       linkExtensionPeers(manifest.extensions.map((entry) => entry.pkg), pkg);
     }
   };
@@ -251,6 +252,7 @@ async function addTransaction(input: {
       announce(c.dim(`  its services cannot run on this platform: protected workstation file access is not available in this release`));
   } catch (e) {
     await restore();
+    if (wasInterrupted) throw new ExtensionInstallInterrupted();
     throw e;
   } finally {
     process.removeListener("SIGINT", interrupted);
