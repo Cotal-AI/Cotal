@@ -15,13 +15,13 @@ import {
   recordOperationSpace, agentGrants, grantMintFlags, type AgentGrants,
 } from "@cotal-ai/workspace";
 
+import { commaList } from "../lib/comma-list.js";
 import { staticMintAuthority } from "../lib/credential-authority.js";
 import { recordCredentialExport } from "../lib/credential-exports.js";
 import { noExpiryRecordPath, noExpiryRecordText } from "../lib/no-expiry-record.js";
 import { mintEndpointCaller } from "./mint-endpoint-caller.js";
 export { resolveMintTarget } from "../lib/credential-authority.js";
 
-const csv = (value: string | undefined): string[] | undefined => value === undefined ? undefined : value.split(",").map((item) => item.trim()).filter(Boolean);
 /** A fixed-profile credential's lifetime when no lifetime flag names one: 24 hours. */
 const DEFAULT_LIFETIME_SECONDS = 86_400;
 const expiry = (seconds: number | undefined): string => {
@@ -183,9 +183,9 @@ export async function mint(args: ParsedArgs): Promise<void> {
       try { definition = existsSync(path) ? loadAgentFile(path) : undefined; }
       catch { throw unusable("could not be read as a persona", `see what is wrong with it with cotal persona show ${name}, then fix it and mint again`); }
       // A flag wins, then the grants of the --identity credential, then the persona.
-      const readFlag = csv(values["allow-subscribe"]);
+      const readFlag = commaList(values["allow-subscribe"]);
       allowSubscribe = readFlag === undefined && carried ? carried.read : resolveReadAcl(definition?.subscribe ?? [], readFlag ?? definition?.allowSubscribe);
-      allowPublish = csv(values["allow-publish"]) ?? carried?.post ?? definition?.allowPublish;
+      allowPublish = commaList(values["allow-publish"]) ?? carried?.post ?? definition?.allowPublish;
       role = values.role ?? (carried ? carried.role ?? undefined : definition?.role);
       if (values.role === undefined && !carried && role !== undefined) {
         try { assertValidRole(role); }

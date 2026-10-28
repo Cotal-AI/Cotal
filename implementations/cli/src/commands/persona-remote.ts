@@ -17,10 +17,10 @@ import { onInstance } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
 import { PERSONA_LIMIT, reservedPersonaName } from "../lib/persona-files.js";
+import { commaList } from "../lib/comma-list.js";
 import type { PersonaValues } from "./persona.js";
 
 const CONTENT_FLAGS = ["file", "prompt", "from", "role", "model", "subscribe", "harness", "allow-subscribe", "allow-publish", "announce"] as const;
-const csv = (text: string | undefined) => text?.split(",").map((part) => part.trim()).filter(Boolean);
 
 /** The command an `--on` refusal tells the caller to rerun with `--on <instance>` added. */
 function personaVerb(mode: string | undefined, name: string | undefined): string {
@@ -49,7 +49,7 @@ export function validateRemotePersonaArguments(args: ParsedArgs): void {
     }
     if ([values.model, values.harness].some((value) => value !== undefined && (!value.trim() || /[\u0000-\u001f\u007f]/u.test(value)))) throw new CommandFailure("refused", "USAGE_INVALID", "model and application pins must be nonempty without terminal controls");
     try {
-      for (const channel of [...(csv(values.subscribe) ?? []), ...(csv(values["allow-subscribe"]) ?? []), ...(csv(values["allow-publish"]) ?? [])]) assertValidChannel(channel);
+      for (const channel of [...(commaList(values.subscribe) ?? []), ...(commaList(values["allow-subscribe"]) ?? []), ...(commaList(values["allow-publish"]) ?? [])]) assertValidChannel(channel);
       if (values.announce !== undefined) { assertValidChannel(values.announce); if (!isConcreteChannel(values.announce)) throw new Error(); }
     } catch { throw new CommandFailure("refused", "USAGE_INVALID", "use native channel ACLs and one concrete announcement channel without rewriting its name"); }
   }
@@ -138,7 +138,7 @@ export async function remotePersona(args: ParsedArgs): Promise<void> {
       if (sender.space !== connection.space || sender.connection.server !== connection.server || !sameRoot || sender.connection.mode !== connection.mode || connection.account !== undefined && sender.connection.auth?.account.pub !== connection.account) throw new CommandFailure("refused", "CONFLICT", "the announcement's resolved space, root or account differs from the selected manager target; no persona was saved", { target });
     }
     const command = mode === "create" ? "define-persona" : mode === "show" ? "show-persona" : "list-personas";
-    const body = mode === "create" ? { name, persona: input, model: values.model, role: values.role, agent: values.harness, subscribe: csv(values.subscribe), allowSubscribe: csv(values["allow-subscribe"]), allowPublish: csv(values["allow-publish"]) } : mode === "show" ? { name } : undefined;
+    const body = mode === "create" ? { name, persona: input, model: values.model, role: values.role, agent: values.harness, subscribe: commaList(values.subscribe), allowSubscribe: commaList(values["allow-subscribe"]), allowPublish: commaList(values["allow-publish"]) } : mode === "show" ? { name } : undefined;
     if (!service.commands.has(command)) throw new CommandFailure("refused", "UNSUPPORTED", "the selected manager does not declare this native persona operation; no legacy or local path was substituted", { target });
     submitted = mode === "create";
     const response = await invokeCommand(connection.nc, connection.space, service, command, body, { deadlineMs: 10_000, id: requestId });
