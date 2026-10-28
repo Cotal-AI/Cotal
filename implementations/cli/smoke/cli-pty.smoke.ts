@@ -166,7 +166,8 @@ try {
   }
 
   // A usage too wide for its line breaks after its own ` | ` alternatives first, and a group too wide
-  // takes lines of its own and breaks the same way inside. A word never leaves its argument.
+  // breaks the same way inside, starting on the `cotal send` line its opening piece fits on. A word
+  // never leaves its argument.
   // An example's command is never wrapped, so each stays one line to copy, and setup's fit leaves out
   // those lines alone; their notes and every other section still fit.
   const helpAt = async (argv: string[], cols: number) => {
@@ -185,7 +186,7 @@ try {
   check(
     "on 60 columns cotal help send breaks its destination group after its alternatives",
     usageOf(send.all).join("\n") === [
-      "  cotal send", "  (--to/-t <agent> | --channel/-c <channel> |", "  --role/-r <role>)",
+      "  cotal send (--to/-t <agent> | --channel/-c <channel> |", "  --role/-r <role>)",
       '  ["<message>" | --file/-f <path> | --stdin]', "  [--json|--plain]",
     ].join("\n"),
     usageOf(send.all),
