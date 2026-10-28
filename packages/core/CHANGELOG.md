@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.121.0
+
+### Minor Changes
+
+- 5d01ea1: Add native nats-server file logging and rotation settings, persist them across controller stack restarts, and keep broker log and startup diagnostics files private.
+
 ## 0.120.2
 
 No changes in this release.

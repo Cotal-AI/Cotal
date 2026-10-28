@@ -1,5 +1,19 @@
 # @cotal-ai/cli
 
+## 0.121.0
+
+### Minor Changes
+
+- 5d01ea1: Add native nats-server file logging and rotation settings, persist them across controller stack restarts, and keep broker log and startup diagnostics files private.
+
+### Patch Changes
+
+- 539997b: Name the retry command in backticks when `backup create` meets another operation's maintenance lock, and the `backup cleanup-fallback` command when `up -f` refuses over an active restore, so the wrapper keeps each command whole.
+- 6d557ce: A help usage whose bracketed group is wider than the terminal starts that group on the line before it when its opening piece fits there, so `cotal help daemon` starts `cotal daemon <setup|status|...` and `cotal help service-endpoint` starts `cotal service-endpoint <approve <proposalId> |`, where `cotal` sat alone on the first usage line. The same applies to `auth`, `run`, `team`, `manager`, `service`, `endpoint`, `channel`, `send` and `watch` at the widths where their group wraps. The `service-endpoint callers` example's note is now "list who may call it", so each `service-endpoint` example fits one 80-column line with its note.
+- Updated dependencies [5d01ea1]
+  - @cotal-ai/core@0.121.0
+  - @cotal-ai/workspace@0.121.0
+
 ## 0.120.2
 
 ### Patch Changes

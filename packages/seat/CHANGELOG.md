@@ -1,5 +1,9 @@
 # @cotal-ai/seat
 
+## 0.121.0
+
+No changes in this release.
+
 ## 0.120.2
 
 No changes in this release.
