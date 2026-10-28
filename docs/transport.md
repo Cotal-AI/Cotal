@@ -80,6 +80,13 @@ installed: the stop or reconnect waits for it, within the JetStream request time
 consumer before closing the connection. The lease watch of a connection that closed on its own is
 left to the broker's five-minute inactive threshold.
 
+The reference client's presence and channel-registry watches follow the same rule: their ordered
+consumer is deleted when the endpoint stops, when a silent presence watch is rebound, and when a
+manual reconnect retires a live connection, and a bind still in flight at that moment retires its
+watch instead of installing it. A profile without the delete grant has that delete refused, and the
+broker removes the consumer at its inactive threshold. The watches of a connection that closed on
+its own are left to that threshold too.
+
 The v0.4 endpoint control surface pins this binding to **nats-server >= 2.12**: it relies on
 native message schedules (durable timers), atomic create-CAS and counters, with no degraded
 fallback ([SPEC §13.12](../SPEC.md#1312-nats--jetstream-binding)).
