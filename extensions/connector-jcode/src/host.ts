@@ -56,6 +56,8 @@ import {
   envFlag,
   eventPlaneArmed,
   feedbackLine,
+  fmtChannel,
+  fmtFrom,
   formatInjection,
   parseToolArgs,
   scrubLaunchMaterial,
@@ -584,6 +586,8 @@ export async function runJcodeHost(): Promise<void> {
   let briefed = false;
   let initialized = false;
   let wakeQueued = false;
+  // Focus mentions have no automatic inbox item. Keep their wake-only hint until a turn succeeds.
+  let pendingMentionWake: { hint: string } | undefined;
   /** Exact Cotal deliveries the active Harness turn has accepted, either in its initial prompt or
    *  through Jcode's session-owned soft-interrupt queue. They commit only when that containing turn
    *  finishes cleanly. A soft_interrupt `ok` proves the live recipient session queued the text; it
@@ -929,7 +933,7 @@ export async function runJcodeHost(): Promise<void> {
   // pendingKickoff implies consecutiveFailures === 0: it is cleared before the only run() that can
   // increment failures and is never re-armed. The error-retry timer therefore never owns kickoff
   // liveness; idle and bridge recovery below are the reachable pre-dispatch triggers.
-  const hasDriveWork = (): boolean => pendingKickoff !== undefined || agent.pendingWake() > 0 || wakeQueued;
+  const hasDriveWork = (): boolean => pendingKickoff !== undefined || pendingMentionWake !== undefined || agent.pendingWake() > 0 || wakeQueued;
 
   /** Re-drive after a growing delay, at most one timer in flight, never while shutting down. */
   const scheduleErrorRetry = (): void => {
@@ -941,7 +945,7 @@ export async function runJcodeHost(): Promise<void> {
       );
       return;
     }
-    if (agent.pendingWake() === 0 && !wakeQueued) return;
+    if (agent.pendingWake() === 0 && !wakeQueued && !pendingMentionWake) return;
     const delay = errorRetryMs;
     errorRetryMs = Math.min(errorRetryMs * 2, ERROR_RETRY_MAX_MS);
     errorRetryTimer = setTimeout(() => {
@@ -1019,6 +1023,7 @@ export async function runJcodeHost(): Promise<void> {
     const parts: string[] = [];
     let ids: string[] = [];
     let turnIds: string[] = [];
+    const mentionWake = pendingKickoff === undefined ? pendingMentionWake : undefined;
     // Run turns ride the same composed injection; their ids commit as surfaced once the Harness
     // verifiably accepted it (two-phase — an unaccepted send re-surfaces them, never a lie).
     const turnPeek = agent.peekPendingTurns();
@@ -1030,7 +1035,7 @@ export async function runJcodeHost(): Promise<void> {
       // its second copy even though every other reader was correct.
       const inbox = agent.peekInbox("automatic").filter((item) => !reservedIds.has(item.recvKey));
       const injection = formatInjection(inbox);
-      if (!injection && !turnPeek) {
+      if (!injection && !turnPeek && !mentionWake) {
         driving = false;
         return;
       }
@@ -1039,6 +1044,7 @@ export async function runJcodeHost(): Promise<void> {
         parts.push(injection);
       }
     }
+    if (mentionWake) parts.push(mentionWake.hint);
     if (turnPeek) {
       turnIds = turnPeek.goalIds;
       parts.push(turnPeek.text);
@@ -1155,6 +1161,7 @@ export async function runJcodeHost(): Promise<void> {
       errorRetryMs = ERROR_RETRY_INITIAL_MS;
       consecutiveFailures = 0;
       lastTurnError = undefined;
+      if (mentionWake && pendingMentionWake === mentionWake) pendingMentionWake = undefined;
     } catch (error) {
       closeEventRun(error as Error);
       await events?.settled();
@@ -1775,6 +1782,14 @@ export async function runJcodeHost(): Promise<void> {
   // A run turn arriving on a quiet seat has no "incoming" item to ride — the intake poll asks
   // for a wake instead. drive()'s own head guards re-entry and a busy session.
   agent.on("wake", () => {
+    if (!sessionBusy() && !reconnecting && !stopping) void drive();
+  });
+
+  // Focus ack-drops a channel mention before "incoming". Wake with attribution only, never its body.
+  agent.on("mention-wake", (item: InboxItem) => {
+    pendingMentionWake = {
+      hint: `You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)}. Pull it with cotal_inbox.`,
+    };
     if (!sessionBusy() && !reconnecting && !stopping) void drive();
   });
 
