@@ -1470,7 +1470,7 @@ await spawn(
   }
 }
 
-const EXPECTED_CELLS = 54;
+const EXPECTED_CELLS = 56;
 const ran = pass + fail;
 console.log(`\nturn-intake.smoke: ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {
