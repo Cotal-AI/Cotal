@@ -40,6 +40,13 @@ case "$1" in
         echo 'probe: capture refused' >&2; exit 1;;
       *) printf 'hello from the pane\\n';;
     esac;;
+  has-session)
+    [ "$TMUX_DRIVER_MODE" = has-session ] && exit 0
+    exit 1;;
+  new-session|select-window|send-keys|if-shell)
+    [ "$TMUX_DRIVER_MODE" != command-refused ] || { echo "probe: $1 refused" >&2; exit 1; }
+    [ "$TMUX_DRIVER_MODE" != silent-failure ] || exit 1
+    exit 0;;
   *) exit 2;;
 esac
 `, { mode: 0o700 });
@@ -130,6 +137,49 @@ esac
   });
   test("capturePane fails closed when the server probe fails", () => {
     failure("pid-refused", 'driver.capturePane("%1", "4242")', "read the server pid", "display-message -p #{pid}", "probe: pid refused");
+  });
+  test("ensureSession skips new-session when has-session succeeds and creates when absent", () => {
+    const present = read("has-session", 'driver.ensureSession("probe", "/tmp")');
+    assert.deepEqual(present.result, {});
+    assert.deepEqual(present.calls, ["has-session -t probe"]);
+    const created = read("ok", 'driver.ensureSession("probe", "/tmp")');
+    assert.deepEqual(created.result, {});
+    assert.deepEqual(created.calls, ["has-session -t probe", "new-session -d -s probe -x 200 -y 50 -c /tmp"]);
+  });
+  test("selectWindow, send and sendKey preserve their success calls", () => {
+    const selected = read("ok", 'driver.selectWindow("@9")');
+    assert.deepEqual(selected.result, {});
+    assert.deepEqual(selected.calls, ["select-window -t @9"]);
+    const sent = read("ok", 'driver.send("x", "%9")');
+    assert.deepEqual(sent.result, {});
+    assert.deepEqual(sent.calls, ["send-keys -l -t %9 -- x"]);
+    const key = read("ok", 'driver.sendKey("Enter", "%9", { server: "4242", timeoutMs: 1000 })');
+    assert.deepEqual(key.result, {});
+    assert.deepEqual(key.calls, ["if-shell -F #{==:#{pid},4242} 'send-keys' '-t' '%9' '--' 'Enter'"]);
+  });
+  test("ensureSession names the refused session start, retains its cause and captures stderr", () => {
+    const got = failure("command-refused", 'driver.ensureSession("probe", "/tmp")', "start session", "new-session -d -s probe -x 200 -y 50 -c /tmp", "probe: new-session refused");
+    assert.deepEqual(got.calls, ["has-session -t probe", "new-session -d -s probe -x 200 -y 50 -c /tmp"]);
+  });
+  test("selectWindow names the failed selection, retains its cause and captures stderr", () => {
+    const got = failure("command-refused", 'driver.selectWindow("@9")', "select window", "select-window -t @9", "probe: select-window refused");
+    assert.deepEqual(got.calls, ["select-window -t @9"]);
+  });
+  test("send names the failed text send, retains its cause and captures stderr", () => {
+    const got = failure("command-refused", 'driver.send("x", "%9")', "send text", "send-keys -l -t %9 -- x", "probe: send-keys refused");
+    assert.deepEqual(got.calls, ["send-keys -l -t %9 -- x"]);
+  });
+  test("sendKey names the failed key send with and without a server guard", () => {
+    const unpinned = failure("command-refused", 'driver.sendKey("Enter", "%9")', "send key", "send-keys -t %9 -- Enter", "probe: send-keys refused");
+    assert.deepEqual(unpinned.calls, ["send-keys -t %9 -- Enter"]);
+    const pinned = failure("command-refused", 'driver.sendKey("Enter", "%9", { server: "4242", timeoutMs: 1000 })', "send key", "if-shell -F #{==:#{pid},4242} 'send-keys' '-t' '%9' '--' 'Enter'", "probe: if-shell refused");
+    assert.deepEqual(pinned.calls, ["if-shell -F #{==:#{pid},4242} 'send-keys' '-t' '%9' '--' 'Enter'"]);
+  });
+  test("a command failure with empty stderr still names Node's command error", () => {
+    const got = read("silent-failure", 'driver.sendKey("Enter", "%9")');
+    assert.ok(got.result.error, "command must throw");
+    assert.ok(got.result.error.message.startsWith("tmux: couldn't send key: Command failed: tmux -u send-keys -t %9 -- Enter"), got.result.error.message);
+    assert.equal(got.result.error.cause?.status, 1);
   });
   console.log(`tmux driver read fixtures: ${root}`);
 }

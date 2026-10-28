@@ -216,8 +216,8 @@ agents exchange messages directly and choose their own work.
   that throw when the extension isn't loaded, never a silent fallback); **byo** is the
   floor (a human's own terminal, tracked via presence); **host** (Agent SDK, true mid-turn
   interrupt) is the documented upgrade path ([roadmap](roadmap.md)).
-  The tmux driver's session-name and pane-capture failures name the operation, include tmux's
-  error text and retain the failed call as `cause`.
+  The tmux driver's session-name, pane-capture, session-start, window-select and key-send
+  failures name the operation, include tmux's error text and retain the failed call as `cause`.
 - **Served commands.** `spawn` (an action, below), `stop`, `ps`, `status`, `attach`,
   `models`, and `define-persona` are among its endpoint commands
   ([§13.5](../SPEC.md#135-verbs)) any authorized node can send, policy-gated

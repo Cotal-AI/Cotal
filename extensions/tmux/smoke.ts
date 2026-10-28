@@ -5,10 +5,11 @@
  */
 import * as tmux from "./src/driver.js";
 import { TmuxRuntime, tmuxRuntimeProvider, tmuxTerminalProvider } from "./src/runtime.js";
-import { registry } from "@cotal-ai/core";
+import { registry, SpawnRefused } from "@cotal-ai/core";
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const SESSION = "cotal-tmux-smoke";
 let passed = 0;
@@ -32,6 +33,17 @@ function throws(label: string, fn: () => unknown) {
   } catch {
     console.log(`  ✓ ${label}`);
     passed++;
+  }
+}
+
+function failsWithReason(label: string, fn: () => unknown, prefix: string, reason: string) {
+  try {
+    fn();
+    console.error(`  ✗ FAIL: ${label} — expected throw, got none`);
+    failed++;
+  } catch (err) {
+    const e = err as { message?: string; cause?: { stderr?: unknown } };
+    ok(label, Boolean(e.message?.startsWith(prefix) && e.message.includes(reason) && String(e.cause?.stderr ?? "").includes(reason)));
   }
 }
 
@@ -66,6 +78,33 @@ console.log("\n── driver ─────────────────
 ok("available() returns true", tmux.available());
 
 console.log(`\n── session: ${SESSION} ──────────────────────────`);
+if (typeof process.getuid === "function") {
+  const unsafeRoot = mkdtempSync(join(tmpdir(), "cotal-tmux-unsafe-"));
+  const unsafeSockDir = join(unsafeRoot, `tmux-${process.getuid()}`);
+  mkdirSync(unsafeSockDir);
+  chmodSync(unsafeSockDir, 0o777);
+  const prevTmp = process.env.TMUX_TMPDIR;
+  const prevTmux = process.env.TMUX;
+  delete process.env.TMUX;
+  process.env.TMUX_TMPDIR = unsafeRoot;
+  try {
+    failsWithReason("ensureSession on an unsafe socket dir names the operation and tmux's reason", () => tmux.ensureSession(SESSION, "/tmp"), "tmux: couldn't start session:", "has unsafe permissions");
+    let spawnErr: unknown;
+    try {
+      new TmuxRuntime(SESSION).spawn("unsafe-seat", { command: "sleep", args: ["1"] }, "/tmp");
+    } catch (err) {
+      spawnErr = err;
+    }
+    ok("TmuxRuntime.spawn on an unsafe socket dir throws SpawnRefused with tmux's reason",
+      spawnErr instanceof SpawnRefused && spawnErr.message.startsWith("tmux: couldn't start session:") && spawnErr.message.includes("has unsafe permissions"));
+  } finally {
+    if (prevTmp === undefined) delete process.env.TMUX_TMPDIR;
+    else process.env.TMUX_TMPDIR = prevTmp;
+    if (prevTmux === undefined) delete process.env.TMUX;
+    else process.env.TMUX = prevTmux;
+    rmSync(unsafeRoot, { recursive: true, force: true });
+  }
+}
 tmux.ensureSession(SESSION, "/tmp");
 // This throwaway session is never attached. `window-size manual` makes tmux honor the session's
 // explicit -x/-y size with no client, so headless `split-window` doesn't fail "size missing" on CI.
@@ -105,6 +144,10 @@ ok("windowRefs entry starts with @", refs[0]!.startsWith("@"));
 tmux.send("echo hello", `${SESSION}:test-win`);
 tmux.sendKey("Enter", `${SESSION}:test-win`);
 ok("send + sendKey don't throw", true);
+failsWithReason("selectWindow on missing window names the operation and tmux's reason", () => tmux.selectWindow("@999999"), "tmux: couldn't select window:", "can't find window: @999999");
+failsWithReason("send on missing pane names the operation and tmux's reason", () => tmux.send("x", "%999999"), "tmux: couldn't send text:", "can't find pane: %999999");
+failsWithReason("sendKey on missing pane names the operation and tmux's reason", () => tmux.sendKey("Enter", "%999999"), "tmux: couldn't send key:", "can't find pane: %999999");
+failsWithReason("server-pinned sendKey on missing pane names the operation and tmux's reason", () => tmux.sendKey("Enter", "%999999", { server: tmux.serverPid(), timeoutMs: 1_000 }), "tmux: couldn't send key:", "can't find pane: %999999");
 
 // closeWindow by stable ID
 tmux.closeWindow(windowId);
