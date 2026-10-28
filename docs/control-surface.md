@@ -300,8 +300,13 @@ A space can run more than one manager. Each manager persists a stable logical in
 across restarts and advances its process epoch when it comes back, so callers address a
 specific manager without caring which process currently serves it. A start serves only at the
 epoch its own registration committed, never at the epoch of a later start of the same instance.
-On a static or open mesh,
-an untargeted spawn rides class anycast (any manager may accept, and the acceptance records which one did).
+On a static mesh or from an unbound open caller, an untargeted spawn rides class anycast
+(any manager may accept, and the acceptance records which one did). An open managed seat's
+persona definition, list, show and spawn tools default to its launching manager. Its generic
+manager describe and self-targeted invoke use that launch address too. An explicit existing
+persona or spawn selector still selects that instance. Static credential grants and user-auth
+issuer selection are unchanged. The library's `describeService` accepts an optional `instanceId`;
+a pinned describe does not read or populate the endpoint-only class cache.
 `cotal spawn <persona> --detach --on <instance>` and `cotal_spawn(instance: "<instance>")`
 pin one instance by its exact id, as `--on` does for `cotal ps`, `cotal models` and every hosted
 `cotal run` verb, and `instance` for `cotal_run`, `cotal_persona` and `cotal_personas`. A foreground CLI spawn has no manager to pin and refuses the

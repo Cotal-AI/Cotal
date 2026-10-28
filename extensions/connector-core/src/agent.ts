@@ -2183,7 +2183,8 @@ export class MeshAgent extends EventEmitter {
     const requested = raw?.trim();
     let instance: string | undefined;
     try {
-      instance = opts?.instance === undefined ? undefined : assertLifecycleToken(opts.instance, "instance");
+      const selected = opts?.instance ?? this.openManagerInstance();
+      instance = selected === undefined ? undefined : assertLifecycleToken(selected, "instance");
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
@@ -2435,6 +2436,11 @@ export class MeshAgent extends EventEmitter {
       ...(verb === "answer" ? { target: { mode: "self" as const } } : {}),
       ...pin,
     });
+  }
+
+  /** Open managed seats use their launch address without changing credentialed routing. */
+  private openManagerInstance(): string | undefined {
+    return !this.config.creds && !this.config.userAuth ? this.config.managerInstanceId : undefined;
   }
 
   /** An explicit manager instance for a manager call, under `spawn`'s rules: a lifecycle token,
@@ -2695,7 +2701,7 @@ export class MeshAgent extends EventEmitter {
     announce?: string;
   }): Promise<ControlReply & { announceError?: string; announceOutcome?: "denied" | "unknown" }> {
     await this.requireConnected();
-    const pin = this.managerPin(def.instance);
+    const pin = this.managerPin(def.instance ?? this.openManagerInstance());
     if ("error" in pin) return pin.error;
     // Validate the destination BEFORE the write, and here rather than only in the tool's schema —
     // this is the API every host's tool surface funnels through, so a caller that reaches
@@ -2771,7 +2777,7 @@ export class MeshAgent extends EventEmitter {
    *  ownership rule as `definePersona`. */
   async listPersonas(instance?: string): Promise<ControlReply> {
     await this.requireConnected();
-    const pin = this.managerPin(instance);
+    const pin = this.managerPin(instance ?? this.openManagerInstance());
     if ("error" in pin) return pin.error;
     return this.managerInvoke("list-personas", undefined, pin);
   }
@@ -2779,7 +2785,7 @@ export class MeshAgent extends EventEmitter {
   /** Mesh-side persona catalog show of one card. Unauthorized / missing names are not-found. */
   async showPersona(name: string, instance?: string): Promise<ControlReply> {
     await this.requireConnected();
-    const pin = this.managerPin(instance);
+    const pin = this.managerPin(instance ?? this.openManagerInstance());
     if ("error" in pin) return pin.error;
     return this.managerInvoke("show-persona", { name }, pin);
   }

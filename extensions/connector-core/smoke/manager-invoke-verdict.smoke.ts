@@ -30,6 +30,7 @@
 import { EpEnvelopeError, EP_UNANSWERED, EP_UNBOUND_RESPONDER, managerCallerBinding } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
+import { cotalToolSpecs } from "../src/tool-specs.js";
 
 let pass = 0, fail = 0;
 /** A cell RECORDS its verdict; it never throws. A throwing cell takes every cell below it with it,
@@ -175,7 +176,56 @@ check("conversation self-stop refuses without dispatch", !conversation.ok && sel
 const overrideSelf = await openSelf.despawn(undefined, { instance: "b".repeat(26) });
 check("a self-stop instance override still refuses without dispatch", !overrideSelf.ok && selfCalls.length === beforeRefusals);
 
-const EXPECTED_CELLS = 28;
+// Dispatch only. The native two-manager replay supplies catalog and pending-goal evidence.
+for (const [label, config, expected] of [
+  ["open managed", { ...cfg, managerInstanceId: instanceId }, instanceId],
+  ["open unbound", cfg, undefined],
+  ["static managed", { ...cfg, id: "caller", managerInstanceId: instanceId, creds: async () => "not-used" }, undefined],
+] as const) {
+  const agent = selfAgent(config);
+  await agent.definePersona({ name: "owned", prompt: "Owned fixture" });
+  check(`${label} persona definition preserves its route`, selfCalls.at(-1)?.opts.instanceId === expected);
+  await agent.listPersonas();
+  check(`${label} persona listing preserves its route`, selfCalls.at(-1)?.opts.instanceId === expected);
+  await agent.showPersona("owned");
+  check(`${label} persona show preserves its route`, selfCalls.at(-1)?.opts.instanceId === expected);
+  await agent.spawn("owned");
+  check(`${label} spawn preserves its route`, selfCalls.at(-1)?.opts.instanceId === expected);
+}
+const explicit = selfAgent({ ...cfg, managerInstanceId: instanceId });
+await explicit.listPersonas("b".repeat(26));
+check("an existing explicit open persona selector stays explicit", selfCalls.at(-1)?.opts.instanceId === "b".repeat(26));
+
+for (const [label, config, expected] of [
+  ["open managed", { ...cfg, managerInstanceId: instanceId }, instanceId],
+  ["open unbound", cfg, undefined],
+  ["static managed", { ...cfg, id: "caller", managerInstanceId: instanceId, creds: async () => "not-used" }, undefined],
+  ["user managed", managerConfig, undefined],
+] as const) {
+  const calls: Array<{ endpoint: string; opts: { instanceId?: string; target?: { mode: string } } }> = [];
+  const agent = new MeshAgent(config);
+  (agent as unknown as { ep: unknown }).ep = {
+    describeService: async (endpoint: string, opts: { instanceId?: string }) => {
+      calls.push({ endpoint, opts });
+      return { endpoint, owner: "local", responder: { instanceId, epoch: 0 }, commands: new Map() };
+    },
+    invokeService: async (endpoint: string, _command: string, _args: unknown, opts: { instanceId?: string; target?: { mode: string } }) => {
+      calls.push({ endpoint, opts });
+      return { reply: { ok: true, data: { turns: [] } }, responder: { instanceId, epoch: 0 } };
+    },
+  };
+  const tools = cotalToolSpecs(config);
+  await tools.find(t => t.name === "cotal_describe")!.run(agent, config, { endpoint: "manager", refresh: true });
+  check(`${label} generic manager describe preserves credential routing`, calls.at(-1)?.opts.instanceId === expected);
+  await tools.find(t => t.name === "cotal_invoke")!.run(agent, config, { endpoint: "manager", command: "turn-pending", self: true });
+  check(`${label} generic manager self read preserves credential routing`, calls.at(-1)?.opts.instanceId === expected && calls.at(-1)?.opts.target?.mode === "self");
+  await tools.find(t => t.name === "cotal_invoke")!.run(agent, config, { endpoint: "other", command: "read", self: true });
+  check(`${label} another endpoint never receives a manager pin`, calls.at(-1)?.opts.instanceId === undefined);
+  await tools.find(t => t.name === "cotal_invoke")!.run(agent, config, { endpoint: "manager", command: "status" });
+  check(`${label} generic untargeted call retains its existing class route`, calls.at(-1)?.opts.instanceId === undefined);
+}
+
+const EXPECTED_CELLS = 57;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {
