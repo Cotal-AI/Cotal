@@ -1346,7 +1346,8 @@ must name this workspace root and a pid that is not running on this host; the ne
 recorded running in this folder and the row must be held by the credential this folder gave its
 previous daemon; `up` prints `shard 0 is still leased to this folder's previous delivery daemon`.
 This holds on a controller stack too, both for an `up` right after the crash and for one after a
-`down` that recorded the members as already stopped, because that `down` keeps the credential.
+`down` that recorded the members as already stopped, because that `down` keeps the credential. A
+legacy bare `down` keeps it too when the stopped daemon's row is still there.
 The wait never writes the lease. A row that is written again while `up` waits has a live holder, so
 the start is refused and `up` exits nonzero. A row held by any other process is refused at once,
 as before.
@@ -1714,7 +1715,12 @@ above does. A record that check leaves unread, such as one behind a link, refuse
 before the first stop and is named once, where reading stopped. No process behind it is read or
 signalled, and no record is removed. A manager or delivery daemon whose pidfile is gone while
 its lease is still live refuses `LIFECYCLE_BLOCKED`, exit 2, before the broker stops. The refusal
-names that daemon and says to stop it, or put its pidfile back, then run `cotal down` again. These are known-blocker
+names that daemon and says to stop it, or put its pidfile back, then run `cotal down` again. A
+delivery daemon gets two seconds to release shard 0 of its lease after the signal and then exits
+anyway, so after it stops, the bare stop reads the lease while the broker still runs. When the row
+still names the credential this folder gave that daemon, or the lease cannot be read, the credential
+stays and `down` prints a `!` line saying so. The next `up` uses it to wait the row out, as after a
+crash, and then starts the new daemon. These are known-blocker
 checks, not a complete live broker-sharing or stop plan; aliases, remote tenants,
 agent impact and process identity remain unproved. These paths do not check full
 whole-stack target ownership, set exclusion, confirmed agent impact or schema
