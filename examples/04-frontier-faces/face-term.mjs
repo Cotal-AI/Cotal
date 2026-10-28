@@ -11,6 +11,7 @@
 //   bun face-term.mjs --persona david --server http://127.0.0.1:4096 \
 //                     --model opencode-go/glm-5.1
 
+import { parseArgs } from 'node:util';
 import { PERSONAS } from './personas.mjs';
 
 function vis(ch) {
@@ -25,17 +26,29 @@ function vis(ch) {
 }
 
 // ---- args ----------------------------------------------------------------------------------
-const argv = process.argv.slice(2);
-const flag = (name, def) => { const i = argv.indexOf('--' + name); return i >= 0 && argv[i + 1] ? argv[i + 1] : def; };
-const has = (name) => argv.includes('--' + name);
-const DEMO = has('demo');
-const PERSONA = flag('persona', 'ray');
-const SERVER = flag('server', 'http://127.0.0.1:4096').replace(/\/$/, '');
-const SESSION = flag('session', ''); // attach to an existing session instead of creating one
+const { values } = parseArgs({
+  options: {
+    demo: { type: 'boolean', default: false },
+    persona: { type: 'string', default: 'ray' },
+    server: { type: 'string', default: 'http://127.0.0.1:4096' },
+    session: { type: 'string', default: '' },
+    password: { type: 'string', default: process.env.OPENCODE_SERVER_PASSWORD ?? '' },
+    model: { type: 'string', default: 'opencode-go/glm-5.1' },
+    list: { type: 'boolean', default: false },
+    dump: { type: 'boolean', default: false },
+    expr: { type: 'string' },
+    speak: { type: 'boolean', default: false },
+    viseme: { type: 'string', default: 'D' },
+  },
+});
+const DEMO = values.demo;
+const PERSONA = values.persona;
+const SERVER = values.server.replace(/\/$/, '');
+const SESSION = values.session; // attach to an existing session instead of creating one
 // HTTP basic auth for an opencode serve with OPENCODE_SERVER_PASSWORD. The env form is the one a
 // launcher uses, since argv is readable by every local user; `opencode attach` reads it the same way.
-const PASSWORD = flag('password', process.env.OPENCODE_SERVER_PASSWORD ?? '');
-const MODEL_STR = flag('model', 'opencode-go/glm-5.1');
+const PASSWORD = values.password;
+const MODEL_STR = values.model;
 const [provModel0, ...rest] = MODEL_STR.split('/');
 const MODEL = { providerID: provModel0, modelID: rest.join('/') };
 if (!Object.hasOwn(PERSONAS, PERSONA)) throw new Error(`face-term: unknown persona "${PERSONA}" (have: ${Object.keys(PERSONAS).join(', ')})`);
@@ -71,7 +84,7 @@ function composeGrid() {
     const row = (p.rows[r] || '').padEnd(GRID, '.');
     for (let c = 0; c < GRID; c++) { const k = row[c]; if (k && k !== '.') put([r, c, k]); }
   }
-  const e = p.expr[state.expr] || p.expr.neutral;
+  const e = p.expr[state.expr];
   const mouth = (state.speaking && state.viseme) ? p.mouths[state.viseme] : p.mouths[e.mouth];
   [...e.brows, ...mouth, ...p.eyes(e.eyes, state.blink)].forEach(put);
   return grid;
@@ -394,10 +407,13 @@ function cleanup() {
 }
 
 async function main() {
-  if (has('list')) { out.write(Object.keys(PERSONAS).join('\n') + '\n'); process.exit(0); }
-  if (has('dump')) { // debug: print the composed key-grid as ASCII and exit
-    if (flag('expr')) state.expr = flag('expr');
-    if (has('speak')) { state.speaking = true; state.viseme = flag('viseme', 'D'); }
+  if (values.list) { out.write(Object.keys(PERSONAS).join('\n') + '\n'); process.exit(0); }
+  if (values.dump) { // debug: print the composed key-grid as ASCII and exit
+    if (values.expr !== undefined) {
+      if (!EXPRS.includes(values.expr)) throw new Error(`face-term: unknown expr "${values.expr}" (have: ${EXPRS.join(', ')})`);
+      state.expr = values.expr;
+    }
+    if (values.speak) { state.speaking = true; state.viseme = values.viseme; }
     const g = composeGrid();
     out.write(g.map((row) => row.map((k) => k || '·').join('')).join('\n') + '\n');
     process.exit(0);
