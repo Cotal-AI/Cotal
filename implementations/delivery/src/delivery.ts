@@ -762,6 +762,9 @@ async function runStartedDelivery(
   let membership: MembershipFeedHandle | undefined;
   let timerWriter: { handle: TimerWriterHandle; nc: Awaited<ReturnType<ReturnType<typeof dialerFor>>> } | undefined;
   let timerWriterAttempt: Promise<void> | undefined;
+  /** Ends the timer writer's retry backoff early. close() calls it so a shutdown that lands during
+   *  a backoff does not wait out a retry it will not make (#3633). */
+  let wakeTimerWriterBackoff: (() => void) | undefined;
   let stopLeaseWatch: (() => void) | undefined;
   let renew: ReturnType<typeof setInterval> | undefined;
   /** Removes THIS process's liveness record, once it has one. Declared BEFORE the handlers that
@@ -867,6 +870,7 @@ async function runStartedDelivery(
         try { await membership?.stop(); } catch { /* broker may be gone */ }
         try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
         try { await Promise.race([timerWriter?.nc.drain(), new Promise((r) => setTimeout(r, 1000))]); } catch { /* broker may be gone */ }
+        wakeTimerWriterBackoff?.();
         try { await timerWriterAttempt; } catch { /* startup or broker fault */ }
         try { await ep.stop(); } catch { /* broker may be gone */ }
       }
@@ -1060,7 +1064,12 @@ async function runStartedDelivery(
         );
         try { await nc?.drain(); } catch { /* connection already gone */ }
         timerWriter = undefined;
-        await new Promise((r) => setTimeout(r, backoffMs).unref());
+        // A close() during this sleep wakes it, and the loop's next check on `stopping` returns.
+        await new Promise<void>((r) => {
+          const timer = setTimeout(r, backoffMs).unref();
+          wakeTimerWriterBackoff = () => { clearTimeout(timer); r(); };
+        });
+        wakeTimerWriterBackoff = undefined;
         backoffMs = Math.min(backoffMs * 2, 300_000);
       }
     }

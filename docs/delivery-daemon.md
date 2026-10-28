@@ -241,7 +241,8 @@ connection under the same delivery credential. That connection presents the cred
 holds now and reconnects onto each renewed one the daemon adopts, so the broker never closes it for
 an expired credential and it never dials with one. Without a running writer no workflow pause on the
 space ever expires. The writer restarts itself with backoff and logs while it is down; a fault
-there never takes delivery down. Stopping the daemon ends the writer's pending fetch at once.
+there never takes delivery down. Stopping the daemon ends the writer's pending fetch at once and
+wakes a retry backoff it is sleeping through, so a close never waits for a retry it will not make.
 
 **Open dev mode has no delivery daemon.** Open mode is deliberately **live-only**: there is no
 trusted reader, so there is no durable backstop. Run an auth mesh if you need durable channels.
