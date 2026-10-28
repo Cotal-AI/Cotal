@@ -1,5 +1,14 @@
 # @cotal-ai/auth
 
+## 0.120.2
+
+### Patch Changes
+
+- 8b12675: Serve owner-authorized `instance-read` and cursor-paginated `instance-list` operations through the public service endpoint host, including current approval and registration state.
+- @cotal-ai/core@0.120.2
+  - @cotal-ai/lang@0.120.2
+  - @cotal-ai/workspace@0.120.2
+
 ## 0.120.1
 
 ### Patch Changes
