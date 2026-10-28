@@ -1,5 +1,11 @@
 # @cotal-ai/web
 
+## 0.115.3
+
+### Patch Changes
+
+- bf5f601: A detached dashboard start names a pidfile it cannot read and stops, instead of waiting out the readiness window and reporting a timeout with no probe. A missing pidfile still means the child has not claimed it yet.
+
 ## 0.115.2
 
 No changes in this release.
