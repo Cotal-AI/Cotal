@@ -1,5 +1,24 @@
 # cotal-ai
 
+## 0.120.1
+
+### Patch Changes
+
+- bba020c: `cotal daemon serve` refused for a socket with the recorded device and inode numbers that another process answers on now says that process is listening at that path and the daemon does not start until it releases it, and Next names `ss -xlp` and `fuser <path>` to find it. Next used to say to run `cotal daemon status`, which gives neither outcome it described. The same `serve` run again now says the lock record names no socket because a clean stop or a refused `serve` clears it, instead of calling the socket one this daemon home never published. `cotal daemon status` refused `PEER_NOT_LOCK_OWNER` or `SOCKET_WRONG_MODE` now gives a step to take: find the process listening at the socket with `ss -xlp`, and run the command with that daemon's `COTAL_HOME` or stop the process and start the daemon with `cotal daemon serve`.
+- Updated dependencies [a49bee6]
+- Updated dependencies [56e4520]
+- Updated dependencies [e2f30c6]
+- Updated dependencies [bba020c]
+  - @cotal-ai/connector-core@0.120.1
+  - @cotal-ai/manager@0.120.1
+  - @cotal-ai/cli@0.120.1
+  - @cotal-ai/auth@0.120.1
+  - @cotal-ai/delivery@0.120.1
+  - @cotal-ai/runtime@0.120.1
+  - @cotal-ai/core@0.120.1
+  - @cotal-ai/seat@0.120.1
+  - @cotal-ai/workspace@0.120.1
+
 ## 0.120.0
 
 ### Patch Changes

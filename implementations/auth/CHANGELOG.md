@@ -1,5 +1,14 @@
 # @cotal-ai/auth
 
+## 0.120.1
+
+### Patch Changes
+
+- e2f30c6: `cotal service-endpoint --help` shows three examples that each fit one 80-column line: read a proposal, approve it, and list its callers before a grant or revoke. The full grant form stays in the usage line.
+- @cotal-ai/core@0.120.1
+  - @cotal-ai/lang@0.120.1
+  - @cotal-ai/workspace@0.120.1
+
 ## 0.120.0
 
 ### Minor Changes
