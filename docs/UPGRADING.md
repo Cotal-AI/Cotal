@@ -34,6 +34,17 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Membership snapshot reads after 0.115.4
+
+`CotalEndpoint.readMembership()` now reads the membership feed with batched Direct Gets and binds
+no consumer, so a dashboard that polls it no longer leaves a consumer per read on the feed's
+stream or a refused `CONSUMER.DELETE` line in the broker log. The read needs
+`$JS.API.DIRECT.GET.KV_cotal_membership_<space>`, which the observer and admin profiles now carry.
+An observer or admin credential minted by an older manager or auth service lacks the row, and its
+`readMembership()` is refused with the grant it lacks rather than scanned with a consumer. Upgrade
+the issuer first, then mint the dashboard's and the CLI's observer credentials again; reconnecting
+with the old credential does not add the grant.
+
 ## Membership watch entries after 0.115.4
 
 `CotalEndpoint.watchMembership(onChange)` now hands `onChange` each feed entry as a

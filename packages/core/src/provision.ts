@@ -1443,6 +1443,12 @@ export function permissionsFor(
       // agent. Read-only: no `$KV.${membershipBucket}` publish — only the `membership-rw` cred writes it.
       `$JS.API.STREAM.INFO.${MEMKV}`,
       `$JS.API.STREAM.MSG.GET.${MEMKV}`,
+      // The snapshot read (`readMembership`) is paged batched Direct Gets whose request subject is the
+      // bare stream, binding no consumer (#4123): this profile may not delete a scan's consumer, so a
+      // consumer per read stayed to the inactive threshold and each refused delete was a broker log
+      // line. The reply subject is caller-chosen, the same vector the consumer create below already
+      // grants on this bucket, so the read reaches no byte the watch could not.
+      `$JS.API.DIRECT.GET.${MEMKV}`,
       `$JS.API.CONSUMER.CREATE.${MEMKV}.>`,
       `$JS.API.CONSUMER.INFO.${MEMKV}.>`,
       // Delivery lease/readiness: READ-ONLY (STREAM.INFO + kv.get), the same pair the `agent` arm

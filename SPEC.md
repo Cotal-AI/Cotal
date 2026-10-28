@@ -6472,6 +6472,7 @@ CHAT history, presence, and channel registry:
 - `$JS.API.CONSUMER.INFO.<CHKV>.>`
 - `$JS.API.STREAM.INFO.<MEMKV>`
 - `$JS.API.STREAM.MSG.GET.<MEMKV>`
+- `$JS.API.DIRECT.GET.<MEMKV>` (the membership snapshot read: paged batched Direct Gets that bind no consumer, since this profile may delete none)
 - `$JS.API.CONSUMER.CREATE.<MEMKV>.>`
 - `$JS.API.CONSUMER.INFO.<MEMKV>.>`
 - `$JS.API.STREAM.INFO.<DLVKV>`
