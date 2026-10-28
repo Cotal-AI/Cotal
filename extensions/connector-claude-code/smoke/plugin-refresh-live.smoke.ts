@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -227,6 +227,20 @@ try {
   ok("the earlier per-project installs are all there is before the update", () => {
     assert.deepEqual(installs(), [...legacy].sort());
   });
+  const userSettings = join(process.env.CLAUDE_CONFIG_DIR!, "settings.json");
+  const settingsBefore = existsSync(userSettings) ? readFileSync(userSettings, "utf8") : undefined;
+  const settings = settingsBefore ? (JSON.parse(settingsBefore) as { enabledPlugins?: Record<string, boolean> }) : {};
+  writeFileSync(userSettings, JSON.stringify({ ...settings, enabledPlugins: { ...settings.enabledPlugins, "cotal@cotal-mesh": false } }));
+  try {
+    const kept = inProject(ROOT, () => refresh.run({ cotal: cli("two") })) as string;
+    ok("an account that turned the plugin off keeps its per-project installs, and gets no user-scope one", () => {
+      assert.deepEqual(installs(), [...legacy].sort());
+      assert.ok(!kept.includes("user scope"), kept);
+    });
+  } finally {
+    if (settingsBefore === undefined) rmSync(userSettings);
+    else writeFileSync(userSettings, settingsBefore);
+  }
   const updated = inProject(ROOT, () => refresh.run({ cotal: cli("two") })) as string;
   ok("refresh installs the plugin for the account and retires the per-project install that had it on", () => {
     assert.deepEqual(installs(), [...legacy.filter((i) => i !== `local:${LEGACY_ON}`), "user"].sort());
