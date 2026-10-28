@@ -171,7 +171,7 @@ const SELECTION_SHAPE = {
     .array(z.strictObject({ channel: z.string().min(1), access: z.enum(["read", "read-post"]) }))
     .max(SELECTION_MAX_ITEMS)
     .optional()
-    .describe("Channels this connection may join and read, or read and post to. No wildcards."),
+    .describe("Channels this connection may join and read, or read and post to. A pattern such as team.* or team.> covers every matching channel, including ones created later."),
   role: z.string().min(1).optional().describe("A role to hold, so role requests (cotal_anycast) reach this connection."),
   capabilities: z
     .array(z.enum(["spawn", "run"]))
