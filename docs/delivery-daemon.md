@@ -103,9 +103,11 @@ row to no reads. A durable join reads that row again just before it writes its m
 once more after. When the channel is no longer allowed, the join writes nothing, or removes the row it
 just wrote, and is refused. A leave or an activation only updates a row that still exists. A row of the
 retiring lifecycle is then either in the inventory or gone, whichever daemon process wrote it. The
-daemon also fences on its own, for a manager that does not narrow the row: from the moment it takes a
-lifecycle's inventory request, it refuses every durable join and leave of that lifecycle, and it starts
-the read only after the ones already running have finished.
+daemon also fences on its own, for a manager that does not narrow the row: when the inventory request
+arrives with the lifecycle's ACL row still allowing reads, it refuses every durable join and leave of
+that lifecycle from that moment, on that daemon process. A request whose row is already narrowed, or
+retired, leaves no such mark, since the row refuses those writes by itself. Either way the read starts
+only after the writes already running have finished.
 
 A reply on the `ctl.delivery` or `ctl.delivery-admin` rail that is larger than the broker's
 `max_payload` cannot be published. The daemon answers that request with a refusal giving the reply's
