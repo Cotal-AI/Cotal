@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.116.4
+
+### Patch Changes
+
+- afe50e7: A manager that fails while it starts now names the cause. Its native child dropped the error and logged only `Code: OPERATION_UNKNOWN`, so `cotal manager start` quoted that line and `cotal service logs manager` showed no reason. The child now writes one last line, `✗ the manager did not start:` with the failure's code and message, the error it wraps and its remedy, and exits 3 as before, so the refusal quotes the cause and the log holds it. A `--foreground` start that exits before readiness no longer says its log records the cause: it says its output went to this terminal and was not captured in its log, and names no log to read.
+- afcfc54: A remedy, Next line, hint or message that names a `cotal` command after other words now writes it in backticks, so a terminal wraps the command as one word and never splits it across lines. At 80 columns the timed-out `invoke` Next used to break inside `cotal invoke manager ps --timeout 10000`, the `TARGET_UNAVAILABLE` Next inside `cotal service --space <space>`, and the note about a folder's stopped space inside its `cotal up`. At 60 columns the `up` and `spawn` option help broke inside `cotal down` and `cotal team deploy <file>`. `--json` carries the same text, with the backticks; no key changed. A command that holds a shell-quoted path or value is named between double backticks when it holds a backtick itself.
+- Updated dependencies [afcfc54]
+  - @cotal-ai/workspace@0.116.4
+  - @cotal-ai/core@0.116.4
+
 ## 0.116.3
 
 ### Patch Changes
