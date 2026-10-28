@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
-import { closeSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { registry, type Command, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
+import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type ExtensionsManifest, type InstalledExtension, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { assertExtensionServiceInstancesStopped } from "../lib/service-instances.js";
 import { cotalRoot } from "../lib/paths.js";
@@ -67,13 +67,13 @@ export async function ext(args: ParsedArgs): Promise<void> {
   if (sub === undefined || (sub === "list" && !rest.length)) return list(presentationOf(v));
   // `ext root` stays a raw path for `$(cotal ext root)`; a structured form of one path adds nothing.
   if (v.json || v.plain) throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
-  if (sub === "add" && rest[0]) return addExtension(atThisVersion(rest[0]));
+  if (sub === "add" && rest[0]) return runAdd(() => addExtension(atThisVersion(rest[0])));
   if (sub === "__update-add" && rest[0] && rest[1]) {
     if (Number(process.env[EXT_UPDATE_PARENT_ENV]) !== process.ppid)
       throw new Error("internal update extension replay must be launched by its recorded parent");
     if (!extensionUpdatePassOwnedBy(process.ppid))
       throw new Error("internal update extension replay requires its parent to own the extension update pass");
-    return addExtension(rest[1], rest[0], true);
+    return runAdd(() => addExtension(rest[1], rest[0], true));
   }
   if (sub === "remove" && rest[0]) return remove(rest[0]);
   // `cotal ext root` prints just the prefix path — a one-line scripting primitive (cf. `npm root -g`,
@@ -87,6 +87,26 @@ export async function ext(args: ParsedArgs): Promise<void> {
     return runSeed({ repair, reset, force });
   }
   throw usage("usage: cotal ext [list] [--json|--plain] | ext add <npm-package> | ext remove <name> | ext root | ext seed [--repair|--reset|--force]");
+}
+
+/** Raised when `SIGINT` or `SIGTERM` interrupts `addExtension`, after rollback and lock cleanup. */
+export class ExtensionInstallInterruptedError extends Error {
+  constructor() {
+    super("extension install interrupted");
+    this.name = "ExtensionInstallInterruptedError";
+  }
+}
+
+async function runAdd(op: () => Promise<void>): Promise<void> {
+  try {
+    await op();
+  } catch (e) {
+    if (e instanceof ExtensionInstallInterruptedError) {
+      process.exitCode = 130;
+      return;
+    }
+    throw e;
+  }
 }
 
 async function npm(args: string[], cwd: string): Promise<{ status: number | null; output: string }> {
@@ -145,7 +165,7 @@ function linkExtensionPeers(packages: string[], operationPkg: string): void {
  *  `announce` takes the closing `✓ added` line; `cotal setup` sends it to stderr when stdout carries
  *  a result. */
 export async function addExtension(spec: string, expectedPkg?: string, borrowMutation = false, announce: (line: string) => void = console.log): Promise<void> {
-  let dir = extensionsDir();
+  const liveDir = extensionsDir();
   // A file:/path spec is resolved to an absolute path so the prefix install works from any cwd.
   const isPath = isPathSpec(spec);
   const resolved = isPath ? resolve(spec) : spec;
@@ -168,114 +188,119 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   // a repair after a parent SIGKILL sees the exact orphan identity and refuses to race it.
   if (seeding) markSeedChildLive(process.env.COTAL_EXT_SEEDING as string, Number(process.env.COTAL_EXT_SEEDING_PARENT));
   try {
-    mkdirSync(dir, { recursive: true, mode: 0o755 });
-    if (!existsSync(join(dir, "package.json"))) {
+    mkdirSync(liveDir, { recursive: true, mode: 0o755 });
+    if (!existsSync(join(liveDir, "package.json"))) {
       // `wx`: a dangling link at the name passes the check above, and must not be followed.
-      writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`, { flag: "wx", mode: 0o644 });
-      provenance.wrote("extensions prefix", join(dir, "package.json"));
+      writeFileSync(join(liveDir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`, { flag: "wx", mode: 0o644 });
+      provenance.wrote("extensions prefix", join(liveDir, "package.json"));
     }
-    await addTransaction();
+    // Validate/read workstation state before npm can mutate the prefix; this snapshot also drives the
+    // final replacement entry so the manifest and installed tree commit as one logical transaction.
+    const manifest = loadExtensionsManifest();
+    // npm installs in-place and may replace the package plus shared dependency/lock state before we
+    // can validate it. A failed update must restore the previously working prefix byte-for-byte.
+    const updating = manifest.extensions.some((entry) => entry.pkg === pkg) || existsSync(extensionPackageDir(pkg));
+    const staging = !seeding && expectedPkg === undefined && !updating;
+    const rollbackRoot = updating ? mkdtempSync(join(dirname(liveDir), ".extensions.rollback-")) : undefined;
+    const stageRoot = staging ? mkdtempSync(join(dirname(liveDir), ".extensions.stage-")) : undefined;
+    const rollbackDir = rollbackRoot ? join(rollbackRoot, "extensions") : undefined;
+    const stageDir = stageRoot ? join(stageRoot, "cotal", "extensions") : undefined;
+    if (stageDir) {
+      mkdirSync(stageDir, { recursive: true });
+      writeFileSync(join(stageDir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`);
+    }
+    if (rollbackDir) {
+      // Snapshot beside the prefix (same filesystem), preserving npm's relative symlinks verbatim.
+      // npm mutates the live tree; rollback removes it and atomically renames this snapshot back.
+      cpSync(liveDir, rollbackDir, { recursive: true, verbatimSymlinks: true });
+      // npm otherwise treats a same-spec/same-version re-add as already current, even when the
+      // installed files are stale or damaged. Remove only the disposable copy's package so install
+      // must materialize it again; the untouched snapshot remains the rollback source.
+      rmSync(extensionPackageDir(pkg), { recursive: true, force: true });
+    }
+
+    const dir = stageDir ?? liveDir;
+    const configHome = process.env.XDG_CONFIG_HOME;
+    let committed = false;
+    let wasInterrupted = false;
+    const interrupted = (): void => {
+      wasInterrupted = true;
+    };
+    process.once("SIGINT", interrupted);
+    process.once("SIGTERM", interrupted);
+    try {
+      // The existing writer lock remains held while workspace helpers resolve into the stage.
+      if (stageRoot) process.env.XDG_CONFIG_HOME = stageRoot;
+      let entry: InstalledExtension;
+      try {
+        entry = await installCandidate(pkg, resolved, dir, manifest, seeding, Boolean(stageDir));
+      } finally {
+        if (configHome === undefined) delete process.env.XDG_CONFIG_HOME;
+        else process.env.XDG_CONFIG_HOME = configHome;
+      }
+      if (wasInterrupted) throw new ExtensionInstallInterruptedError();
+      if (stageDir) {
+        // npm records local specs relative to its prefix. Preserve their meaning after promotion.
+        type NpmMetadata = { dependencies?: Record<string, string>; packages?: Record<string, { dependencies?: Record<string, string> }> };
+        const metadata = (file: string, base = stageDir): NpmMetadata => JSON.parse(readFileSync(file, "utf8"), (_key, value: unknown) =>
+          typeof value === "string" && value.startsWith("file:") ? "file:" + resolve(base, value.slice(5)) : value);
+        const livePackage = metadata(join(liveDir, "package.json"), liveDir);
+        const stagedPackage = metadata(join(stageDir, "package.json"));
+        const dependencies = { ...livePackage.dependencies, ...stagedPackage.dependencies };
+        const lockPath = join(liveDir, "package-lock.json");
+        const liveLock = existsSync(lockPath) ? metadata(lockPath, liveDir) : {};
+        const stagedLock = metadata(join(stageDir, "package-lock.json"));
+        cpSync(join(stageDir, "node_modules"), join(liveDir, "node_modules"), { recursive: true, verbatimSymlinks: true });
+        writeFileSync(join(liveDir, "package.json"), JSON.stringify({ ...livePackage, dependencies }, null, 2) + "\n");
+        writeFileSync(lockPath, JSON.stringify({ ...liveLock, ...stagedLock,
+          packages: { ...liveLock.packages, ...stagedLock.packages, "": { ...stagedLock.packages?.[""], dependencies } },
+        }, null, 2) + "\n");
+        rmSync(stageRoot!, { recursive: true, force: true });
+      }
+      try {
+        saveExtensionsManifest({ extensions: [...manifest.extensions.filter((e) => e.pkg !== pkg), entry] });
+      } catch (e) {
+        fail(pkg, `could not update the extensions manifest: ${(e as Error).message}`);
+      }
+      provenance.wrote(`extensions manifest (+${pkg}@${entry.version})`, extensionsManifestPath());
+      announce(c.green(`✓ added ${pkg}@${entry.version}`) + c.dim(` - provides: ${extensionProvides(entry).map((ext) => `${ext.kind}:${ext.name}`).join(", ")}`));
+      if (!entry.serviceMetadata && (entry.servicePresets?.length || entry.localProcesses?.some((component) => component.service !== undefined)))
+        announce(c.dim(`  its services cannot run on this platform: protected workstation file access is not available in this release`));
+      committed = true;
+      if (rollbackRoot) rmSync(rollbackRoot, { recursive: true, force: true });
+    } catch (e) {
+      if (!committed) {
+        if (rollbackDir) {
+          rmSync(liveDir, { recursive: true, force: true });
+          renameSync(rollbackDir, liveDir);
+          rmSync(rollbackRoot!, { recursive: true, force: true });
+        } else if (stageRoot) {
+          rmSync(stageRoot, { recursive: true, force: true });
+        } else {
+          await npm(["remove", "--no-audit", "--no-fund", pkg], liveDir);
+          linkExtensionPeers(manifest.extensions.map((entry) => entry.pkg), pkg);
+        }
+      }
+      if (wasInterrupted) throw new ExtensionInstallInterruptedError();
+      throw e;
+    } finally {
+      process.removeListener("SIGINT", interrupted);
+      process.removeListener("SIGTERM", interrupted);
+    }
   } finally {
     if (seeding) clearChildMarker();
     releaseMutation();
   }
+}
 
-  async function addTransaction(): Promise<void> {
-  // Validate/read workstation state before npm can mutate the prefix; this snapshot also drives the
-  // final replacement entry so the manifest and installed tree commit as one logical transaction.
-  const manifest = loadExtensionsManifest();
-  // npm installs in-place and may replace the package plus shared dependency/lock state before we
-  // can validate it. A failed update must restore the previously working prefix byte-for-byte.
-  const updating = manifest.extensions.some((entry) => entry.pkg === pkg) || existsSync(extensionPackageDir(pkg));
-  const staging = !seeding && expectedPkg === undefined && !updating && !existsSync(extensionPackageDir(pkg));
-  const rollbackRoot = updating ? mkdtempSync(join(dirname(dir), ".extensions.rollback-")) : undefined;
-  const stageRoot = staging ? mkdtempSync(join(dirname(dir), ".extensions.stage-")) : undefined;
-  const rollbackDir = rollbackRoot ? join(rollbackRoot, "extensions") : undefined;
-  const stageDir = stageRoot ? join(stageRoot, "cotal", "extensions") : undefined;
-  if (stageDir) {
-    mkdirSync(stageDir, { recursive: true });
-    writeFileSync(join(stageDir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`);
-    dir = stageDir;
-  }
-  if (rollbackDir) {
-    // Snapshot beside the prefix (same filesystem), preserving npm's relative symlinks verbatim.
-    // npm mutates the live tree; rollback removes it and atomically renames this snapshot back.
-    cpSync(dir, rollbackDir, { recursive: true, verbatimSymlinks: true });
-    // npm otherwise treats a same-spec/same-version re-add as already current, even when the
-    // installed files are stale or damaged. Remove only the disposable copy's package so install
-    // must materialize it again; the untouched snapshot remains the rollback source.
-    rmSync(extensionPackageDir(pkg), { recursive: true, force: true });
-  }
-
-  const liveDir = extensionsDir();
-  const configHome = process.env.XDG_CONFIG_HOME;
-  let committed = false;
-  let restored = false;
-  const restore = async (): Promise<void> => {
-    if (restored || committed) return;
-    restored = true;
-    if (rollbackDir) {
-      rmSync(extensionsDir(), { recursive: true, force: true });
-      renameSync(rollbackDir, extensionsDir());
-      rmSync(rollbackRoot!, { recursive: true, force: true });
-    } else if (stageRoot) {
-      rmSync(stageRoot, { recursive: true, force: true });
-    } else {
-      await npm(["remove", "--no-audit", "--no-fund", pkg], dir);
-      linkExtensionPeers(manifest.extensions.map((entry) => entry.pkg), pkg);
-    }
-  };
-  let wasInterrupted = false;
-  const interrupted = (): void => {
-    wasInterrupted = true;
-  };
-  process.once("SIGINT", interrupted);
-  process.once("SIGTERM", interrupted);
-  try {
-    // The existing writer lock remains held while workspace helpers resolve into the stage.
-    if (stageRoot) process.env.XDG_CONFIG_HOME = stageRoot;
-    try {
-      await installCandidate();
-    } finally {
-      if (configHome === undefined) delete process.env.XDG_CONFIG_HOME;
-      else process.env.XDG_CONFIG_HOME = configHome;
-    }
-    if (wasInterrupted) throw new Error("extension install interrupted");
-    if (stageDir) {
-      // npm records local specs relative to its prefix. Preserve their meaning after promotion.
-      type NpmMetadata = { dependencies?: Record<string, string>; packages?: Record<string, { dependencies?: Record<string, string> }> };
-      const metadata = (file: string, base = stageDir): NpmMetadata => JSON.parse(readFileSync(file, "utf8"), (_key, value: unknown) =>
-        typeof value === "string" && value.startsWith("file:") ? "file:" + resolve(base, value.slice(5)) : value);
-      const livePackage = metadata(join(liveDir, "package.json"), liveDir);
-      const stagedPackage = metadata(join(stageDir, "package.json"));
-      const dependencies = { ...livePackage.dependencies, ...stagedPackage.dependencies };
-      const lockPath = join(liveDir, "package-lock.json");
-      const liveLock = existsSync(lockPath) ? metadata(lockPath, liveDir) : {};
-      const stagedLock = metadata(join(stageDir, "package-lock.json"));
-      cpSync(join(stageDir, "node_modules"), join(liveDir, "node_modules"), { recursive: true, verbatimSymlinks: true });
-      writeFileSync(join(liveDir, "package.json"), JSON.stringify({ ...livePackage, dependencies }, null, 2) + "\n");
-      writeFileSync(lockPath, JSON.stringify({ ...liveLock, ...stagedLock,
-        packages: { ...liveLock.packages, ...stagedLock.packages, "": { ...stagedLock.packages?.[""], dependencies } },
-      }, null, 2) + "\n");
-      copyFileSync(join(stageDir, "extensions.json"), extensionsManifestPath());
-      rmSync(stageRoot!, { recursive: true, force: true });
-    }
-    committed = true;
-    if (rollbackRoot) rmSync(rollbackRoot, { recursive: true, force: true });
-  } catch (e) {
-    await restore();
-    if (wasInterrupted) {
-      if (seeding) clearChildMarker();
-      releaseMutation();
-      process.exit(130);
-    }
-    throw e;
-  } finally {
-    process.removeListener("SIGINT", interrupted);
-    process.removeListener("SIGTERM", interrupted);
-  }
-
-  async function installCandidate(): Promise<void> {
+async function installCandidate(
+  pkg: string,
+  resolved: string,
+  dir: string,
+  manifest: ExtensionsManifest,
+  seeding: boolean,
+  staged = false,
+): Promise<InstalledExtension> {
   console.error(c.dim(`installing ${resolved} into ${dir} …`));
   // --legacy-peer-deps: never auto-install the peer'd core from the registry — the add ALWAYS
   // links the running binary's copy below (one core instance is the whole point).
@@ -324,7 +349,7 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   // npm mutates the shared prefix, so restore every package's private shared-peer links, not only
   // the candidate's. All extensions resolve the exact same host package instances.
   try {
-    linkExtensionPeers(stageDir ? [pkg] : [...manifest.extensions.filter((entry) => entry.pkg !== pkg).map((entry) => entry.pkg), pkg], pkg);
+    linkExtensionPeers(staged ? [pkg] : [...manifest.extensions.filter((entry) => entry.pkg !== pkg).map((entry) => entry.pkg), pkg], pkg);
   } catch (e) {
     fail(pkg, (e as Error).message);
   }
@@ -364,7 +389,7 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   const connectors = contributed.filter((ext): ext is Connector => ext.kind === "connector");
   const localProcesses = contributed.filter((ext): ext is LocalProcess => ext.kind === "local-process");
   const servicePresets = contributed.filter((ext): ext is ServicePreset => ext.kind === "service-preset").map(cacheServicePreset);
-  const entry: InstalledExtension = {
+  return {
     pkg,
     version,
     spec: resolved,
@@ -376,21 +401,10 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
     servicePresets,
     serviceMetadata: cacheExtensionServiceMetadata(pkg, version, localProcesses, servicePresets),
   };
-  try {
-    saveExtensionsManifest({ extensions: [...manifest.extensions.filter((e) => e.pkg !== pkg), entry] });
-  } catch (e) {
-    fail(pkg, `could not update the extensions manifest: ${(e as Error).message}`);
-  }
-  provenance.wrote(`extensions manifest (+${pkg}@${version})`, extensionsManifestPath());
-  announce(c.green(`✓ added ${pkg}@${version}`) + c.dim(` - provides: ${contributed.map((ext) => `${ext.kind}:${ext.name}`).join(", ")}`));
-  if (!entry.serviceMetadata && (servicePresets.length || localProcesses.some((component) => component.service !== undefined)))
-    announce(c.dim(`  its services cannot run on this platform: protected workstation file access is not available in this release`));
-  }
+}
 
-  function fail(p: string, why: string): never {
-    throw new Error(`${p} ${why}`);
-  }
-  }
+function fail(p: string, why: string): never {
+  throw new Error(`${p} ${why}`);
 }
 
 /** The package NAME a spec installs, known BEFORE npm runs: a path spec reads its package.json;
