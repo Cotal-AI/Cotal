@@ -97,7 +97,7 @@ const kids: ChildProcess[] = [];
 
 const { createSpaceAuth, mintCreds, mintLifecycleUid, newIdentity, probeConnect, remoteManagerActors, serverConfig, setupSpaceStreams } =
   await import("@cotal-ai/core");
-const { authDir, putSpaceAuth, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { authDir, loadManagerInstanceIdentity, putSpaceAuth, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { MANAGER_ENDPOINT } = await import("../../implementations/manager/src/manager-service-contract.js");
 const { makeManagerEndpointHolderEvictor } = await import("../../implementations/manager/src/endpoint-evict.js");
 const { registerRemoteManagerAuthority } = await import("../../implementations/manager/src/remote-register.js");
@@ -656,10 +656,13 @@ try {
   // in a parent such as the temp dir leaves it, and that space does not take the bare run.
   const selected = await caller("use", space);
   must("L: the caller selects the space", selected.code === 0, selected);
+  // Every path under a folder, sorted, so two listings compare as one string.
+  const listing = (dir: string): string => JSON.stringify(readdirSync(dir, { recursive: true }).map(String).sort());
   const hostingParent = scratch("hosting-parent");
   saveSpaceAuth(authDir(hostingParent), await createSpaceAuth("otherspace"));
   const elsewhere = join(hostingParent, "bare-cwd");
   mkdirSync(elsewhere);
+  const parentBefore = listing(join(hostingParent, ".cotal"));
   const bare = spawnProc(tsxBin, [cliBin, "supervise"], { cwd: elsewhere, env: childHomeEnv(callerHome), stdio: ["ignore", "pipe", "pipe"] });
   kids.push(bare);
   twoManagers.push(bare);
@@ -671,9 +674,74 @@ try {
     new RegExp(`✓ manager up \\(space ${space} · [^)]*pty\\)`).test(bareOut) && /! `cotal supervise` is deprecated[^\n]*Use `cotal manager start`/.test(bareOut), bareOut.slice(0, 900));
   const bareId = /✓ manager up/.test(bareOut) ? loadOrCreateRemoteManagerIdentity(callerRoot, space).instanceId : undefined;
   const bareFolder = readdirSync(elsewhere);
-  ok("L: it keeps its records in the space's registered root, not the folder it was started from", bareId !== undefined && bareFolder.length === 0, { bareId, bareFolder });
+  const parentAfter = listing(join(hostingParent, ".cotal"));
+  ok("L: it keeps its records in the space's registered root, not the folder it was started from or its parent's .cotal",
+    bareId !== undefined && bareFolder.length === 0 && parentAfter === parentBefore, { bareId, bareFolder, parentBefore, parentAfter });
   const barePs = bareId === undefined ? undefined : await caller("ps", "--space", space, "--on", bareId);
   ok("L: ps --on that manager is answered", barePs?.code === 0 && /No managed agents/.test(barePs.out), barePs);
+
+  // A command run from `cwd` under the Cotal home `home`. A manager stays up, so it is stopped once it
+  // says so, and deregisters before the next start.
+  const homeCli = (home: string, cwd: string, ...args: string[]) => new Promise<{ code: number | null; out: string }>((resolveRun) => {
+    const child = spawnProc(tsxBin, [cliBin, ...args], { cwd, env: childHomeEnv(home), stdio: ["ignore", "pipe", "pipe"] });
+    kids.push(child);
+    let out = "";
+    child.stdout?.on("data", (chunk: Buffer) => { out += chunk.toString(); });
+    child.stderr?.on("data", (chunk: Buffer) => { out += chunk.toString(); });
+    const stop = (): void => { child.kill("SIGTERM"); setTimeout(() => child.kill("SIGKILL"), 15_000).unref(); };
+    const up = setInterval(() => { if (/✓ manager up/.test(out)) { clearInterval(up); stop(); } }, 100);
+    const cap = setTimeout(stop, 120_000);
+    child.on("close", (code) => { clearInterval(up); clearTimeout(cap); resolveRun({ code, out }); });
+  });
+
+  // N: with nothing selected, a bare `cotal supervise` in a folder that holds a prepared space is
+  // refused for that space as not started, with the `cotal up` that starts it, as `--space` is. It
+  // names no space nobody made and prints no log line.
+  const preparedHome = scratch("prepared-home"), preparedRoot = scratch("prepared-root");
+  const preparedSpace = "preparedsp";
+  const prepared = await homeCli(preparedHome, preparedRoot, "space", "create", preparedSpace, "--root", preparedRoot);
+  const noSelection = await homeCli(preparedHome, preparedRoot, "use");
+  must("N: the folder prepares a space, and nothing is selected", prepared.code === 0 && /no space is selected/.test(noSelection.out), { prepared, noSelection });
+  const unselected = await homeCli(preparedHome, preparedRoot, "supervise");
+  ok("N: a bare supervise there is refused as not started for the folder's prepared space, with the cotal up that starts it",
+    unselected.code === 2 && unselected.out.includes(`"${preparedSpace}" is prepared but not started, so no manager started`) && /Code:\s+TARGET_UNAVAILABLE/.test(unselected.out)
+      && unselected.out.includes(`start it with \`cotal up\` in ${preparedRoot}`) && !/'main'|"main"|\d{4}-\d\d-\d\dT\d\d:\d\d/.test(unselected.out), unselected.out.slice(-900));
+
+  // M: a space this home hosts locally, selected by `cotal use`: its root holds the signer and the TCP
+  // broker trusts it. A bare `cotal supervise` from an empty folder, and from an empty folder under a
+  // parent whose `.cotal` holds an unrelated space, starts the manager in the hosting root with that
+  // root's instance, as `cotal manager start` does. Neither folder nor the parent's `.cotal` changes.
+  // Each run hosts the space from its own root, so each start is its instance's first registration: a
+  // second start of one instance re-registers it, which needs a delivery daemon this rig does not run.
+  const localRun = async (cwd: string): Promise<{ out: string; hostedId: string | undefined }> => {
+    const localRoot = scratch("local-root"), localHome = scratch("local-home");
+    saveSpaceAuth(authDir(localRoot), auth);
+    const suiteHome = process.env.COTAL_HOME;
+    process.env.COTAL_HOME = localHome;
+    try { recordMesh({ space, server: tcpServer, root: localRoot, mode: "auth", ts: new Date().toISOString() }); }
+    finally { process.env.COTAL_HOME = suiteHome; }
+    const localSelected = await homeCli(localHome, localRoot, "use", space);
+    must("M: the local home selects the space", localSelected.code === 0, localSelected);
+    const { out } = await homeCli(localHome, cwd, "supervise");
+    return { out, hostedId: loadManagerInstanceIdentity(localRoot, space)?.instanceId };
+  };
+  const localEmpty = scratch("local-empty");
+  const localParent = scratch("local-parent");
+  saveSpaceAuth(authDir(localParent), await createSpaceAuth("otherspace"));
+  const localNested = join(localParent, "bare-cwd");
+  mkdirSync(localNested);
+  const localBefore = [listing(localEmpty), listing(localNested), listing(join(localParent, ".cotal"))];
+  const emptyRun = await localRun(localEmpty);
+  const nestedRun = await localRun(localNested);
+  const localAfter = [listing(localEmpty), listing(localNested), listing(join(localParent, ".cotal"))];
+  const servedId = (out: string): string | undefined => /manager service endpoint registered: manager\/(\S+)/.exec(out)?.[1];
+  const upHere = new RegExp(`✓ manager up \\(space ${space} · [^)]*pty\\)`);
+  ok("M: a bare supervise from an empty folder starts the manager of the hosted space", upHere.test(emptyRun.out), emptyRun.out.slice(-900));
+  ok("M: and from an empty folder under a parent that holds an unrelated space", upHere.test(nestedRun.out), nestedRun.out.slice(-900));
+  ok("M: each serves the instance its hosting root records",
+    [emptyRun, nestedRun].every((run) => run.hostedId !== undefined && servedId(run.out) === run.hostedId),
+    [emptyRun, nestedRun].map((run) => ({ hosted: run.hostedId, served: servedId(run.out) })));
+  ok("M: neither folder nor the parent's .cotal changed", JSON.stringify(localAfter) === JSON.stringify(localBefore), { localBefore, localAfter });
 
   // K: a managed spawn the host refuses at enrollment is refused, not unknown. The caller's grant no
   // longer carries admin, so the envelope walk applies, and the persona's role is not in its scope.
