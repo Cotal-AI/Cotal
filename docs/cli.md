@@ -4309,7 +4309,9 @@ unpinned, the class queue answers and the attribution line names whichever insta
 calls one command by name: `--args` is a JSON object validated against the fetched input schema
 *before*
 publish, and `--timeout` sets one deadline in milliseconds for the whole call (default 10000): the contract read, a
-`--name` lookup and the reply all spend from it, so an endpoint nothing serves is refused when it runs out. `--server` overrides the
+`--name` lookup and the reply all spend from it, so an endpoint nothing serves is refused when it runs out. When the
+endpoint answers but its contract read runs out of the deadline, the call fails with `OPERATION_FAILED` before any
+command is published, names the deadline, and its Next suggests a longer `--timeout`. `--server` overrides the
 registry's broker URL and `--creds` names a creds file for an off-registry connection. A targeted command takes `--name <agent>` (resolved to the agent's current principal through
 `inspect`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
 the operator-only `any` authorization mode. Neither command has compile-time knowledge of any
