@@ -195,7 +195,7 @@ export async function resolveService(
   space: string,
   endpoint: string,
   caller: EpCaller,
-  opts: { deadlineMs?: number; instanceId?: string; signal?: AbortSignal; commands?: readonly string[] } = {},
+  opts: { deadlineMs?: number; instanceId?: string; classInstanceId?: string; signal?: AbortSignal; commands?: readonly string[] } = {},
 ): Promise<ResolvedService> {
   if (opts.commands !== undefined) {
     if (!Array.isArray(opts.commands) || opts.commands.length === 0)

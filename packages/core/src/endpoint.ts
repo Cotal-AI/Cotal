@@ -2896,7 +2896,7 @@ export class CotalEndpoint extends EventEmitter {
     endpoint: string,
     command: string,
     args?: Record<string, unknown>,
-    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal; instanceId?: string } = {},
+    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal; instanceId?: string; classInstanceId?: string } = {},
   ): Promise<EpAttributedReply> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     const nc = this.nc;
@@ -2904,10 +2904,11 @@ export class CotalEndpoint extends EventEmitter {
     const resolve = async (signal = opts.signal, deadlineMs = opts.deadlineMs ?? 10_000): Promise<ResolvedService> => {
       signal?.throwIfAborted();
       const needed = opts.follow ? [command, "goal-result"] : [command];
-      const full = opts.instanceId === undefined ? this.resolvedServices.get(endpoint) : undefined;
+      const classSelected = opts.instanceId === undefined && opts.classInstanceId === undefined;
+      const full = classSelected ? this.resolvedServices.get(endpoint) : undefined;
       if (full && needed.every((name) => full.commands.has(name))) return full;
       const cacheKey = [...needed].sort().join("\u0000");
-      const commandCache = opts.instanceId === undefined ? this.resolvedCommandServices.get(endpoint) : undefined;
+      const commandCache = classSelected ? this.resolvedCommandServices.get(endpoint) : undefined;
       const cached = commandCache?.get(cacheKey);
       if (cached) return cached;
       const svc = await resolveService(nc, this.space, endpoint, caller, {
@@ -2915,10 +2916,11 @@ export class CotalEndpoint extends EventEmitter {
         signal,
         commands: needed,
         ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}),
+        ...(opts.classInstanceId !== undefined ? { classInstanceId: opts.classInstanceId } : {}),
       });
       // Pinned resolves never enter either class cache. Narrow unpinned handles stay in their own
       // command-set cache, so they cannot truncate discovery or evict another command's handle.
-      if (opts.instanceId === undefined) {
+      if (classSelected) {
         let byCommand = this.resolvedCommandServices.get(endpoint);
         if (!byCommand) {
           byCommand = new Map();

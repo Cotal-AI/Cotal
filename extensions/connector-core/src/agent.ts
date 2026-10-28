@@ -2362,7 +2362,15 @@ export class MeshAgent extends EventEmitter {
           }) : undefined,
         });
       } else {
-        r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, input, opts);
+        // Static launches keep their class-only grants. Resolve the launching manager's
+        // attributed describe, then use the existing bind fence to refuse sibling deliveries
+        // before effects. An explicit instance retains its existing route and grant rules.
+        const launchLocal = command === "stop" || command === "spawn" || command === "define-persona";
+        const classInstanceId = this.config.creds && launchLocal && opts.instanceId === undefined
+          ? this.config.managerInstanceId : undefined;
+        r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, input, {
+          ...opts, ...(classInstanceId !== undefined ? { classInstanceId } : {}),
+        });
       }
     } catch (e) {
       // The verdict "nobody answered" comes from core's answer-provenance marker, NEVER from the
