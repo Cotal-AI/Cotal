@@ -1357,13 +1357,17 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   if (!values["dry-run"]) {
     const spaceForRoot = values.space ?? folderSpace();
     if (values.file) {
+      // Only a manifest error is deferred: the -f path reports it from the same load. The pin's refusal
+      // is not one of those errors, and the path that finds a broker already answering the manifest's
+      // address never reaches the later pin in startMeshDetached, so the catch used to discard it.
+      let prepared: ReturnType<typeof loadManifest> | undefined;
       try {
-        const prepared = loadManifest(resolve(values.file));
-        // A --space that names another space is refused by the -f path below, before anything is written.
-        if (values.space === undefined || values.space === prepared.manifest.space) ensureRootForSpace(prepared.manifest.space);
+        prepared = loadManifest(resolve(values.file));
       } catch {
         // Manifest errors are reported by the -f path with the same load; do not double-print.
       }
+      // A --space that names another space is refused by the -f path below, before anything is written.
+      if (prepared && (values.space === undefined || values.space === prepared.manifest.space)) ensureRootForSpace(prepared.manifest.space);
     } else {
       ensureRootForSpace(spaceForRoot);
     }
