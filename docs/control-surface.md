@@ -213,6 +213,14 @@ the manager's state leaves them. Its own startup sweep never retires a session i
 holds. A session that none of these retired stays held until the next start of that manager
 instance.
 
+## Persona write observation
+
+An unanswered `define-persona` command does not prove the persona was not written. The
+`cotal_persona` tool reports that write outcome as unknown and tells the caller to read it with
+`cotal_personas` on the same manager before acting. The write may still land after the wait ends,
+so a missing readback alone does not make another definition safe. A failed describe, broker
+no-responders answer or explicit pre-effect refusal remains a failure, not an unknown write.
+
 ## Spawn is a goal
 
 Long-running commands are **actions** ([SPEC §13.6](../SPEC.md#136-composites)): the caller
