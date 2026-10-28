@@ -498,7 +498,7 @@ export async function abandonRetainedStackStop(journal: StackJournal, requestId:
     } finally { hold.release(); }
   }
   const named = pending.map((stop) => `; ${stop.definition} retains stop request ${stop.requestId}`).join("");
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no member of this stack retains a stop request with that ID${named}; nothing was abandoned`, { target: { root: journal.root, space: journal.space, requestId }, remedy: pending.length === 1 ? abandonRemedy(pending[0]!.requestId) : `run \`cotal down --dry-run\` to see what blocks the stop, or \`cotal service status <definition> --instance <id> --space ${journal.space}\` for a member's request` });
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no member of this stack retains a stop request with that ID${named}; nothing was abandoned`, { target: { root: journal.root, space: journal.space, requestId }, given: "requestId", remedy: pending.length === 1 ? abandonRemedy(pending[0]!.requestId) : `run \`cotal down --dry-run\` to see what blocks the stop, or \`cotal service status <definition> --instance <id> --space ${journal.space}\` for a member's request` });
 }
 
 /** Settle an earlier `up` or `down` that has no recorded outcome, from evidence only. The caller
