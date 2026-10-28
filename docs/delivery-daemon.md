@@ -35,7 +35,11 @@ read checks it must apply. A conformant deployment may realize the backstop diff
   reader acks such an entry only after the delete succeeds. A failed delete leaves the entry pending,
   so it is retried and given up after ten redeliveries, and an entry the stream no longer holds counts
   as removed. A daemon that stops serving while the delete is in flight neither acks nor gives up the
-  entry, so the daemon that serves next retries it. An entry whose owner has no ACL row at all is
+  entry, so the daemon that serves next retries it. When the entry came from a durable channel, the
+  reader also removes the retired lifecycle's member row for that channel, when one exists: a daemon
+  that died between creating a row and its post-write ACL read leaves one, and until it goes every
+  later message on the channel is copied into the retired inbox and dropped again. The removal is
+  best effort; a failure is a warning, and the next entry retries it. An entry whose owner has no ACL row at all is
   retried, then given up after ten redeliveries, and kept, because a missing row does not prove the
   owner is gone.
 - **Membership registry.** A privileged-written record of who is a durable member of each

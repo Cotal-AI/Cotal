@@ -257,6 +257,68 @@ try {
     console.log(`POSTWRITE_WITNESS inventoryListed=${listings.get(e.uid)?.channels.length} rowWrittenAfterInventory=${lastOp === "PURGE"} lateJoinAccepted=${lateOutcome === "accepted"} retainedRows=${left.length} ms=${Date.now() - t0}`);
   }
 
+  // DEATH (#4994): a predecessor's join passed its pre-write ACL read, its create lands after the
+  // successor's inventory read, and the daemon dies before its post-write ACL read. No check of the
+  // join removes that row. The next message fanned out on the channel reaches the retired lifecycle's
+  // inbox, and the reader that drops that entry removes the row with it.
+  {
+    const t0 = Date.now();
+    const d = await seat("death-d");
+    await d.ep.durableJoinChannel("lane.a");
+    // The publisher whose message fans out after the retirement (a seat's post ACL is default-deny).
+    const pId = newIdentity();
+    const pUid = mintLifecycleUid();
+    const p = new CotalEndpoint({ space, servers: broker.servers, creds: await provisionAgent(prov, auth, pId, { subscribe: [], allowSubscribe: ["lane.>"], allowPublish: ["lane.after"], lifecycleUid: pUid }), lifecycleUid: pUid, card: { id: pId.id, name: "death-p", kind: "agent" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false });
+    endpoints.push(p);
+    p.on("error", () => {});
+    await p.start();
+    const oldEp = daemon.ep as unknown as { aclAllows(o: string, u: string, c: string): Promise<boolean>; membersRegistry(): Promise<KV> };
+    const members = await oldEp.membersRegistry();
+    const create = members.create.bind(members);
+    const key = memberKey("lane.after", d.principal, d.uid);
+    const h = held();
+    members.create = async (k, data, ...rest) => {
+      if (k === key) { h.enter(); await h.released; }
+      return create(k, data, ...rest);
+    };
+    // The daemon dies before its post-write read: that read never answers while the witness runs.
+    const allows = oldEp.aclAllows.bind(oldEp);
+    let dies!: () => void;
+    const death = new Promise<boolean>((r) => { dies = () => r(false); });
+    let reads = 0;
+    oldEp.aclAllows = async (o, u, c) => {
+      if (o === d.principal && c === "lane.after" && ++reads === 2) return death;
+      return allows(o, u, c);
+    };
+    const late = outcome(d.ep.durableJoinChannel("lane.after"));
+    await h.entered;
+    await handover();
+    let rowAfterCreate: string | undefined;
+    afterInventory = async () => {
+      h.release();
+      for (let i = 0; i < 50 && rowAfterCreate === undefined; i++) {
+        rowAfterCreate = (await kv.get(key))?.operation;
+        if (rowAfterCreate === undefined) await new Promise((r) => setTimeout(r, 100));
+      }
+    };
+    const accounting = await retire(d);
+    members.create = create;
+    const leftBefore = await rows(d);
+    check("DEATH: the successor's fenced inventory listed only the 1 row on the broker, and the held create landed after it",
+      listedOnly(d, ["lane.a"]) && accounting.members.deleted === 1 && rowAfterCreate === "PUT", { listing: listings.get(d.uid), members: accounting.members, rowAfterCreate });
+    check("DEATH: with the post-write read dead, 1 row of the retired lifecycle is left on the broker", leftBefore.length === 1, leftBefore);
+    await p.multicast("after the retirement", { channel: "lane.after" });
+    let left = await rows(d);
+    for (let i = 0; i < 100 && left.length !== 0; i++) { await new Promise((r) => setTimeout(r, 100)); left = await rows(d); }
+    retained += left.length;
+    check("DEATH: the message fanned out against that row, and the reader that dropped its entry removed the row: 0 rows remain", left.length === 0, left);
+    dies();
+    const lateOutcome = await late;
+    oldEp.aclAllows = allows;
+    check("DEATH: the dead daemon's join, had it lived, would have refused without recreating the row", /narrowed or retired while the row was written/.test(lateOutcome) && (await rows(d)).length === 0, lateOutcome);
+    console.log(`DEATH_WITNESS rowLeftByDeath=${leftBefore.length} retainedRows=${left.length} ms=${Date.now() - t0}`);
+  }
+
   // TOMBSTONE: a predecessor's leave read the row; the deprovisioner purges it; then the leave writes.
   {
     const t0 = Date.now();
