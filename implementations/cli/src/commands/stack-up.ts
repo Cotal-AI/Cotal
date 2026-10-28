@@ -61,6 +61,7 @@ import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/br
 import { brokerStoreWrite, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, storeDamageNotice, storeFull } from "../lib/broker-store-health.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
+import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js";
 import { definitionListeners, exposedPlaintext, listenerRow, type StackListener } from "../lib/stack-listeners.js";
 import { definitionRootMatch, serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, serviceRecordsWriteProblem, type ServiceInstance, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
@@ -473,6 +474,7 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
     warnings.push({ code: "PERSONA_NOT_WRITTEN", target: { root, space }, message: `the default persona was not written in ${root}: ${(error as Error).message}` });
   }
   if (mode !== "open") {
+    if (request.noManager) warnings.push(await noManagerCredentialWarning(root, space));
     const unparsable = await unparsableDaemonCreds(root, space);
     if (unparsable.length) warnings.push({ code: "DAEMON_CREDENTIAL_UNPARSABLE", target: { root, space, credentials: unparsable }, message: unparsableDaemonCredsNotice(unparsable) });
   }
