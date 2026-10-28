@@ -104,6 +104,7 @@ import type {
 import {
   openMembersRegistry,
   commitMember,
+  commitMemberRevision,
   tombstoneMember,
   activateMember,
   readMember,
@@ -124,6 +125,7 @@ import {
   readChannelDefaults,
   decodeChannelEntry,
 } from "./channels.js";
+import { isCasLoss } from "./endpoint-records.js";
 import {
   anycastSubject,
   assertValidRole,
@@ -172,6 +174,7 @@ import {
   assertLifecycleToken,
   mintLifecycleUid,
   lifecycleNameKey,
+  memberKey,
   DEV_OWNER,
   spacePrefix,
   spaceWildcard,
@@ -5248,8 +5251,8 @@ export class CotalEndpoint extends EventEmitter {
     if (!open) {
       if (opts.aclFence && !(await this.aclAllows(owner, lifecycleUid, channel)))
         throw new Error(`durableJoin: "${channel}" is no longer within the read ACL of lifecycle ${lifecycleUid} (narrowed or retired); no membership row was written`);
-      await commitMember(kv, base);
-      if (opts.aclFence) await this.keepRowIfAclAllows(kv, owner, lifecycleUid, channel);
+      const written = await commitMemberRevision(kv, base);
+      if (opts.aclFence) await this.keepRowIfAclAllows(kv, owner, lifecycleUid, channel, written.revision);
     }
     const fence = Math.max(await this.chatFrontier(), await this.fanoutDeliveredSeq());
     const cu = await this.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);
@@ -5284,24 +5287,33 @@ export class CotalEndpoint extends EventEmitter {
     return row !== undefined && channelInAllow(row.record.allowSubscribe, channel);
   }
 
-  /** The post-write half of {@link durableJoinFor}'s `aclFence`: keep the row just written only on
-   *  proof that the lifecycle's ACL row still allows the channel. Otherwise, a failed read included,
-   *  remove the row by its exact key and refuse the join. The ACL row no longer allows this channel, so
-   *  no row of it is wanted, whoever wrote the latest revision. */
-  private async keepRowIfAclAllows(kv: KV, owner: string, lifecycleUid: string, channel: string): Promise<void> {
+  /** The post-write half of {@link durableJoinFor}'s `aclFence`: keep the row just written (at
+   *  `revision`) only on proof that the lifecycle's ACL row still allows the channel, and refuse the
+   *  join otherwise. When the ACL row proves the channel is no longer allowed, no row of the lifecycle
+   *  on that channel is wanted, so the row goes by its exact key whoever wrote its latest revision.
+   *  When the read itself fails, nothing is proven either way, so only this write is taken back: a
+   *  later revision belongs to another join of the same lifecycle, which may have been authorized. */
+  private async keepRowIfAclAllows(kv: KV, owner: string, lifecycleUid: string, channel: string, revision: number): Promise<void> {
+    let disallowed = false;
     let why: string;
     try {
       if (await this.aclAllows(owner, lifecycleUid, channel)) return;
+      disallowed = true;
       why = "was narrowed or retired while the row was written";
     } catch (e) {
       why = `could not be re-read after the row was written (${(e as Error).message})`;
     }
+    const fail = (outcome: string, cause?: unknown) =>
+      new Error(`durableJoin: the read ACL of lifecycle ${lifecycleUid} ${why}; ${outcome}`, cause === undefined ? undefined : { cause });
     try {
-      await deleteMember(kv, channel, owner, lifecycleUid);
+      if (disallowed) await deleteMember(kv, channel, owner, lifecycleUid);
+      else await kv.purge(memberKey(channel, owner, lifecycleUid), { previousSeq: revision });
     } catch (e) {
-      throw new Error(`durableJoin: the read ACL of lifecycle ${lifecycleUid} ${why}, and removing its "${channel}" row failed (${(e as Error).message})`, { cause: e });
+      if (!disallowed && isCasLoss(e))
+        throw fail(`a later write replaced its "${channel}" row, which was left to that write`);
+      throw fail(`removing its "${channel}" row failed (${(e as Error).message})`, e);
     }
-    throw new Error(`durableJoin: the read ACL of lifecycle ${lifecycleUid} ${why}; its "${channel}" row was removed`);
+    throw fail(`its "${channel}" row was removed`);
   }
 
   /** Privileged durable-LEAVE write: tombstone the membership at `leaveCursor = frontier` so the

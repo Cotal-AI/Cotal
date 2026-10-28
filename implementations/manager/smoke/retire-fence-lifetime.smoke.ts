@@ -19,7 +19,9 @@
  *   - TOMBSTONE: a quiesced predecessor's leave read the row before the deprovisioner purged it, and
  *     writes after the purge;
  *   - SKEW: a retirement that does not narrow (an older manager) against this daemon, with a late join
- *     on the same daemon process, which the in-memory mark refuses.
+ *     on the same daemon process, which the in-memory mark refuses;
+ *   - READFAIL: a predecessor's post-write ACL read fails, so it takes back only its own write, and a
+ *     successor's retry that activated the still-authorized row keeps it until the lifecycle retires.
  * Every witness must end with 0 rows of the retired lifecycle.
  *
  * Run: pnpm smoke:retire-fence-lifetime (needs nats-server on PATH)
@@ -30,7 +32,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CotalEndpoint, createSpaceAuth, deprovisionAgent, DEV_OWNER, liveKvEntries, memberKey, mintCreds, mintLifecycleUid, newIdentity, openAclRegistry,
-  openMembersRegistry, parseMemberKey, principalKey, provisionAgent, readAcl, setupSpaceStreams, type ControlReply, type DeprovisionResourceAccounting, type Identity,
+  openMembersRegistry, parseMemberKey, principalKey, provisionAgent, readAcl, readMember, setupSpaceStreams, type ControlReply, type DeprovisionResourceAccounting, type Identity,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -49,7 +51,7 @@ const dir = mkdtempSync(join(tmpdir(), "fence-lifetime-"));
 const workspaceRoot = join(dir, "ws");
 for (const d of [join(workspaceRoot, ".cotal"), join(dir, "home")]) mkdirSync(d, { recursive: true });
 process.env.COTAL_HOME = join(dir, "home");
-process.env.COTAL_SEAT_ROOT = mkdtempSync(join(tmpdir(), "s"));
+const seatRoot = (process.env.COTAL_SEAT_ROOT = mkdtempSync(join(tmpdir(), "s")));
 process.env.DO_NOT_TRACK = "1";
 
 const auth = await createSpaceAuth(space);
@@ -105,8 +107,8 @@ try {
   const listings = new Map<string, { complete: boolean; channels: string[]; fenced: boolean }>();
   let afterInventory: (() => Promise<void>) | undefined;
   m.lifecycleMembershipInventory = async (a) => {
-    const r = await readInventory(a);
     const acl = await readAcl(aclKv, principalKey(DEV_OWNER, a.id).key, a.lifecycleUid);
+    const r = await readInventory(a);
     listings.set(a.lifecycleUid, { complete: r.complete, channels: r.channels, fenced: acl !== undefined && acl.record.allowSubscribe.length === 0 });
     const step = afterInventory;
     afterInventory = undefined;
@@ -306,6 +308,48 @@ try {
     check("SKEW: 0 rows of the retired lifecycle remain", left.length === 0, left);
     console.log(`SKEW_WITNESS narrowed=false inventoryListed=${channels.length} lateJoinAccepted=${lateOutcome === "accepted"} retainedRows=${left.length} ms=${Date.now() - t0}`);
   }
+  // READFAIL: a predecessor's post-write ACL read fails and its removal of the row it wrote is held.
+  // A successor takes a retry of the same join for the still-authorized lifecycle and activates that
+  // row. The predecessor then takes back only its own revision, so the activated row stays.
+  {
+    const t0 = Date.now();
+    const r = await seat("readfail-r");
+    const oldEp = daemon.ep as unknown as { aclAllows(o: string, u: string, c: string): Promise<boolean>; membersRegistry(): Promise<KV> };
+    const allows = oldEp.aclAllows.bind(oldEp);
+    let reads = 0;
+    oldEp.aclAllows = async (o, u, c) => {
+      if (o === r.principal && c === "lane.r" && ++reads === 2) throw new Error("injected: the post-write ACL read failed");
+      return allows(o, u, c);
+    };
+    const members = await oldEp.membersRegistry();
+    const purge = members.purge.bind(members);
+    const key = memberKey("lane.r", r.principal, r.uid);
+    const h = held();
+    members.purge = async (k, ...rest) => {
+      if (k === key) { h.enter(); await h.released; }
+      return purge(k, ...rest);
+    };
+    const first = outcome(r.ep.durableJoinChannel("lane.r"));
+    await h.entered;
+    await handover();
+    const retry = await r.ep.durableJoinChannel("lane.r");
+    h.release();
+    const firstOutcome = await first;
+    oldEp.aclAllows = allows;
+    members.purge = purge;
+    const kept = await readMember(kv, "lane.r", r.principal, r.uid);
+    const liveRows = (await rows(r)).length;
+    check("READFAIL: the predecessor refused its join and left the row a later write replaced",
+      /could not be re-read after the row was written \(injected: the post-write ACL read failed\); a later write replaced its "lane\.r" row/.test(firstOutcome), firstOutcome);
+    check("READFAIL: the successor's retry is durable and its 1 activated row stays while the lifecycle is authorized",
+      retry.durable === true && liveRows === 1 && kept?.record.activated === true && kept.record.leaveCursor === undefined, { retry, liveRows, kept: kept?.record });
+    const accounting = await retire(r);
+    const left = await rows(r);
+    retained += left.length;
+    check("READFAIL: the lifecycle's retirement then lists and removes that row: 0 rows remain",
+      listedOnly(r, ["lane.r"]) && accounting.members.deleted === 1 && left.length === 0, { listing: listings.get(r.uid), members: accounting.members, left });
+    console.log(`READFAIL_WITNESS liveRowsKept=${liveRows} retryDurable=${retry.durable} retainedRows=${left.length} ms=${Date.now() - t0}`);
+  }
   console.log(`FENCE_LIFETIME retainedRowWitnesses=${retained}`);
   check("every witness retired its lifecycle with 0 rows left", retained === 0, { retained });
 } catch (e) {
@@ -319,6 +363,7 @@ try {
   await daemon?.stop().catch(() => {});
   await broker.stop();
   rmSync(dir, { recursive: true, force: true });
+  rmSync(seatRoot, { recursive: true, force: true });
 }
 finish();
 process.exit(process.exitCode ?? 0);
