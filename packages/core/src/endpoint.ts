@@ -3545,18 +3545,21 @@ export class CotalEndpoint extends EventEmitter {
     const kv = await this.membershipFeedRegistry();
     const members: MembershipEntry[] = [];
     let asOf: number | undefined;
-    // ONE pass. This was `kv.keys()` followed by a sequential `kv.get()` per key — O(N) round trips,
-    // measured at 30-34s for 89 entries against a mesh at 534ms RTT. `liveKvEntries` is ~3 round
-    // trips regardless of N, and (unlike the old loop) refuses to return a truncated view rather
-    // than reporting a partial roster as the whole one.
-    let scanPrefix: string | undefined;
-    const entries = await liveKvEntries(kv, {
-      onConsumer: (info) => { scanPrefix = this.recordOwnWatchConsumer(info); },
-    }).finally(() => {
-      // The scan's own last delete goes out after nats.js closed its consumer, so every predecessor
-      // delete the library sent is answered ahead of it on this connection.
-      if (scanPrefix) this.ownWatchDeletePrefixes.delete(scanPrefix);
-    });
+    // Paged batched Direct Gets, as the on-demand presence read: a few round trips regardless of N,
+    // a short page refused rather than reported as the whole feed, and no consumer bound. The scan
+    // this replaced bound an ordered consumer per read whose delete the observer and admin profiles
+    // may not send (#691), so every dashboard poll left a consumer to the broker's inactive threshold
+    // and a refused `CONSUMER.DELETE` line in its log (#4123).
+    let entries: KvEntry[];
+    try {
+      entries = await lastKvEntries(kv);
+    } catch (e) {
+      if (!isPublishPermissionDenied(e)) throw e;
+      throw new Error(
+        `membership read refused for ${this.card.id}: this credential may not publish $JS.API.DIRECT.GET.KV_${membershipBucket(this.space)}, the membership feed read (SPEC Appendix B). A credential minted by an older issuer can lack this grant even when newly minted; upgrade the manager or auth service that issues credentials, then mint a new credential. Reusing credentials or reconnecting does not add the grant.`,
+        { cause: e },
+      );
+    }
     for (const e of entries) {
       if (e.key === MEMBERSHIP_FEED_KEY) {
         try { asOf = e.json<{ observedAt: number }>().observedAt; } catch { /* heartbeat garbled; leave undefined */ }
