@@ -24,7 +24,7 @@ import { nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, serviceRecordsWriteProblem, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { abandonableSignalStop, assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, readinessAddressSurvivors, resumableSignalStop, retainedStopRequest, settleExitedInstance, PROCESS_STOP_GRACE_MS, stopProcessService } from "../lib/service-process.js";
-import { abandonLaunchRemedy, abandonRemedy, abandonRetainedStackStop, abandonUnresolvedStackLaunch, acquireStackOperationLock, interruptedUpLeftManagerOut, newStackOperation, localRecords, previewStackSettlement, processGone, readStackJournal, recordedProcessesUnder, recordedProcessLine, refuseControllerCut, removeStaleLocalRecords, RESUME_REMEDY, runningStackRoles, settleRetainedStackStops, STACK_DEFINITION, STACK_ROLES, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, staleRecordNotice, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { abandonLaunchRemedy, abandonRemedy, abandonRetainedStackStop, abandonUnresolvedStackLaunch, acquireStackOperationLock, interruptedUpLeftManagerOut, newStackOperation, localRecords, previewStackSettlement, processGone, readStackJournal, recordedProcessesUnder, recordedProcessLine, refuseControllerCut, refuseUnretainedStackStop, removeStaleLocalRecords, RESUME_REMEDY, runningStackRoles, settleRetainedStackStops, STACK_DEFINITION, STACK_ROLES, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, staleRecordNotice, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { readStackRuns } from "../lib/stack-runs.js";
 import { refuseLiveUnrecordedDaemons } from "./down-live-lease.js";
 import { localProcessSurface } from "../ext-loader.js";
@@ -88,7 +88,13 @@ export function validateStackDownArguments(root: string, values: ParsedArgs["val
   if (values["abandon-stop"] !== undefined) {
     if (values["dry-run"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--abandon-stop removes a retained stop request, so a read-only preview cannot take it");
     if (values["with-agents"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--abandon-stop cannot be combined with --with-agents: the abandoned stop's manager has exited, so no manager can stop the agents");
-    if (values.yes !== true) throw new ConfirmationRequired("--abandon-stop needs --yes, because it gives up the only record of what that stop did", { remedy: `run cotal down --abandon-stop ${values["abandon-stop"]} --yes to give it up` });
+    if (values.yes !== true) {
+      // The ID is looked up first, with nothing written, so one no member retains is refused, naming
+      // the stop request to abandon, before --yes is asked for.
+      const journal = readStackJournal(root)?.journal;
+      if (journal && typeof values["abandon-stop"] === "string" && (values.space === undefined || values.space === journal.space)) refuseUnretainedStackStop(journal, values["abandon-stop"]);
+      throw new ConfirmationRequired("--abandon-stop needs --yes, because it gives up the only record of what that stop did", { remedy: `run cotal down --abandon-stop ${values["abandon-stop"]} --yes to give it up` });
+    }
   }
   if (values["abandon-launch"] !== undefined) {
     if (values["dry-run"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--abandon-launch records a member launch failed, so a read-only preview cannot take it");

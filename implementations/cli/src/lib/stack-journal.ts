@@ -480,25 +480,63 @@ export function abandonUnresolvedStackLaunch(journal: StackJournal, instanceId: 
  *  naming each stop request a member's refusal offers to abandon, and nothing is written. */
 export async function abandonRetainedStackStop(journal: StackJournal, requestId: string): Promise<{ role: StackRole; row: ServiceInstanceSnapshot; abandonment: ServiceAdapterStopAbandonment }> {
   const store = serviceDefinitionStore(journal.space);
-  const pending: { definition: string; requestId: string }[] = [];
+  const members: { definition: string; rows: ServiceInstanceSnapshot[] }[] = [];
   for (const role of STACK_ROLES.filter((entry) => stackRoleApplies(journal.mode, entry))) {
     const definition = store.read(STACK_DEFINITION[role]), launch = definition?.record.value.launch;
     if (!definition || launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER[role] || launch.options.root !== journal.root) continue;
     const hold = store.pin(definition);
     try {
-      const rows = serviceInstances(journal.space, definition.name);
-      const row = rows.find((entry) => retainedStopRequest(entry.record.value)?.requestId === requestId);
-      if (row) return { role, ...await abandonRetainedNativeStop(definition, row, requestId) };
-      const signalled = rows.find((entry) => !entry.record.value.nativeStopRequired && entry.record.value.state === "stopping" && entry.record.value.requestId === requestId);
-      if (signalled) return { role, row: abandonRetainedSignalStop(signalled, requestId), abandonment: { requestId, nativeStop: "abandoned", receipts: [], withAgents: false, cleanup: "not-checked" } };
-      for (const entry of rows) {
-        const route = memberStopRoute(entry.record.value);
-        if (route.kind === "abandon") pending.push({ definition: definition.name, requestId: route.requestId });
-      }
+      const rows = serviceInstances(journal.space, definition.name), found = retainingRow(rows, requestId);
+      if (found?.native) return { role, ...await abandonRetainedNativeStop(definition, found.row, requestId) };
+      if (found) return { role, row: abandonRetainedSignalStop(found.row, requestId), abandonment: { requestId, nativeStop: "abandoned", receipts: [], withAgents: false, cleanup: "not-checked" } };
+      members.push({ definition: definition.name, rows });
     } finally { hold.release(); }
   }
+  throw stopNotRetained(journal, requestId, members);
+}
+
+/** Refuse, as {@link abandonRetainedStackStop} does, an `--abandon-stop` ID no member of this stack
+ *  retains, read without its locks and with nothing written, so a `down` not yet given `--yes` names
+ *  the stop request to abandon before it asks for `--yes`. */
+export function refuseUnretainedStackStop(journal: StackJournal, requestId: string): void {
+  const store = serviceDefinitionStore(journal.space);
+  const members: { definition: string; rows: ServiceInstanceSnapshot[] }[] = [];
+  for (const role of STACK_ROLES.filter((entry) => stackRoleApplies(journal.mode, entry))) {
+    const definition = store.read(STACK_DEFINITION[role]), launch = definition?.record.value.launch;
+    if (!definition || launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER[role] || launch.options.root !== journal.root) continue;
+    const rows = serviceInstances(journal.space, definition.name);
+    if (retainingRow(rows, requestId)) return;
+    members.push({ definition: definition.name, rows });
+  }
+  throw stopNotRetained(journal, requestId, members);
+}
+
+/** The row of `rows` that retains stop request `requestId`: a native stop's request file, or a
+ *  signal stop's `stopping` record. */
+function retainingRow(rows: readonly ServiceInstanceSnapshot[], requestId: string): { row: ServiceInstanceSnapshot; native: boolean } | undefined {
+  const row = rows.find((entry) => retainedStopRequest(entry.record.value)?.requestId === requestId);
+  if (row) return { row, native: true };
+  const signalled = rows.find((entry) => !entry.record.value.nativeStopRequired && entry.record.value.state === "stopping" && entry.record.value.requestId === requestId);
+  return signalled ? { row: signalled, native: false } : undefined;
+}
+
+/** The `TARGET_NOT_FOUND` refusal of an `--abandon-stop` ID no member retains, naming each stop
+ *  request a member's refusal offers to abandon. When no member retains any stop request, as after
+ *  the stop was abandoned, it says so and names the step the stack's state takes: `cotal down` while
+ *  a member runs, otherwise `cotal up`. */
+function stopNotRetained(journal: StackJournal, requestId: string, members: readonly { definition: string; rows: readonly ServiceInstanceSnapshot[] }[]): CommandFailure {
+  const target = { root: journal.root, space: journal.space, requestId };
+  const values = members.flatMap(({ rows }) => rows.map((entry) => entry.record.value));
+  if (!values.some((value) => value.state === "stopping" || retainedStopRequest(value) !== undefined)) {
+    const running = values.some((value) => observeServiceProcess(value) === "running");
+    return new CommandFailure("refused", "TARGET_NOT_FOUND", "no member of this stack retains a stop request; nothing was abandoned", { target, given: "requestId", remedy: running ? "the stack is running; stop it with `cotal down`" : "the stack is not running; start it with `cotal up`" });
+  }
+  const pending = members.flatMap(({ definition, rows }) => rows.flatMap((entry) => {
+    const route = memberStopRoute(entry.record.value);
+    return route.kind === "abandon" ? [{ definition, requestId: route.requestId }] : [];
+  }));
   const named = pending.map((stop) => `; ${stop.definition} retains stop request ${stop.requestId}`).join("");
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no member of this stack retains a stop request with that ID${named}; nothing was abandoned`, { target: { root: journal.root, space: journal.space, requestId }, given: "requestId", remedy: pending.length === 1 ? abandonRemedy(pending[0]!.requestId) : `run \`cotal down --dry-run\` to see what blocks the stop, or \`cotal service status <definition> --instance <id> --space ${journal.space}\` for a member's request` });
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `no member of this stack retains a stop request with that ID${named}; nothing was abandoned`, { target, given: "requestId", remedy: pending.length === 1 ? abandonRemedy(pending[0]!.requestId) : `run \`cotal down --dry-run\` to see what blocks the stop, or \`cotal service status <definition> --instance <id> --space ${journal.space}\` for a member's request` });
 }
 
 /** Settle an earlier `up` or `down` that has no recorded outcome, from evidence only. The caller
