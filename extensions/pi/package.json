@@ -27,7 +27,7 @@
     }
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.10"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",

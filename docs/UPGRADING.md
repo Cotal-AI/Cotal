@@ -61,6 +61,30 @@ once per replay with the marker. To stop paying the rescan, branch on `change.ty
 `heartbeat` into the last snapshot's `asOf`, ignore `replayed`, and read (or apply the record) on a
 `member` change. The stock dashboard, `cotal view` and `cotal channel members --follow` do this.
 
+## Node 22.10 is the floor after 0.115.4
+
+Every package now declares `"node": ">=22.10"`, where Node 22 was enough up to 0.115.4. The reason
+is `module.flushCompileCache()`, which arrived in v22.10.0 and which a Claude Code seat's entry
+calls on every launch.
+
+Check the runtime before upgrading a host with `node -v`. On a host whose Node is 22.0 through 22.9,
+three things change.
+
+The `cotal` binary refuses to start, naming the floor, the running version, and the repair for the
+way it was installed. It checks the version before loading anything else, so an old runtime gets
+one sentence instead of a parse error from a dependency.
+
+A seat launched through `dist/seat.cjs` prints one line naming the floor and exits without serving.
+`node dist/mcp.cjs` still serves there and pays the bundle's compile on every start, which is the
+route for a host that cannot move its Node yet.
+
+The installer compares the minor version from this release on, so
+`curl -fsSL https://get.cotal.ai | sh` on a host whose Node is 22.9 downloads and verifies the
+pinned Node rather than using that one. Up to 0.115.4 it accepted any Node 22.
+
+Nothing migrates and no credential or state is recreated. A host already on Node 22.10 or newer has
+nothing to do.
+
 ## The Claude Code seat entry after 0.115.4
 
 The plugin's MCP server is launched through a new file, `dist/seat.cjs`, which enables Node's

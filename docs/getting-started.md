@@ -20,7 +20,7 @@ local mesh with an agent on it, in a few minutes.
 curl -fsSL https://get.cotal.ai | sh
 ```
 
-That is the whole install on a machine with nothing on it. The script finds a Node 22+ or
+That is the whole install on a machine with nothing on it. The script finds a Node 22.10+ or
 installs a verified one of its own, puts `cotal` in `~/.local/bin`, adds that to your PATH,
 and runs guided setup. It never uses sudo and writes nothing outside your home directory. What it
 creates is not writable by group or other accounts, whatever your umask.
@@ -34,7 +34,7 @@ installation. `type -a cotal` shows shell aliases, functions and executable cand
 installer cannot change the current shell's cached command; refresh that cache after correcting
 PATH order. Do not follow an older executable's force-seed advice to repair command selection.
 
-On Windows, or if you already run Node 22+ and would rather use npm directly:
+On Windows, or if you already run Node 22.10+ and would rather use npm directly:
 
 ```bash
 npm install -g cotal-ai   # puts `cotal` on your PATH
@@ -54,7 +54,7 @@ The CLI sends usage telemetry by default. Run `cotal telemetry off` to disable i
 
 Requirements:
 
-- Node 22 or newer. The installer handles this for you; it downloads an official Node build
+- Node 22.10 or newer. The installer handles this for you; it downloads an official Node build
   and checks it against the SHA-256 sums published beside it on nodejs.org.
 - On Linux, a glibc system. Cotal's Linux terminal binaries target glibc, so
   musl distributions (Alpine) are not supported yet and the installer refuses them rather

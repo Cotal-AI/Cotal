@@ -28,7 +28,7 @@ walkthrough, use [Choose a workflow](using-cotal.md).
 ## Running it
 
 ```bash
-npm install -g cotal-ai   # puts `cotal` on your PATH (needs Node 22+)
+npm install -g cotal-ai   # puts `cotal` on your PATH (needs Node 22.10+)
 cotal                     # the selected space, common commands, and where to start
 cotal help                # the same, then every command group (also `cotal --help`)
 cotal help <command> [<subcommand>]   # one command's or subcommand's usage and flags

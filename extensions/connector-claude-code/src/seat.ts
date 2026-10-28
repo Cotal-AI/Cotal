@@ -10,7 +10,11 @@
  * process entry on its own, so nothing that already points at it breaks.
  */
 import { createRequire } from "node:module";
-import { enableSeatCompileCache, flushSeatCompileCache } from "@cotal-ai/connector-core/seat-cache";
+import { assertSeatRuntime, enableSeatCompileCache, flushSeatCompileCache } from "@cotal-ai/connector-core/seat-cache";
+
+// First, and before any call into the cache: a Node below the declared floor is told what is
+// wrong and gets no seat, instead of a `TypeError` on the next line.
+assertSeatRuntime("cotal-connector");
 
 enableSeatCompileCache("cotal-connector");
 

@@ -318,12 +318,22 @@ OS user's own Cotal directory, which `COTAL_HOME` never redirects. Node keys a s
 it, so a Node upgrade pays one compile and reads no stale entry. The directory grows to the size of one compiled bundle per Node version, under 1 MB each, and
 deleting it is safe at any time: the next seat writes it again.
 
+The directory is created with owner-only permissions, whatever the launching umask was, because a
+compiled bundle belongs to the user who ran the seat.
+
 Two things the cache never does. A cache it cannot open, such as a read-only home, prints one line
 to stderr with Node's reason and the seat serves without it. `NODE_DISABLE_COMPILE_CACHE=1` turns it
-off silently.
+off silently. Setting `NODE_COMPILE_CACHE` to a directory of your own takes precedence over both:
+Node enables the cache there at startup and the seat leaves it alone.
+
+This entry needs Node 22.10 or newer, which is where `module.flushCompileCache()` lands, and that is
+the floor `cotal-ai` declares. On anything older the entry prints one line naming the floor and the
+running version and exits without serving, rather than starting a seat that dies on its first
+flush.
 
 Nothing else moved. `node dist/mcp.cjs` is still a working seat launch for a config written before
-this entry existed, and it pays the compile on every start.
+this entry existed, and it pays the compile on every start. It needs no compile cache, so it is also
+the way to serve from a Node older than the floor.
 
 ## Sessions Cotal did not launch
 

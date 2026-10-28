@@ -56,7 +56,7 @@ curl -fsSL https://get.cotal.ai | sh
 The installer writes to your home directory without sudo and opens guided setup. You can
 [read the script](https://get.cotal.ai) first or preview it with `| sh -s -- --dry-run`.
 
-On Windows, or with an existing Node 22+ installation:
+On Windows, or with an existing Node 22.10+ installation:
 
 ```bash
 npm install -g cotal-ai

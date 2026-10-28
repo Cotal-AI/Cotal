@@ -52,7 +52,7 @@ pnpm check         # every local check, :live suites included; runs every step a
 
 ESM only (`"type": "module"`); `tsx` runs TS directly, but packages import each other from their
 built `dist/`, so run `pnpm build` after `pnpm install` and after editing a package
-([docs/cli.md](docs/cli.md#running-it)). Node &gt;= 22.
+([docs/cli.md](docs/cli.md#running-it)). Node &gt;= 22.10.
 
 ## Repository map
 

@@ -11,9 +11,17 @@
  * before its first statement runs, so a call the bundler inlined into the bundle caches nothing.
  * The seat entry (`dist/seat.cjs`) therefore enables the cache and then loads the bundle.
  */
-import { constants, enableCompileCache, flushCompileCache, type EnableCompileCacheResult } from "node:module";
+import { constants, enableCompileCache, flushCompileCache } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { mkSecretDir } from "@cotal-ai/core/secret-fs";
+
+/**
+ * The oldest Node a seat entry runs on. `enableCompileCache()` arrived in v22.8.0 and
+ * `flushCompileCache()` in v22.10.0, and the entry calls both, so v22.10.0 is the first Node that
+ * has all of it. The published `engines.node` says the same thing.
+ */
+export const SEAT_NODE_FLOOR = "22.10.0";
 
 /**
  * Where the seat keeps its compile cache: `compile-cache` under this OS user's own Cotal
@@ -33,19 +41,67 @@ export function seatCompileCacheDir(): string {
 }
 
 /**
- * Enable the compile cache for everything this process loads after the call, and report what Node
- * decided. `label` prefixes the one diagnostic line, matching the seat's other stderr lines.
+ * Refuse a runtime that cannot cache a seat's compile, before anything calls into the cache.
  *
- * `enableCompileCache()` does not throw: it returns a status. A cache this process cannot open is
- * not a seat failure, so FAILED prints Node's own message once and the seat runs on without a
- * cache. DISABLED means the operator set `NODE_DISABLE_COMPILE_CACHE`, which is an answer rather
- * than an error, so it says nothing.
+ * Serving anyway without a cache is a silent downgrade of the one thing this entry exists for, so
+ * an old runtime is refused rather than degraded. The version is checked first and the two
+ * functions after it, so a runtime that reports the version without shipping the API gets this
+ * sentence instead of a `TypeError` from the next line. `label` prefixes the line, matching the
+ * seat's other stderr lines.
  */
-export function enableSeatCompileCache(label: string): EnableCompileCacheResult {
-  const result = enableCompileCache(seatCompileCacheDir());
+export function assertSeatRuntime(label: string): void {
+  const reason = unsupportedRuntime();
+  if (!reason) return;
+  process.stderr.write(
+    `[${label}] fatal: unsupported_node: a Cotal seat needs Node >= ${SEAT_NODE_FLOOR}, ${reason}. ` +
+      `Upgrade Node, or run the server bundle dist/mcp.cjs, which needs no compile cache.\n`,
+  );
+  process.exit(1);
+}
+
+/** Why this runtime cannot run a seat entry, or nothing when it can. */
+function unsupportedRuntime(): string | undefined {
+  const [floorMajor, floorMinor] = SEAT_NODE_FLOOR.split(".").map(Number);
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  if (major! < floorMajor! || (major === floorMajor && minor! < floorMinor!))
+    return `this is v${process.versions.node}`;
+  if (typeof enableCompileCache !== "function" || typeof flushCompileCache !== "function")
+    return `v${process.versions.node} reports the version but has no module compile cache`;
+  return undefined;
+}
+
+/**
+ * Enable the compile cache for everything this process loads after the call.
+ *
+ * The directory is created the way the rest of `~/.cotal` is created, 0700 and owner-only, because
+ * `enableCompileCache()` would otherwise create it at whatever the process umask allows and a
+ * seat's compiled bundle belongs to one user. Node still creates its own version-keyed directory
+ * inside it at the umask, and the 0700 above that is what keeps another user out.
+ *
+ * Neither step is allowed to end a seat. `enableCompileCache()` does not throw, it returns a
+ * status, so a cache this process cannot open prints one line with the real reason and the seat
+ * runs on without a cache. `label` prefixes that line.
+ */
+export function enableSeatCompileCache(label: string): void {
+  // Node's two cache environment variables decide this before we do: `NODE_COMPILE_CACHE` enables
+  // the cache in the operator's directory at startup, and `NODE_DISABLE_COMPILE_CACHE` turns it
+  // off. Either way the directory below is not the one in use, so do not create it and do not
+  // report on a cache this call does not own.
+  if (process.env.NODE_COMPILE_CACHE || process.env.NODE_DISABLE_COMPILE_CACHE) return;
+  const dir = seatCompileCacheDir();
+  try {
+    mkSecretDir(dir);
+  } catch (e) {
+    unavailable(label, (e as Error).message);
+    return;
+  }
+  const result = enableCompileCache(dir);
   if (result.status === constants.compileCacheStatus.FAILED)
-    process.stderr.write(`[${label}] compile cache unavailable, continuing without it: ${result.message ?? "no reason reported"}\n`);
-  return result;
+    unavailable(label, result.message ?? "no reason reported");
+}
+
+function unavailable(label: string, reason: string): void {
+  process.stderr.write(`[${label}] compile cache unavailable, continuing without it: ${reason}\n`);
 }
 
 /**
