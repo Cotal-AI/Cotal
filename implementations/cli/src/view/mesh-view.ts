@@ -7,7 +7,7 @@
 // See docs/mesh-view.md.
 
 import { EventEmitter } from "node:events";
-import type { CotalEndpoint, CotalMessage, EndpointRef, MembershipSnapshot, Presence, PresenceStatus } from "@cotal-ai/core";
+import type { CotalEndpoint, CotalMessage, EndpointRef, MembershipChange, MembershipSnapshot, Presence, PresenceStatus } from "@cotal-ai/core";
 import { deliveryOf, chatWildcard, isEventChannel, partsToText } from "@cotal-ai/core";
 
 // ---- the model the surfaces render -----------------------------------------
@@ -285,7 +285,7 @@ export class MeshView extends EventEmitter {
     await this.loadMembership();
     try {
       this.membershipWatch = await this.ep.watchMembership(
-        () => this.scheduleMembership(),
+        (change) => this.onMembershipChange(change),
         (e) => { this.membership = { ...this.membership, unreadable: `watch: ${e.message}` }; this.dirty = true; },
       );
     } catch (e) {
@@ -294,6 +294,19 @@ export class MeshView extends EventEmitter {
       if (!feedAbsent(e)) this.membership = { ...this.membership, unreadable: `watch: ${(e as Error).message}` };
       this.dirty = true;
     }
+  }
+
+  /** A heartbeat moves only `asOf`, so it is copied into the last snapshot instead of costing a
+   *  bucket re-read (#4904); a member change is read back in full, and a heartbeat that arrives
+   *  while the last read failed is the retry. */
+  private onMembershipChange(change: MembershipChange): void {
+    if (change.type === "replayed") return;
+    if (change.type === "heartbeat" && change.update && this.membership.snapshot && this.membership.unreadable === undefined) {
+      this.membership = { snapshot: { ...this.membership.snapshot, asOf: change.asOf } };
+      this.dirty = true;
+      return;
+    }
+    this.scheduleMembership();
   }
 
   private scheduleMembership(): void {

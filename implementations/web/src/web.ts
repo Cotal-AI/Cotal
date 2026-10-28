@@ -20,6 +20,8 @@ import {
   openPrivateAppend,
   writePrivateRecord,
   type CotalMessage,
+  type MembershipChange,
+  type MembershipSnapshot,
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
@@ -878,15 +880,28 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   // feed (no delivery daemon, or provisioned before this feature) simply never emits, and the graph
   // degrades to traffic-only. The admin cred carries the read grant; agents never do.
   let membershipWatch: { stop(): Promise<void> } | undefined;
+  let lastMembership: MembershipSnapshot | undefined;
   const pushMembership = debounce(() => {
     // A swallowed rejection here left the graph showing its LAST GOOD snapshot indefinitely, which
     // is worse than the HTTP case: the display was not merely empty, it was stale and confident.
     void ep.readMembership()
-      .then((m) => broadcast("membership", m))
-      .catch((e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }));
+      .then((m) => { lastMembership = m; broadcast("membership", m); })
+      .catch((e) => { lastMembership = undefined; broadcast(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }); });
   }, 150);
+  // The daemon rewrites the heartbeat key every poll with nothing else changed; re-reading the whole
+  // bucket for it was a full ordered-consumer rescan per heartbeat per dashboard (#4904). The watch
+  // delivers the heartbeat's `asOf`, so only a member change (or a failed last read) costs a read.
+  const onMembership = (change: MembershipChange) => {
+    if (change.type === "replayed") return;
+    if (change.type === "heartbeat" && change.update && lastMembership) {
+      lastMembership = { ...lastMembership, asOf: change.asOf };
+      broadcast("membership", lastMembership);
+      return;
+    }
+    pushMembership();
+  };
   try {
-    membershipWatch = await ep.watchMembership(pushMembership, (e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: e.message }));
+    membershipWatch = await ep.watchMembership(onMembership, (e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: e.message }));
   } catch (e) {
     console.error(c.dim(`• membership feed unavailable - graph shows traffic only (${(e as Error).message})`));
   }
