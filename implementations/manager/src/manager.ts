@@ -1060,6 +1060,9 @@ interface ManagedAgent {
    *  host revoked the grant, never from the stop door. */
   handedOff?: true;
   launch: ManagedLaunch;
+  /** The bounded launch wait elapsed without a join. Process liveness is separate, and an
+   * exact-incarnation late join clears this diagnostic without stopping the seat. */
+  joinIssue?: string;
   /** Set on a manifest `continuity: exact` seat once its first session was proven: the coordinates
    *  its assignment is recorded under, kept current at every later proven rebind and at its stop. */
   continuity?: Omit<ContinuityAssignment, "version" | "sessionId">;
@@ -4802,6 +4805,7 @@ export class Manager {
     for (const a of this.agents.values()) {
       const seen = roster.get(this.managedPrincipal(a));
       if (a.terminalizing || !this.isOwnPresence(a, seen)) continue;
+      if (seen.status !== "offline") a.joinIssue = undefined;
       const who = `${a.name} (${a.id}, uid ${a.lifecycleUid}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""})`;
       if (seen.status === "offline" && !a.offMesh) {
         a.offMesh = true;
@@ -7673,6 +7677,12 @@ export class Manager {
       const finish = (r: { ok: true; operator?: string } | { ok: false; uncertain?: boolean; running?: boolean; deliberate?: boolean; detail: string }): void => {
         if (done) return;
         done = true;
+        if (!r.ok && r.uncertain) {
+          a.joinIssue = r.detail;
+          console.error(`seat join degraded: ${r.detail}`);
+        } else if (r.ok) {
+          a.joinIssue = undefined;
+        }
         clearTimeout(timer);
         clearTimeout(operatorTimer);
         if (joinedPoll !== undefined) clearInterval(joinedPoll);
@@ -11502,6 +11512,7 @@ export class Manager {
         status: a.handle.status(),
         uptimeMs: Date.now() - a.startedAt,
         mesh: seen?.status ?? "absent",
+        ...(a.joinIssue ? { joinHealth: { state: "degraded" as const, reason: a.joinIssue } } : {}),
         ...(condition ? { condition } : {}),
         ...(activeAt !== undefined ? { activeAt } : {}),
         // `current` is the only state in which `mesh` is a verdict; the other two are the
