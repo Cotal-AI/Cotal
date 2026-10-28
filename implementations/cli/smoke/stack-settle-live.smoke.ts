@@ -582,7 +582,7 @@ try {
     const capped = cli(root, "status", "--space", space, "--json");
     const cappedSelected = capped.env?.result?.selected as { message?: string; storeCap?: number } | undefined;
     check("status then says the stack is stopped after a failed up, shows the recorded cap and names up --max-file-store at the floor, not a bare up",
-      capped.status === 0 && Boolean(cappedSelected?.message?.includes(`"${space}" is stopped; its last operation, cotal up, failed`)) && cappedSelected?.storeCap === MIN_FILE_STORE - 1
+      capped.status === 0 && Boolean(cappedSelected?.message?.includes(`"${space}" is stopped; its last operation, \`cotal up\`, failed`)) && cappedSelected?.storeCap === MIN_FILE_STORE - 1
         && ((capped.env?.result?.hints ?? []) as string[]).some((hint) => hint.startsWith(`start it with \`cotal up --max-file-store ${MIN_FILE_STORE}\` or more in `)), shown(capped));
     // With another space selected, the note on what this folder holds names the up that starts it.
     const folderNote = (run: Run) => run.env?.warnings?.find((warning) => warning.code === "FOLDER_SPACE_NOT_RUNNING" && warning.target?.space === space);
@@ -600,7 +600,7 @@ try {
     const stoppedStatus = cli(root, "status", "--space", space, "--json");
     const stoppedSelected = stoppedStatus.env?.result?.selected as { message?: string; storeCap?: number } | undefined;
     check("status then says the stack is stopped after a completed down, not prepared but not started, and names a bare up",
-      stoppedStatus.status === 0 && Boolean(stoppedSelected?.message?.includes(`"${space}" is stopped; its last operation, cotal down, completed`)) && stoppedSelected?.storeCap === undefined
+      stoppedStatus.status === 0 && Boolean(stoppedSelected?.message?.includes(`"${space}" is stopped; its last operation, \`cotal down\`, completed`)) && stoppedSelected?.storeCap === undefined
         && ((stoppedStatus.env?.result?.hints ?? []) as string[]).some((hint) => hint.startsWith("start it again with `cotal up` in ")), shown(stoppedStatus));
     const notedDown = cli(root, "status", "--json");
     check("with another space selected, the folder note names a bare up after a completed down whose cap is at the floor",

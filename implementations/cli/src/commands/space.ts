@@ -100,7 +100,7 @@ export interface PreparedRow {
   /** What its root's stack records, as `status` reports it: never started, stopped, or a last
    *  `up` or `down` with no recorded outcome. */
   readonly state: "prepared" | "stopped" | "unsettled";
-  /** That last operation and how it ended, such as `cotal down, completed`; null when it never started. */
+  /** That last operation and how it ended, such as `` `cotal down`, completed ``; null when it never started. */
   readonly lastOperation: string | null;
 }
 

@@ -1179,7 +1179,7 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   if (values.on !== undefined) {
     if (values.local === true || ["validate", "plan", "simulate", "turns", "yield", "revoke"].includes(verb)) usage("--on pins a hosted run command; local and offline commands take no manager instance");
     try { assertLifecycleToken(values.on, "instanceId"); }
-    catch { usage("--on requires the full manager instance id as cotal ps prints it"); }
+    catch { usage("--on requires the full manager instance id as `cotal ps` prints it"); }
   }
   // A local drive, a revoke and a check print text only. Name the manager's form where one takes the
   // flag, and the same command without it where none does.

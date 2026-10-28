@@ -102,7 +102,7 @@ const runCommand: Command = {
   validate: (args) => { workflowArguments(args); },
   flags: [
     ...targetFlags,
-    { name: "on", type: "string", value: "<instance>", description: "hosted verbs only: pin one full manager instance as cotal ps prints it" },
+    { name: "on", type: "string", value: "<instance>", description: "hosted verbs only: pin one full manager instance as `cotal ps` prints it" },
     { name: "file", type: "string", short: "f", value: "<program>", description: "cotal-lang program source (start; resume --local when no program is recorded)", completion: "files" },
     { name: "local", type: "boolean", description: "drive in this process instead of on the manager (bare broker, or a run the manager cannot host)" },
     { name: "admit-read", type: "string", value: "<channels>", description: "start --local: the channels the run may read, comma-separated patterns or `none` (required; SPEC 14.8)" },

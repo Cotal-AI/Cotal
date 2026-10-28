@@ -1019,7 +1019,7 @@ const managerCommands: Command[] = [
       { name: "seat-cap", type: "string", value: "<n|unlimited>", description: "live seats this manager admits per owner (default unlimited); kept for later starts in this root" },
       { name: "name", type: "string", value: "<name>", description: "the name who --all, the manager choice and --on use for this manager; kept for later starts in this root" },
       { name: "roster", type: "string", value: "<file>", description: "declarative roster to boot at startup" },
-      { name: "launch", type: "string", value: "<spec>", description: "resolved mesh-manifest launch spec (cotal up -f / spawn -f)" },
+      { name: "launch", type: "string", value: "<spec>", description: "resolved mesh-manifest launch spec (`cotal up -f` / `spawn -f`)" },
       { name: "resume-attempt", type: "string", value: "<id>", description: "maintenance restore attempt accepted by resumePreserved" },
       { name: "resume-commit-token", type: "string", value: "<token>", description: "deprecated: durable resume commit evidence on argv; prefer --resume-commit-file" },
       { name: "resume-commit-file", type: "string", value: "<path>", description: "protected one-read resume commit handoff file" },

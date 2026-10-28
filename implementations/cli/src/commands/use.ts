@@ -21,7 +21,7 @@ interface Selection {
   /** What that root's stack records, as `status` reports it: never started, stopped, or a last `up`
    *  or `down` with no recorded outcome. Null when `current` is not a prepared space. */
   readonly preparedState: "prepared" | "stopped" | "unsettled" | null;
-  /** That last operation and how it ended, such as `cotal down, completed`, or null. */
+  /** That last operation and how it ended, such as `` `cotal down`, completed ``, or null. */
   readonly lastOperation: string | null;
   /** This folder's space when a command without `--space` targets it here instead of `current`, or null. */
   readonly folder: string | null;

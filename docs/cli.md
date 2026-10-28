@@ -266,8 +266,8 @@ such as an identity, starts on the line under the label. A word wider than the l
 keeps a line of its own and is never split. A command wraps as one word, so a copied line never holds
 part of one: a command under Next, and a command a sentence names in backticks after other words,
 from its `cotal` (or the `cd` that precedes it) to its closing backtick, whatever words its arguments
-are. A remedy, Next line, hint or message that names a command after other words writes it in
-backticks, so it wraps whole and `--json` carries the same text. A command that holds a
+are. A remedy, Next line, hint, message or option description that names a command after other
+words writes it in backticks, so it wraps whole and `--json` carries the same text. A command that holds a
 backtick itself, as a quoted path can, is named between double backticks, as Markdown writes such code,
 and wraps whole to the matching pair. A line that starts with a command, such as a usage line, wraps at
 its spaces. A command wider than the line, such as a `next:` command or a remedy that is one whole
@@ -2747,7 +2747,7 @@ so is a bare `space show` outside a project with nothing selected. Each entry un
 `preparedAt`, `current`, `rootMissing`, which is true when its project folder no longer exists,
 `state` and `lastOperation`. `state` is `prepared` for a space that never started, `stopped` for one
 whose stack ran and was stopped, and `unsettled` when its last `up` or `down` recorded no outcome.
-`lastOperation` names that operation and how it ended, such as `cotal down, completed`, or is null.
+`lastOperation` names that operation and how it ended, such as `` `cotal down`, completed ``, or is null.
 `space show` of a prepared space gives those with the kind `prepared-space`. The listing marks
 such a folder `(no longer exists)` and names `cotal space forget <space>` for it instead of `cotal up`.
 
@@ -3007,7 +3007,7 @@ answer, and the listing does not mark it as this folder's. A selection that name
 names the space that was selected, and `--json` gives `current: null` with that `previous`. With
 nothing selected it is a `no-op`, exit 0. It takes no space name.
 A space stays selected through its `cotal down`: `use` then reports it as stopped, with its last
-operation, such as `cotal down, completed`, and names `cotal up` in its root. It stays selected until
+operation, such as `` `cotal down`, completed ``, and names `cotal up` in its root. It stays selected until
 `use` changes it. On a controller root, `up --json` gives
 `result.selection`, with `current`, the space selected after the start, and `changed`, which is true
 when this `up` selected its own space because no space was selected.
@@ -3205,7 +3205,7 @@ root. When the home holds a stack an earlier release started there, it also says
 folder reach that stack until then.
 
 A prepared space whose controller stack ran and was stopped reads as stopped, with its last
-operation and how it ended, such as `cotal down, completed`, and Next names `cotal up` in its root.
+operation and how it ended, such as `` `cotal down`, completed ``, and Next names `cotal up` in its root.
 A space that never started still reads as prepared but not started. When the stopped stack recorded
 a file store cap below 67108865, the least the space's streams start on, the selected space shows it
 in a `Store cap` row, and Next names `cotal up --max-file-store 67108865` or more instead, because a
