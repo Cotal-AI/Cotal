@@ -26,6 +26,10 @@
  *      it connects, under a `Mesh:` heading with a code and no boot line, from that stopped root, from
  *      a folder with no records (naming the folder that hosts the space, writing nothing there), and
  *      from a stopped static root.
+ *   E5. A TLS space behind a local CA, its public exchange behind an HTTPS proxy, joined by a
+ *      participant from its bundle: with `NODE_EXTRA_CA_CERTS` set, the participant's `manager start`
+ *      comes up and its native child carries the variable; with it unset, the line the refusal quotes
+ *      names the TLS reason.
  *   F. `cotal down` stops the auth service (space-scoped pid) with the broker; re-`up` WITHOUT
  *      --user-auth on a user-enabled root is refused fail-closed.
  *   G. `clean all`, and `reset space` on a stopped controller stack, name the IdP trust and the
@@ -34,10 +38,11 @@
  * COTAL_HOME is sandboxed; kills only what it starts. Needs nats-server on PATH.
  * Run: pnpm smoke:user-auth-launch:live   (pnpm build first — the subprocesses run built dist)
  */
-import { spawn } from "node:child_process";
-import { createServer } from "node:http";
+import { execFileSync, spawn } from "node:child_process";
+import { createServer, request as httpRequest } from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -101,7 +106,7 @@ const CLAUDE = join(import.meta.dirname, "..", "..", "..", "extensions", "connec
 /** Run the REAL binary (built dist through bin/cotal.ts) in the sandboxed workspace. ASYNC on
  *  purpose: a sync child would block this process's event loop — and the in-process IdP with it —
  *  deadlocking any subprocess step that calls back into the IdP (the user-mode send does). */
-function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string>; sandbox?: SmokeSandboxAnchor } = {}): Promise<{ status: number | null; out: string }> {
+function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string | undefined>; sandbox?: SmokeSandboxAnchor } = {}): Promise<{ status: number | null; out: string }> {
   return new Promise((resolvePromise) => {
     const options = {
       cwd: opts.cwd ?? root,
@@ -157,6 +162,8 @@ let witnessNc: Awaited<ReturnType<typeof connect>> | undefined;
 let other: { root: string; home: string; env: Record<string, string>; sandbox: SmokeSandboxAnchor } | undefined;
 // E4's home, its prepared roots and its folder with no records, likewise.
 let second: { home: string; env: Record<string, string>; roots: { root: string; sandbox: SmokeSandboxAnchor }[]; bare?: string } | undefined;
+// E5's TLS host, its proxy and the participant that joined it, likewise.
+let caRig: { hostRoot: string; hostHome: string; hostEnv: Record<string, string>; sandbox: SmokeSandboxAnchor; joinRoot: string; joinHome: string; joinEnv: Record<string, string>; proxy: HttpsServer } | undefined;
 try {
   // ---------- A. up --user-auth ----------
   console.log("A) cotal up --user-auth --idp <real IdP> --auth-timeout 3 --detach");
@@ -771,6 +778,63 @@ try {
         plain(staticStopped.out).includes(`start it again with \`cotal up\` in ${root3}, or start the manager from the folder whose cotal up started the broker at ${SERVER}`), staticStopped.out);
   }
 
+  // ---------- E5. a participant joined by bundle starts a manager behind a local CA ----------
+  console.log("E5) a participant that joined a TLS space by its bundle starts a manager with NODE_EXTRA_CA_CERTS, and names the TLS refusal without it");
+  {
+    const hostHome = mkdtempSync(join(tmpdir(), "cotal-ua-ca-host-home-")), hostRoot = mkdtempSync(join(tmpdir(), "cotal-ua-ca-host-root-"));
+    const joinHome = mkdtempSync(join(tmpdir(), "cotal-ua-ca-join-home-")), joinRoot = mkdtempSync(join(tmpdir(), "cotal-ua-ca-join-root-"));
+    // A throwaway CA and the 127.0.0.1 certificate it signs, which the broker and the proxy serve.
+    const pki = join(hostHome, "pki");
+    mkdirSync(pki, { mode: 0o700 });
+    const caFile = join(pki, "ca.pem"), caKey = join(pki, "ca.key"), srvCert = join(pki, "srv.pem"), srvKey = join(pki, "srv.key"), srvExt = join(pki, "srv.ext");
+    const openssl = (args: string[]) => execFileSync("openssl", args, { stdio: "ignore" });
+    openssl(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", caKey, "-out", caFile, "-days", "2", "-subj", "/CN=cotal-smoke-ca",
+      "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-addext", "subjectKeyIdentifier=hash"]);
+    openssl(["req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", srvKey, "-out", join(pki, "srv.csr"), "-subj", "/CN=127.0.0.1"]);
+    writeFileSync(srvExt, "subjectAltName=IP:127.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n");
+    openssl(["x509", "-req", "-in", join(pki, "srv.csr"), "-CA", caFile, "-CAkey", caKey, "-CAcreateserial", "-out", srvCert, "-days", "2", "-extfile", srvExt]);
+    for (const key of [caKey, srvKey]) chmodSync(key, 0o600);
+    // The HTTPS reverse proxy an operator puts in front of the public exchange face.
+    const exchangePort = await pickFreePort();
+    const proxy = createHttpsServer({ key: readFileSync(srvKey), cert: readFileSync(srvCert) }, (req, res) => {
+      req.pipe(httpRequest({ host: "127.0.0.1", port: exchangePort, path: req.url, method: req.method, headers: req.headers }, (answer) => {
+        res.writeHead(answer.statusCode ?? 502, answer.headers);
+        answer.pipe(res);
+      }).on("error", () => res.writeHead(502).end()));
+    });
+    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
+    const proxyUrl = `https://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+    const hostEnv = { COTAL_HOME: hostHome, XDG_CONFIG_HOME: join(hostHome, "xdg"), NODE_EXTRA_CA_CERTS: caFile };
+    const joinEnv = { COTAL_HOME: joinHome, XDG_CONFIG_HOME: join(joinHome, "xdg"), NODE_EXTRA_CA_CERTS: caFile };
+    const hostSandbox = recordSmokeSandbox({ root: hostRoot, cotalHome: hostHome, xdgConfigHome: hostEnv.XDG_CONFIG_HOME });
+    caRig = { hostRoot, hostHome, hostEnv, sandbox: hostSandbox, joinRoot, joinHome, joinEnv, proxy };
+    const CA_SPACE = `${SPACE}-ca`;
+    const hostUp = await cotal(["up", "-d", "--user-auth", "--idp", base, "--space", CA_SPACE, "--server", `tls://127.0.0.1:${await pickFreePort()}`,
+      "--tls-cert", srvCert, "--tls-key", srvKey, "--exchange-public-port", String(exchangePort), "--exchange-public-url", proxyUrl], { cwd: hostRoot, env: hostEnv });
+    check("a TLS user-auth space behind a local CA starts, its public exchange behind an HTTPS proxy", hostUp.status === 0, hostUp.out);
+    const bundleFile = join(hostHome, "bundle.json");
+    writeFileSync(bundleFile, await (await fetch(`http://127.0.0.1:${exchangePort}/.well-known/cotal-mesh`)).text());
+    const added = await cotal(["space", "add", "--file", bundleFile, "--root", joinRoot], { cwd: joinRoot, env: joinEnv });
+    check("a participant under its own home registers the space from its bundle", added.status === 0, added.out);
+    const { sub: joinSub } = await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+    const joinGrant = await cotal(["actor", "grant", "cli", "--sub", joinSub, "--full", "--scope", "spawn,role:default,supervise"], { cwd: hostRoot, env: hostEnv });
+    check("the host grants the participant's signed-in CLI supervise", joinGrant.status === 0, joinGrant.out);
+    const trusted = await cotal(["manager", "start", "--name", "joined"], { cwd: joinRoot, env: joinEnv });
+    check("with NODE_EXTRA_CA_CERTS set, as docs/cli.md says, the participant's manager start comes up",
+      trusted.status === 0 && plain(trusted.out).includes("Owned process running"), trusted.out);
+    const childPid = /^\s*PID:\s+(\d+)$/m.exec(plain(trusted.out))?.[1];
+    const childEnvironment = childPid ? readFileSync(`/proc/${childPid}/environ`, "utf8").split("\0") : [];
+    check("…and the native child it launched carries NODE_EXTRA_CA_CERTS from that command", childEnvironment.includes(`NODE_EXTRA_CA_CERTS=${caFile}`), { childPid, names: childEnvironment.map((entry) => entry.split("=")[0]) });
+    const joinStop = await cotal(["manager", "stop", "--yes"], { cwd: joinRoot, env: joinEnv });
+    check("…and the participant stops it", joinStop.status === 0 && plain(joinStop.out).includes("Service stopped"), joinStop.out);
+    const untrusted = await cotal(["manager", "start", "--name", "joined"], { cwd: joinRoot, env: { ...joinEnv, NODE_EXTRA_CA_CERTS: undefined } });
+    const quoted = /the last line it logged is: (.*)$/m.exec(plain(untrusted.out))?.[1] ?? "";
+    check("with NODE_EXTRA_CA_CERTS unset, manager start exits 5 and the line it quotes names the TLS reason the authority call failed on",
+      untrusted.status === 5 && quoted.includes(`did not answer at ${proxyUrl}/manager-service-authority (fetch failed); cause: `) && quoted.includes("UNABLE_TO_VERIFY_LEAF_SIGNATURE"), untrusted.out);
+    const hostDown = await cotal(["down", "--yes"], { cwd: hostRoot, env: hostEnv, sandbox: hostSandbox });
+    check("…and the TLS host stops", hostDown.status === 0, hostDown.out);
+  }
+
   // ---------- F. down + fail-closed re-up ----------
   console.log("F) down stops the auth service; re-up without --user-auth is refused");
   const down = await cotal(["down"]);
@@ -844,6 +908,12 @@ try {
     }
     if (second.bare) rmSync(second.bare, { recursive: true, force: true });
     rmSync(second.home, { recursive: true, force: true });
+  }
+  if (caRig) {
+    await cotal(["manager", "stop", "--yes"], { cwd: caRig.joinRoot, env: caRig.joinEnv, timeoutMs: 30_000 }); // E5's participant manager, if it still runs
+    await cotal(["down", "--yes"], { cwd: caRig.hostRoot, env: caRig.hostEnv, sandbox: caRig.sandbox, timeoutMs: 30_000 }); // E5's TLS host, if still up
+    caRig.proxy.close();
+    for (const dir of [caRig.hostHome, caRig.hostRoot, caRig.joinHome, caRig.joinRoot]) rmSync(dir, { recursive: true, force: true });
   }
   idpSrv.close();
   rmSync(home, { recursive: true, force: true });
