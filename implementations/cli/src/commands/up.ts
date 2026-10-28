@@ -94,7 +94,6 @@ import {
   jsonFlag,
   plainFlag,
   renderReport,
-  terminalWidth,
   assertSingleSpaceBroker,
   assertUserAuthInfo,
   authDir,
@@ -713,7 +712,7 @@ function assertFreshTeamBootOwnership(root: string, space: string, mode?: "open"
  *  failed or unknown stop is reported with its retained members; nothing is force-killed. */
 function stopForegroundStack(root: string, signal: "SIGINT" | "SIGTERM"): Promise<void> {
   return stackDown(root, { yes: true }).catch((error) => {
-    process.stderr.write(`${renderReport(commandFailureReport(isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the foreground stack stop did not confirm its outcome; its members were retained")), "rich", terminalWidth(process.stderr))}\n`);
+    process.stderr.write(`${renderReport(commandFailureReport(isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the foreground stack stop did not confirm its outcome; its members were retained")), "rich", process.stderr)}\n`);
   }).finally(() => { process.exitCode = signal === "SIGINT" ? 130 : 143; });
 }
 
@@ -761,7 +760,7 @@ async function holdStack(root: string, start?: () => Promise<void>): Promise<voi
       stopping = true;
       process.off("SIGINT", interrupt); process.off("SIGTERM", terminate);
       clearInterval(lifetime);
-      process.stderr.write(`${renderReport({ sections: [{ title: "Foreground stack released", blocks: [{ kind: "lines", lines: [`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`] }] }] }, "rich", terminalWidth(process.stderr))}\n`);
+      process.stderr.write(`${renderReport({ sections: [{ title: "Foreground stack released", blocks: [{ kind: "lines", lines: [`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`] }] }] }, "rich", process.stderr)}\n`);
       process.exitCode = 0;
       resolveHold();
     }, 1000);
@@ -1938,7 +1937,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // about it, and ends with the steps to take. It used to print this one green line alone, so
       // `up` in a running project's subfolder answered without saying which mesh it reached or what
       // to do next, while the launch beside it printed both.
-      console.log(`${renderReport({ space: held.space, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
+      console.log(`${renderReport({ space: held.space, sections: [] }, "rich", process.stdout)}\n`);
       console.log(c.green(`✓ mesh "${held.space}" already running at ${server}`));
       // USER MODE: re-upping IS the documented recovery for a dead auth service (the provider's
       // failure copy says "restart it with `cotal up`"), so a refresh must re-ensure the service —
@@ -2019,7 +2018,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       seedPersonaAfterUp(root);
       // The same Next a launch ends with: this mesh runs, so the steps are the ones that use and
       // stop it. A manager the refresh found or healed is what makes `spawn` one of them.
-      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecordState(held.space).state === "alive", machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}) }, held.space) }] }] }, "rich", terminalWidth(process.stdout))}`);
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecordState(held.space).state === "alive", machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}) }, held.space) }] }] }, "rich", process.stdout)}`);
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -2081,7 +2080,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const unnamed = values.space === undefined && unnamedDefault(cotalRoot(), receiptSpace);
     refuseStartOverUserState(Boolean(values.open), wantUser, receiptSpace);
     await claimSpace(receiptSpace, server, cotalRoot());
-    if (!quietRestore) console.log(`${renderReport({ space: receiptSpace, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
+    if (!quietRestore) console.log(`${renderReport({ space: receiptSpace, sections: [] }, "rich", process.stdout)}\n`);
     const { pid, executable, authService, controlPlane, delivery, manager } = await startMeshDetached({
       transport,
       server,
@@ -2139,7 +2138,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
         console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal))}`));
     }
-    if (!quietRestore) console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext(detached, receiptSpace) }] }] }, "rich", terminalWidth(process.stdout))}`);
+    if (!quietRestore) console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext(detached, receiptSpace) }] }] }, "rich", process.stdout)}`);
     if (restored) restoreSinks.get(restored.attemptId)?.({
       attemptId: restored.attemptId, space: restored.space, root: restored.root, server: restored.server, mode: restored.mode,
       selection: restored.selection, restoredStreams: restored.restoredStreams, targetPath: restored.targetPath, runtime: restored.runtime, brokerPid: pid,

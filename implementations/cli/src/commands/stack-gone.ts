@@ -12,7 +12,7 @@ import { join } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, getCurrent, isCommandFailure, localMeshesForRoot, oneLine, presentationOf,
-  readProcessCommand, recordOperationSpace, removeMeshesByRoot, renderReport, terminalWidth, writeResult, type Report,
+  readProcessCommand, recordOperationSpace, removeMeshesByRoot, renderReport, writeResult, type Report,
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { cotalRoot } from "../lib/paths.js";
@@ -162,7 +162,7 @@ export async function goneRootStackDown(space: string, root: string, values: Par
     return;
   }
   if (!values.yes && !(canPrompt() && presentation !== "json")) throw new ConfirmationRequired(`stopping the stack of ${space}, whose folder ${root} is gone, requires --yes outside an interactive terminal`, { target, remedy: `run \`cotal down --space ${space} --yes\` to stop it; \`cotal down --space ${space} --dry-run\` shows what it stops` });
-  if (presentation !== "json") console.log(renderReport(planView(space, root, members), presentation, terminalWidth(process.stdout)));
+  if (presentation !== "json") console.log(renderReport(planView(space, root, members), presentation, process.stdout));
   if (!values.yes) {
     const answer = await prompts.confirm({ message: `Stop every displayed member of ${oneLine(space)}'s stack by signal and remove its saved definitions?`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) {

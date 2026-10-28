@@ -1,7 +1,7 @@
 import * as prompts from "../lib/prompts.js";
 import { lstatSync, readlinkSync } from "node:fs";
 import type { ParsedArgs } from "@cotal-ai/core";
-import { ConfirmationRequired, CommandFailure, canonicalRoot, commandFailureReport, isCommandFailure, oneLine, presentationOf, processGroupMembers, processGroupOf, protectedLocalDirectory, renderReport, terminalWidth, writeResult, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, canonicalRoot, commandFailureReport, isCommandFailure, oneLine, presentationOf, processGroupMembers, processGroupOf, protectedLocalDirectory, renderReport, writeResult, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
 import { reportOnInterrupt } from "../lib/interrupt-report.js";
 import { observeRecordedSupervisor, systemdUserUnitDirectory } from "../lib/service-systemd.js";
 import { observeSystemdAttempt } from "../lib/service-systemd-attempt-read.js";
@@ -354,7 +354,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   const kernelPlan = mode === "stop" || mode === "restart" ? await prepareKernelServiceStop(definition, selected!) : undefined;
   // The impact is the first report the operation prints, so it carries the space's Mesh line.
   const impact = [...(nativePlan ? nativeImpactView(nativePlan).sections : []), ...(kernelPlan ? kernelImpactView(kernelPlan).sections : [])];
-  if (impact.length && presentation !== "json") console.log(renderReport({ space, sections: impact }, presentation, terminalWidth(process.stdout)));
+  if (impact.length && presentation !== "json") console.log(renderReport({ space, sections: impact }, presentation, process.stdout));
   if (confirmStop && !values.yes) {
     const answer = await prompts.confirm({ message: `${mode === "stop" ? "Stop" : "Restart"} ${oneLine(name)} instance ${selected!.name} on ${oneLine(selected!.record.value.host.name)}? ${nativePlan ? "Apply the displayed native seat policy only if its full scope is unchanged." : kernelPlan ? "Signal only the displayed broker process, only if its scope is unchanged." : "Only its pinned direct process is controlled."}`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) return cancelled();
@@ -369,7 +369,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   if (values.foreground) console.error(renderReport({ space, sections: [{ title: "Foreground service lifetime", blocks: [
     { kind: "fields", rows: [["Definition", name], ["Space", space], ["Instance", selected?.name ?? "assigned once at launch"], ["Execution", "owned terminal-bound process; not a detachable view"], ["Output", "this terminal; not captured in the background log"]] },
     { kind: "lines", lines: ["Ctrl-C or terminal loss may end this process and its native in-process work. Controlled shutdown uses the selected process identity and declared stop policy. An external kill or interrupted startup is not a confirmed stop or proof of descendant, registration or authority cleanup."] },
-  ] }] }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr)));
+  ] }] }, presentation === "plain" ? "plain" : "rich", process.stderr));
   let started: Awaited<ReturnType<typeof startProcessService>>;
   if (mode === "restart") {
     const hold = store.pin(definition);
@@ -417,7 +417,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
           await stopProcessService(definition, current, undefined, { plan: await prepareNativeServiceStop(definition, current), withAgents: false });
         } catch (error) {
           const failure = isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "foreground shutdown did not confirm the owned process exit; its record was retained");
-          process.stderr.write(`${renderReport(commandFailureReport(failure), presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+          process.stderr.write(`${renderReport(commandFailureReport(failure), presentation === "plain" ? "plain" : "rich", process.stderr)}\n`);
         } finally { finishShutdown(); }
       })();
     };
@@ -433,7 +433,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       if (current && current.record.value.process?.pid === started.instance.record.value.process?.pid && current.record.value.process?.token === started.instance.record.value.process?.token && !retainedStopRequest(current.record.value)) serviceInstanceStore(space).commit(current.name, current, { ...current.record.value, state: "stopped", readiness: "not-checked", exit, updatedAt: new Date().toISOString() });
       process.exitCode = signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : exit.code === 0 ? 0 : 5;
     } catch (error) {
-      if (isCommandFailure(error)) process.stderr.write(`${renderReport(commandFailureReport(error), presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+      if (isCommandFailure(error)) process.stderr.write(`${renderReport(commandFailureReport(error), presentation === "plain" ? "plain" : "rich", process.stderr)}\n`);
       throw error;
     } finally { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); }
   }

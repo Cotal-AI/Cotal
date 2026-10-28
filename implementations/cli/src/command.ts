@@ -31,6 +31,7 @@ import {
   operationWarnings,
   outputDeclarationProblems,
   oneLine,
+  paintFor,
   preferencesFolderWarning,
   recordOperationWarning,
   renderReport,
@@ -174,7 +175,7 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
     process.exit(1);
   }
   // Rendered in the run's scope, so the `Mesh:` heading keeps the note on how the run chose its space.
-  const report = () => renderReport(commandFailureReport(failure), plain ? "plain" : "rich", terminalWidth(process.stderr));
+  const report = () => renderReport(commandFailureReport(failure), plain ? "plain" : "rich", process.stderr);
   const writeReport = () => writeSync(2, `${scope ? runOperation(scope, report) : report()}
 `);
   // Under --json the envelope alone reports the failure. Its text report goes to stderr only when the
@@ -209,7 +210,7 @@ async function extSeedGate(registry: Registry, argv: string[], configFolder: Con
   // A help request short-circuits to usage and mutates NOTHING (the maintenance run writes the seed
   // stamp/manifest).
   if (asksForHelp(argv)) {
-    printHelpPath(extCmd, ["seed"]);
+    paintFor(process.stdout, () => printHelpPath(extCmd, ["seed"]));
     return true;
   }
   if (configFolder) failureExit(extCmd, configFolderRefusal(configFolder), false);
@@ -348,14 +349,14 @@ export interface RunCliOptions {
  *  in words. Either way the words it quotes are escaped, as the report escapes every text. */
 function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command, words: readonly string[] = []): void {
   const report = plain || !localeIsUtf8();
-  if (report) writeSync(2, `${renderReport(commandFailureReport(failure), plain ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+  if (report) writeSync(2, `${renderReport(commandFailureReport(failure), plain ? "plain" : "rich", process.stderr)}\n`);
   else {
     stderrLine("✗ ", oneLine(failure.message), c.red);
     if (failure.remedy) stderrLine("  ", oneLine(failure.remedy), c.dim, failure.remedyIsCommand);
   }
   if (!cmd) return;
   if (report) console.error("");
-  printHelpPath(cmd, helpPath(cmd, words).path, (line) => console.error(line), terminalWidth(process.stderr));
+  paintFor(process.stderr, () => printHelpPath(cmd, helpPath(cmd, words).path, (line) => console.error(line), terminalWidth(process.stderr)));
 }
 
 /** A usage error, written by {@link usageRefusal} with the help of the command or subcommand `words`
@@ -520,7 +521,7 @@ function helpPath(cmd: Command, rest: readonly string[]): { path: string[]; unkn
  *  does, so a mistyped subcommand never gets its group's help. */
 function printHelpFor(cmd: Command, rest: readonly string[]): void {
   const { path, unknown } = helpPath(cmd, rest);
-  printHelpPath(cmd, unknown === undefined ? path : [...path, unknown]);
+  paintFor(process.stdout, () => printHelpPath(cmd, unknown === undefined ? path : [...path, unknown]));
 }
 
 /**
@@ -610,7 +611,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   };
   let commands = surface();
   const [word, ...words] = argv;
-  if (word === undefined) return printEntry(commands);
+  if (word === undefined) return paintFor(process.stdout, () => printEntry(commands));
   let cmd = findCommand(commands, word);
   let rest = ownWords(cmd, words, leadingGlobals);
   const wantsHelp = asksForHelp(rest);
@@ -785,14 +786,14 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // covers every path that lets one reach the boundary, not just the ones that happen to call an
     // `…OrExit` helper.
     if (isWorkspaceTargetError(e)) {
-      console.error(c.red(renderWorkspaceError({ kind: "target", error: e })));
+      console.error(paintFor(process.stderr, () => c.red(renderWorkspaceError({ kind: "target", error: e }))));
       if (debugFlag("COTAL_DEBUG") && e instanceof Error && e.stack) console.error(c.dim(e.stack));
       process.exit(1);
     }
     // A command without structured output shows the same choice and keeps its exit 1.
     const restated = isConnectRefusal(e) ? await managerChoice().then(({ managerChoiceFailure, rosterOf }) => managerChoiceFailure(e.failure(), () => rosterOf(target), argv)) : undefined;
     if (restated) {
-      writeSync(2, `${renderReport(commandFailureReport(restated), parsed.values.plain === true ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+      writeSync(2, `${renderReport(commandFailureReport(restated), parsed.values.plain === true ? "plain" : "rich", process.stderr)}\n`);
       process.exit(1);
     }
     // Every other command failure (a broker permission denial, a missing --creds file, a failed

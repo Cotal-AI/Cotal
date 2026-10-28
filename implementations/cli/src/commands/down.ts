@@ -8,7 +8,6 @@ import {
   localRecordName,
   presentationOf,
   renderReport,
-  terminalWidth,
   abortMaintenanceCut,
   acquireMaintenanceLock,
   assertSingleSpaceBroker,
@@ -553,7 +552,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   let cleaning = false, cleaned = false;
   const interrupt = noticeBetweenSteps(() => legacyStopInterruptNotice(selected, folderCtx(), stopped, stopInFlight(), cleaned), () => cleaning || stopInFlight() !== undefined);
   // The stop's lines follow the space they stop, as every other report of down begins.
-  console.log(`${renderReport({ space: guarded.space, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
+  console.log(`${renderReport({ space: guarded.space, sections: [] }, "rich", process.stdout)}\n`);
   // Every dry run returned or was refused above, so from here on this is the whole-stack stop of
   // this folder's root.
 
@@ -634,7 +633,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     console.error(c.red("Nothing running for the local stack (no recorded pidfiles)."));
     process.exit(1);
   }
-  console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: "Start it again" }] }] }] }, "rich", terminalWidth(process.stdout))}`);
+  console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: "Start it again" }] }] }] }, "rich", process.stdout)}`);
 }
 
 /** What an interrupted bare down of a legacy stack left: the members it stopped, the ones still
