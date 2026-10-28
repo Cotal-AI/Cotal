@@ -16,7 +16,8 @@
  * renewal source and reports it connected only once the broker and the space's ready both accept it. A
  * connection it reached records that intent, so a restarted daemon connects those spaces again.
  * `install` (`install.ts`) runs it as a systemd user service that starts at login, restarts on its
- * own and survives logout through linger. A killed daemon comes back by itself: its lifetime lock
+ * own and survives logout through linger. `setup` (`setup.ts`) is those steps plus sign-in,
+ * registration and connection in one command, for a machine with no browser on it. A killed daemon comes back by itself: its lifetime lock
  * is kernel-held, so the restart knows its predecessor is gone and removes the exact socket that
  * predecessor published (`lifetime.ts`). `state: "ready"` means the local control listener is bound
  * and verified; it says nothing about any mesh or Cloud connection.
@@ -33,6 +34,7 @@ import { EndpointRefusal, checkDir, daemonPaths, daemonPathsFor, type DaemonPath
 import { serveDaemon } from "./server.js";
 import { connectCheckViaDaemon, loginViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
 import { applyInstall, applyUninstall, planInstall, planUninstall } from "./install.js";
+import { runSetup } from "./setup.js";
 import type { ConnectCheckResult, DaemonStatus, LoginResult, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
 export const daemonFlags = [
@@ -43,6 +45,7 @@ export const daemonFlags = [
   { name: "daemon-home", type: "string", value: "<abs dir>", description: "run or reach the daemon whose state lives in this directory (absolute, yours, mode 0700, not the Cotal home): its own sign-in, identity and registration, its own socket and lifetime lock. Without it, the default daemon" },
   { name: "dry-run", type: "boolean", description: "install, uninstall: report the unit it would write or remove, and change nothing" },
   { name: "yes", type: "boolean", short: "y", description: "uninstall: confirm in a script" },
+  { name: "wait", type: "string", value: "<seconds>", description: "setup: how long to wait for the space owner's approval (default 900, 0 reports what it reached)" },
   spaceFlag,
 ] as const satisfies readonly FlagSpec[];
 
@@ -311,6 +314,51 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
   ] }));
 }
 
+/** Connect a headless machine with one command: install, sign in, register, connect. */
+async function setupCommand(args: ParsedArgs): Promise<void> {
+  const presentation = presentationOf(args.values);
+  const values = args.values as { space?: string; idp?: string; "client-id"?: string; wait?: string };
+  const space = values.space;
+  if (typeof space !== "string" || !space) throw new CommandFailure("refused", "USAGE_INVALID", "cotal daemon setup needs --space <s>");
+  let idp: string | undefined;
+  if (values.idp !== undefined) {
+    try { idp = normalizeIdpUrl(values.idp); }
+    catch { throw new CommandFailure("refused", "USAGE_INVALID", "use an HTTPS provider auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment"); }
+  }
+  if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
+  const waitSeconds = values.wait === undefined ? 900 : Number(values.wait);
+  if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > 86400) throw new CommandFailure("refused", "USAGE_INVALID", "--wait takes whole seconds from 0 to 86400");
+  const { paths, home } = resolveTarget(args);
+  const plain = presentation === "plain";
+  // Progress goes to stderr so a --json caller still reads one document on stdout.
+  const report = (line: string) => { if (presentation !== "json") process.stderr.write(`${line}\n`); };
+  let r;
+  try {
+    r = await runSetup({
+      paths, daemonHome: home, space, peerUid, peerPid, waitSeconds, report,
+      ...(idp !== undefined ? { idp } : {}),
+      ...(values["client-id"] !== undefined ? { clientId: values["client-id"] } : {}),
+      onPrompt: (p) => {
+        process.stderr.write(`${renderReport({ sections: [{ title: "Approve this machine", blocks: [
+          { kind: "fields", rows: [["Provider", idp!], ["Open", p.verificationUriComplete], ["Or open", p.verificationUri], ["Approval code", p.userCode], ["Expires", p.expiresAt]] },
+          { kind: "lines", lines: [{ text: "Open that link on any device with a browser. This machine needs none. Do not share the approval link or code.", tone: "hint" }] },
+        ] }] }, plain ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+      },
+    });
+  } catch (e) {
+    throw asFailure(e);
+  }
+  writeResult(presentation, { command: "daemon setup", target: { space }, result: r }, () => ({ sections: [
+    { title: "Connected", blocks: [
+      { kind: "fields", rows: [["Space", r.space], ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : []), ...(r.unit ? [["Unit", r.unit] as [string, string]] : [])] },
+      { kind: "lines", lines: [
+        ...r.steps.map((s) => ({ text: `${s.step}: ${s.outcome}`, tone: "hint" as const })),
+        { text: "The daemon runs as a user service, restarts on its own and reconnects after a restart. Read it with cotal daemon service-status, and close the connection with cotal daemon service-disconnect.", tone: "hint" as const },
+      ] },
+    ] },
+  ] }));
+}
+
 async function serve(args: ParsedArgs): Promise<void> {
   const { paths, home } = resolveTarget(args);
   let running;
@@ -337,17 +385,19 @@ async function run(args: ParsedArgs): Promise<void> {
   if (mode === "register") return registerCommand(args);
   if (mode === "service-connect" || mode === "service-disconnect" || mode === "service-status") return serviceCommand(args, mode);
   if (mode === "install" || mode === "uninstall") return unitCommand(args, mode);
-  throw new CommandFailure("refused", "USAGE_INVALID", mode === undefined ? "cotal daemon needs a mode: status, serve, install, uninstall, login, connect-check, register, service-connect, service-disconnect or service-status" : `unknown daemon mode ${JSON.stringify(mode)}`, { remedy: "cotal daemon status" });
+  if (mode === "setup") return setupCommand(args);
+  throw new CommandFailure("refused", "USAGE_INVALID", mode === undefined ? "cotal daemon needs a mode: setup, status, serve, install, uninstall, login, connect-check, register, service-connect, service-disconnect or service-status" : `unknown daemon mode ${JSON.stringify(mode)}`, { remedy: "cotal daemon status" });
 }
 
 const daemonCommand: Command = {
   kind: "command",
   name: "daemon",
   group: "Manager",
-  summary: "the local machine daemon (Linux): install it as a user service, serve its control endpoint, read its status, sign it in, check and request its own registration with a space, and connect it as its own service",
-  positionals: "<status|serve|install|uninstall|login|connect-check|register|service-connect|service-disconnect|service-status>",
+  summary: "the local machine daemon (Linux): connect this machine to a space with one command, install it as a user service, serve its control endpoint, read its status, sign it in, check and request its own registration with a space, and connect it as its own service",
+  positionals: "<setup|status|serve|install|uninstall|login|connect-check|register|service-connect|service-disconnect|service-status>",
   flags: daemonFlags,
   subcommands: [
+    { name: "setup", summary: "connect this machine to a space with one command: install the user service, sign in by device code without a local browser, register, and connect once the space owner approves", examples: [{ command: "cotal daemon setup --space <space> --idp <url>", note: "connect a headless machine" }, { command: "cotal daemon setup --space <space> --wait 0", note: "report what it reached without waiting for approval" }], flagNames: ["space", "idp", "client-id", "wait", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "status", summary: "ask the running daemon for its status over the local endpoint", examples: [{ command: "cotal daemon status", note: "ask the running daemon for its status" }, { command: "cotal daemon status --json", note: "the same as one JSON document" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
     { name: "serve", summary: "run the daemon in the foreground and serve its local endpoint (refusals honor --json)", examples: [{ command: "cotal daemon serve", note: "run the machine daemon in this terminal" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "install", summary: "install the daemon as a systemd user service that starts at login, restarts on its own and survives logout", examples: [{ command: "cotal daemon install", note: "run it as a persistent user service" }, { command: "cotal daemon install --dry-run", note: "show the unit it would write" }], flagNames: ["daemon-home", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
@@ -360,7 +410,7 @@ const daemonCommand: Command = {
     { name: "service-status", summary: "read the running daemon's service connection to a space, without contacting it", examples: [{ command: "cotal daemon service-status --space <space>", note: "read the state of that connection" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
   ],
   prepareMeshTarget: false,
-  examples: [{ command: "cotal daemon install", note: "run the machine daemon as a persistent user service" }, { command: "cotal daemon status", note: "ask the running daemon for its status" }, { command: "cotal daemon login --idp <url>", note: "sign the daemon in with device approval" }],
+  examples: [{ command: "cotal daemon setup --space <space> --idp <url>", note: "connect a headless machine to a space" }, { command: "cotal daemon install", note: "run the machine daemon as a persistent user service" }, { command: "cotal daemon status", note: "ask the running daemon for its status" }],
   run,
 };
 
