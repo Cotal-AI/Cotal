@@ -3361,9 +3361,12 @@ function notExecuted(e: unknown, code: EpErrorCode): EpEnvelopeError {
     : new EpEnvelopeError(code, e instanceof Error ? e.message : String(e), undefined, "not-executed");
 }
 
+/** A request-body refusal keeps its own status. Anything else escaped a handler, so it is a server
+ *  fault: the fixed message goes to the client and the error stays in the log. */
 function sendRequestError(res: ServerResponse, e: unknown): void {
   if (e instanceof RequestBodyError) return send(res, e.status, { error: e.message });
-  send(res, 400, { error: e instanceof Error ? e.message : String(e) });
+  console.error(`auth-service: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
+  send(res, 500, { error: "internal error" });
 }
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx) => void | Promise<void>;
@@ -3684,6 +3687,13 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   const peer = policy.peerKey(req);
   const peerThrottled = policy.throttled(ctx, peer);
   const body = await readJsonBody(req);
+  const shape = "exchange needs { idpToken: string, actor: string, ttlSec?: number, view?: string }";
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    policy.recordFailure(ctx, peer);
+    console.error(`auth-service: refused an exchange: ${shape}`);
+    if (peerThrottled) return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
+    return send(res, 400, { error: shape });
+  }
   const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant, transferWriter } = body as {
     idpToken?: unknown;
     actor?: unknown;
@@ -3779,7 +3789,7 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
     }
   }
   if (typeof idpToken !== "string" || !idpToken || typeof actor !== "string" || !actor)
-    return send(res, 400, { error: "exchange needs { idpToken: string, actor: string, ttlSec?: number, view?: string }" });
+    return send(res, 400, { error: shape });
   try {
     // The bridge validates `view` against the closed enum and the fresh ledger grant — an
     // unknown or under-scoped view is a refused exchange (audited + throttled like any other).
