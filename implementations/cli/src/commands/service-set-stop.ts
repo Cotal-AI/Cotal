@@ -39,7 +39,7 @@ const BROKER_NAMES = new Set(["nats", "broker", STACK_DEFINITION.broker]);
 function brokerMember(space: string, name: string): CommandFailure {
   return new CommandFailure("refused", "TARGET_NOT_FOUND", `${oneLine(name)} matches no service a set of names can stop in space ${oneLine(space)}; no service was stopped`, {
     target: { space, name },
-    remedy: "a set of names never stops the broker; a bare cotal down stops it with the whole stack",
+    remedy: "a set of names never stops the broker; a bare `cotal down` stops it with the whole stack",
   });
 }
 
@@ -49,7 +49,7 @@ function unmatchedMember(space: string, name: string): CommandFailure {
   const stackName = stackMemberFor(space, name);
   return new CommandFailure("refused", "TARGET_NOT_FOUND", `${oneLine(name)} matches no saved definition or preset in space ${oneLine(space)}; no service was stopped`, {
     target: { space, name },
-    remedy: stackName ? `this space's controller stack names it ${stackName}; name ${stackName} instead, or run bare cotal down to stop the whole stack` : unsavedServiceStep(name, "stop"),
+    remedy: stackName ? `this space's controller stack names it ${stackName}; name ${stackName} instead, or run bare \`cotal down\` to stop the whole stack` : unsavedServiceStep(name, "stop"),
   });
 }
 
@@ -127,7 +127,7 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
     writeResult(presentation, { command: "down", target, result: { kind: "service-set-stop-preview", rows: preview, dryRun: true, reserved: false, nativeImpactChecked: false, stopped: false } }, (result) => ({ sections: [...setView(result.rows, "Named service stop preview").sections, { blocks: [{ kind: "lines", lines: ["Metadata and owned process roles only. No provider code, native impact query, reservation, process signal or instance-record write was requested. This preview does not authorize a stop."] }] }] }));
     return;
   }
-  if (!args.values.yes && !interactive) throw new ConfirmationRequired(yesRequired("stopping a named service set", presentation === "json"), { target, remedy: `run cotal down ${args.positionals.join(" ")} --yes to stop them; cotal down ${args.positionals.join(" ")} --dry-run shows what it stops` });
+  if (!args.values.yes && !interactive) throw new ConfirmationRequired(yesRequired("stopping a named service set", presentation === "json"), { target, remedy: `run \`cotal down ${args.positionals.join(" ")} --yes\` to stop them; \`cotal down ${args.positionals.join(" ")} --dry-run\` shows what it stops` });
   for (const [index, member] of members.entries()) {
     member.impact = await prepareNativeServiceStop(member.definition, member.instance);
     rows[index]!.impact = member.impact ?? null;

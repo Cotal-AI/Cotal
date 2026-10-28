@@ -159,6 +159,6 @@ export function jetStreamDisabled(root: string, space: string): Extract<StoreWri
 export function jetStreamDisabledRefusal(write: Extract<StoreWriteObservation, { state: "write-failed" }>, root: string, space: string, needs: string, outcome: string, target: Record<string, unknown>, managerPid: number | undefined): CommandFailure {
   return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker logged a store write failure at ${write.at}: ${write.cause}, and disabled JetStream until it restarts, so ${needs}; ${outcome}`, {
     target: { ...target, brokerLog: write.log },
-    remedy: `${managerPid !== undefined ? `end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run cotal down` : "run cotal down"}; ${storeWriteRepair(write, root, space)}, then run cotal up`,
+    remedy: `${managerPid !== undefined ? `end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run \`cotal down\`` : "run `cotal down`"}; ${storeWriteRepair(write, root, space)}, then run \`cotal up\``,
   });
 }

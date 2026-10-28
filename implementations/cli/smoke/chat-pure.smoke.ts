@@ -477,7 +477,7 @@ console.log("8. a channel outside the session's grant refuses before any effect"
   check("a session opened on no channel refuses a post as a permission denial",
     none?.outcome === "refused" && none.code === "PERMISSION_DENIED", none);
   check("...says so and names the command that opens a session on the channel with this session's flags",
-    /opened on no channel/.test(none?.message ?? "") && (none?.message ?? "").includes("Leave and run cotal chat review --stdio --space a2 to open"), none);
+    /opened on no channel/.test(none?.message ?? "") && (none?.message ?? "").includes("Leave and run `cotal chat review --stdio --space a2` to open"), none);
   const read = grantRefusal(["general"], "other", "read", reopen);
   check("a channel outside a read grant refuses as a permission denial", read?.code === "PERMISSION_DENIED" && read.message === "#other is outside this session's read grant", read);
   check("no refusal shows a broker subject or calls the session an agent",

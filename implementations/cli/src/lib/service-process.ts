@@ -201,7 +201,7 @@ function retainedNativeStop(definition: ServiceDefinitionSnapshot, row: ServiceI
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", retained.publication === "published"
     ? "an earlier native stop request is retained without its terminal receipt, so its outcome is unknown; nothing was submitted or written and its exit was not settled as a crash"
     : "this launch's native stop request file does not read as its own, so whether an earlier stop was published is unknown; nothing was submitted or written and its exit was not settled as a crash",
-  { target: { ...instanceProjection(row), requestId: retained.requestId, stopPublication: retained.publication }, remedy: `inspect the original request with cotal service status ${definition.name} --instance ${row.name} --space ${row.record.value.space}` });
+  { target: { ...instanceProjection(row), requestId: retained.requestId, stopPublication: retained.publication }, remedy: `inspect the original request with \`cotal service status ${definition.name} --instance ${row.name} --space ${row.record.value.space}\`` });
 }
 
 /** Settle every instance of one definition under its writer lock. */
@@ -442,13 +442,13 @@ export async function serviceReadiness(row: ServiceInstanceSnapshot, definition:
   if (definition.readiness.type === "http") {
     // The address alone is named: a definition's URL is kept out of reports, and its path may carry a token.
     const { definition: name, instanceId, space } = uncertain.record.value, host = new URL(definition.readiness.url).host;
-    const inspect = `read its output with cotal service logs ${name} --instance ${instanceId} --space ${space}, and stop it with cotal service stop ${name} --instance ${instanceId} --space ${space} --yes before another start`;
+    const inspect = `read its output with \`cotal service logs ${name} --instance ${instanceId} --space ${space}\`, and stop it with \`cotal service stop ${name} --instance ${instanceId} --space ${space} --yes\` before another start`;
     // A service that answered with another status said it is not ready, so the start failed.
     if (seen && "status" in seen)
       throw new CommandFailure("failed", "OPERATION_FAILED", `the owned process answered its HTTP readiness check on ${host} with status ${seen.status}, not ${definition.readiness.expectedStatus}, until its ${definition.readiness.timeoutMs} ms deadline passed. The process was left running, not relaunched or killed`, { target: instanceProjection(uncertain), remedy: inspect });
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the owned process did not answer its HTTP readiness check on ${host} with status ${definition.readiness.expectedStatus} within ${definition.readiness.timeoutMs} ms; the last check saw ${seen?.failure ?? "no completed request"}. The process was left running, not relaunched or killed`, {
       target: instanceProjection(uncertain),
-      remedy: `${inspect}; cotal service show ${name} --space ${space} shows the readiness deadline it missed`,
+      remedy: `${inspect}; \`cotal service show ${name} --space ${space}\` shows the readiness deadline it missed`,
     });
   }
   throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the owned process did not establish its declared readiness before the deadline; it was not relaunched or automatically killed", { target: instanceProjection(uncertain), remedy: "inspect service status/logs with the original full instance ID before another start" });
@@ -495,9 +495,9 @@ export function assertRestartAdmitted(definition: ServiceDefinitionSnapshot): vo
  *  member's records stay with its stack, so its refusal names no command. */
 function staleRevisionInstance(definition: ServiceDefinitionSnapshot, selected: ServiceInstanceSnapshot): CommandFailure {
   const { name } = definition, { space } = definition.record.value, id = selected.name;
-  const forget = `forget its record with cotal service remove ${name} --instance ${id} --space ${space} --yes, then run cotal service start ${name} --space ${space} again`;
+  const forget = `forget its record with \`cotal service remove ${name} --instance ${id} --space ${space} --yes\`, then run \`cotal service start ${name} --space ${space}\` again`;
   const remedy = (Object.values(STACK_DEFINITION) as string[]).includes(name) ? undefined
-    : gone(observeServiceProcess(selected.record.value)) ? forget : `stop it with cotal service stop ${name} --instance ${id} --space ${space} --yes, ${forget}`;
+    : gone(observeServiceProcess(selected.record.value)) ? forget : `stop it with \`cotal service stop ${name} --instance ${id} --space ${space} --yes\`, ${forget}`;
   return new CommandFailure("refused", "CONFLICT", "this instance belongs to another definition revision; it was not adopted", { target: instanceProjection(selected), remedy });
 }
 
@@ -515,7 +515,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
   // retired, with the journal's own IDs, and only while the definition has no instance record.
   if (options.replacement && (options.brokerInstance || options.newInstance || options.instance !== undefined)) throw new CommandFailure("refused", "UNSUPPORTED", "a journaled stack replacement is started only under its own IDs; no launch was allocated");
   const { program, adapter: declaredAdapter, cliInvocation, env, launcher } = prepareProcessService(definition);
-  if (options.foreground && custodiedPlatform()) throw new CommandFailure("refused", "UNSUPPORTED", "on Windows a service runs in the background under the custodian that holds its job; a terminal-attached foreground child was not substituted", { remedy: `start it in the background with cotal service start ${definition.name} --space ${value.space}` });
+  if (options.foreground && custodiedPlatform()) throw new CommandFailure("refused", "UNSUPPORTED", "on Windows a service runs in the background under the custodian that holds its job; a terminal-attached foreground child was not substituted", { remedy: `start it in the background with \`cotal service start ${definition.name} --space ${value.space}\`` });
   if (declaredAdapter && (options.newInstance && !declaredAdapter.declaration.capabilities.multiInstance || options.foreground && !declaredAdapter.declaration.capabilities.foreground)) throw new CommandFailure("refused", "UNSUPPORTED", "the selected adapter does not declare this multi-instance or foreground capability; no launch was allocated");
   const hold = held ?? serviceDefinitionStore(value.space).pin(definition);
   let child: ChildProcess | undefined, unpinned: (() => void) | undefined, spawnedCustody: ServiceCustody | undefined;
@@ -548,8 +548,8 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       // A settled exit (`failed` with its gone process) is relaunched; a retained `stopping`
       // request is still decided by its own stop evidence.
       const settledExit = exitedWithoutStop(selected.record.value);
-      if (declaredAdapter?.declaration.stop === "native" && selected.record.value.process && !settledExit && !(selected.record.value.state === "stopped" && selected.record.value.nativeStop)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original native service disappeared during its retained stop request, without its recorded terminal stop; no replacement was launched", { target: instanceProjection(selected), remedy: `inspect the original request with cotal service status ${definition.name} --instance ${selected.name} --space ${value.space}` });
-      if (declaredAdapter?.declaration.stop === "kernel-exit" && selected.record.value.process && !settledExit && !(selected.record.value.state === "stopped" && selected.record.value.kernelStop)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original broker process disappeared during its retained stop request, without this controller's recorded exact-exit stop; no replacement listener was launched over its store", { target: instanceProjection(selected), remedy: `inspect the original request with cotal service status ${definition.name} --instance ${selected.name} --space ${value.space}` });
+      if (declaredAdapter?.declaration.stop === "native" && selected.record.value.process && !settledExit && !(selected.record.value.state === "stopped" && selected.record.value.nativeStop)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original native service disappeared during its retained stop request, without its recorded terminal stop; no replacement was launched", { target: instanceProjection(selected), remedy: `inspect the original request with \`cotal service status ${definition.name} --instance ${selected.name} --space ${value.space}\`` });
+      if (declaredAdapter?.declaration.stop === "kernel-exit" && selected.record.value.process && !settledExit && !(selected.record.value.state === "stopped" && selected.record.value.kernelStop)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original broker process disappeared during its retained stop request, without this controller's recorded exact-exit stop; no replacement listener was launched over its store", { target: instanceProjection(selected), remedy: `inspect the original request with \`cotal service status ${definition.name} --instance ${selected.name} --space ${value.space}\`` });
     }
     // HTTP readiness proves only that something answers, so an address that answers before the
     // launch could pass a child that never listened, such as a second instance on the first one's port.
@@ -560,7 +560,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       const holders = live ? [] : addressHolders(value.readiness.url);
       throw new CommandFailure("refused", "CONFLICT", `something already answers ${host}, where ${definition.name}'s HTTP readiness is checked, so a new process's readiness could not be told from it${holders.length ? `; process ${holders.join(", ")} of this account listens there` : ""}; nothing was launched`, {
         target: { space: value.space, definition: definition.name, address: host, ...(live ? { instanceId: live.name } : {}) },
-        remedy: live ? `instance ${live.name} of ${definition.name} answers there; give another instance its own port, or stop that one with cotal service stop ${definition.name} --instance ${live.name} --space ${value.space} --yes first`
+        remedy: live ? `instance ${live.name} of ${definition.name} answers there; give another instance its own port, or stop that one with \`cotal service stop ${definition.name} --instance ${live.name} --space ${value.space} --yes\` first`
           : holders.length ? `stop process ${holders.join(", ")}, which is not an instance of ${definition.name}, then run the command again` : `stop what listens on ${host}, then run the command again`,
       });
     }
@@ -698,7 +698,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       const last = logFrom === undefined ? undefined : lastLoggedLine(path, logFrom);
       // A foreground child wrote to this terminal, so its log holds nothing from this launch.
       const where = options.foreground ? "its output went to this terminal and was not captured in its log" : last ? `the last line it logged is: ${last}` : "its log records the cause";
-      throw new CommandFailure("failed", "OPERATION_FAILED", `the owned service process exited before readiness was established${exited ? ` (exit code ${exitCode ?? "none"}, signal ${exitSignal ?? "none"})` : ""}; ${where}`, { target: instanceProjection(failed), ...(options.foreground ? {} : { remedy: `read its log with cotal service logs ${definition.name} --instance ${id} --space ${value.space}` }) });
+      throw new CommandFailure("failed", "OPERATION_FAILED", `the owned service process exited before readiness was established${exited ? ` (exit code ${exitCode ?? "none"}, signal ${exitSignal ?? "none"})` : ""}; ${where}`, { target: instanceProjection(failed), ...(options.foreground ? {} : { remedy: `read its log with \`cotal service logs ${definition.name} --instance ${id} --space ${value.space}\`` }) });
     }
     return { instance: running, noOp: false, child, exit: { done: exit, observed: () => exited, result: () => ({ code: exitCode, signal: exitSignal }) } };
   } finally { if (unpinned) unpinnedLaunches.delete(unpinned); if (!held) hold.release(); }
@@ -764,7 +764,7 @@ export function preflightProcessServiceStop(definition: ServiceDefinitionSnapsho
     return;
   }
   if (value.nativeStopRequired) throw new CommandFailure("refused", "UNSUPPORTED", "a selected instance requires its original native stop policy; a set stop cannot replace it with process signals");
-  if (value.kernelStopRequired || declared?.declaration.stop === "kernel-exit") throw new CommandFailure("refused", "UNSUPPORTED", `${oneLine(definition.name)} runs a broker, which a set of names never stops; no service was stopped`, { remedy: `stop the services that use it, then the broker alone with cotal service stop ${definition.name} --instance ${selected.name} --space ${value.space} --yes` });
+  if (value.kernelStopRequired || declared?.declaration.stop === "kernel-exit") throw new CommandFailure("refused", "UNSUPPORTED", `${oneLine(definition.name)} runs a broker, which a set of names never stops; no service was stopped`, { remedy: `stop the services that use it, then the broker alone with \`cotal service stop ${definition.name} --instance ${selected.name} --space ${value.space} --yes\`` });
   if (gone(state)) return;
   if (state !== "running" || !value.process) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a selected service process is foreign, unreadable or unresolved; no service was stopped");
   const command = readProcessCommand(value.process.pid);
@@ -798,7 +798,7 @@ async function stopCustodiedProcess(current: ServiceInstanceSnapshot, initial: R
 async function endLeftoverJob(current: ServiceInstanceSnapshot, membersMayEnd: boolean) {
   const row = current;
   const held = await askCustodian(row, { op: "status" });
-  if (!membersMayEnd && held.members.length) throw new CommandFailure("refused", "UNSUPPORTED", `the service's program exited while its job still holds process ${held.members.join(", ")}, which would end with it; nothing was stopped`, { target: instanceProjection(row), remedy: `end them with cotal service stop ${row.record.value.definition} --instance ${row.name} --space ${row.record.value.space} --with-agents --yes` });
+  if (!membersMayEnd && held.members.length) throw new CommandFailure("refused", "UNSUPPORTED", `the service's program exited while its job still holds process ${held.members.join(", ")}, which would end with it; nothing was stopped`, { target: instanceProjection(row), remedy: `end them with \`cotal service stop ${row.record.value.definition} --instance ${row.name} --space ${row.record.value.space} --with-agents --yes\`` });
   const custodian = row.record.value.custody!.custodian;
   const ended = await askCustodian(row, { op: "terminate", code: 1 });
   for (const deadline = Date.now() + 5000; assertRecordIdentity(custodian).kind === "match" && Date.now() < deadline;) await delay(100);
@@ -839,7 +839,7 @@ export async function stopProcessService(definition: ServiceDefinitionSnapshot, 
       if (custodiedPlatform() && !native.withAgents) {
         // A Windows manager's agents run in its job and end with it, so a stop that keeps them refuses.
         const others = (await askCustodian(row, { op: "status" })).members.filter((pid) => pid !== target.pid);
-        if (others.length) throw new CommandFailure("refused", "UNSUPPORTED", `on Windows the manager's job also holds process ${others.join(", ")}, which would end with it; nothing was stopped`, { target: instanceProjection(row), remedy: `stop it with its agents, cotal service stop ${definition.name} --instance ${row.name} --space ${row.record.value.space} --with-agents --yes` });
+        if (others.length) throw new CommandFailure("refused", "UNSUPPORTED", `on Windows the manager's job also holds process ${others.join(", ")}, which would end with it; nothing was stopped`, { target: instanceProjection(row), remedy: `stop it with its agents, \`cotal service stop ${definition.name} --instance ${row.name} --space ${row.record.value.space} --with-agents --yes\`` });
       }
       row = transition(row, { state: "stopping", requestId });
       let returned = false;
@@ -991,11 +991,11 @@ export function removableServiceInstances(space: string, name: string, instanceI
   const rows = serviceInstances(space, name).filter(named);
   if (instanceId !== undefined && !rows.length) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the full instance ID does not belong to this selected definition and space", { target: { space, name, instanceId } });
   for (const row of rows) refuseRecordedSupervisor(row.record.value, "remove");
-  for (const row of rows) if (!gone(observeServiceProcess(row.record.value))) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "service remove requires every recorded owned instance stopped and its supervisor uninstalled", { target: instanceProjection(row), remedy: `use cotal service stop ${name} --instance ${row.name} before removing ${instanceId === undefined ? "its definition" : "its record"}` });
+  for (const row of rows) if (!gone(observeServiceProcess(row.record.value))) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "service remove requires every recorded owned instance stopped and its supervisor uninstalled", { target: instanceProjection(row), remedy: `use \`cotal service stop ${name} --instance ${row.name}\` before removing ${instanceId === undefined ? "its definition" : "its record"}` });
   // A settled exit is a record of evidence, not an unknown request. An unsettled one is settled by
   // the named stop, which signals nothing when the process is already gone.
-  const settle = (row: ServiceInstanceSnapshot) => row.record.value.state === "stopping" || retainedStopRequest(row.record.value) ? { remedy: `inspect the original request with cotal service status ${name} --instance ${row.name} --space ${space}` }
-    : UNSETTLED_RUN.includes(row.record.value.state) ? { remedy: `record the exit with cotal service stop ${name} --instance ${row.name} --space ${space} --yes, then remove it` } : {};
+  const settle = (row: ServiceInstanceSnapshot) => row.record.value.state === "stopping" || retainedStopRequest(row.record.value) ? { remedy: `inspect the original request with \`cotal service status ${name} --instance ${row.name} --space ${space}\`` }
+    : UNSETTLED_RUN.includes(row.record.value.state) ? { remedy: `record the exit with \`cotal service stop ${name} --instance ${row.name} --space ${space} --yes\`, then remove it` } : {};
   for (const row of rows) if (row.record.value.nativeStopRequired && row.record.value.process && !row.record.value.nativeStop && !exitedWithoutStop(row.record.value)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native service has no confirmed terminal stop; its launch and unknown request cannot be forgotten merely because the process disappeared", { target: instanceProjection(row), ...settle(row) });
   for (const row of rows) if (row.record.value.kernelStopRequired && row.record.value.process && !row.record.value.kernelStop && !exitedWithoutStop(row.record.value)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the broker has no recorded exact-exit stop from this controller; its launch cannot be forgotten merely because the process disappeared", { target: instanceProjection(row), ...settle(row) });
   return rows;

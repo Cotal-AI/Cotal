@@ -172,7 +172,7 @@ const redoAgain = run(["service", "add", "redo", "--file", workerFile, "--space"
 const stale = run(["service", "start", "redo", "--space", "b1"]);
 check("a start that selects the earlier revision's record refuses CONFLICT, exit 2, naming that stopped record",
   redoAgain.status === 0 && stale.status === 2 && stale.envelope?.error?.code === "CONFLICT" && stale.envelope.target?.instanceId === oldId && stale.envelope.target?.observedProcess === "gone", shown(stale));
-check("its Next forgets that record, then starts again", stale.envelope?.error?.remedy === `forget its record with cotal service remove redo --instance ${oldId} --space b1 --yes, then run cotal service start redo --space b1 again`, stale.envelope?.error);
+check("its Next forgets that record, then starts again", stale.envelope?.error?.remedy === `forget its record with \`cotal service remove redo --instance ${oldId} --space b1 --yes\`, then run \`cotal service start redo --space b1\` again`, stale.envelope?.error);
 const forgotten = run(["service", "remove", "redo", "--instance", String(oldId), "--space", "b1", "--yes"]);
 const current = run(["service", "start", "redo", "--space", "b1"]);
 const revision = run(["service", "show", "redo", "--space", "b1"]).envelope?.result?.revision;
@@ -247,7 +247,7 @@ const member = run(["service", "add", "stack-manager", "--preset", "manager", "-
 check("rig: a definition under a stack member's name is saved", member.status === 0, shown(member));
 const keptMember = run(["service", "remove", "stack-manager", "--space", "b1", "--yes"]);
 check("service remove of a stack member's definition refuses UNSUPPORTED, exit 2, naming down and space forget, and keeps it",
-  keptMember.status === 2 && keptMember.envelope?.error?.code === "UNSUPPORTED" && keptMember.envelope.error.remedy === "it goes with the stack: cotal down --yes, then cotal space forget b1"
+  keptMember.status === 2 && keptMember.envelope?.error?.code === "UNSUPPORTED" && keptMember.envelope.error.remedy === "it goes with the stack: `cotal down --yes`, then `cotal space forget b1`"
     && run(["service", "show", "stack-manager", "--space", "b1"]).status === 0, shown(keptMember));
 
 // A bare executable name, looked up once on add's PATH. The pinned script and a decoy of the same
@@ -298,7 +298,7 @@ check("service remove of a stack member's definition refuses UNSUPPORTED, exit 2
   check("a start whose HTTP readiness never answers exits 3, naming the address, status, deadline and the refused connection",
     late.status === 3 && late.envelope?.error?.code === "OPERATION_UNKNOWN" && message.includes(`on 127.0.0.1:${port} with status 200 within 1500 ms; the last check saw connection refused`) && message.includes("left running"), shown(late));
   check("it never prints the URL's path or query", !`${late.stdout}${late.stderr}`.includes("/health") && !`${late.stdout}${late.stderr}`.includes("smoke-hidden"), shown(late));
-  check("its Next names the logs and the stop for that exact instance, and service show for the deadline", typeof id === "string" && remedy.includes(`cotal service logs httpsvc --instance ${id} --space b1`) && remedy.includes(`cotal service stop httpsvc --instance ${id} --space b1 --yes`) && remedy.endsWith("cotal service show httpsvc --space b1 shows the readiness deadline it missed"), late.envelope?.error);
+  check("its Next names the logs and the stop for that exact instance, and service show for the deadline", typeof id === "string" && remedy.includes(`cotal service logs httpsvc --instance ${id} --space b1`) && remedy.includes(`cotal service stop httpsvc --instance ${id} --space b1 --yes`) && remedy.endsWith("`cotal service show httpsvc --space b1` shows the readiness deadline it missed"), late.envelope?.error);
   const stopped = run(["service", "stop", "httpsvc", "--instance", String(id), "--space", "b1", "--yes"]);
   check("following it stops the process, exit 0", stopped.status === 0 && stopped.envelope?.outcome === "ok", shown(stopped));
   check("rig: the definition is forgotten", run(["service", "remove", "httpsvc", "--space", "b1", "--yes"]).status === 0);
@@ -347,7 +347,7 @@ const answering = (port: number, status: number) => ({ type: "process", executab
   check("...and quotes the last line it logged during that launch", (start.envelope?.error?.message ?? "").endsWith("the last line it logged is: broken"), shown(start));
   const restart = run(["service", "restart", "broken", "--space", "b1", "--yes"]);
   check("its restart is partial, exit 4, naming the replacement's exit code and its log",
-    restart.status === 4 && restart.envelope?.error?.code === "OPERATION_PARTIAL" && (restart.envelope.error.message ?? "").includes("exited before readiness was established (exit code 1") && (restart.envelope.error.remedy ?? "").startsWith("read its log with cotal service logs broken --instance "), shown(restart));
+    restart.status === 4 && restart.envelope?.error?.code === "OPERATION_PARTIAL" && (restart.envelope.error.message ?? "").includes("exited before readiness was established (exit code 1") && (restart.envelope.error.remedy ?? "").startsWith("read its log with `cotal service logs broken --instance "), shown(restart));
   const after = run(["service", "status", "broken", "--space", "b1"]);
   check("status then shows it failed with exit code 1", after.envelope?.result?.recordedState === "failed" && (after.envelope.result.exit as { code?: number } | null)?.code === 1, after.envelope?.result);
   check("rig: the definition is forgotten", run(["service", "remove", "broken", "--space", "b1", "--yes"]).status === 0);
@@ -513,7 +513,7 @@ if (process.platform === "linux") {
   const definition = (executable: string) => JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable, args: [], cwd: work }, readiness: { type: "process", timeoutMs: 3000 } });
   const unavailable = (r: ReturnType<typeof run>, message: string, remedy: string) => r.status === 2 && r.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE"
     && r.envelope.error.message === `${message}; no launch or write was attempted` && r.envelope.error.remedy === remedy;
-  const replace = (thing: string) => `; to use another ${thing}, forget the service with cotal service remove moved --space b1 --yes and add it again`;
+  const replace = (thing: string) => `; to use another ${thing}, forget the service with \`cotal service remove moved --space b1 --yes\` and add it again`;
   writeFileSync(file, definition(join(dir, "nosuch.sh")));
   const missingAdd = run(["service", "add", "moved", "--file", file, "--space", "b1"]);
   check("add of an executable that does not exist refuses DEPENDENCY_UNAVAILABLE, exit 2, naming it and the field to correct",

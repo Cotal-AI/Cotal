@@ -7,7 +7,7 @@ import {
 } from "@cotal-ai/core";
 import { type NatsConnection } from "@nats-io/transport-node";
 import {
-  CommandFailure, commandFailureReport, exitCode, failureEnvelope, jsonFlag, plainFlag, presentationOf, renderReport, streamRecord, terminalWidth, writeEnvelope, writeResult, writeStreamRecord,
+  CommandFailure, codeSpan, commandFailureReport, exitCode, failureEnvelope, jsonFlag, plainFlag, presentationOf, renderReport, streamRecord, terminalWidth, writeEnvelope, writeResult, writeStreamRecord,
   loadMeshes, targetFlags, type Report,
   recordOperationSpace,
 } from "@cotal-ai/workspace";
@@ -147,7 +147,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
       const longer = budgetMs < 10_000 ? 10_000 : Math.min(budgetMs * 2, 2_147_483_647);
       throw new CommandFailure("failed", "OPERATION_FAILED", `the ${budgetMs}ms ${values.timeout === undefined ? "deadline" : "--timeout"} ran out during the endpoint contract read; no command was published`, {
         native: { code: error.code, outcome: error.outcome }, cause: error,
-        remedy: `rerun it with a longer --timeout and the same other flags, such as cotal ${commandName === "endpoint" ? "endpoint invoke" : "invoke"} ${shellWord(selector)} ${shellWord(command)} --timeout ${longer}`,
+        remedy: `rerun it with a longer --timeout and the same other flags, such as ${codeSpan(`cotal ${commandName === "endpoint" ? "endpoint invoke" : "invoke"} ${shellWord(selector)} ${shellWord(command)} --timeout ${longer}`)}`,
       });
     });
     const declaration = service.commands.get(command);

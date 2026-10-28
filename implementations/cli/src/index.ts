@@ -464,8 +464,8 @@ const baseCommands: Command[] = [
       { name: "force", type: "boolean", description: "replacement is scoped to auth signer" },
     ],
     outputs: ["json", "plain"], prepareMeshTarget: false,
-    validate: () => { throw new CommandFailure("refused", "USAGE_INVALID", "cotal mint moved into the auth namespace; no credential was issued", { remedy: "use cotal auth mint <name>, or cotal auth signer --out <private-file>" }); },
-    run: async () => { throw new CommandFailure("refused", "USAGE_INVALID", "use cotal auth mint <name> instead"); },
+    validate: () => { throw new CommandFailure("refused", "USAGE_INVALID", "cotal mint moved into the auth namespace; no credential was issued", { remedy: "use `cotal auth mint <name>`, or `cotal auth signer --out <private-file>`" }); },
+    run: async () => { throw new CommandFailure("refused", "USAGE_INVALID", "use `cotal auth mint <name>` instead"); },
   },
   {
     kind: "command", name: "team", aliases: ["t"], group: "Teams",

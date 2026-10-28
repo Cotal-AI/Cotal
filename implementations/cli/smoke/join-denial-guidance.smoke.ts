@@ -161,7 +161,7 @@ try {
   const bare = cli("join", "--space", SPACE, "--server", server, "--creds", unprovisioned, "--lifecycle-uid", unprovisionedUid, "--name", "probe");
   check("CELL: a --creds join with no inbox for its lifecycle names that lifecycle and the provisioning mint, not cotal up",
     bare.status === 2 && /Code: +TARGET_NOT_FOUND/.test(bare.text) && bare.text.includes(`no inbox provisioned for this credential's lifecycle ${unprovisionedUid}`) &&
-      bare.text.includes("cotal auth mint <name> --provision") && !/run cotal up/.test(bare.text), bare.text);
+      bare.text.includes("cotal auth mint <name> --provision") && !/run `cotal up`/.test(bare.text), bare.text);
 
   console.log(fail === 0
     ? `\nJOIN DENIAL GUIDANCE SMOKE OK ✅  (${pass} passed, ${fail} failed)`

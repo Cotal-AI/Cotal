@@ -71,7 +71,7 @@ for (const [entry, preset] of Object.entries(DEPRECATED_DAEMON_PRESETS) as [keyo
   const warning = deprecatedDaemonEntryWarning(DEPRECATED_MANAGER_ENTRY);
   const command = registry.all<Command>("command").find((row) => row.name === DEPRECATED_MANAGER_ENTRY);
   check("supervise is still a registered entry, hidden from help and completion", command?.hidden === true);
-  check("supervise is marked deprecated where its own help shows it, naming cotal manager start", command?.summary.startsWith(`(deprecated, removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}; use cotal manager start) `) === true, command?.summary);
+  check("supervise is marked deprecated where its own help shows it, naming cotal manager start", command?.summary.startsWith(`(deprecated, removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}; use \`cotal manager start\`) `) === true, command?.summary);
   check("supervise keeps its pre-cut argv", (() => { try { parseCommandArgs(command!, lines.supervise.slice(1)); return true; } catch { return false; } })());
   check("supervise names cotal manager start, with --foreground for a terminal", warning.includes("Use `cotal manager start`, or `cotal manager start --foreground`"), warning);
   check("supervise names the shared removal release", warning.includes(` removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}.`), warning);
@@ -136,7 +136,7 @@ for (const [entry, twinName] of Object.entries(DAEMON_ENTRY_TWINS) as [keyof typ
   const fields = [...new Set([...Object.keys(command), ...Object.keys(twin)])].filter((key) => key !== "name" && key !== "run" && key !== "summary");
   const differ = fields.filter((key) => (command as unknown as Record<string, unknown>)[key] !== (twin as unknown as Record<string, unknown>)[key]);
   check(`${twinName} declares what ${entry} declares`, differ.length === 0, differ);
-  const use = entry === DEPRECATED_MANAGER_ENTRY ? "cotal manager start" : `the ${DEPRECATED_DAEMON_PRESETS[entry]} service preset`;
+  const use = entry === DEPRECATED_MANAGER_ENTRY ? "`cotal manager start`" : `the ${DEPRECATED_DAEMON_PRESETS[entry]} service preset`;
   check(`${entry}'s summary is its twin's under the deprecation mark`, command.summary === `(deprecated, removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}; use ${use}) ${twin.summary}`, command.summary);
   const line = lines[entry].slice(1);
   check(`${twinName} parses ${entry}'s pre-cut line as ${entry} does`,

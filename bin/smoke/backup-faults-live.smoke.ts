@@ -36,7 +36,7 @@ const BACKUP_STAGES = {
   close: /smoke-injected failure after snapshot close/,
   manifest: /smoke-injected failure before manifest publication/,
   // A full disk names its cause and directory, what was and was not written, and a retry.
-  nospace: /ran out of disk space \(ENOSPC\) writing the backup in [^\n]*artifact-nospace; it removed the partial backup and published none, and the preserved cut is still ready[\s\S]*free space on the disk that holds [^\n]*artifact-nospace, then run cotal backup create [^\n]*artifact-nospace again/,
+  nospace: /ran out of disk space \(ENOSPC\) writing the backup in [^\n]*artifact-nospace; it removed the partial backup and published none, and the preserved cut is still ready[\s\S]*free space on the disk that holds [^\n]*artifact-nospace, then run `cotal backup create [^\n]*artifact-nospace` again/,
 } as const;
 
 const journalState = (root: string): string | undefined => {
@@ -196,7 +196,7 @@ async function backupStageFaultScenario(): Promise<void> {
     for (const destination of [join(root, ".cotal", material, "bk"), join(root, "material-link", "bk2")]) {
       const cleaned = run("backup", "create", destination, "--json");
       const cleanedEnvelope = JSON.parse(cleaned.stdout) as { error?: { code?: string; message?: string } };
-      assert.ok(cleaned.status === 1 && cleanedEnvelope.error?.code === "USAGE_INVALID" && (cleanedEnvelope.error.message ?? "").includes(`is inside ${join(root, ".cotal", material)}, which cotal clean all removes`), `a destination ${destination} that clean all removes is a usage refusal\n${cleaned.stdout}${cleaned.stderr}`);
+      assert.ok(cleaned.status === 1 && cleanedEnvelope.error?.code === "USAGE_INVALID" && (cleanedEnvelope.error.message ?? "").includes(`is inside ${join(root, ".cotal", material)}, which \`cotal clean all\` removes`), `a destination ${destination} that clean all removes is a usage refusal\n${cleaned.stdout}${cleaned.stderr}`);
       assert.ok(!existsSync(join(root, ".cotal", material, "bk")) && !existsSync(join(root, ".cotal", material, "bk2")), `that refusal writes nothing in ${material}`);
     }
     rmSync(join(root, "material-link"));
@@ -227,7 +227,7 @@ async function backupStageFaultScenario(): Promise<void> {
       assert.notEqual(faulted.status, 0, `${stage} fault must fail the backup\nstdout:\n${faulted.stdout}`);
       assert.match(faulted.stderr, injected, `${stage} fault reports its injected failure`);
       // The cleanup completed, so the next step is the same create, not a recovery.
-      assert.match(faulted.stderr, new RegExp(`then run cotal backup create \\S*artifact-${stage} again`), `${stage} fault names the same create as its next step`);
+      assert.match(faulted.stderr, new RegExp(`then run \`cotal backup create \\S*artifact-${stage}\` again`), `${stage} fault names the same create as its next step`);
       if (stage !== "nospace") assert.match(faulted.stderr, /the preserved cut is still ready; fix the cause in the native detail/, `${stage} fault says the cut is still ready`);
       assert.equal(journalState(root), "ready", `${stage} fault returns the maintenance journal to ready`);
       assert.equal(existsSync(destination), false, `${stage} fault leaves no unpublished artifact at the destination`);
@@ -413,7 +413,7 @@ async function interruptedRestoreScenario(): Promise<void> {
       const envelope = JSON.parse(lost.stdout) as { target?: { attemptId?: unknown; holderPid?: unknown; holderOperation?: unknown }; error?: { code?: string; message?: string; remedy?: string } };
       assert.equal(lost.status, 2, `a create that meets the lock refuses\n${lost.stdout}${lost.stderr}`);
       assert.ok(envelope.error?.code === "LIFECYCLE_BLOCKED" && envelope.error.message === `backup create is refused: a backup create, process ${process.pid}, has held this root's maintenance lock since ${contender.owner.startedAt}; nothing was changed`
-        && envelope.error.remedy?.startsWith(`wait for process ${process.pid} to finish, then run cotal backup create ${join(root, "contended")} again`)
+        && envelope.error.remedy?.startsWith(`wait for process ${process.pid} to finish, then run \`cotal backup create ${join(root, "contended")}\` again`)
         && envelope.target?.holderPid === process.pid && envelope.target.holderOperation === "backup create" && !("attemptId" in envelope.target), `the losing create names the lock holder\n${lost.stdout}`);
     } finally { releaseMaintenanceLock(contender); }
 

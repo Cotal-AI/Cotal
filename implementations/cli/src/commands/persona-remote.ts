@@ -145,7 +145,7 @@ export async function remotePersona(args: ParsedArgs): Promise<void> {
     // A manager in this root writes and reads this root's own catalog file.
     const localFile = connection.root === undefined || name === undefined ? undefined : agentFilePath(connection.root, name);
     if (!response.reply.ok) throw failedReply(response, target, mode === "create",
-      mode === "show" && localFile !== undefined && existsSync(localFile) ? `a persona file of that name is in this root's catalog, which the manager does not show this caller: read it here with cotal p show ${name}` : undefined);
+      mode === "show" && localFile !== undefined && existsSync(localFile) ? `a persona file of that name is in this root's catalog, which the manager does not show this caller: read it here with \`cotal p show ${name}\`` : undefined);
     const raw = response.reply.data as Record<string, unknown>;
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("persona reply shape");
     if (mode === "create" && (raw.name !== name || typeof raw.path !== "string")) throw new Error("persona write reply identity");

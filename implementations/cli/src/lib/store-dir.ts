@@ -99,7 +99,7 @@ export function sharedStoreAtStart(dir: string, space: string, recorded: boolean
 
 /** The warning for a start on its recorded store that another space also uses. */
 export function sharedStoreWarning(dir: string, tenants: readonly StoreTenant[]): string {
-  return `the store ${dir} also belongs to ${storeTenantsText(tenants)}; a store folder belongs to one space, and cotal reset store, cotal reset space and cotal clean store refuse it while both use it`;
+  return `the store ${dir} also belongs to ${storeTenantsText(tenants)}; a store folder belongs to one space, and \`cotal reset store\`, \`cotal reset space\` and \`cotal clean store\` refuse it while both use it`;
 }
 
 /** The warning for a start whose recorded store is missing. */
@@ -111,7 +111,7 @@ export function missingStoreWarning(dir: string): string {
 export function refuseSharedStoreRemoval(path: string, space: string): void {
   const tenants = otherStoreTenants(path, space);
   if (tenants.length)
-    throw new CommandFailure("refused", "CONFLICT", `the store ${path} also belongs to ${storeTenantsText(tenants)}, and removing it would delete that data too; nothing was removed`, { target: { space, storeDir: path, otherSpaces: tenants }, remedy: `keep it while either space needs its history; once neither does, stop both with cotal down and remove ${path} by hand` });
+    throw new CommandFailure("refused", "CONFLICT", `the store ${path} also belongs to ${storeTenantsText(tenants)}, and removing it would delete that data too; nothing was removed`, { target: { space, storeDir: path, otherSpaces: tenants }, remedy: `keep it while either space needs its history; once neither does, stop both with \`cotal down\` and remove ${path} by hand` });
 }
 
 /** The entries of a restore's old store that no Cotal store writes, which no cleanup deletes: none
@@ -121,7 +121,8 @@ export function oldStoreForeignEntries(path: string | undefined): string[] {
 }
 
 /** The refusal for a store that holds `entries` no Cotal store writes. `held` says why that matters,
- *  `outcome` what did not happen, and `retry` is the command to run once they are moved out. */
+ *  `outcome` what did not happen, and `retry` is what to run once they are moved out, a command in
+ *  backticks or a step such as "the restore". */
 export function foreignEntriesRefusal(path: string, entries: readonly string[], held: string, outcome: string, retry: string, target: Readonly<Record<string, unknown>> = {}): CommandFailure {
   return new CommandFailure("refused", "CONFLICT", `${held} ${path} also holds ${listEntries(entries)}, which no Cotal store writes; ${outcome}`, {
     target: { ...target, storeDir: path, entries: [...entries] },
@@ -233,5 +234,5 @@ export function warnForeignStoreEntries(value: string): void {
   if (!statIfPresent(path)?.isDirectory()) return;
   const foreign = foreignStoreEntries(path);
   if (foreign.length)
-    console.error(c.yellow(`! the --store-dir ${path} also holds ${listEntries(foreign)}; the broker writes its store beside them, and cotal clean store, cotal reset store, cotal backup cleanup-fallback and a restore into this directory refuse it while they are there`));
+    console.error(c.yellow(`! the --store-dir ${path} also holds ${listEntries(foreign)}; the broker writes its store beside them, and \`cotal clean store\`, \`cotal reset store\`, \`cotal backup cleanup-fallback\` and a restore into this directory refuse it while they are there`));
 }

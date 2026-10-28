@@ -17,6 +17,9 @@ const {
   presentationOf,
   renderReport,
   codeSpan,
+  commandFailureReport,
+  CommandFailure,
+  heldSpaceNote,
   wrapWords,
   writeResult,
 } = await import("@cotal-ai/workspace");
@@ -176,6 +179,19 @@ check("a line that starts with a command, as a usage line does, wraps at its spa
 const listed = renderReport({ sections: [{ title: "Verdict", blocks: [{ kind: "commands", items: [{ command: `cotal reset store ${longName} --yes`, description: "Remove only this stopped store" }] }] }] }, "plain", 80).split("\n");
 check("a command in a command list keeps one line, however wide", listed.includes(`  cotal reset store ${longName} --yes`) && listed.includes("    Remove only this stopped store"), listed);
 const fits = (text: string, width: number) => text.split("\n").every((line) => displayWidth(line) <= width);
+// A Next and the stopped-space note name their command in backticks after other words, so at 80
+// columns it keeps one line. Named bare, these split after `cotal`, as the control shows.
+const nextLines = (remedy: string) => renderReport(commandFailureReport(new CommandFailure("refused", "TARGET_UNAVAILABLE", "nothing answered", { remedy })), "plain", 80).split("\n");
+for (const [remedy, command] of [
+  ["rerun it with a longer --timeout and the same other flags, such as `cotal invoke manager ps --timeout 10000`", "`cotal invoke manager ps --timeout 10000`"],
+  ["start the service that serves nosuch, then run the command again; `cotal service --space stoppedspace-1028` lists this space's services", "`cotal service --space stoppedspace-1028`"],
+] as const) {
+  const lines = nextLines(remedy), bareLines = nextLines(remedy.replaceAll("`", ""));
+  check(`a Next keeps ${command} on one line at 80 columns, which it splits named bare`,
+    lines.some((line) => line.includes(command)) && fits(lines.join("\n"), 80) && !bareLines.some((line) => line.includes(command.replaceAll("`", ""))), { lines, bareLines });
+}
+const heldNote = renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [{ text: heldSpaceNote({ space: "stoppedspace-1028", root: "/nonexistent-cotal-root", state: "stopped" }), tone: "hint" }] }] }] }, "plain", 80).split("\n");
+check("the stopped-space note keeps `cotal up` on one line at 80 columns", heldNote.length === 2 && heldNote[1] === "`cotal up`", heldNote);
 const longFields = { sections: [{ blocks: [{ kind: "fields" as const, rows: [["id", "x"], ["server", "nats://broker.example.com:4222 with a note that runs well past the line"]] as [string, string][] }] }] };
 const longField = renderReport(longFields, "plain", 60);
 check("a long field value fits the width", fits(longField, 60), longField);

@@ -56,7 +56,7 @@ export function goneStackRefusal(failure: CommandFailure): CommandFailure {
   const gone = goneStackRoot(space);
   if (gone === undefined || canonicalRoot(gone) !== canonicalRoot(root)) return failure;
   return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `space "${space}" started in ${root}, and that folder is gone with the seed it held, so no credential for its stack can be made here`, {
-    target: failure.target, remedy: `stop the stack it left running and free its name with cotal down --space ${space} --yes`,
+    target: failure.target, remedy: `stop the stack it left running and free its name with \`cotal down --space ${space} --yes\``,
   });
 }
 
@@ -81,7 +81,7 @@ function readMembers(space: string, root: string): Member[] {
       const state = observeServiceProcess(instance.record.value);
       if (state !== "running" && !processGone(state)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the ${role}'s instance ${instance.name} is ${state === "foreign-host" ? "recorded on another machine" : "unreadable or has an unresolved launch"}, so whether it runs is not known; no member was stopped`, {
         target: { space, root, definition: definition.name, instanceId: instance.name, process: state },
-        remedy: `inspect it with cotal service status ${definition.name} --instance ${instance.name} --space ${space}`,
+        remedy: `inspect it with \`cotal service status ${definition.name} --instance ${instance.name} --space ${space}\``,
       });
       members.push({ role, definition, instance, pid: instance.record.value.process?.pid ?? null, live: state === "running" });
     }
@@ -127,7 +127,7 @@ async function stopMember(space: string, member: Member): Promise<Stopped> {
     }
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the ${member.role}'s process ${target.pid} did not exit within ${EXIT_WINDOW_MS[member.role] / 1000} s of SIGTERM; it was not killed, and later members were not stopped`, {
       target: { space, instanceId: member.instance.name, pid: target.pid },
-      remedy: `run cotal down --space ${space} --yes again once process ${target.pid} has exited`,
+      remedy: `run \`cotal down --space ${space} --yes\` again once process ${target.pid} has exited`,
     });
   } finally { hold.release(); }
 }
@@ -176,13 +176,13 @@ export async function goneRootStackDown(space: string, root: string, values: Par
     try { stopped.push(await stopMember(space, member)); }
     catch (error) {
       if (!isCommandFailure(error) || !stopped.some((row) => row.result === "stopped")) throw error;
-      throw new CommandFailure(error.outcome === "unknown" ? "unknown" : "partial", error.outcome === "unknown" ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", `${error.message}; the members before it were stopped and the saved definitions were kept`, { target: error.target, changed: stopped.filter((row) => row.result === "stopped"), remedy: error.remedy ?? `run cotal down --space ${space} --yes again` });
+      throw new CommandFailure(error.outcome === "unknown" ? "unknown" : "partial", error.outcome === "unknown" ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", `${error.message}; the members before it were stopped and the saved definitions were kept`, { target: error.target, changed: stopped.filter((row) => row.result === "stopped"), remedy: error.remedy ?? `run \`cotal down --space ${space} --yes\` again` });
     }
   }
   let released: string[];
   try { released = releaseDefinitions(space, root); removeMeshesByRoot(root, space); }
   catch (error) {
-    throw new CommandFailure("partial", "OPERATION_PARTIAL", `every member stopped, but removing the saved definitions or the registration did not confirm (${error instanceof Error ? error.message : String(error)})`, { target, changed: stopped, remedy: `run cotal down --space ${space} --yes again` });
+    throw new CommandFailure("partial", "OPERATION_PARTIAL", `every member stopped, but removing the saved definitions or the registration did not confirm (${error instanceof Error ? error.message : String(error)})`, { target, changed: stopped, remedy: `run \`cotal down --space ${space} --yes\` again` });
   }
   writeResult(presentation, { command: "down", target, result: { kind: "gone-root-stack-stop", ...target, members: stopped, releasedDefinitions: released } }, (): Report => ({ space, sections: [
     { title: "Stack stopped; its folder was gone", blocks: [
@@ -193,8 +193,8 @@ export async function goneRootStackDown(space: string, root: string, values: Par
     // A folder moved or renamed with its records keeps the journal, store and trust, and adopting them
     // where it is now keeps its history, as `up` run there names.
     { title: "Next", blocks: [{ kind: "commands", items: [
-      { command: `cotal space create ${space} --adopt --root <folder>`, description: "If the folder was moved or renamed, adopt its records where it is now, which keeps its history, then run cotal up there" },
-      { command: `cotal space create ${space}`, description: "Otherwise prepare the space in another folder, then run cotal up there" },
+      { command: `cotal space create ${space} --adopt --root <folder>`, description: "If the folder was moved or renamed, adopt its records where it is now, which keeps its history, then run `cotal up` there" },
+      { command: `cotal space create ${space}`, description: "Otherwise prepare the space in another folder, then run `cotal up` there" },
     ] }] },
   ] }));
 }

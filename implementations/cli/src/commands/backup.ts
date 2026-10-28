@@ -105,13 +105,13 @@ function backupInterruptNotice(root: string, attemptId: string, destination: str
   if (journal?.state !== "claimed" || journal.claim.attemptId !== attemptId) return `Interrupted: backup attempt ${attemptId} stopped and holds no claim on this root.`;
   const recover = `cotal backup recover ${attemptId} --yes`;
   if (lstatSync(join(destination, "manifest.json"), { throwIfNoEntry: false }))
-    return `Interrupted: backup attempt ${attemptId} published ${destination} but stopped before it released this root.\nRelease it with ${recover}; the published artifact is kept.`;
-  return `Interrupted: backup attempt ${attemptId} stopped before it published, and left a partial artifact at ${destination}.\nRemove it and release this root with ${recover}; a backup create to another directory also does that first.`;
+    return `Interrupted: backup attempt ${attemptId} published ${destination} but stopped before it released this root.\nRelease it with \`${recover}\`; the published artifact is kept.`;
+  return `Interrupted: backup attempt ${attemptId} stopped before it published, and left a partial artifact at ${destination}.\nRemove it and release this root with \`${recover}\`; a backup create to another directory also does that first.`;
 }
 
 /** This root has no stopped preserved cut to back up. Nothing was claimed or copied. */
 function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal>): CommandFailure {
-  if (!record) return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "backup requires a stopped preserved cut, and this root records none", { target: { root }, remedy: "stop the stack with cotal down --preserve-state, then create the backup" });
+  if (!record) return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "backup requires a stopped preserved cut, and this root records none", { target: { root }, remedy: "stop the stack with `cotal down --preserve-state`, then create the backup" });
   // A restore that still runs is named and waited for; only a stale one is rolled back.
   if (record.state === "restore-ready") {
     const assessment = assessRestoreClaim(record, { unrecordedOwnersDead: attemptProcessesGone(root) });
@@ -119,7 +119,7 @@ function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal
   }
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup requires the stopped preserved cut; maintenance state is ${record.state}`, {
     target: { root, space: record.space, state: record.state },
-    remedy: "restore" in record ? restoreNextStep(record.state, record.restore.attemptId, restoreLeftOut(record)) : "finish this root's current maintenance attempt first; check it with cotal status",
+    remedy: "restore" in record ? restoreNextStep(record.state, record.restore.attemptId, restoreLeftOut(record)) : "finish this root's current maintenance attempt first; check it with `cotal status`",
   });
 }
 
@@ -139,7 +139,7 @@ function lockHeld(root: string, retry: string): CommandFailure {
     : "another maintenance operation holds this root's maintenance lock";
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup create is refused: ${who}; nothing was changed`, {
     target: { root, ...(holder ? { holderPid: holder.owner.pid, holderStartedAt: holder.owner.startedAt, ...(holder.operation ? { holderOperation: holder.operation } : {}) } : {}) },
-    remedy: `wait for ${holder ? `process ${holder.owner.pid}` : "that operation"} to finish, then run ${retry} again; cotal status shows this root's maintenance state`,
+    remedy: `wait for ${holder ? `process ${holder.owner.pid}` : "that operation"} to finish, then run ${retry} again; \`cotal status\` shows this root's maintenance state`,
   });
 }
 
@@ -460,7 +460,7 @@ function noSpaceFailure(error: unknown, observed: BackupObservation, args: Parse
   const destination = resolve(args.positionals[1]!);
   const { what, directory } = observed.writing;
   const written = what === "backup" ? "it removed the partial backup and published none" : `it removed the partial copy and wrote nothing to ${destination}`;
-  return new CommandFailure("failed", "OPERATION_FAILED", `backup create ran out of disk space (${code}) writing the ${what} in ${directory}; ${written}, and the preserved cut is still ready`, { target, native: { detail: error instanceof Error ? error.message : String(error) }, remedy: `free space on the disk that holds ${directory}, then run ${retryCreate(args)} again` });
+  return new CommandFailure("failed", "OPERATION_FAILED", `backup create ran out of disk space (${code}) writing the ${what} in ${directory}; ${written}, and the preserved cut is still ready`, { target, native: { detail: error instanceof Error ? error.message : String(error) }, remedy: `free space on the disk that holds ${directory}, then run \`${retryCreate(args)}\` again` });
 }
 
 /** The same `backup create`, for a failure that left the preserved cut ready to try again. */
@@ -514,7 +514,7 @@ export async function backup(args: ParsedArgs): Promise<void> {
     // The guard's own sentence is the operator's evidence, as on restore: it names the cause, such as
     // a broker still answering at the cut's endpoint. Snapshot bytes and credentials never reach it.
     const detail = error instanceof Error ? error.message : String(error);
-    throw new CommandFailure(outcome, outcome === "refused" ? "LIFECYCLE_BLOCKED" : outcome === "failed" ? "OPERATION_FAILED" : "OPERATION_UNKNOWN", outcome === "refused" ? "backup preparation did not establish an eligible stopped preserved cut; no published artifact was established" : outcome === "failed" ? "backup creation failed and its native attempt cleanup completed; no published artifact was established" : "the backup attempt did not confirm publication and cleanup; its original attempt is retained without a retry", { target, native: { ...(isMaintenanceError(error) ? { code: error.code } : {}), detail }, remedy: outcome === "failed" ? `the preserved cut is still ready; fix the cause in the native detail, then run ${retryCreate(args)} again` : "inspect the preserved-cut maintenance state and original attempt before recovery; snapshot bytes and credentials were not printed" });
+    throw new CommandFailure(outcome, outcome === "refused" ? "LIFECYCLE_BLOCKED" : outcome === "failed" ? "OPERATION_FAILED" : "OPERATION_UNKNOWN", outcome === "refused" ? "backup preparation did not establish an eligible stopped preserved cut; no published artifact was established" : outcome === "failed" ? "backup creation failed and its native attempt cleanup completed; no published artifact was established" : "the backup attempt did not confirm publication and cleanup; its original attempt is retained without a retry", { target, native: { ...(isMaintenanceError(error) ? { code: error.code } : {}), detail }, remedy: outcome === "failed" ? `the preserved cut is still ready; fix the cause in the native detail, then run \`${retryCreate(args)}\` again` : "inspect the preserved-cut maintenance state and original attempt before recovery; snapshot bytes and credentials were not printed" });
   }
   writeResult(presentationOf(args.values), { command: "backup create", target: { space: observed.published!.space, directory: observed.published!.directory }, result: { ...observed.published!, cleanupConfirmed: observed.cleanupConfirmed } }, backupCreateView);
 }
@@ -540,7 +540,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   try { assertSingleSpaceBroker(authDir(root), "cotal backup"); }
   catch (error) { throw new CommandFailure("refused", "CONFLICT", (error as Error).message, { target: { root } }); }
   const live = liveMeshProcesses(root);
-  if (live.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup is offline-only; still running: ${live.join(", ")}`, { target: { root }, remedy: "stop the stack with cotal down --preserve-state, then create the backup" });
+  if (live.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup is offline-only; still running: ${live.join(", ")}`, { target: { root }, remedy: "stop the stack with `cotal down --preserve-state`, then create the backup" });
   // Refusals that need no lock come first, so a refused create leaves no maintenance state behind.
   const journal = readMaintenanceJournal(root);
   if (!journal) throw notReady(root, undefined);
@@ -556,7 +556,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   if (destinationExists) {
     // The partial artifact of an interrupted create is named with the command that removes it.
     const partial = journal.state === "claimed" && journal.claim.ownedPaths?.some((owned) => owned.label === "destination" && owned.path === destinationPath) ? journal.claim.attemptId : undefined;
-    throw new CommandFailure("refused", "CONFLICT", partial ? `the backup destination ${destinationPath} is the partial artifact of interrupted backup attempt ${partial}; backup create writes only a new directory` : "the backup destination already exists; backup create writes only a new directory", { target: { directory: destinationPath }, remedy: partial ? `remove it with cotal backup recover ${partial} --yes, then run this create again` : "name a directory that does not exist yet" });
+    throw new CommandFailure("refused", "CONFLICT", partial ? `the backup destination ${destinationPath} is the partial artifact of interrupted backup attempt ${partial}; backup create writes only a new directory` : "the backup destination already exists; backup create writes only a new directory", { target: { directory: destinationPath }, remedy: partial ? `remove it with \`cotal backup recover ${partial} --yes\`, then run this create again` : "name a directory that does not exist yet" });
   }
   if (missingBackupPath(destinationPath) === "folder")
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no folder ${dirname(destinationPath)} to create the backup in; nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath), missing: "folder" }, remedy: "create that folder first; backup create makes only the artifact's own folder" });
@@ -570,7 +570,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   const cleaned = Object.values(localIdentityCleanupTargets(canonicalRoot(root), journal.space)).flat().map(canonicalRoot)
     .find((path) => overlaps(canonicalFuturePath(destinationPath), path));
   if (cleaned)
-    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside ${cleaned}, which cotal clean all removes; nothing was written`, { target: { directory: destinationPath, removedBy: cleaned }, remedy: `name a destination outside ${cleaned}`, selfContained: true });
+    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside ${cleaned}, which \`cotal clean all\` removes; nothing was written`, { target: { directory: destinationPath, removedBy: cleaned }, remedy: `name a destination outside ${cleaned}`, selfContained: true });
   try { accessSync(dirname(destinationPath), constants.W_OK | constants.X_OK); }
   catch {
     throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${dirname(destinationPath)}, so the backup cannot be created in it; nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath) }, remedy: `make that folder writable with chmod u+w ${dirname(destinationPath)}, or name a destination in a folder this account can write` });
@@ -633,7 +633,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     // is refused naming that listener, as restore and resume refuse it.
     const space = ready.space;
     await assertEndpointUnreachable(recordedServer).catch((error: Error) => {
-      throw new CommandFailure("refused", "CONFLICT", `${error.message}; a process there may still be changing the preserved store, so nothing was copied`, { target: { root, space, server: recordedServer }, remedy: `stop the process that listens on ${recordedServer}, then run ${retryCreate(args)} again` });
+      throw new CommandFailure("refused", "CONFLICT", `${error.message}; a process there may still be changing the preserved store, so nothing was copied`, { target: { root, space, server: recordedServer }, remedy: `stop the process that listens on ${recordedServer}, then run \`${retryCreate(args)}\` again` });
     });
     // Ownership precedes existence: the claim is journaled with pending slots for every path this
     // attempt may create, so a crash at any later instant leaves a journal owner to recover from.

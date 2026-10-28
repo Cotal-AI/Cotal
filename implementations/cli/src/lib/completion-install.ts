@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { acquireLock } from "@cotal-ai/core";
 import { LOAD_NOW, SCRIPTS } from "./completion-scripts.js";
-import { CommandFailure } from "@cotal-ai/workspace";
+import { CommandFailure, codeSpan } from "@cotal-ai/workspace";
 
 interface Snapshot { bytes: Buffer; hash: string; dev: number; ino: number; mode: number }
 /** `wiring.created` marks a startup file that `install` created, so `uninstall` removes it once it is empty. */
@@ -57,8 +57,8 @@ function unsafe(gaps: Gap[]): CommandFailure {
   return new CommandFailure("refused", "PERMISSION_DENIED", `${gaps.map((gap) => `${gap.path} ${gap.problem}`).join("; ")}; custom shell wiring was not changed`, {
     target: gaps.length === 1 ? { path: gaps[0]!.path } : { path: gaps[0]!.path, paths: gaps.map((gap) => gap.path) },
     remedy: gaps.every((gap) => gap.chmod)
-      ? `${chmodsFor(gaps).join("; ")} and run the command again, or wire completion yourself from cotal completion script <shell>`
-      : "wire completion yourself from cotal completion script <shell>",
+      ? `${chmodsFor(gaps).join("; ")} and run the command again, or wire completion yourself from \`cotal completion script <shell>\``
+      : "wire completion yourself from `cotal completion script <shell>`",
   });
 }
 /** The unsafe folders above `path`, named with their reasons, and the chmod that fixes them when one
@@ -191,7 +191,7 @@ function ownership(paths: Paths, shell: string): { record?: Ownership; snapshot?
   if (record.wiring && typeof record.wiring === "object" && typeof record.wiring.path === "string" && record.wiring.path !== paths.rc)
     throw new CommandFailure("refused", "CONFLICT", `${recordPath(paths)} records ${shell} completion wired into ${record.wiring.path}, and this environment's startup file is ${paths.rc ?? "none"}`, {
       target: { shell, path: recordPath(paths) },
-      remedy: shell === "zsh" ? `read or change it with the ZDOTDIR it was installed under: ZDOTDIR=${dirname(record.wiring.path)} cotal completion` : "read or change it from the environment it was installed in",
+      remedy: shell === "zsh" ? `read or change it with the ZDOTDIR it was installed under: ${codeSpan(`ZDOTDIR=${dirname(record.wiring.path)} cotal completion`)}` : "read or change it from the environment it was installed in",
     });
   if (record.wiring !== null && (!record.wiring || typeof record.wiring !== "object" || Object.keys(record.wiring).some((key) => !["path", "block", "created"].includes(key)) || (record.wiring.created !== undefined && record.wiring.created !== true) || record.wiring.path !== paths.rc || typeof record.wiring.block !== "string" || ![blockFor(paths.stub, shell), "\n" + blockFor(paths.stub, shell)].includes(record.wiring.block))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the completion ownership record contains unknown startup wiring; it was not used to rewrite a shell file");
   return { record, snapshot };
@@ -237,7 +237,7 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     if (lstatSync(paths.rc, { throwIfNoEntry: false })?.isSymbolicLink())
       throw new CommandFailure("refused", "PERMISSION_DENIED", `${paths.rc} is a symlink, and completion does not write through one; nothing was changed`, {
         target: { shell, path: paths.rc },
-        remedy: operation === "install" ? `add this line to the file it points to yourself: ${LOAD_NOW[shell]}` : "remove the cotal completion lines from the file it points to yourself",
+        remedy: operation === "install" ? `add this line to the file it points to yourself: ${LOAD_NOW[shell]}` : "remove the `cotal completion` lines from the file it points to yourself",
       });
   }
   safeParents(dirname(paths.stub), true);
@@ -273,7 +273,7 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
         const marked = current.match(MARKED)?.length ?? 0;
         if (!force || !marked) throw new CommandFailure("refused", "CONFLICT", "the recorded startup block is modified or ambiguous; custom startup content was not rewritten", { target: { shell, path: paths.rc }, remedy: marked
           ? `${operation === "install" ? "rewrite" : "remove"} the lines from "${BEGIN}" to "${END}" in ${paths.rc} with \`cotal completion ${operation} ${shell} --force\`, or edit them there yourself`
-          : `${paths.rc} has no complete block from "${BEGIN}" to "${END}", so remove the cotal completion lines there yourself, then run \`cotal completion ${operation} ${shell}\` again` });
+          : `${paths.rc} has no complete block from "${BEGIN}" to "${END}", so remove the \`cotal completion\` lines there yourself, then run \`cotal completion ${operation} ${shell}\` again` });
         forced = true;
         installedBlock = blockFor(paths.stub, shell);
         let placed = operation === "uninstall";
@@ -291,7 +291,7 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
         const line = nextStartup.split("\n").find((text) => text.includes(paths.stub))!.trim();
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${paths.rc} still names this stub outside the cotal block, in ${JSON.stringify(line)}; removing the stub would break that line`, { target: { shell, path: paths.rc }, remedy: `remove that line from ${paths.rc} yourself, then run \`cotal completion uninstall ${shell}\` again` });
       }
-      if (readOnly()) throw new CommandFailure("refused", "PERMISSION_DENIED", `${paths.rc} is read-only, so its completion line was not removed; nothing was changed`, { target: { shell, path: paths.rc }, remedy: `remove the line ${completionSourceLine(paths.stub, shell)} from ${paths.rc} yourself, then run cotal completion uninstall ${shell} again` });
+      if (readOnly()) throw new CommandFailure("refused", "PERMISSION_DENIED", `${paths.rc} is read-only, so its completion line was not removed; nothing was changed`, { target: { shell, path: paths.rc }, remedy: `remove the line ${completionSourceLine(paths.stub, shell)} from ${paths.rc} yourself, then run \`cotal completion uninstall ${shell}\` again` });
       if (paths.rc && nextStartup !== current) {
         // A startup file install created, with nothing else in it now, goes rather than staying empty.
         if (created && nextStartup === "" && startup) remove(paths.rc, startup);

@@ -599,8 +599,8 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
           // The account here records the revocation, so the refusal says so instead of "check your creds".
           const claims = credsClaims(creds);
           const message = `credentials rejected at ${at}: the key ${claims.sub} in ${flags.creds} was revoked at ${new Date(revokedAt * 1000).toISOString()} with auth revoke-credential`;
-          const mint = claims.name === "agent" ? `mint a new key with the grants it held: cotal auth mint <label>${grantMintFlags(agentGrants(claims.nats ?? {}, space))}` : `mint a new key: cotal auth mint <label>${typeof claims.name === "string" ? ` --profile ${claims.name}` : ""}`;
-          const remedy = `a revoked key is not signed again; ${mint} --out <new file>`;
+          const mint = claims.name === "agent" ? `mint a new key with the grants it held: \`cotal auth mint <label>${grantMintFlags(agentGrants(claims.nats ?? {}, space))} --out <new file>\`` : `mint a new key: \`cotal auth mint <label>${typeof claims.name === "string" ? ` --profile ${claims.name}` : ""} --out <new file>\``;
+          const remedy = `a revoked key is not signed again; ${mint}`;
           throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path: flags.creds } });
         }
         const message = `credentials rejected at ${at}: ${flags.creds} is a credential for space "${owner}", which is registered here at ${elsewhere}, not ${at}`;

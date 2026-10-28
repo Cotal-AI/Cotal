@@ -166,7 +166,7 @@ try {
     check("  and cotal service logs stack-manager reads the same file", stackManager.outcome === "ok" && stackManager.result?.path === json.result?.path && stackManager.result?.lines?.length === 5, stackManager);
     const refusedStop = envelope(upCotal(["manager", "stop", "--yes", "--json"])) as LogsEnvelope & { error?: { code?: string; remedy?: string } };
     check("cotal manager stop still refuses it UNSUPPORTED with the stack advice",
-      refusedStop.outcome === "refused" && refusedStop.error?.code === "UNSUPPORTED" && refusedStop.error.remedy === "it stops with its stack through cotal down, or where cotal supervise runs it", refusedStop);
+      refusedStop.outcome === "refused" && refusedStop.error?.code === "UNSUPPORTED" && refusedStop.error.remedy === "it stops with its stack through `cotal down`, or where `cotal supervise` runs it", refusedStop);
     const refusedInstall = envelope(upCotal(["manager", "install", "--dry-run", "--json"])) as LogsEnvelope & { error?: { code?: string; remedy?: string } };
     check("  and so does cotal manager install --dry-run while it runs, with the same advice",
       refusedInstall.outcome === "refused" && refusedInstall.error?.code === "UNSUPPORTED" && refusedInstall.error.remedy === refusedStop.error?.remedy, refusedInstall);
@@ -174,7 +174,7 @@ try {
       const brokerSet = envelope(upCotal(["down", name, "delivery", "--dry-run", "--json"])) as LogsEnvelope & { error?: { code?: string; message?: string; remedy?: string } };
       check(`cotal down ${name} delivery refuses the whole set and names the bare down that stops the broker`,
         brokerSet.outcome === "refused" && brokerSet.error?.code === "TARGET_NOT_FOUND" && brokerSet.error.message === `${name} matches no service a set of names can stop in space ${UP_SPACE}; no service was stopped`
-          && brokerSet.error.remedy === "a set of names never stops the broker; a bare cotal down stops it with the whole stack", brokerSet);
+          && brokerSet.error.remedy === "a set of names never stops the broker; a bare `cotal down` stops it with the whole stack", brokerSet);
     }
 
     // A follow is a read-only view: it writes one JSON record per line and ends when down stops the manager.
@@ -218,9 +218,9 @@ try {
     const goneJson = envelope(upCotal(["manager", "logs", "--json"])) as LogsEnvelope & { target?: { path?: string }; error?: { code?: string; message?: string; remedy?: string } };
     check("cotal manager logs with that log removed says the log is gone and names only cotal up",
       goneJson.outcome === "refused" && goneJson.error?.code === "TARGET_NOT_FOUND" && goneJson.error.message === `the manager log at ${goneLog} is no longer there; nothing was read`
-        && goneJson.error.remedy === "start the stack again with cotal up" && goneJson.target?.path === goneLog, goneJson);
+        && goneJson.error.remedy === "start the stack again with `cotal up`" && goneJson.target?.path === goneLog, goneJson);
     check("  and its text says so, with no cotal manager start and no claim that none was started",
-      gone.status === 2 && out(gone).includes("is no longer there; nothing was read") && /Next\s+start the stack again with cotal up\s*$/.test(out(gone))
+      gone.status === 2 && out(gone).includes("is no longer there; nothing was read") && /Next\s+start the stack again with `cotal up`\s*$/.test(out(gone))
         && !out(gone).includes("cotal manager start") && !out(gone).includes("no manager has been started"), out(gone));
   }
 } catch (e) {

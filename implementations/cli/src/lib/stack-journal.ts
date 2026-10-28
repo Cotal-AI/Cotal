@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, rmdirSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
+import { CommandFailure, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
@@ -122,12 +122,12 @@ function unreadable(root: string): never {
   throw new CommandFailure("refused", "SCHEMA_INVALID", `the stack journal ${path} is not valid JSON, as an interrupted write or a full disk can leave it; no stack membership or stopped state was inferred`, {
     target: { root, path },
     remedy: running === undefined
-      ? `stop any running member of this stack with cotal service stop <name> --instance <id> --yes, manager first and broker last, then remove ${path} and run cotal up from ${root}`
+      ? `stop any running member of this stack with \`cotal service stop <name> --instance <id> --yes\`, manager first and broker last, then remove ${path} and run \`cotal up\` from ${root}`
       : running.length === 0
         ? spaces.size
-          ? `no member of this stack is running, so remove ${path}; the next cotal up from ${root} starts the stack again from its saved definitions`
-          : `no space is recorded at this root, so remove ${path} and run cotal up from ${root}`
-        : `stop its running members with ${running.map((row) => `cotal service stop ${row.name} --instance ${row.instanceId} --space ${row.space} --yes`).join(", then ")}, then remove ${path} and run cotal up from ${root}`,
+          ? `no member of this stack is running, so remove ${path}; the next \`cotal up\` from ${root} starts the stack again from its saved definitions`
+          : `no space is recorded at this root, so remove ${path} and run \`cotal up\` from ${root}`
+        : `stop its running members with ${running.map((row) => `\`cotal service stop ${row.name} --instance ${row.instanceId} --space ${row.space} --yes\``).join(", then ")}, then remove ${path} and run \`cotal up\` from ${root}`,
   });
 }
 
@@ -219,8 +219,8 @@ export function adoptStackJournal(root: string, space: string): string {
   const lock = acquireLock(`${path}.lock`, { label: "stack journal", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds the stack journal") });
   try {
     const found = journalRecordedElsewhere(canonical);
-    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${canonical} holds no stack journal another folder recorded, so there is nothing to adopt; nothing was written`, { target: { root: canonical, space }, remedy: `run cotal space create ${space} --root ${shellWord(canonical)} without --adopt` });
-    if (found.journal.space !== space) throw new CommandFailure("refused", "CONFLICT", `the stack journal in ${canonical} is for "${found.journal.space}", not "${space}"; nothing was written`, { target: { root: canonical, space, journalSpace: found.journal.space }, remedy: `adopt it with cotal space create ${found.journal.space} --adopt --root ${canonical}` });
+    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${canonical} holds no stack journal another folder recorded, so there is nothing to adopt; nothing was written`, { target: { root: canonical, space }, remedy: `run ${codeSpan(`cotal space create ${space} --root ${shellWord(canonical)}`)} without --adopt` });
+    if (found.journal.space !== space) throw new CommandFailure("refused", "CONFLICT", `the stack journal in ${canonical} is for "${found.journal.space}", not "${space}"; nothing was written`, { target: { root: canonical, space, journalSpace: found.journal.space }, remedy: `adopt it with \`cotal space create ${found.journal.space} --adopt --root ${canonical}\`` });
     const block = stackAdoptionBlock(canonical, found.recordedRoot, space, found.journal.members);
     if (block) throw new CommandFailure("refused", "CONFLICT", `${block.message}; it was not adopted and nothing was written`, { target: { root: canonical, recordedRoot: found.recordedRoot, space }, remedy: block.remedy });
     const under = (path: string) => { const rest = relative(found.recordedRoot, path); return rest !== "" && !rest.startsWith("..") && !isAbsolute(rest) ? join(canonical, rest) : path; };
@@ -317,7 +317,7 @@ export function acquireStackOperationLock(root: string, operation?: string): Mai
     if (!isMaintenanceError(error) || error.code !== "lock-held") throw error;
     let holder: number | undefined;
     try { holder = (decodeLocalJson(readLocalRecordSource(paths.lock, 64 * 1024) ?? Buffer.from("null")) as { owner?: { pid?: unknown } } | null)?.owner?.pid as number | undefined; } catch { holder = undefined; }
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `another whole-stack or maintenance operation holds this root${Number.isSafeInteger(holder) ? ` (pid ${holder})` : ""}; nothing was changed`, { target: { root, ...(Number.isSafeInteger(holder) ? { holderPid: holder } : {}) }, remedy: "run the command again after that operation exits; a foreground cotal up holds the root only while it starts" });
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `another whole-stack or maintenance operation holds this root${Number.isSafeInteger(holder) ? ` (pid ${holder})` : ""}; nothing was changed`, { target: { root, ...(Number.isSafeInteger(holder) ? { holderPid: holder } : {}) }, remedy: "run the command again after that operation exits; a foreground `cotal up` holds the root only while it starts" });
   }
   // An exit through process.exit skips the caller's release, so the lock is checked here as well.
   process.once("exit", (code) => {
@@ -351,7 +351,7 @@ function classifyStackMember(journal: StackJournal, role: StackRole, settle: boo
   const space = journal.space, name = STACK_DEFINITION[role];
   const store = serviceDefinitionStore(space), definition = store.read(name);
   const target = { root: journal.root, space, operation: journal.operation.id, definition: name };
-  const inspect = (instanceId: string) => `inspect it with cotal service status ${name} --instance ${instanceId} --space ${space}`;
+  const inspect = (instanceId: string) => `inspect it with \`cotal service status ${name} --instance ${instanceId} --space ${space}\``;
   if (!definition) {
     const orphans = serviceInstances(space, name);
     if (orphans.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a stack member instance has no saved definition; the earlier operation was not settled", { target: { ...target, instances: orphans.map((row) => row.name) }, remedy: inspect(orphans[0]!.name) });
@@ -359,7 +359,7 @@ function classifyStackMember(journal: StackJournal, role: StackRole, settle: boo
   }
   const launch = definition.record.value.launch;
   if (launch.type !== "adapter" || launch.adapter !== STACK_ADAPTER[role] || launch.options.root !== journal.root)
-    throw new CommandFailure("refused", "CONFLICT", "a saved definition under a stack name belongs to another adapter or root; the earlier operation was not settled", { target, remedy: `inspect cotal service show ${name} --space ${space}` });
+    throw new CommandFailure("refused", "CONFLICT", "a saved definition under a stack name belongs to another adapter or root; the earlier operation was not settled", { target, remedy: `inspect \`cotal service show ${name} --space ${space}\`` });
   const hold = settle ? store.pin(definition) : undefined;
   try {
     const rows = serviceInstances(space, name);
@@ -584,7 +584,7 @@ function resolveReplacement(journal: StackJournal, row: StackMember): StackMembe
   const value = found.record.value;
   if (replacement.operation === journal.operation.id && replacement.definitionRevision !== undefined && found.name === replacement.instanceId && value.launchRequestId === replacement.launchRequestId && value.definitionRevision === replacement.definitionRevision && serviceDefinitionStore(space).read(row.definition)?.record.revision === replacement.definitionRevision)
     return { ...member, instanceId: found.name };
-  throw new CommandFailure("refused", "CONFLICT", "the definition's instance record is not the replacement this stack journal recorded for its operation; neither was adopted", { target, remedy: `inspect it with cotal service status ${row.definition} --instance ${found.name} --space ${space}` });
+  throw new CommandFailure("refused", "CONFLICT", "the definition's instance record is not the replacement this stack journal recorded for its operation; neither was adopted", { target, remedy: `inspect it with \`cotal service status ${row.definition} --instance ${found.name} --space ${space}\`` });
 }
 
 /** The read-only classification `settleStackOperation` would record, for a preview. Writes nothing. */
@@ -710,7 +710,7 @@ export function goneStackRoot(space: string): string | undefined {
  *  `kept` names them, why, and the route that removes them. */
 export function releaseStackDefinitions(root: string, space: string): { released: string[]; kept?: { names: string[]; why: string } } {
   let owned: ServiceDefinitionSnapshot[];
-  try { owned = stackDefinitionsAt(space, root); } catch (error) { return { released: [], kept: { names: [], why: `${(error as Error).message}; inspect them with cotal service --space ${space}` } }; }
+  try { owned = stackDefinitionsAt(space, root); } catch (error) { return { released: [], kept: { names: [], why: `${(error as Error).message}; inspect them with \`cotal service --space ${space}\`` } }; }
   if (!owned.length) return { released: [] };
   const names = owned.map((row) => row.name);
   let preserved: boolean;
@@ -719,9 +719,9 @@ export function releaseStackDefinitions(root: string, space: string): { released
   try {
     for (const row of owned) removableServiceInstances(space, row.name);
   } catch (error) {
-    const route = goneStackRoot(space) === root ? `its folder is gone; cotal down --space ${space} --yes stops the stack and removes them`
-      : existsSync(root) ? `stop the stack with cotal down --yes in ${root}, then run cotal space forget ${space} again`
-      : isCommandFailure(error) && error.remedy || `inspect them with cotal service --space ${space}`;
+    const route = goneStackRoot(space) === root ? `its folder is gone; \`cotal down --space ${space} --yes\` stops the stack and removes them`
+      : existsSync(root) ? `stop the stack with \`cotal down --yes\` in ${root}, then run \`cotal space forget ${space}\` again`
+      : isCommandFailure(error) && error.remedy || `inspect them with \`cotal service --space ${space}\``;
     return { released: [], kept: { names, why: `${(error as Error).message}; ${route}` } };
   }
   const store = serviceDefinitionStore(space), released: string[] = [];
@@ -729,7 +729,7 @@ export function releaseStackDefinitions(root: string, space: string): { released
     for (const row of owned) { store.commit(row.name, row, undefined, () => removeStoppedInstanceRecords(space, row.name)); released.push(row.name); }
   } catch (error) {
     if (!released.length) throw error;
-    throw new CommandFailure("partial", "OPERATION_PARTIAL", "some stack definitions were removed, but another changed before its removal", { target: { space, root }, changed: released.map((name) => ({ kind: "service-definition", name })), remedy: `inspect the rest with cotal service --space ${space}` });
+    throw new CommandFailure("partial", "OPERATION_PARTIAL", "some stack definitions were removed, but another changed before its removal", { target: { space, root }, changed: released.map((name) => ({ kind: "service-definition", name })), remedy: `inspect the rest with \`cotal service --space ${space}\`` });
   }
   return { released };
 }

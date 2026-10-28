@@ -140,16 +140,16 @@ function interruptedStart(name: string, space: string, selected: string | undefi
   const target = { space, name, instanceId: left?.name ?? null };
   const observed = left && observeServiceProcess(left.record.value);
   return !left
-    ? new CommandFailure("failed", "OPERATION_FAILED", `the start of ${name} was interrupted before it launched a process, so nothing was started`, { target, remedy: `run cotal service start ${name} --space ${space} again` })
+    ? new CommandFailure("failed", "OPERATION_FAILED", `the start of ${name} was interrupted before it launched a process, so nothing was started`, { target, remedy: `run \`cotal service start ${name} --space ${space}\` again` })
     : observed === "running"
-      ? new CommandFailure("unknown", "OPERATION_UNKNOWN", `the start of ${name} was interrupted while it waited for readiness; instance ${left.name} (pid ${left.record.value.process?.pid}) was left running, and this start did not establish its readiness`, { target, remedy: `run cotal service start ${name} --space ${space} to wait for its readiness again, or stop it with cotal service stop ${name} --instance ${left.name} --space ${space} --yes` })
-      : new CommandFailure("unknown", "OPERATION_UNKNOWN", `the start of ${name} was interrupted before it confirmed the process of instance ${left.name} (observed: ${observed}); its record is kept`, { target, remedy: `inspect it with cotal service status ${name} --instance ${left.name} --space ${space}` });
+      ? new CommandFailure("unknown", "OPERATION_UNKNOWN", `the start of ${name} was interrupted while it waited for readiness; instance ${left.name} (pid ${left.record.value.process?.pid}) was left running, and this start did not establish its readiness`, { target, remedy: `run \`cotal service start ${name} --space ${space}\` to wait for its readiness again, or stop it with \`cotal service stop ${name} --instance ${left.name} --space ${space} --yes\`` })
+      : new CommandFailure("unknown", "OPERATION_UNKNOWN", `the start of ${name} was interrupted before it confirmed the process of instance ${left.name} (observed: ${observed}); its record is kept`, { target, remedy: `inspect it with \`cotal service status ${name} --instance ${left.name} --space ${space}\`` });
 }
 
 /** The next step for a name that resolves to no saved definition and to no member of the space's
  *  controller stack. */
 export function unsavedServiceStep(name: string, mode: string): string {
-  return name === "web" ? "the web dashboard is an extension: add it with cotal ext add @cotal-ai/web, then start it with cotal service start web --creds <file>" : mode === "stop" ? "list this space's saved definitions with cotal service" : "add a supported service definition explicitly before starting it";
+  return name === "web" ? "the web dashboard is an extension: add it with `cotal ext add @cotal-ai/web`, then start it with `cotal service start web --creds <file>`" : mode === "stop" ? "list this space's saved definitions with `cotal service`" : "add a supported service definition explicitly before starting it";
 }
 
 /** `root` is the selected space's root, where a definition must have been added to launch. */
@@ -160,7 +160,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   const store = serviceDefinitionStore(space, addedDefinitionStep), definition = store.read(name);
   if (!definition) {
     const stackName = stackMemberFor(space, name);
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; no process or extension was ${mode === "stop" ? "stopped" : "started"}`, { target: { space, name }, remedy: stackName ? `this space's controller stack names it ${stackName}: use cotal ${commandName === "down" ? "down" : `${commandName} ${mode}`} ${stackName} --space ${space}${mode === "stop" ? ", or bare cotal down to stop the whole stack" : ""}` : unsavedServiceStep(name, mode) });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; no process or extension was ${mode === "stop" ? "stopped" : "started"}`, { target: { space, name }, remedy: stackName ? `this space's controller stack names it ${stackName}: use \`cotal ${commandName === "down" ? "down" : `${commandName} ${mode}`} ${stackName} --space ${space}\`${mode === "stop" ? ", or bare `cotal down` to stop the whole stack" : ""}` : unsavedServiceStep(name, mode) });
   }
   if (mode === "start" || mode === "restart" || mode === "install") assertDefinitionRoot(definition, space, root, mode);
   const rows = serviceInstances(space, name);
@@ -208,7 +208,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   }
   if (mode === "uninstall") {
     if (process.platform !== "linux") throw new CommandFailure("refused", "UNSUPPORTED", "native service removal currently needs the supported Linux user manager; no unit or private store was touched", { target });
-    if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("native uninstall", presentation === "json"), { target, remedy: `confirm with cotal svc uninstall ${name} --yes, or inspect it with --dry-run` });
+    if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("native uninstall", presentation === "json"), { target, remedy: `confirm with \`cotal svc uninstall ${name} --yes\`, or inspect it with --dry-run` });
     if (!values.yes) {
       const answer = await prompts.confirm({ message: `Disable and remove the exact owned unit for ${oneLine(name)} instance ${selected!.name}? The saved definition remains.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled();
@@ -285,7 +285,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       writeResult(presentation, { command: commandName, target, result: { kind: "service-native-operation-preview", operation: mode, dryRun: true, instance: row, native, changed: false }, completeness: "partial", partial: { message: "This exact-unit status read reserves no native state or process identity. A real action rechecks its receipt, source and native invocation before submission." } }, (): Report => ({ sections: [{ title: "Native service operation preview", blocks: [{ kind: "fields", rows: [["Action", mode], ["Definition", name], ["Instance", selected!.name], ["Unit", row.supervisorRecord.unit ?? "not recorded"], ["Unit state", native.activeState ?? native.state], ["Autostart", native.unitFileState ?? "not checked"], ["Process", row.observedProcess]] }, { kind: "lines", lines: ["No native request, process signal or private-store seed ran. This observation does not authorize a later action without fresh checks."] }] }] }));
       return;
     }
-    if ((mode === "stop" || mode === "restart") && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(`${mode} requires --yes outside an interactive terminal`, { target, remedy: `confirm with cotal svc ${mode} ${name} --yes, or preview it with --dry-run` });
+    if ((mode === "stop" || mode === "restart") && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(`${mode} requires --yes outside an interactive terminal`, { target, remedy: `confirm with \`cotal svc ${mode} ${name} --yes\`, or preview it with --dry-run` });
     if ((mode === "stop" || mode === "restart") && !values.yes) {
       const answer = await prompts.confirm({ message: `${mode === "stop" ? "Stop" : "Restart"} the exact owned unit ${supervisor.unit} for ${oneLine(name)} instance ${selected!.name}?`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled();
@@ -335,7 +335,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   }
   // A restart whose original process is already gone stops nothing, so it asks for nothing.
   const confirmStop = mode === "stop" || mode === "restart" && !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(selected!.record.value));
-  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired(mode, presentation === "json"), { target, remedy: `confirm with cotal svc ${mode} ${name} --yes, or preview it with --dry-run` });
+  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired(mode, presentation === "json"), { target, remedy: `confirm with \`cotal svc ${mode} ${name} --yes\`, or preview it with --dry-run` });
   if (mode === "restart") assertRestartAdmitted(definition);
   let nativePlan: Awaited<ReturnType<typeof prepareNativeServiceStop>> | undefined;
   try { nativePlan = mode === "stop" || mode === "restart" ? await prepareNativeServiceStop(definition, selected!, values["with-agents"] === true) : undefined; }
@@ -349,7 +349,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     let store: { path: string; cap?: number } | undefined;
     try { store = recordedStore(root, space); } catch { store = undefined; }
     const pid = mode === "stop" ? selected!.record.value.process?.pid : undefined;
-    throw fullStoreStopRefusal(oneLine(name), store, "nothing was stopped", target, `make room with cotal history clear --space ${space} --yes, which purges all of this space's channel history, then run cotal svc ${mode} ${oneLine(name)} --space ${space} --yes${pid !== undefined ? `; to keep that history, end it on this host with kill -TERM ${pid}, which stops its agents by its default policy` : ""}`);
+    throw fullStoreStopRefusal(oneLine(name), store, "nothing was stopped", target, `make room with \`cotal history clear --space ${space} --yes\`, which purges all of this space's channel history, then run \`cotal svc ${mode} ${oneLine(name)} --space ${space} --yes\`${pid !== undefined ? `; to keep that history, end it on this host with kill -TERM ${pid}, which stops its agents by its default policy` : ""}`);
   }
   const kernelPlan = mode === "stop" || mode === "restart" ? await prepareKernelServiceStop(definition, selected!) : undefined;
   // The impact is the first report the operation prints, so it carries the space's Mesh line.

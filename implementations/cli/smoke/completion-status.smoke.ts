@@ -320,7 +320,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const warning = (JSON.parse(without.stdout) as { warnings: { code: string; message: string }[] }).warnings.find((w) => w.code === "COMPLETION_OWNERSHIP_UNREADABLE");
   check(
     "without the ZDOTDIR it was installed under, the warning names the record, its startup file and that ZDOTDIR",
-    without.status === 4 && warning?.message === `${record} records zsh completion wired into ${join(zdot, ".zshrc")}, and this environment's startup file is ${join(s.home, ".zshrc")}; read or change it with the ZDOTDIR it was installed under: ZDOTDIR=${zdot} cotal completion`,
+    without.status === 4 && warning?.message === `${record} records zsh completion wired into ${join(zdot, ".zshrc")}, and this environment's startup file is ${join(s.home, ".zshrc")}; read or change it with the ZDOTDIR it was installed under: \`ZDOTDIR=${zdot} cotal completion\``,
     { status: without.status, warning },
   );
   const text = s.run(["completion"]);
@@ -357,7 +357,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("completion install --json is one ok envelope and writes the managed block", installJson.status === 0 && outcomeOf(installJson.stdout) === "ok" && existsSync(bashrc) && readFileSync(bashrc, "utf8").includes(`# >>> cotal completion >>>\nsource '${join(s.xdg, "cotal", "completion.bash")}'\n# <<< cotal completion <<<\n`), shown(installJson));
   // With no pwsh on PATH there is no profile to wire, so install refuses without guessing one.
   const pwsh = s.run(["completion", "install", "powershell"]);
-  check("completion install powershell is refused, naming the supported loading command", pwsh.status === 2 && pwsh.stdout === "" && pwsh.stderr.includes("the supported loading command is: cotal completion script powershell | Out-String | Invoke-Expression"), shown(pwsh));
+  check("completion install powershell is refused, naming the supported loading command", pwsh.status === 2 && pwsh.stdout === "" && pwsh.stderr.includes("the supported loading command is: `cotal completion script powershell | Out-String | Invoke-Expression`"), shown(pwsh));
   const fromShell = s.run(["completion", "install"], { SHELL: "/bin/tcsh" });
   check("a SHELL that names an unsupported shell is refused UNSUPPORTED, exit 2, naming it without the whole help",
     fromShell.status === 2 && /completion does not support tcsh, the shell SHELL names/.test(fromShell.stderr) && /UNSUPPORTED/.test(fromShell.stderr) && !/^Usage$/m.test(fromShell.stderr), shown(fromShell));

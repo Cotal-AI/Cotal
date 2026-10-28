@@ -370,10 +370,10 @@ async function completionOut(positionals: string[]): Promise<string> {
   const denied = endpointFailure(new EpEnvelopeError("permission-denied", "refused by the broker", undefined, "not-executed"), { space: "s" }, true);
   const named = withPairedCallerRemedy(denied, "com.example.reviews", { space: "s" });
   assert.equal(`${named.outcome}/${named.code}`, "refused/PERMISSION_DENIED", "naming a paired caller keeps the refusal");
-  assert.equal(named.remedy, "issue a caller for com.example.reviews with cotal auth mint <name> --endpoint com.example.reviews --space s --out <private-file>, then rerun with --creds <private-file>", "a refused call to another endpoint names the caller file that makes it");
+  assert.equal(named.remedy, "issue a caller for com.example.reviews with `cotal auth mint <name> --endpoint com.example.reviews --space s --out <private-file>`, then rerun with --creds <private-file>", "a refused call to another endpoint names the caller file that makes it");
   assert.deepEqual([named.native, named.target], [denied.native, denied.target], "the remedy keeps the native cause and the target");
-  assert.equal(withPairedCallerRemedy(denied, "com.example.reviews", { space: "s", server: "nats://127.0.0.1:4333" }).remedy, "issue a caller for com.example.reviews with cotal auth mint <name> --endpoint com.example.reviews --space s --server nats://127.0.0.1:4333 --out <private-file>, then rerun with --creds <private-file>", "the caller remedy keeps the --server the call was given");
-  assert.equal(withPairedCallerRemedy(denied, "com.example.reviews", { space: "s", server: "nats://h:1 o'k" }).remedy, "issue a caller for com.example.reviews with cotal auth mint <name> --endpoint com.example.reviews --space s --server 'nats://h:1 o'\\''k' --out <private-file>, then rerun with --creds <private-file>", "a server a shell would split is quoted in the caller remedy");
+  assert.equal(withPairedCallerRemedy(denied, "com.example.reviews", { space: "s", server: "nats://127.0.0.1:4333" }).remedy, "issue a caller for com.example.reviews with `cotal auth mint <name> --endpoint com.example.reviews --space s --server nats://127.0.0.1:4333 --out <private-file>`, then rerun with --creds <private-file>", "the caller remedy keeps the --server the call was given");
+  assert.equal(withPairedCallerRemedy(denied, "com.example.reviews", { space: "s", server: "nats://h:1 o'k" }).remedy, "issue a caller for com.example.reviews with `cotal auth mint <name> --endpoint com.example.reviews --space s --server 'nats://h:1 o'\\''k' --out <private-file>`, then rerun with --creds <private-file>", "a server a shell would split is quoted in the caller remedy");
   assert.equal(withPairedCallerRemedy(denied, "manager", { space: "s" }).remedy, undefined, "a refused manager call names no caller file, because the operator instrument already requests the manager");
   const unknown = endpointFailure(new Error("lost"), { space: "s" }, true);
   assert.equal(withPairedCallerRemedy(unknown, "com.example.reviews", { space: "s" }), unknown, "only a refusal gains the caller-file remedy");
@@ -390,7 +390,7 @@ async function completionOut(positionals: string[]): Promise<string> {
   const read = endpointFailure(silent, target, false);
   assert.equal(`${read.outcome}/${read.code}`, "refused/TARGET_UNAVAILABLE", "an unanswered contract read is an unavailable target");
   assert.equal(read.message, "no instance of com.example.reviews answered its contract read, so nothing is serving it or none could be reached", "the refusal says no instance answered");
-  assert.equal(read.remedy, "start the service that serves com.example.reviews, then run the command again; cotal service --space s lists this space's services", "its Next names how to start what serves it");
+  assert.equal(read.remedy, "start the service that serves com.example.reviews, then run the command again; `cotal service --space s` lists this space's services", "its Next names how to start what serves it");
   assert.equal(endpointFailure(silent, target, true).outcome, "unknown", "an unanswered call that may have run stays unknown");
   assert.equal(endpointFailure(new EpEnvelopeError("deadline-exceeded", "the closure walk exhausted its budget"), target, false).code, "OPERATION_FAILED", "a deadline without the unanswered marker stays a failed read");
 }

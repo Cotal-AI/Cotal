@@ -97,7 +97,7 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
       catch (error) {
         const cause = (error as { code?: unknown }).code;
         const code = cause === "signed-out" ? "AUTH_REQUIRED" : cause === "refused" ? "PERMISSION_DENIED" : "DEPENDENCY_UNAVAILABLE";
-        throw new CommandFailure("refused", code, "the user-auth deployer view was not issued; no identity or broader credential was substituted", { target: { root, space }, remedy: code === "AUTH_REQUIRED" ? "sign in with cotal login, then inspect the selected space" : "inspect the caller's team deploy grant on this exact space" });
+        throw new CommandFailure("refused", code, "the user-auth deployer view was not issued; no identity or broader credential was substituted", { target: { root, space }, remedy: code === "AUTH_REQUIRED" ? "sign in with `cotal login`, then inspect the selected space" : "inspect the caller's team deploy grant on this exact space" });
       }
     }
     if (userRead && (!conn.epCaller || userRead.owner !== conn.epCaller.owner || userRead.actor !== conn.epCaller.actor))

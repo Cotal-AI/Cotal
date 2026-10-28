@@ -41,6 +41,7 @@ import {
   brokerAddressForDisplay,
   canonicalRoot,
   CLI_USER_ACTOR,
+  codeSpan,
   CommandFailure,
   deliveryCredsKey,
   DELIVERY_PIDFILE,
@@ -521,7 +522,7 @@ function readBootAttempts(root: string, gaps: Gaps): NonNullable<StatusResult["b
   // A `.cotal` link that leads nowhere leaves this folder no records of its own, and the walk to a
   // root passes over it.
   const here = cotalLinkHere();
-  if (here?.dangling) gaps.add("COTAL_DIR_DANGLING", `this folder's .cotal links to ${here.target}, which does not exist, so this folder has no records of its own; remove the link and prepare this folder with cotal space create <space> --root ${here.root}`, { root: here.root, path: here.path, link: here.target });
+  if (here?.dangling) gaps.add("COTAL_DIR_DANGLING", `this folder's .cotal links to ${here.target}, which does not exist, so this folder has no records of its own; remove the link and prepare this folder with \`cotal space create <space> --root ${here.root}\``, { root: here.root, path: here.path, link: here.target });
   // Neither inventory is read through a link; the folder it leads to reports its own.
   const link = cotalDirLink(root);
   if (link !== undefined) {
@@ -910,8 +911,8 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   if (storedState && !maintained && !unusable) {
     const resetSpace = storeResetSpace(root, space);
     hints.push(resetSpace !== undefined
-      ? `if the stored JetStream state is stale: ${cmd} reset store ${resetSpace}, then \`up\` with your usual flags`
-      : `if the stored JetStream state is stale: ${cmd} clean store --force, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
+      ? `if the stored JetStream state is stale: \`${cmd} reset store ${resetSpace}\`, then \`up\` with your usual flags`
+      : `if the stored JetStream state is stale: \`${cmd} clean store --force\`, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
   }
   // A stack started with --no-manager can still have a manager: a `manager` preset service run here.
   let managerService: StatusResult["folder"]["managerService"] = null;
@@ -1461,7 +1462,7 @@ function machineSection(m: StatusResult["machine"]): Section {
     ...m.integrations.map((r): [string, Cell] => [r.name, cell(r.text, tone[r.state])]),
   ];
   if (m.connectors === null) rows.push(["Connectors", cell("unreadable - see the warning below", "failed")]);
-  else if (!m.connectors.length) rows.push(["Connectors", cell(`none installed · ${displayCmd()} setup`, "hint")]);
+  else if (!m.connectors.length) rows.push(["Connectors", cell(`none installed · \`${displayCmd()} setup\``, "hint")]);
   for (const h of m.connectors ?? [])
     rows.push([h.name, h.missing.length ? cell(`${h.missing.join(", ")} not on PATH`, "hint") : cell(h.requires.length ? `${h.requires.join(", ")} on PATH` : "in-process", "ok")]);
   rows.push(["Skills (.agents)", skillsCell(m.skills)]);
@@ -1593,10 +1594,10 @@ function selectedSection(s: SelectedResult, folder: StatusResult["folder"], deli
     rows.push(["connection", s.connection === "reachable" ? cell("reachable", "ok") : cell("unreachable", "failed")]);
     const l = s.login;
     if (!l) rows.push(["login", cell("unreadable - see the warning below", "failed")]);
-    if (l && !l.subject) rows.push(["login", cell(`not signed in - ${displayCmd()} login --idp ${l.idp}`, "waiting")]);
+    if (l && !l.subject) rows.push(["login", cell(`not signed in - ${codeSpan(`${displayCmd()} login --idp ${l.idp}`)}`, "waiting")]);
     if (l?.subject) {
       rows.push(["login", cell(`${l.subject} · session until ${l.expiresAt}`, "ok")]);
-      if (l.actor === "not-granted") rows.push(["actor", cell(`"${CLI_USER_ACTOR}" not granted - ${displayCmd()} actor grant ${CLI_USER_ACTOR} --sub ${l.subject} --full`, "waiting")]);
+      if (l.actor === "not-granted") rows.push(["actor", cell(`"${CLI_USER_ACTOR}" not granted - ${codeSpan(`${displayCmd()} actor grant ${CLI_USER_ACTOR} --sub ${l.subject} --full`)}`, "waiting")]);
       else if (l.actor === "granted" && l.grant)
         rows.push([
           "actor",
@@ -1630,8 +1631,8 @@ function setUpApplications(m: StatusResult["machine"]): string[] {
 function applicationsCell(m: StatusResult["machine"]): Cell {
   if (m.connectors === null) return stateCell("could not be read", "failed");
   const setUp = setUpApplications(m), others = m.connectors.length - setUp.length;
-  if (!setUp.length) return stateCell(`not set up · ${displayCmd()} setup adds one`, "hint");
-  return stateCell(`${setUp.join(", ")}${others ? ` · ${others} more with ${displayCmd()} setup` : ""}`, "ok");
+  if (!setUp.length) return stateCell(`not set up · \`${displayCmd()} setup\` adds one`, "hint");
+  return stateCell(`${setUp.join(", ")}${others ? ` · ${others} more with \`${displayCmd()} setup\`` : ""}`, "ok");
 }
 
 /** The extensions line: one count at the version they share, naming only those that differ from it.
@@ -1783,7 +1784,7 @@ function spacesOverview(r: StatusResult, wide: boolean): Section {
       Number(b.space === reported) - Number(a.space === reported) || a.space.localeCompare(b.space));
     blocks.push({ kind: "table", header: false, columns, rows: ordered.map(row) });
     if (r.meshes.items.some((entry) => entry.check === "not-checked"))
-      blocks.push({ kind: "lines", lines: [cell(`Unselected spaces are not dialed · ${displayCmd()} status --all dials each`, "hint")] });
+      blocks.push({ kind: "lines", lines: [cell(`Unselected spaces are not dialed · \`${displayCmd()} status --all\` dials each`, "hint")] });
   }
   for (const unreadable of r.meshes.unreadable) blocks.push({ kind: "lines", lines: [stateCell(`Registration could not be read: ${unreadable.error}`, "failed")] });
   // One line per account, named by the account whose catalog failed rather than by its token URL.
@@ -1842,7 +1843,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
     const service = r.folder.managerService;
     rows.push(["Manager", service
       ? stateCell(`the ${service.definition} service · instance ${service.instanceId} · outside this stack, which was started with --no-manager`, "ok")
-      : stateCell("none · this stack was started with --no-manager; bare cotal up adds it", "hint")]);
+      : stateCell("none · this stack was started with --no-manager; bare `cotal up` adds it", "hint")]);
   }
   const blocks: Section["blocks"][number][] = [{ kind: "fields", rows }];
   if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.controllerStack) {
@@ -1947,7 +1948,7 @@ function nextActions(r: StatusResult): Section {
     if (own && stack === "running")
       items.unshift({ command: `${cmd} down --yes`, description: "Stop the stack its space was deleted under" }, { command: `${cmd} up`, description: "Then start it again; up creates the space's streams, empty" });
     else if (own)
-      items.unshift({ command: `${cmd} up --root ${shellWord(r.selected.root)}`, description: stack === "stopped" ? "Create the space's streams again, empty, and restart the stack's stopped members" : `Create the space's streams again, empty; while the stack runs, stop it first with ${cmd} down --yes` });
+      items.unshift({ command: `${cmd} up --root ${shellWord(r.selected.root)}`, description: stack === "stopped" ? "Create the space's streams again, empty, and restart the stack's stopped members" : `Create the space's streams again, empty; while the stack runs, stop it first with \`${cmd} down --yes\`` });
     else {
       const absent = spaceStreamsAbsent(r.selected.space, r.selected.spaceStreams.root ?? undefined, stack ?? undefined);
       extra.push(`${absent.message}; ${absent.remedy}`);
@@ -1976,7 +1977,7 @@ function nextActions(r: StatusResult): Section {
     );
   // A manager that does not answer cannot report its stop impact, so no stop route reaches it.
   if (r.stackManager?.endpoint === "not-answering")
-    items.unshift({ command: `kill -KILL ${r.stackManager.pid}`, description: `The stack manager does not answer, so ${cmd} down cannot stop it. If it stays that way, end its process; ${cmd} down --yes then records it stopped` });
+    items.unshift({ command: `kill -KILL ${r.stackManager.pid}`, description: `The stack manager does not answer, so \`${cmd} down\` cannot stop it. If it stays that way, end its process; \`${cmd} down --yes\` then records it stopped` });
   // The broker keeps a store write error until it restarts, so messages sent meanwhile may be lost.
   if (r.store?.state === "write-failed") {
     const repair = storeWriteRepair(r.store, r.selected.resolved ? r.selected.root : undefined, r.selected.space ?? "");
@@ -1988,7 +1989,7 @@ function nextActions(r: StatusResult): Section {
         { command: own ? `${cmd} down --yes` : `${cmd} down --space ${r.selected.space} --yes`, description: "Then stop the other members" },
         { command: own ? `${cmd} up` : `${cmd} up --root ${shellWord(r.selected.root)}`, description: `${first}; then up starts the broker again with the history it kept` },
       );
-    else items.unshift({ command: `${cmd} down`, description: `${first}; then ${cmd} up starts the broker again with the history it kept` });
+    else items.unshift({ command: `${cmd} down`, description: `${first}; then \`${cmd} up\` starts the broker again with the history it kept` });
   }
   // The broker refuses every write while the store is over its cap, so sends store nothing, and a
   // stopped member starts again only once there is room. Making room purges the space's channel

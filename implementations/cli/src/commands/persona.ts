@@ -92,9 +92,9 @@ export async function persona(args: ParsedArgs): Promise<void> {
     const expected = requirePersonaSource(path);
     // The seeded default is what a bare `cotal spawn` launches, so removing it says so.
     const seeded = name === "default";
-    const question = seeded ? `Remove the seeded default persona '${name}' at ${path}? A bare cotal spawn launches it.` : `Remove '${name}' at ${path}?`;
+    const question = seeded ? `Remove the seeded default persona '${name}' at ${path}? A bare \`cotal spawn\` launches it.` : `Remove '${name}' at ${path}?`;
     if (!values.yes) {
-      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(yesRequired(`removing '${name}' at ${path}`, presentation === "json"), { remedy: `confirm with cotal persona remove ${name} --yes` });
+      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(yesRequired(`removing '${name}' at ${path}`, presentation === "json"), { remedy: `confirm with \`cotal persona remove ${name} --yes\`` });
       let confirmed = false;
       if (presentation === "plain") {
         confirmed = (await prompts.askLine(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
@@ -127,7 +127,7 @@ async function createSource(name: string, path: string, values: Values): Promise
     const source = values.file === "-" ? "standard input" : values.file;
     const def = validatePersona(bytes, source);
     // The file's own name is known, so name it and the create that keeps it.
-    if (def.name !== name) throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy: `create it under its own name with cotal persona create ${def.name} --file ${values.file}, or set its name to '${name}'` });
+    if (def.name !== name) throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy: `create it under its own name with \`cotal persona create ${def.name} --file ${values.file}\`, or set its name to '${name}'` });
     // A role is an address `send -r` reaches, so a role it would refuse is refused here.
     if (def.role !== undefined) {
       if (/[\u0000-\u001f\u007f]/u.test(def.role)) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition ${source}: role takes a label without control characters`);
@@ -214,7 +214,7 @@ function receipt(presentation: Presentation, catalog: PersonaCatalog, name: stri
     { title: result.action === "removed" ? "Persona removed" : result.action === "created" ? "Persona created" : "Persona saved", blocks: [
       { kind: "lines", lines: [{ text: result.name, tone: "ok", mark: "✓" }] },
       { kind: "fields", rows: [["File", result.path], ["Running agents", "unchanged"]] },
-      ...(seededDefault ? [{ kind: "lines" as const, lines: ["This was the seeded default persona, which a bare cotal spawn launches. A local cotal up in this root, cotal space create or cotal setup writes a fresh copy."] }] : []),
+      ...(seededDefault ? [{ kind: "lines" as const, lines: ["This was the seeded default persona, which a bare `cotal spawn` launches. A local `cotal up` in this root, `cotal space create` or `cotal setup` writes a fresh copy."] }] : []),
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: result.action === "removed" ? [
       { command: "cotal p", description: "Browse the local catalog" },

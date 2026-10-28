@@ -50,7 +50,7 @@ export async function preflightUserStack(root: string, space: string, idpUrl: st
   if (verdict.ok) return;
   const code = verdict.reason === "required" || verdict.reason === "invalid" ? "USAGE_INVALID" : verdict.reason === "conflict" ? "CONFLICT" : "DEPENDENCY_UNAVAILABLE";
   const remedy = verdict.reason === "required" ? "cotal up --user-auth --idp <auth base URL>"
-    : verdict.reason === "conflict" ? "run bare cotal up to keep the space's pinned IdP; re-pointing it is a deliberate migration"
+    : verdict.reason === "conflict" ? "run bare `cotal up` to keep the space's pinned IdP; re-pointing it is a deliberate migration"
       : verdict.reason === "invalid" ? "pass an https IdP auth base URL, or http on a loopback IP, without credentials, a query or a fragment"
         : "check --idp <auth base URL>; it must serve <base>/jwks";
   const message = verdict.reason === "required" ? "a first user-auth stack needs the IdP it trusts; no stack was prepared"
@@ -74,7 +74,7 @@ export async function userLoginState(root: string, space: string): Promise<{ sta
 
 /** The refusal a user stack reports when the manager cannot be attempted for want of a login.
  *  `then` is the step after the sign-in: a bare `up` again, or the manager command that was refused. */
-export function userLoginRequired(space: string, login: Awaited<ReturnType<typeof userLoginState>>, then = "run bare cotal up again"): CommandFailure {
+export function userLoginRequired(space: string, login: Awaited<ReturnType<typeof userLoginState>>, then = "run bare `cotal up` again"): CommandFailure {
   const idp = "idpUrl" in login && login.idpUrl ? ` --idp ${login.idpUrl}` : "";
   const message = login.state === "not-granted"
     ? "the signed-in user has no granted interactive row for the CLI in this space; the manager was not attempted"

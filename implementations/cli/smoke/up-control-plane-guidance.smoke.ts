@@ -43,7 +43,7 @@ try {
       const brokerRecord = join(root, ".cotal", "nats.pid");
       if (existsSync(brokerRecord)) brokerPid = Number(readFileSync(brokerRecord, "utf8").trim());
       suite.check(`${label} startup reaches the real retained broker launcher`,
-        brokerPid !== undefined && probeLiveness(brokerPid) === "alive" && /✓ running in the background: nats-server \(pid \d+\) - stop with: cotal down/.test(output), output);
+        brokerPid !== undefined && probeLiveness(brokerPid) === "alive" && /✓ running in the background: nats-server \(pid \d+\) - stop with: `cotal down`/.test(output), output);
       if (malformed) {
         suite.check("control-plane refusal keeps a nonzero exit", result.status === 1, output);
         suite.check("control-plane refusal preserves the cause and its own next step",

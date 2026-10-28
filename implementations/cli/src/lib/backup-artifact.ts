@@ -464,7 +464,7 @@ export function notAnArtifactRefusal(root: string, path: string, outcome: string
     const what = !stat.isDirectory() ? (stat.isFile() ? "is a file" : "is not a folder") : readdirSync(path).length === 0 ? "is an empty folder" : "holds no manifest.json and no file a backup create writes";
     return new CommandFailure("refused", "TARGET_NOT_FOUND", `${path} is not a backup artifact: it ${what}; ${outcome}`, { target: { ...target, directory: path }, remedy: "name the folder backup create wrote" });
   }
-  if (manifestMissing(path)) return new CommandFailure("refused", "SCHEMA_INVALID", `${path} has no manifest.json, so it is an incomplete artifact, as an interrupted backup create leaves one; ${outcome}`, { target: { ...target, directory: path, fault: "manifest-missing" }, remedy: "it cannot be verified or restored. In the folder it was created from, cotal status names the interrupted backup attempt, and cotal backup recover <attempt> --yes removes this directory; then create a new backup" });
+  if (manifestMissing(path)) return new CommandFailure("refused", "SCHEMA_INVALID", `${path} has no manifest.json, so it is an incomplete artifact, as an interrupted backup create leaves one; ${outcome}`, { target: { ...target, directory: path, fault: "manifest-missing" }, remedy: "it cannot be verified or restored. In the folder it was created from, `cotal status` names the interrupted backup attempt, and `cotal backup recover <attempt> --yes` removes this directory; then create a new backup" });
   return undefined;
 }
 

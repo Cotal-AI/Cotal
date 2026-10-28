@@ -67,7 +67,7 @@ export function deprecatedDaemonEntryWarning(entry: DeprecatedDaemonEntry, kept:
 /** The summary the entry's own help shows: marked deprecated, with its removal release and the
  *  service preset that replaces it. */
 export function deprecatedDaemonEntrySummary(entry: keyof typeof DEPRECATED_DAEMON_PRESETS | typeof DEPRECATED_MANAGER_ENTRY, summary: string): string {
-  const use = entry === DEPRECATED_MANAGER_ENTRY ? "cotal manager start" : `the ${DEPRECATED_DAEMON_PRESETS[entry]} service preset`;
+  const use = entry === DEPRECATED_MANAGER_ENTRY ? "`cotal manager start`" : `the ${DEPRECATED_DAEMON_PRESETS[entry]} service preset`;
   return `(deprecated, removed in ${DAEMON_ENTRY_REMOVAL_RELEASE}; use ${use}) ${summary}`;
 }
 

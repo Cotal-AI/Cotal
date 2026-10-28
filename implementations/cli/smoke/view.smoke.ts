@@ -129,9 +129,9 @@ check("the watch roster names a working agent's progress as unknown", watchRoste
   const row = marker(feedLine({ ...post, text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }));
   const dm = marker(feedLine({ ...post, delivery: "unicast", channel: undefined, toIds: [ids.bob], text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }));
   check("a watch line cut at the row bound names the code units not shown and the history read that shows it whole",
-    whole?.[1] === String(lost) && whole[2] === "; cotal history general shows it whole" && !feedLine(post).includes("END-MARK"));
-  check("a stream row already cut keeps the count it lost", row?.[1] === String(lost) && row[2] === "; cotal history general shows it whole");
-  check("a cut direct message points at cotal history --dms", dm?.[1] === String(lost) && dm[2] === "; cotal history --dms shows it whole");
+    whole?.[1] === String(lost) && whole[2] === "; `cotal history general` shows it whole" && !feedLine(post).includes("END-MARK"));
+  check("a stream row already cut keeps the count it lost", row?.[1] === String(lost) && row[2] === "; `cotal history general` shows it whole");
+  check("a cut direct message points at cotal history --dms", dm?.[1] === String(lost) && dm[2] === "; `cotal history --dms` shows it whole");
   check("control: a message within the bound has no marker", marker(feedLine({ ...post, text: "short" })) === null);
 }
 

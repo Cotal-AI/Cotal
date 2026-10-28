@@ -281,7 +281,7 @@ try {
   console.log("8. ps names a removal that works on this space, and the legacy spelling refuses without its usage");
   const ps = await cli(["ps", "--space", SPACE]);
   check("ps lists the corpse as stale and names endpoint deregister from this space's own root",
-    ps.status === 4 && ps.stdout.includes(`remove the record from this space's own root: cotal endpoint deregister manager ${IID_CORPSE} --yes`), { status: ps.status, out: ps.stdout.slice(-700) });
+    ps.status === 4 && ps.stdout.includes(`remove the record from this space's own root: \`cotal endpoint deregister manager ${IID_CORPSE} --yes\``), { status: ps.status, out: ps.stdout.slice(-700) });
   const legacy = await cli(["deregister-instance", "--instance", IID_CORPSE]);
   check("deregister-instance refuses naming endpoint deregister and the static authority it needs, and prints no usage after it",
     legacy.status === 1 && legacy.stderr.includes("the legacy deregistration spelling no longer executes") && legacy.stderr.includes("cotal endpoint deregister <class> <full-instance-id>") &&

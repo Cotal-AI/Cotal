@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { AGENT_LIFECYCLE_HELD, agentLifecycleHeld, type AgentLifecycleHeld, type AgentLifecycleRelease } from "@cotal-ai/core";
-import { CommandFailure } from "@cotal-ai/workspace";
+import { CommandFailure, codeSpan } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { shellWord } from "./endpoint-errors.js";
 import { displayCmd } from "./self-exec.js";
@@ -78,7 +78,7 @@ export async function settleHeldName<T>(
         throw new CommandFailure("refused", "CONFLICT", `"${agent}" is held by lifecycle ${held.lifecycleUid} on ${custodian.selector}, which does not report it running; it may still be starting`, {
           target: { agent, lifecycleUid: held.lifecycleUid, managerInstanceId: custodian.instanceId },
           native: { detail: { held } },
-          remedy: `nothing was launched; run the spawn again in a moment, or stop it there with ${displayCmd()} stop ${shellWord(agent)} --on ${shellWord(custodian.selector)}`,
+          remedy: `nothing was launched; run the spawn again in a moment, or stop it there with ${codeSpan(`${displayCmd()} stop ${shellWord(agent)} --on ${shellWord(custodian.selector)}`)}`,
         });
       // Without the host's typed answer nothing says which lifecycle holds the name, or that a
       // name holds it at all: a stale serve epoch is a conflict too. The refusal stands as it came.
@@ -104,7 +104,7 @@ export async function settleHeldName<T>(
       if (answered.outcome === "unknown")
         throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `"${agent}" is held by lifecycle ${held.lifecycleUid}, which is not running, and the mesh could not confirm its release (HTTP ${answered.status}${answered.reason ? `: ${answered.reason}` : ""})`, {
           target: { agent, lifecycleUid: held.lifecycleUid }, native: { detail: { stage: "release", held, release: answered } },
-          remedy: `nothing was launched and the release was not repeated; cotal auth retire ${held.lifecycleUid} asks for it again`,
+          remedy: `nothing was launched and the release was not repeated; \`cotal auth retire ${held.lifecycleUid}\` asks for it again`,
         });
       released = held.lifecycleUid;
       console.error(c.dim(`"${agent}" was held by lifecycle ${held.lifecycleUid}, which is not running; it was released, so this spawn starts a new one …`));

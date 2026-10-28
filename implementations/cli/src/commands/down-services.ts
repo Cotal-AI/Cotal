@@ -32,7 +32,7 @@ export function planBareDownServices(space: string): BareDownService[] {
   catch (error) {
     const known = isCommandFailure(error) ? error : undefined;
     throw new CommandFailure("refused", known?.outcome === "refused" ? known.code : "TARGET_UNAVAILABLE", "this space's service records could not be read completely; bare down stopped no service and not the broker", {
-      target: { space }, remedy: `inspect them with cotal service list --space ${space}`,
+      target: { space }, remedy: `inspect them with \`cotal service list --space ${space}\``,
       ...(known ? { native: { code: known.code, outcome: known.outcome, detail: known.message } } : {}),
     });
   }
@@ -43,15 +43,15 @@ export function planBareDownServices(space: string): BareDownService[] {
   for (const row of instances) {
     const value = row.record.value;
     const base = { definition: value.definition, instanceId: row.name, host: value.host.name, recordedState: value.state };
-    const blocked = (observed: BareDownService["process"], reason: string, remedy = `inspect it with ${statusCommand(space, value.definition, row.name)}`) =>
+    const blocked = (observed: BareDownService["process"], reason: string, remedy = `inspect it with \`${statusCommand(space, value.definition, row.name)}\``) =>
       rows.push({ ...base, process: observed, action: "blocked", reason, remedy });
     let observed: ServiceProcessState;
     try { observed = observeServiceProcess(value); }
     catch { blocked("not-observed", "this host's machine and boot identity could not be established, so its process was not observed"); continue; }
-    if (observed === "foreign-host") { blocked(observed, `it is recorded on host ${value.host.name}, which this down does not control`, `on ${value.host.name}, run cotal service stop ${value.definition} --instance ${row.name} --space ${space} --yes`); continue; }
+    if (observed === "foreign-host") { blocked(observed, `it is recorded on host ${value.host.name}, which this down does not control`, `on ${value.host.name}, run \`cotal service stop ${value.definition} --instance ${row.name} --space ${space} --yes\``); continue; }
     if (!definitions.has(value.definition)) {
       if (processGone(observed) && !receipts.has(row.name)) rows.push({ ...base, process: observed, action: "already-stopped", reason: null, remedy: null });
-      else blocked(observed, "its saved definition is missing, so the service controller cannot stop it", `inspect the space's services with cotal service list --space ${space}`);
+      else blocked(observed, "its saved definition is missing, so the service controller cannot stop it", `inspect the space's services with \`cotal service list --space ${space}\``);
       continue;
     }
     try { assertNoServiceUnitAttempts(space, value.definition); }
@@ -62,9 +62,9 @@ export function planBareDownServices(space: string): BareDownService[] {
     rows.push({ ...base, process: observed, action: observed === "running" || receipts.has(row.name) ? "stop-first" : "already-stopped", reason: null, remedy: null });
   }
   for (const attempt of census.nativeAttempts) if (!recorded.has(attempt.instanceId))
-    rows.push({ definition: attempt.definition, instanceId: attempt.instanceId, host: "not recorded", process: "not-observed", recordedState: "no instance record", action: "blocked", reason: `a retained native ${attempt.kind} attempt names an instance with no record`, remedy: `inspect it with cotal service show ${attempt.definition} --space ${space}` });
+    rows.push({ definition: attempt.definition, instanceId: attempt.instanceId, host: "not recorded", process: "not-observed", recordedState: "no instance record", action: "blocked", reason: `a retained native ${attempt.kind} attempt names an instance with no record`, remedy: `inspect it with \`cotal service show ${attempt.definition} --space ${space}\`` });
   for (const receipt of census.supervisors) if (!recorded.has(receipt.instanceId))
-    rows.push({ definition: receipt.definition, instanceId: receipt.instanceId, host: "not recorded", process: "not-observed", recordedState: "no instance record", action: "blocked", reason: "a supervisor receipt names an instance with no record", remedy: `inspect it with cotal service show ${receipt.definition} --space ${space}` });
+    rows.push({ definition: receipt.definition, instanceId: receipt.instanceId, host: "not recorded", process: "not-observed", recordedState: "no instance record", action: "blocked", reason: "a supervisor receipt names an instance with no record", remedy: `inspect it with \`cotal service show ${receipt.definition} --space ${space}\`` });
   return rows.sort((a, b) => a.definition.localeCompare(b.definition) || a.instanceId.localeCompare(b.instanceId));
 }
 
@@ -76,7 +76,7 @@ export function liveServicesRefusal(space: string, rows: readonly BareDownServic
   if (!live.length) return undefined;
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `saved services in this space still run or could not be verified and depend on its broker (${live.map((row) => `${row.definition} instance ${row.instanceId}: ${row.action === "stop-first" ? row.process : row.reason}`).join("; ")}); ${command === "down" ? "bare down" : command} stopped nothing`, {
     target: { space, services: live.map((row) => ({ definition: row.definition, instanceId: row.instanceId, process: row.process, reason: row.reason })) },
-    remedy: `${live.map((row) => row.action === "stop-first" ? `stop ${row.definition} with cotal service stop ${row.definition} --instance ${row.instanceId} --space ${space} --yes` : row.remedy).join("; ")}, then run cotal ${command} again`,
+    remedy: `${live.map((row) => row.action === "stop-first" ? `stop ${row.definition} with \`cotal service stop ${row.definition} --instance ${row.instanceId} --space ${space} --yes\`` : row.remedy).join("; ")}, then run \`cotal ${command}\` again`,
   });
 }
 
@@ -91,6 +91,6 @@ export function bareDownServicesView(space: string, rows: readonly BareDownServi
   return { space, sections: [{ title: "Services bare down checks first", blocks: [
     { kind: "table", columns: [{ key: "definition", label: "Service" }, { key: "instance", label: "Full instance" }, { key: "host", label: "Execution host" }, { key: "process", label: "Process" }, { key: "plan", label: "Bare down" }],
       rows: rows.map((row) => ({ definition: row.definition, instance: row.instanceId, host: row.host, process: row.process, plan: { text: plan(row), tone: row.action === "already-stopped" ? "ok" as const : "failed" as const } })) },
-    { kind: "lines", lines: ["Bare down refuses while any instance here still runs or could not be verified, because each depends on the broker it stops. It stops no service itself: stop each one with cotal service stop <name> --instance <id> --space <space> --yes, then run cotal down. A stopped instance does not block, and saved definitions are kept."] },
+    { kind: "lines", lines: ["Bare down refuses while any instance here still runs or could not be verified, because each depends on the broker it stops. It stops no service itself: stop each one with `cotal service stop <name> --instance <id> --space <space> --yes`, then run `cotal down`. A stopped instance does not block, and saved definitions are kept."] },
   ] }] };
 }

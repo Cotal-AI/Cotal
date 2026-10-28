@@ -46,7 +46,7 @@ export async function launchAgent(ctx: ControlCtx, input: AgentLaunchInput): Pro
         receipt = JSON.parse(output) as Envelope<ManagedLaunchResult>;
         if (receipt.schemaVersion !== 1 || receipt.command !== "spawn") throw new Error("invalid receipt");
       } catch {
-        resolve({ ok: false, canRetry: false, message: "Launch outcome unconfirmed. Inspect the roster and cotal ps before starting another agent." });
+        resolve({ ok: false, canRetry: false, message: "Launch outcome unconfirmed. Inspect the roster and `cotal ps` before starting another agent." });
         return;
       }
       const result = receipt.result;
