@@ -18,17 +18,26 @@ import { mintServiceCallerPayloadObserverCreds } from "../src/service-caller-pay
 import { SERVICE_CALLER_PAYLOAD_FLOOR } from "../src/service-caller-payload.js";
 import { createHash } from "node:crypto";
 import { grantActor, findInteractiveActor, revokeActor, grantManagedActor } from "../src/ledger.js";
-import { ensurePinnedIdp, loadOwnerSecret } from "../src/store.js";
+import { ensurePinnedIdp, loadOwnerSecret, saveAuthServiceInfo } from "../src/store.js";
+import { saveIdpSession } from "../src/login.js";
+import { serviceEndpointHostCall, type ServiceEndpointValues } from "../src/service-host-client.js";
 import { deriveOwnerForIdpSubject } from "../src/derive.js";
 import { startAuthService, type AuthServiceHandle } from "../src/service.js";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { checks } from "./_service-custody-fixture.js";
 
-const baseline = process.argv.includes("--baseline"), second = process.argv.includes("--second"), c = checks(), rid = () => randomBytes(16).toString("hex");
+const baseline = process.argv.includes("--baseline"), second = process.argv.includes("--second"), cli = process.argv.includes("--cli"), c = checks(), rid = () => randomBytes(16).toString("hex");
 const enc = new TextEncoder();
 const fx = await startHostedAuthFixture("callerissue", 1, baseline ? {} : { maxPayload: SERVICE_CALLER_PAYLOAD_FLOOR }), a = fx.accounts[0]!;
 const { publicKey, privateKey } = await generateKeyPair("EdDSA"), jwk = { ...await exportJWK(publicKey), kid: "caller-fixture" };
-const idp = createServer((_req, res) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ keys: [jwk] })); });
+const mintIdpToken = () => new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(origin).setSubject("human").setIssuedAt().setExpirationTime("10m").sign(privateKey);
+// `/token` trades the owner's CLI login session for a fresh IdP JWT, as `cotal login` leaves it (--cli).
+const idp = createServer(async (req, res) => {
+  res.setHeader("content-type", "application/json");
+  if (req.url !== "/api/auth/token") return void res.end(JSON.stringify({ keys: [jwk] }));
+  if (req.headers.authorization !== "Bearer session-human") { res.writeHead(401); return void res.end("{}"); }
+  res.end(JSON.stringify({ token: await mintIdpToken() }));
+});
 await new Promise<void>(r => idp.listen(0, "127.0.0.1", r));
 const origin = `http://127.0.0.1:${(idp.address() as { port: number }).port}`;
 const stateDir = join(fx.dir, "caller-state"); mkdirSync(stateDir);
@@ -40,7 +49,7 @@ const strangerRow = grantActor(stateDir, { owner, actor: "stranger", scope: [], 
 const managedToken = rid(), managedUid = rid();
 const managedRow = grantManagedActor(stateDir, { owner, actor: "managed", lifecycleUid: managedUid, parent: `${owner}.caller`,
   scope: [], allowSubscribe: [], allowPublish: [], tokenHash: createHash("sha256").update(managedToken).digest("hex"), custody: { kind: "foreground" } });
-const idpToken = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(origin).setSubject("human").setIssuedAt().setExpirationTime("10m").sign(privateKey);
+const idpToken = await mintIdpToken();
 let service: AuthServiceHandle | undefined, admin: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
 const connections: NatsConnection[] = [];
 let serve: ReturnType<typeof serveEndpoint> | undefined, runs = 0;
@@ -49,6 +58,17 @@ try {
   await setupSpaceStreams({ servers: fx.servers, space: a.space, creds: await mintCreds(a.auth, newIdentity(), "provisioner") });
   service = await startAuthService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: "caller-fixture" }, space: a.space,
     servers: fx.servers, store: a.store, storeIdentity: a.store.identity, stateDir, serviceEndpoints: { startup: { kind: "normal" }, ...(!baseline ? { callerPayload: { observerCreds: async () => { await beforeObserver?.(); return mintServiceCallerPayloadObserverCreds({ pub: a.auth.sys.pub, signingSeed: a.auth.sys.signingSeed! }); } } } : {}) } });
+  // --cli: the owner's grants and revoke go through `cotal service-endpoint`'s own client, from a
+  // separate root that knows the running service and holds the owner's login session.
+  const clientDir = join(fx.dir, "caller-client"), cliHome = join(fx.dir, "caller-home");
+  if (cli) {
+    mkdirSync(clientDir); mkdirSync(cliHome);
+    ensurePinnedIdp(clientDir, `${origin}/api/auth`);
+    saveAuthServiceInfo(clientDir, { url: service.url, pid: process.pid, cap: service.cap });
+    process.env.COTAL_HOME = cliHome;
+    saveIdpSession(cliHome, `${origin}/api/auth`, { token: "session-human", expiresAt: Math.floor(Date.now() / 1000) + 600, sub: "human" });
+  }
+  const ownerCli = (positionals: string[], values: ServiceEndpointValues) => serviceEndpointHostCall(clientDir, a.space, positionals, values);
   const post = async (path: string, body: unknown) => {
     const r = await fetch(`${service!.url}${path}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${service!.cap}` }, body: JSON.stringify(body) });
     const out = await r.json() as Record<string, any>;
@@ -125,15 +145,27 @@ try {
           callerPayload: { observerCreds: () => mintServiceCallerPayloadObserverCreds({ pub: a.auth.sys.pub, signingSeed: a.auth.sys.signingSeed! }) } } });
       host = service.serviceEndpointHost!;
     }
-    const granted = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "caller-grant", granter: { kind: "owner", owner }, input: {
-      grantee, service: { endpoint, instanceId, approvalDigest: witness.approvalDigest }, capabilities: [capability], expectedPolicyRevision: 0 } });
+    const granted = cli ? (await ownerCli(["grant", first.proposalId], { to: `${owner}.caller`, lifecycle: grantee.lifecycleUid, commands: command })).answer
+      : await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "caller-grant", granter: { kind: "owner", owner }, input: {
+        grantee, service: { endpoint, instanceId, approvalDigest: witness.approvalDigest }, capabilities: [capability], expectedPolicyRevision: 0 } });
     assert.equal(granted.state, "granted", JSON.stringify(granted)); if (granted.state !== "granted") throw new Error("caller grant"); grantId = granted.grant.grantId;
     if (!process.argv.includes("--managed-before")) {
-      const managedGrant = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "caller-grant", granter: { kind: "owner", owner }, input: {
-        grantee: { owner, actor: "managed", lifecycleUid: managedRow.lifecycleUid! }, service: { endpoint, instanceId, approvalDigest: witness.approvalDigest }, capabilities: [capability], expectedPolicyRevision: 0 } });
+      const managedGrant = cli ? (await ownerCli(["grant", first.proposalId], { to: `${owner}.managed`, lifecycle: managedRow.lifecycleUid!, commands: command })).answer
+        : await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "caller-grant", granter: { kind: "owner", owner }, input: {
+          grantee: { owner, actor: "managed", lifecycleUid: managedRow.lifecycleUid! }, service: { endpoint, instanceId, approvalDigest: witness.approvalDigest }, capabilities: [capability], expectedPolicyRevision: 0 } });
       assert.equal(managedGrant.state, "granted", JSON.stringify(managedGrant));
       c.check("managed grant captures actual parent lifecycle and immutable covering grant", managedGrant.state === "granted" && managedGrant.grant.parentRefs.length === 1
         && managedGrant.grant.parentRefs[0]!.principal.lifecycleUid === grantee.lifecycleUid);
+    }
+    if (cli) {
+      const before = (await authKv.get(`servicepolicy.${grantee.lifecycleUid}`))!.revision;
+      const again = await ownerCli(["grant", first.proposalId], { to: `${owner}.caller`, lifecycle: grantee.lifecycleUid, commands: command });
+      const after = (await authKv.get(`servicepolicy.${grantee.lifecycleUid}`))!.revision;
+      c.check("CLI grant run again reads the covering grant and sends nothing", again.requestId === undefined && again.note?.includes(grantId) === true && after === before, { again, before, after });
+      const listed = await ownerCli(["callers", first.proposalId], {});
+      const records = listed.answer.state === "page" && listed.answer.operation === "caller-policy-list" ? listed.answer.records : [];
+      c.check("CLI callers lists the two grantees of the approved instance", records.length === 2
+        && records.map((r) => r.value.grantee.actor).sort().join() === "caller,managed", listed.answer);
     }
     if (process.argv.includes("--managed-before")) {
       const managedGrant = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "caller-grant", granter: { kind: "owner", owner }, input: {
@@ -199,7 +231,8 @@ try {
       c.check(`${boundary} during final actual SYS observation denies native JWT release`, observations >= 2 && refused && runs === expectedRuns);
     } else {
     const revision = (await authKv.get(`servicepolicy.${grantee.lifecycleUid}`))!.revision;
-    const revoked = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "caller-revoke", granter: { kind: "owner", owner }, input: { grantee, grantId, expectedPolicyRevision: revision } });
+    const revoked = cli ? (await ownerCli(["revoke", grantId], { to: `${owner}.caller`, lifecycle: grantee.lifecycleUid })).answer
+      : await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "caller-revoke", granter: { kind: "owner", owner }, input: { grantee, grantId, expectedPolicyRevision: revision } });
     c.check("controlled revoke confirms deny-new without claiming retirement", "denyNew" in revoked && revoked.denyNew === "landed", revoked);
     refused = false; try { await invoke("caller", callerRow.lifecycleUid!); } catch { refused = true; }
     c.check("revoked new issuance cannot invoke and handler count unchanged", refused && runs === expectedRuns);

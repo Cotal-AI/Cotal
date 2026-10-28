@@ -6,12 +6,12 @@
  * served. Redirects are refused: a 302 could walk the proof onto a host the registry never pinned.
  * The parsed answer comes back verbatim; the caller binds it to its own request.
  */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { mkSecretDir, writeSecretFileCreateOnly, type EpCapability } from "@cotal-ai/core";
+import { canonicalJson, mkSecretDir, writeSecretFileCreateOnly, type EpCapability, type ServicePrincipal } from "@cotal-ai/core";
 import { CommandFailure, findMesh, homeCotalDir, probeLiveness } from "@cotal-ai/workspace";
-import { parseServiceHostResult, type ServiceHostInputs, type ServiceHostOperation, type ServiceHostResult } from "./service-host-contract.js";
+import { parseServiceHostResult, type ServiceCallerGrant, type ServiceHostInputs, type ServiceHostOperation, type ServiceHostResult } from "./service-host-contract.js";
 import { SERVICE_ENDPOINT_HOST_PATH } from "./service-endpoint-authority.js";
 import { fetchIdpJwt, requireIdpSession } from "./login.js";
 import { loadAuthServiceInfo, loadPinnedIdp } from "./store.js";
@@ -21,13 +21,15 @@ export type ServiceHostRouteRequest<K extends ServiceHostOperation = ServiceHost
   v: 1; kind: "service-endpoint-host"; requestId: string; operation: O; input: ServiceHostInputs[O];
 } }[K];
 
-export const SERVICE_ENDPOINT_USAGE = "service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref>>";
+export const SERVICE_ENDPOINT_USAGE = "service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref> | callers <proposalId> | grant <proposalId> --to <owner.actor> --lifecycle <uid> --commands <a,b> | revoke <grantId> --to <owner.actor> --lifecycle <uid>>";
 
-export type ServiceEndpointValues = { owner?: string; claim?: string; "caller-ceiling"?: string; "request-id"?: string };
+export type ServiceEndpointValues = { owner?: string; claim?: string; "caller-ceiling"?: string; "request-id"?: string;
+  to?: string; lifecycle?: string; commands?: string; cursor?: string };
 
 /** One `cotal service-endpoint` run: the subcommand, its subject, the id an effectful request went
- *  under, and the host's answer. */
-export interface ServiceEndpointCall { request: string; subject: string; requestId?: string; answer: ServiceHostResult }
+ *  under, the host's answer, and why nothing was sent when the answer is a read that made the
+ *  request unnecessary. */
+export interface ServiceEndpointCall { request: string; subject: string; requestId?: string; answer: ServiceHostResult; note?: string }
 
 /** An effectful host request as this root sent it, kept so a later run can send the same bytes
  *  under the same id. The host replays an identical request and answers `conflict` to a different
@@ -100,7 +102,7 @@ export async function serviceEndpointHostCall(dir: string, space: string, positi
   let resolved: ServiceHostTarget | undefined;
   const host = () => resolved ??= serviceHostEndpoint(dir, space, `service-endpoint ${sub}`);
   const post = (r: ServiceHostRouteRequest) => postServiceEndpointHost(host(), r);
-  const read = async (operation: "proposal-read" | "operation-read" | "name-read", input: ServiceHostInputs[typeof operation]): Promise<ServiceEndpointCall> =>
+  const read = async (operation: "proposal-read" | "operation-read" | "name-read" | "caller-policy-list", input: ServiceHostInputs[typeof operation]): Promise<ServiceEndpointCall> =>
     ({ request: sub, subject, answer: await post(fresh(operation, input) as ServiceHostRouteRequest) });
   // A lost answer leaves the request recorded, so the failure names the id a resend goes under.
   const send = async (request: RecordedHostRequest): Promise<ServiceEndpointCall> => {
@@ -147,7 +149,63 @@ export async function serviceEndpointHostCall(dir: string, space: string, positi
       recordHostRequest(dir, request);
       return send(request);
     }
+    case "callers": {
+      const { endpoint, instanceId } = await proposed(subject);
+      return read("caller-policy-list", { owner: null, cursor: values.cursor ?? null, limit: 50, service: { endpoint, instanceId } });
+    }
+    case "grant": {
+      const commands = [...new Set((values.commands ?? "").split(",").map((c) => c.trim()).filter(Boolean))];
+      if (!commands.length) throw new CommandFailure("refused", "USAGE_INVALID", "grant needs --commands <a,b>: the commands the grantee may invoke; nothing was sent");
+      const grantee = granteeOf();
+      const proposal = await proposed(subject);
+      if (proposal.state !== "approved" || proposal.approvalDigest === null)
+        throw new CommandFailure("refused", "CONFLICT", `proposal ${subject} is ${proposal.state}; a caller is granted on an approved registration, and nothing was sent`);
+      const service = { endpoint: proposal.endpoint, instanceId: proposal.instanceId, approvalDigest: proposal.approvalDigest };
+      const capabilities: EpCapability[] = commands.map((command) => ({ endpoint: service.endpoint, command, instanceId: service.instanceId, instanceOnly: true }));
+      const policy = await post(fresh("caller-policy-read", { grantee, service: { endpoint: service.endpoint, instanceId: service.instanceId } }));
+      const record = policy.state === "present" && policy.operation === "caller-policy-read" ? policy.record : undefined;
+      // A grant already covering these commands at this approval is the answer: a second run of the
+      // same grant, or a retry whose first send landed, adds nothing.
+      const held = record?.value.grants.find((g: ServiceCallerGrant) => g.status.state === "active" && g.endpoint === service.endpoint
+        && g.instanceId === service.instanceId && g.serviceApprovalDigest === service.approvalDigest
+        && commands.every((command) => g.capabilities.some((c) => c.command === command && c.target === undefined)));
+      if (held) return { request: sub, subject, answer: policy, note: `${grantee.owner}.${grantee.actor} already holds grant ${held.grantId} for these commands; nothing was sent` };
+      return derived(fresh("caller-grant", { grantee, service, capabilities, expectedPolicyRevision: record?.revision ?? 0 }));
+    }
+    case "revoke": {
+      const grantee = granteeOf();
+      const policy = await post(fresh("caller-policy-read", { grantee, service: null }));
+      const record = policy.state === "present" && policy.operation === "caller-policy-read" ? policy.record : undefined;
+      if (!record?.value.grants.some((g: ServiceCallerGrant) => g.grantId === subject))
+        throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${grantee.owner}.${grantee.actor} holds no grant ${subject} you can read on space "${space}"; nothing was sent`);
+      return derived(fresh("caller-revoke", { grantee, grantId: subject, expectedPolicyRevision: record.revision }));
+    }
     default: throw usage();
+  }
+
+  /** The proposal a caller request names: its endpoint, instance and, once approved, the approval
+   *  digest. A decided proposal reads back as its tombstone, which still names all three. */
+  async function proposed(proposalId: string): Promise<{ endpoint: string; instanceId: string; state: string; approvalDigest: string | null }> {
+    const r = await post(fresh("proposal-read", { proposalId }));
+    if (r.state !== "present" || r.operation !== "proposal-read")
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no proposal ${proposalId} is yours on space "${space}"; nothing was sent`);
+    const v = r.record.value;
+    return { endpoint: v.endpoint, instanceId: v.instanceId, state: v.state, approvalDigest: "approvalDigest" in v ? v.approvalDigest : null };
+  }
+
+  function granteeOf(): ServicePrincipal {
+    const to = values.to ?? "", dot = to.indexOf("."), lifecycleUid = values.lifecycle;
+    if (dot <= 0 || dot === to.length - 1 || !lifecycleUid)
+      throw new CommandFailure("refused", "USAGE_INVALID", `${sub} needs --to <owner.actor> and --lifecycle <uid>: a caller grant names one exact lifecycle; nothing was sent`);
+    return { owner: to.slice(0, dot), actor: to.slice(dot + 1), lifecycleUid };
+  }
+
+  /** Send a caller change under an id derived from the space and the request's own input. The input
+   *  carries the policy revision it was read at, so a retry after a lost answer is the same request
+   *  and the host replays its answer, while a run after the change landed reads a new revision. */
+  async function derived(request: ServiceHostRouteRequest<"caller-grant" | "caller-revoke">): Promise<ServiceEndpointCall> {
+    const requestId = createHash("sha256").update(`cotal/service-endpoint/${request.operation}/v1\n${space}\n${canonicalJson(request.input)}`).digest("hex").slice(0, 32);
+    return { request: sub!, subject: subject!, requestId, answer: await post({ ...request, requestId }) };
   }
 }
 
