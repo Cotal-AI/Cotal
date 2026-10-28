@@ -162,6 +162,14 @@ try {
     c.check("actual managed actor secret exchange and callout resolves/invokes generic endpoint", reachedManaged && runs === 2);
     let staleRefused = false; try { await invoke("managed", rid()); } catch { staleRefused = true; }
     c.check("managed connection cannot publish as a different caller lifecycle", staleRefused && runs === 2);
+    // An unpinned call, the way `cotal_invoke` sends one: the grant holds only the instance rail.
+    let reachedUnpinned = false;
+    try {
+      const nc = await dial("caller");
+      const target = await resolveService(nc, a.space, endpoint, { owner, actor: "caller", uid: callerRow.lifecycleUid! }, { deadlineMs: 3000 });
+      reachedUnpinned = (await invokeCommand(nc, a.space, target, command, second ? { n: 7 } : {}, { deadlineMs: 3000 })).reply.ok;
+    } catch (e) { console.log("UNPINNED_RESULT", (e as Error).message); }
+    c.check("an unpinned resolve/invoke reaches an instance-only grant on the instance that answered describe", reachedUnpinned && runs === 3);
     const expectedRuns = runs;
     let refused = false; try { await invoke("stranger", strangerRow.lifecycleUid!); } catch { refused = true; }
     c.check("ungranted lifecycle cannot invoke and handler count unchanged", refused && runs === expectedRuns);

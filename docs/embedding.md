@@ -1571,7 +1571,9 @@ and rechecks them before append. An admin scope never substitutes for endpoint c
 capability must name that instance with `instanceOnly: true`, carry no journal access and no `any` or
 `ledger` target, and sit within the approval's caller ceiling. The answer is `granted` with the grant
 as stored. Ordinary user-auth agent connects now derive their endpoint rows from this policy through
-core's native grant builder, including reserved Describe for each authorized exact instance. The
+core's native grant builder, including reserved Describe for each authorized exact instance. An unpinned
+`invokeService` or `invokeCommand` whose class publish the broker refuses is re-sent once on the rail of
+the instance that answered its describe, so a granted caller reaches the service without naming the instance. The
 callout rechecks grantee lifecycle, named ancestor grants, current name, assignment, root, activation,
 approval and ceiling, then checks the policy evidence again after signing and native-key recording.
 The original connection expiry is at most 60 seconds from issuance, and capped by root and approval

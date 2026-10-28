@@ -191,7 +191,8 @@ export const BIND_SPLIT_REISSUES = 16;
 /**
  * INVOKE one named command on a resolved service: validate nothing here (the compiled input
  * contract in {@link epCall}'s request builder gates args before publish, and the responder's
- * digest-bound boundary re-validates), route on the `one` rail, return the attributed reply. A
+ * digest-bound boundary re-validates), route on the `one` rail (or the resolved instance's `inst` rail
+ * when the broker refuses the class publish), return the attributed reply. A
  * command absent from the resolved surface is `not-found` (the caller cannot see it, or it does
  * not exist); a targeted command needs its `target`.
  *
@@ -264,13 +265,6 @@ export async function invokeCommand(
     }
     return service.responder.epoch;
   };
-  // `--on`: a PINNED service routes to its exact instance's `inst` rail (the same instance the
-  // describe resolved to, at its resolved epoch), never the class `one` queue — so the command reaches
-  // the addressed manager in a multi-manager space. Unpinned ⇒ class anycast `one` (unchanged). The
-  // describeBound currency check still holds: an inst-routed reply carries that instance's id.
-  const route = service.pinnedInstanceId !== undefined
-    ? { mode: "inst" as const, instanceId: service.pinnedInstanceId, epoch: service.responder.epoch }
-    : { mode: "one" as const };
   // The bind travels WITH the request, so the responder can refuse before running the command
   // rather than leaving `describeBound` to report the split afterwards. It is sent exactly when
   // this handle's own resolve is the currency reference — that is the caller saying "this
@@ -280,14 +274,15 @@ export async function invokeCommand(
   const bind = opts.currentEpoch === undefined
     ? { instanceId: service.pinnedInstanceId ?? service.responder.instanceId, epoch: service.responder.epoch }
     : undefined;
-  return epCall(nc, space, route, {
+  const deadline = Date.now() + (opts.deadlineMs ?? 10_000);
+  const call = (route: { mode: "one" } | { mode: "inst"; instanceId: string; epoch: number }) => epCall(nc, space, route, {
     endpoint: service.endpoint, command, contract: resolved.contract, caller,
     ...(sendArgs !== undefined ? { args: sendArgs } : {}),
     ...(opts.target ? { target: opts.target } : {}),
     ...(bind !== undefined ? { bind } : {}),
     ...(opts.id !== undefined ? { id: opts.id } : {}),
   }, {
-    deadlineMs: opts.deadlineMs ?? 10_000,
+    deadlineMs: deadline - Date.now(),
     signal: opts.signal,
     currentEpoch: opts.currentEpoch ?? describeBound,
     // What the currency hook returns decides how a stale-epoch refusal is worded and marked: the
@@ -295,6 +290,23 @@ export async function invokeCommand(
     // the handle is the stale side); a caller-supplied hook is a registry read by epCall's contract.
     currencyReference: opts.currentEpoch ? "registry" : "bind",
   });
+  // `--on`: a PINNED service routes to its exact instance's `inst` rail (the same instance the
+  // describe resolved to, at its resolved epoch), never the class `one` queue — so the command reaches
+  // the addressed manager in a multi-manager space. The describeBound currency check still holds:
+  // an inst-routed reply carries that instance's id.
+  if (service.pinnedInstanceId !== undefined)
+    return call({ mode: "inst", instanceId: service.pinnedInstanceId, epoch: service.responder.epoch });
+  try {
+    return await call({ mode: "one" });
+  } catch (e) {
+    // Unpinned goes to the class `one` queue. When the broker refuses that publish, nothing ran
+    // (`not-executed`). An instance-only grant, which is the only kind a service caller grant mints,
+    // holds just the `inst` rail of the instance it names, and this handle's describe already reached
+    // an instance, attested by the broker. So the same bound request goes once to that instance's
+    // rail; a credential without that row is refused there too, and that refusal stands.
+    if (!(e instanceof EpEnvelopeError) || e.code !== "permission-denied" || e.outcome !== "not-executed" || deadline <= Date.now()) throw e;
+    return call({ mode: "inst", instanceId: service.responder.instanceId, epoch: service.responder.epoch });
+  }
 }
 
 /** The refusal a goal-following call meets on a handle whose endpoint serves no `goal-result`: an
