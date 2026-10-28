@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.115.0
+
+### Patch Changes
+
+- d1df021: Wake Jcode seats for focus-mode channel mentions with a pull-only hint, including mentions received during a busy turn.
+
 ## 0.114.1
 
 No changes in this release.
