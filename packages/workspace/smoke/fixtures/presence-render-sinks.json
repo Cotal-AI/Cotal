@@ -1304,7 +1304,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/console/ui/Roster.tsx",
-        "anchor": "return progressSignal(undefined, Date.now()).kind === \"unknown\" ? \"progress unknown\" : \"progress observed\";"
+        "anchor": "return \"progress unknown\";"
       }
     },
     {
