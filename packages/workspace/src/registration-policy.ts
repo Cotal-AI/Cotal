@@ -87,7 +87,10 @@ function checkBundleDocument(parsed: unknown): Check<UserBundle> {
       return bad("✗ the user-auth bundle's agent-provisioning endpoint (userAuth.endpoints.agentProvisioningUrl) is not a URL");
     }
     const refusal = assertPinnedFetchUrl(pu, "the bundle's agent-provisioning endpoint (userAuth.endpoints.agentProvisioningUrl)");
-    if (refusal) return bad(refusal, "UNSUPPORTED");
+    // The sentence is unmarked, because a pinned-fetch caller classifies the error rather than its
+    // text. A bundle check is the other way around: its message is what the front end prints, and
+    // every other refusal from this function already carries the glyph.
+    if (refusal) return bad(`✗ ${refusal}`, "UNSUPPORTED");
   }
   if (typeof doc.sentinelCreds !== "string" || !doc.sentinelCreds)
     return bad("✗ the user-auth bundle carries no sentinelCreds - the sentinel identity is part of the export");
