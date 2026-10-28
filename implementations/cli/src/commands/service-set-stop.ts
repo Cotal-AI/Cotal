@@ -34,14 +34,22 @@ function setView(rows: readonly MemberResult[], title: string): Report {
 
 const BROKER_NAMES = new Set(["nats", "broker", STACK_DEFINITION.broker]);
 
-/** Why the set refuses a name that reaches no saved definition, with the step a single named `down`
- *  names. A set never stops the broker, so a broker name names the bare `down` instead. */
-function unmatchedMember(space: string, name: string, preset: boolean): CommandFailure {
-  const stackName = BROKER_NAMES.has(name) ? undefined : stackMemberFor(space, name);
-  return new CommandFailure("refused", "TARGET_NOT_FOUND", `${oneLine(name)} matches no saved definition${preset ? "" : " or preset"} in space ${oneLine(space)}; no service was stopped`, {
+/** A set never stops the broker, so each of its names gets one refusal, which names the bare `down`
+ *  that stops it with the whole stack. */
+function brokerMember(space: string, name: string): CommandFailure {
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `${oneLine(name)} matches no service a set of names can stop in space ${oneLine(space)}; no service was stopped`, {
     target: { space, name },
-    remedy: BROKER_NAMES.has(name) ? "a set of names never stops the broker; a bare cotal down stops it with the whole stack"
-      : stackName ? `this space's controller stack names it ${stackName}; name ${stackName} instead, or run bare cotal down to stop the whole stack` : unsavedServiceStep(name, "stop"),
+    remedy: "a set of names never stops the broker; a bare cotal down stops it with the whole stack",
+  });
+}
+
+/** Why the set refuses a name that reaches no saved definition, with the step a single named `down`
+ *  names. */
+function unmatchedMember(space: string, name: string): CommandFailure {
+  const stackName = stackMemberFor(space, name);
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `${oneLine(name)} matches no saved definition or preset in space ${oneLine(space)}; no service was stopped`, {
+    target: { space, name },
+    remedy: stackName ? `this space's controller stack names it ${stackName}; name ${stackName} instead, or run bare cotal down to stop the whole stack` : unsavedServiceStep(name, "stop"),
   });
 }
 
@@ -88,18 +96,16 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
   const { space, root } = personaCatalog(args.values as { space?: string });
   recordOperationSpace(space);
   const store = serviceDefinitionStore(space), members: Member[] = [], presetTargets: PresetServiceTarget[] = [];
+  // The broker's three names refuse alike, before any member resolves. A saved service of your own
+  // named nats or broker is that service.
+  const broker = args.positionals.find((name) => BROKER_NAMES.has(name) && (name === STACK_DEFINITION.broker || !store.read(name)));
+  if (broker) throw brokerMember(space, broker);
   for (const requested of args.positionals) {
     // A preset name reaches the service built on it, as a single named down does.
-    let resolved: PresetServiceTarget | undefined;
-    try { resolved = resolvePresetService(space, root, requested, "stop", args.values); }
-    catch (error) {
-      // The broker preset with no saved service built on it still names the broker.
-      if (requested === "broker" && isCommandFailure(error) && error.code === "TARGET_NOT_FOUND") throw unmatchedMember(space, requested, true);
-      throw error;
-    }
+    const resolved = resolvePresetService(space, root, requested, "stop", args.values);
     if (resolved?.recorded) throw recordedProcessRefusal(requested, resolved.recorded, space, "down");
     const name = resolved?.name ?? requested, definition = store.read(name);
-    if (!definition) throw unmatchedMember(space, name, false);
+    if (!definition) throw unmatchedMember(space, name);
     const same = members.find((member) => member.definition.name === name);
     if (same) throw new CommandFailure("refused", "USAGE_INVALID", `${oneLine(same.requested)} and ${oneLine(requested)} both name ${oneLine(name)}; name each service once, and no service was stopped`, { target: { space, name } });
     if (resolved) presetTargets.push(resolved);

@@ -70,7 +70,8 @@
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
  *     it, `up` then `down` stop both. While the broker is live, its refusal of a seat's credential
  *     is kept as it is. `down delivery manager --dry-run` previews both stack members, a set naming
- *     `nats` refuses whole with a message that names it, and `down manager delivery --yes` stops both
+ *     `nats`, `broker` or `stack-broker` refuses whole with one code, message and bare `down` for
+ *     each, in a dry run and a stop, and `down manager delivery --yes` stops both
  *     with each requested name in its target. `down manager` stops `stack-manager` through the service
  *     stop and `up` starts it again; the broker stop then names its stack members. Under umask
  *     0002 the delivery-aware marker is 0600. After a clean down, a group-writable `.cotal/auth`
@@ -934,12 +935,28 @@ try {
       setPreview.status === 0 && setPreview.env?.result?.kind === "service-set-stop-preview"
         && JSON.stringify(previewMembers.map((member) => [member.name, member.requested])) === JSON.stringify([["stack-delivery", "delivery"], ["stack-manager", "manager"]]), shown(setPreview));
     const setManager = runningPidOf(space, "stack-manager"), setDelivery = runningPidOf(space, "stack-delivery");
+    const brokerNext = "a set of names never stops the broker; a bare cotal down stops it with the whole stack";
     const unknown = cli(root, "down", "stack-manager", "nats", "--space", space, "--yes", "--json");
-    check("a broker name in the set that matches no saved definition or preset refuses the whole set and names the bare down, not stack-broker",
+    check("a broker name in the set refuses the whole set and names the bare down, not stack-broker",
       unknown.status === 2 && unknown.env?.error?.code === "TARGET_NOT_FOUND" && unknown.env.target?.name === "nats"
-        && unknown.env.error.message === `nats matches no saved definition or preset in space ${space}; no service was stopped`
-        && unknown.env.error.remedy === "a set of names never stops the broker; a bare cotal down stops it with the whole stack"
+        && unknown.env.error.message === `nats matches no service a set of names can stop in space ${space}; no service was stopped`
+        && unknown.env.error.remedy === brokerNext
         && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), shown(unknown));
+    // broker and stack-broker reach the saved stack-broker, and refuse as nats does wherever they stand.
+    for (const set of [["delivery", "broker", "--dry-run"], ["manager", "broker", "--yes"], ["delivery", "stack-broker", "--yes"], ["manager", "stack-broker", "--dry-run"], ["broker", "delivery", "--yes"]]) {
+      const name = set.find((word) => word.endsWith("broker"))!;
+      const named = cli(root, "down", ...set, "--space", space, "--json");
+      check(`down ${set.join(" ")} --json refuses as nats does, with its code, message and bare down`,
+        named.status === 2 && named.env?.error?.code === "TARGET_NOT_FOUND" && named.env.target?.name === name
+          && named.env.error.message === `${name} matches no service a set of names can stop in space ${space}; no service was stopped`
+          && named.env.error.remedy === brokerNext
+          && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), shown(named));
+    }
+    const plainBroker = cli(root, "down", "delivery", "stack-broker", "--space", space, "--yes");
+    const plainText = `${plainBroker.stdout}${plainBroker.stderr}`;
+    check("and its plain refusal names the same code and bare down, with no stop policy wording",
+      plainBroker.status === 2 && plainText.includes(`stack-broker matches no service a set of names can stop in space ${space}; no service was stopped`)
+        && plainText.includes("TARGET_NOT_FOUND") && plainText.includes(brokerNext) && !plainText.includes("kernel-exit") && !plainText.includes("UNSUPPORTED"), plainText);
     const unknownOne = cli(root, "down", "nosuch", "--space", space, "--dry-run", "--json");
     const unknownSet = cli(root, "down", "nosuch", "delivery", "--space", space, "--yes", "--json");
     check("any other name in the set that matches nothing refuses the whole set with the step a single named down names",
