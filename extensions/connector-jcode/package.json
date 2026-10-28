@@ -36,6 +36,8 @@
     "@cotal-ai/connector-core": "workspace:*",
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/smoke-kit": "workspace:*",
+    "@nats-io/jetstream": "^3.4.0",
+    "@nats-io/transport-node": "^3.4.0",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.4",
     "zod": "^4.4.3"
