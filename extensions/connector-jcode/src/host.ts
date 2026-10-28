@@ -185,7 +185,9 @@ function publicConfig(config: AgentConfig): AgentConfig {
   // pointer on the child rail.
   return {
     ...config,
-    creds: config.creds ? "managed" : undefined,
+    // Keep the catalog's authenticated-mode gate without exposing either credential shape.
+    // Clearing both markers makes a user-mode child advertise tools its host refuses.
+    creds: config.creds || config.userAuth ? "managed" : undefined,
     userAuth: undefined,
     token: undefined,
     user: undefined,

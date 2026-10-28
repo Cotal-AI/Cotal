@@ -4500,7 +4500,16 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.js) throw new Error(this.notLiveMsg());
     assertPartsSerializable(msg.parts);
     // msgID = message id → free server-side dedup across JetStream redelivery.
-    await this.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
+    try {
+      await this.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
+    } catch (error) {
+      if (error instanceof TimeoutError)
+        throw new Error(
+          `${error.message}. The send outcome is unknown: the broker may have stored the message. Check before resending.`,
+          { cause: error },
+        );
+      throw error;
+    }
   }
 
   /** Create the three backing streams for this space (idempotent). Open-mode lazy create;
