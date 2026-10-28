@@ -107,6 +107,7 @@ import {
   tombstoneMember,
   activateMember,
   readMember,
+  deleteMember,
   listMembers,
   listLifecycleMemberChannels,
   durableEligible,
@@ -650,7 +651,9 @@ export class CotalEndpoint extends EventEmitter {
    *  (#4965). A durable join or leave bound to one of them is refused, so no row of a retiring lifecycle
    *  is written after its inventory read starts. An entry goes when a later inventory for the same
    *  principal finds its ACL row retired; an alias that never retires again keeps its one entry until
-   *  the daemon restarts. */
+   *  the daemon restarts. This is the second layer of the fence: it covers a manager that does not
+   *  narrow the ACL row before the inventory, on this daemon process only. The first is the ACL row
+   *  each join re-reads around its write (`durableJoinFor`'s `aclFence`), which holds across daemons. */
   private readonly retiringLifecycles = new Map<string, Set<string>>();
   /** The durable joins and leaves running now, by `<principal>/<lifecycleUid>`: the writes an
    *  inventory of that lifecycle waits for before it reads. */
@@ -5207,11 +5210,19 @@ export class CotalEndpoint extends EventEmitter {
    *
    * Runs on the daemon (which hosts the fan-out/reader loops + the members KV), so catch-up + the
    * activation fence read are in-process — no cross-process cursor read.
+   *
+   * `aclFence` (the `ctl.delivery` join always sets it) re-reads the lifecycle's exact ACL row
+   * immediately before the write that creates or reopens its row, and again after it. When the channel
+   * is no longer within that row, the join is refused, and a row it already wrote is removed first.
+   * A retirement narrows that ACL row before it reads the lifecycle's inventory (fenceLifecycleAcl),
+   * so a row written too late for the inventory removes itself, whichever daemon process wrote it.
+   * Without the option the write is a privileged assertion that consults no ACL.
    */
   async durableJoinFor(
     owner: string,
     channel: string,
     lifecycleUid: string,
+    opts: { aclFence?: boolean } = {},
   ): Promise<{ durable: boolean; reason?: string; generation?: number }> {
     if (!this.js) throw new Error("endpoint not started");
     await this.manager(); // ensure jsm — a non-consuming provisioner inits it lazily; catch-up + fence need it
@@ -5234,7 +5245,12 @@ export class CotalEndpoint extends EventEmitter {
       channel, owner, lifecycleUid, state: "durable-active", joinCursor, generation,
       activated: false, writerIdentity: this.card.id, updatedAt: Date.now(),
     };
-    if (!open) await commitMember(kv, base);
+    if (!open) {
+      if (opts.aclFence && !(await this.aclAllows(owner, lifecycleUid, channel)))
+        throw new Error(`durableJoin: "${channel}" is no longer within the read ACL of lifecycle ${lifecycleUid} (narrowed or retired); no membership row was written`);
+      await commitMember(kv, base);
+      if (opts.aclFence) await this.keepRowIfAclAllows(kv, owner, lifecycleUid, channel);
+    }
     const fence = Math.max(await this.chatFrontier(), await this.fanoutDeliveredSeq());
     const cu = await this.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);
     if (cu.evicted) {
@@ -5259,6 +5275,33 @@ export class CotalEndpoint extends EventEmitter {
     if (!activated)
       return { durable: false, reason: "activation superseded by a concurrent leave or rejoin", generation };
     return { durable: true, generation };
+  }
+
+  /** Whether one lifecycle's exact ACL row allows `channel` now. A leader-served read: the handle is
+   *  opened without direct reads, so a row narrowed before this read began is the row it returns. */
+  private async aclAllows(owner: string, lifecycleUid: string, channel: string): Promise<boolean> {
+    const row = await readAcl(await this.aclRegistry(), owner, lifecycleUid);
+    return row !== undefined && channelInAllow(row.record.allowSubscribe, channel);
+  }
+
+  /** The post-write half of {@link durableJoinFor}'s `aclFence`: keep the row just written only on
+   *  proof that the lifecycle's ACL row still allows the channel. Otherwise, a failed read included,
+   *  remove the row by its exact key and refuse the join. The ACL row no longer allows this channel, so
+   *  no row of it is wanted, whoever wrote the latest revision. */
+  private async keepRowIfAclAllows(kv: KV, owner: string, lifecycleUid: string, channel: string): Promise<void> {
+    let why: string;
+    try {
+      if (await this.aclAllows(owner, lifecycleUid, channel)) return;
+      why = "was narrowed or retired while the row was written";
+    } catch (e) {
+      why = `could not be re-read after the row was written (${(e as Error).message})`;
+    }
+    try {
+      await deleteMember(kv, channel, owner, lifecycleUid);
+    } catch (e) {
+      throw new Error(`durableJoin: the read ACL of lifecycle ${lifecycleUid} ${why}, and removing its "${channel}" row failed (${(e as Error).message})`, { cause: e });
+    }
+    throw new Error(`durableJoin: the read ACL of lifecycle ${lifecycleUid} ${why}; its "${channel}" row was removed`);
   }
 
   /** Privileged durable-LEAVE write: tombstone the membership at `leaveCursor = frontier` so the
@@ -5418,7 +5461,9 @@ export class CotalEndpoint extends EventEmitter {
     if (!channelInAllow(acl.allowSubscribe, channel))
       return { ok: false, error: `channel "${channel}" is not within your read ACL [${acl.allowSubscribe.join(", ")}]` };
     const uid = acl.lifecycleUid;
-    try { return { ok: true, data: await this.membershipWrite(caller, uid, () => this.durableJoinFor(caller, channel, uid)) }; }
+    // The lookup above may be stale by the time the row is written (a retirement can fence and purge
+    // this lifecycle meanwhile), so the write re-checks the exact ACL row itself (`aclFence`).
+    try { return { ok: true, data: await this.membershipWrite(caller, uid, () => this.durableJoinFor(caller, channel, uid, { aclFence: true })) }; }
     catch (e) { return { ok: false, error: (e as Error).message }; }
   }
 
@@ -5983,9 +6028,11 @@ export class CotalEndpoint extends EventEmitter {
       const uid = typeof req.args?.lifecycleUid === "string" ? req.args.lifecycleUid : "";
       if (!parsePrincipalKey(principal)) return { ok: false, error: "lifecycleMemberships: a principal (owner.actor dot-form) is required" };
       try { assertLifecycleToken(uid); } catch (e) { return { ok: false, error: `lifecycleMemberships: ${(e as Error).message}` }; }
-      // The lifecycle is retiring, so its memberships stop changing here (#4965): a join or leave bound
-      // to it is refused from now on, and the read starts after the ones already running have finished.
-      // A row they write is then in the read; nothing it misses can be written afterwards.
+      // A retirement fences the lifecycle's ACL row before it asks (fenceLifecycleAcl), and every join
+      // re-reads that row around the row it creates, so a row written after this read begins removes
+      // itself, on whichever daemon wrote it. For a manager that does not fence, this daemon's own
+      // memberships of the lifecycle stop changing here (#4965): a join or leave bound to it is refused
+      // from now on, and the read starts after the ones already running have finished.
       let marked = this.retiringLifecycles.get(principal);
       if (marked === undefined) this.retiringLifecycles.set(principal, (marked = new Set()));
       // An earlier lifecycle of this principal whose ACL row is retired can bind no join or leave any

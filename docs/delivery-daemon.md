@@ -94,9 +94,14 @@ exception: the `lifecycleMemberships` inventory a retirement reads before it del
 agent's membership rows. That request is answered without waiting for the others, so a manager stop
 that retires many seats does not queue each inventory behind the other seats' evictions. Inventories
 that arrive together share one read of the members bucket, and each one's read begins after it
-arrived. From the moment the daemon takes a lifecycle's inventory request, it refuses every durable
-join and leave of that lifecycle, and it starts the read only after the ones already running have
-finished. A row of the retiring lifecycle is then either in the inventory or never written.
+arrived. Before the manager asks for a lifecycle's inventory, it narrows that lifecycle's read-ACL
+row to no reads. A durable join reads that row again just before it writes its membership row, and
+once more after. When the channel is no longer allowed, the join writes nothing, or removes the row it
+just wrote, and is refused. A leave or an activation only updates a row that still exists. A row of the
+retiring lifecycle is then either in the inventory or gone, whichever daemon process wrote it. The
+daemon also fences on its own, for a manager that does not narrow the row: from the moment it takes a
+lifecycle's inventory request, it refuses every durable join and leave of that lifecycle, and it starts
+the read only after the ones already running have finished.
 
 A reply on the `ctl.delivery` or `ctl.delivery-admin` rail that is larger than the broker's
 `max_payload` cannot be published. The daemon answers that request with a refusal giving the reply's

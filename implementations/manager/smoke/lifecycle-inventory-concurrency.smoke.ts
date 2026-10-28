@@ -179,14 +179,14 @@ try {
   const rowsOf = async (s: Seat) => (await listMembers(kv, { owner: s.principal })).filter((r) => r.lifecycleUid === s.uid);
   const outcome = (p: Promise<unknown>) => p.then(() => "ok", (e: Error) => e.message);
   // Hold the daemon's next durable join at its start, after the ACL authorized it.
-  const dj = daemon.ep as unknown as { durableJoinFor(owner: string, channel: string, uid: string): Promise<unknown>; deliveryServeSub: { getPending(): number }; retiringLifecycles: Map<string, Set<string>> };
+  const dj = daemon.ep as unknown as { durableJoinFor(...args: unknown[]): Promise<unknown>; deliveryServeSub: { getPending(): number }; retiringLifecycles: Map<string, Set<string>> };
   const joinFor = dj.durableJoinFor.bind(dj);
   let joinHeld: { entered: () => void; release: Promise<void> } | undefined;
-  dj.durableJoinFor = async (owner, channel, uid) => {
+  dj.durableJoinFor = async (...args) => {
     const h = joinHeld;
     joinHeld = undefined;
     if (h) { h.entered(); await h.release; }
-    return joinFor(owner, channel, uid);
+    return joinFor(...args);
   };
   const holdJoin = () => {
     let release!: () => void;

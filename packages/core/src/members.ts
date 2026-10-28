@@ -96,6 +96,9 @@ export async function commitMember(kv: KV, next: MembershipRecord): Promise<Memb
  * generation — so a later rejoin (a NEWER generation) wins, and a stale leave reply (an OLDER
  * generation than what's stored, e.g. the agent already rejoined) is rejected. A no-op if there is
  * no record (already gone) or it is already tombstoned at/below this cursor.
+ *
+ * UPDATE-ONLY: the write is a revision CAS on the row it read, so a row purged in between (a
+ * retirement's deprovisioner) stays purged and this returns undefined. It never recreates a key.
  */
 export async function tombstoneMember(
   kv: KV,
@@ -106,25 +109,34 @@ export async function tombstoneMember(
   writerIdentity: string,
   expectedGeneration?: number,
 ): Promise<MembershipRecord | undefined> {
-  const cur = await readMember(kv, channel, owner, lifecycleUid);
-  if (!cur) return undefined;
-  // Stale-leave guard: a leave is for the generation the agent joined with (`expectedGeneration`,
-  // captured at durableJoin). If the record has since moved to a NEWER generation — the agent left
-  // and REJOINED — this stale leave must NOT tombstone the rejoin (it would durable-disable a live
-  // membership). Refuse it. (Same intent as the generation guard in commitMember, but a leave reads
-  // the current record so it needs the caller's expected generation to detect the rejoin.)
-  if (expectedGeneration !== undefined && cur.record.generation !== expectedGeneration)
-    throw new StaleMembershipWrite(channel, owner, expectedGeneration, cur.record.generation);
-  if (cur.record.leaveCursor !== undefined && cur.record.leaveCursor <= leaveCursor)
-    return cur.record; // already left at/before this cursor
-  const next: MembershipRecord = {
-    ...cur.record,
-    state: "live-confirmed",
-    leaveCursor,
-    writerIdentity,
-    updatedAt: Date.now(),
-  };
-  return commitMember(kv, next);
+  const key = memberKey(channel, owner, lifecycleUid);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const cur = await readMember(kv, channel, owner, lifecycleUid);
+    if (!cur) return undefined;
+    // Stale-leave guard: a leave is for the generation the agent joined with (`expectedGeneration`,
+    // captured at durableJoin). If the record has since moved to a NEWER generation — the agent left
+    // and REJOINED — this stale leave must NOT tombstone the rejoin (it would durable-disable a live
+    // membership). Refuse it. (Same intent as the generation guard in commitMember, but a leave reads
+    // the current record so it needs the caller's expected generation to detect the rejoin.)
+    if (expectedGeneration !== undefined && cur.record.generation !== expectedGeneration)
+      throw new StaleMembershipWrite(channel, owner, expectedGeneration, cur.record.generation);
+    if (cur.record.leaveCursor !== undefined && cur.record.leaveCursor <= leaveCursor)
+      return cur.record; // already left at/before this cursor
+    const next: MembershipRecord = {
+      ...cur.record,
+      state: "live-confirmed",
+      leaveCursor,
+      writerIdentity,
+      updatedAt: Date.now(),
+    };
+    try {
+      await kv.update(key, new TextEncoder().encode(JSON.stringify(next)), cur.revision);
+      return next;
+    } catch {
+      continue; // revision moved under us, or the row was removed: re-read
+    }
+  }
+  throw new Error(`members CAS exhausted retries for ${key}`);
 }
 
 /**
