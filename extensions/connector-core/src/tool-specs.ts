@@ -1738,6 +1738,13 @@ export function cotalToolSpecs(
       ) {
         try {
           const reply = await agent.definePersona({ name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, announce });
+          if (reply.definitionOutcome === "unknown") {
+            const readback = `cotal_personas(name="${name}"${instance === undefined ? "" : `, instance="${instance}"`})`;
+            const message = `The definition outcome for persona \`${name}\` is unknown: ${reply.error ?? "the manager reply was not observed"}. ` +
+              `The file may already have been written or may still be written. Do not re-run this definition or spawn it on this result. ` +
+              `Read back with ${readback} on the same manager before acting. A missing readback alone does not prove the write will not land.`;
+            return { text: message, structured: { status: "unknown", name, ...(instance === undefined ? {} : { instance }), next: readback, message } };
+          }
           if (!reply.ok) return err(`Couldn't define ${name}: ${reply.error ?? "manager refused"}`);
           const spawnHint = `spawn it with cotal_spawn(name="${name}"${instance === undefined ? "" : `, instance="${instance}"`}) to bring it online`;
           // The persona is SAVED whenever we get here, so a failed announcement is a partial success,
