@@ -203,7 +203,7 @@ export async function refuseUnknownChannel(name: string, values: Values, target:
   const reader = await connectOrThrow(values, "operator");
   const auth = reader.bearer ? { bearer: reader.bearer, sentinelCreds: reader.sentinelCreds } : { creds: reader.creds };
   let registry: ChannelRegistryRead;
-  try { registry = await readChannelRegistry({ servers: reader.server, space: reader.space, ...auth, directGet: !reader.bearer }); }
+  try { registry = await readChannelRegistry({ servers: reader.server, space: reader.space, ...auth, directGet: batchedRead(reader, channelBucket(reader.space)) }); }
   catch (error) {
     if (isPublishPermissionDenied(error)) return;
     throw error;
