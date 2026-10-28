@@ -106,12 +106,12 @@ try {
   });
   ok("Claude Code starts that copy's server in place, and it answers", () => {
     const line = startedIn(PROJECT_A);
-    assert.ok(line.includes(join(FOLDER, "dist", "mcp.cjs")), line);
+    assert.ok(line.includes(join(FOLDER, "dist", "seat.cjs")), line);
     assert.match(line, /Connected/);
   });
   const first = folderVersion();
   ok("a project setup never ran in starts the same copy", () => {
-    assert.ok(startedIn(PROJECT_B).includes(join(FOLDER, "dist", "mcp.cjs")));
+    assert.ok(startedIn(PROJECT_B).includes(join(FOLDER, "dist", "seat.cjs")));
   });
   ok("status calls the copy current at user scope", () => {
     assert.deepEqual(status(RELEASE), { label: "Claude plugin", state: "ok", text: "current (user scope)" });
@@ -128,11 +128,13 @@ try {
     assert.equal(text, `cotal@cotal-mesh ${folderVersion()}; reload plugins or reopen Claude to load it in running sessions`);
     assert.deepEqual(installs(), ["user"]);
   });
-  ok("after the refresh both projects start the rewritten copy and record its version", () => {
-    for (const dir of [PROJECT_A, PROJECT_B]) assert.ok(startedIn(dir).includes(join(FOLDER, "dist", "mcp.cjs")));
+  ok("after the refresh both projects start the rewritten copy, which is the one Claude Code resolves", () => {
+    for (const dir of [PROJECT_A, PROJECT_B]) assert.ok(startedIn(dir).includes(join(FOLDER, "dist", "seat.cjs")));
     const out = spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8", maxBuffer: BIG });
-    const entry = (JSON.parse(out.stdout) as { id: string; version: string }[]).find((e) => e.id === "cotal@cotal-mesh");
-    assert.equal(entry?.version, folderVersion());
+    // A folder-backed record can keep the version it was installed at; the manifest it reads is what loads.
+    const entry = (JSON.parse(out.stdout) as { id: string; readFromFolder?: string }[]).find((e) => e.id === "cotal@cotal-mesh");
+    assert.equal(entry?.readFromFolder, FOLDER);
+    assert.equal((JSON.parse(readFileSync(join(entry!.readFromFolder!, ".claude-plugin", "plugin.json"), "utf8")) as { version: string }).version, folderVersion());
   });
   ok("a second refresh with the same CLI writes the same version", () => {
     const before = folderVersion();
@@ -178,7 +180,7 @@ try {
     assert.deepEqual(installs(), [`local:${PROJECT_FILE}`, `local:${PROJECT_GONE}`, "user"].sort());
   });
   ok("both projects still start the copy, now from the user-scope install", () => {
-    for (const dir of [PROJECT_A, PROJECT_B]) assert.ok(startedIn(dir).includes(join(FOLDER, "dist", "mcp.cjs")));
+    for (const dir of [PROJECT_A, PROJECT_B]) assert.ok(startedIn(dir).includes(join(FOLDER, "dist", "seat.cjs")));
     assert.deepEqual(status(RELEASE), { label: "Claude plugin", state: "ok", text: "current (user scope)" });
   });
   mkdirSync(join(PROJECT_OFF, ".claude"));
@@ -206,6 +208,42 @@ try {
     assert.deepEqual(status(RELEASE), { label: "Claude plugin", state: "ok", text: "current (user scope)" });
     const text = inProject(ROOT, () => connector.run({ cotal: cli("two") })) as string;
     assert.ok(text.startsWith("cotal@cotal-mesh (user scope)"), text);
+  });
+
+  // `cotal update` on a machine an earlier release set up. Setup installed the plugin per project then,
+  // and the refresh updated each install where it was, so the plugin stayed local-only and missing in
+  // every other folder. Here it is on in one project, installed but turned off in another, and shared by
+  // a third through that project's own settings.
+  const LEGACY_ON = join(ROOT, "legacy-on");
+  const LEGACY_OFF = join(ROOT, "legacy-off");
+  const SHARED = join(ROOT, "shared");
+  for (const dir of [LEGACY_ON, LEGACY_OFF, SHARED]) mkdirSync(dir);
+  plugin(ROOT, "uninstall", "cotal@cotal-mesh", "--scope", "user");
+  plugin(LEGACY_ON, "install", "cotal@cotal-mesh", "--scope", "local");
+  plugin(LEGACY_OFF, "install", "cotal@cotal-mesh", "--scope", "local");
+  plugin(LEGACY_OFF, "disable", "cotal@cotal-mesh", "--scope", "local");
+  plugin(SHARED, "install", "cotal@cotal-mesh", "--scope", "project");
+  const legacy = [`local:${LEGACY_OFF}`, `local:${LEGACY_ON}`, `local:${PROJECT_FILE}`, `local:${PROJECT_GONE}`, "project"];
+  ok("the earlier per-project installs are all there is before the update", () => {
+    assert.deepEqual(installs(), [...legacy].sort());
+  });
+  const updated = inProject(ROOT, () => refresh.run({ cotal: cli("two") })) as string;
+  ok("refresh installs the plugin for the account and retires the per-project install that had it on", () => {
+    assert.deepEqual(installs(), [...legacy.filter((i) => i !== `local:${LEGACY_ON}`), "user"].sort());
+    assert.ok(updated.includes("cotal@cotal-mesh (user scope, replacing 1 project install)"), updated);
+  });
+  ok("a project that never had it now starts the copy", () => {
+    assert.ok(startedIn(PROJECT_A).includes(join(FOLDER, "dist", "seat.cjs")));
+  });
+  ok("the project that turned it off keeps it off", () => {
+    const out = spawnSync("claude", ["plugin", "list", "--json"], { cwd: LEGACY_OFF, encoding: "utf8", maxBuffer: BIG });
+    const on = (JSON.parse(out.stdout) as { id: string; enabled?: boolean }[]).filter((e) => e.id === "cotal@cotal-mesh" && e.enabled === true);
+    assert.deepEqual(on, []);
+  });
+  ok("a second refresh moves nothing", () => {
+    const again = inProject(ROOT, () => refresh.run({ cotal: cli("two") })) as string;
+    assert.ok(!again.includes("replacing"), again);
+    assert.deepEqual(installs(), [...legacy.filter((i) => i !== `local:${LEGACY_ON}`), "user"].sort());
   });
 
   console.log(`plugin-refresh-live.smoke: ${checks} checks passed`);
