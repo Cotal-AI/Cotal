@@ -459,7 +459,9 @@ embedder whose host issues each conversation its own grant may pass `options.too
 Registering a tool offers it to no connection by itself: a connection calls only the tools its
 host lists in `GatewayConnection.tools`, default `GATEWAY_TOOLS`, and only those its credential's
 capabilities allow. With `options.selection`, `cotal_connect` takes channels, a role and capabilities,
-builds a canonical proposal with core's `conversationSelection`, and hands it to `open`. Only the
+builds a canonical proposal with core's `conversationSelection`, and hands it to `open`. Its
+description tells the agent to ask in that first call for the channels, role and capabilities it
+already knows it needs, so the person approves one request. Only the
 person's decision in the authority's authenticated UI is consent. The approved selection may differ
 from the proposal and must stay within their current authority. The empty approved selection still
 includes direct-message send and receive and own activity publication; disclose these before
@@ -484,11 +486,11 @@ when its connection closes, also while the broker is unreachable; it listens for
 since the last read, and a wait that starts after one returns it at once. Every other routed tool
 except `cotal_inbox` adds a line to its result when wake-worthy messages are waiting.
 
-`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions?, approvalResume?, waitSeconds? })`
+`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions?, approvalResume?, selection?, waitSeconds? })`
 serves one HTTP request to the endpoint with the package's own MCP server, so the embedding service
 never imports an MCP SDK or a zod version of its own. The service authenticates the request, answers
 401 itself when that fails, and passes the result as `auth`. A framework that already parsed the JSON body passes it
-as `body`. The endpoint is stateless: each POST gets a fresh server and a JSON response, and every
+as `body`. `selection` turns on the permission request described above for a hosted endpoint. The endpoint is stateless: each POST gets a fresh server and a JSON response, and every
 other method answers 405. A `cotal_wait` call holds its POST open for up to `waitSeconds`.
 `GATEWAY_INSTRUCTIONS` is the server instructions text sent when `instructions` is omitted.
 
