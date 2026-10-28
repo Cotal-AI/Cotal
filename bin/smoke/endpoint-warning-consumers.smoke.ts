@@ -269,6 +269,17 @@ const sites: Site[] = [
     proof: "structural",
     limit: "delivery-renewal owns the daemon behavior; this census keeps the shipped registration in the full closure",
   },
+  {
+    cell: "Linear user-auth serve deliberately ignores recoverable side-channel warnings",
+    consumer: "Linear user-auth serve endpoint",
+    disposition: "ignore",
+    source: "implementations/linear/src/user-auth-serve.ts",
+    dist: "implementations/linear/dist/user-auth-serve.js",
+    sourceNeedle: 'ep.on("warning", () => {});',
+    distNeedle: 'ep.on("warning",()=>{});',
+    proof: "structural",
+    limit: "the explicit ignore is proven; the awaited ready confirmation and the connection handler own the serve verdict",
+  },
 ];
 
 let failures = 0;

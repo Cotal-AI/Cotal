@@ -97,6 +97,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       // `--service-endpoints` (2026-10, #4396): hosts the service endpoint authority door and host
       // route, threaded to the auth-service daemon; every auth-service inventory carries it.
       "service-endpoints:boolean",
+      // `--recreate-issued-stores` (2026-10): on a fresh broker start, back up the space's pre-0.111.0
+      // issued-authority stores into a new directory, delete them and create them again.
+      "recreate-issued-stores:string",
       "store-dir:string", "tls-cert:string", "tls-key:string", "user-auth:boolean",
     ],
     positionals: false,
