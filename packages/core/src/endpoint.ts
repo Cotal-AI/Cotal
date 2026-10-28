@@ -98,6 +98,7 @@ import type {
   MembershipRecord,
   ChannelMembership,
   MembershipEntry,
+  MembershipChange,
   MembershipSnapshot,
   Plane3Entry,
 } from "./types.js";
@@ -540,8 +541,28 @@ export function fitHistoryPage(items: CotalMessage[], budget: number): CotalMess
   return first === items.length ? [] : items.slice(first);
 }
 
+/** One feed entry, decoded the way {@link CotalEndpoint.readMembership} decodes it: the reserved
+ *  heartbeat key carries `asOf`, every other key is one agent's record, and an undecodable record
+ *  is a member change with no record (never a crash in the consumer callback). */
+function membershipChange(e: KvEntry, update: boolean): MembershipChange {
+  const operation = e.operation;
+  if (e.key === MEMBERSHIP_FEED_KEY) {
+    let asOf: number | undefined;
+    if (operation === "PUT") { try { asOf = e.json<{ observedAt: number }>().observedAt; } catch { /* heartbeat garbled; leave undefined */ } }
+    return { type: "heartbeat", revision: e.revision, update, asOf };
+  }
+  let member: MembershipEntry | undefined;
+  if (operation === "PUT") {
+    try {
+      const rec = e.json<ChannelMembership>();
+      member = { id: e.key, live: rec.live ?? [], durable: rec.durable ?? [], observedAt: rec.observedAt };
+    } catch { /* undecodable: delivered as a change with no record */ }
+  }
+  return { type: "member", id: e.key, operation, revision: e.revision, update, member };
+}
+
 type MembershipFeedWatch = {
-  onChange: () => void;
+  onChange: (change: MembershipChange) => void;
   onClosed?: (err: Error) => void;
   iter?: { stop(): void };
   consumer?: PushConsumer;
@@ -3548,11 +3569,13 @@ export class CotalEndpoint extends EventEmitter {
     return { asOf, members };
   }
 
-  /** Watch the membership feed for changes (admin/observer): `onChange` fires on every KV entry,
-   *  including the initial replay — the caller debounces + re-reads {@link readMembership}. The async
-   *  stop handle resolves only after its ordered broker consumer is deleted. Best-effort: a feed the
-   *  cred can't read (or absent) surfaces as an `error` event and the dashboard keeps its last snapshot. */
-  async watchMembership(onChange: () => void, onClosed?: (err: Error) => void): Promise<{ stop(): Promise<void> }> {
+  /** Watch the membership feed for changes (admin/observer): `onChange` receives every KV entry as a
+   *  {@link MembershipChange} — the decoded member record (or its deletion), or the feed heartbeat's
+   *  `asOf` — so a caller keeps its snapshot current without re-reading the bucket; the entries replayed
+   *  when the watch (re)arms carry `update: false` and end with a `replayed` change. The async stop
+   *  handle resolves only after its ordered broker consumer is deleted. Best-effort: a feed the cred
+   *  can't read (or absent) surfaces as an `error` event and the dashboard keeps its last snapshot. */
+  async watchMembership(onChange: (change: MembershipChange) => void, onClosed?: (err: Error) => void): Promise<{ stop(): Promise<void> }> {
     if (this.stopped) throw new Error("endpoint stopped - cannot watch membership");
     const watch: MembershipFeedWatch = { onChange, onClosed, stopped: false, arm: Promise.resolve() };
     this.membershipFeedWatches.add(watch);
@@ -3600,9 +3623,18 @@ export class CotalEndpoint extends EventEmitter {
     watch.consumer = consumer;
     watch.consumerStream = info.stream_name;
     watch.consumerName = info.name;
+    // The replay is the bucket's last value per key, bound at `info`; it ends with the entry that
+    // leaves nothing pending (the same rule as nats.js `watch()`'s `initializedFn`).
+    let replaying = info.num_pending > 0;
     let iter: Awaited<ReturnType<PushConsumer["consume"]>>;
-    try { iter = await consumer.consume({ callback: () => {
-      if (!watch.stopped && watch.consumer === consumer) watch.onChange();
+    try { iter = await consumer.consume({ callback: (jm: JsMsg) => {
+      if (watch.stopped || watch.consumer !== consumer) return;
+      const entry = kv.jmToWatchEntry(jm, !replaying);
+      watch.onChange(membershipChange(entry, !replaying));
+      if (replaying && jm.info.pending === 0) {
+        replaying = false;
+        watch.onChange({ type: "replayed", revision: entry.revision });
+      }
     } }); }
     catch (err) {
       await this.disarmMembershipWatch(watch);
@@ -3613,6 +3645,7 @@ export class CotalEndpoint extends EventEmitter {
       await this.disarmMembershipWatch(watch);
       return;
     }
+    if (!replaying) watch.onChange({ type: "replayed", revision: 0 }); // an empty feed replays nothing
     iter.closed().then(() => {
       if (watch.stopped || watch.consumer !== consumer) return;
       const err = new Error("membership watch closed");

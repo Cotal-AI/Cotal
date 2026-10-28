@@ -1,4 +1,4 @@
-import { CotalEndpoint, subjectMatches, type FlagValues, type MembershipSnapshot } from "@cotal-ai/core";
+import { CotalEndpoint, subjectMatches, type FlagValues, type MembershipChange, type MembershipSnapshot } from "@cotal-ai/core";
 import { brokerAddressForDisplay, CommandFailure, exitCode, streamRecord, writeStreamRecord, writeResult, renderReport, terminalWidth, type ConnectRefusal, type Presentation, type Report } from "@cotal-ai/workspace";
 import { connectOrThrow, credentialEnded, userViewAuthOrExit } from "../lib/connect.js";
 import { refuseUnknownChannel, type channelFlags } from "./channels.js";
@@ -119,6 +119,17 @@ export async function channelMembers(values: Values, channel: string, presentati
     if (stopped || timer) return;
     timer = setTimeout(() => { timer = undefined; refresh(); }, 40);
   };
+  // A heartbeat changes no census, only the feed's `asOf` (reported in a later gap record), so it is
+  // copied into the last census instead of costing a bucket re-read (#4904). After an interruption
+  // the next change of any kind is read back in full, so the gap is reported against a fresh census.
+  const onMembership = (change: MembershipChange) => {
+    if (change.type === "replayed") return;
+    if (change.type === "heartbeat" && change.update && last && !interruption && !reading) {
+      last = { ...last, asOf: change.asOf ?? null };
+      return;
+    }
+    changed();
+  };
   ep.on("error", () => { if (streaming) interrupted(false); });
   ep.on("transport", ({ connected }: { connected: boolean }) => {
     if (!streaming) return;
@@ -135,7 +146,7 @@ export async function channelMembers(values: Values, channel: string, presentati
       emit("snapshot", last);
       if (presentation !== "json") console.log(renderReport(membersView(last, true), presentation, terminalWidth(process.stdout)));
       if (last.asOf === null) emit("gap", { reason: "The membership feed has no successful poll yet." });
-      watch = await ep.watchMembership(changed, watchClosed);
+      watch = await ep.watchMembership(onMembership, watchClosed);
       await ended;
     }
   } catch (error) {

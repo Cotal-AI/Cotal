@@ -11,7 +11,7 @@
  * `traffic-only`, a later successful read clears the reason, a failed watch is named as such.
  */
 import { EventEmitter } from "node:events";
-import type { CotalEndpoint, MembershipSnapshot, Presence } from "@cotal-ai/core";
+import type { CotalEndpoint, MembershipChange, MembershipSnapshot, Presence } from "@cotal-ai/core";
 import type { FeedEntry } from "../src/console/mesh.js";
 import { MeshView, type MembershipView } from "../src/view/mesh-view.js";
 import { foldTopo, membershipFreshness } from "../src/console/ui/topo/model.js";
@@ -123,9 +123,10 @@ console.log("5. MeshView classifies what its endpoint answers (the error path dr
 class StubEndpoint extends EventEmitter {
   space = "stub";
   readAnswer: () => Promise<MembershipSnapshot> = () => Promise.resolve({ asOf: NOW, members: [] });
-  watchAnswer: (cb: () => void, onClosed?: (e: Error) => void) => Promise<{ stop(): Promise<void> }> = (cb, onClosed) => { this.onChange = cb; this.onClosed = onClosed; return Promise.resolve({ stop: async () => {} }); };
-  onChange?: () => void;
+  watchAnswer: (cb: (change: MembershipChange) => void, onClosed?: (e: Error) => void) => Promise<{ stop(): Promise<void> }> = (cb, onClosed) => { this.onChange = cb; this.onClosed = onClosed; return Promise.resolve({ stop: async () => {} }); };
+  onChange?: (change: MembershipChange) => void;
   onClosed?: (e: Error) => void;
+  reads = 0;
   async start() {}
   async stop() {}
   getRoster(): Presence[] { return []; }
@@ -133,9 +134,12 @@ class StubEndpoint extends EventEmitter {
   async listChannels() { return []; }
   async dmHistory() { return []; }
   ref() { return { id: "stub", name: "stub" }; }
-  readMembership() { return this.readAnswer(); }
-  watchMembership(cb: () => void, onClosed?: (e: Error) => void) { return this.watchAnswer(cb, onClosed); }
+  readMembership() { this.reads++; return this.readAnswer(); }
+  watchMembership(cb: (change: MembershipChange) => void, onClosed?: (e: Error) => void) { return this.watchAnswer(cb, onClosed); }
 }
+/** What the watch delivers for one agent's record and for the daemon's heartbeat (#4904). */
+const memberChange: MembershipChange = { type: "member", id: "a:x", operation: "PUT", revision: 7, update: true, member: { id: "a:x", live: ["ops"], durable: [], observedAt: NOW } };
+const heartbeat = (asOf: number): MembershipChange => ({ type: "heartbeat", revision: 8, update: true, asOf });
 async function viewOver(stub: StubEndpoint): Promise<{ view: MeshView; m: () => MembershipView }> {
   const view = new MeshView(stub as unknown as CotalEndpoint, {});
   await view.start();
@@ -151,9 +155,27 @@ async function viewOver(stub: StubEndpoint): Promise<{ view: MeshView; m: () => 
   check("...and the pill says unreadable", membershipFreshness(NOW, m()).label === "unreadable");
   // The watch fires, the read now succeeds: the reason clears and the snapshot is live.
   stub.readAnswer = () => Promise.resolve(snapshot);
-  stub.onChange?.();
+  stub.onChange?.(heartbeat(NOW + 1));
   await wait(300);
-  check("a later successful read clears the reason and carries the snapshot", m().unreadable === undefined && m().snapshot?.asOf === NOW, m());
+  check("a heartbeat over a FAILED read is the retry: the reason clears and the snapshot is read", m().unreadable === undefined && m().snapshot?.asOf === NOW, m());
+  await view.stop();
+}
+{
+  // #4904: the daemon rewrites the heartbeat every poll with nothing else changed. Over a readable
+  // snapshot that moves `asOf` and nothing else, so it must cost no bucket read; a member change does.
+  const stub = new StubEndpoint();
+  stub.readAnswer = () => Promise.resolve(snapshot);
+  const { view, m } = await viewOver(stub);
+  const readsAfterStart = stub.reads;
+  stub.onChange?.(heartbeat(NOW + 5_000));
+  await wait(300);
+  check("a heartbeat over a readable snapshot moves asOf without a bucket read", m().snapshot?.asOf === NOW + 5_000 && m().snapshot?.members.length === 5 && stub.reads === readsAfterStart, { asOf: m().snapshot?.asOf, reads: stub.reads, readsAfterStart });
+  stub.onChange?.({ type: "replayed", revision: 8 });
+  await wait(300);
+  check("a replayed marker costs no read either", stub.reads === readsAfterStart, { reads: stub.reads, readsAfterStart });
+  stub.onChange?.(memberChange);
+  await wait(300);
+  check("a member change reads the feed back in full", stub.reads === readsAfterStart + 1 && m().snapshot?.asOf === NOW, { reads: stub.reads, readsAfterStart, asOf: m().snapshot?.asOf });
   await view.stop();
 }
 {
@@ -181,7 +203,7 @@ async function viewOver(stub: StubEndpoint): Promise<{ view: MeshView; m: () => 
   await wait(50);
   check("a watch that closes after setup is named as the watch's failure, never as a connection error", /^watch: membership watch closed/.test(m().unreadable ?? ""), m());
   check("...and never as a connection error", view.snapshot().status.error === undefined, view.snapshot().status);
-  stub.onChange?.();
+  stub.onChange?.(memberChange);
   await wait(300);
   check("...and a later change clears the reason, leaving a live snapshot", m().unreadable === undefined && m().snapshot?.asOf === NOW, m());
   await view.stop();

@@ -34,6 +34,22 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Membership watch entries after 0.115.4
+
+`CotalEndpoint.watchMembership(onChange)` now hands `onChange` each feed entry as a
+`MembershipChange`: a `member` change with the agent's decoded record (or none, when the key was
+deleted), a `heartbeat` change with the daemon's `asOf`, and one `replayed` change closing the
+entries a newly armed or rearmed watch replays (those carry `update: false`). Up to 0.115.4 the
+callback took no argument, and the documented contract was to re-read `readMembership` on every
+call; because the delivery daemon rewrites the heartbeat key every poll, an observer following that
+contract rescanned the whole bucket through a fresh ordered consumer per heartbeat, with nothing
+changed.
+
+A callback written against the old contract still compiles and still works; it is now also called
+once per replay with the marker. To stop paying the rescan, branch on `change.type`: copy a
+`heartbeat` into the last snapshot's `asOf`, ignore `replayed`, and read (or apply the record) on a
+`member` change. The stock dashboard, `cotal view` and `cotal channel members --follow` do this.
+
 ## Multi-space host lane opens after 0.115.2
 
 Every multi-space host (`auth-service --spaces`, `auth-service --callout-only --spaces`,
