@@ -110,6 +110,18 @@ const EXCHANGE_PROBE_TIMEOUT_MS = 5_000;
  * the box), which is also what keeps the suites honest without a TLS fixture. Everything else
  * must be `https:`.
  */
+/** A pinned fetch that the policy itself refused: a target that is not https (and not a loopback
+ *  http literal), or an answer that is a redirect. A transport failure is not one of these: it
+ *  escapes as whatever `fetch` threw, so a caller tells a refusal from a failure with `instanceof`
+ *  rather than by a character in the message. The message is unmarked; the front end that prints
+ *  it adds its own glyph. */
+export class PinnedFetchRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PinnedFetchRefused";
+  }
+}
+
 export function assertPinnedFetchUrl(u: URL, what: string): string | undefined {
   if (u.protocol === "https:") return undefined;
   // The loopback exception is decided by PARSING the host as an address, never by how the text
@@ -122,7 +134,7 @@ export function assertPinnedFetchUrl(u: URL, what: string): string | undefined {
   // Name the ACTUAL rule. "must be https://" alone misleads the developer whose local flow used
   // http://localhost: it blames the scheme, when the same scheme on 127.0.0.1 would have passed.
   return (
-    `✗ ${what} must be https:// (got ${u.protocol}//) - the pins this registration adopts cannot be fetched over a channel the network can rewrite` +
+    `${what} must be https:// (got ${u.protocol}//) - the pins this registration adopts cannot be fetched over a channel the network can rewrite` +
     (u.protocol === "http:"
       ? `. Plain http is accepted only for a loopback LITERAL (127.0.0.1, ::1), where nothing leaves this machine - "${u.hostname}" is a name, and a hosts entry or a poisoned lookup could point it anywhere, so use the literal`
       : "")
@@ -145,11 +157,11 @@ export async function pinnedFetchProbe(target: string): Promise<{ refused: boole
 export async function pinnedFetch(target: string, what: string): Promise<Response> {
   const u = new URL(target);
   const bad = assertPinnedFetchUrl(u, what);
-  if (bad) throw new Error(bad);
+  if (bad) throw new PinnedFetchRefused(bad);
   const res = await fetch(u, { redirect: "manual", signal: AbortSignal.timeout(EXCHANGE_PROBE_TIMEOUT_MS) });
   if (res.status >= 300 && res.status < 400)
-    throw new Error(
-      `✗ ${what} answered ${res.status} (a redirect to ${JSON.stringify(res.headers.get("location") ?? "")}) - a redirect can move a pinned fetch onto plaintext or onto another host, so it is refused rather than followed; publish the document at the pinned URL itself`,
+    throw new PinnedFetchRefused(
+      `${what} answered ${res.status} (a redirect to ${JSON.stringify(res.headers.get("location") ?? "")}) - a redirect can move a pinned fetch onto plaintext or onto another host, so it is refused rather than followed; publish the document at the pinned URL itself`,
     );
   return res;
 }
@@ -202,12 +214,7 @@ export async function refreshRegistrationPolicy(target: { space: string; policy?
   } catch {
     throw new Error(`manual registration for "${entry.space}" has an invalid pinned exchange URL`);
   }
-  let response: Response;
-  try {
-    response = await pinnedFetch(base.toString(), `manual registration "${entry.space}" policy refresh at ${entry.userAuth.endpoints.url}`);
-  } catch (error) {
-    throw new Error((error as Error).message.replace(/^✗ /, ""));
-  }
+  const response = await pinnedFetch(base.toString(), `manual registration "${entry.space}" policy refresh at ${entry.userAuth.endpoints.url}`);
   if (!response.ok)
     throw new Error(`manual registration "${entry.space}" policy refresh at ${entry.userAuth.endpoints.url} answered HTTP ${response.status}`);
   const checked = await checkDiscoveryDocument(response);
