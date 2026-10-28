@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.115.1
+
+### Patch Changes
+
+- 05eed2f: Route nameless self-despawn on open meshes to the seat's launching manager so a sibling manager cannot receive the stop. Preserve static credential grants and user-auth manager selection.
+
 ## 0.115.0
 
 No changes in this release.
