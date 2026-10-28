@@ -402,6 +402,7 @@
     "smoke:remote-run-attempt": "tsx implementations/manager/smoke/remote-run-attempt.smoke.ts",
     "smoke:remote-run-client": "tsx implementations/manager/smoke/remote-run-client.smoke.ts",
     "smoke:run-answer-rejection": "tsx implementations/manager/smoke/run-answer-rejection.smoke.ts",
+    "smoke:renewal-rejection-text": "tsx implementations/manager/smoke/renewal-rejection-text.smoke.ts",
     "smoke:managed-agent-runtime-client": "tsx implementations/manager/smoke/remote-managed-agent-runtime-client.smoke.ts",
     "smoke:remote-isolated-renewal": "for target in serve goalWriter executor; do F_ISOLATED_TARGET=$target tsx implementations/manager/smoke/remote-isolated-renewal.smoke.ts || exit 1; done",
     "smoke:retirement-copy": "tsx implementations/manager/smoke/retirement-copy.smoke.ts",
