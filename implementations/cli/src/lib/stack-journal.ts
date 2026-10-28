@@ -521,14 +521,22 @@ function retainingRow(rows: readonly ServiceInstanceSnapshot[], requestId: strin
 }
 
 /** The `TARGET_NOT_FOUND` refusal of an `--abandon-stop` ID no member retains, naming each stop
- *  request a member's refusal offers to abandon. */
+ *  request a member's refusal offers to abandon. When no member retains any stop request, as after
+ *  the stop was abandoned, it says so and names the step the stack's state takes: `cotal down` while
+ *  a member runs, otherwise `cotal up`. */
 function stopNotRetained(journal: StackJournal, requestId: string, members: readonly { definition: string; rows: readonly ServiceInstanceSnapshot[] }[]): CommandFailure {
+  const target = { root: journal.root, space: journal.space, requestId };
+  const values = members.flatMap(({ rows }) => rows.map((entry) => entry.record.value));
+  if (!values.some((value) => value.state === "stopping" || retainedStopRequest(value) !== undefined)) {
+    const running = values.some((value) => observeServiceProcess(value) === "running");
+    return new CommandFailure("refused", "TARGET_NOT_FOUND", "no member of this stack retains a stop request; nothing was abandoned", { target, given: "requestId", remedy: running ? "the stack is running; stop it with `cotal down`" : "the stack is not running; start it with `cotal up`" });
+  }
   const pending = members.flatMap(({ definition, rows }) => rows.flatMap((entry) => {
     const route = memberStopRoute(entry.record.value);
     return route.kind === "abandon" ? [{ definition, requestId: route.requestId }] : [];
   }));
   const named = pending.map((stop) => `; ${stop.definition} retains stop request ${stop.requestId}`).join("");
-  return new CommandFailure("refused", "TARGET_NOT_FOUND", `no member of this stack retains a stop request with that ID${named}; nothing was abandoned`, { target: { root: journal.root, space: journal.space, requestId }, given: "requestId", remedy: pending.length === 1 ? abandonRemedy(pending[0]!.requestId) : `run \`cotal down --dry-run\` to see what blocks the stop, or \`cotal service status <definition> --instance <id> --space ${journal.space}\` for a member's request` });
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `no member of this stack retains a stop request with that ID${named}; nothing was abandoned`, { target, given: "requestId", remedy: pending.length === 1 ? abandonRemedy(pending[0]!.requestId) : `run \`cotal down --dry-run\` to see what blocks the stop, or \`cotal service status <definition> --instance <id> --space ${journal.space}\` for a member's request` });
 }
 
 /** Settle an earlier `up` or `down` that has no recorded outcome, from evidence only. The caller

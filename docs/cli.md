@@ -1167,8 +1167,10 @@ as one whose manager was killed before it read the request, is cleared only on r
 `TARGET_NOT_FOUND` when no member retains that request, as for the operation ID of the `down` that
 sent it. It looks the ID up before it asks for `--yes`, so that refusal comes with or without
 `--yes`. That refusal names the stop request each member retains and, when there is one, its
-`--abandon-stop` command as Next. Its fields show the ID it was given as `Given ID`, and `--json`
-carries it as `target.requestId`. Either way nothing changes. Otherwise it
+`--abandon-stop` command as Next. When no member retains a stop request, as after that stop was
+abandoned, the refusal says so and names `cotal up` as Next, or `cotal down` while the stack runs.
+Its fields show the ID it was given as `Given ID`, and `--json` carries it as `target.requestId`.
+Either way nothing changes. Otherwise it
 removes the request, the stop reservation and a `--with-agents` shutdown intent that the same stop
 armed, records the manager `failed`, and stops the rest of the stack with a `STOP_ABANDONED` warning.
 Whether that manager stopped or released its agents' seats is not confirmed, and a seat that runs

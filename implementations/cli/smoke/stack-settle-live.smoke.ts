@@ -117,6 +117,8 @@
  *     operation, and `down --abandon-stop` given the operation ID refuses `TARGET_NOT_FOUND`, naming
  *     that stop request and its command, and abandons nothing. Without `--yes` it refuses the same
  *     way. Its fields label the operation ID `Given ID`, and `--json` keeps it as `target.requestId`.
+ *     Once that stop is abandoned and the stack stopped, abandoning it again refuses
+ *     `TARGET_NOT_FOUND`, says no member retains a stop request and names `cotal up`.
  * 10. A repeated `down --with-agents --yes`. After one that completed it is a no-op, exit 0. After a
  *     `down` without `--with-agents` it still refuses `LIFECYCLE_BLOCKED`.
  * 11. A first `up` under `ulimit -n 32`. Its broker cannot create the space's streams, so the `up`
@@ -1428,6 +1430,10 @@ try {
     const abandoned = cli(root, "down", "--abandon-stop", request ?? "none", "--yes", "--json");
     const final = cli(root, "down", "--yes", "--json");
     check(`${space}: abandoning that stop lets down stop the stack`, abandoned.status === 0 && final.status === 0 && gone(space, "stack-broker") && gone(space, "stack-manager"), { abandoned: shown(abandoned), final: shown(final) });
+    const again = cli(root, "down", "--abandon-stop", request ?? "none", "--yes", "--plain");
+    const againNext = again.stderr.includes("\nNext\n") ? again.stderr.slice(again.stderr.indexOf("\nNext\n") + 6) : "";
+    check(`${space}: abandoning that stop again once the stack stopped refuses TARGET_NOT_FOUND, says no member retains a stop request, and names cotal up with no placeholder`,
+      again.status === 2 && again.stderr.includes("TARGET_NOT_FOUND") && again.stderr.includes("no member of this stack retains a stop request; nothing was abandoned") && againNext.includes("`cotal up`") && !again.stderr.includes("<definition>") && !again.stderr.includes("<id>"), shown(again));
   }
 
   // 10. A repeated down --with-agents.
