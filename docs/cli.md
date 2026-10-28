@@ -4132,6 +4132,9 @@ cotal service-endpoint approve <proposalId> [--caller-ceiling a,b | --request-id
 cotal service-endpoint refuse <proposalId> [--request-id <hex32>] [--space <s>] [--json | --plain]
 cotal service-endpoint proposal <proposalId> | operation <operationId> | name <endpoint> [--space <s>]
 cotal service-endpoint name-bind <endpoint> (--owner <u_…> --claim <ref> | --request-id <hex32>) [--space <s>]
+cotal service-endpoint callers <proposalId> [--cursor <c>] [--space <s>]
+cotal service-endpoint grant <proposalId> --to <owner.actor> --lifecycle <uid> --commands <a,b> [--space <s>]
+cotal service-endpoint revoke <grantId> --to <owner.actor> --lifecycle <uid> [--space <s>]
 ```
 
 Decides and inspects service endpoint registrations on a user-auth space whose auth service runs
@@ -4162,6 +4165,21 @@ the first attempt moved, so the replay never rebuilds the request, and it takes 
 `--caller-ceiling`, `--owner` or `--claim`. An id this root never recorded, or one recorded for a
 different command or subject, is refused with nothing sent. A run without `--request-id` is a new
 request, and a proposal already being approved answers `approval-in-progress`.
+
+`callers`, `grant` and `revoke` manage who may invoke an approved service, as its owner. A caller
+grant names one exact lifecycle: `--to` is the caller's owner token and actor name, and
+`--lifecycle` is its lifecycle uid, so a respawned agent needs a grant of its own. `grant` reads the
+proposal (a decided proposal still names its endpoint, instance and approval) and the caller's
+policy, then grants the `--commands` you list on that instance; the host refuses any command
+outside the approval's caller ceiling. An agent spawned by another actor is admitted only under its
+actual parent chain, with every ancestor already holding a covering grant, so grant the chain from
+its root down. A caller that already holds an active grant covering those commands is reported with
+its grant id and nothing is sent. A grant or revoke goes under a request id derived from the space and
+the request, including the policy revision it was read at, so running it again after a lost answer
+sends the same request and the host replays its answer. `callers` lists the grantees of the
+proposal's instance, 50 per page; pass the page's `nextCursor` as `--cursor`. `revoke` answers
+`pending` with `denyNew: "landed"`: new issuance stops, and connections already issued keep their
+original expiry of at most 60 seconds.
 
 ## Handle inspection
 
@@ -6534,8 +6552,13 @@ cotal service-endpoint approve <proposalId> --caller-ceiling linear.mcp --space 
 ```
 
 The `linear.mcp` ceiling covers the five Linear commands, so callers can be granted them later; an
-approval without it has an empty ceiling and no caller can be granted. Repeat the
-same command after approval. Its instance, registration body and request identities are retained;
+approval without it has an empty ceiling and no caller can be granted. Grant an agent, for example:
+
+```bash
+cotal service-endpoint grant <proposalId> --to <owner.actor> --lifecycle <uid> --commands inventory --space <space>
+```
+
+Repeat the same `serve` command after approval. Its instance, registration body and request identities are retained;
 a changed account, target or embedded contract refuses instead of replacing them. The shared
 renewal source activates and renews the access bearer. The service verifies the signed bearer and
 embedded cluster before serving, and reports ready only after the broker flush and host acknowledgement.

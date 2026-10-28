@@ -340,7 +340,7 @@ async function runServiceEndpoint(args: ParsedArgs, target: AuthTarget): Promise
       sections: [{ title: `Service endpoint ${result.request}`, blocks: [
         { kind: "fields" as const, rows: [["Space", space], ["Subject", result.subject], ["State", String((result.answer as { state: string }).state)],
           ...(result.requestId !== undefined ? [["Request id", result.requestId]] : [])] as [string, string][] },
-        { kind: "lines" as const, lines: [{ text: JSON.stringify(result.answer), tone: "hint" as const }] },
+        { kind: "lines" as const, lines: [...(result.note !== undefined ? [result.note] : []), { text: JSON.stringify(result.answer), tone: "hint" as const }] },
       ] }],
     }));
   });
@@ -537,10 +537,10 @@ const authCommands: Command[] = [
     kind: "command",
     name: "service-endpoint",
     group: "Identity",
-    summary: "decide and inspect service endpoint registrations on this space's auth service - approve or refuse a proposal as its owner; bind a name as the operator",
-    examples: [{ command: "cotal service-endpoint approve <proposalId>", note: "approve a service's registration" }, { command: "cotal service-endpoint refuse <proposalId>", note: "refuse it" }, { command: "cotal service-endpoint proposal <proposalId>", note: "read a request before deciding" }],
-    usage: "cotal service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref>> [--caller-ceiling a,b] [--request-id <hex32>] [--space <s>] [--json|--plain]",
-    positionals: "<approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint>>",
+    summary: "decide and inspect service endpoint registrations on this space's auth service - approve or refuse a proposal as its owner, grant and revoke its callers; bind a name as the operator",
+    examples: [{ command: "cotal service-endpoint approve <proposalId>", note: "approve a service's registration" }, { command: "cotal service-endpoint refuse <proposalId>", note: "refuse it" }, { command: "cotal service-endpoint proposal <proposalId>", note: "read a request before deciding" }, { command: "cotal service-endpoint grant <proposalId> --to <owner.actor> --lifecycle <uid> --commands <a,b>", note: "let one agent lifecycle invoke the approved service" }],
+    usage: "cotal service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref> | callers <proposalId> | grant <proposalId> --to <owner.actor> --lifecycle <uid> --commands <a,b> | revoke <grantId> --to <owner.actor> --lifecycle <uid>> [--caller-ceiling a,b] [--request-id <hex32>] [--cursor <c>] [--space <s>] [--json|--plain]",
+    positionals: "<approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> | callers <proposalId> | grant <proposalId> | revoke <grantId>>",
     outputs: ["json", "plain"],
     flags: [
       jsonFlag, plainFlag, spaceFlag,
@@ -548,6 +548,10 @@ const authCommands: Command[] = [
       { name: "claim", type: "string", value: "<ref>", description: "name-bind: your claim reference for the namespace (the host verifies no domain control)" },
       { name: "caller-ceiling", type: "string", value: "<a,b>", description: "approve: capabilities the proposed commands declare, such as read; callers may be granted every command that declares one (default: none)" },
       { name: "request-id", type: "string", value: "<hex32>", description: "approve, refuse, name-bind: send the request an earlier run here recorded under this id again, as it was; the host replays its answer" },
+      { name: "to", type: "string", value: "<owner.actor>", description: "grant, revoke: the caller, as owner token and actor name" },
+      { name: "lifecycle", type: "string", value: "<uid>", description: "grant, revoke: the caller's exact lifecycle; a respawned agent is a new lifecycle and needs its own grant" },
+      { name: "commands", type: "string", value: "<a,b>", description: "grant: the commands the caller may invoke, within the approval's caller ceiling" },
+      { name: "cursor", type: "string", value: "<c>", description: "callers: the next page, as the previous page's nextCursor" },
     ],
     run: (args) => runServiceEndpoint(args, localAuthTarget(args.values as { space?: string })),
   },
