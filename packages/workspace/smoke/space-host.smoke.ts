@@ -211,10 +211,29 @@ try {
   check("the lane that open settles with after the refusal is closed, not served",
     await until(() => count("k", "closed") === 1, 3_000) && count("k", "open") === 1, events.slice(-2));
 
-  // ---- a signal closes every lane ---------------------------------------------------------------------
+  // ---- a signal closes every lane, including one still opening when it lands (#4959) -----------------
+  const stopping = join(dir, "stopping.json");
+  write(stopping, entries({ p: 41 }));
+  const stopHost = await runSpaceHost({
+    manifest: stopping, settings, startup: "servable", openDeadlineSeconds: 2, open: openStub,
+    label: "stopping host", entry: "stopping --spaces", serving: "serving", log: (l) => logLines.push(l),
+  });
+  let releaseQ!: () => void;
+  faults.set("q", { holdOpen: new Promise<void>((r) => { releaseQ = r; }) });
+  write(stopping, entries({ p: 41, q: 42 }));
+  check("a reconcile pass is inside the open of a space when the signal lands", await until(() => starts.get("q") === 1, 5_000), starts.get("q"));
   process.kill(process.pid, "SIGTERM");
-  const code = await host.ended;
+  let endedBeforeRelease = false;
+  const stopEnded = stopHost.ended.then((c) => { if (!releasedQ) endedBeforeRelease = true; return c; });
+  let releasedQ = false;
+  await wait(300);
+  releasedQ = true;
+  releaseQ();
+  const [code, stopCode] = await Promise.all([host.ended, stopEnded]);
   check("SIGTERM closes every lane and ends the host with 0", code === 0 && host.lanes.size === 0 && count("a", "closed") === 2 && count("c", "closed") === 2, { code, events: events.slice(-3) });
+  check("the stop waits for the open in flight, closes the lane it opens, and never serves it",
+    stopCode === 0 && !endedBeforeRelease && count("q", "open") === 1 && count("q", "closed") === 1 && count("p", "closed") === 1 && stopHost.lanes.size === 0,
+    { stopCode, endedBeforeRelease, events: events.slice(-4) });
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

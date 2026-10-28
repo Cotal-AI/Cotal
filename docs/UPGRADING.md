@@ -56,6 +56,12 @@ one that fails to open: `space "<s>" did not open within 30s - no lane was left 
 has to change before the upgrade; a supervisor that waited more than 30 seconds for a ready line
 now sees it sooner.
 
+A stop (SIGINT, SIGTERM) that lands while a pass is still opening a space now waits for that open,
+bounded by the same deadline, and closes the lane it produces before the host ends. Up to 0.115.4
+the host exited with that lane never closed, so a delivery host stopped in that window left the
+space's lease row in place until its TTL and a restart was refused with `a live lease already
+exists`.
+
 ## Multi-space callout host startup after 0.115.0
 
 `cotal auth-service --callout-only --spaces <manifest>` now starts with the spaces it can serve. It

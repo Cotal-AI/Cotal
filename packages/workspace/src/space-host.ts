@@ -247,7 +247,13 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
   const openWithin = async (space: string, settings: S): Promise<"opened" | "failed" | "pending"> => {
     const attempt = options.open(space, settings);
     const settled = await within(attempt);
-    if (settled.outcome === "opened") { take(settled.lane, settings); return "opened"; }
+    if (settled.outcome === "opened") {
+      // A stop that landed while this open ran has already snapshotted the lanes to close: this one
+      // is closed here instead of taken, and the stop waits for it (#4959).
+      if (stopping) { await settled.lane.close().catch(() => {}); return "opened"; }
+      take(settled.lane, settings);
+      return "opened";
+    }
     if (settled.outcome === "failed") {
       log(`✗ ${label}: space "${space}" could not be served (${settled.why}) - retrying in ${REOPEN_WAIT_SECONDS}s`);
       return "failed";
@@ -276,12 +282,23 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
     let failed = false;
     await Promise.all(wanted.spaces.map(async (space) => {
       if (lanes.has(space) || unclosed.has(space) || opening.has(space) || stopping) return;
-      const outcome = await openWithin(space, settingsOf(wanted, space));
-      if (outcome === "opened") log(`${label}: space "${space}" opened - ${lanes.size} lane(s) up`);
-      if (outcome === "failed") failed = true;
+      const open = openWithin(space, settingsOf(wanted, space));
+      inflight.add(open);
+      try {
+        const outcome = await open;
+        if (outcome === "opened") log(stopping ? `${label}: space "${space}" opened during the stop - closed it` : `${label}: space "${space}" opened - ${lanes.size} lane(s) up`);
+        if (outcome === "failed") failed = true;
+      } finally {
+        inflight.delete(open);
+      }
     }));
     if (failed) schedule(REOPEN_WAIT_SECONDS);
   };
+
+  /** Opens a pass is waiting on. A stop waits for them before it closes the lanes, so a lane that
+   *  opens under the stop is closed by it and not left to the process exit (#4959). Each is bounded
+   *  by the open deadline, so the wait is too. */
+  const inflight = new Set<Promise<unknown>>();
 
   // ---- the acknowledgment ------------------------------------------------------------------------
   // Sound because passes are serialized and each reads the manifest afresh: a pass that read an
@@ -452,7 +469,10 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
       clearInterval(backstop);
       watcher?.close();
       // Every lane closes at once: one lane waiting on a slow broker must not hold the others open.
-      void closeAll().then(() => resolve_(0));
+      // An open still running for a pass finishes first, closing its lane under the stop, so the
+      // process does not exit with that lane's footprint (a delivery lease, a callout connection)
+      // left behind (#4959).
+      void Promise.allSettled([...inflight]).then(closeAll).then(() => resolve_(0));
     };
     process.on("SIGINT", stop("SIGINT"));
     process.on("SIGTERM", stop("SIGTERM"));
