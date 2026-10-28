@@ -105,7 +105,7 @@ import { captureSeatCheckpoint } from "../lib/seat-capture.js";
 import { processRecorded, stopInFlight, stopLocalProcess } from "../lib/local-process-stop.js";
 import { stopManager } from "../lib/manager-proc.js";
 import { ensureDelivery, removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
-import { controllerStackRecorded, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
+import { controllerStackRecorded, deliveryLeaseAfterStop, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
 import { noticeBetweenSteps } from "../lib/interrupt-notice.js";
 import { goneRootDown, goneRootStackDown, validateGoneRootDownArguments } from "./stack-gone.js";
 import { readStackJournal, recordedProcessLine } from "../lib/stack-journal.js";
@@ -380,7 +380,7 @@ function recordsElsewhere(root: string, action: "stop" | "preview"): CommandFail
 /** Keep the retained pidfile sweep from crossing an exact recorded broker-sharing boundary or
  *  stopping the broker under a saved service that still runs. This is not a complete live ownership
  *  or agent-impact proof. */
-function guardLegacyBareDown(): { space: string } {
+function guardLegacyBareDown(): { space: string; server: string } {
   const root = canonicalRoot(cotalRoot());
   const target = { root };
   if (root === canonicalRoot(homedir())) {
@@ -437,7 +437,7 @@ function guardLegacyBareDown(): { space: string } {
     "then run `cotal down` again",
   ].join("; ") });
   assertNoLiveServices(mesh.space, "down");
-  return { space: mesh.space };
+  return { space: mesh.space, server: mesh.server };
 }
 
 /** Bare down reads each process record it stops where the record lies, as the stopped-stack census
@@ -558,6 +558,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
 
   let any = false;
   let allStopped = true;
+  let deliveryLease: Awaited<ReturnType<typeof deliveryLeaseAfterStop>> | undefined;
   // A missing manager or delivery pidfile is not proof those daemons stopped. They renew leases
   // while they run, so a live lease with no pidfile refuses before the broker is stopped.
   await refuseLiveUnrecordedDaemons(selected, { ...folderCtx(), space: guarded.space });
@@ -572,7 +573,13 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     try {
       const context = folderCtx();
       if (component.name === "manager") await stopManager(context.space, { withAgents: values["with-agents"] });
-      else if (component.name === "delivery") await stopDelivery(context.space, { preserveCredentials: true });
+      else if (component.name === "delivery") {
+        await stopDelivery(context.space, { preserveCredentials: true });
+        // The daemon's exit does not prove its release committed: it gives the release two seconds
+        // and then exits anyway. The row it leaves is recognised by the next up only through this
+        // daemon's credential, so the lease is read while the broker still runs.
+        if (recorded) deliveryLease = await deliveryLeaseAfterStop(context.root, context.space, guarded.server);
+      }
       else await stopLocalProcess(component, context);
       if (recorded) stopped.push(component.label);
     } catch (e) {
@@ -589,7 +596,11 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   }
   cleaning = true;
 
-  if (selected.some((component) => component.name === "delivery"))
+  if (deliveryLease === "held" || deliveryLease === "unread")
+    stderrLine("! ", deliveryLease === "held"
+      ? "the delivery daemon exited without releasing shard 0 of its lease, so its credential stays; the next `cotal up` waits for the lease to expire"
+      : "the delivery lease could not be read after the delivery daemon stopped, so its credential stays; the next `cotal up` waits out a lease that still names it", c.yellow);
+  else if (selected.some((component) => component.name === "delivery"))
     await removeDeliveryCredentials(folderCtx().space);
 
   for (const component of selected) {

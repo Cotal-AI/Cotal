@@ -392,7 +392,7 @@ async function previewStackStop(root: string, values: ParsedArgs["values"], pres
  *  that was killed, or whose release write the broker refused, as a full store refuses it, leaves its
  *  row until the lease expires. The holder is the one that credential gives, never a name or pid.
  *  "unread" when the row could not be read. */
-async function deliveryLeaseAfterStop(root: string, space: string, server: string): Promise<"held" | "released" | "unread"> {
+export async function deliveryLeaseAfterStop(root: string, space: string, server: string): Promise<"held" | "released" | "unread"> {
   const store = workspaceSecretStore(root);
   let ep: CotalEndpoint | undefined;
   try {
