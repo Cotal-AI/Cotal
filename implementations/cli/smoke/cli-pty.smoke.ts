@@ -209,6 +209,12 @@ try {
       search.exitCode === 0 && search.all.some((line) => line.trim() === "read the full page: `cotal docs cli`") && search.all.every(spansClose), search.all.filter((line) => !spansClose(line)));
     check(`${name} on an 80-column terminal fits every line that can break`, search.exitCode === 0 && search.all.length > 20 && fit(search.all.join("\n"), 80).every(unbreakable), fit(search.all.join("\n"), 80));
   }
+  // A hit's title, `Page › heading`, is a section title and wraps at its words as any title does.
+  // Titles are the lines that start at the margin.
+  const narrowSearch = await helpAt(["docs", "--search", "manager"], 40);
+  const hitTitles = narrowSearch.all.filter((line) => /^\S/.test(line));
+  check("cotal docs --search manager on a 40-column terminal fits every hit title line",
+    narrowSearch.exitCode === 0 && hitTitles.some((line) => line.includes(" › ")) && fit(hitTitles.join("\n"), 40).length === 0, hitTitles);
   const setup80 = await helpAt(["help", "setup"], 80);
   check("cotal help setup on an 80-column terminal fits every line, its examples included", setup80.exitCode === 0 && fit(setup80.all.join("\n"), 80).length === 0 && setup80.all.includes("Examples"), fit(setup80.all.join("\n"), 80));
   const setup = await helpAt(["help", "setup"], 40);

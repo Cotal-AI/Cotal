@@ -61,6 +61,8 @@
  * Next offering a longer one, and that the same invoke without the flag keeps its message and Next.
  * Cell 14 invokes the manager with a `--timeout` its contract read outruns and grades the failure
  * that names the flag and the read, with a Next naming a longer `--timeout`.
+ * Cell 15 sweeps `--timeout` until a contract read returns after the deadline and the call fails
+ * before it publishes, and grades that this failure's Next names a longer `--timeout` as well.
  *
  * Mutation-proof target `cli-on-mint`: drop the instance from the mint (in
  * `packages/workspace/src/connect.ts`, force `pinned` to `undefined`) and cell 3's
@@ -776,6 +778,35 @@ try {
     shortJson.run.status === 5 && typeof shortEnv?.target?.requestId === "string" &&
       JSON.stringify({ ...shortEnv, target: { ...shortEnv.target, requestId: "<id>" } }) === JSON.stringify(expectedShortEnv),
     { timeoutMs: shortJson.ms, status: shortJson.run.status, stdout: shortJson.run.stdout.slice(-900) });
+
+  // A contract read can be answered inside `--timeout` and still return after it: the validators
+  // compile after the last store read. The call then fails before it publishes, and that failure
+  // names the same longer `--timeout` as cell 14. Nothing in the binary can hold the call in that
+  // window, so each budget from 1ms is tried three times, doubling, until a run lands in it.
+  console.log("\n15. invoke --timeout that runs out after the contract read and before the publish names a longer --timeout");
+  const published = (ms: number): string => `the ${ms}ms --timeout ran out before the command was published`;
+  const beforePublish = async (argv: string[]): Promise<{ ms: number; run: Run }> => {
+    let last!: { ms: number; run: Run };
+    for (let ms = 1; ms <= 1024; ms *= 2) for (let attempt = 0; attempt < 3; attempt++) {
+      const run = await cotal([...argv, "--timeout", String(ms), "--space", space], root1);
+      mustHaveRun(run, `\`${argv.join(" ")} --timeout ${ms}\``);
+      last = { ms, run };
+      if (strip(run.out).includes(published(ms))) return last;
+    }
+    return last;
+  };
+  const late = await beforePublish(["invoke", "manager", "ps"]);
+  const lateOut = strip(late.run.out);
+  check("invoke manager ps whose --timeout runs out before the publish fails OPERATION_FAILED, exit 5, and its Next names a longer --timeout",
+    late.run.status === 5 && /Code:\s+OPERATION_FAILED/.test(lateOut) && lateOut.includes(published(late.ms)) &&
+      /^Next\n\s+rerun it with a longer --timeout and the same other flags, such as `cotal invoke manager ps --timeout 10000`$/m.test(lateOut),
+    { timeoutMs: late.ms, status: late.run.status, out: lateOut.slice(-900) });
+  const lateJson = await beforePublish(["endpoint", "invoke", "manager", "ps", "--json"]);
+  let lateEnv: { error?: unknown } | undefined;
+  try { lateEnv = JSON.parse(lateJson.run.stdout); } catch { lateEnv = undefined; }
+  check("...and endpoint invoke --json carries that failure with the longer --timeout as its remedy",
+    lateJson.run.status === 5 && JSON.stringify(lateEnv?.error) === JSON.stringify({ code: "OPERATION_FAILED", message: published(lateJson.ms), remedy: "rerun it with a longer --timeout and the same other flags, such as `cotal endpoint invoke manager ps --timeout 10000`" }),
+    { timeoutMs: lateJson.ms, status: lateJson.run.status, stdout: lateJson.run.stdout.slice(-900) });
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 } finally {
