@@ -130,7 +130,7 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
   servicePresetFlags(preset);
   const missing = presetMissingOptions(preset, given);
   const line = verb === "start" ? `cotal service start ${preset.name}` : `cotal service ${verb} --preset ${preset.name}`;
-  if (missing.length) throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default; nothing was saved or started`, { remedy: `${line} ${missing.map((name) => `--${name} ${placeholder(resolveServiceAdapter(preset.adapter, {}, false).declaration.paths?.[name], properties[name]?.type)}`).join(" ")}`, selfContained: true });
+  if (missing.length) throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default; nothing was saved or started`, { remedy: `${line} ${missing.map((name) => `--${name} ${placeholder(resolveServiceAdapter(preset.adapter, {}, false).declaration.paths?.[name], properties[name]?.type)}`).join(" ")}`, selfContained: true, remedyIsCommand: true });
   const values: ParsedArgs["values"] = { ...presetDefaultOptions(preset, space, root, given, migrate), ...given };
   for (const [name, schema] of Object.entries(properties)) {
     const value = values[name], negative = values[`no-${name}`];

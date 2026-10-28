@@ -270,7 +270,9 @@ are. A remedy, Next line, hint or message that names a command after other words
 backticks, so it wraps whole and `--json` carries the same text. A command that holds a
 backtick itself, as a quoted path can, is named between double backticks, as Markdown writes such code,
 and wraps whole to the matching pair. A line that starts with a command, such as a usage line, wraps at
-its spaces. Help wraps the same way, including the title of `cotal help`.
+its spaces. A command wider than the line, such as a `next:` command or a remedy that is one whole
+command, is never broken: it overflows as one line, so a copy is whole. Help wraps the same way,
+including the title of `cotal help`.
 
 A question that defaults to No, such as the one before `history clear`, `down`, `channel remove` or
 `persona remove`, is answered by typing: `y` or `yes`, in any case, then Enter confirms it. Enter

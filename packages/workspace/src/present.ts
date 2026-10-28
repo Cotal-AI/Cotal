@@ -131,12 +131,13 @@ function draw(cell: Cell, style: Style): { shown: string; width: number } {
 }
 
 /** A cell drawn in lines that fit `width` columns, each line toned on its own. A continuation line
- *  starts under the first line's text, past its leading spaces and the mark, plus `hang` columns. */
-function drawWrapped(cell: Cell, style: Style, width: number, hang = 0): string[] {
+ *  starts under the first line's text, past its leading spaces and the mark, plus `hang` columns. A
+ *  `whole` cell, as a command is, is never broken: one wider than the line runs past it. */
+function drawWrapped(cell: Cell, style: Style, width: number, hang = 0, whole = typeof cell !== "string" && cell.tone === "command"): string[] {
   const text = textOf(cell, style);
   const lead = /^ */.exec(text)![0];
   const markWidth = typeof cell !== "string" && cell.mark && marks(style) ? displayWidth(oneLine(cell.mark)) + 1 : 0;
-  const [first = "", ...rest] = wrapWords(text.slice(lead.length), width - lead.length - markWidth - hang);
+  const [first = "", ...rest] = wrapWords(whole ? [text.slice(lead.length)] : text.slice(lead.length), width - lead.length - markWidth - hang);
   const piece = (words: string): Cell => (typeof cell === "string" ? words : { text: words, ...(cell.tone ? { tone: cell.tone } : {}) });
   return [
     draw(typeof cell === "string" ? lead + first : { ...cell, text: lead + first }, style).shown,
@@ -289,12 +290,12 @@ export function writeResult<R>(
     const report = view(out.result);
     console.log(renderReport({ ...report, ...(typeof target?.space === "string" && target.space ? { space: target.space } : {}) }, presentation, terminalWidth(process.stdout)));
     const errWidth = terminalWidth(process.stderr);
-    const say = (cell: Styled, hang: number) => { for (const line of drawWrapped(cell, presentation, errWidth, hang)) console.error(line); };
+    const say = (cell: Styled, hang: number, whole?: boolean) => { for (const line of drawWrapped(cell, presentation, errWidth, hang, whole)) console.error(line); };
     // The run's own warnings were printed on stderr when they were recorded.
     for (const warning of warnings) say({ text: `! ${warning.message}`, tone: "waiting" }, 2);
     if (error) {
       say({ text: `${marks(presentation) ? "✗" : "!"} ${error.message}`, tone: outcome === "partial" || outcome === "unknown" ? "waiting" : "failed" }, 2);
-      if (error.remedy) say({ text: `  ↳ ${error.remedy}`, tone: "hint" }, 2);
+      if (error.remedy) say({ text: `  ↳ ${error.remedy}`, tone: "hint" }, 2, out.failure?.remedyIsCommand);
     }
   }
   process.exitCode = exitCode(outcome, code);
@@ -344,6 +345,6 @@ export function commandFailureReport(failure: CommandFailure): Report {
     // Receipts that are plain strings, such as file paths, are listed; structured ones need structured output.
     ...(failure.changed?.length && !purges.length && !nativeRows.length ? [{ title: "Confirmed changes", blocks: [{ kind: "lines" as const, lines: names(failure.changed).length === failure.changed.length ? [...names(failure.changed)] : [`${failure.changed.length} change receipt(s) retained. Choose structured output before the operation to retain their data; do not repeat a mutation merely to view its receipt.`] }] }] : []),
     ...(managers.length ? [{ title: "Live managers", blocks: [{ kind: "table" as const, columns: [{ key: "name", label: "Manager" }, { key: "instanceId", label: "Instance" }, { key: "host", label: "Host" }, { key: "activity", label: "Activity" }, { key: "since", label: "Running since" }], rows: managers }] }] : []),
-    ...(failure.remedy ? [{ title: "Next", blocks: [{ kind: "lines" as const, lines: [failure.remedy] }] }] : []),
+    ...(failure.remedy ? [{ title: "Next", blocks: [{ kind: "lines" as const, lines: [failure.remedyIsCommand ? { text: failure.remedy, tone: "command" as const } : failure.remedy] }] }] : []),
   ] };
 }

@@ -14,12 +14,14 @@ export function hang(prefix: string, text: string | readonly string[], width: nu
 /** A `✗` failure or `↳` hint on stderr, wrapped at spaces to the terminal, each continuation line
  *  under the text. Its control characters are shown as escapes, as a report shows them (see
  *  {@link oneLine}), because the text can quote a file or an argument. Under a locale that is not
- *  UTF-8 it is written as plain writes it: `!` for the failure mark and the punctuation in ASCII. */
-export function stderrLine(prefix: string, text: string, paint: (s: string) => string): void {
+ *  UTF-8 it is written as plain writes it: `!` for the failure mark and the punctuation in ASCII. A
+ *  `whole` text, such as a remedy that is one command, is never broken: one wider than the line runs past it. */
+export function stderrLine(prefix: string, text: string, paint: (s: string) => string, whole = false): void {
   const ascii = !localeIsUtf8();
   const lead = ascii ? plainPunctuation(prefix.replace("✗", "!")) : prefix;
   const shown = oneLine(text);
-  for (const line of hang(lead, ascii ? plainPunctuation(shown) : shown, terminalWidth(process.stderr))) console.error(paint(line));
+  const words = ascii ? plainPunctuation(shown) : shown;
+  for (const line of hang(lead, whole ? [words] : words, terminalWidth(process.stderr))) console.error(paint(line));
 }
 
 /** A presence status in words, after its mark unless `marks` is false. */
