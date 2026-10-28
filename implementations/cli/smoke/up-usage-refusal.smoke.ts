@@ -37,6 +37,10 @@
  * open and then in TIME-WAIT, with nothing listening, and need the refusal to say which.
  * A refusal that names the whole fix, such as a nats:// address where the root's recorded policy or
  * --tls-cert serves TLS, prints no help after it. Those cells need `openssl` on PATH.
+ * `up -f` binds one local broker, so a comma-separated address list, from `broker.servers`, from
+ * `--server`, or beside `broker.host`, refuses `USAGE_INVALID` and names that source. A single
+ * address from each source prints the dry-run plan, and `topology view -f` still accepts the list.
+ * Those cells use ports no local broker can serve, so a regression starts nothing.
  *
  * Run: pnpm smoke:up-usage-refusal
  */
@@ -508,6 +512,45 @@ try {
         && !r.stderr.includes("start a separate space in this folder"), shown(r));
 } finally {
   holder.close();
+}
+
+// up -f binds one address. A comma-separated list used to reach `new URL` whole and exit 3 with
+// "Invalid URL", naming neither the source nor the rule. Ports 1 and 2 cannot be bound.
+{
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-oneaddr-")));
+  roots.push(root);
+  mkdirSync(join(root, ".cotal"), { mode: 0o700 });
+  const list = "nats://127.0.0.1:1,nats://127.0.0.1:2";
+  const manifest = (name: string, broker: string) => writeFileSync(join(root, name), `apiVersion: cotal/v1\nkind: Mesh\nspace: oneaddr\nbroker: { ${broker}, auth: false }\nchannels:\n  general: { description: Open coordination. }\n`);
+  manifest("list.yaml", `servers: "${list}"`);
+  manifest("host-list.yaml", `host: 127.0.0.1, servers: "${list}"`);
+  manifest("single.yaml", `servers: "nats://127.0.0.1:1"`);
+  manifest("host-single.yaml", `host: 127.0.0.1, servers: "nats://127.0.0.1:1"`);
+  const wrote = () => readdirSync(join(root, ".cotal")).join(",");
+  const before = wrote();
+  // `up -f --json` is refused before the manifest is read, so the text form is the route that reaches
+  // this check. It names the field the operator wrote and stops before the URL parse.
+  for (const { label, args, source } of [
+    { label: "a broker.servers list", args: ["up", "-f", "list.yaml"], source: "broker.servers" },
+    { label: "a --server list", args: ["up", "-f", "single.yaml", "--server", list], source: "--server" },
+    { label: "a broker.host beside a list", args: ["up", "-f", "host-list.yaml"], source: "broker.servers" },
+  ]) {
+    const r = run(args, root);
+    check(`up -f with ${label} refuses exit 1, naming ${source} and the one-address rule, with no help`,
+      r.status === 1 && r.stdout === "" && !/Invalid URL|Usage|Options/.test(r.stderr)
+        && r.stderr === `✗ ${source} names more than one broker address, and up -f binds one; nothing was started or written\n  name one address in ${source}\n`, shown(r));
+  }
+  for (const { label, args } of [
+    { label: "one broker.servers address", args: ["up", "-f", "single.yaml", "--dry-run"] },
+    { label: "one --server address", args: ["up", "-f", "single.yaml", "--server", "nats://127.0.0.1:2", "--dry-run"] },
+    { label: "broker.host beside one address", args: ["up", "-f", "host-single.yaml", "--dry-run"] },
+  ]) {
+    const r = run(args, root);
+    check(`up -f --dry-run with ${label} prints the plan and exits 0`, r.status === 0 && /Dry run - nothing was changed/.test(r.stdout) && r.stderr === "", shown(r));
+  }
+  const view = run(["topology", "view", "-f", "list.yaml"], root);
+  check("topology view -f accepts the two-address list and exits 0", view.status === 0 && view.stdout.includes(list), shown(view));
+  check("the one-address refusals and their controls wrote nothing under .cotal", wrote() === before, wrote());
 }
 
 finish();

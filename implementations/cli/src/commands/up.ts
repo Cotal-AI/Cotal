@@ -3282,7 +3282,8 @@ export async function prepareFreshTeamBoot(file: string, opts: { space: string; 
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, flags);
   const m = eff.manifest;
   const host = m.broker?.host ?? "127.0.0.1";
-  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, hostSource, serverSource) : (m.broker?.servers ?? DEFAULT_SERVER);
+  const listed = singleBindAddress(m.broker?.servers, serverSource);
+  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, listed, hostSource, serverSource) : (listed ?? DEFAULT_SERVER);
   const open = m.broker?.auth === false;
   const mode = open ? "open" as const : m.broker?.auth === "user" ? "user" as const : "auth" as const;
   const runtime = m.runtime ?? "pty";
@@ -3314,7 +3315,8 @@ export async function prepareResumeTeamBoot(file: string, opts: { space: string;
     throw new CommandFailure("refused", "CONFLICT", "the team manifest no longer names the selected space; nothing was resumed", { target: { selectedSpace: opts.space, declaredSpace: prepared.manifest.space } });
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, { transport: opts.transport, dryRun: false, freshTeamBoot: true });
   const m = eff.manifest;
-  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, hostSource, serverSource) : (m.broker?.servers ?? DEFAULT_SERVER);
+  const listed = singleBindAddress(m.broker?.servers, serverSource);
+  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, listed, hostSource, serverSource) : (listed ?? DEFAULT_SERVER);
   const open = m.broker?.auth === false;
   const mode = open ? "open" as const : m.broker?.auth === "user" ? "user" as const : "auth" as const;
   const runtime = m.runtime ?? "pty";
@@ -3427,10 +3429,13 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   const host = m.broker?.host ?? "127.0.0.1";
   // Same bind-vs-probe reconciliation as the flag path: a manifest that sets `broker.host` without
   // an explicit `broker.servers` would otherwise bind one address and be probed at another.
-  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, hostSource, serverSource) : (m.broker?.servers ?? DEFAULT_SERVER);
+  // A comma-separated list is a set of connect targets, and this command binds one address, so it
+  // is refused by its source before any URL parse of the whole string.
+  const listed = singleBindAddress(m.broker?.servers, serverSource);
+  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, listed, hostSource, serverSource) : (listed ?? DEFAULT_SERVER);
   assertTlsIntentServed(server, opts.transport, opts.server !== undefined ? "--server" : "the manifest's broker.servers");
   // A --tls-cert broker serves TLS only, so its address says tls://, as a bare up requires of --server.
-  if (opts.transport.kind === "tls-required" && server.split(",").some((url) => /^nats:\/\//i.test(url.trim())))
+  if (opts.transport.kind === "tls-required" && /^nats:\/\//i.test(server.trim()))
     throw new CommandFailure("refused", "USAGE_INVALID", `--tls-cert serves the broker over TLS, so ${opts.server !== undefined ? "--server" : "the manifest's broker.servers"} must be a tls:// address; nothing was started or written`, {
       target: { space: m.space, server: brokerAddressForDisplay(server) ?? "not displayable" },
       remedy: opts.server !== undefined ? `pass --server ${tlsAddress(server)}` : `set broker.servers to ${tlsAddress(server)} in ${file}`,
@@ -3720,6 +3725,16 @@ function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): { pre
     hostSource: !o.host && m.broker?.host !== undefined ? "broker.host" : "--host",
     serverSource: !o.server && m.broker?.servers !== undefined ? "broker.servers" : "--server",
   };
+}
+
+/** The one broker address `up -f` binds, or undefined when the manifest names none. A comma-separated
+ *  list is a set of connect targets, which a shared consumer such as `topology view -f` still accepts;
+ *  this command creates one local broker, so more than one entry is refused by the source that named
+ *  it, before the string is parsed as one URL. */
+function singleBindAddress(servers: string | undefined, source: string): string | undefined {
+  if (servers !== undefined && servers.split(",").length > 1)
+    throw new CommandFailure("refused", "USAGE_INVALID", `${source} names more than one broker address, and up -f binds one; nothing was started or written`, { remedy: `name one address in ${source}`, selfContained: true });
+  return servers;
 }
 
 /** Start the CONTROL PLANE alongside the broker: old-manager preflight → delivery daemon (auth
@@ -5094,7 +5109,7 @@ function resolveTransport(
 /** A `tls://` broker address is recorded as required TLS, and every later dial through the record
  *  trusts it. Refuse it, before anything starts, when this start would serve plaintext. */
 function assertTlsIntentServed(server: string, transport: BrokerTransport, source: string): void {
-  const tls = server.split(",").some((url) => url.trim().toLowerCase().startsWith("tls://"));
+  const tls = server.trim().toLowerCase().startsWith("tls://");
   if (tls && transport.kind !== "tls-required")
     throw new CommandFailure("refused", "USAGE_INVALID", `${source} names a tls:// address, but no TLS certificate and key are configured, so the broker would serve plaintext; nothing was started`, { target: { server: brokerAddressForDisplay(server) ?? "not displayable" }, remedy: "serve TLS with --tls-cert <cert.pem> --tls-key <key.pem>, or use a nats:// address", selfContained: true });
 }
@@ -5104,7 +5119,7 @@ function assertTlsIntentServed(server: string, transport: BrokerTransport, sourc
  *  naming the recorded policy that serves TLS and the address to pass instead. */
 function assertTlsAddressServed(server: string, transport: BrokerTransport, root: string): void {
   if (transport.kind !== "tls-required") return;
-  if (!server.split(",").some((url) => /^nats:\/\//i.test(url.trim()))) return;
+  if (!/^nats:\/\//i.test(server.trim())) return;
   throw new CommandFailure("refused", "USAGE_INVALID", `this root serves the broker over TLS (${brokerPolicyPath(root)}), so --server must be a tls:// address; nothing was started or written`, {
     target: { root, server: brokerAddressForDisplay(server) ?? "not displayable" },
     remedy: `pass --server ${tlsAddress(server)}`,
@@ -5120,8 +5135,8 @@ function commitTransportPolicy(root: string, transport: BrokerTransport, quietBo
   if (!quietBoot) announceTransport(transport, server);
 }
 
-/** The `tls://` form of a broker URL, or of each URL in a list. */
-const tlsAddress = (server: string): string => server.split(",").map((url) => url.trim().replace(/^nats:/i, "tls:")).join(",");
+/** The `tls://` form of a broker URL. */
+const tlsAddress = (server: string): string => server.trim().replace(/^nats:/i, "tls:");
 
 function announceTransport(transport: BrokerTransport, server?: string): void {
   if (transport.kind !== "tls-required") return;
