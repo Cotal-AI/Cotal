@@ -934,10 +934,13 @@ async function runSeats(args: ParsedArgs): Promise<void> {
   writeResult(presentation, { command: "manager", target, result: { kind: "manager-seat-drain", entries, preview: false, drainSubmitted: true }, ...(incomplete ? { completeness: "partial" as const, failure: new CommandFailure("unknown", "OPERATION_UNKNOWN", "some native drains did not confirm completion; confirmed removals are retained, but an unresolved custodian effect was not treated as unchanged", { target, changed, remedy: "re-read the full seat IDs; no drain was retried" }) } : { noOp: changed.length === 0 }) }, view);
 }
 
-/** A failure on one line: its code, message, the error it wraps and its remedy; another error's message. */
+/** A failure on one line: its code, message, the error it wraps and its remedy; another error's native
+ *  code when it has one, its message and the error it wraps. */
 function failureLine(error: unknown): string {
-  if (!isCommandFailure(error)) return rejectionText(error);
-  return `${error.code}: ${error.message}${error.cause === undefined ? "" : `; cause: ${failureLine(error.cause)}`}${error.remedy ? `; next: ${error.remedy}` : ""}`;
+  if (isCommandFailure(error)) return `${error.code}: ${error.message}${error.cause === undefined ? "" : `; cause: ${failureLine(error.cause)}`}${error.remedy ? `; next: ${error.remedy}` : ""}`;
+  if (!(error instanceof Error)) return rejectionText(error);
+  const code = (error as NodeJS.ErrnoException).code;
+  return `${typeof code === "string" ? `${code}: ` : ""}${rejectionText(error)}${error.cause === undefined ? "" : `; cause: ${failureLine(error.cause)}`}`;
 }
 
 const maintenanceOutputFlags = [jsonFlag, plainFlag,

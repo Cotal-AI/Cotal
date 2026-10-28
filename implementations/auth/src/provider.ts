@@ -786,7 +786,7 @@ async function postManagerAuthority(
     headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
     body: JSON.stringify({ idpToken: idpJwt, request }),
     signal: AbortSignal.timeout(30_000),
-  }).catch((error) => { throw new Error(`the ${what} endpoint did not answer at ${endpoint} (${error instanceof Error ? error.message : String(error)})`); });
+  }).catch((error) => { throw new Error(`the ${what} endpoint did not answer at ${endpoint} (${error instanceof Error ? error.message : String(error)})`, { cause: error }); });
   if (response.status >= 300 && response.status < 400)
     throw new Error(`the ${what} endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
   // A stand-in object would reach the caller as a result the endpoint never sent.
