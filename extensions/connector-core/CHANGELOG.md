@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.116.2
+
+### Patch Changes
+
+- 6309047: Report an unanswered persona definition as an unknown write outcome, with same-manager readback guidance, instead of a failed definition that invites an unsafe retry. Preserve concrete refusals and pre-submission failures.
+
 ## 0.116.1
 
 No changes in this release.
