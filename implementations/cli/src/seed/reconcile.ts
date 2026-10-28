@@ -9,10 +9,12 @@ import {
   connectorMetadataStale,
   extensionPackageDir,
   extensionsDir,
+  extensionsManifestPath,
   installedExtensionPackage,
   loadExtensionsManifest,
   provenance,
   quarantineExtensionsManifest,
+  saveExtensionsManifest,
   type InstalledExtension,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -334,6 +336,10 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   const refreshed: string[] = [];
   const verified: string[] = [];
   const removedKept: string[] = [];
+  // Built-ins the install check below already read, and which of them are gone. The later drop reuses
+  // both, so a repair does not read the same package.json again.
+  const checkedPkgs = new Set<string>();
+  const absentPkgs = new Set<string>();
   // A verify run keeps a built-in only on proof. An interrupted or failed earlier run and a prefix
   // that is not the tree its lock records each void that proof for every built-in at once, so the run
   // reinstalls all of them the way `--force` does, and says why. Read when the first installed
@@ -374,7 +380,12 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
       // survive while a required file is gone). An operator-managed official entry (no seeded marker)
       // is never auto-refreshed on upgrade — only --force may replace it.
       const isSeeded = entry.source === "seeded";
-      const torn = mode === "repair" && isSeeded && (repairAllSeeded || installState(name) !== "intact");
+      const state = mode === "repair" && isSeeded ? installState(name) : undefined;
+      if (state !== undefined) {
+        checkedPkgs.add(entry.pkg);
+        if (state === "absent") absentPkgs.add(entry.pkg);
+      }
+      const torn = state !== undefined && (repairAllSeeded || state !== "intact");
       const metadataStale = isSeeded && connectorMetadataStale(entry);
       let refresh = mode === "force" || torn || metadataStale || (isSeeded && isStrictlyNewer(generation, stampGen));
       if (mode === "verify" && !refresh) {
@@ -410,6 +421,12 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   // An npm upgrade reaches this path before the command runs. Refresh harness-owned copies before
   // stamping the generation: a failed refresh must remain an incomplete upgrade on the next boot.
   if (migrationFrom) await refreshInstalls();
+
+  // A maintenance run is the recovery for a manifest entry whose package directory is gone. The
+  // add above skips linking its peers so the reseed can finish; the entry itself is not installed,
+  // so it does not stay recorded. A built-in the check above already read is not read again. A
+  // package.json that is present but corrupt still throws here.
+  if (mode === "repair" || mode === "reset") dropAbsentExtensions(checkedPkgs, absentPkgs);
 
   // Commit: authority (+ backup) → witness → stamp (LAST); THEN drop the cursor + recovery obligation
   // and GC old stores. The cursor and recovery marker are cleared only here, so an interruption
@@ -496,6 +513,27 @@ function announceSeedMigration(from: string, stamp: Stamp): void {
   process.stderr.write(
     `→ migrated operator-global seed store generation ${from} -> ${stamp.generation}, written by ${stamp.writtenBy} at ${stamp.writtenAt}: ${stampPath()}\n`,
   );
+}
+
+/** Remove manifest entries whose package directory is gone. A maintenance seed is the recovery for
+ *  that drift, so the entry does not stay recorded after the built-ins are in place. `checked` and
+ *  `absent` are what the install check above already learned, so this does not read those packages
+ *  again. Any other entry is read here, and one whose package.json is present but corrupt throws, as
+ *  {@link installedExtensionPackage} does, rather than being reported removed. */
+function dropAbsentExtensions(checked: ReadonlySet<string>, absent: ReadonlySet<string>): void {
+  const manifest = loadExtensionsManifest();
+  const kept: InstalledExtension[] = [];
+  for (const entry of manifest.extensions) {
+    const gone = absent.has(entry.pkg) || (!checked.has(entry.pkg) && installedExtensionPackage(entry.pkg) === undefined);
+    if (gone) {
+      if (!absent.has(entry.pkg)) console.error(c.dim(`removed ${entry.pkg} from the extensions manifest: its package is not installed at ${extensionPackageDir(entry.pkg)}`));
+      continue;
+    }
+    kept.push(entry);
+  }
+  if (kept.length === manifest.extensions.length) return;
+  saveExtensionsManifest({ extensions: kept });
+  provenance.wrote("extensions manifest (removed entries whose packages are not installed)", extensionsManifestPath());
 }
 
 /** Quarantine any corrupt manifest / seed-state so a maintenance run rebuilds clean instead of wedging

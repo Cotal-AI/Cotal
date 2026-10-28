@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { registry, type Command, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
+import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionPackage, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { assertExtensionServiceInstancesStopped } from "../lib/service-instances.js";
 import { cotalRoot } from "../lib/paths.js";
@@ -135,9 +135,20 @@ async function npm(args: string[], cwd: string): Promise<{ status: number | null
 }
 
 /** Rebuild each installed package's private links after npm mutates the shared prefix. Keeping the
- * links inside the owning package prevents a later sibling add/remove from pruning its peers. */
+ * links inside the owning package prevents a later sibling add/remove from pruning its peers.
+ * A manifest entry whose package directory is gone has no peers to preserve: npm prunes a package
+ * the prefix does not list, and a reset is the recovery for that drift. Skipping it lets the
+ * install finish. A present package.json that cannot be read still fails the bind. */
 function linkExtensionPeers(packages: string[], operationPkg: string): void {
-  for (const link of bindExtensionPeers(packages, operationPkg, { force: true }))
+  const present: string[] = [];
+  for (const owner of packages) {
+    if (installedExtensionPackage(owner) === undefined) {
+      console.error(c.dim(`${owner} is in the manifest but not installed at ${extensionPackageDir(owner)}; its shared peers were not linked`));
+      continue;
+    }
+    present.push(owner);
+  }
+  for (const link of bindExtensionPeers(present, operationPkg, { force: true }))
     provenance.wrote(`${link.peer} link (${link.owner} → this CLI's copy)`, link.destination);
 }
 
