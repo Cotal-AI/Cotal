@@ -645,7 +645,9 @@ resolve refuses the spawn and starts nothing, and the other seats keep the runti
 members to a real channel as durable membership rows: the channel derives from the step's own
 request id when the program names none (a program-named channel is borrowed, never torn down, and
 a membership that predates the conclave survives its close), each member handle resolves to its
-principal through the seat's own presence row (an absent member is catchable as L4002), and a
+principal through the seat's own presence row (an absent member is catchable as L4002), each
+member's row is written under that lifecycle's exact read ACL (read just before the write and again
+after it, so a member retiring meanwhile gets no row and keeps none), and a
 conclave cancelled on a losing branch is released by the same cancellation sweep. `ask` parks one
 checkpoint-plane pause per attempt, answered through `cotal run answer` as a checkpoint is, and
 tells the agent through the same relay `turn` uses: one relay per attempt under the attempt's own
