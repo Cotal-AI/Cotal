@@ -18,8 +18,8 @@ import { join } from "node:path";
 /**
  * Where the seat keeps its compile cache: `compile-cache` under this OS user's own Cotal
  * directory, so it persists across restarts and upgrades and is never in a temp directory that a
- * reboot clears. Node then keys a subdirectory by Node version, architecture and uid inside it, so
- * a Node upgrade pays one compile instead of reading a stale entry.
+ * reboot clears. Node keys a subdirectory inside it, so a Node upgrade pays one compile instead of
+ * reading a stale entry.
  *
  * This repeats `userCotalDir()` from `@cotal-ai/workspace` because a connector peer-depends on
  * `@cotal-ai/core` alone and cannot import the workspace layer. `pnpm smoke:seat-compile-cache`

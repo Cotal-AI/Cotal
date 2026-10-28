@@ -315,8 +315,7 @@ of the process's malloc arena for as long as the seat runs.
 
 The cache lives in `~/.cotal/compile-cache` (`%LOCALAPPDATA%\Cotal\compile-cache` on Windows), the
 OS user's own Cotal directory, which `COTAL_HOME` never redirects. Node keys a subdirectory inside
-it by Node version, architecture and uid, so a Node upgrade pays one compile and reads no stale
-entry. The directory grows to the size of one compiled bundle per Node version, under 1 MB each, and
+it, so a Node upgrade pays one compile and reads no stale entry. The directory grows to the size of one compiled bundle per Node version, under 1 MB each, and
 deleting it is safe at any time: the next seat writes it again.
 
 Two things the cache never does. A cache it cannot open, such as a read-only home, prints one line
