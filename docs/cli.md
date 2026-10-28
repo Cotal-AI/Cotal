@@ -4773,6 +4773,11 @@ Enter is pressed by default, since a command typed but never submitted has not b
 `--no-enter` types the text and leaves it sitting at the prompt, which is how you stage a line and
 send it later.
 
+At a Claude selection menu, including `AskUserQuestion`, text input is refused before any bytes
+are written. Pasting a number or an answer there can otherwise confirm the highlighted option
+instead of the requested answer. Use `cotal attach --name <n>` and the menu's arrow keys and Enter.
+This refusal also applies to `--no-enter`.
+
 Nothing comes back but a `Terminal input written` receipt. It names the agent, space and manager,
 the bytes the manager reported writing (counting the trailing carriage return) and whether Enter was
 requested. It confirms the write to the terminal only. Whatever the agent does next shows up where

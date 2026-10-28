@@ -11353,6 +11353,34 @@ export class Manager {
     const write = a.handle.write?.bind(a.handle);
     if (!write)
       throw new EpEnvelopeError("unimplemented", `input is not supported by runtime ${a.handle.kind}`, undefined, "not-executed");
+    if (a.agent === "claude") {
+      // AskUserQuestion ignores bracketed text at its choice menu, but the following Enter
+      // confirms the highlighted option. Refuse rather than answer a different question choice.
+      const handle = a.handle;
+      let selection = false;
+      try {
+        const session = handle.attach();
+        const backlog = await session.backlog();
+        const term = new Headless.Terminal({ cols: session.cols, rows: session.rows, allowProposedApi: true });
+        try {
+          await new Promise<void>((done) => term.write(backlog, done));
+          const screen = term.buffer.active;
+          const lines = Array.from({ length: term.rows }, (_, y) =>
+            screen.getLine(screen.baseY + y)?.translateToString(true).trim() ?? "");
+          selection = lines.some((line) => /^❯\s+\d+\./u.test(line))
+            && lines.some((line) => line.includes("Enter to select") && line.includes("↑/↓ to navigate") && line.includes("Esc to cancel"));
+        } finally {
+          term.dispose();
+        }
+      } catch {
+        throw new EpEnvelopeError("failed-precondition", `cannot inspect Claude input for seat "${a.name}"; use cotal attach --name ${a.name} to inspect and type directly`, undefined, "not-executed");
+      }
+      if (selection)
+        throw new EpEnvelopeError("failed-precondition", `Claude is showing a selection menu for seat "${a.name}"; input text cannot safely select an option. Use cotal attach --name ${a.name}, then arrow keys and Enter; nothing was typed`, undefined, "not-executed");
+      // Snapshot parsing awaits I/O. Keep this write bound to the authorized incarnation and handle.
+      if (this.agents.get(a.name) !== a || a.handle !== handle || handle.status() !== "running")
+        throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" changed while inspecting its terminal; nothing was typed`, undefined, "not-executed");
+    }
     // The contract validated `text` (non-empty, <= 64KiB) and `enter` (boolean) before this ran, so
     // the only decision left is the carriage return. `!== false` and not `?? true`: an ABSENT enter
     // and an explicit `true` must behave identically, and only `false` may suppress the return.
