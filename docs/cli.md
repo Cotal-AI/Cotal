@@ -7581,7 +7581,7 @@ cotal deliver --spaces <manifest> --server <url> [--root <dir>]
 cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy] [--advertised-server <url>] [--agent-provisioning-url <https://…>] [--auth-timeout <seconds>]
 cotal auth-service --space <s> --server <url> --callout-only [--auth-timeout <seconds>]
 cotal auth-service --server <url> --callout-only --spaces <manifest> [--auth-timeout <seconds>]
-cotal auth-service --server <url> --spaces <manifest> [--auth-timeout <seconds>] [--service-endpoints]
+cotal auth-service --server <url> --spaces <manifest> [--auth-timeout <seconds>]
 cotal service add intake --preset feedback-intake --space <s> --root <absolute-root> --keys <private-keys.json> --creds <private-creds>
 cotal service start intake --space <s>
 ```
@@ -7642,21 +7642,28 @@ service, one lane each: the callout, the authority plane, the loopback exchange 
 public face. A lane is the service `auth-service --space` runs, with the same refusals and its own
 plane claim, connections, connect limits and capability. Each lane writes its space's own
 `auth-service.json`, naming the host's pid, on a loopback port of its own. The manifest is version 2,
-one object per space, carrying that space's public face under the names of the flags it replaces:
+one object per space, carrying that space's public face and service endpoints under the names of
+the flags it replaces:
 
 ```json
 { "version": 2, "spaces": [
   { "space": "<s>", "exchangePublicPort": 7451, "exchangeTrustedProxy": true },
-  { "space": "<s>" }
+  { "space": "<s>", "serviceEndpoints": true }
 ] }
 ```
 
 An entry takes `exchangePublicPort`, `exchangePublicUrl`, `exchangeTrustedProxy`, `advertisedServer`
 and `agentProvisioningUrl`, with the rules of the flags: the last four need `exchangePublicPort`.
-An entry without `exchangePublicPort` has no public face. Two spaces naming one port, a version
-other than 2 and any refusal of the version 1 grammar refuse the whole manifest. `--port` and the
-public-face flags refuse with `--spaces`; `--server`, `--auth-timeout` and `--service-endpoints`
-apply to every lane. A changed entry closes that space's lane and opens it again on its new settings.
+An entry without `exchangePublicPort` has no public face. `serviceEndpoints`, `true` or `false`, is
+the space's `--service-endpoints`: a lane whose entry sets it opens the service endpoint host and
+serves `/service-endpoint-authority` and `/service-endpoint-host`, and a lane without it opens none of
+that and answers both routes 404. Two spaces naming one port, a version other than 2 and any refusal
+of the version 1 grammar refuse the whole manifest. `--port`, the public-face flags and
+`--service-endpoints` refuse with `--spaces`; `--server` and `--auth-timeout` apply to every lane. A
+changed entry closes that space's lane and opens it again on its new settings, and the other lanes
+keep serving. An embedder that writes the manifest checks it with `parseAuthHostManifest(text)` from
+`@cotal-ai/auth` before renaming it into place: it applies the rules the host applies and throws the
+message the host would log.
 
 At startup this host serves every space it can, names each one it cannot with the reason, and retries
 those every 5 seconds; its ready line counts the spaces serving against the spaces named. A space

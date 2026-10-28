@@ -161,9 +161,11 @@ the fields other than `space` validated by the host that reads it:
   `advertisedServer`, `agentProvisioningUrl`. Each entry gets the single-space rules: the last four
   require `exchangePublicPort`, and `checkPublicFace` runs on it. Across entries, two spaces naming
   one nonzero port refuse the whole manifest, which keeps the live lanes.
-- Host flags are what is one value per broker or host: `--server`, `--auth-timeout` (the broker's
-  `authorization { timeout }`) and `--service-endpoints`. `--space`, `--port` and the five
-  public-face flags refuse with `--spaces`; the refusal names the manifest as where the face is set.
+- Host flags are what is one value per broker or host: `--server` and `--auth-timeout` (the broker's
+  `authorization { timeout }`). `--space`, `--port` and the five public-face flags refuse with
+  `--spaces`; the refusal names the manifest as where the face is set. `--service-endpoints` first
+  applied to every lane; it now refuses too, and an entry's `serviceEndpoints` (`true` or `false`)
+  sets it per space, so a space that admits service endpoints no longer needs a process of its own.
 - A live lane whose entry changes is closed and reopened by the same reconcile pass, since a bound
   listener cannot change its port. This is the multi-space form of the existing rule that a
   listener flag change needs a restart.

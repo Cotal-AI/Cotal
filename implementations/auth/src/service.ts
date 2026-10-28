@@ -66,7 +66,7 @@ import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
 import { VOID_SCHEMA, CotalEndpoint, dialerFor, deprovisionAgent, singleDocumentClosure, dlvDurable, dlvStream, dmDurable, dmStream, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, holdIssuerSession, acceptedReadGrant, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, epgateKey, isCasLoss, sameManagedGrantCustody, parseServiceRegistrationWitness, serviceWitnessDigest, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
-import { findCotalRoot, loadManagerInstanceIdentity, runSpaceHost, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, type SpaceLane, type SpaceSettings, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
+import { findCotalRoot, loadManagerInstanceIdentity, parseSpaceManifest, runSpaceHost, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, type SpaceLane, type SpaceSettings, type SpaceSettingsManifest, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
@@ -2170,6 +2170,10 @@ export function authServiceConfiguration(args: ParsedArgs) {
       .filter((name) => v[name] !== undefined);
     if (!calloutOnly && perSpace.length > 0)
       throw new Error(`auth-service: --spaces gives each space an ephemeral loopback port and sets its public face in its manifest entry - drop ${perSpace.map((name) => `--${name}`).join(", ")}`);
+    // Whether a space hosts service endpoints is its own setting too, so the flag would turn them on
+    // for every space. The manifest entry alone says it, and the flag refuses rather than defaulting.
+    if (!calloutOnly && v["service-endpoints"] !== undefined)
+      throw new Error('auth-service: --spaces takes service endpoints per space - set "serviceEndpoints": true on the manifest entry of each space that hosts them and drop --service-endpoints');
   } else if (!v.space) {
     throw new Error("auth-service: --space is required (or --spaces <manifest> to serve several spaces from this one process)");
   }
@@ -2204,8 +2208,9 @@ export function authServiceConfiguration(args: ParsedArgs) {
   const publicFace = publicPort === undefined ? undefined : { port: publicPort, url: publicUrlFlag, trustedProxy, advertisedServer, agentProvisioningUrl };
   const badFace = publicFace && checkPublicFace(publicFace);
   if (badFace) throw new Error(badFace);
-  // Service endpoints are off unless the flag names them: an absent flag opens no engine, no
-  // discovery connection and no door, and the routes answer 404 as before.
+  // Service endpoints are off unless the flag names them (or, under --spaces, a space's manifest
+  // entry): an absent flag opens no engine, no discovery connection and no door, and the routes
+  // answer 404 as before.
   const serviceEndpoints = v["service-endpoints"] !== undefined;
   // The broker's `authorization { timeout }`, which `cotal up` renders and passes here from the same
   // value. Absent: the callout's default, which is nats-server's.
@@ -2251,7 +2256,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
   if (calloutOnly) return runAuthCalloutReplica({ space, server, root, ...(limits !== undefined ? { limits } : {}) }, store);
   if (spaces !== undefined) {
     if (lifecycle) throw new Error("auth-service: the auth-service service preset runs one space - run --spaces from the auth-service entry or an embedder's runAuthService call");
-    return runAuthServiceHost({ manifest: spaces, server, root, serviceEndpoints, runtime: options, ...(limits !== undefined ? { limits } : {}) }, store);
+    return runAuthServiceHost({ manifest: spaces, server, root, runtime: options, ...(limits !== undefined ? { limits } : {}) }, store);
   }
   const dir = userAuthStateDir(root, space);
   const secrets = store ?? workspaceSecretStore(root);
@@ -2344,40 +2349,62 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
   process.exit(0);
 }
 
-/** The fields of an `auth-service --spaces` manifest entry besides `space`: the public-face flags of
+/** The public-face fields of an `auth-service --spaces` manifest entry: the public-face flags of
  *  `auth-service --space`, under the same names in camel case. */
-const AUTH_HOST_ENTRY_FIELDS = ["exchangePublicPort", "exchangePublicUrl", "exchangeTrustedProxy", "advertisedServer", "agentProvisioningUrl"] as const;
+const AUTH_HOST_FACE_FIELDS = ["exchangePublicPort", "exchangePublicUrl", "exchangeTrustedProxy", "advertisedServer", "agentProvisioningUrl"] as const;
 
-/** Reads one space's public face from its version 2 manifest entry, under the rules the flags
- *  follow, and refuses two spaces naming one port. `null` is a space with no public face. */
-export const authHostSettings: SpaceSettings<PublicFaceInput | null> = {
+/** The fields of an `auth-service --spaces` manifest entry besides `space`: the public face, and
+ *  `serviceEndpoints`, the per-space form of `--service-endpoints`. */
+const AUTH_HOST_ENTRY_FIELDS = [...AUTH_HOST_FACE_FIELDS, "serviceEndpoints"] as const;
+
+/** One space's settings in an `auth-service --spaces` manifest, read from its entry. */
+export interface AuthHostEntry {
+  /** The space's public face, or `null` for an entry without `exchangePublicPort`. */
+  publicFace: PublicFaceInput | null;
+  /** Whether the space's lane hosts service endpoints, as `--service-endpoints` does for one space.
+   *  An absent field is `false`. */
+  serviceEndpoints: boolean;
+}
+
+/** Reads one space's public face from its entry's public-face fields, under the rules the flags
+ *  follow. `null` is a space with no public face. */
+function authHostPublicFace(fields: Readonly<Record<string, unknown>>): PublicFaceInput | null {
+  const { exchangePublicPort: port, exchangePublicUrl: url, exchangeTrustedProxy: trustedProxy, advertisedServer, agentProvisioningUrl } = fields;
+  if (port === undefined) {
+    const riders = AUTH_HOST_FACE_FIELDS.slice(1).filter((k) => fields[k] !== undefined);
+    if (riders.length) throw new Error(`${riders.join(", ")} ride${riders.length === 1 ? "s" : ""} the public face - set exchangePublicPort too`);
+    return null;
+  }
+  if (typeof port !== "number") throw new Error(`exchangePublicPort must be a port number, got ${JSON.stringify(port)}`);
+  for (const [name, value] of [["exchangePublicUrl", url], ["advertisedServer", advertisedServer], ["agentProvisioningUrl", agentProvisioningUrl]] as const)
+    if (value !== undefined && typeof value !== "string") throw new Error(`${name} must be a string, got ${JSON.stringify(value)}`);
+  if (trustedProxy !== undefined && typeof trustedProxy !== "boolean") throw new Error(`exchangeTrustedProxy must be true or false, got ${JSON.stringify(trustedProxy)}`);
+  const face: PublicFaceInput = {
+    port,
+    ...(url !== undefined ? { url: url as string } : {}),
+    trustedProxy: trustedProxy === true,
+    ...(advertisedServer !== undefined ? { advertisedServer: advertisedServer as string } : {}),
+    ...(agentProvisioningUrl !== undefined ? { agentProvisioningUrl: agentProvisioningUrl as string } : {}),
+  };
+  const bad = checkPublicFace(face);
+  if (bad) throw new Error(bad.replace(/^auth-service: /, ""));
+  return face;
+}
+
+/** Reads one space's settings from its version 2 manifest entry, under the rules the flags follow,
+ *  and refuses two spaces naming one port. */
+const authHostSettings: SpaceSettings<AuthHostEntry> = {
   parse(_space, fields) {
     const unknown = Object.keys(fields).filter((k) => !(AUTH_HOST_ENTRY_FIELDS as readonly string[]).includes(k));
     if (unknown.length) throw new Error(`unknown field(s) ${unknown.join(", ")}; an entry takes space, ${AUTH_HOST_ENTRY_FIELDS.join(", ")}`);
-    const { exchangePublicPort: port, exchangePublicUrl: url, exchangeTrustedProxy: trustedProxy, advertisedServer, agentProvisioningUrl } = fields;
-    if (port === undefined) {
-      const riders = AUTH_HOST_ENTRY_FIELDS.slice(1).filter((k) => fields[k] !== undefined);
-      if (riders.length) throw new Error(`${riders.join(", ")} ride${riders.length === 1 ? "s" : ""} the public face - set exchangePublicPort too`);
-      return null;
-    }
-    if (typeof port !== "number") throw new Error(`exchangePublicPort must be a port number, got ${JSON.stringify(port)}`);
-    for (const [name, value] of [["exchangePublicUrl", url], ["advertisedServer", advertisedServer], ["agentProvisioningUrl", agentProvisioningUrl]] as const)
-      if (value !== undefined && typeof value !== "string") throw new Error(`${name} must be a string, got ${JSON.stringify(value)}`);
-    if (trustedProxy !== undefined && typeof trustedProxy !== "boolean") throw new Error(`exchangeTrustedProxy must be true or false, got ${JSON.stringify(trustedProxy)}`);
-    const face: PublicFaceInput = {
-      port,
-      ...(url !== undefined ? { url: url as string } : {}),
-      trustedProxy: trustedProxy === true,
-      ...(advertisedServer !== undefined ? { advertisedServer: advertisedServer as string } : {}),
-      ...(agentProvisioningUrl !== undefined ? { agentProvisioningUrl: agentProvisioningUrl as string } : {}),
-    };
-    const bad = checkPublicFace(face);
-    if (bad) throw new Error(bad.replace(/^auth-service: /, ""));
-    return face;
+    const publicFace = authHostPublicFace(fields);
+    const { serviceEndpoints } = fields;
+    if (serviceEndpoints !== undefined && typeof serviceEndpoints !== "boolean") throw new Error(`serviceEndpoints must be true or false, got ${JSON.stringify(serviceEndpoints)}`);
+    return { publicFace, serviceEndpoints: serviceEndpoints === true };
   },
   across(settings) {
     const ports = new Map<number, string>();
-    for (const [space, face] of settings) {
+    for (const [space, { publicFace: face }] of settings) {
       if (face === null || face.port === 0) continue;
       const other = ports.get(face.port);
       if (other !== undefined) throw new Error(`spaces "${other}" and "${space}" both name exchangePublicPort ${face.port}; each space's public face needs its own port`);
@@ -2385,6 +2412,14 @@ export const authHostSettings: SpaceSettings<PublicFaceInput | null> = {
     }
   },
 };
+
+/** Parse an `auth-service --spaces` manifest with the rules the host applies to every read of it:
+ *  the version 2 grammar, each entry's fields and the checks across entries. Throws naming what is
+ *  wrong, with the message the host logs. A writer checks a manifest with it before renaming the
+ *  file into place. */
+export function parseAuthHostManifest(text: string): SpaceSettingsManifest<AuthHostEntry> {
+  return parseSpaceManifest(text, authHostSettings);
+}
 
 /** One space's full auth service held by a multi-space host ({@link runAuthServiceHost}): the
  *  context `--space` runs, plus that space's discovery file, with no process-level concern. It
@@ -2461,11 +2496,12 @@ async function openAuthServiceLane(o: {
 }
 
 /** Run one multi-space auth service host (`auth-service --spaces <manifest>`) until a signal ends it:
- *  one full auth service lane per space the version 2 manifest names, on the one `--server`. It
+ *  one full auth service lane per space the version 2 manifest names, on the one `--server`, with the
+ *  public face and service endpoints its entry sets. It
  *  starts with the spaces it can serve and retries the rest, and acknowledges each manifest in
  *  `<manifest>.applied` once every space it does not name is closed. `store`, when given, is every
  *  lane's only source of secret material. */
-async function runAuthServiceHost(args: { manifest: string; server: string; root: string; serviceEndpoints: boolean; limits?: AuthCalloutLimits; runtime: AuthServiceRuntimeOptions }, store?: SecretStore): Promise<void> {
+async function runAuthServiceHost(args: { manifest: string; server: string; root: string; limits?: AuthCalloutLimits; runtime: AuthServiceRuntimeOptions }, store?: SecretStore): Promise<void> {
   const { server, root } = args;
   const log = (l: string) => console.error(l);
   const secrets = store ?? workspaceSecretStore(root);
@@ -2473,9 +2509,9 @@ async function runAuthServiceHost(args: { manifest: string; server: string; root
     manifest: args.manifest,
     settings: authHostSettings,
     startup: "servable",
-    open: (space, publicFace) => openAuthServiceLane({
-      space, server, root, secrets, hostedStore: store !== undefined, publicFace,
-      serviceEndpoints: args.serviceEndpoints, runtime: args.runtime, log: (l) => log(`[${space}] ${l}`),
+    open: (space, entry) => openAuthServiceLane({
+      space, server, root, secrets, hostedStore: store !== undefined, publicFace: entry.publicFace,
+      serviceEndpoints: entry.serviceEndpoints, runtime: args.runtime, log: (l) => log(`[${space}] ${l}`),
       ...(args.limits !== undefined ? { limits: args.limits } : {}),
     }),
     label: "auth service host",

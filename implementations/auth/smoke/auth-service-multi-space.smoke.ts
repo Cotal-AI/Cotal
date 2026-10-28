@@ -11,13 +11,18 @@
  * free; each space's loopback and public exchange and JWKS answer from that space's own keys; a bearer
  * from one space's exchange connects only into that space's data account, and the other space's
  * callout and exchange refuse it; every connection a lane opens is in its own space's accounts, read
- * from the broker's `/connz`; a changed entry moves that space's public face; removing a space from
+ * from the broker's `/connz`; a space whose entry sets `serviceEndpoints` opens the endpoint engine,
+ * its two connections and its admission record and answers the service endpoint routes, while a
+ * space without it opens none of them and answers 404, and a change to that one field reopens that
+ * space's lane alone; `--service-endpoints` beside `--spaces` refuses; the `@cotal-ai/auth` export
+ * `parseAuthHostManifest` refuses each manifest the host refuses with the host's message and reads
+ * the settings the host serves; a changed entry moves that space's public face; removing a space from
  * the full host's and a callout host's manifests is acknowledged in each `<manifest>.applied` only
  * after that space has no listener, discovery file, connection or callout responder left, while the
  * other space keeps exchanging and connecting; SIGTERM closes every lane.
  *
- * `--measure` instead reports RSS in MiB per space for 1, 4 and 16 lanes in one process against 16
- * single-space processes, all idle.
+ * `--measure` instead reports RSS in MiB per space for 1, 4 and 16 lanes in one process, 16 lanes
+ * that all set `serviceEndpoints`, and 16 single-space processes, all idle.
  *
  * Run: pnpm smoke:auth-service-multi-space [--measure]   (nats-server on PATH, or NATS_SERVER_BIN)
  */
@@ -47,10 +52,10 @@ if (process.argv[2] === "__daemon-auth-service") {
   process.env.COTAL_HOME = home;
 
   const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-io/transport-node");
-  const { createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams } = await import("@cotal-ai/core");
-  const { authDir, parseSpaceManifest, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
-  const { cotalAuthProvider, grantManagedActor, loadAuthServiceInfo, loadCalloutAuth, newActorToken } = await import("@cotal-ai/auth");
-  const { authHostSettings } = await import("../src/service.js");
+  const { jetstreamManager } = await import("@nats-io/jetstream");
+  const { createBrokerAuth, createSpaceAccountAuth, epAuthBucket, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams, standaloneConnectOpts } = await import("@cotal-ai/core");
+  const { authDir, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+  const { cotalAuthProvider, grantManagedActor, loadAuthServiceInfo, loadCalloutAuth, newActorToken, parseAuthHostManifest } = await import("@cotal-ai/auth");
   const { saveIdpSession } = await import("../src/login.js");
   const { pickFreePort } = await import("./_free-port.js");
 
@@ -59,7 +64,7 @@ if (process.argv[2] === "__daemon-auth-service") {
   const MEASURE_LANES = [1, 4, 16];
   const SPACE_COUNT = MEASURE ? Math.max(...MEASURE_LANES) : 3;
   /** Every cell below that runs. A suite that skipped one fails here rather than passing short. */
-  const EXPECTED_CHECKS = 49;
+  const EXPECTED_CHECKS = 70;
 
   const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
   const until = async (test: () => boolean | Promise<boolean>, message: string, ms = 90_000) => {
@@ -230,6 +235,16 @@ if (process.argv[2] === "__daemon-auth-service") {
         record(`${lanes} lane(s), one process`, [host.child.pid!], lanes);
         await stopDaemon(label);
       }
+      {
+        const lanes = Math.max(...MEASURE_LANES);
+        writeManifest(manifest, { version: 2, spaces: spaces.slice(0, lanes).map((s) => ({ space: s.name, serviceEndpoints: true })) });
+        const host = startDaemon("host:endpoints", ["--spaces", manifest]);
+        await until(() => host.text().includes("✓ auth service host up") || host.child.exitCode !== null, `the ${lanes}-lane endpoint host did not come up: ${host.text()}`, 300_000);
+        if (!host.text().includes(`(${lanes} of ${lanes} space(s) serving`)) throw new Error(`the ${lanes}-lane endpoint host did not serve every space: ${host.text().slice(-600)}`);
+        await settle();
+        record(`${lanes} lane(s) with serviceEndpoints, one process`, [host.child.pid!], lanes);
+        await stopDaemon("host:endpoints");
+      }
       const labels: string[] = [];
       for (const s of spaces) {
         const label = `single:${s.name}`;
@@ -246,7 +261,7 @@ if (process.argv[2] === "__daemon-auth-service") {
       console.log("| --- | --- | --- | --- | --- | --- |");
       for (const r of table) console.log(`| ${r.shape} | ${r.procs} | ${r.lanes} | ${r.rssMb} | ${(r.rssMb / r.lanes).toFixed(1)} | ${r.loadavg} |`);
       console.log("");
-      const one = table.find((r) => r.shape.startsWith(`${spaces.length} lane`))!;
+      const one = table.find((r) => r.shape === `${spaces.length} lane(s), one process`)!;
       const many = table.find((r) => r.shape.includes("single-space processes"))!;
       check(`${spaces.length} lanes in one process hold less RSS than ${spaces.length} single-space processes`, one.rssMb < many.rssMb, { oneProcess: one.rssMb, processes: many.rssMb });
       complete = true;
@@ -262,18 +277,34 @@ if (process.argv[2] === "__daemon-auth-service") {
       writeManifest(v1, { version: 1, spaces: [A.name] });
       const samePort = join(home, "same-port.json");
       writeManifest(samePort, { version: 2, spaces: [{ space: A.name, exchangePublicPort: portA }, { space: B.name, exchangePublicPort: portA }] });
+      const badEndpoints = join(home, "bad-endpoints.json");
+      writeManifest(badEndpoints, { version: 2, spaces: [{ space: A.name, serviceEndpoints: "true" }] });
+      /** What each refused start printed, by manifest, for the export's cell below. */
+      const refusedText = new Map<string, string>();
       for (const [why, args, expect] of [
         ["a public-face flag with --spaces", ["--spaces", manifestPath, "--exchange-public-port", String(portA)], "drop --exchange-public-port"],
         ["--port with --spaces", ["--spaces", manifestPath, "--port", "0"], "drop --port"],
+        ["--service-endpoints with --spaces", ["--spaces", manifestPath, "--service-endpoints"], '"serviceEndpoints": true on the manifest entry of each space that hosts them and drop --service-endpoints'],
         ["--space with --spaces", ["--space", A.name, "--spaces", manifestPath], "are alternatives"],
         ["a version 1 manifest", ["--spaces", v1], "version must be 2"],
         ["two spaces naming one public port", ["--spaces", samePort], "both name exchangePublicPort"],
+        ["a serviceEndpoints that is not true or false", ["--spaces", badEndpoints], "serviceEndpoints must be true or false"],
       ] as Array<[string, string[], string]>) {
         const d = startDaemon(`refused:${why}`, args);
         const code = await exited(d.child);
+        refusedText.set(args[args.indexOf("--spaces") + 1]!, d.text());
         check(`${why} refuses`, code !== 0 && d.text().includes(expect), d.text().trim().split("\n").at(-1)?.slice(0, 160));
       }
-      check("no refused start wrote an acknowledgment", !existsSync(`${v1}.applied`) && !existsSync(`${samePort}.applied`));
+      check("no refused start wrote an acknowledgment",
+        [manifestPath, v1, samePort, badEndpoints].every((m) => !existsSync(`${m}.applied`)));
+      // The export is the host's own rule: each manifest the host refused, it refuses with the message
+      // the host printed after naming the path.
+      const exportRefusal = (path: string): string | undefined => {
+        try { parseAuthHostManifest(readFileSync(path, "utf8")); return undefined; } catch (e) { return e instanceof Error ? e.message : String(e); }
+      };
+      check("parseAuthHostManifest refuses each manifest the host refused at startup, with the host's message",
+        [v1, samePort, badEndpoints].every((m) => { const why = exportRefusal(m); return why !== undefined && refusedText.get(m)!.includes(`${m} is invalid: ${why}`); }),
+        exportRefusal(badEndpoints));
 
       // ---- startup with one unservable space and one space whose port is taken ---------------------
       const squatter = createTcpServer();
@@ -281,7 +312,7 @@ if (process.argv[2] === "__daemon-auth-service") {
       const startSha = writeManifest(manifestPath, { version: 2, spaces: [
         { space: A.name, exchangePublicPort: portA, exchangeTrustedProxy: true },
         { space: B.name, exchangePublicPort: portB },
-        { space: C.name, exchangePublicPort: portC },
+        { space: C.name, exchangePublicPort: portC, serviceEndpoints: true },
         { space: "never-provisioned" },
       ] });
       const host = startDaemon("host", ["--spaces", manifestPath]);
@@ -344,14 +375,107 @@ if (process.argv[2] === "__daemon-auth-service") {
       check("the two lanes hold the same number of connections, one shape per lane", connsA.length === connsB.length, { a: connsA.length, b: connsB.length });
       check("each space's callout queue group has one member, its own lane", (await calloutMembers(A.name)).length === 1 && (await calloutMembers(B.name)).length === 1);
 
+      // ---- service endpoints per entry ------------------------------------------------------------
+      // C's entry sets serviceEndpoints and B's does not. C must open what `--space --service-endpoints`
+      // opens and B what a single-space service without the flag opens: nothing.
+      const serviceRoutes = async (space: Space, port: number) => {
+        const cap = info(space)!.cap;
+        const host = (base: string, withCap: boolean) => fetch(`${base}/service-endpoint-host`,
+          { method: "POST", headers: { "content-type": "application/json", ...(withCap ? { authorization: `Bearer ${cap}` } : {}) }, body: "{}" });
+        const door = async (base: string) => { const res = await fetch(`${base}/service-endpoint-authority`); return { status: res.status, body: await res.json() as { kind?: string; space?: string } }; };
+        return {
+          door: [await door(info(space)!.url), await door(`http://127.0.0.1:${port}`)],
+          host: [(await host(info(space)!.url, true)).status, (await host(`http://127.0.0.1:${port}`, false)).status],
+        };
+      };
+      /** A lane's long-lived connections with the space suffix removed, sorted. Service host effect
+       *  connections live for one operation, so they are left out of the shape. */
+      const shapeOf = async (space: Space) => (await laneConnections(space.name)).map((c) => c.name!.slice(0, -(space.name.length + 1)))
+        .filter((n) => n !== "cotal:service-host-effect").sort();
+      const ENDPOINT_CONNECTIONS = ["cotal:service-callout", "cotal:service-host-discovery"];
+      /** How many `svchost.admission` writes the space's auth store holds, from the stream's own subject
+       *  counts, read with the provisioner's stream info grant. */
+      const admissionWrites = async (space: Space): Promise<number> => {
+        const creds = await mintCreds(spaceAuths.find((a) => a.space === space.name)!, newIdentity(), "provisioner");
+        const nc = await connect({ servers, maxReconnectAttempts: 0, ...standaloneConnectOpts({ creds, tls: false }) });
+        try {
+          const bucket = epAuthBucket(space.name);
+          const subject = `$KV.${bucket}.svchost.admission`;
+          const si = await (await jetstreamManager(nc)).streams.info(`KV_${bucket}`, { subjects_filter: subject });
+          return (si.state.subjects as Record<string, number> | undefined)?.[subject] ?? 0;
+        } finally { await nc.close(); }
+      };
+      const startEntries = parseAuthHostManifest(readFileSync(manifestPath, "utf8"));
+      check("parseAuthHostManifest reads the startup manifest as the host serves it: serviceEndpoints on C alone",
+        startEntries.settings.get(C.name)?.serviceEndpoints === true && startEntries.settings.get(A.name)?.serviceEndpoints === false && startEntries.settings.get(B.name)?.serviceEndpoints === false);
+      const routesC = await serviceRoutes(C, portC);
+      check("the lane whose entry sets serviceEndpoints serves its own door on both faces",
+        routesC.door.every((d) => d.status === 200 && d.body.kind === "service-endpoint-authority-info" && d.body.space === C.name), routesC.door.map((d) => d.status));
+      check("the lane whose entry sets serviceEndpoints takes host requests on both faces past the 404", routesC.host.every((status) => status === 400), routesC.host);
+      const routesB = await serviceRoutes(B, portB);
+      check("the lane whose entry omits serviceEndpoints answers 404 on both routes and both faces",
+        routesB.door.every((d) => d.status === 404) && routesB.host.every((status) => status === 404), { door: routesB.door.map((d) => d.status), host: routesB.host });
+      const shapeB = await shapeOf(B);
+      const shapeC = await shapeOf(C);
+      check("the lane with serviceEndpoints holds the plain lane's connections plus the discovery and service callout connections",
+        JSON.stringify(shapeC) === JSON.stringify([...shapeB, ...ENDPOINT_CONNECTIONS].sort()), { b: shapeB.length, c: shapeC.length });
+      check("the lane without serviceEndpoints holds no service connection", (await laneConnections(B.name)).every((c) => !c.name!.startsWith("cotal:service-")), shapeB);
+      check("only the lane with serviceEndpoints wrote its admission record", await admissionWrites(C) === 1 && await admissionWrites(B) === 0 && await admissionWrites(A) === 0);
+
+      // A change to that one field closes and reopens C's lane alone, in each direction. B's capability
+      // is minted per open, so an unchanged one shows B's lane never reopened.
+      const startEntry = (c: Record<string, unknown>) => ({ version: 2, spaces: [
+        { space: A.name, exchangePublicPort: portA, exchangeTrustedProxy: true },
+        { space: B.name, exchangePublicPort: portB },
+        { space: C.name, exchangePublicPort: portC, ...c },
+      ] });
+      const flip = async (c: Record<string, unknown>) => {
+        const mark = host.text().length;
+        const before = { a: info(A)!.cap, b: info(B)!.cap, c: info(C)!.cap };
+        writeManifest(manifestPath, startEntry(c));
+        await until(() => host.text().slice(mark).includes(`space "${C.name}" opened`), `C did not reopen: ${host.text().slice(-600)}`);
+        const log = host.text().slice(mark);
+        return { before, log, onlyC: log.includes(`space "${C.name}" changed its settings`) && !log.includes(`space "${A.name}"`) && !log.includes(`space "${B.name}"`)
+          && info(A)!.cap === before.a && info(B)!.cap === before.b && info(C)!.cap !== before.c };
+      };
+      const off = await flip({});
+      const routesOff = await serviceRoutes(C, portC);
+      check("dropping serviceEndpoints reopens only that space's lane", off.onlyC, off.log.slice(0, 300));
+      check("with the field dropped, the lane answers 404 on both routes and both faces",
+        routesOff.door.every((d) => d.status === 404) && routesOff.host.every((status) => status === 404), { door: routesOff.door.map((d) => d.status), host: routesOff.host });
+      check("with the field dropped, the lane holds the plain lane's connections", JSON.stringify(await shapeOf(C)) === JSON.stringify(shapeB), await shapeOf(C));
+      check("dropping the field leaves the space's admission record in place", await admissionWrites(C) === 1);
+      const replicaC = join(home, "callout-c.json");
+      writeManifest(replicaC, { version: 1, spaces: [C.name] });
+      const refusedReplica = startDaemon("refused:replica-c", ["--callout-only", "--spaces", replicaC]);
+      check("a callout host naming that space still refuses it, since its admission record is open",
+        await exited(refusedReplica.child) !== 0 && refusedReplica.text().includes(`space "${C.name}" admits service endpoints`), refusedReplica.text().trim().split("\n").at(-1)?.slice(0, 160));
+      const on = await flip({ serviceEndpoints: true });
+      const routesOn = await serviceRoutes(C, portC);
+      check("adding serviceEndpoints back reopens only that space's lane", on.onlyC, on.log.slice(0, 300));
+      check("with the field back, the lane serves its door and host route again and holds the endpoint connections",
+        routesOn.door.every((d) => d.status === 200) && routesOn.host.every((status) => status === 400) && JSON.stringify(await shapeOf(C)) === JSON.stringify(shapeC));
+      check("writing serviceEndpoints false where it was absent changes no lane", await (async () => {
+        const mark = host.text().length;
+        const capB = info(B)!.cap;
+        const sha = writeManifest(manifestPath, { version: 2, spaces: [
+          { space: A.name, exchangePublicPort: portA, exchangeTrustedProxy: true },
+          { space: B.name, exchangePublicPort: portB, serviceEndpoints: false },
+          { space: C.name, exchangePublicPort: portC, serviceEndpoints: true },
+        ] });
+        await until(() => applied(manifestPath) === sha, `the manifest with an explicit false was not acknowledged: ${host.text().slice(-600)}`);
+        return !host.text().slice(mark).includes("changed its settings") && info(B)!.cap === capB;
+      })());
+
       // ---- a changed entry moves that space's public face ------------------------------------------
       const movedSha = writeManifest(manifestPath, { version: 2, spaces: [
         { space: A.name, exchangePublicPort: portA2, exchangeTrustedProxy: true },
         { space: B.name, exchangePublicPort: portB },
-        { space: C.name, exchangePublicPort: portC },
+        { space: C.name, exchangePublicPort: portC, serviceEndpoints: true },
       ] });
       await until(() => applied(manifestPath) === movedSha && info(A)?.publicUrl === `http://127.0.0.1:${portA2}`, `space A's face did not move: ${host.text().slice(-600)}`);
-      check("a changed entry closes and reopens only that space's lane", host.text().includes(`space "${A.name}" changed its settings`) && !host.text().includes(`space "${B.name}" changed its settings`));
+      check("a changed entry closes and reopens only that space's lane", host.text().includes(`space "${A.name}" changed its settings`) && !host.text().includes(`space "${B.name}" changed its settings`)
+        && (host.text().match(new RegExp(`space "${C.name}" changed its settings`, "g")) ?? []).length === 2);
       check("space A's public face answers on its new port and no longer on its old one",
         (await getJson(`http://127.0.0.1:${portA2}/health`)).status === 200 && await refused(`http://127.0.0.1:${portA}/health`));
       check("space B kept its lane and its discovery file across A's move", info(B)?.pid === host.child.pid && (await exchange(`http://127.0.0.1:${portB}`, B, B.actors[1])).status === 200);
@@ -370,15 +494,18 @@ if (process.argv[2] === "__daemon-auth-service") {
       const bBearer = (await exchange(info(B)!.url, B, B.actors[1], info(B)!.cap)).body.token!;
       const bLoopback = info(B)!.url;
       check("space B's outstanding bearer connects before the removal", (await connectOnce(B, bBearer)).account === B.dataAccountPub);
-      const removedSha = writeManifest(manifestPath, { version: 2, spaces: [{ space: A.name, exchangePublicPort: portA2, exchangeTrustedProxy: true }, { space: C.name, exchangePublicPort: portC }] });
+      const removedSha = writeManifest(manifestPath, { version: 2, spaces: [{ space: A.name, exchangePublicPort: portA2, exchangeTrustedProxy: true }, { space: C.name, exchangePublicPort: portC, serviceEndpoints: true }] });
       const removedCalloutSha = writeManifest(calloutManifest, { version: 1, spaces: [A.name] });
-      // Space A's traffic runs alongside, from before the removal to after both acknowledgments.
+      // Space A's traffic runs alongside, from before the removal to after both acknowledgments. The
+      // checks after them include a connect nothing answers, which ends on the client's 10 s timeout,
+      // so the rounds are paced: unpaced, they pass A's actor's 60 connects a minute in each process.
       let duringOk = 0, duringAttempts = 0, trafficDone = false;
       const traffic = (async () => {
         while (!trafficDone || duringAttempts < 5) {
           duringAttempts++;
           const e = await exchange(info(A)!.url, A, A.actors[0], info(A)!.cap);
           if (e.status === 200 && (await connectOnce(A, e.body.token!)).account === A.dataAccountPub) duringOk++;
+          await wait(250);
         }
       })();
       await until(() => applied(manifestPath) === removedSha && applied(calloutManifest) === removedCalloutSha,
@@ -425,14 +552,21 @@ if (process.argv[2] === "__daemon-auth-service") {
         ["a public URL that is not https", '{"version":2,"spaces":[{"space":"a","exchangePublicPort":1,"exchangePublicUrl":"http://x"}]}'],
         ["a duplicate space", '{"version":2,"spaces":[{"space":"a"},{"space":"a"}]}'],
         ["a partial file", '{"version":2,"spaces":[{"space":"a"'],
+        ["a serviceEndpoints that is a number", '{"version":2,"spaces":[{"space":"a","serviceEndpoints":1}]}'],
+        ["a serviceEndpoints that is null", '{"version":2,"spaces":[{"space":"a","serviceEndpoints":null}]}'],
       ] as Array<[string, string]>) {
         let refusal: string | undefined;
-        try { parseSpaceManifest(text, authHostSettings); } catch (e) { refusal = e instanceof Error ? e.message : String(e); }
+        try { parseAuthHostManifest(text); } catch (e) { refusal = e instanceof Error ? e.message : String(e); }
         check(`the version 2 manifest refuses ${why}`, refusal !== undefined, refusal?.slice(0, 110));
       }
-      const parsed = parseSpaceManifest('{"version":2,"spaces":[{"space":"a","exchangePublicPort":7451,"exchangeTrustedProxy":true},{"space":"b"}]}', authHostSettings);
+      const parsed = parseAuthHostManifest('{"version":2,"spaces":[{"space":"a","exchangePublicPort":7451,"exchangeTrustedProxy":true},{"space":"b"}]}');
       check("the version 2 manifest accepts the shape an embedder writes",
-        parsed.spaces.length === 2 && parsed.settings.get("a")?.port === 7451 && parsed.settings.get("a")?.trustedProxy === true && parsed.settings.get("b") === null);
+        parsed.spaces.length === 2 && parsed.settings.get("a")?.publicFace?.port === 7451 && parsed.settings.get("a")?.publicFace?.trustedProxy === true
+        && parsed.settings.get("b")?.publicFace === null && parsed.settings.get("b")?.serviceEndpoints === false);
+      const withField = parseAuthHostManifest('{"version":2,"spaces":[{"space":"a","serviceEndpoints":true},{"space":"b","serviceEndpoints":false},{"space":"c"}]}');
+      check("serviceEndpoints needs no public face, and false reads the same as absent",
+        withField.settings.get("a")?.serviceEndpoints === true && withField.settings.get("a")?.publicFace === null
+        && JSON.stringify(withField.settings.get("b")) === JSON.stringify(withField.settings.get("c")));
 
       // ---- SIGTERM closes every lane ------------------------------------------------------------------
       await stopDaemon("replica");

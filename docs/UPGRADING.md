@@ -34,6 +34,39 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Service endpoints on a multi-space auth service host after 0.114.0
+
+`cotal auth-service --spaces <manifest>` now takes service endpoints per space, from each space's
+manifest entry, and refuses `--service-endpoints`. This affects a host run on any release from 0.112.0
+before 0.114.0 with both `--spaces` and `--service-endpoints`, where the flag turned service endpoints
+on for every space the manifest named. Started the same way, such a host now stops at startup with nothing opened:
+
+```
+auth-service: --spaces takes service endpoints per space - set "serviceEndpoints": true on the manifest entry of each space that hosts them and drop --service-endpoints
+```
+
+`auth-service --spaces` without the flag, `auth-service --callout-only --spaces` and
+`auth-service --space --service-endpoints` are unchanged.
+
+### Before the upgrade
+
+- Add `"serviceEndpoints": true` to the entry of each space that keeps service endpoints, and drop
+  `--service-endpoints` from the host's command line. An entry that had a public face keeps it:
+
+  ```json
+  { "version": 2, "spaces": [
+    { "space": "<s>", "exchangePublicPort": 7451, "exchangeTrustedProxy": true, "serviceEndpoints": true },
+    { "space": "<s>" }
+  ] }
+  ```
+
+  To keep the old behavior, set it on every entry.
+- Write the new manifest first, then restart the host on the new version. Until the restart the old
+  host reports the new field as unknown and keeps its lanes as they were.
+- A space whose entry leaves the field out answers `/service-endpoint-authority` and
+  `/service-endpoint-host` with 404 after the upgrade. Its admission record and registrations stay
+  in its stores, and a callout replica still refuses it.
+
 ## Multi-space delivery startup after 0.112.0
 
 `cotal deliver --spaces <manifest>` now starts with the spaces it can serve. It names each space it

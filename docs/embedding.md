@@ -1442,7 +1442,8 @@ are public.
 
 `openAuthAuthorityPlane` and `startAuthService` take `serviceEndpoints: { startup: { kind: "normal" } }`
 to host these operations; it is off by default. `cotal up --user-auth --service-endpoints` sets it
-on the stock auth service. With it, the plane and the
+on the stock auth service, and a lane of `auth-service --spaces` sets it when its manifest entry has
+`"serviceEndpoints": true`. With it, the plane and the
 hosted handle gain `serviceEndpointHost(request)`, which answers `decide`, `revoke`, `name-bind`, the
 four caller-policy operations and the three reads (`proposal-read`, `operation-read` and
 `name-read`) in process. A hosted context rejects it as
@@ -1474,6 +1475,15 @@ close stays owned past its call: close closes it again first, and rejects with t
 while it stays open, so you can retry close. Until a retry succeeds or the process exits, discovery,
 the administrative rail, both scanners and the remaining clients stay live, so no successor can
 take over the claim.
+
+On a multi-space host the setting is per space. The manifest entry's `serviceEndpoints` is the only
+place it is set, and `--service-endpoints` refuses beside `--spaces`
+([server daemons](cli.md#server-daemons)). Check a manifest you write with
+`parseAuthHostManifest(text)` from `@cotal-ai/auth` before you rename it into place: it is the parser
+the host applies. A callout replica cannot issue a service-endpoint connection, so it refuses to start
+in a space whose admission is open. The first open with service endpoints opens it and nothing closes
+it, so keep every space that has ever run with service endpoints off replica manifests, also after
+its entry drops the field.
 
 With `serviceEndpoints`, both faces also serve `/service-endpoint-authority`, and without it that
 route answers 404. `GET` returns the receiver's account and space, the exact `iss` its service

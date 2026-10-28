@@ -340,7 +340,9 @@ it runs only on a host trusted like the full service's. A replica that loses a s
 the broker stops answering and exits non-zero, and the broker sends later connects to the other
 members; restart it with the unit that runs it. It refuses the HTTP flags and `--service-endpoints`.
 A replica cannot issue a service-endpoint connection, so it refuses to start in a space that admits
-service endpoints, one whose full service runs with `--service-endpoints`.
+service endpoints: one whose full service has run with `--service-endpoints`, or as a lane whose
+manifest entry sets `serviceEndpoints`. That first run opens the space's admission and nothing closes
+it, so the refusal stays after the setting is dropped.
 
 The loopback face also serves four host-only doors, all capability-gated and never on the public
 face. Two retire a lifecycle: `/interactive-lifecycle/retire` (used by `cotal actor grant/revoke`)
@@ -486,7 +488,8 @@ the process runs.
 The full auth service can be hosted the same way. `cotal auth-service --spaces <manifest>`, without
 `--callout-only`, holds one full service per space in one process: each lane holds its space's plane
 claim, callout, connections, connect limits and capability, and serves that space's exchange and JWKS
-on listeners of its own, so one space's request never reaches another space's keys. A fence or a lost
+on listeners of its own, so one space's request never reaches another space's keys. A lane hosts
+service endpoints only when its manifest entry sets `serviceEndpoints`. A fence or a lost
 broker connection stops that space's lane alone. Callout replica hosts listing the same spaces add
 event loops for connect bursts, since one process answers callouts on one thread. Removing a space
 from every host's manifest and waiting for each host's `<manifest>.applied` stops all minting and
