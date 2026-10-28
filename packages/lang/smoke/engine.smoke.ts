@@ -1331,6 +1331,34 @@ await parallel({
   const inRoom = await caught(() => withFrame(room, () => h.ctx.set(outer, "n", 2)));
   ok("and so does the same write inside a conclave body", codeOf(inRoom) === "L2032", String(inRoom));
   ok("and neither landed", outer.n === 0, outer.n);
+
+  // `depth` is a getter over `keys.path.length`, not a second field: a frame built directly over a
+  // branched KeyScope cannot drift from its path.
+  const direct = new EngineFrame(new KeyScope().branch("parallel", "outer", 0, "a"), new RunClock(0), new Signal());
+  const over = new (EngineFrame as unknown as new (...a: unknown[]) => EngineFrame)(
+    new KeyScope().branch("parallel", "outer", 0, "a"),
+    new RunClock(0),
+    new Signal(),
+    2,
+  );
+  const inDirect = await caught(() => withFrame(direct, () => h.ctx.set(outer, "n", 3)));
+  const inOver = await caught(() => withFrame(over, () => h.ctx.set(outer, "n", 4)));
+  const bornInDirect = (await withFrame(direct, () => h.ctx.born({ n: 0 }))) as Record<string, number>;
+  const wroteInOver = await withFrame(over, () => h.ctx.set(bornInDirect, "n", 5));
+  ok(
+    "a frame built over a branched KeyScope derives depth from keys.path.length",
+    !Object.hasOwn(direct, "depth") &&
+      typeof Object.getOwnPropertyDescriptor(EngineFrame.prototype, "depth")?.get === "function" &&
+      EngineFrame.length === 3 &&
+      direct.depth === 1 &&
+      over.depth === 1 &&
+      codeOf(inDirect) === "L2032" &&
+      codeOf(inOver) === "L2032" &&
+      outer.n === 0 &&
+      wroteInOver === 5 &&
+      bornInDirect.n === 5,
+    { direct: direct.depth, over: over.depth, inDirect: String(inDirect), inOver: String(inOver), bornInDirect: bornInDirect.n },
+  );
 }
 
 {
