@@ -262,8 +262,8 @@ retains `target.space` without a text header. A refusal for a name no space has,
 history prefix each new row with the mesh name so the context remains visible as
 output scrolls.
 
-On a terminal, a long value, line, warning or failure wraps at spaces, and each continuation line
-starts under the text it continues. A labeled value with a word too wide to fit beside its label,
+On a terminal, a long title, value, line, warning or failure wraps at spaces, and each continuation
+line starts under the text it continues. A labeled value with a word too wide to fit beside its label,
 such as an identity, starts on the line under the label. A word wider than the line, such as a path,
 keeps a line of its own and is never split. A command under Next wraps as one word, so a copied line
 never holds part of one. So does anything a line writes in backticks, from its opening backtick to its
