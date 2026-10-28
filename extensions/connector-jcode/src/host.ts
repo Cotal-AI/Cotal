@@ -877,7 +877,7 @@ export async function runJcodeHost(): Promise<void> {
     tui.once("exit", (code) => void shutdown(code ?? 0));
   };
 
-  const shutdown = async (code = 0): Promise<void> => {
+  const shutdown = async (code = 0, signal?: "SIGINT" | "SIGTERM"): Promise<void> => {
     if (stopping) return;
     stopping = true;
     agent.releaseInFlight(surfacedIds);
@@ -913,6 +913,10 @@ export async function runJcodeHost(): Promise<void> {
     }
     socketHome.dispose();
     await agent.stop().catch(() => {});
+    // Keep the initiating signal last: closing a busy harness can print a turn failure during
+    // teardown, and the runtime retains the final connector diagnostic for its reap line.
+    if (signal)
+      writeJcodeDiagnostic(`[cotal-jcode] received ${signal}; shutting down; signal sender unavailable from Node.js\n`);
     process.exit(exit);
   };
 
@@ -1850,8 +1854,8 @@ export async function runJcodeHost(): Promise<void> {
     onShutdown: () => void shutdownControl(),
   });
 
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown(0, "SIGINT"));
+  process.on("SIGTERM", () => void shutdown(0, "SIGTERM"));
 
   try {
     client = await launchPrivateJcode();
