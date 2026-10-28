@@ -681,12 +681,15 @@ const NO_POSTABLE_DEFAULT =
  *  hosting connector and is stamped onto outgoing feedback. An explicit env restricts feedback's
  *  Git lookup to its global config; omitted preserves process inheritance and repository lookup.
  *  `offered` limits the set to those names for a host that serves only part of the surface, and the
- *  orientation card then lists only those. */
+ *  orientation card then lists only those. `emptyInboxNote` lets a delivery-owning connector
+ *  explain a prior confirmed handoff when an ordinary inbox read has no unread items. It is
+ *  advisory only and cannot change selection or acknowledgements. */
 export function cotalToolSpecs(
   config: AgentConfig,
   source = "connector",
   env?: NodeJS.ProcessEnv,
   offered?: ReadonlySet<string>,
+  emptyInboxNote?: () => string | undefined,
 ): CotalToolSpec[] {
   // Manager-op tools (cotal_spawn / cotal_persona / cotal_personas) ride the `spawn` capability — publish to the
   // privileged control subject. The AUTH layer is the real boundary: on an authed mesh an agent
@@ -943,7 +946,7 @@ export function cotalToolSpecs(
             return ok(
               scope
                 ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
-                : "Inbox empty, no new messages.",
+                : emptyInboxNote?.() ?? "Inbox empty, no new messages.",
             );
           if (!shown.length) {
             const part = partReply({
