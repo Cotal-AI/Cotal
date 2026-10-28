@@ -3288,15 +3288,26 @@ export function outstandingPauseTokens(entries: readonly JournalEntry[]): string
  * authoritative, and a poll only bounds how late its observation can be.
  */
 export class EpfSettleWatcher implements SettleWatcher {
+  private readonly read: (ref: CheckpointRef) => Promise<CheckpointSettleFact | undefined>;
+  private readonly pollMs: number;
+
+  constructor(jsm: JetStreamManager, space: string, pollMs?: number);
+  constructor(read: (ref: CheckpointRef) => Promise<CheckpointSettleFact | undefined>, pollMs?: number);
   constructor(
-    private readonly jsm: JetStreamManager,
-    private readonly space: string,
-    private readonly pollMs = FIRE_POLL_MS,
-  ) {}
+    jsmOrRead: JetStreamManager | ((ref: CheckpointRef) => Promise<CheckpointSettleFact | undefined>),
+    spaceOrPollMs?: string | number,
+    pollMs?: number,
+  ) {
+    const space = spaceOrPollMs as string;
+    this.read = typeof jsmOrRead === "function"
+      ? jsmOrRead
+      : (ref) => readCheckpointSettle(jsmOrRead, space, ref);
+    this.pollMs = (typeof jsmOrRead === "function" ? (spaceOrPollMs as number | undefined) : pollMs) ?? FIRE_POLL_MS;
+  }
 
   async awaitSettle(ref: CheckpointRef): Promise<CheckpointSettleFact> {
     for (;;) {
-      const settled = await readCheckpointSettle(this.jsm, this.space, ref);
+      const settled = await this.read(ref);
       if (settled !== undefined) return settled;
       await delay(this.pollMs);
     }
