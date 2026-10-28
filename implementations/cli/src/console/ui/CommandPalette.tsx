@@ -120,7 +120,11 @@ export function CommandPalette({
       if (key.return) {
         const selected = items[selClamped];
         if (mode === "command" && selected) {
-          if (selected.control && !canControl || selected.write && !canWrite) return;
+          // An action this session cannot take still answers Enter: the line goes to the dispatcher,
+          // which refuses it with the notice that says which permission is missing (publishing or
+          // manager control) instead of the palette swallowing the key (#4905). The row's label
+          // already names the refusal; the notice is the activation feedback.
+          if (selected.control && !canControl || selected.write && !canWrite) return onRun(selected.value);
           if (selected.value === "spawn") return onNewAgent();
           const command = COMMANDS.find((item) => item.name === selected.value);
           if (command?.usage) { setChoosingTarget(true); onChange(`${selected.value} `); first(); return; }
