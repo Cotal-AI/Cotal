@@ -24,6 +24,8 @@ import {
   dialerFor,
   DEFAULT_SERVER,
   DEFAULT_SPACE,
+  SERVICE_AUTHORITY_MAX_BYTES,
+  SERVICE_CALLER_PAYLOAD_FLOOR,
   createSpaceAuth,
   serverConfig,
   openServerConfig,
@@ -359,6 +361,7 @@ export const upFlags: FlagSpec[] = [
   { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
   { name: "max-file-store", type: "string", value: "<bytes>", description: "JetStream file storage cap in bytes (default: nats-server's dynamic cap). Fixed at broker start and recorded for the next `up`; a legacy root also keeps it across `down --preserve-state`" },
   { name: "auth-timeout", type: "string", value: "<seconds>", description: "user-auth only: how long the broker waits for the auth callout, 1 to 60 seconds (default: nats-server's 2); the auth service answers inside it. Fixed at broker start and recorded for the next `up`" },
+  { name: "max-payload", type: "string", value: "<bytes>", description: "broker-wide message size limit in bytes (default: nats-server's 1048576). Service endpoint caller grants need at least 2098176. Fixed at broker start and recorded for the next `up`" },
   { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json)" },
   { name: "tls-cert", type: "string", value: "<file>", description: "serve the broker over TLS with this certificate (requires --tls-key)" },
   { name: "tls-key", type: "string", value: "<file>", description: "the private key for --tls-cert" },
@@ -465,6 +468,20 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (parseAuthTimeout(args.values["auth-timeout"] as string | undefined) !== undefined) {
     if (args.values.open === true) throw new CommandFailure("refused", "USAGE_INVALID", "--auth-timeout sets the auth callout's timeout, and an open space has no auth callout; nothing was started", { remedy: "drop --auth-timeout, or start a user-auth space with --user-auth" });
     if (args.values.file !== undefined || args.values.restore !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--auth-timeout cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}, which starts the broker its own record describes; nothing was started`, { remedy: "start it without --auth-timeout; a recorded timeout is rendered again" });
+  }
+  // The payload limit is rendered by the auth-mode broker configuration. The open broker renders a
+  // different one that carries no limit, and a manifest or a restore starts the broker its own
+  // record describes, so none of the three takes the flag.
+  const requestedPayload = parseMaxPayload(args.values["max-payload"] as string | undefined);
+  if (requestedPayload !== undefined) {
+    if (args.values.open === true) throw new CommandFailure("refused", "USAGE_INVALID", "--max-payload sets the broker's message size limit, which the open broker configuration does not render; nothing was started", { remedy: "drop --max-payload, or start an auth space without --open" });
+    if (args.values.file !== undefined || args.values.restore !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--max-payload cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}, which starts the broker its own record describes; nothing was started`, { remedy: "start it without --max-payload; a recorded limit is rendered again" });
+    // A space that admits service endpoints is a space whose auth host asserts the caller payload
+    // precondition at startup, and that assertion REFUSES below the floor, so the auth context does
+    // not open at all. Refusing the pair here is the difference between a usage error before
+    // anything starts and a broker that comes up without its auth plane.
+    if (args.values["service-endpoints"] === true && requestedPayload < SERVICE_CALLER_PAYLOAD_FLOOR)
+      throw new CommandFailure("refused", "USAGE_INVALID", `--max-payload ${requestedPayload} is below ${SERVICE_CALLER_PAYLOAD_FLOOR} bytes, the least a space with --service-endpoints starts on: a caller policy row may grow to ${SERVICE_AUTHORITY_MAX_BYTES} bytes and its write needs ${SERVICE_CALLER_PAYLOAD_FLOOR - SERVICE_AUTHORITY_MAX_BYTES} more, so the auth host refuses to open; nothing was started`, { remedy: `pass --max-payload ${SERVICE_CALLER_PAYLOAD_FLOOR} or more, or drop --service-endpoints` });
   }
   if (typeof args.values["store-dir"] === "string") assertStoreDirArgument(args.values["store-dir"], typeof args.values.root === "string" ? resolve(args.values.root) : freshFolderRoot(args.values) ?? cotalRoot());
   const restoreOnly = args.values["restore-only"];
@@ -908,7 +925,7 @@ const NO_MANAGER_DURING_RECOVERY = "--no-manager is refused while this root has 
 
 async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?: () => void, freshTeamBoot = false, restoreSink?: (result: RestoreStartupResult) => void): Promise<void> {
   const values = args.values as {
-    server?: string; "store-dir"?: string; "max-file-store"?: string; "auth-timeout"?: string; space?: string; root?: string; open?: boolean; "user-auth"?: boolean; "service-endpoints"?: boolean; idp?: string;
+    server?: string; "store-dir"?: string; "max-file-store"?: string; "auth-timeout"?: string; "max-payload"?: string; space?: string; root?: string; open?: boolean; "user-auth"?: boolean; "service-endpoints"?: boolean; idp?: string;
     "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
     channels?: string; detach?: boolean; foreground?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
     restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean; "recreate-issued-stores"?: string;
@@ -1136,10 +1153,16 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         if (requestedMaxFileStore !== undefined && requestedMaxFileStore !== resumeMaxFileStore)
           throw preservedOnly("--max-file-store", requestedMaxFileStore, "file store cap", resumeMaxFileStore === undefined ? "no cap" : String(resumeMaxFileStore));
         // The resumed broker renders this root's recorded auth callout timeout again.
-        const recordedTimeout = readBrokerPolicy(root)?.authTimeout;
+        const recordedPolicy = readBrokerPolicy(root);
+        const recordedTimeout = recordedPolicy?.authTimeout;
         const requestedTimeout = parseAuthTimeout(values["auth-timeout"]);
         if (requestedTimeout !== undefined && requestedTimeout !== recordedTimeout)
           throw preservedOnly("--auth-timeout", requestedTimeout, "auth callout timeout", recordedTimeout === undefined ? "none" : String(recordedTimeout));
+        // So is the payload limit: a resume renders the recorded one.
+        const recordedPayload = recordedPolicy?.maxPayload;
+        const requestedPayload = parseMaxPayload(values["max-payload"]);
+        if (requestedPayload !== undefined && requestedPayload !== recordedPayload)
+          throw preservedOnly("--max-payload", requestedPayload, "payload limit", recordedPayload === undefined ? "none" : String(recordedPayload));
         if (values.runtime && runtimes[0] && values.runtime !== runtimes[0])
           throw preservedOnly("--runtime", values.runtime, "agent runtime", runtimes[0]);
         const resumeRuntime = values.runtime ?? runtimes[0] ?? "pty";
@@ -1202,6 +1225,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         const requestedTimeout = parseAuthTimeout(values["auth-timeout"]);
         if (requestedTimeout !== undefined && requestedTimeout !== readBrokerPolicy(root)?.authTimeout)
           throw new Error(`--auth-timeout ${requestedTimeout} is not this root's recorded auth callout timeout; resume attempt ${attemptId} re-renders the recorded one - omit --auth-timeout`);
+        const requestedPayload = parseMaxPayload(values["max-payload"]);
+        if (requestedPayload !== undefined && requestedPayload !== readBrokerPolicy(root)?.maxPayload)
+          throw new Error(`--max-payload ${requestedPayload} is not this root's recorded payload limit; resume attempt ${attemptId} re-renders the recorded one - omit --max-payload`);
         // Recovery re-asserts the source identity rather than trusting the journaled spelling.
         assertStoreIdentity(journal.source);
         // The bound listener decides re-entry: a live exact listener is ADOPTED, a provably dead
@@ -1335,6 +1361,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const maxSessions = parsePositiveIntegerFlag("--max-sessions", values["max-sessions"]);
   const maxFileStore = parseMaxFileStore(values["max-file-store"]);
   const authTimeout = parseAuthTimeout(values["auth-timeout"]);
+  const maxPayload = parseMaxPayload(values["max-payload"]);
   // The manifest path renders its broker from the manifest, which has no store fields, so the flag
   // would be accepted and never rendered. Refuse it rather than drop it.
   if (maxFileStore !== undefined && values.file)
@@ -1477,7 +1504,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         try {
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
           if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
-          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
+          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
         } finally { releaseMaintenanceLock(stackLock); }
       };
       if (values.foreground) await holdForegroundStack(meshRoot, start);
@@ -1815,11 +1842,21 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       }
       // So is the auth callout timeout: the running broker keeps the one it was started with, which
       // its broker policy records.
-      const runningTimeout = readBrokerPolicy(root)?.authTimeout;
+      const runningPolicy = readBrokerPolicy(root);
+      const runningTimeout = runningPolicy?.authTimeout;
       if (authTimeout !== undefined && authTimeout !== runningTimeout) {
         console.error(
           c.red(
             `✗ mesh "${held.space}" is already running at ${server} - a running broker can't change --auth-timeout (it is fixed at start); \`cotal down\` it first, then \`cotal up --user-auth --auth-timeout ${authTimeout}\``,
+          ),
+        );
+        process.exit(1);
+      }
+      // And so is the payload limit, which the same record carries.
+      if (maxPayload !== undefined && maxPayload !== runningPolicy?.maxPayload) {
+        console.error(
+          c.red(
+            `✗ mesh "${held.space}" is already running at ${server} - a running broker can't change --max-payload (it is fixed at start); \`cotal down\` it first, then \`cotal up --max-payload ${maxPayload}\``,
           ),
         );
         process.exit(1);
@@ -2088,6 +2125,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       storeDir: values["store-dir"],
       maxFileStore,
       authTimeout,
+      maxPayload,
       space: values.space,
       open: values.open,
       userAuth: wantUser ? { idpUrl: values.idp } : undefined,
@@ -2171,7 +2209,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // Decided above the branch; the dial host is only settled here (a port collision may have moved
   // the server, and the hostname is what the certificate has to match).
   assertServesDialHost(transport, new URL(server).hostname);
-  const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport, values["rotate-sys"], maxFileStore, false, authTimeout) : undefined;
+  const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport, values["rotate-sys"], maxFileStore, false, { authTimeout, maxPayload }) : undefined;
   const port = Number(new URL(server).port) || 4222;
   // Both modes go through a RENDERER, never bare CLI flags. Open mode used to start from
   // `-js -sd … -p … -a …`, which never called a renderer at all — so the required transport union
@@ -2695,7 +2733,7 @@ function provePreparedRestoreListener(prepared: PreparedRestore): Promise<Restor
  *  nothing here launches the legacy pidfile stack. A degraded attempt starts nothing and holds on any
  *  member that is not live. Returns whether the caller should hold the stack's lifetime in the
  *  foreground, which it does after releasing the lock. */
-async function resumeControllerStack(lock: MaintenanceLock, root: string, values: { "accept-stale-checkpoint"?: boolean; runtime?: string; server?: string; "store-dir"?: string; "max-file-store"?: string; "auth-timeout"?: string; detach?: boolean; foreground?: boolean; json?: boolean; plain?: boolean }, restoreSink?: (result: RestoreStartupResult) => void): Promise<boolean> {
+async function resumeControllerStack(lock: MaintenanceLock, root: string, values: { "accept-stale-checkpoint"?: boolean; runtime?: string; server?: string; "store-dir"?: string; "max-file-store"?: string; "auth-timeout"?: string; "max-payload"?: string; detach?: boolean; foreground?: boolean; json?: boolean; plain?: boolean }, restoreSink?: (result: RestoreStartupResult) => void): Promise<boolean> {
   let journal = readMaintenanceJournal(root)!;
   const cut = cutController(journal.cut)!;
   const space = journal.space;
@@ -2706,6 +2744,7 @@ async function resumeControllerStack(lock: MaintenanceLock, root: string, values
     if (values.server !== undefined && values.server !== journal.cut.launch.server) throw new CommandFailure("refused", "USAGE_INVALID", "a controller resume takes its broker address from the cut; --server is refused", { target: { root, space } });
     if (values["store-dir"] !== undefined || values["max-file-store"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a controller resume takes its store and cap from the cut; --store-dir and --max-file-store are refused", { target: { root, space } });
     if (values["auth-timeout"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a controller resume renders this root's recorded auth callout timeout; --auth-timeout is refused", { target: { root, space }, remedy: "run `cotal up` without --auth-timeout" });
+    if (values["max-payload"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a controller resume renders this root's recorded payload limit; --max-payload is refused", { target: { root, space }, remedy: "run `cotal up` without --max-payload" });
     const runtimes = [...new Set(agents.map((agent) => agent.launch?.runtime).filter((value): value is string => typeof value === "string"))];
     if (runtimes.length > 1 || (values.runtime !== undefined && runtimes[0] !== undefined && values.runtime !== runtimes[0]))
       throw new CommandFailure("refused", "USAGE_INVALID", "--runtime must equal the preserved inventory's runtime; a controller resume does not change it", { target: { root, space } });
@@ -3351,13 +3390,13 @@ export async function recheckFreshTeamBoot(plan: FreshTeamBootPlan, own?: { depl
 export function controllerStackNative(): StackUpNative {
   return {
     prepareBroker: async (opts) => {
-      const prepared = await prepareBrokerStart({ transport: opts.transport, server: opts.server, space: opts.space, ...(opts.open ? { open: true } : {}), ...(opts.userAuth ? { userAuth: opts.userAuth } : {}), ...(opts.host ? { host: opts.host } : {}), ...(opts.storeDir ? { storeDir: opts.storeDir } : {}), ...(opts.existingStore ? { existingStore: opts.existingStore } : {}), ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}), ...(opts.authTimeout !== undefined ? { authTimeout: opts.authTimeout } : {}), ...(opts.seed !== undefined ? { seed: opts.seed as ChannelRegistryFile } : opts.channels ? { channels: opts.channels } : {}), quietBoot: true });
-      return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { creds: prepared.setup.creds, wsPort: prepared.setup.wsPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile, ...(prepared.setup?.authTimeout !== undefined ? { authTimeout: prepared.setup.authTimeout } : {}) };
+      const prepared = await prepareBrokerStart({ transport: opts.transport, server: opts.server, space: opts.space, ...(opts.open ? { open: true } : {}), ...(opts.userAuth ? { userAuth: opts.userAuth } : {}), ...(opts.host ? { host: opts.host } : {}), ...(opts.storeDir ? { storeDir: opts.storeDir } : {}), ...(opts.existingStore ? { existingStore: opts.existingStore } : {}), ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}), ...(opts.authTimeout !== undefined ? { authTimeout: opts.authTimeout } : {}), ...(opts.maxPayload !== undefined ? { maxPayload: opts.maxPayload } : {}), ...(opts.seed !== undefined ? { seed: opts.seed as ChannelRegistryFile } : opts.channels ? { channels: opts.channels } : {}), quietBoot: true });
+      return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { creds: prepared.setup.creds, wsPort: prepared.setup.wsPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile, ...(prepared.setup?.authTimeout !== undefined ? { authTimeout: prepared.setup.authTimeout } : {}), ...(prepared.setup?.maxPayload !== undefined ? { maxPayload: prepared.setup.maxPayload } : {}) };
     },
     initializeStreams: (server, space, setup, seedFile, recreateIssuedStores) => postStart(server, space, setup, seedFile as ChannelRegistryFile | undefined, recreateIssuedStores),
     recreateDeletedStreams: ({ seed, ...opts }) => recreateDeletedStreams({ ...opts, ...(seed !== undefined ? { seed: seed as ChannelRegistryFile } : {}) }),
     recordMesh: (entry) => recordOurMesh({ ...entry, ts: new Date().toISOString() }, "started", true),
-    commitTransport: (root, chosen, authTimeout) => commitTransportPolicy(root, chosen, true, undefined, authTimeout),
+    commitTransport: (root, chosen, limits) => commitTransportPolicy(root, chosen, true, undefined, limits),
   };
 }
 
@@ -3949,7 +3988,7 @@ async function serveReadyListener(l: {
   // Commit the policy only for a listener that is up and recorded (S5), and before the control
   // plane (S9). startDeliveryWithBroker is HANDED the transport decision, so it does not depend on
   // the file at all.
-  commitTransportPolicy(cotalRoot(), transport, l.quietBoot, server, setup?.authTimeout);
+  commitTransportPolicy(cotalRoot(), transport, l.quietBoot, server, { authTimeout: setup?.authTimeout, maxPayload: setup?.maxPayload });
   // The delivery daemon self-gates on `.cotal/auth`, so an open mesh has none. Class-2 credential
   // renewal is NOT wired here: the MANAGER is the renewal owner (it is resident in every mesh mode,
   // where a foreground `up` process is not).
@@ -3992,6 +4031,8 @@ export interface DetachOpts {
   maxFileStore?: number;
   /** The auth callout timeout in seconds (`--auth-timeout`). Absent: the root's recorded one. */
   authTimeout?: number;
+  /** The broker's payload limit in bytes (`--max-payload`). Absent: the root's recorded one. */
+  maxPayload?: number;
   space?: string;
   open?: boolean;
   /** USER MODE: enable per-user auth (presence = on; `idpUrl` pins the IdP on first enable). */
@@ -4064,7 +4105,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   // effective server is finally known — a manifest may name a different host than the flags did, and
   // a certificate that is valid for one is not thereby valid for the other.
   const transport = assertServesDialHost(opts.transport, new URL(server).hostname);
-  const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth, transport, opts.rotateSys, opts.maxFileStore, opts.quietBoot, opts.authTimeout) : undefined;
+  const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth, transport, opts.rotateSys, opts.maxFileStore, opts.quietBoot, { authTimeout: opts.authTimeout, maxPayload: opts.maxPayload }) : undefined;
   const port = Number(new URL(server).port) || 4222;
   // Same rule as the foreground path: every route to a listener names its transport (see
   // `writeOpenBrokerConf`). Detach must not be the mode where the fence quietly does not apply.
@@ -4919,6 +4960,16 @@ function parseAuthTimeout(raw: string | undefined): number | undefined {
 }
 const MAX_AUTH_TIMEOUT_SECONDS = 60;
 
+/** `--max-payload`, a positive whole number of bytes. nats-server refuses to start above 64 MiB, so
+ *  the refusal names that bound rather than letting the broker exit on its own configuration. */
+function parseMaxPayload(raw: string | undefined): number | undefined {
+  const bytes = parsePositiveIntegerFlag("--max-payload", raw);
+  if (bytes !== undefined && bytes > MAX_BROKER_PAYLOAD_BYTES)
+    throw new CommandFailure("refused", "USAGE_INVALID", `--max-payload ${bytes} is over ${MAX_BROKER_PAYLOAD_BYTES} bytes (64 MiB), which nats-server refuses to start on; nothing was started`, { remedy: `pass --max-payload ${MAX_BROKER_PAYLOAD_BYTES} or less` });
+  return bytes;
+}
+const MAX_BROKER_PAYLOAD_BYTES = 64 * 1024 * 1024;
+
 /** The auth-service daemon argv that gives the callout the broker's timeout as its deadline. Built
  *  only from the value the broker configuration rendered, so the two never differ. */
 function authTimeoutArgs(seconds: number | undefined): string[] {
@@ -5115,9 +5166,10 @@ function assertTlsAddressServed(server: string, transport: BrokerTransport, root
 
 /** Persist a transport, and the auth callout timeout the broker configuration rendered, after its
  *  listener starts; a structured boot leaves stdout to its receipt. */
-function commitTransportPolicy(root: string, transport: BrokerTransport, quietBoot = false, server?: string, authTimeout?: number): void {
-  if (transport.kind !== "tls-required" && authTimeout === undefined) return;
-  writeBrokerPolicy(root, { version: 1, transport, ...(authTimeout !== undefined ? { authTimeout } : {}) });
+function commitTransportPolicy(root: string, transport: BrokerTransport, quietBoot = false, server?: string, limits?: { authTimeout?: number; maxPayload?: number }): void {
+  const { authTimeout, maxPayload } = limits ?? {};
+  if (transport.kind !== "tls-required" && authTimeout === undefined && maxPayload === undefined) return;
+  writeBrokerPolicy(root, { version: 1, transport, ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}) });
   if (!quietBoot) announceTransport(transport, server);
 }
 
@@ -5343,10 +5395,12 @@ async function authSetup(
   rotateSys = false,
   maxFileStore?: number,
   quietBoot = false,
-  // `--auth-timeout`. Absent: the timeout the root's broker policy records, so a bare `up` renders
-  // the one an earlier `up` set.
-  requestedAuthTimeout?: number,
-): Promise<{ confPath: string; creds: string; wsPort: number; prepared?: AuthPrepared; stateDir?: string; authTimeout?: number }> {
+  // `--auth-timeout` and `--max-payload`. Each absent value falls back to the one the root's broker
+  // policy records, so a bare `up` renders what an earlier `up` set. They arrive as one object
+  // rather than two trailing optional numbers: a transposed pair of those renders a wrong
+  // configuration in silence.
+  requested: { authTimeout?: number; maxPayload?: number } = {},
+): Promise<{ confPath: string; creds: string; wsPort: number; prepared?: AuthPrepared; stateDir?: string; authTimeout?: number; maxPayload?: number }> {
   const dir = authDir(cotalRoot()); // the broker config (server.conf) still lands under the FS auth dir
   const store = workspaceSecretStore(cotalRoot());
   let auth: SpaceAuth | undefined = await getSpaceAuth(store, space).catch((error: unknown) => { throw unreadableTrust(error); });
@@ -5463,13 +5517,15 @@ async function authSetup(
   }
   // Owner-private regardless of umask, as `writeOpenBrokerConf` writes the open configuration: the
   // broker preset refuses a configuration that other local users can write.
-  const authTimeout = requestedAuthTimeout ?? readBrokerPolicy(cotalRoot())?.authTimeout;
-  writeBrokerConfig(confPath, serverConfig(auth, spaces, { transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, authTimeout, host, wsPort, wsHost: host, extraAccounts }));
+  const recorded = readBrokerPolicy(cotalRoot());
+  const authTimeout = requested.authTimeout ?? recorded?.authTimeout;
+  const maxPayload = requested.maxPayload ?? recorded?.maxPayload;
+  writeBrokerConfig(confPath, serverConfig(auth, spaces, { transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, authTimeout, maxPayload, host, wsPort, wsHost: host, extraAccounts }));
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.
   const creds = await mintCreds(auth, newIdentity(), "provisioner");
-  return { confPath, creds, wsPort, ...(prepared ? { prepared, stateDir } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}) };
+  return { confPath, creds, wsPort, ...(prepared ? { prepared, stateDir } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}) };
 }
 
 /**

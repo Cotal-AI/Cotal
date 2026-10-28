@@ -315,7 +315,7 @@ the subject-token sanitizer. Endpoint names still use the separate DNS-label gra
 | `createSpaceAuth(space)` | the one-space convenience: broker trust + one account in a single composed bundle. |
 | `setupSpaceStreams({ servers, space, creds })` | create the space's JetStream streams. |
 | `ensureDefaultDeliveryClass({ servers, space, creds?, deliveryClass })` | write the space's default delivery class at creation so it is wire-discoverable (SPEC section 4). |
-| `serverConfig(broker, spaces, { storeDir, maxFileStore?, authTimeout?, extraAccounts?, port?, host? })` | render the broker config: one operator, N space accounts. `storeDir` is required, `maxFileStore` caps JetStream file storage in bytes (omitted, nats-server's dynamic default applies), `authTimeout` renders `authorization { timeout }` in whole seconds for the auth callout (omitted, no block and nats-server's default), and `extraAccounts` preloads the auth-callout account. |
+| `serverConfig(broker, spaces, { storeDir, maxFileStore?, maxPayload?, authTimeout?, extraAccounts?, port?, host? })` | render the broker config: one operator, N space accounts. `storeDir` is required, `maxFileStore` caps JetStream file storage in bytes (omitted, nats-server's dynamic default applies), `maxPayload` sets the broker's `max_payload` in bytes (omitted, nats-server's 1 MiB default), `authTimeout` renders `authorization { timeout }` in whole seconds for the auth callout (omitted, no block and nats-server's default), and `extraAccounts` preloads the auth-callout account. |
 | `mintCreds(auth, identity, profile, opts?)` | mint a scoped cred for any `Profile`. |
 | `mintMembershipObserverCreds`, `mintConnectionEvictorCreds` | mint the membership/eviction scoped creds. |
 | `provisionAgent`, `provisionAgentDurables` | create a principal's bind-only durables. |
@@ -1586,10 +1586,13 @@ cutoff marker. It never answers `revoked`, and the result parser refuses that ar
 `caller-policy-read` gives an owner its own grantees, and another owner's grantee only filtered to a
 service it holds; `caller-policy-list` needs a service selector.
 
-Caller grants need `max_payload >= 2098176` (2 MiB plus 1 KiB), `max_control_line >= 4096`,
-and an auth stream with `max_msg_size: -1`. Broker generation accepts an explicit
-`serverConfig(broker, accounts, { ...options, maxPayload: 2098176 })`; omission leaves the native
-1 MiB default unchanged. No startup path raises limits automatically.
+Caller grants need `max_payload >= 2098176` (`SERVICE_CALLER_PAYLOAD_FLOOR`: 2 MiB plus 1 KiB),
+`max_control_line >= 4096`, and an auth stream with `max_msg_size: -1`. Broker generation accepts an
+explicit `serverConfig(broker, accounts, { ...options, maxPayload: SERVICE_CALLER_PAYLOAD_FLOOR })`;
+omission leaves the native 1 MiB default unchanged. No startup path raises limits automatically. The
+stock root sets it with [`cotal up --max-payload <bytes>`](cli.md#up), which records the value in
+`.cotal/broker-policy.json`; a renderer outside `up` reads it back with
+`readBrokerPolicy(root)?.maxPayload` so every render of that broker carries the same limit.
 
 For a **standalone broker only**, pass `serviceEndpoints.callerPayload.observerCreds` to
 `startAuthService` (or the corresponding authority-plane option). The callback returns fresh
@@ -1612,8 +1615,13 @@ leaf links refuse, regardless of connected peer count. This is not multi-broker 
 1 MiB broker fails startup with the required byte limit and creates no assertion.
 
 Positive caller issuance repeats the observation and checks the exact assertion revision, complete
-plane hold and effective authority again before native JWT release. Withdrawal, config changes or
-claim loss refuse new issuance. Reopening needs an explicit bootstrap to reassert for the new claim;
+plane hold and effective authority again before native JWT release. Withdrawal or claim loss refuse
+new issuance. A broker RELOAD, which keeps the same incarnation serving and moves its
+`config_digest`, does not: when the fresh observation proves the same incarnation, the same auth
+store, and every limit above again, the record is re-asserted under the held claim by CAS on the
+exact prior row and issuance continues. A reload that breaks any of those, a `max_payload` below the
+floor included, still refuses, and a withdrawn record is never overwritten. A RESTART is a new
+incarnation and refuses. Reopening needs an explicit bootstrap to reassert for the new claim;
 a prior-plane broker-bound assertion cannot authorize another append. Legacy assertion syntax still
 parses for existing trusted storage fixtures but alone never enables production caller issuance.
 Shutdown drains in-flight observations and closes their owned connections before releasing the claim.

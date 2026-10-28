@@ -1,6 +1,6 @@
 import { strict as nodeAssert } from "node:assert";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import { createSpaceAuth, serverConfig, openServerConfig } from "../src/index.js";
+import { createSpaceAuth, serverConfig, openServerConfig, SERVICE_AUTHORITY_MAX_BYTES, SERVICE_CALLER_PAYLOAD_FLOOR, SERVICE_CALLER_PAYLOAD_OVERHEAD } from "../src/index.js";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
@@ -149,5 +149,25 @@ for (const [what, tlsConf, plainConf] of [
       /serverConfig: authTimeout must be a positive whole number of seconds/, `serverConfig: authTimeout ${bad} is refused naming the option`);
 }
 
-console.log(`serverconfig-shapes smoke: OK - all 4 call-site shapes render (incl. the :live-only extraAccounts-from-variable form), tls renders on both renderers, allow_non_tls/handshake_first/verify never emitted, open renderer carries no auth material, maxFileStore unset is byte-identical and set renders max_file_store, invalid caps refused, authTimeout unset is byte-identical and set renders the authorization block`);
+// The broker's payload limit (`maxPayload`), which `cotal up --max-payload` renders and service
+// endpoint caller grants need at or above SERVICE_CALLER_PAYLOAD_FLOOR. Unset must stay
+// byte-identical, so a broker that never asks for a limit is not restarted into a different config.
+{
+  const unset = serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: 4331, storeDir, wsPort: 4332, extraAccounts: extra });
+  assert.ok(!unset.includes("max_payload"), "serverConfig: unset maxPayload renders no max_payload line");
+  assert.equal(serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: 4331, storeDir, wsPort: 4332, extraAccounts: extra, maxPayload: undefined }), unset,
+    "serverConfig: an explicit undefined maxPayload renders byte-identical config");
+  const set = serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: 4331, storeDir, wsPort: 4332, extraAccounts: extra, maxPayload: SERVICE_CALLER_PAYLOAD_FLOOR });
+  assert.ok(set.includes(`\nmax_control_line: 65536\nmax_payload: ${SERVICE_CALLER_PAYLOAD_FLOOR}\n`), "serverConfig: a set maxPayload renders max_payload after the control-line limit");
+  assert.equal(set.replace(`max_payload: ${SERVICE_CALLER_PAYLOAD_FLOOR}\n`, ""), unset, "serverConfig: a set maxPayload adds only that line");
+  // The floor is one number, in core, that both the renderer's caller and the auth host read.
+  assert.equal(SERVICE_CALLER_PAYLOAD_FLOOR, SERVICE_AUTHORITY_MAX_BYTES + SERVICE_CALLER_PAYLOAD_OVERHEAD,
+    "the caller payload floor is the authority envelope limit plus the write's header bound");
+  assert.equal(SERVICE_CALLER_PAYLOAD_FLOOR, 2098176, "the caller payload floor is the 2098176 bytes every caller-grants surface names");
+  for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53])
+    assert.throws(() => serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: 4331, storeDir, maxPayload: bad }),
+      /serverConfig: maxPayload must be a positive safe integer of bytes/, `serverConfig: maxPayload ${bad} is refused naming the option`);
+}
+
+console.log(`serverconfig-shapes smoke: OK - all 4 call-site shapes render (incl. the :live-only extraAccounts-from-variable form), tls renders on both renderers, allow_non_tls/handshake_first/verify never emitted, open renderer carries no auth material, maxFileStore unset is byte-identical and set renders max_file_store, invalid caps refused, authTimeout unset is byte-identical and set renders the authorization block, maxPayload unset is byte-identical and set renders max_payload at the caller floor`);
 emitSentinel({ passed: cells(), failed: 0 });

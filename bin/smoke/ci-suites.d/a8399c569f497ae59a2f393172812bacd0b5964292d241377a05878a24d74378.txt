@@ -1,0 +1,4 @@
+# A broker reload under a live auth plane: caller issuance re-binds its payload assertion to the
+# configuration now in force instead of refusing until the plane is reopened, and still refuses a
+# reload that moves max_payload below the caller floor.
+smoke:service-caller-reload
