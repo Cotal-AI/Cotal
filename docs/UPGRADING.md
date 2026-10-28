@@ -34,11 +34,11 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
-## Multi-space callout host startup after 0.114.0
+## Multi-space callout host startup after 0.115.0
 
 `cotal auth-service --callout-only --spaces <manifest>` now starts with the spaces it can serve. It
 names each space it cannot serve with the reason and retries that space every 5 seconds. Up to
-0.113.x the host exited nonzero unless every space in the manifest opened, so one space whose
+0.114.x the host exited nonzero unless every space in the manifest opened, so one space whose
 service endpoint admission was open, or whose material was missing, kept the callout of every other
 space in the manifest unanswered by this host, and a supervisor that restarts it looped.
 

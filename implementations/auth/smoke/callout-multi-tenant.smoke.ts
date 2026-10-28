@@ -399,7 +399,7 @@ if (process.argv[2] === "__daemon-auth-service") {
       }
       const journalFor = (space: string) => mixed.out.join("").split("\n").filter((l) => l.startsWith("auth callout:") && l.includes(` space=${space} `)).length;
       check("every connect to the refused space is refused and none is authorized",
-        eRefusals.length === eAttempts && eAuthorized === 0 && eSeen.every((c) => c.account !== E.dataAccountPub),
+        eRefusals.length === eAttempts && eSeen.length >= eAttempts && eAuthorized === 0 && eSeen.every((c) => c.account !== E.dataAccountPub),
         { attempts: eAttempts, refused: eRefusals.length, authorized: eAuthorized, broker: eSeen, sample: eRefusals[0]?.slice(0, 60) });
       check("this host answered no callout for the refused space and answered the plain spaces' callouts",
         journalFor(E.name) === 0 && journalFor(spaces[0].name) > 0 && journalFor(spaces[1].name) > 0,
