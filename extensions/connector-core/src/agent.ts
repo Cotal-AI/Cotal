@@ -346,7 +346,7 @@ export type ConnectionState = "ready" | "stalled" | "degraded" | "connecting" | 
 export const AUTOMATIC_QUEUE_STALL_MS = 600_000;
 
 /** An `ask` relayed as a turn: the record the run needs, the attempt it is on, the previous
- *  refusal when there was one, and the command that answers it (`cotal run answer`, the same door
+ *  refusal when there was one, and the native command that answers it (the same door
  *  a checkpoint is answered through). Empty when the payload carries no ask. */
 function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown; checkpoint?: unknown }): string {
   const escalation = renderEscalation(p);
@@ -360,7 +360,16 @@ function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown; che
   const refused = typeof a.refused === "string" ? `\nYour last answer was refused: ${a.refused}` : "";
   return `\nThis turn is an ask: the run needs a record from you at step ${String(p.step)} with fields ${fields}`
     + ` (attempt ${String(a.attempt)} of ${String(a.attempts)}${by}).${refused}`
-    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json record>'`;
+    + renderPauseAnswer(p, "<json record>");
+}
+
+/** The seat's native connection holds its identity even when its shell has no mesh environment. */
+function renderPauseAnswer(p: { run?: unknown; step?: unknown }, value: string): string {
+  return `\nAnswer through your native Cotal tools: call cotal_describe for endpoint "manager", then cotal_invoke`
+    + ` with endpoint="manager", command="run-answer", self=true and args=`
+    + `{"runId":${JSON.stringify(p.run)},"stepKey":${JSON.stringify(p.step)},"value":${value}}.`
+    + `\nReplace ${value} with your answer. This route uses your own seat identity and needs no run grant or run-status read.`
+    + ` Do not use cotal_yield to answer this request: yielding or ending your host turn submits no value and can withdraw your answer authorization.`;
 }
 
 /** An escalated `checkpoint` relayed as a turn: the question, the record wanted when the pause
@@ -2576,8 +2585,8 @@ export class MeshAgent extends EventEmitter {
     const text =
       `🎯 Cotal — a run handed you ${waiting.length === 1 ? "its turn" : `${waiting.length} turns`}:\n` +
       `${blocks.join("\n")}\n` +
-      `(Do the work now with your own tools. Ending your turn yields "done" back to the run automatically; ` +
-      `call cotal_yield only when you are blocked or handing the turn to another agent.)`;
+      `(Do the work now with your own tools. An ask must be answered through its native route above before ending your host turn. ` +
+      `For ordinary turns, ending your turn yields "done" automatically; call cotal_yield when blocked or handing off an ordinary turn.)`;
     return { text, goalIds: waiting.map((t) => t.goalId) };
   }
 
