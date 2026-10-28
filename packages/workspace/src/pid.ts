@@ -782,8 +782,9 @@ export function removeIdentityPin(pidfilePath: string): void {
 
 /** The loud torn/unpinned refusal, in the same shape as {@link identityRefusal}: name the component,
  *  the file, what was found, and the operator's next step. Legacy records do not reach this helper:
- *  callers emit {@link identityLegacyWarning} and proceed. Match and gone signal or clear, mismatch
- *  refuses through {@link identityRefusal}, and no-pid means there is no process to stop. */
+ *  callers emit {@link identityLegacyWarning} and proceed. Match and gone signal or clear, and mismatch
+ *  refuses through {@link identityRefusal}. A reread that finds no pid is the caller's own refusal:
+ *  the pid it parsed is no longer the record, so it is not signalled. */
 export function identityUncertaintyRefusal(
   label: string,
   pidfilePath: string,
