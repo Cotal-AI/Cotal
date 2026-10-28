@@ -390,7 +390,10 @@ Readers MUST drop a record whose `card.id` differs from its KV key, whose `card.
 and is not an object with a string `code`, and SHOULD report the rejection on their recoverable
 diagnostic path. A `condition` of `null`, a bare string or an object with no `code` is dropped.
 A writer of its own presence MUST refuse, before storing the row, an `activity` or `attention`
-that is not a string and a `condition` whose `code` is not a string. `null` clears `condition`.
+that is not a string and a `condition` that does not encode as a JSON object with a string `code`.
+The condition it stores is that encoded object, so a value that prints a string `code` and then
+serializes to an array, an empty object, or an object whose `code` is not a string is refused
+rather than written. `null` clears `condition`.
 A reader that kept a record whose `ts` is missing or text such as `"nope"` could not age it past the liveness window, so it would
 show its peer live after the key expired. Readers print the string fields as text, and an object
 such as `{"toString":null,"valueOf":null}` throws when converted, so one kept row would fail every

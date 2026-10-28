@@ -3199,10 +3199,12 @@ export class CotalEndpoint extends EventEmitter {
     if (Number.isFinite(at) && at > (this.activeAt ?? 0)) this.activeAt = at;
   }
 
-  /** Publish a harness-reported condition, or clear it. Core stores the relay without interpretation. */
+  /** Publish a harness-reported condition, or clear it. Core stores the relay without interpretation.
+   *  The value kept is the one {@link publishPresence} will write: a condition that prints a string
+   *  `code` and then serializes to an array, an empty object, or an object whose `code` is not a
+   *  string would make every later heartbeat of this writer unreadable. */
   async setCondition(condition: PresenceCondition | null): Promise<void> {
-    if (condition !== null) assertPresenceString(condition.code, "condition.code");
-    this.condition = condition ?? undefined;
+    this.condition = condition === null ? undefined : presenceCondition(condition);
     this.conditionRevision++;
     await this.publishPresence();
   }
@@ -8015,6 +8017,36 @@ function assertPresenceString(value: unknown, field: string): void {
   if (typeof value !== "string") {
     throw new Error(`${field} must be a string (SPEC §6); a presence row carrying ${typeof value} is dropped by every reader`);
   }
+}
+
+/** The condition a presence row will carry, copied from the value {@link JSON.stringify} writes.
+ *  A caller object is not that value: an array with an own `code`, an inherited `code`, or a
+ *  `toJSON` that returns another shape all print a string `code` and serialize to a row every reader
+ *  drops. The copy keeps `code` and, when the encoded value has them, a string `source`, a string
+ *  `message` and a numeric `since`. It is a plain object, so a later mutation or `toJSON` of the
+ *  caller's value cannot change what the next heartbeat stores. `null` is the clear, handled by the
+ *  caller. */
+function presenceCondition(value: unknown): PresenceCondition {
+  let encoded: string;
+  try {
+    encoded = JSON.stringify(value);
+  } catch (error) {
+    throw new Error(`condition must encode as a JSON object with a string code (SPEC §6): ${(error as Error).message}`);
+  }
+  const parsed: unknown = encoded === undefined ? undefined : JSON.parse(encoded);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`condition must be a JSON object with a string code (SPEC §6); a presence row carrying ${parsed === null ? "null" : Array.isArray(parsed) ? "an array" : typeof parsed} is dropped by every reader`);
+  }
+  const code = (parsed as { code?: unknown }).code;
+  assertPresenceString(code, "condition.code");
+  // The reader keeps any string code (SPEC §6). The closed PresenceConditionCode union is what a
+  // connector is expected to relay, not a gate this writer adds: a string outside it is stored.
+  const record = parsed as Record<string, unknown>;
+  const copy: PresenceCondition = { code: code as PresenceCondition["code"] };
+  if (typeof record.source === "string") copy.source = record.source;
+  if (typeof record.message === "string") copy.message = record.message;
+  if (typeof record.since === "number") copy.since = record.since;
+  return copy;
 }
 
 /** Shallow-equal two per-channel-mode maps (presence dedup): a change must re-emit, so an attention
