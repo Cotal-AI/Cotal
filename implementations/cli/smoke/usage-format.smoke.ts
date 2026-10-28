@@ -39,6 +39,9 @@
  * A span in backticks that is no command is one word too: the Next of `daemon install --dry-run`
  * where no user manager answers split `systemctl --user show-environment` after `--user`.
  *
+ * A usage whose first group is wider than the line starts that group on the `cotal` line, at 80 and
+ * 120 columns: `help daemon` and `help service-endpoint` printed `cotal` alone on the first line.
+ *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, with the
  * built `@cotal-ai/linear` extension imported for its cells. The examples census renders each help
  * in this process from the built surfaces the binary composes, and runs both help forms of each
@@ -260,6 +263,18 @@ for (const [args, usage, foreign] of [
   };
   for (const cmd of commands) census(cmd, [], cmd);
   console.log(`  examples census: ${paths.length} commands and subcommands`);
+
+  // A usage whose first group is wider than the line starts that group on the `cotal` line, and
+  // every line of the help fits. Daemon's and service-endpoint's put `cotal` on a line of its own.
+  for (const name of ["daemon", "service-endpoint"]) {
+    for (const width of [80, 120]) {
+      const lines: string[] = [];
+      printHelpPath(registry.resolve<Command>("command", name), [], (line) => lines.push(...line.replace(/\x1b\[[0-9;]*m/g, "").split("\n")), width);
+      const at = lines.indexOf("Usage");
+      check(`cotal help ${name} at ${width} columns starts its usage with cotal ${name}, every line within the width`,
+        at > 0 && lines[at + 1]!.startsWith(`  cotal ${name} `) && lines.every((line) => displayWidth(line) <= width), { usage: lines.slice(at, lines.indexOf("", at)), wide: lines.filter((line) => displayWidth(line) > width) });
+    }
+  }
 
   // At 60 columns an option's description wraps without splitting a `--flag <value>` unit or a
   // command it names. Up's -d named cotal down bare and spawn's --allow-stale cotal team deploy

@@ -130,7 +130,7 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
     if (binding) recheckStackResume(binding, deploymentId); else await recheckFreshTeamBoot(plan, { deploymentId });
     const started = await startControllerStack({
       maintenanceLock: lock, root: plan.root, space: plan.space, server: plan.server, transport: plan.transport, runtime: plan.runtime, noManager: false, mode: plan.mode,
-      ...(plan.idp !== undefined ? { idp: plan.idp } : {}), ...(plan.host ? { host: plan.host } : {}), ...(plan.maxSessions !== undefined ? { maxSessions: plan.maxSessions } : {}),
+      ...(plan.idp !== undefined ? { idp: plan.idp } : {}), ...(plan.host ? { host: plan.host } : {}), ...(plan.maxSessions !== undefined ? { maxSessions: plan.maxSessions } : {}), ...(plan.logFile !== undefined ? { logFile: plan.logFile } : {}), ...(plan.logfileSizeLimit !== undefined ? { logfileSizeLimit: plan.logfileSizeLimit } : {}), ...(plan.logfileMaxNum !== undefined ? { logfileMaxNum: plan.logfileMaxNum } : {}),
       foreground: request.foreground, presentation: request.presentation,
       ...(binding ? { expectPriorDown: { journalSha256: binding.journalSha256, operationId: binding.priorDown } } : {}),
       manifest: {
@@ -187,4 +187,3 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
   writeResult(request.presentation, { command: "team boot", target: { space: result.space, root: result.root, deploymentId: result.deploymentId }, result, ...(joins ? { completeness: "partial" as const, partial: { message: "Agent joins are not checked by this receipt." } } : {}), warnings: plan.prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })) }, (data) => bootView(data, journal));
   if (request.foreground) await holdForegroundStack(plan.root);
 }
-

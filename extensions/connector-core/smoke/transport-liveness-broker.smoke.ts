@@ -21,7 +21,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import type { AgentConfig } from "../src/config.js";
-import { isReachable } from "@cotal-ai/core";
+import { isReachable, chatStream, chatSubject, dmStream, unicastSubject, parsePrincipalKey, setupSpaceStreams } from "@cotal-ai/core";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -803,7 +803,7 @@ try {
   jsBroker = startBroker(jsConfig);
   releases.push(teardownOnSignal(jsBroker, dir));
   for (let i = 0; i < 80; i++) { if (await isReachable(jsServers)) break; await sleep(50); }
-  const jsCfg = { ...cfg, servers: jsServers, space: `js-health-${jsPort}`, name: "js-health-agent" };
+  const jsCfg = { ...cfg, servers: jsServers, space: `js-health-${jsPort}`, name: "js-health-agent", subscribe: ["publish-timeout"], allowSubscribe: ["publish-timeout"], allowPublish: ["publish-timeout"] };
   jsAgent = new MeshAgent(jsCfg);
   await jsAgent.start();
   await jsAgent.waitUntilConnected();
@@ -876,34 +876,6 @@ try {
     check("an unbound inbox does not present its empty buffer as a live mesh read", JSON.stringify(reply).includes("Mesh connection is not ready (disconnected)"), reply);
   } finally { await freshClient.close(); await freshServer.close(); await fresh.stop(); }
 
-  // Reject the first presence write with the broker's native sealed-stream guard.
-  // This owned bucket is never reused; sealing cannot be undone.
-  const sealedNc = await connect({ servers: jsServers });
-  const sealedJsm = await jetstreamManager(sealedNc);
-  const sealedInfo = await sealedJsm.streams.info(`KV_cotal_presence_${jsCfg.space}`);
-  const sealedConfig = { ...sealedInfo.config, sealed: true };
-  await sealedJsm.streams.update(sealedInfo.config.name, sealedConfig);
-  const refused = new MeshAgent({ ...jsCfg, name: "first-write-refused" });
-  const refusedStart = refused.start().catch(() => {});
-  const refusedServer = new McpServer({ name: "refused-presence", version: "0.0.0" });
-  registerCotalTools(refusedServer, refused, jsCfg, "smoke");
-  const [refusedCt, refusedSt] = InMemoryTransport.createLinkedPair();
-  const refusedClient = new Client({ name: "refused-presence", version: "0.0.0" });
-  await Promise.all([refusedClient.connect(refusedCt), refusedServer.connect(refusedSt)]);
-  try {
-    check("first-write fixture observes the REAL presence registration refusal", await until(() => refused.connectionIssue?.includes("presence registration failed") === true), refused.connectionIssue);
-    for (const [name, args] of [
-      ["cotal_send", { channel: "test", text: "refused" }],
-      ["cotal_dm", { to: "js-health-agent", text: "refused" }],
-    ] as const) {
-      const reply = await refusedClient.callTool({ name, arguments: args });
-      const text = JSON.stringify(reply);
-      check(`${name} names the recorded first presence write refusal rather than broker-start advice`, reply.isError === true && text.includes("presence registration failed") && text.includes(`cotal_presence_${jsCfg.space}`) && text.includes("sealed stream") && !text.includes("cotal up"), reply);
-    }
-  } finally {
-    await refused.stop(); await refusedStart;
-    await refusedClient.close(); await refusedServer.close(); await sealedNc.close();
-  }
 
   // A real accepted put with its acknowledgement withheld, not a rejected put stub.
   // Only this owned TCP proxy drops downstream bytes, and no endpoint timing changes.
@@ -953,6 +925,100 @@ try {
     for (const socket of ackSockets) socket.destroy();
     await new Promise<void>((resolve) => ackProxy.close(() => resolve()));
   }
+
+  // A native stream fault leaves presence healthy. A missing PubAck cannot prove non-delivery:
+  // the real DM below times out while its exact message remains readable from the broker.
+  await setupSpaceStreams({ servers: jsServers, space: jsCfg.space });
+  const publishConnection = await connect({ servers: jsServers });
+  try {
+    const manager = await jetstreamManager(publishConnection);
+    const dmName = dmStream(jsCfg.space);
+    const principal = parsePrincipalKey(jsAgent.ep.card.id);
+    if (!principal) throw new Error("the live agent has no principal");
+    const dmSubject = unicastSubject(jsCfg.space, principal.owner, principal.actor, principal.owner, principal.actor);
+    const invoke = async (name: string, args: Record<string, unknown>): Promise<string> => {
+      const reply = await jsClient!.callTool({ name, arguments: args });
+      const text = (reply.content as Array<{ type: string; text?: string }>).find((part) => part.type === "text")?.text;
+      if (text === undefined) throw new Error(`${name} returned no text`);
+      return text;
+    };
+    const dmText = "owned-puback-timeout";
+    const healthySend = await invoke("cotal_send", { channel: "publish-timeout", text: "owned-publish-control" });
+    check(
+      "the channel publish control succeeds before its stream is removed",
+      healthySend.startsWith("Sent to #publish-timeout"), healthySend,
+    );
+    await manager.streams.update(dmName, { no_ack: true });
+    let dmError: Error | undefined;
+    try { await jsAgent.ep.unicastAttributed(jsAgent.ep.card.id, dmText); }
+    catch (error) { if (error instanceof Error) dmError = error; else throw error; }
+    const stored = await manager.streams.getMessage(dmName, { last_by_subj: dmSubject });
+    if (stored === null) throw new Error("the timed-out DM was not stored by the owned broker");
+    check(
+      "a REAL DM publish timeout names its subject and unknown outcome while the message is stored",
+      dmError?.message.includes(JSON.stringify(dmSubject)) === true &&
+        dmError.message.includes("The send outcome is unknown") && dmError.cause instanceof Error &&
+        dmError.cause.name === "TimeoutError" && stored.json<{ parts: Array<{ text?: string }> }>().parts[0]?.text === dmText,
+      { error: dmError?.message, cause: (dmError?.cause as Error | undefined)?.name, stored: stored.seq },
+    );
+    await manager.streams.update(dmName, { no_ack: false });
+    const acked = await jsAgent.ep.unicastAttributed(jsAgent.ep.card.id, "owned-puback-recovery");
+    check("the same REAL DM path returns its storage ack after PubAck recovery", acked.ack.seq > stored.seq, acked.ack);
+
+    const chatName = chatStream(jsCfg.space);
+    await manager.streams.delete(chatName);
+    const channel = "publish-timeout";
+    const subject = chatSubject(jsCfg.space, principal.owner, principal.actor, channel);
+    const refusedSend = await invoke("cotal_send", { channel, text: "owned-missing-chat" });
+    check(
+      "a REAL channel publish timeout names its subject through the registered MCP route",
+      refusedSend.includes(JSON.stringify(subject)) && refusedSend.includes("The send outcome is unknown") &&
+        !refusedSend.includes("was not sent"),
+      refusedSend,
+    );
+    const afterPublishFailure = await jsStatus();
+    check(
+      "a publish-only fault does not invent a presence or transport failure",
+      afterPublishFailure.state === "ready" && afterPublishFailure.transportConnected === true &&
+        !("presenceWriteFailure" in afterPublishFailure),
+      afterPublishFailure,
+    );
+    const recoveredPublish = await tool("cotal_reconnect");
+    const recoveredSend = await invoke("cotal_send", { channel, text: "owned-recreated-chat" });
+    check(
+      "recreating the missing stream restores the same REAL channel publish path",
+      recoveredPublish.isError !== true && recoveredSend.startsWith(`Sent to #${channel}`),
+      { recoveredPublish, recoveredSend },
+    );
+  } finally { await publishConnection.close(); }
+  // Run irreversible sealing only after publish-timeout recovery cells on this broker.
+  // The bucket is owned by this fixture and never reused after sealing.
+  const sealedNc = await connect({ servers: jsServers });
+  const sealedJsm = await jetstreamManager(sealedNc);
+  const sealedInfo = await sealedJsm.streams.info(`KV_cotal_presence_${jsCfg.space}`);
+  const sealedConfig = { ...sealedInfo.config, sealed: true };
+  await sealedJsm.streams.update(sealedInfo.config.name, sealedConfig);
+  const refused = new MeshAgent({ ...jsCfg, name: "first-write-refused" });
+  const refusedStart = refused.start().catch(() => {});
+  const refusedServer = new McpServer({ name: "refused-presence", version: "0.0.0" });
+  registerCotalTools(refusedServer, refused, jsCfg, "smoke");
+  const [refusedCt, refusedSt] = InMemoryTransport.createLinkedPair();
+  const refusedClient = new Client({ name: "refused-presence", version: "0.0.0" });
+  await Promise.all([refusedClient.connect(refusedCt), refusedServer.connect(refusedSt)]);
+  try {
+    check("first-write fixture observes the REAL presence registration refusal", await until(() => refused.connectionIssue?.includes("presence registration failed") === true), refused.connectionIssue);
+    for (const [name, args] of [
+      ["cotal_send", { channel: "publish-timeout", text: "refused" }],
+      ["cotal_dm", { to: "js-health-agent", text: "refused" }],
+    ] as const) {
+      const reply = await refusedClient.callTool({ name, arguments: args });
+      const text = JSON.stringify(reply);
+      check(`${name} names the recorded first presence write refusal rather than broker-start advice`, reply.isError === true && text.includes("presence registration failed") && text.includes(`cotal_presence_${jsCfg.space}`) && text.includes("sealed stream") && !text.includes("cotal up"), reply);
+    }
+  } finally {
+    await refused.stop(); await refusedStart;
+    await refusedClient.close(); await refusedServer.close(); await sealedNc.close();
+  }
 } finally {
   await jsClient?.close().catch(() => {});
   await jsServer?.close().catch(() => {});
@@ -973,7 +1039,7 @@ try {
   for (const release of releases) release();
 }
 
-const EXPECTED_CELLS = 42;
+const EXPECTED_CELLS = 48;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

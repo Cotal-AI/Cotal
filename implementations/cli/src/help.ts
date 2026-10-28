@@ -73,14 +73,19 @@ function usageUnits(tokens: readonly UsageToken[]): UsageToken[][] | undefined {
 }
 
 /** A usage in lines of at most `width` columns, broken only where {@link usageUnits} allows. A group
- *  too wide for a line takes lines of its own and breaks the same way one level in. Only a single
- *  option with its argument wider than the line is broken at its spaces. From 20 columns every line
- *  fits or is one word; below 20 the usage is one line, as {@link wrapWords} leaves it. Either way
- *  the report renderer draws each line as it is. */
-function usageLines(tokens: readonly UsageToken[], width: number): string[] {
+ *  too wide for a line breaks the same way one level in, and what follows it starts a line. When its
+ *  first piece leaves a bracket open, so the group breaks inside that bracket, its first line
+ *  continues the line before it, `lead`, if that piece fits there after a space. Otherwise the group
+ *  starts a line, which keeps a word such as `cotal` or `persona` with the word after it. Only a
+ *  single option with its argument wider than the line is broken at its spaces. From 20 columns every
+ *  line fits or is one word; below 20 the usage is one line, as {@link wrapWords} leaves it. Either
+ *  way the report renderer draws each line as it is. */
+function usageLines(tokens: readonly UsageToken[], width: number, lead = ""): string[] {
   const text = joined(tokens);
   if (!(width >= 20) || displayWidth(text) <= width) return [text];
   const units = usageUnits(tokens);
+  const opens = (units?.[0] ?? tokens).reduce((depth, token) => depth + nesting(token.text), 0) > 0;
+  if (lead && !(opens && tokens[0]!.spaced)) return [lead, ...usageLines(tokens, width)];
   if (!units) {
     // No gap may break, so these tokens are one option and its argument, joined by spaces, and
     // broken at them. A ` | ` after them stays on the line before it when it fits there.
@@ -89,16 +94,15 @@ function usageLines(tokens: readonly UsageToken[], width: number): string[] {
       if (word === "|" && kept.length && displayWidth(`${kept[kept.length - 1]} |`) <= width) kept[kept.length - 1] += " |";
       else kept.push(word);
     }
-    return wrapWords(kept, width);
+    return wrapWords(lead ? [lead, ...kept] : kept, width);
   }
   const lines: string[] = [];
-  let line = "";
+  let line = lead;
   for (const unit of units) {
     const piece = joined(unit);
     const longer = `${line}${unit[0]!.spaced ? " " : ""}${piece}`;
     if (displayWidth(piece) > width) {
-      if (line) lines.push(line);
-      lines.push(...usageLines(unit, width));
+      lines.push(...usageLines(unit, width, line));
       line = "";
     } else if (line && displayWidth(longer) > width) {
       lines.push(line);

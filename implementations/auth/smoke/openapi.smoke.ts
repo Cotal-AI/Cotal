@@ -227,9 +227,8 @@ try {
   await request(base, '/service-endpoint-host', 'POST', 403, { idpToken: 'invalid', request: host });
   const read = await request(base, '/service-endpoint-host', 'POST', 200, { idpToken, request: host });
   assert.equal(read.state, 'absent');
-  const unimplemented = await request(base, '/service-endpoint-host', 'POST', 200, { idpToken, request: { ...host, requestId: 'd'.repeat(32), operation: 'instance-read', input: { endpoint: 'contract', instanceId: nativeRequest.instanceId } } });
-  assert.equal(unimplemented.state, 'denied');
-  assert.equal(unimplemented.reason, 'unsupported');
+  const missingInstance = await request(base, '/service-endpoint-host', 'POST', 200, { idpToken, request: { ...host, requestId: 'd'.repeat(32), operation: 'instance-read', input: { endpoint: 'contract', instanceId: nativeRequest.instanceId } } });
+  assert.equal(missingInstance.state, 'absent');
   const operator = await request(base, '/service-endpoint-host', 'POST', 403, JSON.stringify({ idpToken, request: { v: 1, kind: 'service-endpoint-host', requestId: 'c'.repeat(32), operation: 'admission-open', input: {} } }), {}, true);
   assert.match(String(operator.error), /operator/);
   // Valid IdP proofs can still consume the refusal budget when native dispatch fails.

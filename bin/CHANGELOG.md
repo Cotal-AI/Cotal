@@ -1,5 +1,58 @@
 # cotal-ai
 
+## 0.121.1
+
+### Patch Changes
+
+- Updated dependencies [44ff795]
+- Updated dependencies [44ff795]
+- Updated dependencies [44ff795]
+  - @cotal-ai/cli@0.121.1
+  - @cotal-ai/workspace@0.121.1
+  - @cotal-ai/auth@0.121.1
+  - @cotal-ai/delivery@0.121.1
+  - @cotal-ai/manager@0.121.1
+  - @cotal-ai/runtime@0.121.1
+  - @cotal-ai/connector-core@0.121.1
+  - @cotal-ai/core@0.121.1
+  - @cotal-ai/seat@0.121.1
+
+## 0.121.0
+
+### Patch Changes
+
+- 6d557ce: A help usage whose bracketed group is wider than the terminal starts that group on the line before it when its opening piece fits there, so `cotal help daemon` starts `cotal daemon <setup|status|...` and `cotal help service-endpoint` starts `cotal service-endpoint <approve <proposalId> |`, where `cotal` sat alone on the first usage line. The same applies to `auth`, `run`, `team`, `manager`, `service`, `endpoint`, `channel`, `send` and `watch` at the widths where their group wraps. The `service-endpoint callers` example's note is now "list who may call it", so each `service-endpoint` example fits one 80-column line with its note.
+- Updated dependencies [539997b]
+- Updated dependencies [5d01ea1]
+- Updated dependencies [6d557ce]
+  - @cotal-ai/cli@0.121.0
+  - @cotal-ai/core@0.121.0
+  - @cotal-ai/workspace@0.121.0
+  - @cotal-ai/auth@0.121.0
+  - @cotal-ai/connector-core@0.121.0
+  - @cotal-ai/delivery@0.121.0
+  - @cotal-ai/manager@0.121.0
+  - @cotal-ai/runtime@0.121.0
+  - @cotal-ai/seat@0.121.0
+
+## 0.120.2
+
+### Patch Changes
+
+- d6bf008: `cotal docs --search` on a terminal now draws each hit as `cotal docs <page>` draws its page: a paragraph is joined before it wraps, so a span in backticks that crosses a line break in the page's source stays whole, and lines are no longer ragged. A code block keeps its lines without its fence marks, a list item or table keeps its own lines, and the hit's heading is its title. `--plain` wraps the same text. At 80 columns `cotal docs --search manager` broke `` `cotal service show manager` `` after `cotal`, at 120 columns too.
+- Updated dependencies [8b12675]
+- Updated dependencies [0bb0ef4]
+- Updated dependencies [bf946f3]
+  - @cotal-ai/auth@0.120.2
+  - @cotal-ai/connector-core@0.120.2
+  - @cotal-ai/cli@0.120.2
+  - @cotal-ai/manager@0.120.2
+  - @cotal-ai/delivery@0.120.2
+  - @cotal-ai/runtime@0.120.2
+  - @cotal-ai/core@0.120.2
+  - @cotal-ai/seat@0.120.2
+  - @cotal-ai/workspace@0.120.2
+
 ## 0.120.1
 
 ### Patch Changes

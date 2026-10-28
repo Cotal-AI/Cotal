@@ -254,7 +254,7 @@ export function renderReport(report: Report, style: Style, width: number | NodeJ
   for (const section of report.sections) {
     if (out.length) out.push("");
     const indent = section.title === undefined ? "" : "  ";
-    if (section.title !== undefined) out.push(draw({ text: section.title, tone: "title" }, style).shown);
+    if (section.title !== undefined) out.push(...drawWrapped({ text: section.title, tone: "title" }, style, width));
     for (const block of section.blocks) {
       if (block.kind === "table") out.push(...renderTable(block, style, width, indent));
       else if (block.kind === "fields") out.push(...renderFields(block, style, indent, width));

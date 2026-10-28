@@ -1447,8 +1447,11 @@ to host these operations; it is off by default. `cotal up --user-auth --service-
 on the stock auth service, and a lane of `auth-service --spaces` sets it when its manifest entry has
 `"serviceEndpoints": true`. With it, the plane and the
 hosted handle gain `serviceEndpointHost(request)`, which answers `decide`, `revoke`, `name-bind`, the
-four caller-policy operations and the three reads (`proposal-read`, `operation-read` and
-`name-read`) in process. A hosted context rejects it as
+four caller-policy operations and the instance, proposal, operation and name reads in process.
+`instance-read` returns the current `ServiceInstanceView` for the proved owner's selector, including
+its approval digest and registration state. `instance-list` walks the native assignment subjects with
+a cursor and returns only that owner's instances. Missing and foreign selectors both read absent.
+A hosted context rejects it as
 `unavailable` while it is not ready. The host authenticates no caller: the embedder must
 authenticate the operator or owner granter it passes. The stock service does that on
 `POST /service-endpoint-host`: the body is `{ idpToken, request }` with no granter, and the route

@@ -119,6 +119,8 @@ export interface ClaudeHooks {
   handle: HookHandle;
   /** Pass as {@link ControlServerOpts.onReply}. */
   onReply: (ev: HookEvent, delivered: boolean) => void;
+  /** Receipt for an empty inbox after a confirmed hook handoff. Contains no peer content. */
+  inboxDeliveryNote(): string | undefined;
 }
 
 /**
@@ -238,6 +240,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    *  it labels a possible repeat for the model. Bounded; on overflow the label is dropped (never
    *  the message), because the label is a courtesy and the message is the product. */
   const unconfirmed = new Set<string>();
+  let lastDelivery: { count: number; event: string } | undefined;
 
   /** Flag deliveries whose confirmation this process could not obtain (keyed by receive key, #624:
    *  an id-less item's wire id is "", so raw-id keying would label EVERY later id-less message a
@@ -476,7 +479,9 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     }
     for (const id of ids) unconfirmed.delete(id);
     try {
-      agent.drainInboxDeliveries(ids);
+      const committed = agent.drainInboxDeliveries(ids);
+      if (committed.items.length)
+        lastDelivery = { count: committed.items.length, event: ev.hook_event_name ?? "" };
     } catch {
       // The ack itself failed — a JetStream ack publishes, so a closed connection throws. Whatever
       // did not ack is also not marked handled, so JetStream redelivers it and nothing is lost. But
@@ -487,7 +492,12 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     }
   };
 
-  return { handle, onReply, adoptTranscript: adoptEvents };
+  return {
+    handle, onReply, adoptTranscript: adoptEvents,
+    inboxDeliveryNote: () => lastDelivery
+      ? `No unread messages remain. The most recent confirmed Claude Code hook handoff carried ${lastDelivery.count} message${lastDelivery.count === 1 ? "" : "s"} as additionalContext (${lastDelivery.event}). This is a delivery receipt, not a new message.`
+      : undefined,
+  };
 }
 
 /** One `claude/channel` push. A rejection is surfaced to the caller. */

@@ -2127,7 +2127,7 @@ export async function runJcodeHost(): Promise<void> {
       // A readiness-turn provider refusal is different from arbitrary Harness API failure: Jcode
       // supplied an invalid-request code and a rejected model/effort value the connector can safely
       // classify. Preserve only those bounded fields; all other message bytes stay scrubbed (#828).
-      const classified = classifyReadinessProviderRefusal(error);
+      const classified = classifyReadinessProviderRefusal(error, config.model);
       if (classified) {
         writeJcodeDiagnostic(
           `[cotal-jcode] pre-join readiness outcome: provider refusal of ${classified.parameter} ${JSON.stringify(classified.value)} (${classified.providerCode}); never joined\n`,

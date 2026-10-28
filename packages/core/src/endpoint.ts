@@ -2576,12 +2576,18 @@ export class CotalEndpoint extends EventEmitter {
     assertPartsSerializable(msg.parts);
     // Publish DIRECTLY rather than through publishMsg, the way multicastExpecting does: this path
     // must read the ack, and publishMsg deliberately discards it.
-    const ack = await this.js.publish(
-      unicastSubject(this.space, recip.owner, recip.actor, this.owner, this.actor),
-      JSON.stringify(msg),
-      { msgID: msg.id },
-    );
-    return { msg, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
+    const subject = unicastSubject(this.space, recip.owner, recip.actor, this.owner, this.actor);
+    try {
+      const ack = await this.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
+      return { msg, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
+    } catch (error) {
+      if (error instanceof TimeoutError)
+        throw new Error(
+          `${error.message} publishing to ${JSON.stringify(subject)}. The send outcome is unknown: the broker may have stored the message. Check before resending.`,
+          { cause: error },
+        );
+      throw error;
+    }
   }
 
   /** Anycast: deliver to ANY one instance of a service (role) — queue-group load balancing. */
@@ -4603,7 +4609,7 @@ export class CotalEndpoint extends EventEmitter {
     } catch (error) {
       if (error instanceof TimeoutError)
         throw new Error(
-          `${error.message}. The send outcome is unknown: the broker may have stored the message. Check before resending.`,
+          `${error.message} publishing to ${JSON.stringify(subject)}. The send outcome is unknown: the broker may have stored the message. Check before resending.`,
           { cause: error },
         );
       throw error;
