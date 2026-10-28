@@ -32,7 +32,6 @@ import {
   parsePid,
   probeLiveness,
   probeWebReadiness,
-  progressSignal,
   readPidfile,
   readWebSession,
   removePidPair,
@@ -856,7 +855,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   // both browser renderers can say so honestly without deriving progress from the heartbeat.
   const rosterSnapshot = () => ep.getRoster().map((presence) => ({
     ...presence,
-    progress: presence.status === "working" ? progressSignal(undefined, Date.now()) : undefined,
+    progress: presence.status === "working" ? { kind: "unknown" as const } : undefined,
   }));
 
   const clients = new Set<ServerResponse>();
