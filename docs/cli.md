@@ -5002,10 +5002,12 @@ terminal it wraps like any other warning. A run given
 says to keep `supervise` for that run instead. It keeps its flags and its run for existing units,
 scripts and containers. The manager that `cotal up` starts
 runs the same code through a hidden entry. Without `--space` it
-supervises the space other commands target here: `COTAL_SPACE`, else the space this folder hosts
-or is registered for, else the one `cotal use` selected. A space it did not get from `--space`,
-`COTAL_SPACE` or a folder that hosts it keeps its manager records in the folder that space is
-registered at, so a start from any folder is the same manager, with the same instance and name.
+supervises the space other commands target here: `COTAL_SPACE`, else the running space this folder
+hosts or is registered for, else the one `cotal use` selected, else the space this folder hosts. A
+space the folder only holds, such as a prepared or stopped one or one a `cotal up` in a folder above
+it left, does not take the run from the selection. A registered or selected space keeps its manager
+records in the folder that space is registered at, so a start from any folder is the same manager,
+with the same instance and name.
 
 | Flag | Default | Meaning |
 |---|---|---|

@@ -652,10 +652,14 @@ try {
   // L: with the space selected by `cotal use`, a bare `cotal supervise` from a folder that neither
   // hosts nor registers it starts a manager for that space on the pty runtime, in the root the space
   // is registered at, and prints the deprecation line that names `cotal manager start`. Its own ps
-  // answers.
+  // answers. The folder sits inside one that holds a space this home never registered, as a `cotal up`
+  // in a parent such as the temp dir leaves it, and that space does not take the bare run.
   const selected = await caller("use", space);
   must("L: the caller selects the space", selected.code === 0, selected);
-  const elsewhere = scratch("bare-cwd");
+  const hostingParent = scratch("hosting-parent");
+  saveSpaceAuth(authDir(hostingParent), await createSpaceAuth("otherspace"));
+  const elsewhere = join(hostingParent, "bare-cwd");
+  mkdirSync(elsewhere);
   const bare = spawnProc(tsxBin, [cliBin, "supervise"], { cwd: elsewhere, env: childHomeEnv(callerHome), stdio: ["ignore", "pipe", "pipe"] });
   kids.push(bare);
   twoManagers.push(bare);
@@ -664,7 +668,7 @@ try {
   bare.stderr?.on("data", (chunk: Buffer) => { bareOut += chunk.toString(); });
   for (let i = 0; i < 1_200 && !/✓ manager up/.test(bareOut) && bare.exitCode === null; i++) await sleep(100);
   ok("L: a bare supervise on the selected hosted space starts a manager there on the pty runtime, and its deprecation line names cotal manager start",
-    new RegExp(`✓ manager up \\(space ${space} · [^)]*pty\\)`).test(bareOut) && /! cotal supervise is deprecated[^\n]*Use cotal manager start/.test(bareOut), bareOut.slice(0, 900));
+    new RegExp(`✓ manager up \\(space ${space} · [^)]*pty\\)`).test(bareOut) && /! `cotal supervise` is deprecated[^\n]*Use `cotal manager start`/.test(bareOut), bareOut.slice(0, 900));
   const bareId = /✓ manager up/.test(bareOut) ? loadOrCreateRemoteManagerIdentity(callerRoot, space).instanceId : undefined;
   const bareFolder = readdirSync(elsewhere);
   ok("L: it keeps its records in the space's registered root, not the folder it was started from", bareId !== undefined && bareFolder.length === 0, { bareId, bareFolder });

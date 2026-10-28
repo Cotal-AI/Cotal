@@ -135,14 +135,16 @@ function spaceFor(v: Values, root = findCotalRoot()): string {
   return v.space ?? soleSpaceOf(authDir(root)) ?? DEFAULT_SPACE;
 }
 
-/** The space and root a `supervise` runs for. `--space` or `COTAL_SPACE` names the space, and a
- *  folder that hosts a space supervises that one; the manager then runs in this folder's root.
- *  Otherwise the space is the one every other command targets here, this folder's registered space
- *  or else the `cotal use` selection, and the manager runs in the root that space is registered at,
- *  so its identity and name are the same whichever folder it is started from. */
+/** The space and root a `supervise` runs for. `--space` or `COTAL_SPACE` names the space, and the
+ *  manager then runs in this folder's root. Otherwise the space is the one every other command
+ *  targets here, this folder's registered space or else the `cotal use` selection, and the manager
+ *  runs in the root that space is registered at, so its identity and name are the same whichever
+ *  folder it is started from. A space a folder only holds on disk, such as a stopped one or one a
+ *  `cotal up` in a parent folder left, does not take the run from the selection. With neither,
+ *  {@link superviseTarget} supervises the space this folder hosts. */
 function superviseSelection(v: Values): { values: Values; root: string } {
   const root = findCotalRoot();
-  if (v.space !== undefined || process.env.COTAL_SPACE !== undefined || soleSpaceOf(authDir(root)) !== undefined) return { values: v, root };
+  if (v.space !== undefined || process.env.COTAL_SPACE !== undefined) return { values: v, root };
   const space = folderSpace(process.cwd()) ?? getCurrent();
   if (space === undefined) return { values: v, root };
   return { values: { ...v, space }, root: findMesh(space)?.root ?? root };
