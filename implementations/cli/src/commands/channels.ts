@@ -3,7 +3,7 @@ import { isAbsolute, join } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import {
   assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
-  ChannelRegistryConflict, channelBucket, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, validateChannelConfig,
+  ChannelRegistryConflict, channelBucket, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, UndecodableRegistryEntry, validateChannelConfig,
   type ChannelConfig, type ChannelRegistryFile, type ChannelRegistryRead, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
@@ -146,6 +146,8 @@ export async function channels(args: ParsedArgs): Promise<void> {
     // A write that kept losing the revision race to other writers saved nothing.
     if (error instanceof ChannelRegistryConflict)
       throw new CommandFailure("refused", "CONFLICT", `${error.message}; this change was not saved`, { target, remedy: "read the channel with cotal ch show, then repeat the change" });
+    if (error instanceof UndecodableRegistryEntry)
+      throw new CommandFailure("refused", "CONFLICT", error.message, { target, remedy: "read the key and replace the value; the bytes were left as they are" });
     // A write the broker refused before any purge was acknowledged applied nothing.
     if (purged === undefined && isPublishPermissionDenied(error)) {
       const write = action === "remove" ? values.purge ? `purge #${name}'s history and remove its metadata` : "remove channel metadata" : action === "defaults" ? "write channel defaults" : "write channel metadata";
@@ -207,7 +209,8 @@ export async function refuseUnknownChannel(name: string, values: Values, target:
     throw error;
   }
   const registered = Object.keys(registry.channels ?? {}).sort();
-  if (registered.includes(name) || (await earlierMessages(values, name)) !== false) return;
+  const saved = new Set([...registered, ...(registry.undecodable ?? []).map((entry) => entry.key)]);
+  if (saved.has(name) || (await earlierMessages(values, name)) !== false) return;
   const spelled = registered.find((channel) => channel.toLowerCase() === name.toLowerCase());
   const known = registered.length ? `registered channels: ${registered.map((channel) => `#${channel}`).join(", ")}` : "this space registers no channels";
   throw new CommandFailure("refused", "TARGET_NOT_FOUND",

@@ -1445,10 +1445,11 @@ channel name, or an invalid value refuses `SCHEMA_INVALID` before anything start
 and the entry. A default file that is invalid refuses the same way, with a remedy to fix or remove
 it. A manifest start (`-f`) seeds from the manifest's own channels instead. A start also writes the
 space's default delivery class when the defaults key has none. When that key holds a value that
-does not decode, the start refuses with `CONFLICT` and leaves the bytes as they are. Because the
-next start writes the default file's values back, a `channel set` or `channel defaults` of a field
-that file sets, and a `channel remove` of a channel it names, warn `CHANNEL_SEED_REAPPLIES` and
-name the file.
+does not decode, the start refuses with `CONFLICT` and leaves those bytes as they are, including
+when the channel seed would otherwise write that key. A defaults value that decodes but names no
+delivery class is still filled. Because the next start writes the default file's values back, a
+`channel set` or `channel defaults` of a field that file sets, and a `channel remove` of a
+channel it names, warn `CHANNEL_SEED_REAPPLIES` and name the file.
 
 ## down
 
@@ -6039,8 +6040,9 @@ cotal channel remove <name> [--purge] [--yes]
 metadata, not every channel with traffic. A saved entry whose value does not decode is listed
 under `Not decoded` with its key and the decode error, and the key is left in the registry. Its
 channel resolves to the default policy, as an endpoint's registry watch does. `show` of that
-channel and `defaults` when the defaults key does not decode say the same. `show` includes
-inherited replay and delivery settings.
+channel and `defaults` when the defaults key does not decode say the same. A `set` or `defaults`
+that would write such a key refuses with `CONFLICT` and leaves the bytes as they are. `remove`
+of that key removes the entry. `show` includes inherited replay and delivery settings.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. With `--follow --json`, it emits membership NDJSON
 records. A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a

@@ -16,11 +16,13 @@ import type { ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
 import { lastKvEntries, liveKvEntries } from "./kv-scan.js";
 import { isCasLoss } from "./endpoint-records.js";
 
-/** The defaults key holds bytes that do not decode, so it was not replaced. */
-export class UndecodableChannelDefaults extends Error {
-  constructor(cause: string) {
-    super(`channel registry defaults do not decode (${cause}); the key was left as it is`);
-    this.name = "UndecodableChannelDefaults";
+/** A registry key holds bytes that do not decode, so a write did not replace them. */
+export class UndecodableRegistryEntry extends Error {
+  readonly key: string;
+  constructor(key: string, cause: string) {
+    super(`channel registry entry ${JSON.stringify(key)} does not decode (${cause}); the key was left as it is`);
+    this.name = "UndecodableRegistryEntry";
+    this.key = key;
   }
 }
 
@@ -186,7 +188,10 @@ const MERGE_ATTEMPTS = 10;
 async function mergeRegistryEntry(kv: KV, key: string, patch: ChannelConfig | ChannelDefaults): Promise<boolean> {
   for (let attempt = 0; attempt < MERGE_ATTEMPTS; attempt++) {
     const entry = await kv.get(key);
-    const current = entryValue(entry);
+    const decoded = entryDecode(entry);
+    // A value that does not decode is not an empty entry. Merging over it would replace the bytes.
+    if (decoded.error !== undefined) throw new UndecodableRegistryEntry(key, decoded.error);
+    const current = decoded.value;
     if (current && Object.entries(patch).every(([field, value]) => JSON.stringify((current as Record<string, unknown>)[field]) === JSON.stringify(value))) return false;
     const merged = JSON.stringify({ ...current, ...patch });
     try {
@@ -286,7 +291,7 @@ export async function ensureDefaultDeliveryClass(opts: {
     const current = entryDecode(await kv.get(CHANNEL_DEFAULTS_KEY));
     // An entry that does not decode is not unset. Replacing it would hide the bytes the endpoints
     // cannot use, so the caller reports it and the key is left as it is.
-    if (current.error !== undefined) throw new UndecodableChannelDefaults(current.error);
+    if (current.error !== undefined) throw new UndecodableRegistryEntry(CHANNEL_DEFAULTS_KEY, current.error);
     if (current.value?.deliveryClass !== undefined) return false;
     await writeChannelDefaults(kv, channelDeliveryDefaultPatch(opts.deliveryClass));
     return true;
