@@ -38,14 +38,19 @@ import {
   assertSafePattern,
   assertValidChannel,
   presenceBucket,
+  isPresenceRow,
   principalKey,
   liveKvEntries,
   IncompleteKvScan,
   openMembersRegistry,
   openChannelRegistry,
+  openAclRegistry,
+  readAcl,
+  channelInAllow,
+  memberKey,
   writeChannelConfig,
   readMember,
-  commitMember,
+  commitMemberRevision,
   tombstoneMember,
   StaleMembershipWrite,
   runNoticeId,
@@ -85,6 +90,7 @@ import {
   assertAdmittedPublish,
   assertAdmittedSubscribe,
   assertNotRevoked,
+  isStreamNotFound,
 } from "@cotal-ai/core";
 import { renderRunContext } from "./run-context.js";
 import { migrationSeats } from "./migrate.js";
@@ -249,33 +255,38 @@ export class MeshHandler {
   ) {}
 
   /**
-   * The resolved manager service, memoized as a PROMISE so concurrent branches share one describe
-   * round-trip — and dropped on failure, so a resolve that lost to a manager restart is retried by
-   * the next effect instead of poisoning every spawn for the handler's lifetime.
+   * Resolved manager commands, each memoized as a PROMISE so concurrent branches asking for the
+   * same command share one describe round-trip. A failed resolve is dropped, so a manager restart
+   * does not poison later effects. Different commands stay separate and never fetch one another's
+   * contract closures.
    */
-  private managerService: Promise<ResolvedService> | undefined;
-  private manager(instanceId?: string): Promise<ResolvedService> {
+  private readonly managerServices = new Map<string, Promise<ResolvedService>>();
+  private manager(command: string, instanceId?: string): Promise<ResolvedService> {
     // #1616 ITEM 3 — PINNED DISPATCH. An explicit placement target resolves through the EXISTING
     // instance-dispatch API: `resolveService`'s `instanceId` opt becomes
     // `EpRoute { mode: "inst", instanceId }`, and the handle it returns carries
     // `pinnedInstanceId` so `invokeCommand` addresses that instance and never the class
-    // queue. It is deliberately NOT served from `managerService`: that memo holds the class-anycast
+    // queue. It is deliberately NOT served from `managerServices`: those memos hold class-anycast
     // resolution, and handing a pinned caller the anycast handle would reinstate the exact fallback
     // this item removes. A wrong, unavailable or replaced instance therefore fails to resolve —
     // before a child exists — instead of quietly succeeding somewhere else.
     if (instanceId !== undefined)
-      return resolveService(this.nc, this.binding.space, this.binding.endpoint, this.binding.caller, { instanceId });
-    this.managerService ??= resolveService(this.nc, this.binding.space, this.binding.endpoint, this.binding.caller)
-      .catch((e) => {
-        this.managerService = undefined;
-        throw e;
-      });
-    return this.managerService;
+      return resolveService(this.nc, this.binding.space, this.binding.endpoint, this.binding.caller, { instanceId, commands: [command] });
+    let service = this.managerServices.get(command);
+    if (service === undefined) {
+      service = resolveService(this.nc, this.binding.space, this.binding.endpoint, this.binding.caller, { commands: [command] })
+        .catch((e) => {
+          this.managerServices.delete(command);
+          throw e;
+        });
+      this.managerServices.set(command, service);
+    }
+    return service;
   }
 
   /** A silent pinned describe before submission is host reachability evidence, not seat death. */
-  private async relayManagerBeforeSubmit(host: string | undefined, ref: GoalRef, kind: "turn" | "ask" | "checkpoint", label: string): Promise<ResolvedService> {
-    try { return await this.manager(host); }
+  private async relayManagerBeforeSubmit(host: string | undefined, command: string, ref: GoalRef, kind: "turn" | "ask" | "checkpoint", label: string): Promise<ResolvedService> {
+    try { return await this.manager(command, host); }
     catch (err) {
       if (host !== undefined && unansweredRequest(err) && (await readGoalStatus(await this.actionCtx(), ref)) === undefined)
         throw new EffectError("L4002", kind, `${label}: placed host ${host} unreachable`);
@@ -303,8 +314,8 @@ export class MeshHandler {
     opts: { target?: EpVerbTarget; deadlineMs?: number; id?: string },
   ): Promise<EpAttributedReply> {
     return invokeRepairingSplit(this.nc, this.binding.space, service, command, args, opts, () => {
-      this.managerService = undefined;
-      return this.manager();
+      this.managerServices.delete(command);
+      return this.manager(command);
     });
   }
 
@@ -392,6 +403,49 @@ export class MeshHandler {
       throw e;
     });
     return this.channelsKvOpen;
+  }
+
+  /** The lifecycle read-ACL registry a conclave's membership write is fenced on (#4995). Opened,
+   *  never created. A mesh without one (open mode) records no read ACLs, so there is nothing to
+   *  fence on and the write proceeds as before: opening a bucket is lazy, so its absence is found
+   *  by the first read, which marks the registry absent here. Any other failure stays loud. */
+  private aclKvOpen: Promise<KV | undefined> | undefined;
+  private aclRegistry(): Promise<KV | undefined> {
+    this.aclKvOpen ??= openAclRegistry(this.nc, this.binding.space).then((kv) => kv, (e: unknown) => {
+      if (isStreamNotFound(e)) return undefined;
+      this.aclKvOpen = undefined;
+      throw e;
+    });
+    return this.aclKvOpen;
+  }
+
+  /** Whether the member lifecycle's exact read-ACL row allows `channel` now; true when the space has
+   *  no ACL registry at all (open mode), which the read is the first to find out. */
+  private async memberAclAllows(aclKv: KV, m: { principal: string; uid: string }, channel: string): Promise<boolean> {
+    let row: Awaited<ReturnType<typeof readAcl>>;
+    try {
+      row = await readAcl(aclKv, m.principal, m.uid);
+    } catch (e) {
+      if (!isStreamNotFound(e)) throw e;
+      this.aclKvOpen = Promise.resolve(undefined);
+      return true;
+    }
+    return row !== undefined && channelInAllow(row.record.allowSubscribe, channel);
+  }
+
+  /** The post-write half of the conclave's ACL fence: keep the row just written (at `revision`) only
+   *  on proof the member's ACL row still allows the channel. A row the ACL proves disallowed goes by
+   *  its exact key, whoever wrote its latest revision. When the read fails nothing is proven, so only
+   *  this write is taken back (a later revision belongs to another writer) and the failure is thrown. */
+  private async keepMemberRowIfAclAllows(aclKv: KV, membersKv: KV, m: { principal: string; uid: string }, channel: string, revision: number): Promise<void> {
+    let allowed: boolean | undefined;
+    let readFailure: unknown;
+    try { allowed = await this.memberAclAllows(aclKv, m, channel); } catch (e) { readFailure = e; }
+    if (allowed === true) return;
+    const key = memberKey(channel, m.principal, m.uid);
+    if (allowed === false) { await membersKv.purge(key); return; }
+    try { await membersKv.purge(key, { previousSeq: revision }); } catch { /* a later write replaced it: that write's row */ }
+    throw new Error(`conclave ${channel}: the read ACL of member ${m.principal} (lifecycle ${m.uid}) could not be re-read after its row was written; the write was taken back`, { cause: readFailure });
   }
 
   /** The chat stream's current last sequence — a conclave join/leave cursor (SPEC §7 interval). */
@@ -755,7 +809,7 @@ export class MeshHandler {
       // between the acceptance and the bind). The seat — if one came up — is not addressable from
       // here, and no retry will ever learn more, so throwing would wedge every future sweep of
       // this run behind an answer that cannot arrive. Name the leak for the operator instead.
-      console.error(`! discharge: the spawn goal "${goalId}" settled ${fact.state} with no readable agent identity; if its seat is up it must be despawned by hand (cotal ps)`);
+      console.error(`! discharge: the spawn goal "${goalId}" settled ${fact.state} with no readable agent identity; if its seat is up it must be despawned by hand (\`cotal ps\`)`);
       return;
     }
     // The manager that committed the terminal allocated the seat, and a manager's target resolver
@@ -765,7 +819,7 @@ export class MeshHandler {
     // nothing ran. A bounded run of them leaves the discharge open rather than claiming it gone.
     const allocator = fact.committer?.instanceId;
     for (let attempt = 0; ; attempt += 1) {
-      const reply = await this.invokeManager(await this.manager(), "despawn", { graceful: true }, {
+      const reply = await this.invokeManager(await this.manager("despawn"), "despawn", { graceful: true }, {
         target: { mode: "owner", ...target },
         deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
       });
@@ -780,7 +834,7 @@ export class MeshHandler {
       if (!unrun && (allocator === undefined || reply.responder.instanceId === allocator)) return;
       if (attempt === MANAGER_ROUTE_ATTEMPTS)
         throw new Error(`the spawn goal "${goalId}" was allocated by manager instance ${allocator ?? "(unrecorded)"}, but none of ${attempt + 1} despawns was answered by it, and neither another manager's miss nor a refusal that ran nothing means it is gone; the discharge stays open to retry`);
-      this.managerService = undefined;
+      this.managerServices.delete("despawn");
     }
   }
 
@@ -1160,8 +1214,7 @@ export class MeshHandler {
       ? undefined
       : { endpoint: this.binding.endpoint, token: ctx.requestId };
     if (primary !== undefined) await this.arm(primary, this.now() + parseDuration(req.timeout!));
-    let lapsedSince: number | undefined;
-    let lastReadAt = 0;
+    const watch: DeathWatch = {};
     const decided = async (): Promise<boolean> => ctx.signal.cancelled || (await this.expired(primary)) !== undefined;
     for (;;) {
       if (ctx.signal.cancelled) {
@@ -1170,33 +1223,11 @@ export class MeshHandler {
       }
       const ended = await this.expired(primary);
       if (ended !== undefined) return null;
-      let rows: readonly Presence[];
-      const readAt = this.now();
-      try {
-        rows = await this.presenceRows();
-      } catch (e) {
-        // `liveKvEntries` REFUSES a pass cut short mid-scan instead of returning a partial view —
-        // and a partial view is exactly what must not decide a death. Its own contract says retry,
-        // so the next poll is the retry; a link that stays down keeps surfacing here rather than
-        // as a false DOWN, and the deadline above still ends the wait.
-        if (e instanceof IncompleteKvScan) {
-          await delay(WAIT_POLL_MS);
-          continue;
-        }
-        throw e;
+      const reason = await this.presenceDeath(name, uid, watch, decided);
+      if (reason !== undefined) {
+        if (primary !== undefined) await this.cancelTimer(primary);
+        return { agent: ev.agent, reason, at: this.now() };
       }
-      if (!rows.some((p) => p.card.name === name && p.lifecycleUid === uid)) {
-        const reason = rows.some((p) => p.card.name === name) ? "superseded" : "lapsed";
-        lapsedSince = lapseWindow(lapsedSince, lastReadAt, this.now());
-        if (reason === "superseded" || readAt - lapsedSince >= LAPSE_CONFIRM_MS) {
-          if (reason === "lapsed" && !(await this.lapseStands(name, uid, decided))) lapsedSince = undefined;
-          else {
-            if (primary !== undefined) await this.cancelTimer(primary);
-            return { agent: ev.agent, reason, at: this.now() };
-          }
-        }
-      } else lapsedSince = undefined;
-      lastReadAt = readAt;
       await delay(WAIT_POLL_MS);
     }
   }
@@ -1435,7 +1466,8 @@ export class MeshHandler {
         // to resolve and skips both the invoke and the bind, so its behaviour is unchanged.
         let resolution = readCwdResolution(recorded?.resolution);
         try {
-          const service = await this.manager(req.placement?.instanceId);
+          const command = req.cwd !== undefined && resolution === undefined ? "resolve-cwd" : "spawn";
+          const service = await this.manager(command, req.placement?.instanceId);
           if (req.cwd !== undefined && resolution === undefined) {
             // `req.placement` is guaranteed here: a cwd without one refused at the affinity gate above.
             resolution = await this.resolveCwd(req, service, req.cwd, req.placement?.instanceId ?? "");
@@ -1444,7 +1476,8 @@ export class MeshHandler {
             // a launched seat whose directory no record names.
             await ctx.bind({ resolution });
           }
-          reply = await this.invokeManager(service, "spawn",
+          const spawnService = service.commands.has("spawn") ? service : await this.manager("spawn", req.placement?.instanceId);
+          reply = await this.invokeManager(spawnService, "spawn",
             spawnArgs(resolution === undefined ? req : { ...req, cwd: resolution.cwd }), {
               id: goalId,
               deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
@@ -1619,8 +1652,8 @@ export class MeshHandler {
       const payload = JSON.stringify({ run: this.binding.runId, step, context, noticeIds: notices.map((n) => n.noticeId) });
       let submitted = false;
       const submit = async (): Promise<EpAttributedReply> => {
-        const service = submitted ? await this.manager(host)
-          : await this.relayManagerBeforeSubmit(host, ref, "turn", `turn(${name}#${uid})`);
+        const service = submitted ? await this.manager("turn", host)
+          : await this.relayManagerBeforeSubmit(host, "turn", ref, "turn", `turn(${name}#${uid})`);
         // After invocation may have run, retain the existing goal reconciliation.
         submitted = true;
         return this.invokeManager(service, "turn",
@@ -1687,8 +1720,7 @@ export class MeshHandler {
     await this.arm(primary, deadlineAt);
 
     const actx = await this.actionCtx();
-    let lapsedSince: number | undefined;
-    let lastReadAt = 0;
+    const watch: DeathWatch = {};
     const decided = async (): Promise<boolean> =>
       ctx.signal.cancelled || (await readGoalResult(actx, ref)) !== undefined || (await this.expired(primary)) !== undefined;
     try {
@@ -1706,26 +1738,11 @@ export class MeshHandler {
         const ended = await this.expired(primary);
         if (ended !== undefined)
           throw new EffectError("L4003", "turn-deadline", `turn(${name}#${uid}) deadline elapsed before a yield`);
-        let rows: readonly Presence[];
-        const readAt = this.now();
-        try {
-          rows = await this.presenceRows();
-        } catch (e) {
-          if (e instanceof IncompleteKvScan) { await delay(WAIT_POLL_MS); continue; }
-          throw e;
+        const reason = await this.presenceDeath(name, uid, watch, decided);
+        if (reason !== undefined) {
+          await this.cancelTimer(primary);
+          throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down (${reason}) before a yield`);
         }
-        if (!rows.some((pr) => pr.card.name === name && pr.lifecycleUid === uid)) {
-          const reason = rows.some((pr) => pr.card.name === name) ? "superseded" : "lapsed";
-          lapsedSince = lapseWindow(lapsedSince, lastReadAt, this.now());
-          if (reason === "superseded" || readAt - lapsedSince >= LAPSE_CONFIRM_MS) {
-            if (reason === "lapsed" && !(await this.lapseStands(name, uid, decided))) lapsedSince = undefined;
-            else {
-              await this.cancelTimer(primary);
-              throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down (${reason}) before a yield`);
-            }
-          }
-        } else lapsedSince = undefined;
-        lastReadAt = readAt;
         await delay(WAIT_POLL_MS);
       }
     } catch (e) {
@@ -2028,7 +2045,7 @@ export class MeshHandler {
     const ref: GoalRef = { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId };
     const actx = await this.actionCtx();
     if ((await readGoalStatus(actx, ref)) !== undefined) return;
-    const service = await this.relayManagerBeforeSubmit(seat.host, ref, kind, `${kind}(${step})`);
+    const service = await this.relayManagerBeforeSubmit(seat.host, "turn", ref, kind, `${kind}(${step})`);
     let reply: EpAttributedReply;
     try {
       reply = await this.invokeManager(service, "turn",
@@ -2068,7 +2085,7 @@ export class MeshHandler {
     if ((await readGoalStatus(actx, ref)) === undefined) return;
     const accepter = (await readGoalIndex(actx, ref))?.iid;
     for (let attempt = 0; ; attempt += 1) {
-      const reply = await this.invokeManager(await this.manager(), "cancel", { goalId }, { deadlineMs: TURN_ACCEPT_DEADLINE_MS });
+      const reply = await this.invokeManager(await this.manager("cancel"), "cancel", { goalId }, { deadlineMs: TURN_ACCEPT_DEADLINE_MS });
       if (reply.reply.ok !== false || (await readGoalResult(actx, ref)) !== undefined) return;
       if (accepter === undefined || reply.responder.instanceId === accepter) {
         const err = reply.reply.error!;
@@ -2076,7 +2093,7 @@ export class MeshHandler {
       }
       if (attempt === MANAGER_ROUTE_ATTEMPTS)
         throw new Error(`the relay "${goalId}" was accepted by manager instance ${accepter}, but none of ${attempt + 1} cancels was answered by it; the discharge stays open to retry`);
-      this.managerService = undefined;
+      this.managerServices.delete("cancel");
     }
   }
 
@@ -2271,8 +2288,16 @@ export class MeshHandler {
     for (const m of joins) {
       const existing = await readMember(membersKv, plan.channel, m.principal, m.uid);
       if (existing !== undefined && existing.record.generation >= m.generation) continue;
+      const aclKv = await this.aclRegistry();
+      // The member lifecycle's exact read-ACL row is the fence a retirement relies on: it is narrowed
+      // before the retirement's membership inventory is read, so a row created after that read must
+      // refuse itself (#4984). This write is a creating writer outside the delivery daemon (#4995), so
+      // it reads that row just before the commit and again after it, as the daemon's join does: a
+      // member the row no longer covers gets no row, and a row written while it was narrowed goes.
+      if (aclKv !== undefined && !(await this.memberAclAllows(aclKv, m, plan.channel))) continue;
+      let written: { revision: number };
       try {
-        await commitMember(membersKv, {
+        written = await commitMemberRevision(membersKv, {
           channel: plan.channel,
           owner: m.principal,
           lifecycleUid: m.uid,
@@ -2290,7 +2315,9 @@ export class MeshHandler {
         // A concurrent newer write won between the read and the commit — same verdict as the
         // read-side skip above: the membership is the newer writer's now.
         if (!(e instanceof StaleMembershipWrite)) throw e;
+        continue;
       }
+      if (aclKv !== undefined) await this.keepMemberRowIfAclAllows(aclKv, membersKv, m, plan.channel, written.revision);
     }
   }
 
@@ -2322,7 +2349,7 @@ export class MeshHandler {
     }
   }
 
-  /** Every live presence row that decodes to a card with a string id and name. Foreign bytes in
+  /** Every live presence row {@link isPresenceRow} accepts under its KV key. Foreign bytes in
    *  the bucket are skipped — a peer's malformed self-publish must not break another agent's name
    *  resolution — and what an ABSENT row means belongs to the caller: `resolveMemberPrincipal`
    *  refuses the join loudly, and `waitDown` reads it as the death it is waiting for. */
@@ -2335,9 +2362,47 @@ export class MeshHandler {
       } catch {
         continue;
       }
-      if (isPresenceRow(row)) rows.push(row);
+      if (isPresenceRow(row, e.key)) rows.push(row);
     }
     return rows;
+  }
+
+  /** One poll of the presence death watch `wait(down)` and `turn` share. `undefined` means this
+   *  incarnation is still live, or a lapse has not yet stood for {@link LAPSE_CONFIRM_MS}. A missing
+   *  incarnation is `"superseded"` when a live row holds the name and `"lapsed"` when nothing does.
+   *  `watch` is the caller's own window, written here and read on the next poll. An incomplete scan
+   *  decides nothing and returns `undefined`; every other read failure is raised. */
+  private async presenceDeath(
+    name: string,
+    uid: string,
+    watch: DeathWatch,
+    decided: () => Promise<boolean>,
+  ): Promise<"superseded" | "lapsed" | undefined> {
+    let rows: readonly Presence[];
+    const readAt = this.now();
+    try {
+      rows = await this.presenceRows();
+    } catch (e) {
+      // `liveKvEntries` REFUSES a pass cut short mid-scan instead of returning a partial view —
+      // and a partial view is exactly what must not decide a death. Its own contract says retry,
+      // so the next poll is the retry; a link that stays down keeps surfacing here rather than
+      // as a false DOWN, and the caller's deadline still ends the wait.
+      if (e instanceof IncompleteKvScan) return undefined;
+      throw e;
+    }
+    if (!rows.some((p) => p.card.name === name && p.lifecycleUid === uid)) {
+      const reason = rows.some((p) => p.card.name === name) ? "superseded" : "lapsed";
+      watch.lapsedSince = lapseWindow(watch.lapsedSince, watch.lastReadAt ?? 0, this.now());
+      if (reason === "superseded" || readAt - watch.lapsedSince >= LAPSE_CONFIRM_MS) {
+        if (reason === "lapsed" && !(await this.lapseStands(name, uid, decided))) watch.lapsedSince = undefined;
+        else {
+          watch.lastReadAt = readAt;
+          return reason;
+        }
+      }
+    } else watch.lapsedSince = undefined;
+    watch.lastReadAt = readAt;
+    return undefined;
   }
 
   /** Whether a lapse of `name#uid` confirmed from presence stands as the death, asked of the manager
@@ -2361,7 +2426,7 @@ export class MeshHandler {
       if (await decided()) return false;
       let answer: EpAttributedReply;
       try {
-        answer = await this.invokeManager(await this.manager(), "inspect", { name }, {});
+        answer = await this.invokeManager(await this.manager("inspect"), "inspect", { name }, {});
       } catch (e) {
         if (unansweredRequest(e)) break;
         if (await decided()) return false;
@@ -2375,7 +2440,7 @@ export class MeshHandler {
         if (await decided()) return false;
         throw new Error(`inspect(${name}) was refused by manager instance ${allocator}, which allocated ${name}#${uid}: ${reply.error?.message ?? "refused with no message"}`);
       }
-      this.managerService = undefined;
+      this.managerServices.delete("inspect");
     }
     return !(await decided());
   }
@@ -2726,6 +2791,8 @@ const PRESENCE_GAP_MS = 6_000;
  *  read began within {@link PRESENCE_GAP_MS}, otherwise this read opens a new one. */
 const lapseWindow = (lapsedSince: number | undefined, lastReadAt: number, now: number): number =>
   lapsedSince === undefined || now - lastReadAt > PRESENCE_GAP_MS ? now : lapsedSince;
+/** One caller's window across polls of the presence death watch. */
+interface DeathWatch { lapsedSince?: number; lastReadAt?: number }
 /** The budgets this host meters for an agent, read from the spawn's `permits` record. */
 type AgentPermits = { turns?: number; wallClockMs?: number };
 /** The seat an ask is told to: its roster identity and address.
@@ -3039,16 +3106,6 @@ function isConclavePlan(v: unknown): v is ConclavePlan {
     return typeof r.agent === "string" && typeof r.principal === "string" && typeof r.uid === "string"
       && typeof r.generation === "number" && typeof r.joined === "boolean";
   });
-}
-
-/** Whether a decoded presence value carries the string `card.id` and `card.name` that every
- *  presence reader here matches on or returns. */
-function isPresenceRow(v: unknown): v is Presence {
-  if (typeof v !== "object" || v === null) return false;
-  const card = (v as Record<string, unknown>).card;
-  if (typeof card !== "object" || card === null) return false;
-  const c = card as Record<string, unknown>;
-  return typeof c.id === "string" && typeof c.name === "string";
 }
 
 /** Split an agent handle `<name>#<lifecycleUid>` on its LAST `#` — the uid alphabet

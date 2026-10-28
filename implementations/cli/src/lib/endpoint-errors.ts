@@ -1,5 +1,5 @@
 import { BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, unansweredRequest, type EpAttributedReply } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, isConnectRefusal, type RefusalCode } from "@cotal-ai/workspace";
+import { CommandFailure, codeSpan, isCommandFailure, isConnectRefusal, type RefusalCode } from "@cotal-ai/workspace";
 
 /** Native boundary codes only. A code without a not-executed outcome is not proof of refusal. */
 export function nativeEndpointRefusal(code: string | undefined): RefusalCode | undefined {
@@ -19,7 +19,7 @@ export function endpointFailure(error: unknown, target: Record<string, unknown>,
   if (!mayHaveInvoked && unansweredRequest(error)) {
     const endpoint = typeof target.endpoint === "string" ? target.endpoint : "the endpoint";
     const space = typeof target.space === "string" ? ` --space ${shellWord(target.space)}` : "";
-    return new CommandFailure("refused", "TARGET_UNAVAILABLE", `no instance of ${endpoint} answered its contract read, so nothing is serving it or none could be reached`, { target, native, remedy: `start the service that serves ${endpoint}, then run the command again; cotal service${space} lists this space's services`, cause: error });
+    return new CommandFailure("refused", "TARGET_UNAVAILABLE", `no instance of ${endpoint} answered its contract read, so nothing is serving it or none could be reached`, { target, native, remedy: `start the service that serves ${endpoint}, then run the command again; \`cotal service${space}\` lists this space's services`, cause: error });
   }
   const code = nativeEndpointRefusal(native?.code);
   if ((!mayHaveInvoked || native?.outcome === "not-executed") && code) return new CommandFailure("refused", code, mayHaveInvoked ? "the native endpoint refused the call before execution" : "the native endpoint view could not be resolved under this caller", { target, native, cause: error });
@@ -40,6 +40,6 @@ export function withPairedCallerRemedy(failure: CommandFailure, endpoint: string
   const server = target.server === undefined ? "" : ` --server ${shellWord(target.server)}`;
   return new CommandFailure(failure.outcome, failure.code, failure.message, {
     target: failure.target, ...(failure.native ? { native: failure.native } : {}), ...(failure.changed ? { changed: failure.changed } : {}), cause: failure.cause,
-    remedy: `issue a caller for ${endpoint} with cotal auth mint <name> --endpoint ${endpoint} --space ${shellWord(target.space)}${server} --out <private-file>, then rerun with --creds <private-file>`,
+    remedy: `issue a caller for ${endpoint} with ${codeSpan(`cotal auth mint <name> --endpoint ${endpoint} --space ${shellWord(target.space)}${server} --out <private-file>`)}, then rerun with --creds <private-file>`,
   });
 }

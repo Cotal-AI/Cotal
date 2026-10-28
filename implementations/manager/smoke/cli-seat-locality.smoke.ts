@@ -201,7 +201,7 @@ try {
     /no managed agent .* on any of the \d+ reachable manager instance/.test(ghost.out), ghost.out.slice(-400));
   // The same miss with `--on` refuses TARGET_NOT_FOUND, exit 2; the unpinned form refuses the same way.
   check("...as a TARGET_NOT_FOUND refusal, exit 2, naming both managers and `cotal ps`",
-    ghost.status === 2 && /Code:\s+TARGET_NOT_FOUND/.test(ghost.out) && ghost.out.includes(IID1) && ghost.out.includes(IID2) && ghost.out.includes("run cotal ps to see the agents each manager runs"), ghost.out.slice(-600));
+    ghost.status === 2 && /Code:\s+TARGET_NOT_FOUND/.test(ghost.out) && ghost.out.includes(IID1) && ghost.out.includes(IID2) && ghost.out.includes("run `cotal ps` to see the agents each manager runs"), ghost.out.slice(-600));
   const misses = await Promise.all([
     cotal(["stop", "--name", "no-such-seat", "--space", space, "--server", SERVERS, "--json"], root1),
     cotal(["input", "no-such-seat", "hello", "--space", space, "--server", SERVERS, "--json"], root1),

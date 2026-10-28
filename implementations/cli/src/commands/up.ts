@@ -24,6 +24,8 @@ import {
   dialerFor,
   DEFAULT_SERVER,
   DEFAULT_SPACE,
+  SERVICE_AUTHORITY_MAX_BYTES,
+  SERVICE_CALLER_PAYLOAD_FLOOR,
   createSpaceAuth,
   serverConfig,
   openServerConfig,
@@ -37,6 +39,9 @@ import {
   mintMembershipObserverCreds,
   newIdentity,
   setupSpaceStreams,
+  removeIssuedStoresBeforeRetention,
+  IssuedStoreBeforeRetentionError,
+  IssuedStoreRecreateRefusal,
   reconcileSpaceTtls,
   ttlBuckets,
   standaloneConnectOpts,
@@ -48,6 +53,7 @@ import {
   isJetStreamMissing,
   seedChannelRegistry,
   ensureDefaultDeliveryClass,
+  UndecodableRegistryEntry,
   assertValidChannel,
   isConcreteChannel,
   validateChannelConfig,
@@ -83,13 +89,13 @@ import {
   identityRecord,
   parseRecord,
   CommandFailure,
+  codeSpan,
   commandFailureReport,
   isCommandFailure,
   protectedLocalDirectory,
   jsonFlag,
   plainFlag,
   renderReport,
-  terminalWidth,
   assertSingleSpaceBroker,
   assertUserAuthInfo,
   authDir,
@@ -192,6 +198,7 @@ import {
   spaceNameTooLong,
   MIN_FILE_STORE,
   NATS_PIDFILE,
+  UNTRUSTED_CERTIFICATE,
   exitCode,
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
@@ -320,7 +327,7 @@ export async function startRestore(values: { restore: string; "restore-only"?: s
   await up({ values: { ...values }, positionals: [], raw: [] }, undefined, false, (result) => { returned = result; });
   if (!returned) {
     const root = cotalRoot(), held = heldRestoreAttempt(root);
-    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the guarded restore returned without its activation result; the journal records its state and no step was repeated", { target: { root, ...(held ? { attemptId: held.attemptId, journalState: held.journalState } : {}) }, remedy: held?.remedy ?? "this root's maintenance journal names no restore attempt; check it with cotal status" });
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the guarded restore returned without its activation result; the journal records its state and no step was repeated", { target: { root, ...(held ? { attemptId: held.attemptId, journalState: held.journalState } : {}) }, remedy: held?.remedy ?? "this root's maintenance journal names no restore attempt; check it with `cotal status`" });
   }
   return returned;
 }
@@ -354,6 +361,7 @@ export const upFlags: FlagSpec[] = [
   { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
   { name: "max-file-store", type: "string", value: "<bytes>", description: "JetStream file storage cap in bytes (default: nats-server's dynamic cap). Fixed at broker start and recorded for the next `up`; a legacy root also keeps it across `down --preserve-state`" },
   { name: "auth-timeout", type: "string", value: "<seconds>", description: "user-auth only: how long the broker waits for the auth callout, 1 to 60 seconds (default: nats-server's 2); the auth service answers inside it. Fixed at broker start and recorded for the next `up`" },
+  { name: "max-payload", type: "string", value: "<bytes>", description: "broker-wide message size limit in bytes (default: nats-server's 1048576). Service endpoint caller grants need at least 2098176. Fixed at broker start and recorded for the next `up`" },
   { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json)" },
   { name: "tls-cert", type: "string", value: "<file>", description: "serve the broker over TLS with this certificate (requires --tls-key)" },
   { name: "tls-key", type: "string", value: "<file>", description: "the private key for --tls-cert" },
@@ -371,7 +379,8 @@ export const upFlags: FlagSpec[] = [
   { name: "service-endpoints", type: "boolean", description: "with --user-auth: the auth service also hosts service endpoints (the registration door and the owner-decision host route)" },
   { name: "agent-provisioning-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the deployment's remote agent-provisioning endpoint the public bundle advertises" },
   { name: "rotate-sys", type: "boolean", description: "renew the expired/expiring $SYS creds by rotating the system account (agents, data and creds survive; needs a stopped mesh)" },
-  { name: "detach", type: "boolean", short: "d", description: "run in the background (the default; stop with cotal down)" },
+  { name: "recreate-issued-stores", type: "string", value: "<backup-dir>", description: "back up this space's issued-authority stores created before 0.111.0 into a new <backup-dir>, delete them and create them again (needs a stopped stack and every other issuer of the space stopped)" },
+  { name: "detach", type: "boolean", short: "d", description: "run in the background (the default; stop with `cotal down`)" },
   { name: "foreground", type: "boolean", description: "keep a non-manifest native stack in this terminal; -f currently refuses" },
   { name: "runtime", type: "string", value: "<name>", description: "agent runtime for the mesh manager (default pty; extension runtimes are explicit-only, see `cotal runtimes`); with -f overrides the manifest's runtime" },
   { name: "max-sessions", type: "string", value: "<n>", description: "live-session ceiling for the mesh manager (default 64; one session per console pane, so size for agents × panes). Recorded and reused by later manager launches" },
@@ -394,10 +403,18 @@ export function upComplete(argv: string[]): CompletionResult {
     return { items: ["pty", ...extensionNames("runtime")].filter((v, i, a) => a.indexOf(v) === i).map((value) => ({ value })), directive: "nofiles" };
   if (flag?.name === "restore-only")
     return { items: [{ value: "registry" }], directive: "nofiles" };
-  if (flag && ["root", "restore", "file", "channels", "tls-cert", "tls-key", "store-dir"].includes(flag.name)) return { items: [], directive: "default" };
+  if (flag && ["root", "restore", "recreate-issued-stores", "file", "channels", "tls-cert", "tls-key", "store-dir"].includes(flag.name)) return { items: [], directive: "default" };
   if (flag) return { items: [], directive: "nofiles" };
   const items = upFlags.map((f) => ({ value: `--${f.name}`, description: f.description }));
   return { items, directive: items.length ? "nofiles" : "default" };
+}
+
+/** `--recreate-issued-stores <backup-dir>` names a directory the step creates, so it must not exist
+ *  and its parent must. Checked before anything starts; the step checks again when it creates it. */
+function assertIssuedBackupDirArgument(raw: string): void {
+  const dir = resolve(raw);
+  const problem = !raw.trim() ? "is empty" : existsSync(dir) ? `${dir} already exists` : !existsSync(dirname(dir)) ? `${dirname(dir)} does not exist` : undefined;
+  if (problem) throw new CommandFailure("refused", "USAGE_INVALID", `--recreate-issued-stores names a new backup directory, and ${problem}; nothing was started`, { target: { backupDir: dir }, remedy: "name a directory that does not exist yet, inside one that does" });
 }
 
 /** Launch intent is checked by the kernel before seed or effect preparation. A recovery
@@ -418,7 +435,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (args.values.foreground === true && args.values.detach === true) throw new CommandFailure("refused", "USAGE_INVALID", "choose --foreground or --detach, not both");
   // Only a manifest launch has a plan to print; without -f every route would start the stack.
   if (args.values["dry-run"] === true && !args.values.file)
-    throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run previews a manifest launch and needs -f <cotal.yaml>; nothing was started or written", { remedy: "pass -f <cotal.yaml> to print that manifest's plan; cotal status shows what this folder records" });
+    throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run previews a manifest launch and needs -f <cotal.yaml>; nothing was started or written", { remedy: "pass -f <cotal.yaml> to print that manifest's plan; `cotal status` shows what this folder records" });
   // The stack passes its space to its own children as `--space <name>`, which a leading - breaks.
   const named = typeof args.values.space === "string" ? checkSpaceFlagValue(args.values.space) : undefined;
   if (named && !named.ok) throw new CommandFailure("refused", "USAGE_INVALID", `${named.message.replace(/^✗ /, "")}; nothing was started or written`, { remedy: named.remedy });
@@ -452,22 +469,40 @@ export function validateUpArguments(args: ParsedArgs): void {
     if (args.values.open === true) throw new CommandFailure("refused", "USAGE_INVALID", "--auth-timeout sets the auth callout's timeout, and an open space has no auth callout; nothing was started", { remedy: "drop --auth-timeout, or start a user-auth space with --user-auth" });
     if (args.values.file !== undefined || args.values.restore !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--auth-timeout cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}, which starts the broker its own record describes; nothing was started`, { remedy: "start it without --auth-timeout; a recorded timeout is rendered again" });
   }
+  // The payload limit is rendered by the auth-mode broker configuration. The open broker renders a
+  // different one that carries no limit, and a manifest or a restore starts the broker its own
+  // record describes, so none of the three takes the flag.
+  const requestedPayload = parseMaxPayload(args.values["max-payload"] as string | undefined);
+  if (requestedPayload !== undefined) {
+    if (args.values.open === true) throw new CommandFailure("refused", "USAGE_INVALID", "--max-payload sets the broker's message size limit, which the open broker configuration does not render; nothing was started", { remedy: "drop --max-payload, or start an auth space without --open" });
+    if (args.values.file !== undefined || args.values.restore !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--max-payload cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}, which starts the broker its own record describes; nothing was started`, { remedy: "start it without --max-payload; a recorded limit is rendered again" });
+    // A space that admits service endpoints is a space whose auth host asserts the caller payload
+    // precondition at startup, and that assertion REFUSES below the floor, so the auth context does
+    // not open at all. Refusing the pair here is the difference between a usage error before
+    // anything starts and a broker that comes up without its auth plane.
+    if (args.values["service-endpoints"] === true && requestedPayload < SERVICE_CALLER_PAYLOAD_FLOOR)
+      throw new CommandFailure("refused", "USAGE_INVALID", `--max-payload ${requestedPayload} is below ${SERVICE_CALLER_PAYLOAD_FLOOR} bytes, the least a space with --service-endpoints starts on: a caller policy row may grow to ${SERVICE_AUTHORITY_MAX_BYTES} bytes and its write needs ${SERVICE_CALLER_PAYLOAD_FLOOR - SERVICE_AUTHORITY_MAX_BYTES} more, so the auth host refuses to open; nothing was started`, { remedy: `pass --max-payload ${SERVICE_CALLER_PAYLOAD_FLOOR} or more, or drop --service-endpoints` });
+  }
   if (typeof args.values["store-dir"] === "string") assertStoreDirArgument(args.values["store-dir"], typeof args.values.root === "string" ? resolve(args.values.root) : freshFolderRoot(args.values) ?? cotalRoot());
   const restoreOnly = args.values["restore-only"];
   if (restoreOnly !== undefined && restoreOnly !== "registry") throw new CommandFailure("refused", "USAGE_INVALID", `--restore-only takes registry (got ${JSON.stringify(restoreOnly)})`);
   if (!args.values.restore && (restoreOnly !== undefined || args.values["accept-missing-source"] === true)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore-only and --accept-missing-source require --restore <dir>");
   if (args.values.restore && (args.values.file !== undefined || args.values.channels !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --file/-f or --channels");
-  if (args.values.restore && args.values["rotate-sys"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --rotate-sys", { remedy: "restore the space and verify it first, then rotate: cotal down, then cotal up --rotate-sys" });
+  if (args.values.restore && args.values["rotate-sys"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --rotate-sys", { remedy: "restore the space and verify it first, then rotate: `cotal down`, then `cotal up --rotate-sys`" });
+  if (args.values["recreate-issued-stores"] !== undefined) {
+    if (args.values.file !== undefined || args.values.restore !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--recreate-issued-stores cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}; nothing was started`, { remedy: "run `cotal up --space <space> --recreate-issued-stores <backup-dir>` on its own first" });
+    assertIssuedBackupDirArgument(String(args.values["recreate-issued-stores"]));
+  }
   if (args.values.root !== undefined) preparedUpRoot(String(args.values.root));
   else if (!(args.values.file && args.values["dry-run"] === true)) {
     const inheritedRoot = inheritedMachineHomeRoot();
     if (inheritedRoot) {
       if (!freshFolderRoot(args.values))
-        throw new CommandFailure("refused", "CONFLICT", "this folder inherits the machine's home .cotal; up did not start a stack in that home root", { target: { root: process.cwd(), inheritedRoot }, remedy: "prepare this folder with cotal space create <space> --root ., then run cotal up again from this folder" });
+        throw new CommandFailure("refused", "CONFLICT", "this folder inherits the machine's home .cotal; up did not start a stack in that home root", { target: { root: process.cwd(), inheritedRoot }, remedy: "prepare this folder with `cotal space create <space> --root .`, then run `cotal up` again from this folder" });
     } else {
       const home = machineHomeRoot();
       if (home && !homeHoldsStack(home))
-        throw new CommandFailure("refused", "CONFLICT", `${home} is your home folder, whose .cotal holds this machine's own records, so up started no stack there`, { target: { root: home }, remedy: "prepare a project folder with cotal space create <space> --root <dir>, then run cotal up there, or pass --root <dir> from here" });
+        throw new CommandFailure("refused", "CONFLICT", `${home} is your home folder, whose .cotal holds this machine's own records, so up started no stack there`, { target: { root: home }, remedy: "prepare a project folder with `cotal space create <space> --root <dir>`, then run `cotal up` there, or pass --root <dir> from here" });
     }
   }
   if (args.values.restore !== undefined) refuseControllerCut(args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot(), "up --restore");
@@ -475,11 +510,11 @@ export function validateUpArguments(args: ParsedArgs): void {
     const root = args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : freshFolderRoot(args.values) ?? cotalRoot();
     // A path with a control character or a bidirectional formatting mark is refused before any write.
     const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
-    if (pathProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${pathProblem}; nothing was started or written`, { target: { root }, remedy: "rename the folder without those characters, then run cotal up there" });
+    if (pathProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${pathProblem}; nothing was started or written`, { target: { root }, remedy: "rename the folder without those characters, then run `cotal up` there" });
     const control = rootControlProblem(root);
     if (control) throw new CommandFailure("refused", "CONFLICT", `${control.message}; nothing was started or written`, { target: { root, controlDirectory: control.controlDirectory }, remedy: control.project === undefined
-      ? "prepare a project folder with cotal space create <space> --root <dir>, then run cotal up there"
-      : `run cotal up from the project folder ${shellWord(control.project)}` });
+      ? "prepare a project folder with `cotal space create <space> --root <dir>`, then run `cotal up` there"
+      : `run \`cotal up\` from the project folder ${shellWord(control.project)}` });
     assertUpRootWritable(root);
     // A restore and a manifest name their own store.
     if (args.values.restore === undefined && args.values.file === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : undefined);
@@ -588,11 +623,11 @@ function folderNamedSpace(values: ParsedArgs["values"]): string | undefined {
   const checked = checkSpaceName(space);
   const invalid = spaceNameTooLong(space) ?? (checked.ok ? undefined : checked.message.replace(/^✗ /, ""));
   if (invalid)
-    throw new CommandFailure("refused", "USAGE_INVALID", `${named} the folder name ${JSON.stringify(space)} cannot be one: ${invalid}; nothing was started or written`, { target: { root }, remedy: "name the space with cotal up --space <name>", selfContained: true });
+    throw new CommandFailure("refused", "USAGE_INVALID", `${named} the folder name ${JSON.stringify(space)} cannot be one: ${invalid}; nothing was started or written`, { target: { root }, remedy: "name the space with `cotal up --space <name>`", selfContained: true });
   assertSelectionNotMoved(root, space);
   const held = findMesh(space) ?? findPreparedSpace(space);
   if (held)
-    throw new CommandFailure("refused", "CONFLICT", `${named} "${space}" is already ${"server" in held ? `registered at ${held.server}` : "prepared"} for ${held.root}; nothing was started or written`, { target: { root, space, heldBy: held.root }, remedy: "name this folder's space with cotal up --space <name>, naming one this machine does not use; cotal space lists the names in use" });
+    throw new CommandFailure("refused", "CONFLICT", `${named} "${space}" is already ${"server" in held ? `registered at ${held.server}` : "prepared"} for ${held.root}; nothing was started or written`, { target: { root, space, heldBy: held.root }, remedy: "name this folder's space with `cotal up --space <name>`, naming one this machine does not use; `cotal space` lists the names in use" });
   checkLocalSpace(space, root, "--root", false);
   return space;
 }
@@ -632,10 +667,10 @@ export function preparedUpRoot(value: string): string {
     const cotal = lstatSync(join(root, ".cotal"));
     if (!cotal.isDirectory() || cotal.isSymbolicLink()) throw new Error("not a private project directory");
   } catch {
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "--root must name an existing prepared local project with its own .cotal directory; no ancestor or other space was selected", { target: { root: resolve(value) }, remedy: "prepare it with cotal space create <space> --root <dir>, then retry with that root" });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "--root must name an existing prepared local project with its own .cotal directory; no ancestor or other space was selected", { target: { root: resolve(value) }, remedy: "prepare it with `cotal space create <space> --root <dir>`, then retry with that root" });
   }
   if (canonicalRoot(root) === canonicalRoot(homedir()) || canonicalRoot(join(root, ".cotal")) === canonicalRoot(homeCotalDir()))
-    throw new CommandFailure("refused", "CONFLICT", "--root names the machine's home store, not a prepared project; no stack was started there", { target: { root }, remedy: "prepare the space in a project folder with cotal space create <space> --root <dir>" });
+    throw new CommandFailure("refused", "CONFLICT", "--root names the machine's home store, not a prepared project; no stack was started there", { target: { root }, remedy: "prepare the space in a project folder with `cotal space create <space> --root <dir>`" });
   return root;
 }
 
@@ -656,7 +691,7 @@ function assertFreshTeamBootOwnership(root: string, space: string, mode?: "open"
   if (mode && mode !== "user" && userSpaces.length) throw new CommandFailure("refused", "CONFLICT", "this root retains user-auth state; a static or open team boot did not re-mode its identity", { target: { root, space } });
   if (localMeshesForRoot(root).some((entry) => entry.space !== space)) throw new CommandFailure("refused", "CONFLICT", "another locally registered space uses this broker root; fresh team boot did not reuse or replace its stack", { target: { root, space } });
   if (readMaintenanceJournal(root)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a recovery or maintenance attempt; team boot cannot substitute an ordinary startup", { target: { root, space } });
-  const manager = managerRecordState(undefined, undefined, space, root);
+  const manager = managerRecordState(space, root);
   if (manager.state !== "absent") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a manager record remains, including when its process appears dead; team boot will not stop or overwrite it", { target: { root, space, state: manager.state, path: manager.path }, remedy: "inspect the recorded manager and reconcile its own lifecycle before a fresh team boot" });
   const processes = liveMeshProcesses(root, space);
   if (processes.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a local component may still own this stack; team boot did not replace it", { target: { root, space, processes } });
@@ -695,7 +730,7 @@ function assertFreshTeamBootOwnership(root: string, space: string, mode?: "open"
  *  failed or unknown stop is reported with its retained members; nothing is force-killed. */
 function stopForegroundStack(root: string, signal: "SIGINT" | "SIGTERM"): Promise<void> {
   return stackDown(root, { yes: true }).catch((error) => {
-    process.stderr.write(`${renderReport(commandFailureReport(isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the foreground stack stop did not confirm its outcome; its members were retained")), "rich", terminalWidth(process.stderr))}\n`);
+    process.stderr.write(`${renderReport(commandFailureReport(isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the foreground stack stop did not confirm its outcome; its members were retained")), "rich", process.stderr)}\n`);
   }).finally(() => { process.exitCode = signal === "SIGINT" ? 130 : 143; });
 }
 
@@ -743,7 +778,7 @@ async function holdStack(root: string, start?: () => Promise<void>): Promise<voi
       stopping = true;
       process.off("SIGINT", interrupt); process.off("SIGTERM", terminate);
       clearInterval(lifetime);
-      process.stderr.write(`${renderReport({ sections: [{ title: "Foreground stack released", blocks: [{ kind: "lines", lines: [`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`] }] }] }, "rich", terminalWidth(process.stderr))}\n`);
+      process.stderr.write(`${renderReport({ sections: [{ title: "Foreground stack released", blocks: [{ kind: "lines", lines: [`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`] }] }] }, "rich", process.stderr)}\n`);
       process.exitCode = 0;
       resolveHold();
     }, 1000);
@@ -817,7 +852,7 @@ function seedMovedFailure(error: unknown): unknown {
     return error;
   }
   const changed = { kind: "seed-store", path: seedDir(), ...(moved.from === undefined ? {} : { from: moved.from }), to: moved.to };
-  return new CommandFailure(error.outcome, error.code, message, { remedy: error.remedy, native: error.native, target: error.target, changed: [...(error.changed ?? []), changed], cause: error.cause, selfContained: error.selfContained });
+  return new CommandFailure(error.outcome, error.code, message, { remedy: error.remedy, native: error.native, target: error.target, changed: [...(error.changed ?? []), changed], cause: error.cause, selfContained: error.selfContained, remedyIsCommand: error.remedyIsCommand });
 }
 
 /** `inheritedLock` is the root maintenance lock a recovery re-entry hands down (see the re-entry
@@ -890,10 +925,10 @@ const NO_MANAGER_DURING_RECOVERY = "--no-manager is refused while this root has 
 
 async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?: () => void, freshTeamBoot = false, restoreSink?: (result: RestoreStartupResult) => void): Promise<void> {
   const values = args.values as {
-    server?: string; "store-dir"?: string; "max-file-store"?: string; "auth-timeout"?: string; space?: string; root?: string; open?: boolean; "user-auth"?: boolean; "service-endpoints"?: boolean; idp?: string;
+    server?: string; "store-dir"?: string; "max-file-store"?: string; "auth-timeout"?: string; "max-payload"?: string; space?: string; root?: string; open?: boolean; "user-auth"?: boolean; "service-endpoints"?: boolean; idp?: string;
     "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
     channels?: string; detach?: boolean; foreground?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
-    restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean;
+    restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean; "recreate-issued-stores"?: string;
     "accept-stale-checkpoint"?: boolean;
     "tls-cert"?: string; "tls-key"?: string;
     "max-sessions"?: string;
@@ -907,8 +942,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     __folderNamed?: boolean;
   };
   if (freshTeamBoot && (!values.file || values.restore || values.__restoreAttempt || values.__ordinaryResumeAttempt || values["rotate-sys"] || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "fresh team boot accepts one manifest and its selected lifetime, not a restore, rotation or manager-free override");
-  if (values["manager-name"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--manager-name names the manager a plain cotal up starts; it cannot be combined with --restore, --file or --no-manager");
-  if (values["seat-cap"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--seat-cap caps the manager a plain cotal up starts; it cannot be combined with --restore, --file or --no-manager");
+  if (values["manager-name"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--manager-name names the manager a plain `cotal up` starts; it cannot be combined with --restore, --file or --no-manager");
+  if (values["seat-cap"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--seat-cap caps the manager a plain `cotal up` starts; it cannot be combined with --restore, --file or --no-manager");
   // `space create` and `down` refuse a root other local accounts can write, so `up` refuses it too,
   // before anything is written: a stack started there could not be stopped from it.
   protectedLocalDirectory(canonicalRoot(cotalRoot()), "the project root");
@@ -1001,6 +1036,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // `up` that has already begun adopting a maintenance attempt.
     if (values["rotate-sys"] && readMaintenanceJournal(root))
       throw new Error("--rotate-sys is refused while this root has a maintenance attempt to recover - finish or roll back that attempt (`cotal up` alone recovers it), then `cotal down` and `cotal up --rotate-sys`");
+    if (values["recreate-issued-stores"] !== undefined && readMaintenanceJournal(root))
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--recreate-issued-stores needs a fresh broker start, and this root has a maintenance attempt to recover; nothing was started", { target: { root }, remedy: "finish or roll back that attempt first (`cotal up` alone recovers it)" });
     // Raised here for the stronger reason the journal itself carries: a pending maintenance attempt
     // means the store is mid-recovery, and a broker-only boot over it is wrong with or without the
     // manager half. The manager half is why the FLAG specifically cannot apply. A settled active
@@ -1046,7 +1083,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         const attempt = journal.restore.attemptId;
         const assessment = assessRestoreClaim(journal, { unrecordedOwnersDead: attemptProcessesGone(root) });
         if (assessment !== "stale") throw heldClaim(root, attempt, journal.claim, "cotal up", assessment);
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `cotal up is refused: restore attempt ${attempt} stopped before it committed and still holds the store; nothing was changed`, { target: { root, attemptId: attempt }, remedy: `roll it back with cotal backup recover ${attempt} --yes, then run cotal up; or run the restore again` });
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `cotal up is refused: restore attempt ${attempt} stopped before it committed and still holds the store; nothing was changed`, { target: { root, attemptId: attempt }, remedy: `roll it back with \`cotal backup recover ${attempt} --yes\`, then run \`cotal up\`; or run the restore again` });
       }
       const controllerCut = journal ? cutController(journal.cut) : undefined;
       if (journal && controllerCut && journal.state !== "cut-intent" && journal.state !== "cut-committed" && journal.state !== "resume-retired") {
@@ -1078,9 +1115,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         if (status === "alive") throw restoredBrokerRuns(root, journal.restore.attemptId, journal.listenerProof.processOwner.pid);
       } else if (journal?.state === "ready") {
         const source = preservedSourceState(root, journal.source);
-        if (source.state === "moved") throw movedFolderRefusal(root, journal.space, journal.source.path, source, "run cotal up");
+        if (source.state === "moved") throw movedFolderRefusal(root, journal.space, journal.source.path, source, "run `cotal up`");
         if (source.state === "missing")
-          throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the preserved store recorded at ${journal.source.path} is missing, so up cannot resume it; nothing was started`, { target: { root, space: journal.space, recordedStore: journal.source.path }, remedy: "if this folder was moved, move it back so that path exists again; if the store is lost, restore a backup here with cotal backup restore <dir> --accept-missing-source" });
+          throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the preserved store recorded at ${journal.source.path} is missing, so up cannot resume it; nothing was started`, { target: { root, space: journal.space, recordedStore: journal.source.path }, remedy: "if this folder was moved, move it back so that path exists again; if the store is lost, restore a backup here with `cotal backup restore <dir> --accept-missing-source`" });
         const resume = readMaintenanceResumeDocument(root, journal.resume);
         const attemptId = `resume-${randomUUID()}`;
         const launch = resume.launch as { server?: unknown; storeDir?: unknown; maxFileStore?: unknown };
@@ -1092,7 +1129,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // follows a normal `down` of the resumed mesh.
         const preservedOnly = (flag: string, given: string | number, what: string, preserved: string) => new CommandFailure("refused", "CONFLICT", `${flag} ${given} is not the ${what} that down --preserve-state recorded here (${preserved}), and a resume starts what it recorded; nothing was started`, {
           target: { root, space: journal.space, flag, given: String(given), preserved },
-          remedy: `resume with cotal up without ${flag}; to use ${given}, stop the resumed mesh with cotal down, then run cotal up ${flag} ${given}`,
+          remedy: `resume with \`cotal up\` without ${flag}; to use ${given}, stop the resumed mesh with \`cotal down\`, then run \`cotal up ${flag} ${given}\``,
         });
         if (values.server !== undefined && values.server !== resumeServer) throw preservedOnly("--server", values.server, "broker address", resumeServer);
         const givenStore = values["store-dir"];
@@ -1116,17 +1153,23 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         if (requestedMaxFileStore !== undefined && requestedMaxFileStore !== resumeMaxFileStore)
           throw preservedOnly("--max-file-store", requestedMaxFileStore, "file store cap", resumeMaxFileStore === undefined ? "no cap" : String(resumeMaxFileStore));
         // The resumed broker renders this root's recorded auth callout timeout again.
-        const recordedTimeout = readBrokerPolicy(root)?.authTimeout;
+        const recordedPolicy = readBrokerPolicy(root);
+        const recordedTimeout = recordedPolicy?.authTimeout;
         const requestedTimeout = parseAuthTimeout(values["auth-timeout"]);
         if (requestedTimeout !== undefined && requestedTimeout !== recordedTimeout)
           throw preservedOnly("--auth-timeout", requestedTimeout, "auth callout timeout", recordedTimeout === undefined ? "none" : String(recordedTimeout));
+        // So is the payload limit: a resume renders the recorded one.
+        const recordedPayload = recordedPolicy?.maxPayload;
+        const requestedPayload = parseMaxPayload(values["max-payload"]);
+        if (requestedPayload !== undefined && requestedPayload !== recordedPayload)
+          throw preservedOnly("--max-payload", requestedPayload, "payload limit", recordedPayload === undefined ? "none" : String(recordedPayload));
         if (values.runtime && runtimes[0] && values.runtime !== runtimes[0])
           throw preservedOnly("--runtime", values.runtime, "agent runtime", runtimes[0]);
         const resumeRuntime = values.runtime ?? runtimes[0] ?? "pty";
         // The resumed broker binds this address, so another listener there would leave the resume
         // degraded. It is refused here, before anything is journalled or started, as backup create does.
         await assertEndpointUnreachable(resumeServer).catch((error: Error) => {
-          throw new CommandFailure("refused", "CONFLICT", `${error.message}; the resumed broker needs that address, so nothing was started`, { target: { root, space: journal.space, server: resumeServer }, remedy: `stop the process that listens on ${resumeServer}, then run cotal up again` });
+          throw new CommandFailure("refused", "CONFLICT", `${error.message}; the resumed broker needs that address, so nothing was started`, { target: { root, space: journal.space, server: resumeServer }, remedy: `stop the process that listens on ${resumeServer}, then run \`cotal up\` again` });
         });
         // Admit every seat checkpoint the cut wrote and take custody, BEFORE the resume attempt is
         // journalled and long before a manager starts. A refusal here costs nothing because
@@ -1182,6 +1225,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         const requestedTimeout = parseAuthTimeout(values["auth-timeout"]);
         if (requestedTimeout !== undefined && requestedTimeout !== readBrokerPolicy(root)?.authTimeout)
           throw new Error(`--auth-timeout ${requestedTimeout} is not this root's recorded auth callout timeout; resume attempt ${attemptId} re-renders the recorded one - omit --auth-timeout`);
+        const requestedPayload = parseMaxPayload(values["max-payload"]);
+        if (requestedPayload !== undefined && requestedPayload !== readBrokerPolicy(root)?.maxPayload)
+          throw new Error(`--max-payload ${requestedPayload} is not this root's recorded payload limit; resume attempt ${attemptId} re-renders the recorded one - omit --max-payload`);
         // Recovery re-asserts the source identity rather than trusting the journaled spelling.
         assertStoreIdentity(journal.source);
         // The bound listener decides re-entry: a live exact listener is ADOPTED, a provably dead
@@ -1242,7 +1288,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         const attempt = journal.claim.attemptId;
         const assessment = assessMaintenanceClaim(journal.claim, { unrecordedOwnersDead: attemptProcessesGone(root) });
         if (assessment !== "stale") throw heldClaim(root, attempt, journal.claim, "cotal up", assessment);
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `cotal up is refused: backup attempt ${attempt} stopped before it finished and still holds this root; nothing was changed`, { target: { root, attemptId: attempt }, remedy: `release it with cotal backup recover ${attempt} --yes, then run cotal up` });
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `cotal up is refused: backup attempt ${attempt} stopped before it finished and still holds this root; nothing was changed`, { target: { root, attemptId: attempt }, remedy: `release it with \`cotal backup recover ${attempt} --yes\`, then run \`cotal up\`` });
       } else if (journal) {
         throw new Error(`cotal up is refused while maintenance state is ${journal.state}; follow the recorded recovery`);
       }
@@ -1315,6 +1361,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const maxSessions = parsePositiveIntegerFlag("--max-sessions", values["max-sessions"]);
   const maxFileStore = parseMaxFileStore(values["max-file-store"]);
   const authTimeout = parseAuthTimeout(values["auth-timeout"]);
+  const maxPayload = parseMaxPayload(values["max-payload"]);
   // The manifest path renders its broker from the manifest, which has no store fields, so the flag
   // would be accepted and never rendered. Refuse it rather than drop it.
   if (maxFileStore !== undefined && values.file)
@@ -1339,13 +1386,17 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   if (!values["dry-run"]) {
     const spaceForRoot = values.space ?? folderSpace();
     if (values.file) {
+      // Only a manifest error is deferred: the -f path reports it from the same load. The pin's refusal
+      // is not one of those errors, and the path that finds a broker already answering the manifest's
+      // address never reaches the later pin in startMeshDetached, so the catch used to discard it.
+      let prepared: ReturnType<typeof loadManifest> | undefined;
       try {
-        const prepared = loadManifest(resolve(values.file));
-        // A --space that names another space is refused by the -f path below, before anything is written.
-        if (values.space === undefined || values.space === prepared.manifest.space) ensureRootForSpace(prepared.manifest.space);
+        prepared = loadManifest(resolve(values.file));
       } catch {
         // Manifest errors are reported by the -f path with the same load; do not double-print.
       }
+      // A --space that names another space is refused by the -f path below, before anything is written.
+      if (prepared && (values.space === undefined || values.space === prepared.manifest.space)) ensureRootForSpace(prepared.manifest.space);
     } else {
       ensureRootForSpace(spaceForRoot);
     }
@@ -1356,8 +1407,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const name = assertManagerName(values["manager-name"]);
     const named = { root: cotalRoot(), space: values.space ?? folderSpace() };
     if (readManagerName(named) !== name) {
-      if (managerRecordState(undefined, undefined, named.space, named.root).state === "alive")
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${named.space}, and it keeps the name it started with`, { target: { root: named.root, space: named.space }, remedy: `stop it with cotal down, then run cotal up --manager-name ${shellWord(name)}` });
+      if (managerRecordState(named.space, named.root).state === "alive")
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${named.space}, and it keeps the name it started with`, { target: { root: named.root, space: named.space }, remedy: `stop it with \`cotal down\`, then run ${codeSpan(`cotal up --manager-name ${shellWord(name)}`)}` });
       if (!values["dry-run"]) recordManagerName(named, name);
     }
   }
@@ -1368,8 +1419,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const cap = parseSeatCapFlag("--seat-cap", values["seat-cap"])!;
     const capped = { root: cotalRoot(), space: values.space ?? folderSpace() };
     if (readManagerSeatCap(capped) !== cap) {
-      if (managerRecordState(undefined, undefined, capped.space, capped.root).state === "alive")
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${capped.space}, and it keeps the seat cap it started with`, { target: { root: capped.root, space: capped.space }, remedy: `stop it with cotal down, then run cotal up --seat-cap ${seatCapText(cap)}` });
+      if (managerRecordState(capped.space, capped.root).state === "alive")
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${capped.space}, and it keeps the seat cap it started with`, { target: { root: capped.root, space: capped.space }, remedy: `stop it with \`cotal down\`, then run \`cotal up --seat-cap ${seatCapText(cap)}\`` });
       if (!values["dry-run"]) recordManagerSeatCap(capped, cap);
     }
   }
@@ -1439,7 +1490,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // one, it takes that stack's lifetime over and says so before it blocks.
     const holder = values.foreground ? foregroundHolder(meshRoot) : undefined;
     if (holder !== undefined)
-      throw new CommandFailure("refused", "CONFLICT", `a foreground cotal up in process ${holder} already holds this stack's lifetime; this terminal did not take it over and nothing was started`, { target: { root: meshRoot, space: stackSpace, holderPid: holder }, remedy: `use the terminal that runs process ${holder}, where Ctrl-C stops the stack, or stop it with cotal down --yes from ${meshRoot} and run cotal up --foreground again` });
+      throw new CommandFailure("refused", "CONFLICT", `a foreground \`cotal up\` in process ${holder} already holds this stack's lifetime; this terminal did not take it over and nothing was started`, { target: { root: meshRoot, space: stackSpace, holderPid: holder }, remedy: `use the terminal that runs process ${holder}, where Ctrl-C stops the stack, or stop it with \`cotal down --yes\` from ${meshRoot} and run \`cotal up --foreground\` again` });
     const takeover = values.foreground === true && STACK_ROLES.some((role) => serviceInstances(stackSpace, STACK_DEFINITION[role]).some((row) => observeServiceProcess(row.record.value) === "running"));
     // A signal ends a detached start where it is, after it records a launch it had not yet pinned to
     // its child, and the notice names what it left running. It is installed before the lock, so no
@@ -1453,7 +1504,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         try {
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
           if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
-          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
+          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
         } finally { releaseMaintenanceLock(stackLock); }
       };
       if (values.foreground) await holdForegroundStack(meshRoot, start);
@@ -1491,7 +1542,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const controller = freshTeamBoot ? undefined : readStackJournal(meshRoot);
     if (controller) throw new CommandFailure("refused", "CONFLICT", `this root holds the controller stack of space ${controller.journal.space}, and up -f does not start a manifest beside it; nothing was started`, {
       target: { root: meshRoot, space: controller.journal.space },
-      remedy: `add the manifest's channels and agents to the running stack with cotal team deploy ${values.file}, or stop it with cotal down --yes and start the manifest through the controller with cotal team boot ${values.file}`,
+      remedy: `add the manifest's channels and agents to the running stack with \`cotal team deploy ${values.file}\`, or stop it with \`cotal down --yes\` and start the manifest through the controller with \`cotal team boot ${values.file}\``,
     });
     if (values["dry-run"]) {
       await upManifest(values.file, {
@@ -1616,7 +1667,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       console.log(c.dim("starting this folder's stopped stack in the mode it last ran: open"));
     } else if (implicit) {
       const cleaned = cleanedManifestStart(cotalRoot(), recordedSpace, values.open === true);
-      if (cleaned) throw new CommandFailure("refused", "CONFLICT", `this folder was deployed from a manifest as "${cleaned.space}" at ${cleaned.server} in ${cleaned.mode === "open" ? "open" : "static auth"} mode, and its identity and broker configuration were removed, so a bare up would not start it as it was deployed; nothing was started`, { target: { root: cotalRoot(), space: cleaned.space, server: cleaned.server }, remedy: `deploy it again with ${cleaned.command}` });
+      if (cleaned) throw new CommandFailure("refused", "CONFLICT", `this folder was deployed from a manifest as "${cleaned.space}" at ${cleaned.server} in ${cleaned.mode === "open" ? "open" : "static auth"} mode, and its identity and broker configuration were removed, so a bare up would not start it as it was deployed; nothing was started`, { target: { root: cotalRoot(), space: cleaned.space, server: cleaned.server }, remedy: `deploy it again with ${codeSpan(cleaned.command)}` });
     }
     // A registered address stays as recorded, so a running stack is still found by it.
     const implicitServer = registeredServer ?? serving(retained?.server ?? DEFAULT_SERVER);
@@ -1747,6 +1798,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         );
         process.exit(1);
       }
+      if (values["recreate-issued-stores"] !== undefined)
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `mesh "${held.space}" is already running at ${server}, and its issued-authority stores are recreated only on a fresh broker start, before any issuer runs; nothing was changed`, { target: { space: held.space }, remedy: "stop the stack first, then run `cotal up --recreate-issued-stores <backup-dir>` again" });
       // `--foreground` asks this terminal to hold the stack's lifetime, but this branch starts
       // nothing here: it used to print `✓ already running`, restart a missing manager detached and
       // exit 0. A service unit relying on `--foreground` read that exit as the stack ending, stopped
@@ -1789,11 +1842,21 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       }
       // So is the auth callout timeout: the running broker keeps the one it was started with, which
       // its broker policy records.
-      const runningTimeout = readBrokerPolicy(root)?.authTimeout;
+      const runningPolicy = readBrokerPolicy(root);
+      const runningTimeout = runningPolicy?.authTimeout;
       if (authTimeout !== undefined && authTimeout !== runningTimeout) {
         console.error(
           c.red(
             `✗ mesh "${held.space}" is already running at ${server} - a running broker can't change --auth-timeout (it is fixed at start); \`cotal down\` it first, then \`cotal up --user-auth --auth-timeout ${authTimeout}\``,
+          ),
+        );
+        process.exit(1);
+      }
+      // And so is the payload limit, which the same record carries.
+      if (maxPayload !== undefined && maxPayload !== runningPolicy?.maxPayload) {
+        console.error(
+          c.red(
+            `✗ mesh "${held.space}" is already running at ${server} - a running broker can't change --max-payload (it is fixed at start); \`cotal down\` it first, then \`cotal up --max-payload ${maxPayload}\``,
           ),
         );
         process.exit(1);
@@ -1815,7 +1878,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // Refuse rather than warn: the flag either applies or the command fails. Matching the live
       // argv is a no-op and may proceed. An unreadable command line cannot prove a match.
       if (maxSessions !== undefined) {
-        const live = managerRecordState(undefined, undefined, held.space);
+        const live = managerRecordState(held.space);
         if (live.state === "alive" && !liveManagerWouldApplyMaxSessions(live.command, maxSessions)) {
           console.error(
             c.red(
@@ -1833,7 +1896,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // and a broker-only start. A refresh of a mesh whose manager is NOT live simply proceeds
       // broker-only.
       if (noManager) {
-        const live = managerRecordState(undefined, undefined, held.space);
+        const live = managerRecordState(held.space);
         if (live.state === "alive") {
           console.error(
             c.red(
@@ -1912,7 +1975,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // about it, and ends with the steps to take. It used to print this one green line alone, so
       // `up` in a running project's subfolder answered without saying which mesh it reached or what
       // to do next, while the launch beside it printed both.
-      console.log(`${renderReport({ space: held.space, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
+      console.log(`${renderReport({ space: held.space, sections: [] }, "rich", process.stdout)}\n`);
       console.log(c.green(`✓ mesh "${held.space}" already running at ${server}`));
       // USER MODE: re-upping IS the documented recovery for a dead auth service (the provider's
       // failure copy says "restart it with `cotal up`"), so a refresh must re-ensure the service —
@@ -1960,7 +2023,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // so that's not a reuse - don't claim the runtime is fixed. A dead/absent manager is (re)started
         // with it.
         if (values.runtime) {
-          const live = managerRecordState(undefined, undefined, held.space);
+          const live = managerRecordState(held.space);
           if (live.state === "alive" && managerHasDeliveryMarker(live.pid!, held.space))
             console.error(
               c.dim(`! manager already running for "${held.space}" - its runtime is fixed at start; \`cotal down\` then \`cotal up --runtime ${values.runtime}\` to change it`),
@@ -1993,7 +2056,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       seedPersonaAfterUp(root);
       // The same Next a launch ends with: this mesh runs, so the steps are the ones that use and
       // stop it. A manager the refresh found or healed is what makes `spawn` one of them.
-      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecordState(undefined, undefined, held.space).state === "alive", machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}) }, held.space) }] }] }, "rich", terminalWidth(process.stdout))}`);
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecordState(held.space).state === "alive", machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}) }, held.space) }] }] }, "rich", process.stdout)}`);
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -2055,17 +2118,19 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const unnamed = values.space === undefined && unnamedDefault(cotalRoot(), receiptSpace);
     refuseStartOverUserState(Boolean(values.open), wantUser, receiptSpace);
     await claimSpace(receiptSpace, server, cotalRoot());
-    if (!quietRestore) console.log(`${renderReport({ space: receiptSpace, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
+    if (!quietRestore) console.log(`${renderReport({ space: receiptSpace, sections: [] }, "rich", process.stdout)}\n`);
     const { pid, executable, authService, controlPlane, delivery, manager } = await startMeshDetached({
       transport,
       server,
       storeDir: values["store-dir"],
       maxFileStore,
       authTimeout,
+      maxPayload,
       space: values.space,
       open: values.open,
       userAuth: wantUser ? { idpUrl: values.idp } : undefined,
       rotateSys: values["rotate-sys"],
+      ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}),
       publicExchange,
       channels: values.channels,
       // The RAW flag, not the loopback-defaulted `host` above: `startMeshDetached` applies the same
@@ -2112,7 +2177,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
         console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal))}`));
     }
-    if (!quietRestore) console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext(detached, receiptSpace) }] }] }, "rich", terminalWidth(process.stdout))}`);
+    if (!quietRestore) console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext(detached, receiptSpace) }] }] }, "rich", process.stdout)}`);
     if (restored) restoreSinks.get(restored.attemptId)?.({
       attemptId: restored.attemptId, space: restored.space, root: restored.root, server: restored.server, mode: restored.mode,
       selection: restored.selection, restoredStreams: restored.restoredStreams, targetPath: restored.targetPath, runtime: restored.runtime, brokerPid: pid,
@@ -2144,7 +2209,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // Decided above the branch; the dial host is only settled here (a port collision may have moved
   // the server, and the hostname is what the certificate has to match).
   assertServesDialHost(transport, new URL(server).hostname);
-  const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport, values["rotate-sys"], maxFileStore, false, authTimeout) : undefined;
+  const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport, values["rotate-sys"], maxFileStore, false, { authTimeout, maxPayload }) : undefined;
   const port = Number(new URL(server).port) || 4222;
   // Both modes go through a RENDERER, never bare CLI flags. Open mode used to start from
   // `-js -sd … -p … -a …`, which never called a renderer at all — so the required transport union
@@ -2208,7 +2273,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         clearManagerArtifacts(space);
       } catch (e) {
         console.error(c.red(`! teardown: ${(e as Error).message}`));
-        console.error(c.red(`the stack is still running; to take managed agents with it, run: cotal down --with-agents`));
+        console.error(c.red(`the stack is still running; to take managed agents with it, run: \`cotal down --with-agents\``));
         stopping = false;
         return;
       }
@@ -2327,6 +2392,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     };
     const { authService, controlPlane } = await serveReadyListener({
       child, server, space, storeDir, setup, seedFile, transport,
+      ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}),
       host: values.host,
       maxSessions,
       maxFileStore,
@@ -2366,7 +2432,7 @@ async function unrecordedStackServer(root: string, space: string, host: string |
     return host ? reconcileHostAndServer(host, undefined, "--host", "--server", saved) : saved;
   }
   if (listSpaceAccounts(authDir(root)).includes(space) || existsSync(join(root, ".cotal", "nats")))
-    throw new MissingFlags(`no stack journal, registration or saved broker definition records the address "${space}" ran at in ${root}, which holds its earlier trust or store; nothing was started`, "run cotal up --server <url> with the address it ran at", { root, space });
+    throw new MissingFlags(`no stack journal, registration or saved broker definition records the address "${space}" ran at in ${root}, which holds its earlier trust or store; nothing was started`, "run `cotal up --server <url>` with the address it ran at", { root, space });
   return freshStackServer(host ? reconcileHostAndServer(host, undefined) : DEFAULT_SERVER, host);
 }
 
@@ -2375,7 +2441,7 @@ async function unrecordedStackServer(root: string, space: string, host: string |
 function restoredBrokerRuns(root: string, attempt: string, pid: number, manifest?: string, retire?: string): CommandFailure {
   return new CommandFailure("refused", "CONFLICT", `the broker that restore attempt ${attempt} started still runs here (pid ${pid}), and a new start does not run beside it; nothing was started`, {
     target: { root, attempt, pid },
-    remedy: manifest !== undefined ? `stop the restored stack with cotal down, retire the restore with ${retire}, then run cotal up -f ${manifest} again` : "stop the restored stack with cotal down, then run cotal up again",
+    remedy: manifest !== undefined ? `stop the restored stack with \`cotal down\`, retire the restore with ${retire}, then run \`cotal up -f ${manifest}\` again` : "stop the restored stack with `cotal down`, then run `cotal up` again",
   });
 }
 
@@ -2401,9 +2467,9 @@ function assertOrdinaryUpAllowed(root: string, storeDir?: string, manifest?: str
       throw new Error(`restore attempt ${attempt} active listener ownership is ${status}; refusing ordinary startup`);
     // `up -f` boots a fresh mesh, so the restore it would start over is retired first.
     if (manifest !== undefined)
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore attempt ${attempt} is still active here, and cotal up -f boots a fresh mesh, which does not start over a restore that is not retired; nothing was started`, {
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore attempt ${attempt} is still active here, and \`cotal up -f\` boots a fresh mesh, which does not start over a restore that is not retired; nothing was started`, {
         target: { root, attempt },
-        remedy: `retire the restore with ${retire}, then run cotal up -f ${manifest} again; bare cotal up starts the restored stack instead`,
+        remedy: `retire the restore with ${retire}, then run \`cotal up -f ${manifest}\` again; bare \`cotal up\` starts the restored stack instead`,
       });
     // Relaunching after restore must serve the exact recorded active target, not whatever store the
     // caller happens to name — the journal's provenance would otherwise describe a different mesh.
@@ -2667,7 +2733,7 @@ function provePreparedRestoreListener(prepared: PreparedRestore): Promise<Restor
  *  nothing here launches the legacy pidfile stack. A degraded attempt starts nothing and holds on any
  *  member that is not live. Returns whether the caller should hold the stack's lifetime in the
  *  foreground, which it does after releasing the lock. */
-async function resumeControllerStack(lock: MaintenanceLock, root: string, values: { "accept-stale-checkpoint"?: boolean; runtime?: string; server?: string; "store-dir"?: string; "max-file-store"?: string; "auth-timeout"?: string; detach?: boolean; foreground?: boolean; json?: boolean; plain?: boolean }, restoreSink?: (result: RestoreStartupResult) => void): Promise<boolean> {
+async function resumeControllerStack(lock: MaintenanceLock, root: string, values: { "accept-stale-checkpoint"?: boolean; runtime?: string; server?: string; "store-dir"?: string; "max-file-store"?: string; "auth-timeout"?: string; "max-payload"?: string; detach?: boolean; foreground?: boolean; json?: boolean; plain?: boolean }, restoreSink?: (result: RestoreStartupResult) => void): Promise<boolean> {
   let journal = readMaintenanceJournal(root)!;
   const cut = cutController(journal.cut)!;
   const space = journal.space;
@@ -2677,7 +2743,8 @@ async function resumeControllerStack(lock: MaintenanceLock, root: string, values
   if (!("restore" in journal)) {
     if (values.server !== undefined && values.server !== journal.cut.launch.server) throw new CommandFailure("refused", "USAGE_INVALID", "a controller resume takes its broker address from the cut; --server is refused", { target: { root, space } });
     if (values["store-dir"] !== undefined || values["max-file-store"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a controller resume takes its store and cap from the cut; --store-dir and --max-file-store are refused", { target: { root, space } });
-    if (values["auth-timeout"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a controller resume renders this root's recorded auth callout timeout; --auth-timeout is refused", { target: { root, space }, remedy: "run cotal up without --auth-timeout" });
+    if (values["auth-timeout"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a controller resume renders this root's recorded auth callout timeout; --auth-timeout is refused", { target: { root, space }, remedy: "run `cotal up` without --auth-timeout" });
+    if (values["max-payload"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a controller resume renders this root's recorded payload limit; --max-payload is refused", { target: { root, space }, remedy: "run `cotal up` without --max-payload" });
     const runtimes = [...new Set(agents.map((agent) => agent.launch?.runtime).filter((value): value is string => typeof value === "string"))];
     if (runtimes.length > 1 || (values.runtime !== undefined && runtimes[0] !== undefined && values.runtime !== runtimes[0]))
       throw new CommandFailure("refused", "USAGE_INVALID", "--runtime must equal the preserved inventory's runtime; a controller resume does not change it", { target: { root, space } });
@@ -3209,7 +3276,7 @@ async function startUserAuthService(
     const base = typeof raw.publicUrl === "string" ? raw.publicUrl : String(raw.url);
     const endpoints = { url: base, ...(typeof raw.publicUrl === "string" ? { managerAuthorityUrl: `${base.replace(/\/$/, "")}/manager-service-authority` } : {}) };
     const info = assertUserAuthInfo({ ...setup.prepared.publicAuth, endpoints });
-    if (!quietBoot) console.log(c.green("✓ user-auth service up") + c.dim(` - sign in with: cotal login --idp ${info.idp.url}`));
+    if (!quietBoot) console.log(c.green("✓ user-auth service up") + c.dim(` - sign in with: \`cotal login --idp ${info.idp.url}\``));
     return { userAuth: info, ok: true };
   } catch (e) {
     stderrLine("✗ ", `user-auth service did not come up (${(e as Error).message}) - user connects to "${space}" will fail until a re-\`cotal up\` succeeds`, c.red);
@@ -3323,13 +3390,13 @@ export async function recheckFreshTeamBoot(plan: FreshTeamBootPlan, own?: { depl
 export function controllerStackNative(): StackUpNative {
   return {
     prepareBroker: async (opts) => {
-      const prepared = await prepareBrokerStart({ transport: opts.transport, server: opts.server, space: opts.space, ...(opts.open ? { open: true } : {}), ...(opts.userAuth ? { userAuth: opts.userAuth } : {}), ...(opts.host ? { host: opts.host } : {}), ...(opts.storeDir ? { storeDir: opts.storeDir } : {}), ...(opts.existingStore ? { existingStore: opts.existingStore } : {}), ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}), ...(opts.authTimeout !== undefined ? { authTimeout: opts.authTimeout } : {}), ...(opts.seed !== undefined ? { seed: opts.seed as ChannelRegistryFile } : opts.channels ? { channels: opts.channels } : {}), quietBoot: true });
-      return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { creds: prepared.setup.creds, wsPort: prepared.setup.wsPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile, ...(prepared.setup?.authTimeout !== undefined ? { authTimeout: prepared.setup.authTimeout } : {}) };
+      const prepared = await prepareBrokerStart({ transport: opts.transport, server: opts.server, space: opts.space, ...(opts.open ? { open: true } : {}), ...(opts.userAuth ? { userAuth: opts.userAuth } : {}), ...(opts.host ? { host: opts.host } : {}), ...(opts.storeDir ? { storeDir: opts.storeDir } : {}), ...(opts.existingStore ? { existingStore: opts.existingStore } : {}), ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}), ...(opts.authTimeout !== undefined ? { authTimeout: opts.authTimeout } : {}), ...(opts.maxPayload !== undefined ? { maxPayload: opts.maxPayload } : {}), ...(opts.seed !== undefined ? { seed: opts.seed as ChannelRegistryFile } : opts.channels ? { channels: opts.channels } : {}), quietBoot: true });
+      return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { creds: prepared.setup.creds, wsPort: prepared.setup.wsPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile, ...(prepared.setup?.authTimeout !== undefined ? { authTimeout: prepared.setup.authTimeout } : {}), ...(prepared.setup?.maxPayload !== undefined ? { maxPayload: prepared.setup.maxPayload } : {}) };
     },
-    initializeStreams: (server, space, setup, seedFile) => postStart(server, space, setup, seedFile as ChannelRegistryFile | undefined),
+    initializeStreams: (server, space, setup, seedFile, recreateIssuedStores) => postStart(server, space, setup, seedFile as ChannelRegistryFile | undefined, recreateIssuedStores),
     recreateDeletedStreams: ({ seed, ...opts }) => recreateDeletedStreams({ ...opts, ...(seed !== undefined ? { seed: seed as ChannelRegistryFile } : {}) }),
     recordMesh: (entry) => recordOurMesh({ ...entry, ts: new Date().toISOString() }, "started", true),
-    commitTransport: (root, chosen, authTimeout) => commitTransportPolicy(root, chosen, true, undefined, authTimeout),
+    commitTransport: (root, chosen, limits) => commitTransportPolicy(root, chosen, true, undefined, limits),
   };
 }
 
@@ -3609,7 +3676,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   }
   console.log(c.green(`✓ mesh "${m.space}" up at ${server}`) + c.dim(` (broker pid ${pid})`));
   console.log(c.dim(`  seeded ${m.channels.length} channel(s): ${m.channels.map((ch) => "#" + ch.name).join(", ")}`));
-  if (summaryRecorded) console.log(c.dim(`  fresh deployment ${deploymentId} recorded; cotal team show ${deploymentId} reads its launch summary, not live ownership`));
+  if (summaryRecorded) console.log(c.dim(`  fresh deployment ${deploymentId} recorded; \`cotal team show ${deploymentId}\` reads its launch summary, not live ownership`));
   // Never claim a launch the control plane can't deliver: the manager carries the launch spec, so a
   // degraded control plane (announced above) means the agents are NOT coming up.
   if (effectiveNoManager) {
@@ -3621,7 +3688,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     // The manager launches them after this command returns, so nothing here knows whether one joined:
     // no success mark, and name where the outcome shows.
     console.log(`  launch pending: the manager (${runtime}) starts ${eff.agents.length} agent(s)${owner ? ` as you (owner ${owner})` : ""} after this returns; up -f does not wait for them to join`);
-    console.log(c.dim(`  who joined: cotal ps --space ${m.space}   ·   a failed launch and its reason: ${managerLogDisplayPath(m.space)}`));
+    console.log(c.dim(`  who joined: \`cotal ps --space ${m.space}\`   ·   a failed launch and its reason: ${managerLogDisplayPath(m.space)}`));
   } else {
     stderrLine("✗ ", `${eff.agents.length} agent(s) NOT launched - the control plane did not come up (see above)`, c.red);
   }
@@ -3814,7 +3881,7 @@ async function awaitSpawnedListener(l: {
   const { child, server, space } = l;
   let facts: BrokerFacts;
   try {
-    if (!(await waitReady(server, l.creds, l.tls))) throw exitedBeforeReady(l) ?? new Error(`nats-server did not become reachable at ${server} - see ${l.log}`);
+    if (!(await waitReady(server, l.creds, l.tls, l.log))) throw exitedBeforeReady(l) ?? new Error(`nats-server did not become reachable at ${server} - see ${l.log}`);
     facts = await brokerVersion(server, space, l.creds);
   } catch (e) {
     await stopFailedListener(child);
@@ -3839,7 +3906,7 @@ function exitedBeforeReady(l: { child: ChildProcess; executable: NatsServer; ser
   const { path, source } = l.executable;
   return new CommandFailure("failed", "OPERATION_FAILED", `${natsServerLabel(l.executable)} ${exit} before it answered at ${l.server}; see ${l.log}`, {
     target: { executable: path, ...(exitCode !== null ? { exitCode } : { signal: signalCode }), server: l.server, log: l.log },
-    remedy: source === "path" ? `read ${l.log}, then fix ${path} or take it off PATH so cotal uses its bundled nats-server, and run cotal up again` : `read ${l.log}, then run cotal up again`,
+    remedy: source === "path" ? `read ${l.log}, then fix ${path} or take it off PATH so cotal uses its bundled nats-server, and run \`cotal up\` again` : `read ${l.log}, then run \`cotal up\` again`,
   });
 }
 
@@ -3860,6 +3927,8 @@ async function serveReadyListener(l: {
   storeDir: string;
   setup?: Awaited<ReturnType<typeof authSetup>>;
   seedFile?: ChannelRegistryFile;
+  /** `--recreate-issued-stores`: the new backup directory the fresh boot's stream setup uses. */
+  recreateIssuedStores?: string;
   transport: BrokerTransport;
   /** The raw `--host` flag, so the record can tell an operator's address from the loopback default. */
   host?: string;
@@ -3878,7 +3947,7 @@ async function serveReadyListener(l: {
   if (l.resumeAttempt) await recreateMemoryBuckets(server, space, setup);
   else {
     try {
-      await postStart(server, space, setup, l.seedFile);
+      await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores);
     } catch (e) {
       await stopFailedListener(child);
       throw e;
@@ -3919,7 +3988,7 @@ async function serveReadyListener(l: {
   // Commit the policy only for a listener that is up and recorded (S5), and before the control
   // plane (S9). startDeliveryWithBroker is HANDED the transport decision, so it does not depend on
   // the file at all.
-  commitTransportPolicy(cotalRoot(), transport, l.quietBoot, server, setup?.authTimeout);
+  commitTransportPolicy(cotalRoot(), transport, l.quietBoot, server, { authTimeout: setup?.authTimeout, maxPayload: setup?.maxPayload });
   // The delivery daemon self-gates on `.cotal/auth`, so an open mesh has none. Class-2 credential
   // renewal is NOT wired here: the MANAGER is the renewal owner (it is resident in every mesh mode,
   // where a foreground `up` process is not).
@@ -3962,6 +4031,8 @@ export interface DetachOpts {
   maxFileStore?: number;
   /** The auth callout timeout in seconds (`--auth-timeout`). Absent: the root's recorded one. */
   authTimeout?: number;
+  /** The broker's payload limit in bytes (`--max-payload`). Absent: the root's recorded one. */
+  maxPayload?: number;
   space?: string;
   open?: boolean;
   /** USER MODE: enable per-user auth (presence = on; `idpUrl` pins the IdP on first enable). */
@@ -3970,6 +4041,9 @@ export interface DetachOpts {
    *  creds against the successor. Only this boot (and the foreground one) may set it: rotation is
    *  complete only when the broker it starts is the one carrying the rewritten config. */
   rotateSys?: boolean;
+  /** `--recreate-issued-stores`: back up and delete the space's pre-retention issued-authority stores
+   *  into this new directory before the fresh boot's stream setup creates them again. */
+  recreateIssuedStores?: string;
   channels?: string;
   host?: string;
   /** Channel-registry seed in memory (the `cotal up -f` manifest path), used instead of reading a
@@ -4031,7 +4105,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   // effective server is finally known — a manifest may name a different host than the flags did, and
   // a certificate that is valid for one is not thereby valid for the other.
   const transport = assertServesDialHost(opts.transport, new URL(server).hostname);
-  const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth, transport, opts.rotateSys, opts.maxFileStore, opts.quietBoot, opts.authTimeout) : undefined;
+  const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth, transport, opts.rotateSys, opts.maxFileStore, opts.quietBoot, { authTimeout: opts.authTimeout, maxPayload: opts.maxPayload }) : undefined;
   const port = Number(new URL(server).port) || 4222;
   // Same rule as the foreground path: every route to a listener names its transport (see
   // `writeOpenBrokerConf`). Detach must not be the mode where the fence quietly does not apply.
@@ -4057,7 +4131,7 @@ export function openBrokerLog(path: string): number {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
     throw new CommandFailure("refused", "PERMISSION_DENIED", `no broker was started: ${(error as Error).message}`,
-      { target: { path }, remedy: `remove ${path} or replace it with a regular file you own, then run cotal up again` });
+      { target: { path }, remedy: `remove ${path} or replace it with a regular file you own, then run \`cotal up\` again` });
   }
 }
 
@@ -4084,6 +4158,7 @@ export async function startMeshDetached(
   await awaitSpawnedListener({ child, executable: { path: bin, source, version }, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: logPath, boundListener: opts.boundListener });
   const { authService, controlPlane } = await serveReadyListener({
     child, server, space, storeDir, setup, seedFile, transport,
+    ...(opts.recreateIssuedStores !== undefined ? { recreateIssuedStores: opts.recreateIssuedStores } : {}),
     host: opts.host,
     maxSessions: opts.maxSessions,
     maxFileStore: opts.maxFileStore,
@@ -4117,7 +4192,7 @@ async function assertBrokerAddressFree(server: string, command: string): Promise
   const { says, frees } = addressHolder("the broker address", host, port);
   throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
     target: { root: cotalRoot(), server, bindError: bindError.code },
-    remedy: `start it at another address with ${command} --server ${address.protocol}//${address.hostname}:<port>, or ${frees} and run ${command} again`,
+    remedy: `start it at another address with ${codeSpan(`${command} --server ${address.protocol}//${address.hostname}:<port>`)}, or ${frees} and run ${codeSpan(command)} again`,
   });
 }
 
@@ -4329,9 +4404,9 @@ export async function claimSpace(space: string, server: string, root: string): P
     if (canonicalRoot(existing.root) === canonicalRoot(root) && existing.server !== server)
       throw new CommandFailure("refused", "CONFLICT", `space "${space}" already runs from this project at ${existing.server}, and this start names ${server}; nothing was started`, {
         target,
-        remedy: `run cotal up here with no --server or --host to reach the mesh at ${existing.server}, or stop it first with cotal down${controller ? " --yes" : ""} in ${shellWord(existing.root)}`,
+        remedy: `run \`cotal up\` here with no --server or --host to reach the mesh at ${existing.server}, or stop it first with \`cotal down${controller ? " --yes" : ""}\` in ${shellWord(existing.root)}`,
       });
-    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is already in use by a mesh at ${existing.server} (${existing.root})`, { target, remedy: `start a separate space in this folder with cotal up --space <name>, naming one no other folder uses, or stop "${space}" first with cotal down${controller ? " --yes" : ""} in ${shellWord(existing.root)}` });
+    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is already in use by a mesh at ${existing.server} (${existing.root})`, { target, remedy: `start a separate space in this folder with \`cotal up --space <name>\`, naming one no other folder uses, or stop "${space}" first with \`cotal down${controller ? " --yes" : ""}\` in ${shellWord(existing.root)}` });
   }
   // The recorded root is this root only where it physically resolves, so it is resolved before any
   // comparison, and one that cannot be resolved refuses. A dead holder at another root keeps its name
@@ -4450,19 +4525,53 @@ function seedPersonaAfterUp(root: string, quiet = false): void {
   if (written && !quiet) console.log(c.dim(`  wrote ${written.what}: ${written.path}`));
 }
 
-async function waitReady(server: string, creds?: string, tls = false): Promise<boolean> {
-  for (let i = 0; i < 50; i++) {
-    // An open listener answers the plaintext probe before any handshake, so TLS is checked either way.
+async function waitReady(server: string, creds?: string, tls = false, log?: string): Promise<boolean> {
+  // Fifty silent probes is the bound for a broker that is not advancing. A listener that is up, or a
+  // broker log that keeps growing or recording a JetStream restore, is evidence the process is still
+  // recovering, so the wait continues instead of stopping it at a fixed count.
+  let evidence = 0;
+  let silent = 0;
+  for (let i = 0; silent < 50; i++) {
     const reachable = await isReachable(server, creds ? { creds } : undefined);
     if (tls) await refuseUntrustedListener(server, creds);
     if (reachable) return true;
+    const { evidence: next, restoring } = brokerRecoveryEvidence(log);
+    // Any restore evidence seen during the wait is progress, including evidence already present on
+    // the first probe. A restore that has started and not finished is progress on every probe, since
+    // the broker writes nothing to its log until it completes; the probe cap bounds that wait. Only a
+    // probe with no new evidence and no restore in flight counts toward the silent bound.
+    if (next > evidence || restoring) {
+      evidence = Math.max(evidence, next);
+      silent = 0;
+    } else {
+      silent++;
+    }
+    if (i >= 1_500) return false;
     await new Promise((r) => setTimeout(r, 200));
   }
   return false;
 }
 
-/** Node's codes for a certificate chain this client does not trust. */
-const UNTRUSTED_CERTIFICATE = new Set(["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "CERT_UNTRUSTED"]);
+/** Bytes plus completed-restore lines in the broker log, and whether a restore is in flight. A
+ *  foreground launch inherits the terminal and has no file to read, so it contributes no evidence
+ *  and keeps the silent-probe bound. */
+function brokerRecoveryEvidence(log?: string): { evidence: number; restoring: boolean } {
+  const none = { evidence: 0, restoring: false };
+  if (!log || log.startsWith("the terminal")) return none;
+  let text = "";
+  let size = 0;
+  try {
+    const stat = statSync(log);
+    if (!stat.isFile()) return none;
+    size = stat.size;
+    text = readFileSync(log, "utf8");
+  } catch {
+    return none;
+  }
+  const started = text.match(/Starting restore/g)?.length ?? 0;
+  const restored = text.match(/Restored \d/g)?.length ?? 0;
+  return { evidence: size + restored, restoring: started > restored };
+}
 
 /** Throw when the TLS listener at `server` answers and this client refuses its certificate in the
  *  handshake, which waiting does not change. It dials as the setup that follows does. */
@@ -4482,8 +4591,8 @@ async function refuseUntrustedListener(server: string, creds?: string): Promise<
   throw new CommandFailure("failed", "OPERATION_FAILED", `nats-server answered at ${server}, but this client refused its TLS certificate in the handshake (${reason}); up stopped it and recorded nothing`, {
     native: { code: String(code) },
     remedy: untrusted
-      ? "trust the certificate's CA, or a self-signed certificate itself, by setting NODE_EXTRA_CA_CERTS to that PEM file for cotal up and every cotal command of this space, then run cotal up again"
-      : /^tls:/i.test(server) ? `serve a certificate that names ${hostname}, then run cotal up again` : `pass --server tls://${hostname}:${port}, so every dial checks the certificate against ${hostname}`,
+      ? "trust the certificate's CA, or a self-signed certificate itself, by setting NODE_EXTRA_CA_CERTS to that PEM file for `cotal up` and every cotal command of this space, then run `cotal up` again"
+      : /^tls:/i.test(server) ? `serve a certificate that names ${hostname}, then run \`cotal up\` again` : `pass --server tls://${hostname}:${port}, so every dial checks the certificate against ${hostname}`,
   });
 }
 
@@ -4710,21 +4819,66 @@ async function postStart(
   space: string,
   setup?: { creds: string },
   seedFile?: ChannelRegistryFile,
+  recreateIssuedStores?: string,
 ): Promise<void> {
-  await setupSpaceStreams({ servers: server, space, creds: setup?.creds });
-  if (seedFile) {
-    await seedChannelRegistry({ servers: server, space, creds: setup?.creds, file: seedFile });
+  if (recreateIssuedStores !== undefined) await recreateIssuedStoresBeforeSetup(server, space, setup !== undefined, recreateIssuedStores);
+  try {
+    await setupSpaceStreams({ servers: server, space, creds: setup?.creds });
+  } catch (error) {
+    // Nothing of the stack runs yet, and the caller stops this broker again, so this is a refusal.
+    if (error instanceof IssuedStoreBeforeRetentionError)
+      throw new CommandFailure("refused", "CONFLICT", error.message, { target: { space, store: error.bucket }, remedy: `stop every other issuer and resolver of space ${space}, then add --recreate-issued-stores <backup-dir> to the \`cotal up\` that starts it` });
+    throw error;
   }
-  // SPEC §4: `defaults.deliveryClass` MUST be written at space creation so the effective default is
-  // discoverable on the wire, never inferred from the `?? "durable"` resolution fallback. Auth mode
-  // (`setup` present ⇒ the delivery daemon is up) is local/self-hosted ⇒ `durable`; open mode has no
-  // daemon and is live-only ⇒ `live`. Runs after the seed so an explicit `channels.json` default wins.
-  await ensureDefaultDeliveryClass({
-    servers: server,
-    space,
-    creds: setup?.creds,
-    deliveryClass: setup ? "durable" : "live",
-  });
+  try {
+    if (seedFile) {
+      await seedChannelRegistry({ servers: server, space, creds: setup?.creds, file: seedFile });
+    }
+    // SPEC §4: `defaults.deliveryClass` MUST be written at space creation so the effective default is
+    // discoverable on the wire, never inferred from the `?? "durable"` resolution fallback. Auth mode
+    // (`setup` present ⇒ the delivery daemon is up) is local/self-hosted ⇒ `durable`; open mode has no
+    // daemon and is live-only ⇒ `live`. Runs after the seed so an explicit `channels.json` default wins.
+    // A key that does not decode is not replaced by either write.
+    await ensureDefaultDeliveryClass({
+      servers: server,
+      space,
+      creds: setup?.creds,
+      deliveryClass: setup ? "durable" : "live",
+    });
+  } catch (error) {
+    if (!(error instanceof UndecodableRegistryEntry)) throw error;
+    throw new CommandFailure("refused", "CONFLICT", error.message, { target: { space }, remedy: "read the key and replace the value; the bytes were left as they are" });
+  }
+}
+
+/** `--recreate-issued-stores`: on the broker this boot just started, before any issuer or resolver
+ *  of the space runs, back up and delete the space's issued-authority stores created before bounded
+ *  retention, so the stream setup that follows creates them in the current shape. It runs the core
+ *  step an embedder runs, on a one-shot `issued-store-recreate` credential minted from the root's
+ *  trust; an open space uses its bare connection, as stream setup does. */
+async function recreateIssuedStoresBeforeSetup(server: string, space: string, authenticated: boolean, backupDir: string): Promise<void> {
+  let creds: string | undefined;
+  let inboxPrefix = "_INBOX";
+  if (authenticated) {
+    const auth = await getSpaceAuth(workspaceSecretStore(cotalRoot()), space);
+    if (!auth) throw new Error(`space "${space}" has no trust material under ${authDir(cotalRoot())}; its issued-authority stores were not touched`);
+    const identity = newIdentity();
+    creds = await mintCreds(auth, identity, "issued-store-recreate");
+    inboxPrefix = `_INBOX_${identity.id}`;
+  }
+  const nc = await dialerFor(server)({ servers: server, ...standaloneConnectOpts({ creds, tls: false }), inboxPrefix });
+  let removed;
+  try {
+    removed = await removeIssuedStoresBeforeRetention(nc, { space, backupDir, inboxPrefix });
+  } catch (error) {
+    if (error instanceof IssuedStoreRecreateRefusal)
+      throw new CommandFailure("refused", error.reason === "nothing-to-recreate" ? "CONFLICT" : "USAGE_INVALID", error.message, { target: { space, backupDir }, remedy: error.reason === "nothing-to-recreate" ? "start the space without --recreate-issued-stores" : "name a directory that does not exist yet, inside one that does" });
+    throw error;
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
+  for (const store of removed) console.log(`→ backed up ${store.stream} (${store.messages} messages) to ${store.backup}, then deleted it`);
+  console.log(c.dim("• the issued-authority stores are created again in the current shape; every generation issued before the upgrade is refused from now on"));
 }
 
 /** A resume or restore skips `postStart` because the preserved store already holds every canonical
@@ -4803,6 +4957,16 @@ function parseAuthTimeout(raw: string | undefined): number | undefined {
 }
 const MAX_AUTH_TIMEOUT_SECONDS = 60;
 
+/** `--max-payload`, a positive whole number of bytes. nats-server refuses to start above 64 MiB, so
+ *  the refusal names that bound rather than letting the broker exit on its own configuration. */
+function parseMaxPayload(raw: string | undefined): number | undefined {
+  const bytes = parsePositiveIntegerFlag("--max-payload", raw);
+  if (bytes !== undefined && bytes > MAX_BROKER_PAYLOAD_BYTES)
+    throw new CommandFailure("refused", "USAGE_INVALID", `--max-payload ${bytes} is over ${MAX_BROKER_PAYLOAD_BYTES} bytes (64 MiB), which nats-server refuses to start on; nothing was started`, { remedy: `pass --max-payload ${MAX_BROKER_PAYLOAD_BYTES} or less` });
+  return bytes;
+}
+const MAX_BROKER_PAYLOAD_BYTES = 64 * 1024 * 1024;
+
 /** The auth-service daemon argv that gives the callout the broker's timeout as its deadline. Built
  *  only from the value the broker configuration rendered, so the two never differ. */
 function authTimeoutArgs(seconds: number | undefined): string[] {
@@ -4826,7 +4990,7 @@ async function refuseRunningElsewhere(space: string, root: string): Promise<void
   if (!owner || owner.origin === "manual" || owner.origin === "catalog" || !isAbsolute(owner.root) || canonicalRoot(owner.root) === canonicalRoot(root) || !(await isReachable(owner.server))) return;
   let controller = false;
   try { controller = readStackJournal(owner.root)?.journal.space === space; } catch { /* named with the legacy stop */ }
-  throw new CommandFailure("refused", "CONFLICT", `space "${space}" runs at ${owner.server}, started in ${owner.root}, so up did not start it again`, { target: { space, root: owner.root, server: owner.server }, remedy: `use it from here with --space ${space}, or stop it with cotal down${controller ? " --yes" : ""} in ${owner.root}` });
+  throw new CommandFailure("refused", "CONFLICT", `space "${space}" runs at ${owner.server}, started in ${owner.root}, so up did not start it again`, { target: { space, root: owner.root, server: owner.server }, remedy: `use it from here with --space ${space}, or stop it with \`cotal down${controller ? " --yes" : ""}\` in ${owner.root}` });
 }
 
 /** Refuses a bare `up` in a folder holding the records of a space this machine registers for another
@@ -4841,7 +5005,7 @@ async function refuseRecordsElsewhere(root: string): Promise<void> {
   const takeover = !existsSync(records.recordedRoot) && !(await isReachable(findMesh(space)?.server ?? records.server ?? DEFAULT_SERVER));
   throw new CommandFailure("refused", "CONFLICT", `this folder holds the records of "${space}", which is registered for ${records.recordedRoot}, not for this folder, so up did not start it here`, {
     target: { root, space, recordedRoot: records.recordedRoot },
-    remedy: takeover ? `${records.stackRemedy}; or, to run it from this folder, take the name over with cotal up --space ${space}` : records.stackRemedy,
+    remedy: takeover ? `${records.stackRemedy}; or, to run it from this folder, take the name over with \`cotal up --space ${space}\`` : records.stackRemedy,
   });
 }
 
@@ -4999,9 +5163,10 @@ function assertTlsAddressServed(server: string, transport: BrokerTransport, root
 
 /** Persist a transport, and the auth callout timeout the broker configuration rendered, after its
  *  listener starts; a structured boot leaves stdout to its receipt. */
-function commitTransportPolicy(root: string, transport: BrokerTransport, quietBoot = false, server?: string, authTimeout?: number): void {
-  if (transport.kind !== "tls-required" && authTimeout === undefined) return;
-  writeBrokerPolicy(root, { version: 1, transport, ...(authTimeout !== undefined ? { authTimeout } : {}) });
+function commitTransportPolicy(root: string, transport: BrokerTransport, quietBoot = false, server?: string, limits?: { authTimeout?: number; maxPayload?: number }): void {
+  const { authTimeout, maxPayload } = limits ?? {};
+  if (transport.kind !== "tls-required" && authTimeout === undefined && maxPayload === undefined) return;
+  writeBrokerPolicy(root, { version: 1, transport, ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}) });
   if (!quietBoot) announceTransport(transport, server);
 }
 
@@ -5182,7 +5347,7 @@ function writeBrokerConfig(path: string, text: string): void {
     const entry = lstatSync(path, { throwIfNoEntry: false });
     const what = entry?.isSymbolicLink() ? "is a symlink" : entry?.isDirectory() ? "is a folder" : code === "EACCES" ? "cannot be written by this account" : "is not a regular file this account owns";
     throw new CommandFailure("refused", "PERMISSION_DENIED", `the broker configuration ${path} ${what}, so up cannot write it; it was left as it is and nothing was started`, {
-      target: { path }, remedy: `move it aside, as mv ${shellWord(path)} ${shellWord(`${path}.old`)} does, then run cotal up again, which writes it from the space's trust`,
+      target: { path }, remedy: `move it aside, as mv ${shellWord(path)} ${shellWord(`${path}.old`)} does, then run \`cotal up\` again, which writes it from the space's trust`,
     });
   }
 }
@@ -5193,7 +5358,7 @@ function unreadableTrust(error: unknown): unknown {
   const { code, path } = error as NodeJS.ErrnoException;
   if (code !== "EACCES" && code !== "EPERM" || typeof path !== "string") return error;
   return new CommandFailure("refused", "PERMISSION_DENIED", `the space's trust record ${path} cannot be read by this account (${code}); nothing was started`, {
-    target: { path }, remedy: `make it readable by you again, as chmod 600 ${shellWord(path)} does, then run cotal up again; it holds the space's keys, so keep it`,
+    target: { path }, remedy: `make it readable by you again, as chmod 600 ${shellWord(path)} does, then run \`cotal up\` again; it holds the space's keys, so keep it`,
   });
 }
 
@@ -5227,10 +5392,12 @@ async function authSetup(
   rotateSys = false,
   maxFileStore?: number,
   quietBoot = false,
-  // `--auth-timeout`. Absent: the timeout the root's broker policy records, so a bare `up` renders
-  // the one an earlier `up` set.
-  requestedAuthTimeout?: number,
-): Promise<{ confPath: string; creds: string; wsPort: number; prepared?: AuthPrepared; stateDir?: string; authTimeout?: number }> {
+  // `--auth-timeout` and `--max-payload`. Each absent value falls back to the one the root's broker
+  // policy records, so a bare `up` renders what an earlier `up` set. They arrive as one object
+  // rather than two trailing optional numbers: a transposed pair of those renders a wrong
+  // configuration in silence.
+  requested: { authTimeout?: number; maxPayload?: number } = {},
+): Promise<{ confPath: string; creds: string; wsPort: number; prepared?: AuthPrepared; stateDir?: string; authTimeout?: number; maxPayload?: number }> {
   const dir = authDir(cotalRoot()); // the broker config (server.conf) still lands under the FS auth dir
   const store = workspaceSecretStore(cotalRoot());
   let auth: SpaceAuth | undefined = await getSpaceAuth(store, space).catch((error: unknown) => { throw unreadableTrust(error); });
@@ -5347,13 +5514,15 @@ async function authSetup(
   }
   // Owner-private regardless of umask, as `writeOpenBrokerConf` writes the open configuration: the
   // broker preset refuses a configuration that other local users can write.
-  const authTimeout = requestedAuthTimeout ?? readBrokerPolicy(cotalRoot())?.authTimeout;
-  writeBrokerConfig(confPath, serverConfig(auth, spaces, { transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, authTimeout, host, wsPort, wsHost: host, extraAccounts }));
+  const recorded = readBrokerPolicy(cotalRoot());
+  const authTimeout = requested.authTimeout ?? recorded?.authTimeout;
+  const maxPayload = requested.maxPayload ?? recorded?.maxPayload;
+  writeBrokerConfig(confPath, serverConfig(auth, spaces, { transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, authTimeout, maxPayload, host, wsPort, wsHost: host, extraAccounts }));
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.
   const creds = await mintCreds(auth, newIdentity(), "provisioner");
-  return { confPath, creds, wsPort, ...(prepared ? { prepared, stateDir } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}) };
+  return { confPath, creds, wsPort, ...(prepared ? { prepared, stateDir } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}) };
 }
 
 /**

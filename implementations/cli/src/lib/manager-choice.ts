@@ -1,6 +1,6 @@
 import type { Readable, Writable } from "node:stream";
 import { BASELINE_LIFECYCLE_ENDPOINT, invokeCommand, remoteManagerActors, resolveService, type Presence } from "@cotal-ai/core";
-import { CommandFailure, DEFAULT_MANAGER_NAME, codeSpan, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, terminalWidth } from "@cotal-ai/workspace";
+import { CommandFailure, DEFAULT_MANAGER_NAME, codeSpan, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, type Connection } from "@cotal-ai/workspace";
 import { askManager, liveManagerIds, onInstance, onInstanceId, reportedManagerHost, resolveControlTarget, type ControlAuth } from "./control.js";
 import { openEndpointConnection } from "./endpoint-client.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -79,10 +79,17 @@ function selectorFor(manager: ManagerCandidate, managers: readonly ManagerCandid
   return manager.instanceId;
 }
 
+/** The roster of the space `values` resolve to, read once, with the connection that read it. Only
+ *  presence is read: it carries each manager's name, host and start, and a connection whose grant
+ *  stops short of the channel registry still reads it. */
+async function presenceOf(values: { space?: string; server?: string }): Promise<{ roster: Presence[]; connection: Connection }> {
+  const { ep, connection } = await openTransient(values, "manager-candidates", { throwOnRefusal: true, presenceOnly: true, report: () => {} });
+  try { return { roster: ep.getRoster(), connection }; } finally { await ep.stop().catch(() => {}); }
+}
+
 /** The roster of the space `values` resolve to, read once. */
 export async function rosterOf(values: { space?: string; server?: string }): Promise<Presence[]> {
-  const { ep } = await openTransient(values, "manager-candidates", { throwOnRefusal: true, report: () => {} });
-  try { return ep.getRoster(); } finally { await ep.stop().catch(() => {}); }
+  return (await presenceOf(values)).roster;
 }
 
 /** A `--on` name or host that picks no single live manager, with the managers it could mean. */
@@ -93,19 +100,30 @@ export class ManagerPinUnmatched extends CommandFailure {
       : `--on ${selector} is not the name, host or instance id of a live manager of yours`, {
       target: { on: selector },
       native: { detail: { managers } },
-      remedy: managers.length ? "rerun it with --on naming one of the managers listed" : "start a manager with cotal manager start, then rerun it",
+      remedy: managers.length ? "rerun it with --on naming one of the managers listed" : "start a manager with `cotal manager start`, then rerun it",
     });
   }
 }
+
+/** A named agent that the search found on no single manager: each of `managers` holds it, or each
+ *  did not answer while every manager that answered lacks it. A terminal is asked `question`, among
+ *  `managers` only. */
+export class AgentManagerUnsettled extends CommandFailure {
+  constructor(readonly question: string, readonly managers: readonly ManagerCandidate[], code: "TARGET_AMBIGUOUS" | "TARGET_UNAVAILABLE", message: string, target: Record<string, unknown>) {
+    super("refused", code, message, { target, native: { detail: { managers } }, remedy: "rerun it with --on naming one of the managers listed" });
+  }
+}
+
+/** The managers `instanceIds` name, as `known` shows them, or by instance id alone. */
+export const managersByInstance = (instanceIds: readonly string[], known: readonly ManagerCandidate[] = []): ManagerCandidate[] =>
+  instanceIds.map((instanceId) => known.find((m) => m.instanceId === instanceId) ?? candidateOf(instanceId, undefined));
 
 const targetFlags = (values: { space?: unknown; server?: unknown }) =>
   ({ ...(typeof values.space === "string" ? { space: values.space } : {}), ...(typeof values.server === "string" ? { server: values.server } : {}) });
 
 /** Your live managers on the user-auth mesh `flags` resolve to, as presence shows them. */
 async function yourLiveManagers(flags: { space?: string; server?: string }): Promise<ManagerCandidate[]> {
-  const { ep, connection } = await openTransient(flags, "manager-candidates", { throwOnRefusal: true, report: () => {} });
-  let roster: Presence[];
-  try { roster = ep.getRoster(); } finally { await ep.stop().catch(() => {}); }
+  const { roster, connection } = await presenceOf(flags);
   // Your managers' presence keys are `<owner>.manager_<instanceId>`, and a key is written only by
   // its holder, so the instance id is read from the key, never from what the card says.
   const prefix = `${connection.epCaller?.owner}.manager_`;
@@ -132,7 +150,7 @@ export async function managerPin(values: { on?: unknown; space?: unknown; server
     try { onInstanceId(on, verb); } catch (error) {
       throw new CommandFailure("refused", "USAGE_INVALID", `${(error as Error).message}. A manager's name or host is taken only on a user-auth mesh`, {
         target: { on },
-        remedy: `cotal ps prints each manager's instance id; rerun it as ${verb} --on <instance>`,
+        remedy: `cotal ps prints each manager's instance id; rerun it as \`${verb} --on <instance>\``,
         selfContained: true,
       });
     }
@@ -154,7 +172,7 @@ export async function managersWithPersona(values: { space?: unknown; server?: un
     let connection: Awaited<ReturnType<typeof openEndpointConnection>> | undefined;
     try {
       connection = await openEndpointConnection(flags, "control-caller-privileged", BASELINE_LIFECYCLE_ENDPOINT, manager.instanceId);
-      const service = await resolveService(connection.nc, connection.space, BASELINE_LIFECYCLE_ENDPOINT, connection.auth.epCaller!, { instanceId: manager.instanceId, deadlineMs: 5_000 });
+      const service = await resolveService(connection.nc, connection.space, BASELINE_LIFECYCLE_ENDPOINT, connection.auth.epCaller!, { instanceId: manager.instanceId, deadlineMs: 5_000, commands: ["list-personas"] });
       // The list names every persona in the catalog; a card it cannot show you is listed by name.
       const listed = service.commands.has("list-personas") ? (await invokeCommand(connection.nc, connection.space, service, "list-personas", undefined, { deadlineMs: 5_000 })).reply : undefined;
       const personas = listed?.ok ? (listed.data as { personas?: unknown } | undefined)?.personas : undefined;
@@ -239,15 +257,21 @@ const reruns = (managers: readonly ManagerCandidate[], argv: readonly string[]):
 
 /** The managers an unpinned manager selection refused to choose between, with what the roster
  *  says about each, or undefined when `failure` is not that refusal. A roster that cannot be read
- *  leaves the instance ids. */
-export async function severalLive(failure: CommandFailure, readRoster: () => Promise<readonly Presence[]>): Promise<ManagerCandidate[] | undefined> {
+ *  leaves the instance ids, and `unread` says why: its refusal's message and remedy. */
+export async function severalLive(failure: CommandFailure, readRoster: () => Promise<readonly Presence[]>): Promise<{ managers: ManagerCandidate[]; unread?: string } | undefined> {
   const found = failure.code === "PERMISSION_DENIED" ? SEVERAL_LIVE.exec(failure.message) : null;
   if (!found) return undefined;
   const owner = found[2]!;
   const ids = found[3]!.split(",").map((id) => id.trim()).filter(Boolean);
   let roster: readonly Presence[] = [];
-  try { roster = await readRoster(); } catch { /* the instance ids still name the choice */ }
-  return ids.map((instanceId) => candidateOf(instanceId, roster.find((p) => p.card.id === `${owner}.${remoteManagerActors(instanceId).supervisor}` && p.status !== "offline")));
+  let unread: string | undefined;
+  try { roster = await readRoster(); } catch (error) {
+    const refusal = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure() : undefined;
+    const why = refusal ? [refusal.message, refusal.remedy].filter(Boolean).join("; ") : error instanceof Error ? error.message : String(error);
+    unread = `names unavailable: ${why}`;
+  }
+  const managers = ids.map((instanceId) => candidateOf(instanceId, roster.find((p) => p.card.id === `${owner}.${remoteManagerActors(instanceId).supervisor}` && p.status !== "offline")));
+  return { managers, unread };
 }
 
 /** What a manager's row says about its backend: the runtime it spawns through and whether a
@@ -273,24 +297,30 @@ function choose(chosen: ManagerCandidate, managers: readonly ManagerCandidate[],
   process.stderr.write(`${renderReport({ sections: [{ title: "Manager chosen", blocks: [
     { kind: "fields", rows: [["Manager", chosen.name ?? chosen.instanceId], ["Instance", chosen.instanceId], ["Host", chosen.host ?? "not reported (started by an older cotal)"]] },
     { kind: "lines", lines: [{ text: `To choose it without this question: ${codeSpan(rerunOn(argv, pick.selector))}`, tone: "hint" }] },
-  ] }] }, "rich", terminalWidth(process.stderr))}\n`);
+  ] }] }, "rich", process.stderr)}\n`);
   return chosen;
 }
 
 /**
  * The manager to rerun a command on, asked on this terminal after its unpinned manager selection
- * was refused among several live managers: the most recently started is listed first and is the
- * default. The question and the chosen manager are written to stderr, so `--json` output stays
- * whole. The pick is the `--on` the refusal's Next reruns with, and the refusal came before any
- * effect. Undefined for any other failure, and null when the question is cancelled.
+ * was refused among several live managers, or after a named agent was found on no single manager,
+ * when only the managers that hold it or did not answer are listed: the most recently started is
+ * listed first and is the default. A roster that cannot be read leaves the instance ids, with a
+ * line above the question that says why. The question and the chosen manager are written to stderr,
+ * so `--json` output stays whole. The pick is the `--on` the refusal's Next reruns with, and the
+ * refusal came before any effect. Undefined for any other failure, and null when the question is
+ * cancelled.
  */
 export async function pickManager(failure: CommandFailure, readRoster: () => Promise<readonly Presence[]>, argv: readonly string[]): Promise<ManagerCandidate | null | undefined> {
-  const managers = await severalLive(failure, readRoster);
-  if (!managers) return undefined;
+  const unsettled = failure instanceof AgentManagerUnsettled ? failure : undefined;
+  const several = unsettled ? undefined : await severalLive(failure, readRoster);
+  const managers = unsettled ? [...unsettled.managers] : several?.managers;
+  if (!managers?.length) return undefined;
   const { newest, options } = managerOptions(managers);
   const prompts = await import("./prompts.js");
+  if (several?.unread) prompts.log.warn(prompts.logLines(several.unread, process.stderr), { output: process.stderr });
   const picked = await prompts.select({
-    message: `${managers.length} of your managers are live. Which one should run this?`,
+    message: unsettled?.question ?? `${managers.length} of your managers are live. Which one should run this?`,
     options,
     initialValue: 0,
     output: process.stderr,
@@ -306,7 +336,8 @@ export async function pickManager(failure: CommandFailure, readRoster: () => Pro
  * Where a spawn that names no launch mode runs, asked on this terminal when several of your
  * managers are live on the user-auth mesh `values` resolve to: in this terminal, the default, or
  * launched by one of them and attached here, as `--on` does. The managers are the ones the exchange
- * counts for an unpinned manager selection, read from its refusal. A selection it grants instead is
+ * counts for an unpinned manager selection, read from its refusal, and shown as {@link pickManager}
+ * shows them. A selection it grants instead is
  * dropped, and so is any refusal of a manager selection, which leaves the spawn in this terminal; any
  * other failure is thrown. No manager credential is held while the question waits. Undefined when
  * nothing is asked or this terminal is chosen, and null when the question is cancelled.
@@ -324,13 +355,15 @@ export async function askSpawnPlace(values: { space?: unknown; server?: unknown 
     if (!failure) throw error;
   }
   if (!failure) return undefined;
-  const managers = await severalLive(failure, () => rosterOf(flags));
-  if (!managers) {
+  const several = await severalLive(failure, () => rosterOf(flags));
+  if (!several) {
     if (failure.code === "PERMISSION_DENIED") return undefined;
     throw failure;
   }
+  const { managers } = several;
   const { newest, options } = managerOptions(managers);
   const prompts = await import("./prompts.js");
+  if (several.unread) prompts.log.warn(prompts.logLines(several.unread, process.stderr), { output: process.stderr });
   const picked = await prompts.select({
     message: `${managers.length} of your managers are live. Where should the agent run?`,
     options: [{ value: -1, label: "This terminal", hint: "default" }, ...options],
@@ -433,27 +466,27 @@ export async function askManagerFolder(
     output.write(`${renderReport({ sections: [{ title: "Folder chosen", blocks: [
       { kind: "fields", rows: [["Folder", folder ?? MANAGER_WORKSPACE], ["Host", selection.manager.host ?? "not reported"]] },
       ...(folder === undefined ? [] : [{ kind: "lines" as const, lines: [{ text: `To choose it without this question: ${codeSpan(rerunWithCwd(argv, folder, selection.selector))}`, tone: "hint" as const }] }]),
-    ] }] }, "rich", terminalWidth(output as { isTTY?: boolean; columns?: number }))}\n`);
+    ] }] }, "rich", output as NodeJS.WriteStream)}\n`);
     return folder;
   }
 }
 
 /** `failure` restated as the choice it is, when it is the refusal of an unpinned manager selection
- *  among several live managers, or a `--on` that picked no single manager: each manager by name,
- *  with its instance id and the host, activity and process start its presence reports, and a Next
- *  that reruns `argv` on each. The outcome and code are kept. The roster is read only for the
- *  unpinned refusal, and one that cannot be read leaves the instance ids. Undefined for any other
- *  failure. */
+ *  among several live managers, a `--on` that picked no single manager, or a named agent found on
+ *  no single manager: each manager by name, with its instance id and the host, activity and process
+ *  start its presence reports, and a Next that reruns `argv` on each. The outcome and code are kept.
+ *  The roster is read only for the unpinned refusal, and one that cannot be read leaves the instance
+ *  ids. Undefined for any other failure. */
 export async function managerChoiceFailure(
   failure: CommandFailure,
   readRoster: () => Promise<readonly Presence[]>,
   argv: readonly string[],
 ): Promise<CommandFailure | undefined> {
-  if (failure instanceof ManagerPinUnmatched) {
+  if (failure instanceof ManagerPinUnmatched || failure instanceof AgentManagerUnsettled) {
     if (!failure.managers.length) return undefined;
     return new CommandFailure(failure.outcome, failure.code, failure.message, { target: failure.target, native: failure.native, remedy: reruns(failure.managers, argv), cause: failure });
   }
-  const managers = await severalLive(failure, readRoster);
+  const managers = (await severalLive(failure, readRoster))?.managers;
   if (!managers) return undefined;
   return new CommandFailure(failure.outcome, failure.code, `${managers.length} of your managers are live, and this command needs exactly one of them`, {
     target: failure.target,

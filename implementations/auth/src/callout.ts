@@ -31,7 +31,8 @@ import {
   fmtCreds,
   type AuthorizationRequest,
 } from "@nats-io/jwt";
-import { createAccount, createCurve, fromCurveSeed, fromPublic, fromSeed } from "@nats-io/nkeys";
+import { createAccount, createCurve, fromCurveSeed, fromPublic, fromSeed, NKeysError, NKeysErrorCode } from "@nats-io/nkeys";
+import nacl from "tweetnacl";
 import { assertInboxConnId, calloutReaderId, decodeNatsJwt, nativeNkeySigner, newIdentity, principalKey, principalTags, token } from "@cotal-ai/core";
 import type { JWTVerifyGetKey, CryptoKey } from "jose";
 import { expiredBearerPrincipal, validateUserToken, type ValidatedUserToken } from "./token.js";
@@ -45,6 +46,43 @@ export const AUTH_CALLOUT_SUBJECT = "$SYS.REQ.USER.AUTH";
 
 /** Header carrying the server's public curve key on sealed callout requests. */
 const SERVER_XKEY_HEADER = "Nats-Server-Xkey";
+
+/** Server keys whose NaCl shared key one callout keeps, least recently admitted dropped first. A
+ *  nats-server presents one xkey per process, so this covers every server a queue group serves,
+ *  plus restarts. A request past it derives its key once, for open and seal together, where
+ *  nkeys' `open` and `seal` derived it twice. */
+export const XKEY_SHARED_KEY_CAP = 64;
+
+/** The version tag nkeys' `CurveKP` writes before the nonce of every sealed payload. */
+const XKEY_V1 = new TextEncoder().encode("xkv1");
+
+/** nkeys' `CurveKP.seal` under a precomputed shared key: `xkv1`, a random nonce, then the box. */
+function sealXkv1(message: Uint8Array, sharedKey: Uint8Array): Uint8Array {
+  const nonce = nacl.randomBytes(nacl.box.nonceLength);
+  const box = nacl.box.after(message, nonce, sharedKey);
+  const out = new Uint8Array(XKEY_V1.length + nonce.length + box.length);
+  out.set(XKEY_V1);
+  out.set(nonce, XKEY_V1.length);
+  out.set(box, XKEY_V1.length + nonce.length);
+  return out;
+}
+
+/** The framing checks nkeys' `CurveKP.open` makes before it uses a key: throws on a payload too
+ *  short to hold a box or not tagged `xkv1`. */
+function xkv1Parts(message: Uint8Array): { nonce: Uint8Array; box: Uint8Array } {
+  const head = XKEY_V1.length + nacl.box.nonceLength;
+  if (message.length <= head || XKEY_V1.some((b, i) => message[i] !== b)) throw new NKeysError(NKeysErrorCode.InvalidEncrypted);
+  return { nonce: message.subarray(XKEY_V1.length, head), box: message.subarray(head) };
+}
+
+/** The X25519 secret and the public-key decoder of an nkeys curve keypair. `fromCurveSeed` is typed
+ *  as the generic `KeyPair`; nkeys declares both public on its `CurveKP`. Throws when either is absent. */
+function curveSecret(kp: unknown): { secret: Uint8Array; decode: (key: string) => Uint8Array } {
+  const curve = kp as { seed?: unknown; decodePubCurveKey?(src: string): Uint8Array };
+  if (!(curve.seed instanceof Uint8Array) || curve.seed.length !== nacl.box.secretKeyLength || typeof curve.decodePubCurveKey !== "function")
+    throw new Error("auth callout: this @nats-io/nkeys curve keypair does not expose the seed and key decoder the callout derives its xkey shared keys from");
+  return { secret: curve.seed, decode: curve.decodePubCurveKey.bind(curve) };
+}
 
 /** The error a callout answers when it cannot answer inside the broker's auth timeout. */
 export const CALLOUT_TIMEOUT_REASON = "timeout: the auth callout could not answer inside the broker's authorization timeout";
@@ -233,7 +271,8 @@ type CalloutOutcome = "minted" | "denied" | "timeout" | "shed";
 interface Callout {
   msg: CalloutMsg;
   req: AuthorizationRequest;
-  serverXkey: string;
+  /** The NaCl shared key with the server that sealed the request; the response is sealed with it. */
+  sharedKey: Uint8Array;
   /** The user key the broker generated for this connect, which the response is addressed to. */
   id: string;
   arrivedAt: number;
@@ -265,6 +304,17 @@ const field = (s: string) => (/^[\w.:@|-]+$/.test(s) ? s : JSON.stringify(s));
 export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOpts): { done: Promise<void> } {
   if (!opts.xkeySeed) throw new Error("auth callout: xkey seed is required - refusing to start a callout that would receive bearer tokens unsealed");
   const xkp = fromCurveSeed(new TextEncoder().encode(opts.xkeySeed)); // throws on non-curve seeds
+  const { secret: xkeySecret, decode: decodeServerXkey } = curveSecret(xkp);
+  // NaCl shared keys by sealing header key, least recently admitted first. Each callout keeps its
+  // own, because a key is a function of this callout's seed. The header is read before the request's
+  // signature is checked, so a key is kept only once `admit` has passed every check: a forged header
+  // costs one derivation and is never kept.
+  const sharedKeys = new Map<string, Uint8Array>();
+  const keepSharedKey = (serverXkey: string, key: Uint8Array) => {
+    sharedKeys.delete(serverXkey);
+    if (sharedKeys.size >= XKEY_SHARED_KEY_CAP) sharedKeys.delete(sharedKeys.keys().next().value!);
+    sharedKeys.set(serverXkey, key);
+  };
   const responseSigner = nativeNkeySigner(new TextEncoder().encode(opts.authAccount.signingSeed));
   const userSigner = nativeNkeySigner(new TextEncoder().encode(opts.dataAccount.signingSeed));
   if (!opts.space) throw new Error("auth callout: space is required");
@@ -309,7 +359,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
       { ...data, issuer_account: opts.authAccount.pub },
       { algorithm: Algorithms.v2 },
     );
-    return xkp.seal(enc(resp), c.serverXkey);
+    return sealXkv1(enc(resp), c.sharedKey);
   };
 
   /** Release a sealed response unless the request is already answered. `beforeSend` runs only
@@ -359,9 +409,11 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
       log("auth callout: dropped an UNSEALED request (no Nats-Server-Xkey header) - check the account xkey config");
       return;
     }
-    let claims;
+    let claims, sharedKey: Uint8Array;
     try {
-      const plain = xkp.open(msg.data, serverXkey);
+      const { nonce, box } = xkv1Parts(msg.data);
+      sharedKey = sharedKeys.get(serverXkey) ?? nacl.box.before(decodeServerXkey(serverXkey), xkeySecret);
+      const plain = nacl.box.open.after(box, nonce, sharedKey);
       if (plain === null) throw new Error("xkey open failed");
       claims = decodeNatsJwt<AuthorizationRequest>(dec(plain)); // the issuer's ed25519 signature, verified natively
     } catch (e) {
@@ -394,9 +446,10 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
       log("auth callout: dropped a request whose signed server_id.xkey != sealing header key");
       return;
     }
+    keepSharedKey(serverXkey, sharedKey);
     const queuedAt = performance.now();
     return {
-      msg, req, serverXkey,
+      msg, req, sharedKey,
       id: req.user_nkey,
       arrivedAt, queuedAt,
       admittedAt: Math.floor(Date.now() / 1000),

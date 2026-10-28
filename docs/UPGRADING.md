@@ -34,6 +34,321 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Multi-space host acknowledgments after 0.116.1
+
+Every multi-space host (`auth-service --spaces`, `auth-service --callout-only --spaces`,
+`deliver --spaces`) writes `<manifest>.applied` to say that every space the manifest does not name
+has no lane in that process. From 0.115.2 a space whose open outlived the pass deadline kept that
+open running outside the lane map, so a manifest that dropped such a space was acknowledged while
+its open was still pending. The open then settled, the host took the lane, and the next pass closed
+it. A writer that treats the acknowledgment as a fence, as Cotal Cloud does before it tears a tenant
+down, could see a lane come up for the space after it was told there was none.
+
+The host now holds the record for such a space until its open has settled and any lane it brought up
+is closed, the same way it already holds it for a lane whose close did not confirm. It names the
+space when it starts holding:
+
+```
+✗ delivery host: space(s) "<s>" left the manifest while still opening - acknowledging nothing until each open settles and any lane it opened is closed
+```
+
+### What changes for you
+
+- A removal you fence on can now take as long as that space's open does. There is no timeout and no
+  partial answer: the record names the manifest you wrote only once the removal is true. An operator
+  script that waited a fixed few seconds for `<manifest>.applied` and then proceeded was reading an
+  answer the host could not yet give; give it the time a hung open can take, or stop the host.
+- The other spaces are unaffected. They keep opening, serving and closing while one space's removal
+  is held, which the host's lane lines report as before.
+- A space the manifest still names does not hold anything back: a pending open only matters once the
+  manifest has dropped the space.
+
+## Membership snapshot reads after 0.115.4
+
+`CotalEndpoint.readMembership()` now reads the membership feed with batched Direct Gets and binds
+no consumer, so a dashboard that polls it no longer leaves a consumer per read on the feed's
+stream or a refused `CONSUMER.DELETE` line in the broker log. The read needs
+`$JS.API.DIRECT.GET.KV_cotal_membership_<space>`, which the observer and admin profiles now carry.
+An observer or admin credential minted by an older manager or auth service lacks the row, and its
+`readMembership()` is refused with the grant it lacks rather than scanned with a consumer. Upgrade
+the issuer first, then mint the dashboard's and the CLI's observer credentials again; reconnecting
+with the old credential does not add the grant.
+
+## Membership watch entries after 0.115.4
+
+`CotalEndpoint.watchMembership(onChange)` now hands `onChange` each feed entry as a
+`MembershipChange`: a `member` change with the agent's decoded record (or none, when the key was
+deleted), a `heartbeat` change with the daemon's `asOf`, and one `replayed` change closing the
+entries a newly armed or rearmed watch replays (those carry `update: false`). Up to 0.115.4 the
+callback took no argument, and the documented contract was to re-read `readMembership` on every
+call; because the delivery daemon rewrites the heartbeat key every poll, an observer following that
+contract rescanned the whole bucket through a fresh ordered consumer per heartbeat, with nothing
+changed.
+
+A callback written against the old contract still compiles and still works; it is now also called
+once per replay with the marker. To stop paying the rescan, branch on `change.type`: copy a
+`heartbeat` into the last snapshot's `asOf`, ignore `replayed`, and read (or apply the record) on a
+`member` change. The stock dashboard, `cotal view` and `cotal channel members --follow` do this.
+
+## Node 22.10 is the floor after 0.115.4
+
+Every package now declares `"node": ">=22.10"`, where Node 22 was enough up to 0.115.4. The reason
+is `module.flushCompileCache()`, which arrived in v22.10.0 and which a Claude Code seat's entry
+calls on every launch.
+
+Check the runtime before upgrading a host with `node -v`. On a host whose Node is 22.0 through 22.9,
+three things change.
+
+The `cotal` binary refuses to start, naming the floor, the running version, and the repair for the
+way it was installed. It checks the version before loading anything else, so an old runtime gets
+one sentence instead of a parse error from a dependency.
+
+A seat launched through `dist/seat.cjs` prints one line naming the floor and exits without serving.
+`node dist/mcp.cjs` still serves there and pays the bundle's compile on every start, which is the
+route for a host that cannot move its Node yet.
+
+The installer compares the minor version from this release on, so
+`curl -fsSL https://get.cotal.ai | sh` on a host whose Node is 22.9 downloads and verifies the
+pinned Node rather than using that one. Up to 0.115.4 it accepted any Node 22.
+
+Nothing migrates and no credential or state is recreated. A host already on Node 22.10 or newer has
+nothing to do.
+
+## The Claude Code seat entry after 0.115.4
+
+The plugin's MCP server is launched through a new file, `dist/seat.cjs`, which enables Node's
+compile cache before loading the server bundle. Nothing migrates and nothing is recreated by hand.
+Two things are worth knowing before the first upgraded seat starts.
+
+Run `cotal setup` after upgrading, as the normal upgrade step. The installed plugin and the Claude
+Desktop entry both name the launched file, so a copy written by an older release still points at
+`dist/mcp.cjs`. That copy keeps working: it serves the same seat and pays the bundle's compile on
+every start. Until setup runs, `cotal status` reports the Desktop entry as stale.
+
+Each seat writes a compile cache under `~/.cotal/compile-cache`
+(`%LOCALAPPDATA%\Cotal\compile-cache` on Windows), which `COTAL_HOME` does not redirect. It holds
+under 1 MB per Node version and is safe to delete at any time. A host that gives its seats a
+read-only home gets one line on stderr per seat and seats that serve without a cache. To turn it off
+for a host, set `NODE_DISABLE_COMPILE_CACHE=1` in the seat's environment.
+
+## Multi-space host lane opens after 0.115.2
+
+Every multi-space host (`auth-service --spaces`, `auth-service --callout-only --spaces`,
+`deliver --spaces`) now opens its spaces' lanes together and waits at most 30 seconds for any one of
+them. Up to 0.115.2 the lanes opened one after another, so one space whose open hung (a broker
+connect or JetStream request that never answered) held back every later space in the manifest, the
+ready line, and the acknowledgment a provisioning writer waits on to remove a space.
+
+A space whose open outlives the deadline is reported, its open keeps running and is not started
+again, and its lane is taken when that open settles, or closed if the space left the manifest
+meanwhile. The ready line names such spaces apart from the ones being retried:
+
+```
+✓ delivery host up (2 space(s): <s>, <s>; still opening <s>; retrying <s>) - one delivery lane per space on <server>
+✗ delivery host: space "<s>" did not open within 30s - serving the others without it; its open is still running and is not started again
+```
+
+The default startup (`every`) refuses a space that does not open within the deadline as it refuses
+one that fails to open: `space "<s>" did not open within 30s - no lane was left running`. Nothing
+has to change before the upgrade; a supervisor that waited more than 30 seconds for a ready line
+now sees it sooner.
+
+A stop (SIGINT, SIGTERM) that lands while a pass is still opening a space now waits for that open,
+bounded by the same deadline, and closes the lane it produces before the host ends. Up to 0.115.4
+the host exited with that lane never closed, so a delivery host stopped in that window left the
+space's lease row in place until its TTL and a restart was refused with `a live lease already
+exists`.
+
+## Multi-space callout host startup after 0.115.0
+
+`cotal auth-service --callout-only --spaces <manifest>` now starts with the spaces it can serve. It
+names each space it cannot serve with the reason and retries that space every 5 seconds. Up to
+0.114.x the host exited nonzero unless every space in the manifest opened, so one space whose
+service endpoint admission was open, or whose material was missing, kept the callout of every other
+space in the manifest unanswered by this host, and a supervisor that restarts it looped.
+
+A supervisor, health check or script that read that nonzero exit as "a space could not open" no
+longer sees it: the host stays up. Read its ready line, which counts the spaces answering and names
+the spaces it retries, or its per-space lines:
+
+```
+✓ auth callout host up (2 of 3 space(s) answering: <s>, <s>; retrying <s>) - answering the callout on <server>; no HTTP listener, no auth-service.json
+✗ auth callout host: space "<s>" could not be served (<reason>) - retrying in 5s
+```
+
+A manifest that does not read or parse whole still refuses startup, and so does a manifest directory
+the host cannot write. `auth-service --callout-only --space <s>` still refuses a space it cannot
+serve and exits nonzero.
+
+### Before the upgrade
+
+- Nothing has to change unless something relied on the old exit.
+- A space whose service endpoint admission is open is now named and retried for the life of the host,
+  one lane attempt every 5 seconds. Keep it off callout host manifests: `admitsServiceEndpoints({
+  space, server, secrets })` from `@cotal-ai/auth` returns `true` for each such space.
+
+## Loopback host doors share the invalid-capability budget
+
+`POST /interactive-lifecycle/retire`, `POST /managed-lifecycle/retire` and
+`POST /manager-service-authority/verify-enrollment` now count a missing or wrong loopback capability
+in the same invalid-capability window as `POST /exchange`. The first 30 in a rolling minute answer
+401 with the route's own reason. A further one answers 429, `too many invalid-capability attempts -
+wait a minute and retry`, and each refusal is logged. Before, these three routes answered 401 for
+every attempt and never filled the window. A correct capability is unchanged, and a running mesh
+needs nothing.
+
+The interactive retirement route still states `outcome: "not-executed"` on that refusal, including
+the 429, because nothing was retired. The other two routes keep the 401 body they answered before
+and add no outcome field.
+
+## Service endpoints on a multi-space auth service host after 0.114.0
+
+`cotal auth-service --spaces <manifest>` now takes service endpoints per space, from each space's
+manifest entry, and refuses `--service-endpoints`. This affects a host run on any release from 0.112.0
+before 0.114.0 with both `--spaces` and `--service-endpoints`, where the flag turned service endpoints
+on for every space the manifest named. Started the same way, such a host now stops at startup with nothing opened:
+
+```
+auth-service: --spaces takes service endpoints per space - set "serviceEndpoints": true on the manifest entry of each space that hosts them and drop --service-endpoints
+```
+
+`auth-service --spaces` without the flag, `auth-service --callout-only --spaces` and
+`auth-service --space --service-endpoints` are unchanged.
+
+### Before the upgrade
+
+- Add `"serviceEndpoints": true` to the entry of each space that keeps service endpoints, and drop
+  `--service-endpoints` from the host's command line. An entry that had a public face keeps it:
+
+  ```json
+  { "version": 2, "spaces": [
+    { "space": "<s>", "exchangePublicPort": 7451, "exchangeTrustedProxy": true, "serviceEndpoints": true },
+    { "space": "<s>" }
+  ] }
+  ```
+
+  To keep the old behavior, set it on every entry.
+- Write the new manifest first, then restart the host on the new version. Until the restart the old
+  host reports the new field as unknown and keeps its lanes as they were.
+- A space whose entry leaves the field out answers `/service-endpoint-authority` and
+  `/service-endpoint-host` with 404 after the upgrade. Its admission record and registrations stay
+  in its stores, and a callout replica still refuses it.
+
+## Multi-space delivery startup after 0.112.0
+
+`cotal deliver --spaces <manifest>` now starts with the spaces it can serve. It names each space it
+cannot serve with the reason and retries that space every 5 seconds. Up to 0.111.x the host exited
+nonzero unless every space in the manifest opened, so one space whose lease another daemon still
+held, or whose credential was missing, kept every other space's delivery down.
+
+A supervisor, health check or script that read that nonzero exit as "a space could not open" no
+longer sees it: the host stays up. Read its ready line, which names the spaces it retries, or its
+per-space lines:
+
+```
+✓ delivery host up (1 space(s): <s>; retrying <s>) - one delivery lane per space on <server>
+✗ delivery host: space "<s>" could not be served (<reason>) - retrying in 5s
+```
+
+A manifest that does not read or parse whole still refuses startup. Nothing has to change before
+the upgrade unless something relied on the old exit.
+
+## Writable manifest directory for multi-space hosts after 0.112.0
+
+Every multi-space host now writes `<manifest>.applied` beside its manifest before it opens any lane,
+and refuses to start when it cannot. That covers `auth-service --spaces`, `auth-service
+--callout-only --spaces` and `deliver --spaces`, the last two of which never wrote there before. A
+manifest kept in a directory the host's user cannot write, such as a read-only mount or a folder
+another user owns, now stops the host at startup with nothing opened:
+
+```
+✗ deliver --spaces: cannot write <manifest>.applied (EACCES: permission denied, ...) - no lane was opened
+```
+
+### Before the upgrade
+
+- Give each host's user write access to the directory that holds its manifest, or move the
+  manifest into a directory that user can write and point the unit at the new path.
+- The file holds `{"version": 1, "sha256": "<hex>"}`, the SHA-256 of the manifest the host
+  applied. A tool that stops one space by removing it from the manifest can wait for that hash
+  ([server daemons](cli.md#server-daemons)).
+
+## Issued-authority stores after 0.111.0
+
+0.111.0 bounds the two issued-authority stores of every space, `KV_cotal_issued_<space>` and
+`KV_cotal_accepted_<space>`: each row now ends at its generation's horizon. A store an earlier
+release created keeps every row forever, so every issuer and resolver of the space refuses it and
+the space does not start. This cannot be made automatic. Each space's two stores are backed up,
+deleted and created again once, and every generation issued before that is refused afterwards.
+
+0.111.0 and 0.112.0 name `nats stream backup` and `nats stream rm` for this, and no credential
+those releases mint can run either command. From 0.113.0 `cotal up --recreate-issued-stores
+<backup-dir>` does it. Upgrade a mesh that ran 0.110.x or earlier straight to 0.113.0 or later.
+
+**A rollback after this step does not restore the old stores with stock tools.** Read
+[Rolling back](#rolling-back-the-issued-authority-stores) before you start.
+
+### Before the upgrade
+
+- Pick a backup directory for each space that does not exist yet, inside one that does. The step
+  creates it.
+- Copy the connector seed store and the extensions folder, `seed` and `extensions` in the operator
+  config directory (`~/.config/cotal` by default). The first start of the new release migrates the
+  seed store, and an older release refuses to run over the migrated one.
+- Plan to respawn every static agent a manager runs. Its credential's generation is refused after
+  the step, so its renewals stop.
+
+### The upgrade
+
+1. Stop every issuer and resolver of the space: its stack (`cotal down` from the root), its auth
+   service and every callout replica you started yourself.
+2. Install the new release.
+3. Start the space once with `--recreate-issued-stores <backup-dir>` added to the `cotal up` that
+   starts it, for example `cotal up --space <space> --recreate-issued-stores <backup-dir>` (with
+   `--user-auth` and the other flags that space starts with). Before any issuer starts, it backs up
+   each store created before 0.111.0, checks each backup against its stream, deletes those stores
+   and creates both again:
+
+   ```
+   → backed up KV_cotal_issued_<space> (<n> messages) to <backup-dir>/KV_cotal_issued_<space>, then deleted it
+   → backed up KV_cotal_accepted_<space> (<n> messages) to <backup-dir>/KV_cotal_accepted_<space>, then deleted it
+   ```
+
+4. Remove the flag from any unit or script that starts the space. A later start with it refuses
+   `CONFLICT`, since neither store predates bounded retention any more.
+5. Start the callout replicas and other issuers again, and respawn the static agents.
+
+A space your own composition provisions, rather than `cotal up`, runs the same step through
+`removeIssuedStoresBeforeRetention` ([Embedding](embedding.md#issued-authority-stores-from-before-01110)).
+
+### What refuses
+
+- Without the flag, `cotal up` refuses `CONFLICT` (exit 2), names the store, and stops the broker
+  it started. 0.111.0 and 0.112.0 report the same refusal as `OPERATION_UNKNOWN` (exit 3); nothing
+  is left running in either case.
+- The flag refuses `USAGE_INVALID` when the backup directory exists or its parent does not, or with
+  `-f` or `--restore`, and `LIFECYCLE_BLOCKED` while the stack runs or the root has a maintenance
+  attempt to recover. It runs only on a broker that start launches, before any issuer.
+- A backup that does not match its stream's message count and last sequence, or a store that
+  changes between its backup and the deletes, means an issuer is still writing. Nothing is deleted.
+  Stop it and run the start again with a new backup directory.
+
+### The backup
+
+Each store gets `<backup-dir>/<stream>/backup.json` and `stream.tar.s2`, the layout
+`nats stream backup` writes, so `nats stream restore` reads it. The directories are 0700 and the
+files 0600. Keep them private: they hold the issued-authority evidence of the space.
+
+### Rolling back the issued-authority stores
+
+- 0.110.0 starts on the stores the step created, and its `cotal ps` works there. Restore the seed
+  store and extensions copies first, or it refuses to run.
+- Rows an earlier release writes while rolled back carry no TTL, so the broker never removes them.
+  A later upgrade does not recreate the stores again, because their shape is already current.
+- Putting the backed-up stores back needs a credential that holds `STREAM.RESTORE` on them for
+  `nats stream restore`, and no stock command mints one. A rollback to the stores as they were before
+  the upgrade is not supported with stock tools.
+
 ## Starting the manager by name after 0.105.0
 
 `cotal manager start` starts the manager for this folder's or the selected space, with the pty

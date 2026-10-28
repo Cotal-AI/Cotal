@@ -20,6 +20,16 @@
  *   E3. `cotal supervise` from another root that holds its own signer for the space is refused as a
  *      refusal: a `Mesh:` heading, PERMISSION_DENIED, the refused credential and broker, and a Next
  *      naming the folder that hosts the space. No bare `Authorization Violation` line.
+ *   E4. A prepared second root of the same space under its own home: `manager start` with no sign-in
+ *      is refused AUTH_REQUIRED before anything is saved; a manager left running after a sign-out is
+ *      stopped by the folder's owner through `manager stop` and `down`. `supervise` is refused before
+ *      it connects, under a `Mesh:` heading with a code and no boot line, from that stopped root, from
+ *      a folder with no records (naming the folder that hosts the space, writing nothing there), and
+ *      from a stopped static root.
+ *   E5. A TLS space behind a local CA, its public exchange behind an HTTPS proxy, joined by a
+ *      participant from its bundle: with `NODE_EXTRA_CA_CERTS` set, the participant's `manager start`
+ *      comes up and its native child carries the variable; with it unset, the line the refusal quotes
+ *      names the TLS reason and ends in the step to set `NODE_EXTRA_CA_CERTS`, quoted whole.
  *   F. `cotal down` stops the auth service (space-scoped pid) with the broker; re-`up` WITHOUT
  *      --user-auth on a user-enabled root is refused fail-closed.
  *   G. `clean all`, and `reset space` on a stopped controller stack, name the IdP trust and the
@@ -28,10 +38,11 @@
  * COTAL_HOME is sandboxed; kills only what it starts. Needs nats-server on PATH.
  * Run: pnpm smoke:user-auth-launch:live   (pnpm build first — the subprocesses run built dist)
  */
-import { spawn } from "node:child_process";
-import { createServer } from "node:http";
+import { execFileSync, spawn } from "node:child_process";
+import { createServer, request as httpRequest } from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -62,7 +73,8 @@ childEnv.COTAL_NAME = "cli";
 childEnv.COTAL_ID = "cli_send";
 
 const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-io/transport-node");
-const { chatSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity } = await import("@cotal-ai/core");
+const { jetstreamManager } = await import("@nats-io/jetstream");
+const { channelBucket, chatSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity, presenceBucket } = await import("@cotal-ai/core");
 const { authDir, loadSoleSpaceAuth, loadSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { cotalAuthProvider, deleteIdpSession, establishIdpSession, INTERACTIVE_RETIRE_PATH, loadActorLedger, loadAuthServiceInfo } = await import("../src/index.js");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
@@ -94,7 +106,7 @@ const CLAUDE = join(import.meta.dirname, "..", "..", "..", "extensions", "connec
 /** Run the REAL binary (built dist through bin/cotal.ts) in the sandboxed workspace. ASYNC on
  *  purpose: a sync child would block this process's event loop — and the in-process IdP with it —
  *  deadlocking any subprocess step that calls back into the IdP (the user-mode send does). */
-function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string>; sandbox?: SmokeSandboxAnchor } = {}): Promise<{ status: number | null; out: string }> {
+function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string | undefined>; sandbox?: SmokeSandboxAnchor } = {}): Promise<{ status: number | null; out: string }> {
   return new Promise((resolvePromise) => {
     const options = {
       cwd: opts.cwd ?? root,
@@ -148,6 +160,10 @@ async function approve(userCode: string): Promise<void> {
 let witnessNc: Awaited<ReturnType<typeof connect>> | undefined;
 // E3's second root, with its own home, so `finally` can stop and remove it.
 let other: { root: string; home: string; env: Record<string, string>; sandbox: SmokeSandboxAnchor } | undefined;
+// E4's home, its prepared roots and its folder with no records, likewise.
+let second: { home: string; env: Record<string, string>; roots: { root: string; sandbox: SmokeSandboxAnchor }[]; bare?: string } | undefined;
+// E5's TLS host, its proxy and the participant that joined it, likewise.
+let caRig: { hostRoot: string; hostHome: string; hostEnv: Record<string, string>; sandbox: SmokeSandboxAnchor; joinRoot: string; joinHome: string; joinEnv: Record<string, string>; proxy: HttpsServer } | undefined;
 try {
   // ---------- A. up --user-auth ----------
   console.log("A) cotal up --user-auth --idp <real IdP> --auth-timeout 3 --detach");
@@ -156,7 +172,7 @@ try {
   check("up announces the user-auth service + login line", up.out.includes("user-auth service up") && up.out.includes(`cotal login --idp ${base}`), up.out);
   check(
     "up summary reports the complete user-auth component set",
-    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, user-auth service, manager - stop with: cotal down$/m.test(plain(up.out)),
+    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, user-auth service, manager - stop with: `cotal down`$/m.test(plain(up.out)),
     up.out,
   );
   const stateDir = userAuthStateDir(root, SPACE);
@@ -310,8 +326,32 @@ try {
   });
   await witnessNc.flush();
 
+  // #4091: on the user's bearer the one-shot sender reads the roster and the channel registry once,
+  // so it leaves no watch consumer on either bucket. Counted on an admin tap of its own, whose reply
+  // inbox is the connection-scoped one its grant allows.
+  const inspectorId = newIdentity();
+  const inspector = await connect({
+    servers: SERVER,
+    authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, inspectorId, "admin"))),
+    inboxPrefix: `_INBOX_${inspectorId.id}`,
+  });
+  const inspectorJsm = await jetstreamManager(inspector);
+  const kvConsumers = async () => ({
+    presence: (await inspectorJsm.streams.info(`KV_${presenceBucket(SPACE)}`)).state.consumer_count,
+    channels: (await inspectorJsm.streams.info(`KV_${channelBucket(SPACE)}`)).state.consumer_count,
+  });
+  const consumersBefore = await kvConsumers();
+
   const send = await cotal(["send", "-c", "general", "hello from user mode", "--space", SPACE]);
   check("user-mode send exits 0 (login → exchange → bearer → callout)", send.status === 0, send.out);
+  const consumersAfterSend = await kvConsumers();
+  check("a user-mode send leaves no watch consumer on the presence bucket or the channel registry (#4091)",
+    consumersAfterSend.presence === consumersBefore.presence && consumersAfterSend.channels === consumersBefore.channels, { before: consumersBefore, after: consumersAfterSend });
+  const userList = await cotal(["channel", "--space", SPACE]);
+  const consumersAfterList = await kvConsumers();
+  check("a user-mode `cotal channel` reads the registry once and leaves no scan consumer (#4091)",
+    userList.status === 0 && consumersAfterList.channels === consumersAfterSend.channels, { status: userList.status, out: userList.out.slice(0, 300), before: consumersAfterSend, after: consumersAfterList });
+  await inspector.close().catch(() => {});
   const hasText = (g: CotalMessage, text: string) => g.parts?.some((pt) => (pt as { text?: string }).text === text);
   const arrived = await until(() => got.some((g) => hasText(g, "hello from user mode")));
   const frame = got.find((g) => hasText(g, "hello from user mode"));
@@ -667,9 +707,141 @@ try {
     check("the message names the refused credential, its root, and the broker",
       text.includes(`the broker at ${SERVER} refused the manager credential this folder's signer for space "${SPACE}" minted (${otherRoot}), so no manager started`), refused.out);
     check("Next starts the manager from the folder that hosts the space, and names the participant sign-in",
-      /\nNext\n/.test(text) && text.includes(`start the manager from ${root}, the folder that hosts space "${SPACE}": cd ${root} && cotal manager start`) && text.includes("(cotal meshes add, then cotal login)"), refused.out);
+      /\nNext\n/.test(text) && text.includes(`start the manager from ${root}, the folder that hosts space "${SPACE}": \`cd ${root} && cotal manager start\``) && text.includes("(`cotal meshes add`, then `cotal login`)"), refused.out);
   }
 
+  // ---------- E4. a second root: manager start, its owner's stop, and pre-connect refusals ----------
+  console.log("E4) a second root's manager start needs a sign-in, its owner stops a manager left running without one, and supervise refuses before it connects");
+  {
+    const home2 = mkdtempSync(join(tmpdir(), "cotal-ua-second-home-"));
+    const env = { COTAL_HOME: home2, XDG_CONFIG_HOME: join(home2, "xdg") };
+    second = { home: home2, env, roots: [] };
+    const prepare = async (space: string): Promise<string> => {
+      const at = mkdtempSync(join(tmpdir(), "cotal-ua-second-root-"));
+      const created = await cotal(["space", "create", space, "--root", at], { cwd: at, env });
+      check(`space create prepares ${space} in a second root under its own home`, created.status === 0, created.out);
+      second!.roots.push({ root: at, sandbox: recordSmokeSandbox({ root: at, cotalHome: home2, xdgConfigHome: env.XDG_CONFIG_HOME }) });
+      return at;
+    };
+    const root2 = await prepare(SPACE);
+    const sandbox2 = second.roots[0]!.sandbox;
+    const managerPid = join(root2, ".cotal", `manager.${spaceKey(SPACE)}.pid`);
+    const up2 = await cotal(["up", "-d", "--user-auth", "--idp", base, "--server", `nats://127.0.0.1:${await pickFreePort()}`], { cwd: root2, env });
+    check("with no sign-in, up starts the other members and names cotal login first",
+      up2.status === 4 && field(up2.out, "Native code", "AUTH_REQUIRED") && plain(up2.out).includes(`\nNext\n  cotal login --idp ${base}, then`), up2.out);
+    const refusedStart = await cotal(["manager", "start"], { cwd: root2, env });
+    const refusedText = plain(refusedStart.out);
+    check("manager start with no sign-in exits 2 under a Mesh: heading with AUTH_REQUIRED, and Next signs in, then starts it",
+      refusedStart.status === 2 && refusedText.includes(`Mesh: ${SPACE}\n`) && field(refusedStart.out, "Code", "AUTH_REQUIRED") && refusedText.includes(`cotal login --idp ${base}, then \`cotal manager start\``), refusedStart.out);
+    const shown = await cotal(["service", "show", "manager"], { cwd: root2, env });
+    check("…before anything was saved or launched",
+      !refusedText.includes("saved manager") && !refusedText.includes("forgot manager") && shown.status === 2 && field(shown.out, "Code", "TARGET_NOT_FOUND") && !existsSync(managerPid), { start: refusedStart.out, show: shown.out });
+    // A manager started while signed in keeps running after a sign-out, as one the old start left.
+    const { sub: sub2 } = await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+    const grant2 = await cotal(["actor", "grant", "cli", "--sub", sub2, "--full"], { cwd: root2, env });
+    check("the second root grants its signed-in CLI", grant2.status === 0, grant2.out);
+    const started = await cotal(["manager", "start"], { cwd: root2, env });
+    check("signed in and granted, manager start starts it", started.status === 0 && existsSync(managerPid), started.out);
+    const pid2 = Number(readFileSync(managerPid, "utf8").trim());
+    deleteIdpSession(home2, base);
+    const blocked = await cotal(["down", "--yes"], { cwd: root2, env, sandbox: sandbox2 });
+    check("signed out, down names the manager's own stop first", blocked.status === 2 && field(blocked.out, "Code", "LIFECYCLE_BLOCKED") && plain(blocked.out).includes("cotal svc stop manager --instance"), blocked.out);
+    const stopped = await cotal(["manager", "stop", "--yes"], { cwd: root2, env });
+    check("signed out, the folder's owner stops it with manager stop, reading the manager's own local receipt",
+      stopped.status === 0 && plain(stopped.out).includes("Service stopped") && plain(stopped.out).includes("the pinned child's own local receipt") && !stopped.out.includes("AUTH_REQUIRED") && await until(() => { try { process.kill(pid2, 0); return false; } catch { return true; } }), stopped.out);
+    const down2 = await cotal(["down", "--yes"], { cwd: root2, env, sandbox: sandbox2 });
+    check("…and down then stops the stack", down2.status === 0, down2.out);
+    // supervise refusals: exit 2, a Mesh: heading and a code, before the manager boots or writes.
+    const preConnect = (out: string, code: string) => {
+      const text = plain(out);
+      return text.includes(`Request refused`) && field(out, "Code", code) && !text.includes("manager boot") && !text.includes("✗ ") && !text.includes("re-`cotal up`");
+    };
+    const stoppedHere = await cotal(["supervise", "--space", SPACE, "--server", SERVER], { cwd: root2, env });
+    check("supervise from that stopped root is refused as stopped, not as stale state to remove",
+      stoppedHere.status === 2 && plain(stoppedHere.out).includes(`Mesh: ${SPACE}\n`) && preConnect(stoppedHere.out, "TARGET_UNAVAILABLE") &&
+        plain(stoppedHere.out).includes(`"${SPACE}" is stopped; its last operation, \`cotal down\`, completed, so no manager started`) &&
+        plain(stoppedHere.out).includes(`start it again with \`cotal up\` in ${root2}, or start the manager from the folder whose \`cotal up\` started the broker at ${SERVER}`), stoppedHere.out);
+    second.bare = mkdtempSync(join(tmpdir(), "cotal-ua-no-records-"));
+    const elsewhere = await cotal(["supervise", "--space", SPACE, "--server", SERVER], { cwd: second.bare });
+    check("supervise from a folder with no records names the folder that hosts the space, and writes nothing there",
+      elsewhere.status === 2 && plain(elsewhere.out).includes(`Mesh: ${SPACE}\n`) && preConnect(elsewhere.out, "PERMISSION_DENIED") &&
+        plain(elsewhere.out).includes(`start the manager from ${root}, the folder that hosts space "${SPACE}": \`cd ${root} && cotal manager start\``) &&
+        !plain(elsewhere.out).includes("cotal down") && !existsSync(join(second.bare, ".cotal")), elsewhere.out);
+    const RT = `${SPACE}-rt`;
+    const root3 = await prepare(RT);
+    const up3 = await cotal(["up", "-d", "--no-manager", "--server", `nats://127.0.0.1:${await pickFreePort()}`], { cwd: root3, env });
+    const down3 = await cotal(["down", "--yes"], { cwd: root3, env, sandbox: second.roots[1]!.sandbox });
+    check("a static second root starts and stops", up3.status === 0 && down3.status === 0, { up: up3.out, down: down3.out });
+    const staticStopped = await cotal(["supervise", "--space", RT, "--server", SERVER], { cwd: root3, env });
+    check("supervise from the stopped static root is refused as stopped, naming its own up and the broker's folder",
+      staticStopped.status === 2 && plain(staticStopped.out).includes(`Mesh: ${RT}\n`) && preConnect(staticStopped.out, "TARGET_UNAVAILABLE") &&
+        plain(staticStopped.out).includes(`start it again with \`cotal up\` in ${root3}, or start the manager from the folder whose \`cotal up\` started the broker at ${SERVER}`), staticStopped.out);
+  }
+
+  // ---------- E5. a participant joined by bundle starts a manager behind a local CA ----------
+  console.log("E5) a participant that joined a TLS space by its bundle starts a manager with NODE_EXTRA_CA_CERTS, and names the TLS refusal without it");
+  {
+    const hostHome = mkdtempSync(join(tmpdir(), "cotal-ua-ca-host-home-")), hostRoot = mkdtempSync(join(tmpdir(), "cotal-ua-ca-host-root-"));
+    const joinHome = mkdtempSync(join(tmpdir(), "cotal-ua-ca-join-home-")), joinRoot = mkdtempSync(join(tmpdir(), "cotal-ua-ca-join-root-"));
+    // A throwaway CA and the 127.0.0.1 certificate it signs, which the broker and the proxy serve.
+    const pki = join(hostHome, "pki");
+    mkdirSync(pki, { mode: 0o700 });
+    const caFile = join(pki, "ca.pem"), caKey = join(pki, "ca.key"), srvCert = join(pki, "srv.pem"), srvKey = join(pki, "srv.key"), srvExt = join(pki, "srv.ext");
+    const openssl = (args: string[]) => execFileSync("openssl", args, { stdio: "ignore" });
+    openssl(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", caKey, "-out", caFile, "-days", "2", "-subj", "/CN=cotal-smoke-ca",
+      "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-addext", "subjectKeyIdentifier=hash"]);
+    openssl(["req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", srvKey, "-out", join(pki, "srv.csr"), "-subj", "/CN=127.0.0.1"]);
+    writeFileSync(srvExt, "subjectAltName=IP:127.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n");
+    openssl(["x509", "-req", "-in", join(pki, "srv.csr"), "-CA", caFile, "-CAkey", caKey, "-CAcreateserial", "-out", srvCert, "-days", "2", "-extfile", srvExt]);
+    for (const key of [caKey, srvKey]) chmodSync(key, 0o600);
+    // The HTTPS reverse proxy an operator puts in front of the public exchange face.
+    const exchangePort = await pickFreePort();
+    const proxy = createHttpsServer({ key: readFileSync(srvKey), cert: readFileSync(srvCert) }, (req, res) => {
+      req.pipe(httpRequest({ host: "127.0.0.1", port: exchangePort, path: req.url, method: req.method, headers: req.headers }, (answer) => {
+        res.writeHead(answer.statusCode ?? 502, answer.headers);
+        answer.pipe(res);
+      }).on("error", () => res.writeHead(502).end()));
+    });
+    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
+    const proxyUrl = `https://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+    const hostEnv = { COTAL_HOME: hostHome, XDG_CONFIG_HOME: join(hostHome, "xdg"), NODE_EXTRA_CA_CERTS: caFile };
+    const joinEnv = { COTAL_HOME: joinHome, XDG_CONFIG_HOME: join(joinHome, "xdg"), NODE_EXTRA_CA_CERTS: caFile };
+    const hostSandbox = recordSmokeSandbox({ root: hostRoot, cotalHome: hostHome, xdgConfigHome: hostEnv.XDG_CONFIG_HOME });
+    caRig = { hostRoot, hostHome, hostEnv, sandbox: hostSandbox, joinRoot, joinHome, joinEnv, proxy };
+    const CA_SPACE = `${SPACE}-ca`;
+    const hostUp = await cotal(["up", "-d", "--user-auth", "--idp", base, "--space", CA_SPACE, "--server", `tls://127.0.0.1:${await pickFreePort()}`,
+      "--tls-cert", srvCert, "--tls-key", srvKey, "--exchange-public-port", String(exchangePort), "--exchange-public-url", proxyUrl], { cwd: hostRoot, env: hostEnv });
+    check("a TLS user-auth space behind a local CA starts, its public exchange behind an HTTPS proxy", hostUp.status === 0, hostUp.out);
+    const bundleFile = join(hostHome, "bundle.json");
+    writeFileSync(bundleFile, await (await fetch(`http://127.0.0.1:${exchangePort}/.well-known/cotal-mesh`)).text());
+    const added = await cotal(["space", "add", "--file", bundleFile, "--root", joinRoot], { cwd: joinRoot, env: joinEnv });
+    check("a participant under its own home registers the space from its bundle", added.status === 0, added.out);
+    const { sub: joinSub } = await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+    const joinGrant = await cotal(["actor", "grant", "cli", "--sub", joinSub, "--full", "--scope", "spawn,role:default,supervise"], { cwd: hostRoot, env: hostEnv });
+    check("the host grants the participant's signed-in CLI supervise", joinGrant.status === 0, joinGrant.out);
+    const trusted = await cotal(["manager", "start", "--name", "joined"], { cwd: joinRoot, env: joinEnv });
+    check("with NODE_EXTRA_CA_CERTS set, as docs/cli.md says, the participant's manager start comes up",
+      trusted.status === 0 && plain(trusted.out).includes("Owned process running"), trusted.out);
+    const childPid = /^\s*PID:\s+(\d+)$/m.exec(plain(trusted.out))?.[1];
+    const childEnvironment = childPid ? readFileSync(`/proc/${childPid}/environ`, "utf8").split("\0") : [];
+    check("…and the native child it launched carries NODE_EXTRA_CA_CERTS from that command", childEnvironment.includes(`NODE_EXTRA_CA_CERTS=${caFile}`), { childPid, names: childEnvironment.map((entry) => entry.split("=")[0]) });
+    const joinStop = await cotal(["manager", "stop", "--yes"], { cwd: joinRoot, env: joinEnv });
+    check("…and the participant stops it", joinStop.status === 0 && plain(joinStop.out).includes("Service stopped"), joinStop.out);
+    const untrusted = await cotal(["manager", "start", "--name", "joined"], { cwd: joinRoot, env: { ...joinEnv, NODE_EXTRA_CA_CERTS: undefined } });
+    const quoted = /the last line it logged is: (.*)$/m.exec(plain(untrusted.out))?.[1] ?? "";
+    check("with NODE_EXTRA_CA_CERTS unset, manager start exits 5 and the line it quotes names the TLS reason the authority call failed on",
+      untrusted.status === 5 && quoted.includes(`did not answer at ${proxyUrl}/manager-service-authority (fetch failed); cause: `) && quoted.includes("UNABLE_TO_VERIFY_LEAF_SIGNATURE"), untrusted.out);
+    const logsCommand = /`cotal service logs (\S+) --instance (\S+) --space \S+`/.exec(plain(untrusted.out));
+    const untrustedLog = await cotal(["service", "logs", logsCommand?.[1] ?? "manager", "--instance", logsCommand?.[2] ?? "none", "--space", CA_SPACE], { cwd: joinRoot, env: joinEnv });
+    const logged = /^ *(✗ the manager did not start: .*)$/m.exec(plain(untrustedLog.out))?.[1] ?? "";
+    check("…and that line keeps Node's own message as the cause and ends in the step to trust the CA with NODE_EXTRA_CA_CERTS",
+      logged.includes("UNABLE_TO_VERIFY_LEAF_SIGNATURE: unable to verify the first certificate")
+        && logged.endsWith("; next: trust the certificate's CA, or a self-signed certificate itself, by setting `NODE_EXTRA_CA_CERTS` to that PEM file for the command that starts the manager, then start it again"), untrustedLog.out);
+    check("…and the refusal quotes that line whole, over 400 characters as it is, so the quote ends in its next step",
+      [...logged].length > 400 && quoted === logged, { quoted, logged });
+    const hostDown = await cotal(["down", "--yes"], { cwd: hostRoot, env: hostEnv, sandbox: hostSandbox });
+    check("…and the TLS host stops", hostDown.status === 0, hostDown.out);
+  }
 
   // ---------- F. down + fail-closed re-up ----------
   console.log("F) down stops the auth service; re-up without --user-auth is refused");
@@ -714,7 +886,7 @@ try {
   check("down --yes stops the controller stack", stackDown.status === 0, stackDown.out);
   const resetPreview = await cotal(["reset", "space", STACK, "--dry-run"]);
   check("reset space --dry-run names the IdP trust and the actor ledger, and what a later up needs",
-    resetPreview.status === 0 && plain(resetPreview.out).includes("Removes the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs cotal up --user-auth --idp <auth base URL>") && !resetPreview.out.includes("a later up starts it with a new identity"), resetPreview.out);
+    resetPreview.status === 0 && plain(resetPreview.out).includes("Removes the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs `cotal up --user-auth --idp <auth base URL>`") && !resetPreview.out.includes("a later up starts it with a new identity"), resetPreview.out);
   const reset = await cotal(["reset", "space", STACK, "--yes"]);
   check("…and its receipt names them the same way",
     reset.status === 0 && plain(reset.out).includes(`.cotal/auth/${spaceSegment(STACK)} (IdP trust and actor ledger)`) && plain(reset.out).includes("Removed the IdP trust and the actor ledger of this user-auth space") && !reset.out.includes("A later up creates a new local identity"), reset.out);
@@ -736,6 +908,20 @@ try {
     await cotal(["down"], { cwd: other.root, env: other.env, sandbox: other.sandbox, timeoutMs: 30_000 }); // E3's second root, if it is still up
     rmSync(other.home, { recursive: true, force: true });
     rmSync(other.root, { recursive: true, force: true });
+  }
+  if (second) {
+    for (const { root: at, sandbox: anchor } of second.roots) {
+      await cotal(["down", "--yes"], { cwd: at, env: second.env, sandbox: anchor, timeoutMs: 30_000 }); // E4's roots, if still up
+      rmSync(at, { recursive: true, force: true });
+    }
+    if (second.bare) rmSync(second.bare, { recursive: true, force: true });
+    rmSync(second.home, { recursive: true, force: true });
+  }
+  if (caRig) {
+    await cotal(["manager", "stop", "--yes"], { cwd: caRig.joinRoot, env: caRig.joinEnv, timeoutMs: 30_000 }); // E5's participant manager, if it still runs
+    await cotal(["down", "--yes"], { cwd: caRig.hostRoot, env: caRig.hostEnv, sandbox: caRig.sandbox, timeoutMs: 30_000 }); // E5's TLS host, if still up
+    caRig.proxy.close();
+    for (const dir of [caRig.hostHome, caRig.hostRoot, caRig.joinHome, caRig.joinRoot]) rmSync(dir, { recursive: true, force: true });
   }
   idpSrv.close();
   rmSync(home, { recursive: true, force: true });

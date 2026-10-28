@@ -23,7 +23,7 @@ import { calloutAuthority, managerGateReads, serveCallout } from "./callout-auth
 import type { AuthCalloutLimits } from "./callout.js";
 import { chatConnectAuthority } from "./chat-session-authority.js";
 import { authConnectReaderGrants, openConnectReader } from "./connect-reader.js";
-import { openLifecycleRegistry, registryStores } from "./lifecycle-registry.js";
+import { openLifecycleRegistry, registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { ADMISSION_KEY, parseServiceAdmissionRecord } from "./service-host-ops.js";
 import { dataAccountAuth, loadCalloutAuth, loadIssuer, loadServiceKeys, spaceIssuer } from "./store.js";
 
@@ -47,6 +47,34 @@ export interface CalloutLaneOptions {
   limits?: AuthCalloutLimits;
   /** Diagnostics sink. Default `console.error`. Lines already name their space. */
   log?: (line: string) => void;
+}
+
+/** Whether the space's service host admission is `open`. The first start of its full auth service
+ *  with service endpoints opens it and nothing closes it. A lane refuses exactly such a space, and
+ *  {@link admitsServiceEndpoints} answers with this same read. */
+async function admissionOpen(registry: LifecycleRegistry): Promise<boolean> {
+  const row = await registryStores(registry).authKv.get(ADMISSION_KEY);
+  return row?.operation === "PUT" && parseServiceAdmissionRecord(row.json()).state === "open";
+}
+
+/** Whether a callout lane refuses `space` because it admits service endpoints: `true` once the
+ *  space's full auth service has started with them, also after its setting drops them. It reads on a
+ *  lane's own store grant with the lane's own check, so a manifest writer that keeps every `true`
+ *  space off a callout host's manifest lists only spaces that refusal never names. Throws when the
+ *  space's service keys are missing or its stores cannot be read. */
+export async function admitsServiceEndpoints(options: { space: string; server: string; secrets: SecretStore }): Promise<boolean> {
+  const { space, server, secrets } = options;
+  const keys = await loadServiceKeys(secrets, space);
+  if (!keys) throw new Error(`admitsServiceEndpoints: the service keys for space "${space}" are missing - the space's auth service is not provisioned`);
+  const client = await openAuthorityClient({
+    server, space, dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
+    label: `cotal:auth-replica-admission:${space}`, grants: (id) => calloutReplicaGrants(space, id), log: (l) => console.error(l), noReconnect: true,
+  });
+  try {
+    return await admissionOpen(await openLifecycleRegistry(client.nc, space));
+  } finally {
+    await client.close().catch(() => {});
+  }
 }
 
 /** Open one space's callout membership. Throws before holding anything when the space's material is
@@ -96,13 +124,13 @@ export async function openCalloutLane(options: CalloutLaneOptions): Promise<Call
       return client;
     };
     const stores = await open(`cotal:auth-replica-store:${space}`, (id) => calloutReplicaGrants(space, id));
-    const readerClient = await open(`cotal:auth-replica-reader:${space}`, (id) => authConnectReaderGrants(space, id));
     const registry = await openLifecycleRegistry(stores.nc, space);
     // A lane cannot issue a service-endpoint connection, so in a space that admits them it would
-    // deny the service connects the broker routes to it. It refuses to open there instead.
-    const admission = await registryStores(registry).authKv.get(ADMISSION_KEY);
-    if (admission?.operation === "PUT" && parseServiceAdmissionRecord(admission.json()).state === "open")
-      throw new Error(`auth-service --callout-only: space "${space}" admits service endpoints (its auth service runs with --service-endpoints), and a callout replica cannot issue a service-endpoint connection - serve no lane for this space`);
+    // deny the service connects the broker routes to it. It refuses to open there instead, before its
+    // reader connection: a host retries a refused space, and each retry should hold as little as it can.
+    if (await admissionOpen(registry))
+      throw new Error(`auth-service --callout-only: space "${space}" admits service endpoints (its auth service runs with --service-endpoints, or once did, and that admission stays open), and a callout replica cannot issue a service-endpoint connection - serve no lane for this space`);
+    const readerClient = await open(`cotal:auth-replica-reader:${space}`, (id) => authConnectReaderGrants(space, id));
     const reader = await openConnectReader(readerClient.nc, space);
     const recordsJsm = await jetstreamManager(stores.nc);
     const hooks = calloutAuthority({

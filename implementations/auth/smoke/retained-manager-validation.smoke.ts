@@ -1,6 +1,6 @@
 /** Closed remote retained-agent validation policy cells (broker-free). */
 import assert from "node:assert/strict";
-import { createSpaceAuth, EpEnvelopeError, mintLifecycleUid, newIdentity, remoteManagerActors, resolveAuthProvider, type RemoteRetainedAgentValidationRequest } from "@cotal-ai/core";
+import { AGENT_LIFECYCLE_HELD, createSpaceAuth, EpEnvelopeError, mintLifecycleUid, newIdentity, remoteManagerActors, resolveAuthProvider, type RemoteRetainedAgentValidationRequest } from "@cotal-ai/core";
 import { recordMesh, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -299,15 +299,30 @@ await cell("every shared provider method decodes manager-authority answers from 
     await cell("a host 4xx refuses an enrollment as not executed, and a 5xx leaves its outcome open", async () => {
       const enroll = async (next: Partial<typeof answer>) => {
         answer = { status: 200, type: "application/json", body: "{}", location: "", ...next };
-        return provider.enrollRemoteManagedAgent!({ store: workspaceSecretStore(root), dir: userAuthStateDir(root, space), request: { space } as never }).then(() => undefined, (error: unknown) => error);
+        // A real request always carries its target (the type requires it); the 409 branch names its actor.
+        return provider.enrollRemoteManagedAgent!({ store: workspaceSecretStore(root), dir: userAuthStateDir(root, space), request: { space, target: { actor: "worker" } } as never }).then(() => undefined, (error: unknown) => error);
       };
-      for (const status of [400, 403, 409, 429]) {
+      for (const status of [400, 403, 429]) {
         const refused = await enroll({ status, body: JSON.stringify({ error: "denied by host" }) });
         assert.ok(refused instanceof EpEnvelopeError, `HTTP ${status}`);
         assert.equal(refused.code, "permission-denied");
         assert.equal(refused.outcome, "not-executed");
         assert.equal(refused.message, "signed in, but managed agent enrollment was refused: denied by host");
       }
+      // A 409 is the host holding the name (#4981): a `conflict`, not executed, with the host's typed
+      // held answer riding verbatim when it sent one, and no details when it did not.
+      const bare = await enroll({ status: 409, body: JSON.stringify({ error: "denied by host" }) });
+      assert.ok(bare instanceof EpEnvelopeError, "HTTP 409");
+      assert.equal(bare.code, "conflict");
+      assert.equal(bare.outcome, "not-executed");
+      assert.equal(bare.message, "signed in, but managed agent enrollment was refused: denied by host");
+      assert.equal(bare.details, undefined);
+      const held = { agentId: "u_owner.worker", lifecycleUid: mintLifecycleUid(), custody: { state: "known", kind: "remote-manager", managerInstanceId: "m1" }, presence: "online" };
+      const typed = await enroll({ status: 409, body: JSON.stringify({ code: "AGENT_LIFECYCLE_HELD", held }) });
+      assert.ok(typed instanceof EpEnvelopeError, "HTTP 409 with a held answer");
+      assert.equal(typed.code, "conflict");
+      assert.equal(typed.outcome, "not-executed");
+      assert.deepEqual(typed.details, [{ kind: AGENT_LIFECYCLE_HELD, code: "AGENT_LIFECYCLE_HELD", actor: "worker", held }]);
       for (const status of [500, 502, 503]) {
         const failed = await enroll({ status, body: JSON.stringify({ error: "host broke" }) });
         assert.ok(failed instanceof Error && !(failed instanceof EpEnvelopeError), `HTTP ${status}`);

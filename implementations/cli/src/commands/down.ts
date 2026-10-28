@@ -8,7 +8,6 @@ import {
   localRecordName,
   presentationOf,
   renderReport,
-  terminalWidth,
   abortMaintenanceCut,
   acquireMaintenanceLock,
   assertSingleSpaceBroker,
@@ -65,7 +64,6 @@ import {
   restoreLeftOut,
 } from "@cotal-ai/workspace";
 import { jetstreamManager } from "@nats-io/jetstream";
-import type { NatsConnection } from "@nats-io/transport-node";
 import {
   DEV_OWNER,
   dialerFor,
@@ -77,6 +75,7 @@ import {
   deliveryBucket,
   managerBucket,
   presenceBucket,
+  isPresenceRow,
   parsePrincipalKey,
   principalKey,
   standaloneConnectOpts,
@@ -90,6 +89,7 @@ import { cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
 import { parsePid, probeLiveness, readPidfile } from "@cotal-ai/workspace";
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
+import { directKvValue, refuseLiveUnrecordedDaemons } from "./down-live-lease.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
@@ -104,7 +104,7 @@ import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { captureSeatCheckpoint } from "../lib/seat-capture.js";
 import { processRecorded, stopInFlight, stopLocalProcess } from "../lib/local-process-stop.js";
 import { stopManager } from "../lib/manager-proc.js";
-import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
+import { ensureDelivery, removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
 import { controllerStackRecorded, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
 import { noticeBetweenSteps } from "../lib/interrupt-notice.js";
 import { goneRootDown, goneRootStackDown, validateGoneRootDownArguments } from "./stack-gone.js";
@@ -146,7 +146,7 @@ export function validateDownArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   if (args.positionals.length) {
     for (const name of args.positionals) localRecordName(name);
-    if (args.values["with-agents"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "named down does not accept --with-agents; no flag was dropped", { remedy: "use cotal service stop <manager-name> --instance <full-id> --with-agents for the exact owned manager and its native impact review" });
+    if (args.values["with-agents"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "named down does not accept --with-agents; no flag was dropped", { remedy: "use `cotal service stop <manager-name> --instance <full-id> --with-agents` for the exact owned manager and its native impact review" });
     if (args.values.instance !== undefined && args.positionals.length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", "--instance qualifies one service name, never a multi-service set");
     const allowed = new Set(["space", "instance", "yes", "dry-run", "json", "plain"]);
     if (Object.keys(args.values).some((name) => !allowed.has(name))) throw new CommandFailure("refused", "USAGE_INVALID", "named down accepts only space, instance, confirmation, preview and presentation flags; no whole-stack or manifest option was ignored");
@@ -190,7 +190,7 @@ function refuseStackElsewhere(values: ParsedArgs["values"]): void {
 }
 
 /** The one route that stops the stack `up` starts from the machine home. */
-const MACHINE_HOME_STOP = "stop the machine-home stack with cotal down --preserve-state, which keeps its state for the next cotal up";
+const MACHINE_HOME_STOP = "stop the machine-home stack with `cotal down --preserve-state`, which keeps its state for the next `cotal up`";
 
 /** A bare stack preview is a local record census, never an effect plan or stop authority. */
 function previewWholeStack(args: ParsedArgs): void {
@@ -269,7 +269,7 @@ function previewWholeStack(args: ParsedArgs): void {
     { title: "Recorded native supervisors", blocks: [data.supervisors.length ? { kind: "table", columns: [{ key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "mechanism", label: "Mechanism" }, { key: "unit", label: "Recorded unit" }], rows: data.supervisors.slice(0, 100).map((row) => ({ definition: row.definition, instance: row.instanceId, mechanism: row.mechanism, unit: row.unit })) } : { kind: "lines", lines: ["No supervisor receipts in this space's workstation store."] }, { kind: "lines", lines: [...(data.supervisors.length > 100 ? ["Additional supervisor receipts are in JSON."] : []), "A receipt is not a live unit observation or authority to stop it. No native service status request was made."] }] },
     { title: "Retained native attempts", blocks: [data.nativeAttempts.length ? { kind: "table", columns: [{ key: "kind", label: "Action" }, { key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "step", label: "Step" }, { key: "position", label: "Position" }], rows: data.nativeAttempts.slice(0, 100).map((row) => ({ kind: row.kind, definition: row.definition, instance: row.instanceId, step: row.step, position: row.position })) } : { kind: "lines", lines: ["No retained install, uninstall or unit-action attempts in this space's workstation store."] }, { kind: "lines", lines: [...(data.nativeAttempts.length > 100 ? ["Additional attempts and their full IDs are in JSON."] : []), "A submitted or unknown step may already have changed native state. This preview neither reconciles nor retries it."] }] },
     ...(!home ? [] : homeRuns
-      ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: "cotal down --preserve-state", description: "Stop the machine-home stack and keep its state for the next cotal up" }] }] }]
+      ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: "cotal down --preserve-state", description: "Stop the machine-home stack and keep its state for the next `cotal up`" }] }] }]
       : [{ title: "Next", blocks: [{ kind: "lines" as const, lines: ["No process of the machine-home stack is running, so there is nothing to stop."] }] }]),
   ] }));
 }
@@ -467,9 +467,9 @@ function refuseSpaceElsewhere(root: string, space: string, dryRun: boolean): voi
   let controller = false;
   try { controller = readStackJournal(at)?.journal.space === space; } catch { /* named with the legacy stop */ }
   const stop = dryRun ? "cotal down --dry-run" : controller ? "cotal down --yes" : "cotal down";
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the stack of space "${space}" is recorded at ${at}, not at this folder's root, and cotal down stops only the stack recorded where it runs`, {
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the stack of space "${space}" is recorded at ${at}, not at this folder's root, and \`cotal down\` stops only the stack recorded where it runs`, {
     target: { root, space, spaceRoot: at },
-    remedy: `run ${stop} in ${at}; to stop one saved service, run \`cotal service stop <service-name> --space ${space}\``,
+    remedy: `run \`${stop}\` in ${at}; to stop one saved service, run \`cotal service stop <service-name> --space ${space}\``,
   });
 }
 
@@ -488,10 +488,8 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   validateDownArguments(args);
   if (args.positionals.length > 1) return stopNamedServiceSet(args);
   if (args.positionals.length) return service(namedStopArguments(args), "down");
-  // A stack whose folder is gone stops from this machine's records, wherever down runs.
   const gone = goneRootDown(args.values);
   if (gone) return goneRootStackDown(gone.space, gone.root, args.values);
-  // A root whose stack the service controller owns stops only through its recorded members.
   if (controllerStackRecorded(cotalRoot())) return stackDown(cotalRoot(), args.values);
   const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; "session-store"?: string[]; space?: string };
   // A legacy root whose stack is already stopped: a bare down and its preview stop nothing.
@@ -500,6 +498,9 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     // A root that never started a stack never ran a manager, so it has no agents to stop.
     if (stopped) {
       const { started, ...target } = stopped;
+      // Missing pidfiles are not proof the daemons stopped. A live lease refuses before this
+      // answers that nothing is running, and before the broker is stopped.
+      await refuseLiveUnrecordedDaemons(localProcessSurface(), { root: target.root, space: target.space ?? resolveRuntimeSpace(process.cwd()) });
       return nothingRunning(presentationOf(args.values), target, values["with-agents"] === true && started, [], values["dry-run"] === true);
     }
   }
@@ -551,12 +552,15 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   let cleaning = false, cleaned = false;
   const interrupt = noticeBetweenSteps(() => legacyStopInterruptNotice(selected, folderCtx(), stopped, stopInFlight(), cleaned), () => cleaning || stopInFlight() !== undefined);
   // The stop's lines follow the space they stop, as every other report of down begins.
-  console.log(`${renderReport({ space: guarded.space, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
+  console.log(`${renderReport({ space: guarded.space, sections: [] }, "rich", process.stdout)}\n`);
   // Every dry run returned or was refused above, so from here on this is the whole-stack stop of
   // this folder's root.
 
   let any = false;
   let allStopped = true;
+  // A missing manager or delivery pidfile is not proof those daemons stopped. They renew leases
+  // while they run, so a live lease with no pidfile refuses before the broker is stopped.
+  await refuseLiveUnrecordedDaemons(selected, { ...folderCtx(), space: guarded.space });
   for (const component of selected) {
     await interrupt.between();
     const recorded = processRecorded(component, folderCtx());
@@ -629,7 +633,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     console.error(c.red("Nothing running for the local stack (no recorded pidfiles)."));
     process.exit(1);
   }
-  console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: "Start it again" }] }] }] }, "rich", terminalWidth(process.stdout))}`);
+  console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: "Start it again" }] }] }] }, "rich", process.stdout)}`);
 }
 
 /** What an interrupted bare down of a legacy stack left: the members it stopped, the ones still
@@ -640,9 +644,9 @@ function legacyStopInterruptNotice(members: readonly LocalProcess[], context: Lo
   const done = stopped.length ? `${stopped.join(", ")} ${stopped.length === 1 ? "was" : "were"} stopped` : "no member was stopped";
   const left = running.length ? `${running.join(", ")} ${running.length === 1 ? "is" : "are"} still running` : "no member is running";
   const head = `Interrupted while stopping the stack in ${canonicalRoot(context.root)}; ${done}, and ${left}.`;
-  if (cut) return `${head} The stop of ${cut.label} is not confirmed. Run cotal down --yes to finish the stop.`;
-  if (running.length) return `${head} Run cotal down --yes to finish the stop.`;
-  return cleaned ? `${head} Run cotal up to start it again.` : `${head} Run cotal down --yes to finish its cleanup.`;
+  if (cut) return `${head} The stop of ${cut.label} is not confirmed. Run \`cotal down --yes\` to finish the stop.`;
+  if (running.length) return `${head} Run \`cotal down --yes\` to finish the stop.`;
+  return cleaned ? `${head} Run \`cotal up\` to start it again.` : `${head} Run \`cotal down --yes\` to finish its cleanup.`;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -711,6 +715,19 @@ function assertSessionStores(paths: readonly string[]): string[] {
       throw new CommandFailure("refused", "USAGE_INVALID", `--session-store ${resolved} is not a directory; name the harness transcript store directory for this host`);
     return resolved;
   });
+}
+
+/** Start the delivery daemon a refused cut stopped as its Plane 3 fence. Resolves to nothing when
+ *  the daemon is running again, and to the reason when it is not, so the refusal can say so. */
+async function restartFencedDelivery(space: string, server: string, tls: boolean): Promise<string | undefined> {
+  try {
+    const ensured = await ensureDelivery({ space, server, tls });
+    if (!ensured.running) return "no delivery daemon is running after the attempt";
+    console.error(c.dim(`• delivery daemon started again after the refused cut${ensured.pid !== undefined ? ` (pid ${ensured.pid})` : ""}`));
+    return undefined;
+  } catch (e) {
+    return (e as Error).message;
+  }
 }
 
 async function preserveStateDown(storeOverride?: string, sessionStores: readonly string[] = []): Promise<void> {
@@ -845,7 +862,8 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
       // Fence Plane 3 BEFORE any inventory work: with the delivery daemon stopped, no durable
       // join/leave can mutate MEMBERS at or after the moment the inventory is taken.
       const delivery = all.find((component) => component.name === "delivery");
-      if (delivery && mayBeRunning(delivery, context)) await stopLocalProcess(delivery, context); // fence an uncertain delivery: no MEMBERS mutation may race the inventory
+      const deliveryFenced = delivery !== undefined && mayBeRunning(delivery, context);
+      if (delivery && deliveryFenced) await stopLocalProcess(delivery, context); // fence an uncertain delivery: no MEMBERS mutation may race the inventory
       const prepared = await askManager(
         target.space,
         target.server,
@@ -871,8 +889,12 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
           retainedPrincipals.add(observed.managerId);
           unmanaged = observed.roster.filter((presence) => !retainedPrincipals.has(presence.card.id));
         }
+        // A known, clean refusal, classified as one: it used to be a bare Error, reported as an
+        // unknown outcome (`OPERATION_UNKNOWN`) with no next step (#4510).
         if (unmanaged.length)
-          throw new Error(`cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => `${presence.card.name} (${presence.card.id})`).join(", ")} (manager lease holder: ${observed.managerId})`);
+          throw new CommandFailure("refused", "LIFECYCLE_BLOCKED",
+            `cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => `${presence.card.name} (${presence.card.id})`).join(", ")} (manager lease holder: ${observed.managerId}); nothing was preserved`,
+            { remedy: "stop those endpoints, or wait for their presence to expire, then run `cotal down --preserve-state` again" });
         // A seat that cannot be checkpointed is refused HERE, at prepare time, while every child is
         // still running. This reads only the prepared inventory, so it needs nothing that stopping
         // would provide, and refusing after the stack is down would cost the operator a running mesh
@@ -887,6 +909,18 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
           await askManager(target.space, target.server, "abortPreservation", { attemptId }, target.auth, "any", 30_000);
         } catch { /* best effort - the fence dies with the manager */ }
         clearPreservationPrepareIntent(lock);
+        // The delivery daemon was stopped above as the Plane 3 fence, and a refusal used to leave
+        // it stopped: the operator read "running, unfenced mesh" while no spawn, retirement or join
+        // could complete until the next `cotal up` (#4510). Start it again, and when that fails say
+        // so in the refusal, so what it names is what is actually left.
+        if (deliveryFenced) {
+          const notRestarted = await restartFencedDelivery(mesh.space, mesh.server, target.auth.tls === true);
+          if (notRestarted !== undefined) {
+            const message = `${cause instanceof Error ? cause.message : String(cause)}; the delivery daemon stopped for the cut could not be started again (${notRestarted})`;
+            throw new CommandFailure("refused", isCommandFailure(cause) ? cause.code : "LIFECYCLE_BLOCKED", message,
+              { remedy: "start the delivery daemon with `cotal up`, then address the refusal and run `cotal down --preserve-state` again" });
+          }
+        }
         throw cause;
       }
       resume = writeMaintenanceResumeDocument(lock, {
@@ -1087,32 +1121,6 @@ function resolveStore(path: string): string {
   return resolved;
 }
 
-/** Direct Get one KV subject's last value without creating any consumer. `allowEmpty` treats a
- *  DEL/PURGE tombstone as absence instead of an error. */
-async function directKvValue<T>(
-  nc: NatsConnection,
-  stream: string,
-  subject: string,
-  allowEmpty = false,
-): Promise<T | undefined> {
-  const response = await nc.request(
-    `$JS.API.STREAM.MSG.GET.${stream}`,
-    JSON.stringify({ last_by_subj: subject }),
-    { timeout: 5_000 },
-  );
-  const body = JSON.parse(new TextDecoder().decode(response.data)) as {
-    message?: { data?: string; hdrs?: string };
-    error?: { description?: string };
-  };
-  if (body.error) throw new Error(`maintenance inventory read failed: ${body.error.description ?? "JetStream error"}`);
-  if (!body.message?.data) {
-    const headers = body.message?.hdrs ? Buffer.from(body.message.hdrs, "base64").toString("utf8") : "";
-    if (allowEmpty && /^KV-Operation:\s*(?:DEL|PURGE)\s*$/im.test(headers)) return undefined;
-    throw new Error(`maintenance inventory is missing ${subject}`);
-  }
-  return JSON.parse(Buffer.from(body.message.data, "base64").toString("utf8")) as T;
-}
-
 /** Wire-truth control-plane quiescence: a live manager/delivery daemon renews its lease
  *  continuously, so the cut publishes `ready` only once BOTH lease buckets hold no live value —
  *  a dead daemon's lease expires by TTL, a pidless live one keeps renewing and is refused here.
@@ -1220,19 +1228,6 @@ async function readPresenceAndLease(space: string, server: string): Promise<{ ro
   } finally {
     await nc.drain().catch(() => {});
   }
-}
-
-/** Whether a decoded presence value carries a `card.id` equal to the KV `key` it was read under,
- *  which the cut matches against the retained principals, and the string `card.name` its refusal
- *  names. A participant may write any value under its own key, so only the key is the identity its
- *  write grant proves. A value that fails refuses the inventory: reading it as absent would drop a
- *  live participant from the unmanaged-endpoints refusal. */
-function isPresenceRow(value: unknown, key: string): value is Presence {
-  if (typeof value !== "object" || value === null) return false;
-  const card = (value as { card?: unknown }).card;
-  if (typeof card !== "object" || card === null) return false;
-  const { id, name } = card as { id?: unknown; name?: unknown };
-  return id === key && typeof name === "string";
 }
 
 /**

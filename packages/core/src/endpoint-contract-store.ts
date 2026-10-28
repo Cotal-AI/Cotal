@@ -37,6 +37,7 @@ import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-
 import { createHash } from "node:crypto";
 import { canonicalJson } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { isCasLoss } from "./endpoint-records.js";
 import { epcSubject } from "./endpoint-subjects.js";
 import { epcStreamName } from "./endpoint-binding.js";
 import { CONTRACT_CLOSURE_MAX_ARTIFACTS, contractRefToHex, parseClosureManifest, sha256Ref, type ContractClosureManifest } from "./contract-manifest.js";
@@ -161,7 +162,7 @@ export async function publishContractArtifact(
     // (ensureContractStore: max_msgs_per_subject:1 + discard-new) — the broker's per-subject reject
     // (10077), which fires when a second publish reaches an occupied subject. All three mean "this
     // digest is already published"; anything else is a real infra error.
-    if (code !== 10071 && code !== 10164 && code !== 10077) throw e;
+    if (!isCasLoss(e) && code !== 10077) throw e;
     // The subject is the digest: a prior write with this address holds these bytes (verified
     // on fetch). The loss is idempotent; an unreadable prior write is loud.
     const prior = await fetchContractArtifact(ctx, digestHex);

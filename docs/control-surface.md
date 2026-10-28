@@ -213,6 +213,14 @@ the manager's state leaves them. Its own startup sweep never retires a session i
 holds. A session that none of these retired stays held until the next start of that manager
 instance.
 
+## Persona write observation
+
+An unanswered `define-persona` command does not prove the persona was not written. The
+`cotal_persona` tool reports that write outcome as unknown and tells the caller to read it with
+`cotal_personas` on the same manager before acting. The write may still land after the wait ends,
+so a missing readback alone does not make another definition safe. A failed describe, broker
+no-responders answer or explicit pre-effect refusal remains a failure, not an unknown write.
+
 ## Spawn is a goal
 
 Long-running commands are **actions** ([SPEC §13.6](../SPEC.md#136-composites)): the caller
@@ -300,8 +308,13 @@ A space can run more than one manager. Each manager persists a stable logical in
 across restarts and advances its process epoch when it comes back, so callers address a
 specific manager without caring which process currently serves it. A start serves only at the
 epoch its own registration committed, never at the epoch of a later start of the same instance.
-On a static or open mesh,
-an untargeted spawn rides class anycast (any manager may accept, and the acceptance records which one did).
+On a static mesh or from an unbound open caller, an untargeted spawn rides class anycast
+(any manager may accept, and the acceptance records which one did). An open managed seat's
+persona definition, list, show and spawn tools default to its launching manager. Its generic
+manager describe and self-targeted invoke use that launch address too. An explicit existing
+persona or spawn selector still selects that instance. Static credential grants and user-auth
+issuer selection are unchanged. The library's `describeService` accepts an optional `instanceId`;
+a pinned describe does not read or populate the endpoint-only class cache.
 `cotal spawn <persona> --detach --on <instance>` and `cotal_spawn(instance: "<instance>")`
 pin one instance by its exact id, as `--on` does for `cotal ps`, `cotal models` and every hosted
 `cotal run` verb, and `instance` for `cotal_run`, `cotal_persona` and `cotal_personas`. A foreground CLI spawn has no manager to pin and refuses the
@@ -332,6 +345,13 @@ followed on that renewing connection, using its existing caller-scoped progress 
 readiness budget does not depend on the short-lived control credential. The follower confirms its
 progress subscription with the broker before submitting on the separate connection. A caller still
 checks the resolved instance and epoch, and never retries an ambiguous mutation outcome.
+
+The reference `cotal_spawn` tool retains the published request id when its submission wait
+ends before acceptance is observed. That id is the manager's goal id if the submission is
+accepted later. The tool reports an unknown outcome with the id and a same-caller
+`goal-result` read, without claiming that acceptance occurred. Do not repeat the spawn.
+An unanswered describe or a broker-attested no-responder refusal does not create a goal
+handle. A missing readback is inconclusive while the original submission may still arrive.
 
 The manager's `goal-result` command accepts `{goalId}` and returns `{goalId, result?}`. It reads
 only the authenticated caller's owner, actor and lifecycle through the manager's separate trusted
@@ -395,10 +415,14 @@ cleanly instead of throwing from the retry timer. The resolved command is never 
 readiness behavior.
 
 The describe and the contract store reads after it share the resolver's one deadline, so a slow
-store read fails the resolve with `deadline-exceeded` when that deadline expires. Cancelling a
+store read fails the resolve with `deadline-exceeded` when that deadline expires. `cotal invoke` passes its
+`--timeout` as that deadline (default 10000 ms) and gives the reply what the resolve leaves of it.
+`cotal describe` has no `--timeout` and passes 10000 ms. Cancelling a
 resolve settles a store read in flight instead of waiting for it to return. When one store read
 fails, the resolve fails with it and fetches no further command contracts; fetches already under
-way finish on their own.
+way finish on their own. A call for one command fetches only that command's cluster and schema
+closures. `describe` still fetches the complete visible surface because its result lists every
+command.
 
 The resolve and the invoke are separate trips through the same anycast queue, so in a
 multi-manager space an unpinned call can land on an instance the caller did not resolve. Every

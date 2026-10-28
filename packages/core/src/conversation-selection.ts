@@ -7,13 +7,14 @@
  * already holds it, refuses the whole request otherwise, and never falls back to the baseline.
  */
 import { eventChannel } from "./event-channel.js";
-import { assertValidChannel, assertValidRole, isConcreteChannel } from "./subjects.js";
+import { assertValidChannel, assertValidRole } from "./subjects.js";
 
 export type ConversationChannelAccess = "read" | "read-post";
 
 export interface ConversationSelection {
   v: 1;
-  /** Ascending by channel, unique, concrete, at most {@link SELECTION_MAX_ITEMS}. */
+  /** Ascending by channel, unique, at most {@link SELECTION_MAX_ITEMS}. A channel may be a pattern (`team.*`,
+   *  `team.>`), which grants every channel it matches, including ones created later. */
   channels: { channel: string; access: ConversationChannelAccess }[];
   /** Non-null exactly when `role:<role>` is in {@link capabilities}. */
   role: string | null;
@@ -65,7 +66,6 @@ export function checkConversationSelection(value: unknown): ConversationSelectio
     const c = record(raw, ["channel", "access"], "a channel entry");
     if (typeof c.channel !== "string") fail("a channel must be a string");
     assertValidChannel(c.channel);
-    if (!isConcreteChannel(c.channel)) fail(`channel "${c.channel}" is a wildcard; name concrete channels`);
     if (c.access !== "read" && c.access !== "read-post") fail(`channel "${c.channel}" access must be "read" or "read-post"`);
     return { channel: c.channel, access: c.access as ConversationChannelAccess };
   });

@@ -30,6 +30,7 @@ import {
   recordSpecKey,
   recordStatusKey,
   assertStatusValue,
+  decodeRecordJson,
 } from "./endpoint-records.js";
 import { canonicalJson } from "./canonical.js";
 import { walkKvEntries } from "./kv-scan.js";
@@ -165,7 +166,7 @@ export async function writeRunMigration(
     const existing = await kv.get(key);
     if (!existing || existing.operation !== "PUT")
       throw new EpEnvelopeError("internal", `migration ${key} lost its create CAS but is not readable; reconcile the store`);
-    const parsed = parseSpec(JSON.parse(new TextDecoder().decode(existing.value)), key);
+    const parsed = parseSpec(decodeRecordJson(existing.value, key), key);
     if (canonicalJson(parsed) !== canonicalJson(value))
       throw new EpEnvelopeError("conflict", `migration ${key} already exists with a different report; a migration id is derived from what the check found, so a differing one under the same id is never overwritten`);
     return { key, created: false };

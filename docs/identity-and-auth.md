@@ -112,9 +112,9 @@ host that acts on a caller's behalf (a workflow run, [workflows](workflows.md)) 
 the issuer, not from a ledger that may have changed since. So a static agent credential is an
 **issuance** ([SPEC §13.15](../SPEC.md#1315-issued-authority)): before the material is handed
 out, the issuer records the credential's final permission ceiling, as evidence keyed by a fresh
-**generation**, in `cotal_issued_<space>`. That store is append-only at the broker and the
-evidence is read as the first message on its key, so nothing written later on the same key, by
-anyone, changes what a resolver sees. The credential's endpoint rows then ride a versioned
+**generation**, in `cotal_issued_<space>`. That store is append-only at the broker until a row's
+own TTL ends it, and the evidence is read as the first message on its key, so nothing written later
+on the same key, by anyone, changes what a resolver sees. The credential's endpoint rows then ride a versioned
 rail, `cotal.<space>.ep.v1.…`, with that generation pinned beside the caller triple, so the
 broker binds every request to the ceiling the issuer accepted. The legacy `ep.` rail and the
 `ep.v1.` rail are disjoint subject spaces; a credential holds rows on one of them, and every
@@ -126,6 +126,27 @@ what the file says. A renewal keeps the generation only while the ceiling is byt
 evidence; a changed scope is a fresh issuance on a fresh generation, adopted by a new connection.
 A static agent's evidence names its credential ledger family as the source it depends on, and the
 lifecycle terminal that retires that family retires its issuances with it.
+
+Issued rows do not last forever. A generation carries its **horizon**, the second from which it
+authorizes nothing: the bearer's expiry for a user-auth `manager-caller` view, the instrument's
+five-minute expiry for a control-caller instrument, the assignment expiry for a platform
+supervisor, and 30 days after spawn for a static agent. Every row of a generation in both stores
+is written with a NATS per-message TTL that removes it 60 seconds after the horizon, so the stores
+hold the generations that can still be used, not every exchange ever made. Every host refuses a
+generation at or after its horizon before it reads the store, so a row the broker removed, and
+anything written on its key since, is never read. A static agent's credential renewals stop at its
+horizon, and the agent is then respawned; rotating it onto a new generation instead is
+[#4942](https://github.com/Cotal-AI/Cotal/issues/4942). On a user-auth space the auth service is
+the only issuer, so that cap does not apply there.
+
+A space whose issued stores were created before this retention existed is refused by every service
+that binds them, with the remedy in the error. Stop the space's auth service, its callout replicas
+and every manager, then start the space with `cotal up --space <space> --recreate-issued-stores
+<backup-dir>`. It backs up `KV_cotal_issued_<space>` and `KV_cotal_accepted_<space>` into
+`<backup-dir>`, deletes them, and the start creates them again in the current shape. An embedder
+whose spaces `cotal up` does not start runs the same step ([Embedding](embedding.md)). Generations
+issued before the upgrade refuse afterwards, and static agents started before it are respawned. The
+order and the rollback limits are in [Upgrading](UPGRADING.md#issued-authority-stores-after-01110).
 
 The manager, `cotal spawn`, and the CLI's control-caller instruments all mint through an `issuer`
 session. The deployer instrument does not: it is the one instrument with no default expiry, and an
@@ -254,8 +275,11 @@ The catalog request carries the opaque cached session as its bearer and returns 
 }
 ```
 
-The client checks every `registration` with the same `checkUserBundle` validator used by `cotal
-meshes add`. One invalid entry refuses the whole candidate snapshot. Conditional refresh uses the
+The client checks every `registration` with `checkBundleDocument`, the object checks `checkUserBundle`
+runs after it parses a file for `cotal meshes add`. The catalog already holds the value, so it is not
+serialised back to text: a missing `registration` is a missing field, and the not-JSON sentence stays
+with a file or a discovery body that does not parse. One invalid entry refuses the whole candidate
+snapshot. Conditional refresh uses the
 catalog's `ETag`; a transport error, non-success response, or invalid candidate leaves the prior
 snapshot intact and reports the failure. Only a 401 response for the saved session recommends signing
 in again. Transport errors and server failures report that account's refresh error without discarding
@@ -296,7 +320,7 @@ ordinary lazy path checks again after its five-second capability window, so an I
 Link for an existing login without making the person sign in again.
 
 **One auth service per space** hosts both halves: the NATS auth callout and the token
-exchange. Its default HTTP listener remains loopback-only and requires the per-start capability
+exchange. One process may host the services of several spaces, one lane each (below). Its default HTTP listener remains loopback-only and requires the per-start capability
 stored in the owner-only `auth-service.json` file. An operator may add a second listener with
 `cotal up --user-auth ... --exchange-public-port <port> --exchange-public-url https://auth.example`.
 That listener still binds `127.0.0.1`; put a reverse proxy in front of it and terminate TLS there.
@@ -319,7 +343,11 @@ it runs only on a host trusted like the full service's. A replica that loses a s
 the broker stops answering and exits non-zero, and the broker sends later connects to the other
 members; restart it with the unit that runs it. It refuses the HTTP flags and `--service-endpoints`.
 A replica cannot issue a service-endpoint connection, so it refuses to start in a space that admits
-service endpoints, one whose full service runs with `--service-endpoints`.
+service endpoints: one whose full service has run with `--service-endpoints`, or as a lane whose
+manifest entry sets `serviceEndpoints`. That first run opens the space's admission and nothing closes
+it, so the refusal stays after the setting is dropped. A callout host serving several spaces names
+such a space, retries it every 5 seconds and keeps answering for the others;
+`admitsServiceEndpoints` from `@cotal-ai/auth` answers the same check for a manifest writer.
 
 The loopback face also serves four host-only doors, all capability-gated and never on the public
 face. Two retire a lifecycle: `/interactive-lifecycle/retire` (used by `cotal actor grant/revoke`)
@@ -461,6 +489,16 @@ request: a lane's callout connection authenticates as its space's auth account, 
 is a disjoint subject namespace, so another space's request cannot be delivered on it. See
 [`auth-service`](cli.md#server-daemons) for the manifest and how a space is added or removed while
 the process runs.
+
+The full auth service can be hosted the same way. `cotal auth-service --spaces <manifest>`, without
+`--callout-only`, holds one full service per space in one process: each lane holds its space's plane
+claim, callout, connections, connect limits and capability, and serves that space's exchange and JWKS
+on listeners of its own, so one space's request never reaches another space's keys. A lane hosts
+service endpoints only when its manifest entry sets `serviceEndpoints`. A fence or a lost
+broker connection stops that space's lane alone. Callout replica hosts listing the same spaces add
+event loops for connect bursts, since one process answers callouts on one thread. Removing a space
+from every host's manifest and waiting for each host's `<manifest>.applied` stops all minting and
+connect authorization for it while the other spaces keep serving.
 
 ### Connect limits
 

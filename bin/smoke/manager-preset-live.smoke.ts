@@ -5,7 +5,11 @@
  * which a refused launch does not make and a link standing there does not lose. On Linux the live
  * cell then saves the preset over a broker-only open stack,
  * runs `service start --foreground`, waits for the roster boot, sends SIGINT to the CLI alone and
- * requires exit 130 with the native stop recorded on the instance.
+ * requires exit 130 with the native stop recorded on the instance. A corrupt seat-cap record then
+ * fails the native child at boot: the line it logs last names the record and the one step that
+ * clears it, the background refusal quotes that line and its log holds it, and a foreground start
+ * prints that line on stderr after its Mesh heading and lifetime notice and says its output went
+ * there. On an 80-column pty that line wraps at 80 columns, each continuation under the text.
  *
  * Bare `cotal down` on that legacy root then refuses while the saved service runs: its dry run lists
  * the running manager, warns with the refusal and changes nothing, `down --preserve-state` and bare
@@ -24,6 +28,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { clean, cotalPty } from "../../implementations/cli/smoke/_console-pty.js";
 
 const WT = join(import.meta.dirname, "..", "..");
 const TSX_LOADER = import.meta.resolve("tsx");
@@ -168,6 +173,7 @@ function cotal(args: string[], timeout = 120_000) {
   return spawnSync(process.execPath, ["--import", TSX_LOADER, BIN, ...args], options);
 }
 const out = (r: ReturnType<typeof cotal>) => `${r.stdout ?? ""}${r.stderr ?? ""}`;
+const ptyEnv = Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined));
 const started: ChildProcess[] = [];
 let stackUp = false;
 /** An unreadable instance record a cell plants; teardown removes it so the final down can run. */
@@ -197,6 +203,44 @@ try {
     check("SIGINT to the CLI stops the foreground manager with exit 130", code === 130, { code, tail: text.slice(-1500) });
     const row = serviceInstances(SPACE, "mgr")[0]?.record.value;
     check("the instance records the native stop the manager returned", row?.state === "stopped" && row.nativeStop?.nativeStop === "returned", row);
+
+    // ---- A manager that fails at boot names its cause ---------------------------------------------
+    // The controller does not read the recorded seat cap, so a corrupt record fails the native child
+    // inside its own startup, with a classified failure that wraps the record's refusal.
+    const capRecord = join(root, ".cotal", `manager.${spaceKey(SPACE)}.seat-cap.json`);
+    writeFileSync(capRecord, "not a record\n", { mode: 0o600 });
+    // The line names the record and ends in the one step that clears it.
+    const cause = `✗ the manager did not start: OPERATION_UNKNOWN: the native manager child did not confirm startup; cause: SCHEMA_INVALID: the manager seat-cap record ${capRecord} is not valid JSON; next: remove or repair that record, then start the manager again\n`;
+    const failed = cotal(["service", "start", "mgr", "--space", SPACE]);
+    check("a manager that fails at boot logs its cause and next step last, and the refusal quotes it",
+      failed.status === 5 && out(failed).includes(`exited before readiness was established (exit code 3, signal none); the last line it logged is: ${cause}`), out(failed));
+    const failedId = /cotal service logs mgr --instance (\S+) --space /.exec(out(failed))?.[1];
+    const failedLog = cotal(["service", "logs", "mgr", "--instance", failedId ?? "none", "--space", SPACE]);
+    check("  and the log the refusal names holds that line", failedLog.status === 0 && out(failedLog).includes(cause), out(failedLog));
+    const fgFailed = cotal(["service", "start", "mgr", "--space", SPACE, "--foreground"]);
+    check("a foreground manager that fails at boot prints its cause here, and the refusal says its output went here, not to its log",
+      fgFailed.status === 5 && fgFailed.stderr.includes(cause)
+        && out(fgFailed).includes("exited before readiness was established (exit code 3, signal none); its output went to this terminal and was not captured in its log")
+        && !out(fgFailed).includes("its log records the cause") && !out(fgFailed).includes("cotal service logs"), out(fgFailed));
+    // The parent's Mesh header and lifetime notice come before the child starts, on the stream its line and the refusal use.
+    const order = [`Mesh: ${SPACE}\n`, "Foreground service lifetime", cause, `Mesh: ${SPACE}\n`, "exited before readiness was established"]
+      .reduce<number[]>((at, text) => [...at, fgFailed.stderr.indexOf(text, (at.at(-1) ?? -1) + 1)], []);
+    check("  and its stderr reads the Mesh header and lifetime notice, then the child's line, then the refusal",
+      order.every((at) => at >= 0), fgFailed.stderr);
+    // On a terminal the child wraps that line as the CLI wraps its own: at the terminal's width, each
+    // continuation under the text, a word wider than the line kept whole.
+    const tty = cotalPty(["service", "start", "mgr", "--space", SPACE, "--foreground"], { cwd: root, env: { ...ptyEnv, LC_ALL: "C.UTF-8" }, cols: 80, rows: 40 });
+    let screen = "";
+    tty.onData((data) => { screen += data; });
+    const ttyCode = await Promise.race([new Promise<number>((resolve) => tty.onExit((e) => resolve(e.exitCode))), sleep(120_000).then(() => { tty.kill(); return "timeout" as const; })]);
+    const shown = clean(screen).replace(/\r/g, "").split("\n");
+    const first = shown.findIndex((line) => line.startsWith("✗ the manager did not start: "));
+    const end = shown.findIndex((line, i) => i > first && !line.startsWith("  "));
+    const wrapped = first < 0 ? [] : shown.slice(first, end < 0 ? undefined : end);
+    check("on an 80-column terminal a foreground manager's line wraps at 80 columns, each continuation under the text",
+      ttyCode === 5 && wrapped.length > 1 && wrapped.every((line) => line.length <= 80 || !line.trim().includes(" ")) && wrapped.slice(1).every((line) => /^ {2}\S/.test(line))
+        && wrapped.map((line) => line.trim()).join(" ") === cause.trim(), { ttyCode, screen: clean(screen) });
+    rmSync(capRecord);
 
     // ---- Bare down refuses while the space's service runs, and skips it once stopped -------------
     const start = cotal(["service", "start", "mgr", "--space", SPACE]);
@@ -237,7 +281,7 @@ try {
     const refused = cotal(["down"]);
     check("bare down refuses while the service runs, names its stop then down, and stops nothing",
       refused.status === 2 && out(refused).includes("LIFECYCLE_BLOCKED") && out(refused).includes(`mgr instance ${live?.name}: running`)
-        && out(refused).includes(`${stopCommand}, then run cotal down again`) && !out(refused).includes("Service stopped")
+        && out(refused).includes(`\`${stopCommand}\`, then run \`cotal down\` again`) && !out(refused).includes("Service stopped")
         && liveState() === "running" && await isReachable(SERVER) && findMesh(SPACE) !== undefined, out(refused));
     const stop = cotal(stopCommand.split(" ").slice(1));
     check("the stop the refusal names stops the service", stop.status === 0 && liveState() === "stopped", out(stop));

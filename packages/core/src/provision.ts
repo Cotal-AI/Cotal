@@ -97,19 +97,19 @@ import { parseServiceConnectionBinding, type ServiceConnectionBinding } from "./
 import { SERVICE_ACCESS_TTL_SECONDS } from "./service-authority-limits.js";
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, hardenedAuthorityStreamNames, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, assertGeneration, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
-import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef } from "./issued-authority.js";
+import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, issuedHorizon, issuedStoreStreamNames, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef } from "./issued-authority.js";
 import { admissionBucket, admissionKey, revocationKey } from "./run-admission.js";
 import { runSubmissionKey } from "./run-submission.js";
 import { runDriverGrants, runMediatorGrants, runOperatorGrants, type RunDriverGrantArgs, type RunOperatorGrantArgs } from "./run-driver-grants.js";
 import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
-import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
-import { rawDigest } from "./canonical.js";
+import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey, credentialIdOf } from "./lifecycle-state.js";
 import { environmentManagerPermissions, isEnvironmentManagerProfile, type EnvironmentManagerGrantPin } from "./environment-manager-grants.js";
 import { credsClaims, isUserNkey, type Identity } from "./identity.js";
 import {
   backupProfilePermissions,
   restoreProfilePermissions,
+  snapshotAckGrant,
   type BackupPermissionScope,
   type RestorePermissionScope,
 } from "./backup.js";
@@ -136,7 +136,10 @@ export type Profile =
   | "probe" // connect-only liveness/auth preflight
   | "channel-writer" // channel-registry value-writes (channels set/default, spawn -f seed)
   | "channel-purger" // channel-writer + STREAM.PURGE.CHAT (web channel-delete)
-  | "teardown" // the SOLE STREAM.DELETE holder (down -f space teardown)
+  | "teardown" // the space-wide STREAM.DELETE holder (down -f space teardown)
+  // Ephemeral, minted only by `up --recreate-issued-stores`: back up, then delete, the two
+  // issued-authority stores of ONE space that predate bounded retention. The other STREAM.DELETE holder.
+  | "issued-store-recreate"
   // Control callers — each holds its tier's `operatorInstrumentCapabilities` ep rows, and an any-mode
   // row IS cross-agent reach, so ps/start and stop/attach get SEPARATE, tier-scoped caller creds.
   | "control-caller-privileged" // ps/start → the privileged instrument set, no any-mode row (no cross-agent reach)
@@ -275,10 +278,10 @@ export const ROTATION_RENEWED_TTL_SEC = 30 * 24 * 60 * 60;
 /** The credential lifetime matrix. This is intentionally centralized so every new mint profile must classify its
  * credential-death behavior instead of silently inheriting non-expiring static creds. */
 export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePolicy> = {
-  agent: { class: "mixed", note: "manager children, foreground spawn/join, and cotal mint static outputs all use this profile; split or repair flow required before default exp" },
+  agent: { class: "mixed", note: "manager children, foreground spawn/join, and `cotal mint` static outputs all use this profile; split or repair flow required before default exp" },
   "manager-caller": { class: "mixed", note: "short-lived user-auth view bound to the bearer expiry and one manager instance" },
-  observer: { class: "static-operator-managed", note: "out-of-band dashboard/audit credential from cotal mint" },
-  admin: { class: "static-operator-managed", note: "out-of-band elevated dashboard/audit credential from cotal mint" },
+  observer: { class: "static-operator-managed", note: "out-of-band dashboard/audit credential from `cotal mint`" },
+  admin: { class: "static-operator-managed", note: "out-of-band elevated dashboard/audit credential from `cotal mint`" },
   supervisor: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's always-on endpoint; the manager holds the DATA seed and self-remints via the endpoint creds source" },
   delivery: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "server-side Plane-3 daemon; seed-less - the manager re-signs .cotal/delivery.creds for the SAME nkey, requests delivery-admin reloadCreds for explicit adoption, and the endpoint source re-read is only a backstop" },
   "membership-rw": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "membership feed writer; seed-less - the manager re-signs the membership-rw.creds store key for the SAME nkey, the feed adopts it on a 75% preflight-proven renewal timer (its active self-heal), and delivery-admin reloadCreds is the explicit adoption on top" },
@@ -295,6 +298,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "channel-writer": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "channel registry mutation command" },
   "channel-purger": { class: "mixed", note: "one-shot for CLI, standing inside web; split or renewal required before default exp" },
   teardown: { class: "one-shot", note: "space teardown can be long/destructive; needs TTL budget/remint guard before default exp" },
+  "issued-store-recreate": { class: "one-shot", defaultTtlSeconds: 30 * 60, note: "one `up --recreate-issued-stores` step: snapshot and delete the two pre-retention issued-authority stores of one space; 30 minutes bounds a large store's snapshot" },
   "control-caller-privileged": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "ps/start control call" },
   "control-caller-admin": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "stop/attach admin control call" },
   deployer: { class: "one-shot", note: "manifest deploy spans planning/launch/ledger; needs near-expiry guard or remint before default exp" },
@@ -312,7 +316,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "transfer-writer": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one carried resume per CLI call: one object's chunk and meta subjects in one instance's transfer bucket" },
   "transfer-reader": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one transcript-receive or sweep over the minting instance's own transfer bucket" },
   "endpoint-evictor": { class: "one-shot", defaultTtlSeconds: 60, note: "one re-registration's verify-evict window: a scoped delivery-admin caller that kicks+verifies the SUPERSEDED serve family before the epoch advances; 60s bounds a copied cred to a minute" },
-  "remote-manager": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "auth-service", note: "the scoped remote manager lifecycle: own lease/presence plus same-owner agent provisioning; issued only by the typed supervise protocol, never by cotal mint or a raw view/profile string" },
+  "remote-manager": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "auth-service", note: "the scoped remote manager lifecycle: own lease/presence plus same-owner agent provisioning; issued only by the typed supervise protocol, never by `cotal mint` or a raw view/profile string" },
   "environment-bootstrap": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one admitted environment's bootstrap caller; explicit expiry capped by admission and five minutes" },
   "environment-manager-supervisor": { class: "standing-renewable", renewalOwner: "environment-authority", note: "own lease/presence/liveness; explicit expiry capped by admission, no auth-store access" },
   "environment-manager-executor": { class: "standing-renewable", renewalOwner: "environment-authority", note: "own admitted authority instance RPC; explicit expiry capped by admission, no direct store access" },
@@ -1018,7 +1022,7 @@ export async function mintCreds(
         `would exceed the broker's CONNECT line and the connect would hang silently (issue #375)`,
     );
   }
-  await releaseIssuance(auth.space, profile, pr, opts, perms, validDates.exp, rawDigest(creds).replace("sha256:", "sha256-"));
+  await releaseIssuance(auth.space, profile, pr, opts, perms, validDates.exp, credentialIdOf(creds));
   // §13.1 mint fence for the serve credential: the credential is BUILT, but released only when its
   // NORMATIVE ledger row (holderPrincipal/lifecycleUid/sourceChain/state/exp + the currency
   // coordinates) is durably staged and its revision-pinned CAS wins the instance's single issuance
@@ -1037,7 +1041,7 @@ export async function mintCreds(
       // form (`sha256-<hex>`, never the §13.7 `sha256:` artifact form): the id becomes a segment
       // of the durable `epcred.` KV key, whose grammar has no ":" — the digest property (a
       // byte-identical retry maps to the SAME id) is what matters, not the separator.
-      credentialId: rawDigest(creds).replace("sha256:", "sha256-"),
+      credentialId: credentialIdOf(creds),
       credentialKey: identity.id,
       holderActor: pr.actor,
       // A serve credential is minted directly by the provisioner authority, so its §13.1 issuance
@@ -1050,7 +1054,7 @@ export async function mintCreds(
 }
 
 /** The SPEC 13.15 issuance fence: an issuing mint persists the ceiling it is handing out BEFORE
- *  the material is returned. The evidence is the minted permission set itself (deny rules
+ *  the material is returned, and the material expires by its generation's horizon. The evidence is the minted permission set itself (deny rules
  *  included), imported from the same object the JWT was encoded from, so the record and the
  *  credential cannot disagree. `sources` name the gates the issuance depends on; an issuance bound
  *  to none (a one-shot instrument) carries the credential's own expiry as its liveness. A renewal
@@ -1072,14 +1076,16 @@ async function releaseIssuance(
   if (!seam) throw new Error(`mintCreds: an issued "${profile}" mint requires opts.issuance (the evidence store seam); the material is released only after its evidence is durable (SPEC 13.15)`);
   if (!pr.lifecycleUid) throw new Error("mintCreds: an issuance is lifecycle-keyed; mint with opts.lifecycleUid");
   const ref: IssuedAuthorityRef = { space, owner: pr.owner, actor: pr.actor, uid: pr.lifecycleUid, generation: opts.issued.generation };
+  // Every credential minted on a generation ends by its horizon: past it the generation authorizes
+  // nothing and its rows may be gone, so material outliving it would ride a dead binding.
+  if (exp === undefined || exp > issuedHorizon(ref.generation))
+    throw new Error(`mintCreds: an issued credential must expire by its generation's horizon ${issuedHorizon(ref.generation)} (SPEC 13.15)`);
   const permissions = importNativeSubjectPermissions(perms);
   if (seam.mode === "renew") {
     await seam.store.confirm(ref, permissions);
     await seam.finalize?.(credentialId);
     return;
   }
-  if (seam.sources.length === 0 && exp === undefined)
-    throw new Error("mintCreds: an issuance bound to no source gate must be a bounded credential; nothing else can end its liveness (SPEC 13.15)");
   const prepared = await seam.store.stage({
     version: 1,
     ref,
@@ -1136,7 +1142,7 @@ export async function mintPublicUserJwt(
   if (profile === "endpoint-serve") {
     if (!opts.serveIssuance) throw new Error("mintPublicUserJwt: endpoint-serve requires serveIssuance");
     await finalizeServeIssuance(opts.serveIssuance, opts.endpointServe!, {
-      credentialId: rawDigest(jwt).replace("sha256:", "sha256-"),
+      credentialId: credentialIdOf(jwt),
       credentialKey: publicId,
       holderActor: pr.actor,
       sourceChain: ["root"],
@@ -1175,7 +1181,7 @@ export async function mintServiceCalloutJwt(
     { signer: nativeNkeySigner(new TextEncoder().encode(auth.account.signingSeed)), exp: expiresAt });
   if (Buffer.byteLength(jwt, "utf8") > MAX_MINTED_JWT_BYTES)
     throw new Error("service callout mint exceeds the native JWT byte limit");
-  const credentialId = rawDigest(jwt).replace("sha256:", "sha256-");
+  const credentialId = credentialIdOf(jwt);
   await finalizeServeIssuance(gate, serve, { credentialId, credentialKey: connection.userNkey,
     serviceConnection: connection, holderActor: principal.actor, sourceChain: ["root"], exp: expiresAt });
   if (expiresAt <= Math.floor(Date.now() / 1000))
@@ -1339,7 +1345,8 @@ export function permissionsFor(
   if (profile === "probe") return probePermissions(pr); // connect-only liveness/auth preflight
   if (profile === "channel-writer") return channelWriterPermissions(space, pr); // channel-registry writes
   if (profile === "channel-purger") return channelPurgerPermissions(space, pr); // channel-writer + CHAT purge
-  if (profile === "teardown") return teardownPermissions(space, pr, opts.transferStreams ?? []); // sole STREAM.DELETE holder
+  if (profile === "teardown") return teardownPermissions(space, pr, opts.transferStreams ?? []); // space-wide STREAM.DELETE holder
+  if (profile === "issued-store-recreate") return issuedStoreRecreatePermissions(space, pr); // the two issued-authority stores only
   if (profile === "control-caller-privileged") return controlCallerPermissions(space, pr, "privileged", opts); // ps/start reads
   if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, "admin", opts); // any-mode stop/attach
   if (profile === "deployer") return deployerPermissions(space, pr, opts.controlTier ?? "admin", opts); // spawn -f deploy authority (user-mode view rides privileged)
@@ -1435,6 +1442,12 @@ export function permissionsFor(
       // agent. Read-only: no `$KV.${membershipBucket}` publish — only the `membership-rw` cred writes it.
       `$JS.API.STREAM.INFO.${MEMKV}`,
       `$JS.API.STREAM.MSG.GET.${MEMKV}`,
+      // The snapshot read (`readMembership`) is paged batched Direct Gets whose request subject is the
+      // bare stream, binding no consumer (#4123): this profile may not delete a scan's consumer, so a
+      // consumer per read stayed to the inactive threshold and each refused delete was a broker log
+      // line. The reply subject is caller-chosen, the same vector the consumer create below already
+      // grants on this bucket, so the read reaches no byte the watch could not.
+      `$JS.API.DIRECT.GET.${MEMKV}`,
       `$JS.API.CONSUMER.CREATE.${MEMKV}.>`,
       `$JS.API.CONSUMER.INFO.${MEMKV}.>`,
       // Delivery lease/readiness: READ-ONLY (STREAM.INFO + kv.get), the same pair the `agent` arm
@@ -1562,6 +1575,12 @@ export function permissionsFor(
     // Channel registry: read-only (watch + direct kv.get for the join-time replay decision).
     // No `$KV.${channelBucket(space)}.*` publish — privileged-write, default-deny gives that free.
     `$JS.API.STREAM.MSG.GET.${CHKV}`,
+    // The one-shot CLI reads the registry once with a batched Direct Get, whose request subject is
+    // the bare stream (#4091). On a user-auth mesh those commands connect on the user's bearer, which
+    // the auth service mints with these rows, so the row is what lets them leave no watch consumer
+    // behind. The same reply-subject reasoning as the presence read above: the consumer create below
+    // already grants that vector on this world-readable bucket.
+    `$JS.API.DIRECT.GET.${CHKV}`,
     `$JS.API.CONSUMER.CREATE.${CHKV}.>`,
     `$JS.API.CONSUMER.INFO.${CHKV}.>`,
     // Delivery lease/readiness: READ-ONLY (kv.get) for the non-gating `cotal_channels` delivery-health
@@ -2015,7 +2034,7 @@ function channelPurgerPermissions(space: string, pr: MintPrincipal): Record<stri
   };
 }
 
-/** TEARDOWN — `cotal down -f` space teardown. The SOLE cred that keeps `STREAM.DELETE` (the
+/** TEARDOWN — `cotal down -f` space teardown. The space-wide cred that keeps `STREAM.DELETE` (the
  *  tamper verb). `down -f` is multi-step: `connectProbe` (presence-watch + channel-registry read)
  *  → invoke the manager's `ps` + any-mode `despawn` over the ep rails to politely stop the managed
  *  agents → `readMembership` (the membership-feed read that keeps an owned channel another member
@@ -2075,6 +2094,24 @@ function teardownPermissions(space: string, pr: MintPrincipal, transferStreams: 
     // Own inbox (connectProbe presence-watch delivery + JS API responses) + the ep reply rail (the
     // ps + any-mode despawn calls reply there). The `ctl.admin.<id>.reply.>` subtree is gone.
     sub: { allow: [`_INBOX_${pr.connId}.>`, ...ep.sub] },
+  };
+}
+
+/** ISSUED-STORE-RECREATE — `cotal up --recreate-issued-stores`, and an embedder's call of
+ *  `removeIssuedStoresBeforeRetention`: back up, then delete, the two issued-authority stores of ONE
+ *  space that predate bounded retention. Exactly `STREAM.INFO`, `STREAM.SNAPSHOT` and
+ *  `STREAM.DELETE` on those two streams, the snapshot's delivery inside its own inbox, and the
+ *  snapshot ACK subjects of those two streams ({@link snapshotAckGrant}). Nothing reads a row,
+ *  writes a store or reaches another stream. */
+function issuedStoreRecreatePermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
+  return {
+    pub: {
+      allow: [
+        "$JS.API.INFO",
+        ...issuedStoreStreamNames(space).flatMap((s) => [`$JS.API.STREAM.INFO.${s}`, `$JS.API.STREAM.SNAPSHOT.${s}`, `$JS.API.STREAM.DELETE.${s}`, snapshotAckGrant(s)]),
+      ],
+    },
+    sub: { allow: [`_INBOX_${pr.connId}.>`] },
   };
 }
 
@@ -2478,8 +2515,9 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
 
 /** The ISSUER permission set (SPEC 13.15): value-writes on the evidence store (evidence, attempt,
  *  source index: create-only and CAS rows, keyed by generation) and on the accepted-row store
- *  (create-only, keyed by the client's token); the leader-served point read on the evidence
- *  store; and the ordered `keys()` walk a source retirement enumerates the reverse index with.
+ *  (create-only, keyed by the client's token); `STREAM.INFO` on both, the bind-time shape check;
+ *  the leader-served point read on the evidence store; and the ordered `keys()` walk a source
+ *  retirement enumerates the reverse index with.
  *  NAMED RESIDUAL (the contract's section 8): this profile holds a write and a raw read on ONE
  *  stream, the pairing no peer-held profile may hold, so it is never issuable to a peer. */
 function issuerPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
@@ -2493,6 +2531,7 @@ function issuerPermissions(space: string, pr: MintPrincipal): Record<string, unk
         // A user-auth connection's renewal finds the accepted row its nonce names (SPEC 13.15).
         `$JS.API.DIRECT.GET.KV_${acceptedBucket(space)}.$KV.${acceptedBucket(space)}.>`,
         `$JS.API.STREAM.INFO.${ISSUED}`,
+        `$JS.API.STREAM.INFO.KV_${acceptedBucket(space)}`,
         `$JS.API.STREAM.MSG.GET.${ISSUED}`,
         // Source liveness: the leader-served point read of a static incarnation's issuance gate on
         // the auth store (body-selected, stream-wide: the same named residual every records

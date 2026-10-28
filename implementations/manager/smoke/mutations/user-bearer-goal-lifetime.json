@@ -132,8 +132,8 @@
     {
       "name": "M14 publish outside the owned reply setup promise",
       "file": "packages/core/src/endpoint-call.ts",
-      "find": "      opts.signal?.throwIfAborted();\n      nc.publish(req.subject, req.body, { reply: noRespReplyTo });\n    });",
-      "replace": "      opts.signal?.throwIfAborted();\n    });\n    nc.publish(req.subject, req.body, { reply: noRespReplyTo });",
+      "find": "      opts.signal?.throwIfAborted();\n      nc.publish(req.subject, req.body, { reply: noRespReplyTo });\n      published = true;\n    });",
+      "replace": "      opts.signal?.throwIfAborted();\n    });\n    nc.publish(req.subject, req.body, { reply: noRespReplyTo });\n    published = true;",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "CLOSED: failed subscription leaves no unhandled rejection",
       "cell": "CLOSED: failed subscription leaves no unhandled rejection"

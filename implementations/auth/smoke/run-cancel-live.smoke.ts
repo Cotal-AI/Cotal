@@ -156,7 +156,7 @@ type Client = { nc: NatsConnection; caller: IssuedCaller };
  * human callout's channel issuance or interactive-owner authority. */
 async function channelClient(): Promise<Client> {
   const identity = newIdentity(), uid = mintLifecycleUid();
-  const issued = { generation: mintGeneration(), acceptedToken: mintAcceptedToken() };
+  const issued = { generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: mintAcceptedToken() };
   const caller: IssuedCaller = { owner, actor: "channel", uid, generation: issued.generation };
   const creds = await withIssuerSession({ servers: fx.servers, space: account.space, auth: account.auth, tls: false }, session =>
     mintCreds(account.auth, identity, "agent", { principal: { owner, actor: "channel" }, lifecycleUid: uid,

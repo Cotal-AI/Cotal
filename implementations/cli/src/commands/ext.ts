@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { registry, type Command, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
@@ -145,7 +145,7 @@ function linkExtensionPeers(packages: string[], operationPkg: string): void {
  *  `announce` takes the closing `✓ added` line; `cotal setup` sends it to stderr when stdout carries
  *  a result. */
 export async function addExtension(spec: string, expectedPkg?: string, borrowMutation = false, announce: (line: string) => void = console.log): Promise<void> {
-  const dir = extensionsDir();
+  let dir = extensionsDir();
   // A file:/path spec is resolved to an absolute path so the prefix install works from any cwd.
   const isPath = isPathSpec(spec);
   const resolved = isPath ? resolve(spec) : spec;
@@ -187,8 +187,16 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   // npm installs in-place and may replace the package plus shared dependency/lock state before we
   // can validate it. A failed update must restore the previously working prefix byte-for-byte.
   const updating = manifest.extensions.some((entry) => entry.pkg === pkg) || existsSync(extensionPackageDir(pkg));
+  const staging = !seeding && expectedPkg === undefined && !updating && !existsSync(extensionPackageDir(pkg));
   const rollbackRoot = updating ? mkdtempSync(join(dirname(dir), ".extensions.rollback-")) : undefined;
+  const stageRoot = staging ? mkdtempSync(join(dirname(dir), ".extensions.stage-")) : undefined;
   const rollbackDir = rollbackRoot ? join(rollbackRoot, "extensions") : undefined;
+  const stageDir = stageRoot ? join(stageRoot, "cotal", "extensions") : undefined;
+  if (stageDir) {
+    mkdirSync(stageDir, { recursive: true });
+    writeFileSync(join(stageDir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`);
+    dir = stageDir;
+  }
   if (rollbackDir) {
     // Snapshot beside the prefix (same filesystem), preserving npm's relative symlinks verbatim.
     // npm mutates the live tree; rollback removes it and atomically renames this snapshot back.
@@ -199,15 +207,19 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
     rmSync(extensionPackageDir(pkg), { recursive: true, force: true });
   }
 
+  const liveDir = extensionsDir();
+  const configHome = process.env.XDG_CONFIG_HOME;
   let committed = false;
   let restored = false;
   const restore = async (): Promise<void> => {
     if (restored || committed) return;
     restored = true;
     if (rollbackDir) {
-      rmSync(dir, { recursive: true, force: true });
-      renameSync(rollbackDir, dir);
+      rmSync(extensionsDir(), { recursive: true, force: true });
+      renameSync(rollbackDir, extensionsDir());
       rmSync(rollbackRoot!, { recursive: true, force: true });
+    } else if (stageRoot) {
+      rmSync(stageRoot, { recursive: true, force: true });
     } else {
       await npm(["remove", "--no-audit", "--no-fund", pkg], dir);
       linkExtensionPeers(manifest.extensions.map((entry) => entry.pkg), pkg);
@@ -220,8 +232,34 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   process.once("SIGINT", interrupted);
   process.once("SIGTERM", interrupted);
   try {
-    await installCandidate();
+    // The existing writer lock remains held while workspace helpers resolve into the stage.
+    if (stageRoot) process.env.XDG_CONFIG_HOME = stageRoot;
+    try {
+      await installCandidate();
+    } finally {
+      if (configHome === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = configHome;
+    }
     if (wasInterrupted) throw new Error("extension install interrupted");
+    if (stageDir) {
+      // npm records local specs relative to its prefix. Preserve their meaning after promotion.
+      type NpmMetadata = { dependencies?: Record<string, string>; packages?: Record<string, { dependencies?: Record<string, string> }> };
+      const metadata = (file: string, base = stageDir): NpmMetadata => JSON.parse(readFileSync(file, "utf8"), (_key, value: unknown) =>
+        typeof value === "string" && value.startsWith("file:") ? "file:" + resolve(base, value.slice(5)) : value);
+      const livePackage = metadata(join(liveDir, "package.json"), liveDir);
+      const stagedPackage = metadata(join(stageDir, "package.json"));
+      const dependencies = { ...livePackage.dependencies, ...stagedPackage.dependencies };
+      const lockPath = join(liveDir, "package-lock.json");
+      const liveLock = existsSync(lockPath) ? metadata(lockPath, liveDir) : {};
+      const stagedLock = metadata(join(stageDir, "package-lock.json"));
+      cpSync(join(stageDir, "node_modules"), join(liveDir, "node_modules"), { recursive: true, verbatimSymlinks: true });
+      writeFileSync(join(liveDir, "package.json"), JSON.stringify({ ...livePackage, dependencies }, null, 2) + "\n");
+      writeFileSync(lockPath, JSON.stringify({ ...liveLock, ...stagedLock,
+        packages: { ...liveLock.packages, ...stagedLock.packages, "": { ...stagedLock.packages?.[""], dependencies } },
+      }, null, 2) + "\n");
+      copyFileSync(join(stageDir, "extensions.json"), extensionsManifestPath());
+      rmSync(stageRoot!, { recursive: true, force: true });
+    }
     committed = true;
     if (rollbackRoot) rmSync(rollbackRoot, { recursive: true, force: true });
   } catch (e) {
@@ -258,7 +296,7 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   if (!deps[pkg]) {
     fail(pkg, `npm install succeeded but it is not among the prefix dependencies - remove and retry`);
   }
-  const pkgDir = extensionPackageDir(pkg);
+  const pkgDir = join(dir, "node_modules", ...pkg.split("/"));
   let pkgMeta: {
     version?: string;
     dependencies?: Record<string, string>;
@@ -286,7 +324,7 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   // npm mutates the shared prefix, so restore every package's private shared-peer links, not only
   // the candidate's. All extensions resolve the exact same host package instances.
   try {
-    linkExtensionPeers([...manifest.extensions.filter((entry) => entry.pkg !== pkg).map((entry) => entry.pkg), pkg], pkg);
+    linkExtensionPeers(stageDir ? [pkg] : [...manifest.extensions.filter((entry) => entry.pkg !== pkg).map((entry) => entry.pkg), pkg], pkg);
   } catch (e) {
     fail(pkg, (e as Error).message);
   }

@@ -1,5 +1,236 @@
 # @cotal-ai/core
 
+## 0.120.0
+
+No changes in this release.
+
+## 0.119.5
+
+### Patch Changes
+
+- 8f7d6dd: An unpinned endpoint invoke now reaches a service whose caller grant names only its instance. When the broker refuses the publish on the class queue, nothing ran, so the call goes once more to the rail of the instance that answered its describe. A granted agent's `cotal_invoke` and an unpinned `cotal invoke` therefore work without naming the instance; a credential that holds neither rail is refused as before.
+
+## 0.119.4
+
+### Patch Changes
+
+- ed5c23f: Remedies, hints and messages from `run`, `actor` and `auth`, `logout`, `supervise` and `manager`, `deliver`, `docs`, `daemon`, `linear`, the web dashboard, the console, the Claude Code connector, a run's checkpoint prompt and the endpoint issuance gate now name the commands they suggest in backticks, so a terminal keeps each one whole and `--json` carries the same text. They named them bare after other words, as in "list the recorded runs with cotal run", which split inside the command when the line wrapped.
+
+## 0.119.3
+
+### Patch Changes
+
+- 8866e1e: Endpoint calls now resolve only the command contracts they need instead of fetching the endpoint's complete visible surface. Manager operations that used to read 124 contract-store artifacts for a 40-command surface now read six artifacts for one command, while `describe` still resolves every visible command.
+
+## 0.119.2
+
+No changes in this release.
+
+## 0.119.1
+
+### Patch Changes
+
+- 9f32677: Clarify that a timed-out channel publish has an unknown outcome and that a disconnected send or yield refused before submission was not sent. Keep the Jcode user-auth tool catalog aligned with the host's capability gates without exposing credentials.
+- 3431be6: `cotal up --max-payload <bytes>` sets the broker's own message size limit, a positive integer up to 67108864. `up` renders it as `max_payload: <bytes>` in the broker config and records it in `.cotal/broker-policy.json`, which `readBrokerPolicy` reads back, so a later `cotal up` on the root renders it again without the flag, after `cotal down` or a preserved resume included. A running broker refuses a different value, and `--open`, `-f` and `--restore` refuse the flag. Service endpoint caller grants need at least 2098176 bytes, so a smaller value beside `--service-endpoints` refuses before anything starts. `SERVICE_CALLER_PAYLOAD_FLOOR` and `SERVICE_CALLER_PAYLOAD_OVERHEAD` now come from `@cotal-ai/core`, so the flag's validation and the auth host's assertion read one number. Before, `serverConfig` took a `maxPayload` that no `up` ever passed and no record kept, so a limit written into `server.conf` by hand was lost the next time `up` wrote the file.
+  
+  Caller issuance now survives a broker configuration reload. A reload keeps the same incarnation serving and moves VARZ `config_digest`, and issuance was bound to the digest the bootstrap observed, so every reload refused every later caller issuance until the auth plane was reopened. On a multi-tenant broker that is every tenant sign-up. The verifier now treats a moved digest as a trigger to re-measure: when the fresh observation proves the same broker incarnation and auth store, and proves the standalone topology, the payload floor, the control line, the system account and an uncapped auth stream again, it re-asserts the payload record under the held plane claim by CAS on the exact prior row and continues. A reload that breaks any of those still refuses, a `max_payload` below the floor included, a restart is a new incarnation and still refuses, and a withdrawn record is never overwritten.
+
+## 0.119.0
+
+No changes in this release.
+
+## 0.118.3
+
+No changes in this release.
+
+## 0.118.2
+
+No changes in this release.
+
+## 0.118.1
+
+No changes in this release.
+
+## 0.118.0
+
+No changes in this release.
+
+## 0.117.1
+
+No changes in this release.
+
+## 0.117.0
+
+### Minor Changes
+
+- c93dded: A conversation selection may now name channel patterns. `team.*` and `team.>` in a requested or approved selection grant every channel they match, including channels created after the approval, and the issued grant carries the pattern as it is.
+  
+  Before this, `checkConversationSelection` refused any non-concrete channel. A hosted approval page that let a person grant `team.>` produced an approval every stock client then rejected, so the connection failed after the person had approved it. The grammar check is unchanged: a malformed pattern such as `team.>.x` is still refused, as are more than 32 channels. Whether the person may grant a pattern is still decided by the authority, against that person's own row.
+
+## 0.116.5
+
+No changes in this release.
+
+## 0.116.4
+
+No changes in this release.
+
+## 0.116.3
+
+### Patch Changes
+
+- 1819877: Retain a published spawn request's goal id when the caller deadline ends before acceptance is observed. Report the submission as unknown with same-caller goal-result readback instead of a plain failed spawn, without resubmitting or changing persona numbering.
+
+## 0.116.2
+
+No changes in this release.
+
+## 0.116.1
+
+### Patch Changes
+
+- 31cb8e5: Every place that decides whether a write lost its expected-last-sequence CAS now calls `isCasLoss`, which reads the JetStream error code (10071 or 10164) and never the message text. The `deprovisionAgent` purge path used to accept 10071 or any message containing "10071" or "wrong last sequence", and missed 10164. The auth session ledger kept its own copy that read an `api_error` field the JetStream client does not set, so it only worked through a message match. The create-only publishes for goal binds, work items, checkpoint settle facts, receipts and contract artifacts spelled the code pair inline.
+- c6be6dd: An anycast delivery now reaches `message` listeners with `toService` set to the role in its `svc` subject, and with any payload `to` or `channel` removed, as channel and DM deliveries already were. The payload's routing fields used to pass through unchecked, so a peer could publish to one role while the receiver saw another role, a DM addressed to it, or a channel post, for example in `cotal join` output and connector inbox frames.
+- 331ea96: Delete the presence and channel-registry watch consumers when an endpoint stops, when a silent presence watch is rebound, and when a manual reconnect retires a live connection, including a watch whose bind was still in flight at that moment. They used to stay on the broker for five minutes, so repeated starts and stops or a silent bucket piled up idle consumers on both KV streams.
+- b695d8a: A timer writer's `stop()` no longer waits out the 5 second poll window when it lands while the pump is still issuing a fetch or between two batches. The pump closes that fetch as soon as it is issued, so the delivery daemon no longer spends that window stopping a writer it has just started.
+
+## 0.116.0
+
+### Patch Changes
+
+- 3c60b76: `cotal channel` lists a registry key whose value does not decode, with the decode error, and `readChannelRegistry` returns those keys in `undecodable`. A single-key read still resolves such a value as unset, as an endpoint's registry watch does. A later write does not replace those bytes: `cotal up`, including one whose channel seed would write the key, and `cotal channel set` or `channel defaults`, refuse with `CONFLICT` and leave the key as it is. `channel remove` removes it. A defaults value that decodes but names no delivery class is still filled.
+- 2e7cdfd: A workflow conclave's membership write is fenced by each member lifecycle's exact read-ACL row, as the delivery daemon's join is: the row is read just before the commit and again after it, a member the row no longer covers gets no row, and a row written while the row was narrowed is removed by its exact key. Before, a conclave executing while a member was retiring could create that member's row after the retirement's inventory, and the retired lifecycle kept it. The run-mediator profile gains the read of the ACL registry this needs; a mesh without that registry (open mode) is unchanged.
+- 5b85487: `recordGoalIndex` now refuses a same-goal record over an entry `clearGoalIndex` already deleted with `failed-precondition`, naming the goal as settled or withdrawn. It used to report that normal end state as store corruption with `internal` and "reconcile the store", which it still does for an absent or purged key.
+- ff23d2d: The delivery daemon keeps its in-memory retirement mark only for a `lifecycleMemberships` inventory whose caller did not fence the lifecycle's read-ACL row first. A fenced or retired row refuses every later durable join by itself, so such an inventory leaves no mark; before, every retired alias that never retired again kept one entry per space lane until the daemon restarted. An inventory from a manager that does not fence is marked as before.
+- c19eaf9: Keep open managed-seat persona operations, spawns and generic manager self reads on their launching manager without changing authenticated routing or grants.
+- c8072d6: A managed seat on a legacy-rail bearer no longer asks the broker for its accepted row on every manager call. The read is attempted once per credential and rechecked hourly; a refusal is remembered, so a seat that pulls its turns every 15 s stops putting one refused `DIRECT.GET` request in the broker's log each time (100k to 340k lines a day on one hosted mesh). Issued views are unaffected: their read succeeds and nothing is remembered. `managerCallerBinding` now also returns the bearer's `credentialId` when the issuer stamped one.
+- 726cd81: `CotalEndpoint.readMembership()` reads the membership feed with paged batched Direct Gets and binds no consumer. The observer and admin profiles gain `$JS.API.DIRECT.GET.KV_cotal_membership_<space>`. Before, each read bound an ordered consumer whose delete those profiles may not send, so every dashboard poll left a consumer to the broker's inactive threshold and a refused `CONSUMER.DELETE` line in the broker log (#4123). A credential an older issuer minted without the row is refused with the grant it lacks and the remint to make; it is not scanned instead.
+- 352ee27: `watchMembership` delivers each membership-feed entry to its callback as a `MembershipChange` (the decoded member record or its deletion, the heartbeat's `asOf`, and one `replayed` marker closing every replay) instead of a bare tick. The web dashboard, `cotal view` and `cotal channel members --follow` copy a heartbeat into their last snapshot's `asOf` and read the feed back only on a member change; before, every heartbeat the delivery daemon wrote cost each observer a full ordered-consumer rescan of the bucket with nothing changed.
+- cf3218f: `assertValidName` now refuses a name holding any line break a Unicode-aware splitter honours: VT, FF, NEL (U+0085), LINE SEPARATOR (U+2028) and PARAGRAPH SEPARATOR (U+2029), as well as CR and LF. Before, it tested only CR and LF, so `new CotalEndpoint`, agent-file loading, the gateway connect request and the manager's launch spec accepted such a name and published presence under it, although the validator states a single-line rule. The class is now exported from `@cotal-ai/core` as `LINE_BREAK`, and the connector's message framing uses the same definition.
+- ff12daa: The delivery daemon's trusted reader removes a retired lifecycle's member row when it drops an inbox entry fanned out against it. Such a row is left when a daemon dies between creating the row and its post-write ACL read; it authorizes nothing, but every later message on the channel was copied into the retired inbox and dropped again until the row went. The row goes by its exact key, only when it exists, where that cost is paid.
+- a8a49b7: On a user-auth mesh, `cotal send`, `cotal endpoints`, `cotal personas list --running` and `cotal channels list` read the roster and the channel registry once on the user's bearer and leave no watch or scan consumer behind, as they already did on a static or open mesh. The agent profile, which the auth service mints for a user's connection, gains the batched Direct Get of the channel registry (it already carried the presence one), so an agent credential from `cotal auth mint` passed with `--creds` reads once too. A user connection an older auth service minted without that row is refused with `PERMISSION_DENIED` naming the update, never watched instead.
+
+## 0.115.4
+
+No changes in this release.
+
+## 0.115.3
+
+No changes in this release.
+
+## 0.115.2
+
+### Patch Changes
+
+- fe37cb4: An endpoint that is reconnecting reports that from every unbound guard. `notLiveMsg()` already said "reconnecting - try again shortly" during a rebuild or a retry backoff, and "endpoint not started" only before the first start. The guards that hard-coded the second wording now call it, so a caller waiting out a reconnect is not told the endpoint was never started.
+
+## 0.115.1
+
+No changes in this release.
+
+## 0.115.0
+
+No changes in this release.
+
+## 0.114.1
+
+No changes in this release.
+
+## 0.114.0
+
+No changes in this release.
+
+## 0.113.3
+
+### Patch Changes
+
+- d4a9361: A retired agent no longer keeps a durable membership row written after its inventory. The fence that stopped those writes lived in one delivery daemon's memory, so a join whose ACL lookup outlived it, a join from a still-connected seat after a daemon restart, or a join a quiesced daemon finished after its successor took over could still leave a row. The manager now narrows the retiring lifecycle's read-ACL row to no reads before it asks for the inventory (`fenceLifecycleAcl`). The daemon re-reads that exact row just before and just after a join writes its membership row, and when the channel is no longer allowed it writes nothing, or removes the row it wrote, and refuses the join. A leave's tombstone only updates a row that still exists, so it can no longer recreate a purged one. The daemon's own in-memory fence stays beside it, so a manager that does not narrow the row is still fenced on the daemon that served its inventory.
+
+## 0.113.2
+
+No changes in this release.
+
+## 0.113.1
+
+### Patch Changes
+
+- 14c4333: The `backup` snapshot credential and the `issued-store-recreate` credential that `cotal up --recreate-issued-stores` mints now ACK snapshot chunks through one publish grant per stream they snapshot, `$JS.SNAPSHOT.ACK.<stream>.>`, and no longer hold a response permission. In 0.113.0 and earlier, that permission let the holder answer any reply subject a message to its inbox carried, so a message whose reply was another stream's `$JS.API.STREAM.DELETE` would have deleted that stream through a credential that cannot delete it directly. `cotal backup`, the sanitizing re-snapshot behind `up --restore` and `--recreate-issued-stores` work as before.
+  
+  `--recreate-issued-stores` also reads both selected stores again just before it deletes them, and refuses with nothing deleted when either changed after its backup. It now fsyncs the backup directory's parent as well.
+
+## 0.113.0
+
+### Minor Changes
+
+- a9cd2f5: `cotal up --recreate-issued-stores <backup-dir>` lets a mesh that ran 0.110.x or earlier start on 0.111.0 and later. Those releases refuse a space's `KV_cotal_issued_<space>` and `KV_cotal_accepted_<space>` created before bounded retention, and the remedy they named, `nats stream backup` and `nats stream rm`, needed authority no stock credential holds. On the broker that start launches, before any issuer of the space runs, the flag backs up each store created before bounded retention into a new private directory in the layout `nats stream backup` writes (0700 directories, 0600 files, readable by `nats stream restore`). It checks every backup against its stream's message count and last sequence, deletes those stores only after every check passes, and the start then creates both again in the current shape. It touches no other stream. It refuses `USAGE_INVALID` for a backup directory that exists or has no parent and with `-f` or `--restore`, `LIFECYCLE_BLOCKED` while the stack runs, and `CONFLICT` when neither store predates bounded retention. It works on static-auth, user-auth and open spaces, legacy and controller-owned stacks alike.
+  
+  The step is core's `removeIssuedStoresBeforeRetention(nc, { space, backupDir, inboxPrefix })`, on a connection that holds the new one-shot `issued-store-recreate` profile (`mintCreds`, 30 minutes): `STREAM.INFO`, `STREAM.SNAPSHOT` and `STREAM.DELETE` on those two streams, its own inbox, and a one-use response permission per snapshot chunk. An embedder whose spaces `cotal up` does not start runs it per space with the space's issuers stopped. `cotal auth mint` still exposes only agent, observer and admin, and `teardown` keeps its scope.
+  
+  `cotal up` on such a store now refuses `CONFLICT` (exit 2) instead of reporting `OPERATION_UNKNOWN` (exit 3); the broker it started is stopped again either way. The store check throws `IssuedStoreBeforeRetentionError`, and its remedy, shared by every binder, names the flag. `docs/UPGRADING.md` gains the operator sections for 0.111.0 (with what a rollback can and cannot do) and for the two 0.112.0 changes to multi-space hosts.
+  
+  The `deliver --spaces` ready line no longer prints an empty list as `0 space(s): ;`; it reads `0 space(s); retrying <s>`.
+
+### Patch Changes
+
+- 38fc031: Stop writing a process-CPU timing note to the embedder's stderr when a contract compiles. The number sums every thread in the process, so it does not measure the compile, and the structural registration bounds are what admit a schema. A schema that does not compile is still refused as `contract-invalid`.
+- c1ff7d8: A manager stop that retires many seats at once no longer leaves their membership rows behind. The delivery daemon answers the `lifecycleMemberships` inventory without holding it behind its other admin commands, so a retirement's inventory no longer waits behind every other seat's eviction and misses its 5 s deadline. Inventories that arrive together share one read of the members bucket, and each read begins after its request arrived, so every answer stays complete and lifecycle-exact. A read that fails refuses every request that waited on it. The manager now runs at most 8 retirements at a time, so a stop no longer opens dozens of broker connections together and trips the broker's 2 s authentication timeout, which had also left rows behind. A seat's inventory is still requested only after its own eviction has returned.
+- 29c67fe: A records-KV value that is not JSON is refused as `internal` and names its key from every reader of that bucket. `decodeRecordJson` is that decoder. The goal, checkpoint, service, lease, answer, notice, migration, lifecycle and issued-authority readers use it, and the private copies are gone, so a caller that classifies `EpEnvelopeError` no longer sees a bare `SyntaxError` for the same corruption.
+  
+  Presence readers share `isPresenceRow`. A row needs a non-empty `card.id` equal to its key, a string `card.name`, a known status, a finite `ts`, string display fields, and a condition that is either absent or an object with a string code. The core observer, the runtime and the CLI inventory call that guard.
+- 41fb2de: A retiring agent no longer keeps a membership row written after its inventory. Once the delivery daemon is asked for a lifecycle's membership inventory, it refuses that lifecycle's durable joins and leaves, and it reads only after the ones already running have finished. A manager's chat-session and static reconcile retirements now take the same 8 retirement slots as its seats.
+
+## 0.112.0
+
+No changes in this release.
+
+## 0.111.1
+
+No changes in this release.
+
+## 0.111.0
+
+### Minor Changes
+
+- d367269: Bound the issued-authority stores. A generation now carries its horizon in its first 8 hex digits, every issued and accepted row is written with a NATS per-message TTL that removes it 60 seconds after that horizon, and both stores set `allow_msg_ttl`. Every resolution, renewal and retirement refuses a generation at or past its horizon before it reads the store, so a removed key that is written again is never read. Horizons are the bearer expiry for a user-auth `manager-caller` view, the instrument expiry for a control-caller instrument, the assignment expiry for a platform supervisor, and 30 days after spawn for a managed static seat, whose renewals stop there (rotation is tracked in #4942). The `issuer` credential gains `STREAM.INFO` on the accepted store, and every issuer and resolver (the one-shot and held issuer sessions and the manager) checks both stores' shape when it binds. Breaking: a space's `KV_cotal_issued_<space>` and `KV_cotal_accepted_<space>` created by an earlier release are refused by every binder before it reads or writes them. Stop the space's auth service, callout replicas and managers, back up both streams with `nats stream backup`, remove them with `nats stream rm`, and start this release to recreate them. Generations issued before the upgrade refuse afterwards.
+
+## 0.110.0
+
+No changes in this release.
+
+## 0.109.25
+
+### Patch Changes
+
+- dbfc90b: Every command's help now shows its most common uses. `cotal <command> --help` puts an Examples section right after Usage and Shorthands, before Commands and Options, and each example is a command that works as written with a short note on what it does, such as `cotal spawn -d` to launch an agent through a manager and return. Every command and subcommand `cotal help` lists has one to three. An example's command is never wrapped; its note sits beside it, or under it on a narrow terminal. A command's `examples` entry is now `{ command, note }`; a bare string is still accepted and shows with no note. `cotal manager <verb> --help` shows the manager's own examples.
+
+## 0.109.24
+
+No changes in this release.
+
+## 0.109.23
+
+No changes in this release.
+
+## 0.109.22
+
+No changes in this release.
+
+## 0.109.21
+
+No changes in this release.
+
+## 0.109.20
+
+No changes in this release.
+
+## 0.109.19
+
+No changes in this release.
+
+## 0.109.18
+
+No changes in this release.
+
 ## 0.109.17
 
 ### Patch Changes

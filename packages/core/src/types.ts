@@ -335,6 +335,15 @@ export interface MembershipEntry extends ChannelMembership {
   id: string;
 }
 
+/** One membership-feed entry as `watchMembership` delivers it. `update` is false for the entries a
+ *  (re)armed watch replays from the bucket's last values; every replay ends with one `replayed`
+ *  change. A `member` change carries the decoded record on a PUT, and no record when the key was
+ *  deleted or purged (or the record could not be decoded, the same entries `readMembership` skips). */
+export type MembershipChange =
+  | { type: "member"; id: string; operation: "PUT" | "DEL" | "PURGE"; revision: number; update: boolean; member?: MembershipEntry }
+  | { type: "heartbeat"; revision: number; update: boolean; asOf?: number }
+  | { type: "replayed"; revision: number };
+
 /** The broker-sourced membership feed as the dashboard consumes it. */
 export interface MembershipSnapshot {
   /** Feed freshness — epoch ms of the daemon's last successful poll (the heartbeat key). Undefined when

@@ -46,7 +46,7 @@ export function noticeBetweenSteps(notice: () => string, inStep: () => boolean):
   let pending: InterruptSignal | undefined;
   const exit = (signal: InterruptSignal): never => {
     let text: string;
-    try { text = notice(); } catch { text = "Interrupted. cotal status shows what this root holds."; }
+    try { text = notice(); } catch { text = "Interrupted. `cotal status` shows what this root holds."; }
     exitInterrupted(signal, text);
   };
   const handler = (signal: InterruptSignal) => {

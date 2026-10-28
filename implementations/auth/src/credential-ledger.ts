@@ -79,7 +79,7 @@ import {
 // asserts) is the shared §13.1 state grammar in @cotal-ai/core (`lifecycle-state.ts`), so the
 // static lifecycle adapter writes/revokes rows in the ONE encoding this module reads (design
 // note B1). Re-exported here so the package surface is unchanged.
-export { credRowKey, epcredRowKey, parseSourceMember, SOURCE_ROOT, parseLedgerRow, type CredentialLedgerRow } from "@cotal-ai/core";
+export { credentialIdOf, credRowKey, epcredRowKey, parseSourceMember, SOURCE_ROOT, parseLedgerRow, type CredentialLedgerRow } from "@cotal-ai/core";
 import {
   registryStores,
   assertOrdinaryRegistryMutation,

@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 728,
+    "total": 743,
     "honest-text": 38,
     "presence-only-glyph/count": 57,
     "command-ack": 11,
-    "non-render/control": 622
+    "non-render/control": 637
   },
   "renderers": [
     {
@@ -449,7 +449,7 @@
     {
       "path": "implementations/cli/src/commands/down.ts",
       "kind": "derived-output",
-      "anchor": "`cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => `${presence.card.name} (${presence.card.id})`).join(\", \")} (manager lease holder: ${observed.managerId})`",
+      "anchor": "`cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => `${presence.card.name} (${presence.card.id})`).join(\", \")} (manager lease holder: ${observed.managerId}); nothing was preserved`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1304,7 +1304,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/console/ui/Roster.tsx",
-        "anchor": "return progressSignal(undefined, Date.now()).kind === \"unknown\" ? \"progress unknown\" : \"progress observed\";"
+        "anchor": "return \"progress unknown\";"
       }
     },
     {
@@ -2476,13 +2476,6 @@
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "derived-output",
-      "anchor": "ransition at all.\n      this._status = status;\n      // The turn rela",
-      "class": "non-render/control",
-      "rationale": "Connector lifecycle: stores the in-memory status field; not a rendered textual progress claim."
-    },
-    {
-      "path": "extensions/connector-core/src/agent.ts",
-      "kind": "derived-output",
       "anchor": "this.ep.setStatus(status, activity)",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: hands the status to the embedded endpoint, which owns the wire protocol; no rendering."
@@ -2497,7 +2490,7 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "agent.setStatus(status, activity)",
+      "anchor": "agent.resetStatus(status, activity)",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: publishes status and activity to the mesh; no rendering."
     },
@@ -2981,7 +2974,7 @@
     {
       "path": "implementations/cli/src/commands/completion.ts",
       "kind": "status-token",
-      "anchor": "W[shell.shell]}`, tone: \"waiting\" as const })),\n         ",
+      "anchor": "[shell.shell])}`, tone: \"waiting\" as const })),\n         ",
       "class": "non-render/control",
       "rationale": "Completion report note: \"waiting\" is the color tone for the custom-wiring migration line, not any peer's presence."
     },
@@ -3023,14 +3016,14 @@
     {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "status-token",
-      "anchor": " login --idp ${l.idp}`, \"waiting\")]);\n    if (l?.subject)",
+      "anchor": "gin --idp ${l.idp}`)}`, \"waiting\")]);\n    if (l?.subject)",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "status-token",
-      "anchor": "b ${l.subject} --full`, \"waiting\")]);\n      else if (l.ac",
+      "anchor": "{l.subject} --full`)}`, \"waiting\")]);\n      else if (l.ac",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -3047,6 +3040,20 @@
       "anchor": "f\" } });\n    if (!r.ok) return r;\n    this.yieldedSincePu",
       "class": "non-render/control",
       "rationale": "Turn-yield control flow: returns the manager's refusal to the caller early; the status is a request field, not a rendered presence status."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "ransition at all.\n      this._status = status;\n      this.turnStatus ",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: stores the in-memory status field; not a rendered textual progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "this.turnStatus = status",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: stores the in-memory turn status field beside the seat status; not a rendered textual progress claim."
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
@@ -3827,6 +3834,20 @@
       "rationale": "Preserve report line: prints the preserved source store path; a registration record, not presence."
     },
     {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`preservation attempt ${attemptId} no longer matches its manager's inventory (${(cause as Error).message}); the stale cut intent was aborted - rerun \\`cotal down --preserve-state\\``",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`${cause instanceof Error ? cause.message : String(cause)}; the delivery daemon stopped for the cut could not be started again (${notRestarted})`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
       "path": "implementations/cli/src/commands/endpoint-deregister.ts",
       "kind": "status-token",
       "anchor": "t: \"not checked\", tone: \"waiting\" }], [\"Governance and re",
@@ -4242,7 +4263,7 @@
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
       "kind": "derived-output",
-      "anchor": "`stop space ${holder.space} with cotal down from ${holder.root}`",
+      "anchor": "`stop space ${holder.space} with \\`cotal down\\` from ${holder.root}`",
       "class": "non-render/control",
       "rationale": "Stack up refusal remedy: names the local space that holds the address and its root; a registration record, not presence."
     },
@@ -4270,14 +4291,14 @@
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
       "kind": "derived-output",
-      "anchor": "`start this stack at another address with cotal up --server ${address.protocol}//${address.hostname}:<port> from ${root}, or ${stopHolder} and run cotal up again`",
+      "anchor": "`start this stack at another address with \\`cotal up --server ${address.protocol}//${address.hostname}:<port>\\` from ${root}, or ${stopHolder} and run \\`cotal up\\` again`",
       "class": "non-render/control",
       "rationale": "Stack up refusal remedy: start at another address or free this one; a registration record, not presence."
     },
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
       "kind": "derived-output",
-      "anchor": "`${stopHolder}, then run bare cotal up from ${root}; this stack keeps its recorded address`",
+      "anchor": "`${stopHolder}, then run bare \\`cotal up\\` from ${root}; this stack keeps its recorded address`",
       "class": "non-render/control",
       "rationale": "Stack up refusal remedy: how to free the stack's recorded broker address; a registration record, not presence."
     },
@@ -4457,6 +4478,13 @@
       "rationale": "Team apply journal write: records the returned team receipt under the selected root; no rendering."
     },
     {
+      "path": "implementations/cli/src/commands/team-agent-apply.ts",
+      "kind": "derived-output",
+      "anchor": "retainedRemovalRemedy(blocking, prior.refused.map(({ path }) => path), `cotal team deploy ${shellWord(file)}`)",
+      "class": "non-render/control",
+      "rationale": "Team apply refusal remedy: names the retained removals and the deploy command; not a peer's presence."
+    },
+    {
       "path": "implementations/cli/src/commands/team.ts",
       "kind": "status-token",
       "anchor": "e still needed.\", tone: \"waiting\" }] }] },\n    { title: \"",
@@ -4527,6 +4555,13 @@
       "rationale": "Self-update version field: \"waiting\" is the color tone for an available update, not any peer's presence."
     },
     {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "printLegacyReport(report, target.space)",
+      "class": "non-render/control",
+      "rationale": "Update legacy report: prints the legacy manager inventory of the space; it reports install state, not any peer's presence."
+    },
+    {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "status-token",
       "anchor": "\"offline\"",
@@ -4563,17 +4598,24 @@
     },
     {
       "path": "implementations/cli/src/help.ts",
-      "kind": "derived-output",
-      "anchor": "`cotal up --root ${shellWord(prepared.root)}`",
-      "class": "non-render/control",
-      "rationale": "Help context line: the start command for the prepared space's root; a registration record, not presence."
-    },
-    {
-      "path": "implementations/cli/src/help.ts",
       "kind": "status-token",
       "anchor": "g folder first.\", tone: \"waiting\" }] }] });\n  else if (un",
       "class": "non-render/control",
       "rationale": "Help context line: \"waiting\" is the color tone for a folder that no longer exists, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/help.ts",
+      "kind": "derived-output",
+      "anchor": "`Start this space${capLabel(start)}`",
+      "class": "non-render/control",
+      "rationale": "Help context line: the start command for the prepared space's root with its cap label; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/help.ts",
+      "kind": "derived-output",
+      "anchor": "capLabel(start)",
+      "class": "non-render/control",
+      "rationale": "Help context line: the start command for the prepared space's root with its cap label; a registration record, not presence."
     },
     {
       "path": "implementations/cli/src/lib/controller-preserve.ts",
@@ -4992,13 +5034,6 @@
     {
       "path": "implementations/cli/src/lib/manager-choice.ts",
       "kind": "status-token",
-      "anchor": "visor}` && p.status !== \"offline\")));\n}\n\n/** What a manag",
-      "class": "non-render/control",
-      "rationale": "Manager choice: skips an offline supervisor presence when reading a manager's host; the status is a filter predicate, not rendered."
-    },
-    {
-      "path": "implementations/cli/src/lib/manager-choice.ts",
-      "kind": "status-token",
       "anchor": "anager\" && p.status !== \"offline\" && instanceIdShaped(ins",
       "class": "non-render/control",
       "rationale": "Manager choice: keeps only present manager presences as pin candidates; the status is a filter predicate, not rendered."
@@ -5090,7 +5125,7 @@
     {
       "path": "implementations/cli/src/lib/stack-journal.ts",
       "kind": "derived-output",
-      "anchor": "`stop its running members with ${running.map((row) => `cotal service stop ${row.name} --instance ${row.instanceId} --space ${row.space} --yes`).join(\", then \")}, then remove ${path} and run cotal up from ${root}`",
+      "anchor": "`stop its running members with ${running.map((row) => `\\`cotal service stop ${row.name} --instance ${row.instanceId} --space ${row.space} --yes\\``).join(\", then \")}, then remove ${path} and run \\`cotal up\\` from ${root}`",
       "class": "non-render/control",
       "rationale": "Stack journal refusal remedy: names the service stop commands for the running members; a local stack record, not presence."
     },
@@ -5158,6 +5193,13 @@
       "rationale": "Manager choice: tests whether a live peer holds the name; the status is a filter predicate, not rendered."
     },
     {
+      "path": "implementations/cli/src/lib/manager-choice.ts",
+      "kind": "status-token",
+      "anchor": "visor}` && p.status !== \"offline\")));\n  return { managers",
+      "class": "non-render/control",
+      "rationale": "Manager choice: skips an offline supervisor presence when reading a manager's host; the status is a filter predicate, not rendered."
+    },
+    {
       "path": "implementations/cli/src/commands/spawn.ts",
       "kind": "derived-output",
       "anchor": "meshRelease(mesh)",
@@ -5202,7 +5244,7 @@
     {
       "path": "implementations/cli/src/commands/spawn.ts",
       "kind": "derived-output",
-      "anchor": "`nothing was launched; stop one of this owner's seats with cotal stop --name <name>, or ask the operator who runs that manager to restart it with a higher --seat-cap (it admits ${cap.cap} per owner)`",
+      "anchor": "`nothing was launched; stop one of this owner's seats with \\`cotal stop --name <name>\\`, or ask the operator who runs that manager to restart it with a higher --seat-cap (it admits ${cap.cap} per owner)`",
       "class": "non-render/control",
       "rationale": "Spawn seat-cap remedy: names the cap the manager admits per owner; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
@@ -5249,6 +5291,41 @@
       "rationale": "Spawn composite readiness: hands the launch result to the observing command; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "iginal lifecycle with ${codeSpan(ps)} before another startup",
+      "class": "non-render/control",
+      "rationale": "Spawn partial remedy: names the ps command for the original lifecycle in a code span; no peer presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "`--space ${shellWord(t.space)} --on ${shellWord(reply.managerInstanceId)}`",
+      "class": "non-render/control",
+      "rationale": "Spawn remedy shaping: builds the target flags for the ps command; the spawn reply is tainted only through the local `mesh` registry target, no peer presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "`${displayCmd()} ps ${where}`",
+      "class": "non-render/control",
+      "rationale": "Spawn remedy shaping: builds the ps command for the original lifecycle; no peer presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "`the ${result.runtime} runtime has no terminal to attach, so none was opened; the agent runs in the manager's ${result.runtime} session`",
+      "class": "non-render/control",
+      "rationale": "Spawn attach note: says the runtime opens no terminal; it reports the launch's runtime, not the agent's work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "`check the original lifecycle with ${codeSpan(ps)} before another startup`",
+      "class": "non-render/control",
+      "rationale": "Spawn partial remedy: names the ps command for the original lifecycle in a code span; no peer presence is rendered."
+    },
+    {
       "path": "implementations/cli/src/commands/up.ts",
       "kind": "derived-output",
       "anchor": "reserved.add(key)",
@@ -5268,6 +5345,34 @@
       "anchor": "return status;",
       "class": "non-render/control",
       "rationale": "Service custody: returns the custodian's process status to the caller; not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/channels.ts",
+      "kind": "status-token",
+      "anchor": "default policy.`, tone: \"waiting\" as const }] }] : [])] }",
+      "class": "non-render/control",
+      "rationale": "Channel listing hint row: \"waiting\" is the color tone for the policy hint, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/channels.ts",
+      "kind": "status-token",
+      "anchor": ".\", tone: undecodable ? \"waiting\" : \"hint\" }] }] },\n     ",
+      "class": "non-render/control",
+      "rationale": "Channel listing hint row: \"waiting\" is the color tone for the policy hint, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-live-lease.ts",
+      "kind": "derived-output",
+      "anchor": "userViewAuthOrExit(resolved, \"deployer\")",
+      "class": "non-render/control",
+      "rationale": "Live-lease down control path: resolves the deployer view authority before any lease read; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-live-lease.ts",
+      "kind": "derived-output",
+      "anchor": "jetstreamManager(nc)",
+      "class": "non-render/control",
+      "rationale": "Live-lease down control path: opens the JetStream manager for the lease read; no rendering."
     }
   ]
 }

@@ -52,6 +52,11 @@ dropping the kernel's `--no-color` and `--no-input` as the CLI does. It then req
 working directory, `COTAL_HOME` and `XDG_CONFIG_HOME` to be the recorded sandbox. A flag `down` does
 not declare refuses the call.
 
+`assertSmokeSandboxLinkedDown` checks a `cotal down` run in a folder whose `.cotal` is a link, which
+the CLI refuses before any effect. The folder must sit below the recorded root, whose `.cotal` is still
+the recorded one, and the link must lead nowhere or below that root. `COTAL_HOME` and
+`XDG_CONFIG_HOME` must be the recorded ones.
+
 The CI shard runner also assigns each suite a `SMOKE_BROKER_SCOPE`. This non-secret test marker
 is separate from `COTAL_*` connection settings, so their normal scrub leaves it intact. The token
 carries a compact digest of the scope; Linux descendants can also recover it from ancestor

@@ -325,6 +325,43 @@ try {
       ok("a running spawn that never joins settles `uncertain`", reply.ok === false && reply.code === "uncertain", reply);
       ok("...with the entity-running detail", reply.details?.some((d) => d.kind === GOAL_ENTITY_RUNNING_DETAIL_KIND) === true, reply);
       ok("...and says its process is running", reply.error?.includes("its process is running") === true, reply.error);
+      const inspected = await ep.invokeService("manager", "inspect", { name: "ghostspawn" });
+      const row = inspected.reply.data as { status?: string; mesh?: string; joinHealth?: { state: string; reason: string } };
+      ok("a live never-joining seat exposes degraded join health without claiming process exit",
+        inspected.reply.ok === true && row.status === "running" && row.mesh === "absent" &&
+        row.joinHealth?.state === "degraded" && row.joinHealth.reason.includes("did not join the mesh within 2000ms"), row);
+      const listed = await ep.invokeService("manager", "ps");
+      ok("the ps wire surface carries the same degraded join diagnostic", listed.reply.ok === true &&
+        (listed.reply.data as Array<{ name: string; joinHealth?: { state: string } }>).some((r) => r.name === "ghostspawn" && r.joinHealth?.state === "degraded"), listed.reply);
+    } finally {
+      (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = restore;
+    }
+  }
+
+  // A slow real child is still joining, not degraded, until its declared window elapses. An
+  // uncertain launch remains alive, and its exact-incarnation late join clears the diagnostic.
+  {
+    writeFileSync(join(workspaceRoot, ".cotal", "agents", "latepending.md"), "---\nname: latepending\n---\nOwned late join.\n");
+    const restore = (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs;
+    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2_000;
+    try {
+      const spawning = driver.spawn("latepending", undefined, { agent: "slow-e2e", events: false });
+      await sleep(700);
+      const early = await ep.invokeService("manager", "inspect", { name: "latepending" });
+      const earlyRow = early.reply.data as { status?: string; joinHealth?: unknown };
+      ok("a seat inside its readiness window stays running without a degraded join claim",
+        early.reply.ok === true && earlyRow.status === "running" && earlyRow.joinHealth === undefined, early.reply);
+      const reply = await spawning;
+      ok("a late join first reaches the bounded uncertain outcome", reply.ok === false && reply.code === "uncertain", reply);
+      let late: { status?: string; mesh?: string; presenceIdentityVerified?: boolean; joinHealth?: unknown } = {};
+      for (let i = 0; i < 100; i++) {
+        const observed = await ep.invokeService("manager", "inspect", { name: "latepending" });
+        late = observed.reply.data as typeof late;
+        if (late.presenceIdentityVerified && late.mesh !== "offline" && late.mesh !== "absent") break;
+        await sleep(100);
+      }
+      ok("an exact-incarnation late join clears degraded health without stopping the process",
+        late.status === "running" && late.presenceIdentityVerified === true && late.mesh !== "offline" && late.mesh !== "absent" && late.joinHealth === undefined, late);
     } finally {
       (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = restore;
     }
@@ -332,7 +369,7 @@ try {
 
   // Tear the spawned keepalives down through the manager (they don't exit on broker loss):
   // inspect resolves the wire target, then the targeted ep despawn (the CLI's stop shape).
-  for (const name of ["slowpoke", "slowlaunch", "jcodeslow", "ghost", "picker", "ghostspawn"]) {
+  for (const name of ["slowpoke", "slowlaunch", "jcodeslow", "ghost", "picker", "ghostspawn", "latepending"]) {
     const info = await ep.invokeService("manager", "inspect", { name });
     ok(`inspect resolves ${name}`, info.reply.ok === true, info.reply);
     const row = info.reply.data as { id: string; lifecycleUid: string };

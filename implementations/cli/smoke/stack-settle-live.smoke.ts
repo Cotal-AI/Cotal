@@ -70,7 +70,8 @@
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
  *     it, `up` then `down` stop both. While the broker is live, its refusal of a seat's credential
  *     is kept as it is. `down delivery manager --dry-run` previews both stack members, a set naming
- *     `nats` refuses whole with a message that names it, and `down manager delivery --yes` stops both
+ *     `nats`, `broker` or `stack-broker` refuses whole with one code, message and bare `down` for
+ *     each, in a dry run and a stop, and `down manager delivery --yes` stops both
  *     with each requested name in its target. `down manager` stops `stack-manager` through the service
  *     stop and `up` starts it again; the broker stop then names its stack members. Under umask
  *     0002 the delivery-aware marker is 0600. After a clean down, a group-writable `.cotal/auth`
@@ -112,7 +113,12 @@
  *     that killed `down` took. Killed while delivery's record is `stopping`, with delivery's process
  *     then ended as the down's signal ends it, it leaves delivery gone under an unconfirmed request:
  *     `status` leads Next with `down --abandon-stop <request> --yes`, and its `Delivery responder`
- *     row names the block instead of `up`.
+ *     row names the block instead of `up`. Its blocked line labels that stop request and the
+ *     operation, and `down --abandon-stop` given the operation ID refuses `TARGET_NOT_FOUND`, naming
+ *     that stop request and its command, and abandons nothing. Without `--yes` it refuses the same
+ *     way. Its fields label the operation ID `Given ID`, and `--json` keeps it as `target.requestId`.
+ *     Once that stop is abandoned and the stack stopped, abandoning it again refuses
+ *     `TARGET_NOT_FOUND`, says no member retains a stop request and names `cotal up`.
  * 10. A repeated `down --with-agents --yes`. After one that completed it is a no-op, exit 0. After a
  *     `down` without `--with-agents` it still refuses `LIFECYCLE_BLOCKED`.
  * 11. A first `up` under `ulimit -n 32`. Its broker cannot create the space's streams, so the `up`
@@ -332,7 +338,7 @@ try {
     for (const [flag, name] of [["--open", "open"], ["--user-auth", "user auth"]] as const) {
       const pinned = cli(root, "up", flag, "--no-manager", "--json");
       check(`up ${flag} on the stopped static-auth root refuses CONFLICT, exit 2, and names another folder for ${name}`,
-        pinned.status === 2 && pinned.env?.error?.code === "CONFLICT" && Boolean(pinned.env.error.remedy?.includes(`for ${name} run cotal space create <space>, then cotal up ${flag}, in another folder`)), shown(pinned));
+        pinned.status === 2 && pinned.env?.error?.code === "CONFLICT" && Boolean(pinned.env.error.remedy?.includes(`for ${name} run \`cotal space create <space>\`, then \`cotal up ${flag}\`, in another folder`)), shown(pinned));
     }
 
     // A bare up adds the manager, so the restart keeps --no-manager for the ps refusal.
@@ -342,7 +348,7 @@ try {
     const ps = cli(root, "ps", "--json");
     check("ps on a --no-manager stack refuses TARGET_UNAVAILABLE, exit 2", ps.status === 2 && ps.env?.error?.code === "TARGET_UNAVAILABLE" && !ps.env.error.message.includes("SPEC"), shown(ps));
     check("...and its native detail says the manager has no live instance, with no spec rule in it",
-      ps.env?.error?.cause?.detail === 'failed-precondition: service "manager" has no live registered instances' && ps.env.error.remedy === "start the stack's manager with bare cotal up; a stack started with --no-manager has none", shown(ps));
+      ps.env?.error?.cause?.detail === 'failed-precondition: service "manager" has no live registered instances' && ps.env.error.remedy === "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none", shown(ps));
     const noManager = () => (cli(root, "status", "--json").env?.result?.folder as { noManager?: boolean } | undefined)?.noManager;
     check("status on that stack reports that it runs no manager by choice", noManager() === true);
     const added = cli(root, "up", "--json");
@@ -411,7 +417,7 @@ try {
     const oldStart = cli(root, "service", "start", "old-broker", "--json");
     check("starting a definition saved before the check refuses UNSUPPORTED, exit 2, naming its server option and value and how to add it again",
       oldStart.status === 2 && oldStart.env?.error?.code === "UNSUPPORTED" && oldStart.env.error.message.includes(`the definition's server option "hallo welt": the broker address must be one nats:// or tls:// URL`)
-        && Boolean(oldStart.env.error.remedy?.startsWith(`remove it with cotal service remove old-broker --space ${space} --yes, then add it again`)), shown(oldStart));
+        && Boolean(oldStart.env.error.remedy?.startsWith(`remove it with \`cotal service remove old-broker --space ${space} --yes\`, then add it again`)), shown(oldStart));
     const oldRemoved = cli(root, "service", "remove", "old-broker", "--yes", "--json");
     check("rig: the old definition and its failed instance are removed", oldRemoved.status === 0 && serviceDefinitionStore(space).read("old-broker") === undefined, shown(oldRemoved));
 
@@ -513,7 +519,7 @@ try {
     const second = prepare(other);
     const blocked = cli(second, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json");
     check("a first up where another stack's broker answers refuses CONFLICT, exit 2, naming the address and its space", blocked.status === 2 && blocked.env?.error?.code === "CONFLICT" && blocked.env.error.message.includes(`something already answers at the stack's broker address nats://127.0.0.1:${port}, where space ${space} is registered`), shown(blocked));
-    check("its next step is another --server, or stopping that space", Boolean(blocked.env?.error?.remedy?.includes("cotal up --server nats://127.0.0.1:<port>") && blocked.env.error.remedy.includes(`stop space ${space} with cotal down from `)), shown(blocked));
+    check("its next step is another --server, or stopping that space", Boolean(blocked.env?.error?.remedy?.includes("cotal up --server nats://127.0.0.1:<port>") && blocked.env.error.remedy.includes(`stop space ${space} with \`cotal down\` from `)), shown(blocked));
     const nothing = cli(second, "down", "--yes", "--json");
     check("down of that never-started stack stops nothing and exits 0", nothing.status === 0 && nothing.env?.outcome === "no-op", shown(nothing));
     const reset = cli(second, "reset", "space", other, "--dry-run", "--json");
@@ -522,7 +528,7 @@ try {
     // cleared with clean from its root, and each reset names its own clean route.
     for (const [kind, clean] of [["space", "cotal clean all --force"], ["store", "cotal clean store --force"]] as const) {
       const unregistered = cli(second, "reset", kind, "neverregistered", "--dry-run", "--json");
-      check(`reset ${kind} of a space with no registration or stack names ${clean} from its root`, unregistered.status === 2 && unregistered.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(unregistered.env.error.remedy?.includes(`run ${clean} from that root`)), shown(unregistered));
+      check(`reset ${kind} of a space with no registration or stack names ${clean} from its root`, unregistered.status === 2 && unregistered.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(unregistered.env.error.remedy?.includes(`run \`${clean}\` from that root`)), shown(unregistered));
     }
     const movedPort = await freePort();
     const moved = cli(second, "up", "--server", `nats://127.0.0.1:${movedPort}`, "--no-manager", "--json");
@@ -535,7 +541,7 @@ try {
     const took = cli(taker, "up", "--server", `nats://127.0.0.1:${movedPort}`, "--no-manager", "--json");
     track(third);
     const keeps = cli(second, "up", "--no-manager", "--json");
-    check("a stack that ran names stopping the space at its address and keeps that address", took.status === 0 && keeps.status === 2 && keeps.env?.error?.code === "CONFLICT" && keeps.env.error.message.includes(`where space ${third} is registered`) && Boolean(keeps.env.error.remedy?.startsWith(`stop space ${third} with cotal down from `) && keeps.env.error.remedy.endsWith("; this stack keeps its recorded address")), { took: shown(took), keeps: shown(keeps) });
+    check("a stack that ran names stopping the space at its address and keeps that address", took.status === 0 && keeps.status === 2 && keeps.env?.error?.code === "CONFLICT" && keeps.env.error.message.includes(`where space ${third} is registered`) && Boolean(keeps.env.error.remedy?.startsWith(`stop space ${third} with \`cotal down\` from `) && keeps.env.error.remedy.endsWith("; this stack keeps its recorded address")), { took: shown(took), keeps: shown(keeps) });
     check("down --yes stops the space that took the address", cli(taker, "down", "--yes", "--json").status === 0);
     const back = cli(second, "up", "--no-manager", "--json");
     track(other);
@@ -553,14 +559,14 @@ try {
     track(space);
     check("up with a 128 MiB cap starts", first.status === 0, shown(first));
     const running = cli(root, "up", "--no-manager", "--max-file-store", "268435456", "--json");
-    check("a running broker keeps its cap: CONFLICT, naming the stop that lets a new one apply", running.status === 2 && running.env?.error?.code === "CONFLICT" && Boolean(running.env.error.remedy?.includes("a new --max-file-store applies once the broker is stopped with cotal down --yes")), shown(running));
+    check("a running broker keeps its cap: CONFLICT, naming the stop that lets a new one apply", running.status === 2 && running.env?.error?.code === "CONFLICT" && Boolean(running.env.error.remedy?.includes("a new --max-file-store applies once the broker is stopped with `cotal down --yes`")), shown(running));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
     const path = join(root, ".cotal", "stack-controller.json");
     const journal = JSON.parse(readFileSync(path, "utf8")) as { broker: Record<string, unknown> };
     writeFileSync(path, JSON.stringify({ ...journal, broker: { ...journal.broker, maxFileStore: 1 } }));
     const failed = cli(root, "up", "--no-manager", "--json");
     track(space);
-    check("bare up with a 1-byte recorded cap fails OPERATION_FAILED, exit 5, naming the cap and the flag that replaces it", failed.status === 5 && failed.env?.error?.code === "OPERATION_FAILED" && failed.env.error.message.includes("its JetStream file store cap (--max-file-store 1) has too little room for them") && Boolean(failed.env.error.remedy?.includes(`run cotal up --max-file-store <bytes> from ${root}`)), shown(failed));
+    check("bare up with a 1-byte recorded cap fails OPERATION_FAILED, exit 5, naming the cap and the flag that replaces it", failed.status === 5 && failed.env?.error?.code === "OPERATION_FAILED" && failed.env.error.message.includes("its JetStream file store cap (--max-file-store 1) has too little room for them") && Boolean(failed.env.error.remedy?.includes(`run \`cotal up --max-file-store <bytes>\` from ${root}`)), shown(failed));
     const fixed = cli(root, "up", "--no-manager", "--max-file-store", "134217728", "--json");
     track(space);
     check("up with a new cap on the stopped broker records it and starts", fixed.status === 0 && (JSON.parse(readFileSync(path, "utf8")) as { broker: { maxFileStore?: number } }).broker.maxFileStore === 134217728, shown(fixed));
@@ -576,13 +582,17 @@ try {
     const capped = cli(root, "status", "--space", space, "--json");
     const cappedSelected = capped.env?.result?.selected as { message?: string; storeCap?: number } | undefined;
     check("status then says the stack is stopped after a failed up, shows the recorded cap and names up --max-file-store at the floor, not a bare up",
-      capped.status === 0 && Boolean(cappedSelected?.message?.includes(`"${space}" is stopped; its last operation, cotal up, failed`)) && cappedSelected?.storeCap === MIN_FILE_STORE - 1
+      capped.status === 0 && Boolean(cappedSelected?.message?.includes(`"${space}" is stopped; its last operation, \`cotal up\`, failed`)) && cappedSelected?.storeCap === MIN_FILE_STORE - 1
         && ((capped.env?.result?.hints ?? []) as string[]).some((hint) => hint.startsWith(`start it with \`cotal up --max-file-store ${MIN_FILE_STORE}\` or more in `)), shown(capped));
     // With another space selected, the note on what this folder holds names the up that starts it.
     const folderNote = (run: Run) => run.env?.warnings?.find((warning) => warning.code === "FOLDER_SPACE_NOT_RUNNING" && warning.target?.space === space);
     const noted = cli(root, "status", "--json");
     check(`with another space selected, the folder note names up --max-file-store ${MIN_FILE_STORE} or more after the failed up, not a bare up`,
-      noted.status === 0 && noted.env?.target?.space !== space && folderNote(noted)?.message === `this folder holds the stopped space "${space}"; restart it with cotal up --max-file-store ${MIN_FILE_STORE} or more`, { ...shown(noted), target: noted.env?.target, note: folderNote(noted) });
+      noted.status === 0 && noted.env?.target?.space !== space && folderNote(noted)?.message === `this folder holds the stopped space "${space}"; restart it with \`cotal up --max-file-store ${MIN_FILE_STORE}\` or more`, { ...shown(noted), target: noted.env?.target, note: folderNote(noted) });
+    // Bare `cotal` there names the same up in its own line on what the folder holds, and never a bare one.
+    const entry = cli(root);
+    check(`bare cotal there names up --max-file-store ${MIN_FILE_STORE} or more in its folder note, and no bare up as this folder's start`,
+      entry.status === 0 && entry.stdout.includes(`\n${folderNote(noted)?.message}\n`) && !/^ {2}cotal up +Start this folder's space$/m.test(entry.stdout), { ...shown(entry), stdout: entry.stdout.slice(0, 1200) });
     const floor = cli(root, "up", "--no-manager", "--max-file-store", String(MIN_FILE_STORE), "--json");
     track(space);
     check(`up --max-file-store ${MIN_FILE_STORE} starts the stack`, floor.status === 0, shown(floor));
@@ -590,11 +600,11 @@ try {
     const stoppedStatus = cli(root, "status", "--space", space, "--json");
     const stoppedSelected = stoppedStatus.env?.result?.selected as { message?: string; storeCap?: number } | undefined;
     check("status then says the stack is stopped after a completed down, not prepared but not started, and names a bare up",
-      stoppedStatus.status === 0 && Boolean(stoppedSelected?.message?.includes(`"${space}" is stopped; its last operation, cotal down, completed`)) && stoppedSelected?.storeCap === undefined
+      stoppedStatus.status === 0 && Boolean(stoppedSelected?.message?.includes(`"${space}" is stopped; its last operation, \`cotal down\`, completed`)) && stoppedSelected?.storeCap === undefined
         && ((stoppedStatus.env?.result?.hints ?? []) as string[]).some((hint) => hint.startsWith("start it again with `cotal up` in ")), shown(stoppedStatus));
     const notedDown = cli(root, "status", "--json");
     check("with another space selected, the folder note names a bare up after a completed down whose cap is at the floor",
-      notedDown.status === 0 && notedDown.env?.target?.space !== space && folderNote(notedDown)?.message === `this folder holds the stopped space "${space}"; restart it with cotal up`, { ...shown(notedDown), target: notedDown.env?.target, note: folderNote(notedDown) });
+      notedDown.status === 0 && notedDown.env?.target?.space !== space && folderNote(notedDown)?.message === `this folder holds the stopped space "${space}"; restart it with \`cotal up\``, { ...shown(notedDown), target: notedDown.env?.target, note: folderNote(notedDown) });
   }
 
   // 3f. A space over its file store cap. The broker refuses every write and stores nothing.
@@ -608,7 +618,7 @@ try {
     const refused = await fillStore(root, space);
     check("rig: the broker refuses a publish once the store is over its cap", (refused as { code?: unknown } | undefined)?.code === 10023, String(refused));
     const sent = cli(root, "send", "-c", "general", "after the store filled", "--json");
-    check("send on a full store refuses DEPENDENCY_UNAVAILABLE, exit 2, naming the store and the cap, and leads with history clear", sent.status === 2 && sent.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && sent.env.error.message === `the broker's JetStream store ${store} is full at its --max-file-store cap of 70000000 bytes, so it refused the message; nothing was stored` && sent.env.error.cause?.code === "10023" && Boolean(sent.env.error.remedy?.startsWith("make room with cotal history clear --yes")), shown(sent));
+    check("send on a full store refuses DEPENDENCY_UNAVAILABLE, exit 2, naming the store and the cap, and leads with history clear", sent.status === 2 && sent.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && sent.env.error.message === `the broker's JetStream store ${store} is full at its --max-file-store cap of 70000000 bytes, so it refused the message; nothing was stored` && sent.env.error.cause?.code === "10023" && Boolean(sent.env.error.remedy?.startsWith("make room with `cotal history clear --yes`")), shown(sent));
     const status = cli(root, "status", "--json");
     const full = status.env?.result?.store as { state?: string; used?: number; cap?: number; path?: string } | undefined;
     check("status --json shows the store full with its bytes, cap and path", status.status === 0 && full?.state === "full" && full.cap === 70000000 && (full.used ?? 0) > 70000000 && full.path === store, { status: status.status, store: full });
@@ -619,12 +629,12 @@ try {
     const managerPid = pidOf(space, "stack-manager");
     check("service stop stack-manager on a full store refuses DEPENDENCY_UNAVAILABLE, exit 2, naming the store, history clear and what it purges, and the SIGTERM that keeps the history, and the manager runs on",
       managerStop.status === 2 && managerStop.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && managerStop.env.error.message === `the broker's JetStream store ${store} is full at its --max-file-store cap of 70000000 bytes, and stopping stack-manager needs a credential whose issuance record the full store cannot take; nothing was stopped`
-        && managerStop.env.error.remedy === `make room with cotal history clear --space ${space} --yes, which purges all of this space's channel history, then run cotal svc stop stack-manager --space ${space} --yes; to keep that history, end it on this host with kill -TERM ${managerPid}, which stops its agents by its default policy` && managerPid !== null && alive(managerPid), shown(managerStop));
+        && managerStop.env.error.remedy === `make room with \`cotal history clear --space ${space} --yes\`, which purges all of this space's channel history, then run \`cotal svc stop stack-manager --space ${space} --yes\`; to keep that history, end it on this host with kill -TERM ${managerPid}, which stops its agents by its default policy` && managerPid !== null && alive(managerPid), shown(managerStop));
     const preview = cli(root, "down", "--dry-run", "--json");
     check("down --dry-run predicts the full-store refusal of the manager's stop", preview.status === 0 && (preview.env?.result?.blockedBy as { code?: string; message?: string } | null)?.code === "DEPENDENCY_UNAVAILABLE" && (preview.env?.result?.blockedBy as { message?: string }).message === stopRefused && Boolean(preview.env?.warnings?.some((w) => w.code === "DEPENDENCY_UNAVAILABLE")), shown(preview));
     const manager = pidOf(space, "stack-manager");
     const down = cli(root, "down", "--yes", "--json");
-    check("down --yes on a full store refuses DEPENDENCY_UNAVAILABLE, exit 2, before any stop, naming history clear and what it purges, then the SIGTERM route that keeps the history", down.status === 2 && down.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && down.env.error.message === stopRefused && down.env.error.cause?.code === "10023" && down.env.error.remedy === `make room with cotal history clear --yes, which purges all of this space's channel history, then run cotal down; to keep that history, end the manager on this host with kill -TERM ${manager}, which stops its agents by its default policy, then run cotal down, and cotal up --max-file-store <bytes> with a larger cap` && manager !== null && alive(manager) && !gone(space, "stack-delivery"), shown(down));
+    check("down --yes on a full store refuses DEPENDENCY_UNAVAILABLE, exit 2, before any stop, naming history clear and what it purges, then the SIGTERM route that keeps the history", down.status === 2 && down.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && down.env.error.message === stopRefused && down.env.error.cause?.code === "10023" && down.env.error.remedy === `make room with \`cotal history clear --yes\`, which purges all of this space's channel history, then run \`cotal down\`; to keep that history, end the manager on this host with kill -TERM ${manager}, which stops its agents by its default policy, then run \`cotal down\`, and \`cotal up --max-file-store <bytes>\` with a larger cap` && manager !== null && alive(manager) && !gone(space, "stack-delivery"), shown(down));
     check("history clear --yes makes room", cli(root, "history", "clear", "--yes", "--json").status === 0);
     check("down --dry-run then names no refusal", cli(root, "down", "--dry-run", "--json").env?.result?.blockedBy === null);
     const again = cli(root, "send", "-c", "general", "after the clear", "--json");
@@ -688,7 +698,7 @@ try {
       restart.status === 5 && restart.env?.error?.code === "OPERATION_FAILED"
         && restart.env.error.message.includes("the last line it logged is: ✗ delivery: acquiring the lease for shard 0 failed: insufficient resources. Not binding.")
         && restart.env.error.message.includes(`the broker's JetStream store ${store} is full at its --max-file-store cap of 70000000 bytes, so it refuses every write`)
-        && restart.env.error.remedy === `from ${root}, make room with cotal history clear --yes, which purges all of this space's channel history, then run cotal up again; to keep that history, end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run cotal down --yes and cotal up --max-file-store <bytes> with a larger cap`
+        && restart.env.error.remedy === `from ${root}, make room with \`cotal history clear --yes\`, which purges all of this space's channel history, then run \`cotal up\` again; to keep that history, end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run \`cotal down --yes\` and \`cotal up --max-file-store <bytes>\` with a larger cap`
         && managerPid !== null, shown(restart));
     check("history clear --yes makes room", cli(root, "history", "clear", "--yes", "--json").status === 0);
     const again = cli(root, "up", "--json");
@@ -740,7 +750,7 @@ try {
     check("rig: a write the store refused for permission made the broker disable JetStream",
       refused !== undefined && store?.state === "write-failed" && /permission denied$/.test(store.cause ?? "") && store.jetStreamDisabled === true, { refused: String(refused), store });
     const managerPid = pidOf(space, "stack-manager");
-    const remedy = `end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run cotal down; make ${storeDir} writable by this account again, as chmod -R u+w ${storeDir} does, then run cotal up`;
+    const remedy = `end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run \`cotal down\`; make ${storeDir} writable by this account again, as chmod -R u+w ${storeDir} does, then run \`cotal up\``;
     const plain = cli(root, "status", "--plain");
     check("status leads Next with the manager's SIGTERM, then down, and up once the store is writable again",
       /^Next\n +kill -TERM \d+ /m.test(plain.stdout) && plain.stdout.includes(`kill -TERM ${managerPid}`) && plain.stdout.includes(`First make ${storeDir} writable by this account again, as chmod -R u+w ${storeDir} does; then up starts the broker again with the history it kept`), plain.stdout);
@@ -789,7 +799,7 @@ try {
     rmSync(join(records, "definitions", `${Buffer.from("stack-broker").toString("hex")}.json`));
     const refused = cli(root, "up", "--no-manager", "--json");
     check("with no saved broker definition either, bare up refuses USAGE_INVALID, exit 1, and asks for --server",
-      refused.status === 1 && refused.env?.error?.code === "USAGE_INVALID" && refused.env.error.remedy === "run cotal up --server <url> with the address it ran at" && !existsSync(journalPath), shown(refused));
+      refused.status === 1 && refused.env?.error?.code === "USAGE_INVALID" && refused.env.error.remedy === "run `cotal up --server <url>` with the address it ran at" && !existsSync(journalPath), shown(refused));
     const named = cli(root, "up", "--server", server, "--no-manager", "--json");
     track(space);
     check("up --server with that address starts it", named.status === 0, shown(named));
@@ -867,7 +877,7 @@ try {
     check("bare up on its recorded store, which holds another space's streams, starts and warns STORE_SHARED, naming them",
       warned.status === 0 && Boolean(sharedWarning?.message?.startsWith(`the store ${shared} also belongs to ${tenants}; a store folder belongs to one space`)), shown(warned));
     check("down --yes stops it", cli(ownerRoot, "down", "--yes", "--json").status === 0);
-    const handRemoval = `once neither does, stop both with cotal down and remove ${shared} by hand`;
+    const handRemoval = `once neither does, stop both with \`cotal down\` and remove ${shared} by hand`;
     const preview = cli(ownerRoot, "reset", "store", owner, "--dry-run", "--json");
     const verdict = preview.env?.result?.applyVerdict as { offered?: boolean; code?: string; reason?: string; remedy?: string } | undefined;
     check("reset store --dry-run does not offer it: CONFLICT, naming the other space's streams and the hand removal",
@@ -930,11 +940,35 @@ try {
       setPreview.status === 0 && setPreview.env?.result?.kind === "service-set-stop-preview"
         && JSON.stringify(previewMembers.map((member) => [member.name, member.requested])) === JSON.stringify([["stack-delivery", "delivery"], ["stack-manager", "manager"]]), shown(setPreview));
     const setManager = runningPidOf(space, "stack-manager"), setDelivery = runningPidOf(space, "stack-delivery");
+    const brokerNext = "a set of names never stops the broker; a bare `cotal down` stops it with the whole stack";
     const unknown = cli(root, "down", "stack-manager", "nats", "--space", space, "--yes", "--json");
-    check("a name in the set that matches no saved definition or preset refuses the whole set, naming it and the stack- member",
+    check("a broker name in the set refuses the whole set and names the bare down, not stack-broker",
       unknown.status === 2 && unknown.env?.error?.code === "TARGET_NOT_FOUND" && unknown.env.target?.name === "nats"
-        && unknown.env.error.message === `nats matches no saved definition or preset in space ${space}; no service was stopped`
-        && Boolean(unknown.env.error.remedy?.includes("name stack-broker instead")) && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), shown(unknown));
+        && unknown.env.error.message === `nats matches no service a set of names can stop in space ${space}; no service was stopped`
+        && unknown.env.error.remedy === brokerNext
+        && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), shown(unknown));
+    // broker and stack-broker reach the saved stack-broker, and refuse as nats does wherever they stand.
+    for (const set of [["delivery", "broker", "--dry-run"], ["manager", "broker", "--yes"], ["delivery", "stack-broker", "--yes"], ["manager", "stack-broker", "--dry-run"], ["broker", "delivery", "--yes"]]) {
+      const name = set.find((word) => word.endsWith("broker"))!;
+      const named = cli(root, "down", ...set, "--space", space, "--json");
+      check(`down ${set.join(" ")} --json refuses as nats does, with its code, message and bare down`,
+        named.status === 2 && named.env?.error?.code === "TARGET_NOT_FOUND" && named.env.target?.name === name
+          && named.env.error.message === `${name} matches no service a set of names can stop in space ${space}; no service was stopped`
+          && named.env.error.remedy === brokerNext
+          && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), shown(named));
+    }
+    const plainBroker = cli(root, "down", "delivery", "stack-broker", "--space", space, "--yes");
+    const plainText = `${plainBroker.stdout}${plainBroker.stderr}`;
+    check("and its plain refusal names the same code and bare down, with no stop policy wording",
+      plainBroker.status === 2 && plainText.includes(`stack-broker matches no service a set of names can stop in space ${space}; no service was stopped`)
+        && plainText.includes("TARGET_NOT_FOUND") && plainText.includes(brokerNext) && !plainText.includes("kernel-exit") && !plainText.includes("UNSUPPORTED"), plainText);
+    const unknownOne = cli(root, "down", "nosuch", "--space", space, "--dry-run", "--json");
+    const unknownSet = cli(root, "down", "nosuch", "delivery", "--space", space, "--yes", "--json");
+    check("any other name in the set that matches nothing refuses the whole set with the step a single named down names",
+      unknownSet.status === 2 && unknownSet.env?.error?.code === "TARGET_NOT_FOUND" && unknownSet.env.target?.name === "nosuch"
+        && unknownSet.env.error.message === `nosuch matches no saved definition or preset in space ${space}; no service was stopped`
+        && unknownSet.env.error.remedy === "list this space's saved definitions with `cotal service`" && unknownSet.env.error.remedy === unknownOne.env?.error?.remedy
+        && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), { set: shown(unknownSet), one: shown(unknownOne) });
     const setStop = cli(root, "down", "manager", "delivery", "--space", space, "--yes", "--json");
     const stopMembers = (setStop.env?.target?.members ?? []) as { name: string; requested?: string }[];
     check("down manager delivery --yes stops stack-manager and stack-delivery, and its target keeps each requested name",
@@ -991,7 +1025,7 @@ try {
     if (broker !== null) process.kill(broker, "SIGCONT");
     check("up with a suspended broker refuses within 10s naming its pid and kill -CONT, and records nothing",
       upMs < 10_000 && upHung.status === 2 && upHung.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(upHung.env.error.message.includes(`pid ${broker}`))
-        && upHung.env.error.remedy === `resume it with kill -CONT ${broker} and run cotal up again` && readyBefore !== undefined && readyAfter === readyBefore && journalAfter === journalBefore,
+        && upHung.env.error.remedy === `resume it with kill -CONT ${broker} and run \`cotal up\` again` && readyBefore !== undefined && readyAfter === readyBefore && journalAfter === journalBefore,
       { upMs, readyBefore, readyAfter, journalChanged: journalAfter !== journalBefore, ...shown(upHung) });
     check("down with a suspended broker refuses within 10s, before any read through it", hungMs < 10_000, { hungMs });
     check("down with a suspended broker refuses naming its pid and kill -CONT, and stops nothing", hung.status === 2 && hung.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(hung.env.error.message.includes(`pid ${broker}`)) && Boolean(hung.env.error.remedy?.includes(`kill -CONT ${broker}`)) && broker !== null && alive(broker) && manager !== null && alive(manager), shown(hung));
@@ -1378,9 +1412,28 @@ try {
     check(`${space}: status leads Next with abandoning delivery's stop, and its delivery row names the block instead of up`,
       request !== undefined && status.stdout.includes("Stack blocked · ") && next.includes(`down --abandon-stop ${request} --yes`) && responder.includes("NOT BOUND") && !responder.includes("start it with") && (responder.includes("refuses until the stack block is cleared") || responder.includes("DEAD daemon")),
       { request, next, responder, stdout: status.stdout.slice(-3000) });
+    const operation = readStackJournal(root)?.journal.operation.id;
+    const blocked = status.stdout.split("\n").find((line) => line.includes("Stack blocked · ")) ?? "";
+    check(`${space}: its blocked line labels the stop request Next names, and the operation it also names`,
+      request !== undefined && operation !== undefined && operation !== request && blocked.includes(`with stop request ${request} `) && blocked.includes(`(operation ${operation})`), { request, operation, blocked });
+    const unconfirmed = cli(root, "down", "--abandon-stop", operation ?? "none", "--plain");
+    check(`${space}: without --yes, down --abandon-stop with the operation ID refuses TARGET_NOT_FOUND the same way, before it asks for --yes`,
+      unconfirmed.status === 2 && unconfirmed.stderr.includes("TARGET_NOT_FOUND") && unconfirmed.stderr.includes(`stack-delivery retains stop request ${request};`) && unconfirmed.stderr.includes(`cotal down --abandon-stop ${request} --yes`) && !unconfirmed.stderr.includes("needs --yes") && serviceInstances(space, "stack-delivery")[0]?.record.value.state === "stopping", { ...shown(unconfirmed), operation });
+    const wrong = cli(root, "down", "--abandon-stop", operation ?? "none", "--yes", "--plain");
+    check(`${space}: down --abandon-stop with the operation ID refuses TARGET_NOT_FOUND, naming the stop request and its command, and abandons nothing`,
+      wrong.status === 2 && wrong.stderr.includes("TARGET_NOT_FOUND") && wrong.stderr.includes(`stack-delivery retains stop request ${request};`) && wrong.stderr.includes(`cotal down --abandon-stop ${request} --yes`) && serviceInstances(space, "stack-delivery")[0]?.record.value.state === "stopping", { ...shown(wrong), operation });
+    check(`${space}: that refusal's fields label the operation ID as the ID it was given, not as the original request`,
+      operation !== undefined && new RegExp(`Given ID: +${operation}\n`).test(wrong.stderr) && !wrong.stderr.includes("Original request"), { ...shown(wrong), operation });
+    const wrongJson = cli(root, "down", "--abandon-stop", operation ?? "none", "--yes", "--json");
+    check(`${space}: under --json that refusal still carries the given ID as target.requestId`,
+      wrongJson.status === 2 && wrongJson.env?.error?.code === "TARGET_NOT_FOUND" && operation !== undefined && wrongJson.env.target?.requestId === operation && serviceInstances(space, "stack-delivery")[0]?.record.value.state === "stopping", { ...shown(wrongJson), target: wrongJson.env?.target, operation });
     const abandoned = cli(root, "down", "--abandon-stop", request ?? "none", "--yes", "--json");
     const final = cli(root, "down", "--yes", "--json");
     check(`${space}: abandoning that stop lets down stop the stack`, abandoned.status === 0 && final.status === 0 && gone(space, "stack-broker") && gone(space, "stack-manager"), { abandoned: shown(abandoned), final: shown(final) });
+    const again = cli(root, "down", "--abandon-stop", request ?? "none", "--yes", "--plain");
+    const againNext = again.stderr.includes("\nNext\n") ? again.stderr.slice(again.stderr.indexOf("\nNext\n") + 6) : "";
+    check(`${space}: abandoning that stop again once the stack stopped refuses TARGET_NOT_FOUND, says no member retains a stop request, and names cotal up with no placeholder`,
+      again.status === 2 && again.stderr.includes("TARGET_NOT_FOUND") && again.stderr.includes("no member of this stack retains a stop request; nothing was abandoned") && againNext.includes("`cotal up`") && !again.stderr.includes("<definition>") && !again.stderr.includes("<id>"), shown(again));
   }
 
   // 10. A repeated down --with-agents.
@@ -1454,7 +1507,7 @@ try {
     check("the up still waits on broker readiness when it is interrupted", pinned && child.exitCode === null, { pinned, exitCode: child.exitCode });
     child.kill("SIGINT");
     await exited(child);
-    check("the interrupted up exits 130 naming its unregistered broker's pid, cotal down --yes and then cotal up", child.exitCode === 130 && upErr.includes(`its broker keeps running as pid ${broker}. Run cotal down --yes, then cotal up.`), { exitCode: child.exitCode, stderr: upErr.slice(-400) });
+    check("the interrupted up exits 130 naming its unregistered broker's pid, cotal down --yes and then cotal up", child.exitCode === 130 && upErr.includes(`its broker keeps running as pid ${broker}. Run \`cotal down --yes\`, then \`cotal up\`.`), { exitCode: child.exitCode, stderr: upErr.slice(-400) });
     if (broker !== null) process.kill(broker, "SIGCONT");
     check("the killed up left its broker running and the space unregistered", broker !== null && alive(broker) && findMesh(space) === undefined, { broker, registered: findMesh(space) !== undefined });
     const blocked = cli(root, "up", "--json");
@@ -1518,7 +1571,7 @@ try {
     child.kill("SIGINT");
     await exited(child);
     if (broker !== null) process.kill(broker, "SIGCONT");
-    check("the interrupted --no-manager up exits 130 naming cotal down --yes, then cotal up --no-manager", child.exitCode === 130 && upErr.includes(`its broker keeps running as pid ${broker}. Run cotal down --yes, then cotal up --no-manager.`), { exitCode: child.exitCode, stderr: upErr.slice(-400) });
+    check("the interrupted --no-manager up exits 130 naming cotal down --yes, then cotal up --no-manager", child.exitCode === 130 && upErr.includes(`its broker keeps running as pid ${broker}. Run \`cotal down --yes\`, then \`cotal up --no-manager\`.`), { exitCode: child.exitCode, stderr: upErr.slice(-400) });
     const nextOf = (run: Run) => run.stdout.slice(run.stdout.indexOf("\nNext\n") + 6).split("\n")[0] ?? "";
     const stopped = cli(root, "down", "--yes");
     check("down --yes stops that broker and its Next keeps --no-manager", stopped.status === 0 && nextOf(stopped).includes("up --no-manager") && await until(() => broker === null || !alive(broker), 10_000), { next: nextOf(stopped), ...shown(stopped) });

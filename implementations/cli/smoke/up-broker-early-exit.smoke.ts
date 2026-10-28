@@ -46,7 +46,7 @@ try {
     suite.check(`${mode}: the launcher ran the stand-in as the broker`, existsSync(ran) && readFileSync(ran, "utf8").startsWith("-c "), output);
     suite.check(`${mode}: up fails OPERATION_FAILED, exit 5, not unconfirmed`, result.status === 5 && output.includes("Request failed") && output.includes("OPERATION_FAILED") && !output.includes("OPERATION_UNKNOWN"), `${result.status} ${output}`);
     suite.check(`${mode}: the failure names the file, its observed exit and the log`, output.includes(`nats-server 2.14.0 on PATH at ${fake} ${exit} before it answered at ${server}; see ${log}`), output);
-    suite.check(`${mode}: its next step is the log, then the file or PATH`, output.includes(`read ${log}, then fix ${fake} or take it off PATH so cotal uses its bundled nats-server, and run cotal up again`), output);
+    suite.check(`${mode}: its next step is the log, then the file or PATH`, output.includes(`read ${log}, then fix ${fake} or take it off PATH so cotal uses its bundled nats-server, and run \`cotal up\` again`), output);
     suite.check(`${mode}: the log holds what the stand-in wrote`, existsSync(log) && readFileSync(log, "utf8").includes("stand-in nats-server: not a broker"), existsSync(log) ? readFileSync(log, "utf8") : "no log");
     suite.check(`${mode}: no broker pid record is left`, !existsSync(join(root, ".cotal", "nats.pid")));
   }

@@ -18,6 +18,7 @@ import {
 } from "./mesh-registry.js";
 import { ProtectedRecordStore, shellPath } from "./protected-records.js";
 import { rootNamesNoSpace } from "./space.js";
+import { codeSpan } from "./text-wrap.js";
 
 /**
  * One coherent answer to "which mesh does this command act on, and where do its creds + personas
@@ -376,7 +377,7 @@ function notStarted(space: string, cwd?: string): void {
 /** What the root a space was prepared in records about its stack, as a command that targets it
  *  reports it: `unsettled` when the last whole-stack `up` or `down` recorded no outcome, `stopped`
  *  once a stack that launched a member recorded one, else `prepared`. `lastOperation` names that
- *  operation and how it ended, such as `cotal down, completed`. */
+ *  operation and how it ended, such as `` `cotal down`, completed ``. */
 export type PreparedLifecycle =
   | { state: "prepared"; lastOperation: null }
   | { state: "stopped"; lastOperation: string; stopped: NonNullable<MeshTargetErrorDetails["stopped"]> }
@@ -386,12 +387,12 @@ export type PreparedLifecycle =
 export function preparedLifecycle(root: string, space: string): PreparedLifecycle {
   const stopped = stoppedStack(root, space);
   const unsettled = unsettledStackOperation(root, space);
-  if (unsettled) return { state: "unsettled", lastOperation: `cotal ${unsettled}, with no recorded outcome`, unsettled, ...(stopped ? { stopped } : {}) };
+  if (unsettled) return { state: "unsettled", lastOperation: `${codeSpan(`cotal ${unsettled}`)}, with no recorded outcome`, unsettled, ...(stopped ? { stopped } : {}) };
   if (stopped) return { state: "stopped", lastOperation: `${stopped.operation}, ${stopped.outcome}`, stopped };
   return { state: "prepared", lastOperation: null };
 }
 
-const OPERATION: Record<string, string> = { up: "cotal up", down: "cotal down", preserve: "a preserving cotal down", resume: "a resume" };
+const OPERATION: Record<string, string> = { up: codeSpan("cotal up"), down: codeSpan("cotal down"), preserve: `a preserving ${codeSpan("cotal down")}`, resume: "a resume" };
 const OUTCOME: Record<string, string> = { completed: "completed", failed: "failed", refused: "was refused", partial: "applied in part", unknown: "has an unknown outcome", applying: "did not finish", planned: "did not finish" };
 
 /** The last operation and recorded store cap of `space`'s controller stack at `root`, when its
@@ -514,7 +515,7 @@ export function stackAdoptionBlock(root: string, recordedRoot: string, space: st
   const known = journalInstanceIds(members).find((id) => instances.read(id) !== undefined);
   if (known) return { kind: "known", message: `this machine records instance ${known} of the stack that ${recordedRoot} recorded, so that stack is this machine's own`, remedy: movedRootRemedy(recordedRoot) };
   const registered = findMesh(space), recorded = registered?.root ?? findPreparedSpace(space)?.root;
-  if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with cotal space forget ${space}, then run cotal space create ${space} --adopt --root ${shellPath(root)}` };
+  if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with \`cotal space forget ${space}\`, then run ${codeSpan(`cotal space create ${space} --adopt --root ${shellPath(root)}`)}` };
   return undefined;
 }
 
@@ -531,7 +532,7 @@ export function stackElsewhereRemedy(root: string, recordedRoot: string, space: 
   try { block = stackAdoptionBlock(root, recordedRoot, space, members); } catch { block = null; }
   const adopt = block === undefined ? `adopt it with \`cotal space create ${space} --adopt --root ${shellPath(root)}\`` : block?.kind === "recorded" ? block.remedy : undefined;
   if (adopt === undefined) return movedRootRemedy(recordedRoot);
-  if (rootPathProblem(recordedRoot) !== undefined) return `to run it from this folder, ${adopt}; cotal up refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`;
+  if (rootPathProblem(recordedRoot) !== undefined) return `to run it from this folder, ${adopt}; \`cotal up\` refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`;
   return block === undefined
     ? `${adopt}; this machine records neither "${space}" nor an instance of its stack, so moving the folder back would not start it`
     : `${movedRootRemedy(recordedRoot)}; or, to run it from this folder, ${adopt}`;
@@ -745,18 +746,33 @@ export function noteFolderSpaceShown(space: string, state: "prepared" | "stopped
 }
 
 /** Say under the run's `Mesh: <current>` heading that this folder holds a space that is not running,
- *  so the selection is the target here, and name the `cotal up` that starts it: with
- *  `--max-file-store` at the floor when its stopped stack recorded a cap a bare `up` fails on
- *  ({@link capBelowFloor}). A refusal whose own next step names `cotal up` leaves this one out, so it
- *  names one. An envelope carries the same note as a `FOLDER_SPACE_NOT_RUNNING` warning, which stderr
- *  does not repeat. A folder that holds none says nothing. */
+ *  so the selection is the target here, and name the `cotal up` that starts it ({@link heldSpaceNote}),
+ *  a refusal's heading included. An envelope carries the same note as a `FOLDER_SPACE_NOT_RUNNING`
+ *  warning, which stderr does not repeat. A folder that holds none says nothing. */
 function noteFolderSpaceHeld(folder: { root: string; registered: readonly string[]; prepared?: string }, current: string): void {
   const held = heldSpace(folder);
   if (!held) return;
-  const up = held.state === "stopped" && capBelowFloor(stoppedStack(folder.root, held.space)?.storeCap) ? `cotal up --max-file-store ${MIN_FILE_STORE} or more` : "cotal up";
-  const text = `this folder holds the ${held.state} space "${held.space}"`, step = `${held.state === "prepared" ? "start" : "restart"} it with ${up}`;
-  recordOperationSpaceNote(current, text, step);
-  recordOperationWarning({ code: "FOLDER_SPACE_NOT_RUNNING", target: { space: held.space, state: held.state, root: folder.root, selected: current }, message: `${text}; ${step}` }, { echo: false });
+  const message = heldSpaceNote({ ...held, root: folder.root });
+  recordOperationSpaceNote(current, message);
+  recordOperationWarning({ code: "FOLDER_SPACE_NOT_RUNNING", target: { space: held.space, state: held.state, root: folder.root, selected: current }, message }, { echo: false });
+}
+
+/** What a folder holds that is not running, and the step that starts it with {@link upCommand}. */
+export function heldSpaceNote(held: { space: string; root: string; state: "prepared" | "stopped" }): string {
+  return `this folder holds the ${held.state} space "${held.space}"; ${held.state === "prepared" ? "start" : "restart"} it with \`${upCommand(held.root, held.space)}\`${upNeedsCap(held.root, held.space) ? " or more" : ""}`;
+}
+
+/** Whether a bare `cotal up` of `space` at `root` fails on the file store cap its stopped stack
+ *  recorded ({@link capBelowFloor}), so {@link upCommand} names `--max-file-store` at the floor. */
+export function upNeedsCap(root: string, space: string): boolean {
+  return capBelowFloor(stoppedStack(root, space)?.storeCap);
+}
+
+/** The `cotal up` that starts `space`'s stack at `root`, with `args`, such as a `--root`, after `up`:
+ *  with `--max-file-store` at the floor when {@link upNeedsCap}. It runs as written; a note that
+ *  names it says "or more" after it, and a step's label says so beside it. */
+export function upCommand(root: string, space: string, ...args: string[]): string {
+  return ["cotal up", ...args, ...(upNeedsCap(root, space) ? [`--max-file-store ${MIN_FILE_STORE}`] : [])].join(" ");
 }
 
 /** The space a folder holds that is not running: the one it prepared, the one its stopped stack is

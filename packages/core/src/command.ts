@@ -60,6 +60,12 @@ export type FlagValues<F extends readonly FlagSpec[]> = {
       : string;
 };
 
+/** One example in a command's help: a whole command line that works as written, with `<name>` for a
+ *  value the reader fills in, and a note on what it does, in plain words, at most 60 characters and
+ *  with no closing period. A bare string is a command with no note, the form extensions written
+ *  before notes existed declare. */
+export type CommandExample = string | { readonly command: string; readonly note: string };
+
 /** One mode of a command (`ext add`), named by its first positional. It carries its own help, and
  *  `aliases` are other first words that select it (`rm` for `remove`), scoped to this command. A
  *  command that declares subcommands takes one as its first positional whenever it takes any, so
@@ -76,8 +82,8 @@ export interface Subcommand {
   /** Overrides the generated `cotal <command> <name>` usage line. */
   readonly usage?: string;
   readonly aliases?: readonly string[];
-  /** Full example invocations shown in its help. */
-  readonly examples?: readonly string[];
+  /** Examples shown in its help, the most common use first. */
+  readonly examples?: readonly CommandExample[];
   /** Structured outputs this mode implements. A mode that declares none reports as plain text with
    *  the command's usual exit, whatever its command declares for the bare form. */
   readonly outputs?: readonly OutputMode[];
@@ -108,8 +114,8 @@ export interface Command extends Extension {
   /** Structured outputs this command implements; human text is always available. In a command with
    *  subcommands this covers the bare form, and each subcommand declares its own. */
   readonly outputs?: readonly OutputMode[];
-  /** Full example invocations shown in its help. */
-  readonly examples?: readonly string[];
+  /** Examples shown in its help, the most common use first. */
+  readonly examples?: readonly CommandExample[];
   /** The command only reads: a composition root installs and refreshes nothing before it runs, so a
    *  read never repairs as a hidden prelude. In a command with subcommands this covers the bare form,
    *  and each subcommand declares its own. Absent means the root may prepare what the command uses. */

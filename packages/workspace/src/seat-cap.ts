@@ -42,20 +42,24 @@ export function seatCapText(cap: SeatCap): string {
   return cap === SEAT_CAP_UNLIMITED ? SEAT_CAP_UNLIMITED : String(cap);
 }
 
-/** The cap recorded for this root's manager, or undefined when none was given. */
+/** The cap recorded for this root's manager, or undefined when none was given. A record that does
+ *  not hold one is refused naming its path and the step that clears it. */
 export function readManagerSeatCap(context: LocalProcessContext): SeatCap | undefined {
   const path = canonicalLocalProcessPath(MANAGER_SEAT_CAP_RECORD, context);
   const bytes = readLocalRecordSource(path, 4096, true);
   if (bytes === undefined) return undefined;
+  const corrupt = (what: string) => new CommandFailure("refused", "SCHEMA_INVALID", `the manager seat-cap record ${path} ${what}`, { target: { path }, remedy: "remove or repair that record, then start the manager again" });
   let value: unknown;
   try { value = JSON.parse(bytes.toString("utf8")); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the manager seat-cap record is not valid JSON", { target: { path } }); }
-  const record = localRecordObject(value, ["version", "seatCap"]);
-  if (record.version !== 1) throw new CommandFailure("refused", "SCHEMA_INVALID", "the manager seat-cap record has an unsupported version", { target: { path } });
+  catch { throw corrupt("is not valid JSON"); }
+  let record: Record<string, unknown>;
+  try { record = localRecordObject(value, ["version", "seatCap"]); }
+  catch { throw corrupt("is not an object of version and seatCap"); }
+  if (record.version !== 1) throw corrupt("has an unsupported version");
   const cap = record.seatCap;
   if (cap === SEAT_CAP_UNLIMITED) return SEAT_CAP_UNLIMITED;
   if (typeof cap !== "number" || !Number.isSafeInteger(cap) || cap < 1)
-    throw new CommandFailure("refused", "SCHEMA_INVALID", `the manager seat-cap record holds neither a positive integer nor "${SEAT_CAP_UNLIMITED}"`, { target: { path } });
+    throw corrupt(`holds neither a positive integer nor "${SEAT_CAP_UNLIMITED}"`);
   return cap;
 }
 

@@ -1,7 +1,7 @@
 # cotal-ai
 
 The `cotal` CLI for Cotal, a standard wire interface for AI agents to coordinate as lateral peers
-in a shared pub/sub space over NATS and JetStream. It needs Node 22 or newer.
+in a shared pub/sub space over NATS and JetStream. It needs Node 22.10 or newer.
 
 ```bash
 npx cotal-ai            # name the selected space and the common commands

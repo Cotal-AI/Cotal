@@ -39,7 +39,7 @@ import { clean, cotalPty, repoRoot, wait, type Pty } from "./_console-pty.js";
 const home = mkdtempSync(join(tmpdir(), "cotal-target-resolution-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, setCurrent, clearCurrent } = await import("@cotal-ai/workspace");
+const { getCurrent, MIN_FILE_STORE, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, setCurrent, clearCurrent } = await import("@cotal-ai/workspace");
 const { observeServiceProcess, serviceInstances } = await import("../src/lib/service-instances.js");
 
 const { check, finish } = createSuite();
@@ -177,7 +177,7 @@ const QUESTION = "Which one?";
   const unstarted = run(["who"], deltaPrepared);
   check("in a folder prepared for another space the selection is the target, with what the folder holds under the heading",
     prepared.status === 0 && /\bin alpha\b/.test(unstarted.stdout + unstarted.stderr) &&
-      /^Mesh: alpha\n {2}this folder holds the prepared space "delta"; start it with cotal up$/m.test(unstarted.stdout + unstarted.stderr), { prepared: shown(prepared), unstarted: shown(unstarted) });
+      /^Mesh: alpha\n {2}this folder holds the prepared space "delta"; start it with `cotal up`$/m.test(unstarted.stdout + unstarted.stderr), { prepared: shown(prepared), unstarted: shown(unstarted) });
   const unstartedPs = run(["ps", "--json"], deltaPrepared);
   check("ps there targets the selection too, not the space the folder prepared",
     envelope(unstartedPs)?.target?.space === "alpha", shown(unstartedPs));
@@ -197,7 +197,7 @@ const QUESTION = "Which one?";
   const delta = join(home, "delta");
   mkdirSync(join(delta, ".cotal"), { recursive: true });
   recordPreparedSpace({ space: "delta", root: delta, ts: new Date(0).toISOString() });
-  const HELD = `this folder holds the prepared space "delta"; start it with cotal up`;
+  const HELD = `this folder holds the prepared space "delta"; start it with \`cotal up\``;
   const inDelta = run(["who", "--json"], delta), inDeltaText = run(["who"], delta);
   check("in a prepared space's folder, before its first up, the selection is the target and nothing names the prepared space as one",
     envelope(inDelta)?.target?.space === "alpha" && inDelta.status === 0 &&
@@ -254,7 +254,7 @@ const QUESTION = "Which one?";
   const zetaRoot = join(home, "zeta");
   mkdirSync(join(zetaRoot, ".cotal"), { recursive: true });
   recordMesh({ space: "zeta", server: "nats://127.0.0.1:1", root: zetaRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
-  const STOPPED = `this folder holds the stopped space "zeta"; restart it with cotal up`;
+  const STOPPED = `this folder holds the stopped space "zeta"; restart it with \`cotal up\``;
   const inStopped = run(["who", "--json"], zetaRoot), inStoppedText = run(["who"], zetaRoot), stoppedPs = run(["ps", "--json"], zetaRoot);
   check("a registered folder space whose broker does not answer is not the target: the selection is",
     envelope(inStopped)?.target?.space === "alpha" && inStopped.status === 0 && envelope(stoppedPs)?.target?.space === "alpha" &&
@@ -278,6 +278,49 @@ const QUESTION = "Which one?";
     r.stdout.includes(`this folder's space while it runs; the selected space "alpha" applies outside it and while it is stopped`);
   check("bare cotal there, whose records hold no broker pidfile, leads with the selection, names the stopped space and offers its up",
     leadsWithSelection(entryStopped), shown(entryStopped));
+  // A prepared selection is started by its own `up`, so the entry screen there names that one as this
+  // space's start and offers no spawn, as it does away from any project. ps and send there refuse
+  // for it, naming that `up` under Next, and still name zeta's under their heading.
+  const eta = join(home, "eta");
+  mkdirSync(join(eta, ".cotal"), { recursive: true });
+  recordPreparedSpace({ space: "eta", root: eta, ts: new Date(0).toISOString() });
+  setCurrent("eta");
+  const entryPrepared = run([], zetaRoot), entryPreparedAway = run([]);
+  const refusedPs = run(["ps"], zetaRoot), refusedPsJson = run(["ps", "--json"], zetaRoot), refusedSend = run(["send", "-c", "general", "hi"], zetaRoot);
+  setCurrent("alpha");
+  removePreparedSpace("eta");
+  const startsEta = (r: ReturnType<typeof run>) => r.status === 0 && /^eta · prepared · /m.test(r.stdout) && r.stdout.includes(`\nStart here\n  cotal up --root ${eta}  Start this space\n`) && !r.stdout.includes("cotal spawn");
+  check("with a prepared selection, bare cotal there names the selection's up as this space's start and offers no spawn, as away from any project",
+    startsEta(entryPrepared) && entryPrepared.stdout.includes(`this folder holds the stopped space "zeta"`) && startsEta(entryPreparedAway), { here: shown(entryPrepared), away: shown(entryPreparedAway) });
+  const wholeNote = (r: ReturnType<typeof run>) => r.status === 2 && new RegExp(`^Mesh: eta\n {2}${STOPPED}$`, "m").test(r.stdout + r.stderr) && (r.stdout + r.stderr).includes(`\nNext\n  start it with \`cotal up\` in ${eta}`);
+  check("ps and send there refuse for the prepared selection, naming its up under Next and zeta's whole note under the heading, as ps --json's warning does",
+    wholeNote(refusedPs) && wholeNote(refusedSend) && envelope(refusedPsJson)?.error?.code === "TARGET_UNAVAILABLE" &&
+      envelope(refusedPsJson)?.warnings?.some((w: { code: string; message: string }) => w.code === "FOLDER_SPACE_NOT_RUNNING" && w.message === STOPPED) === true,
+    { ps: shown(refusedPs), send: shown(refusedSend), json: shown(refusedPsJson) });
+  // A stopped stack that recorded a file store cap below the floor fails a bare `up`, so the entry
+  // screen names the `up --max-file-store` the note under a command's heading names, both for this
+  // folder's space and for a selection prepared and capped the same way.
+  const cappedJournal = (root: string, space: string, kind: string, phase: string) => writeFileSync(join(root, ".cotal", "stack-controller.json"), JSON.stringify({ schemaVersion: 1, kind: "cotal-stack-controller", root: realpathSync(root), space, server: "nats://127.0.0.1:1", mode: "open", members: [{ instanceId: "i-1" }], broker: { maxFileStore: MIN_FILE_STORE - 1 }, operation: { id: "op-1", kind, phase, recordedAt: new Date(0).toISOString(), withAgents: false }, updatedAt: new Date(0).toISOString() }) + "\n");
+  // The note says "or more" after the command; a Start here row runs as written and says so in its label.
+  const CAPPED_UP = `cotal up --max-file-store ${MIN_FILE_STORE}`, CAPPED = `this folder holds the stopped space "zeta"; restart it with \`${CAPPED_UP}\` or more`, CAP_LABEL = ` with a store cap of ${MIN_FILE_STORE} or more`;
+  cappedJournal(zetaRoot, "zeta", "down", "completed");
+  recordPreparedSpace({ space: "eta", root: eta, ts: new Date(0).toISOString() });
+  cappedJournal(eta, "eta", "up", "failed");
+  const entryCapped = run([], zetaRoot), headingCapped = run(["who"], zetaRoot);
+  setCurrent("eta");
+  const entryEtaHere = run([], eta), entryEtaThere = run([], zetaRoot);
+  setCurrent("alpha");
+  removePreparedSpace("eta");
+  rmSync(join(eta, ".cotal", "stack-controller.json"));
+  rmSync(join(zetaRoot, ".cotal", "stack-controller.json"));
+  check(`bare cotal there names ${CAPPED_UP} in its folder note, as the note under who's heading does, and as this folder's start`,
+    entryCapped.status === 0 && /^alpha · /m.test(entryCapped.stdout) && entryCapped.stdout.includes(`\n${CAPPED}\n`) &&
+      new RegExp(`^Start here\n {2}${CAPPED_UP} +Start this folder's space${CAP_LABEL}\n {2}cotal spawn `, "m").test(entryCapped.stdout) &&
+      new RegExp(`^Mesh: alpha\n {2}${CAPPED}$`, "m").test(headingCapped.stdout + headingCapped.stderr), { entry: shown(entryCapped), heading: shown(headingCapped) });
+  check(`with a selection whose stopped stack recorded that cap, bare cotal names ${CAPPED_UP} as this space's start, in its folder and in zeta's`,
+    entryEtaHere.status === 0 && /^eta · prepared here · /m.test(entryEtaHere.stdout) && new RegExp(`^Start here\n {2}${CAPPED_UP} +Start this space${CAP_LABEL}$`, "m").test(entryEtaHere.stdout) &&
+      entryEtaThere.stdout.includes(`\nStart here\n  cotal up --root ${eta} --max-file-store ${MIN_FILE_STORE}  Start this space${CAP_LABEL}\n`) && entryEtaThere.stdout.includes(`\n${CAPPED}\n`),
+    { here: shown(entryEtaHere), there: shown(entryEtaThere) });
   // A pidfile naming a live process does not show it stopped, and help reads no broker, so it says when
   // the folder's space applies; one naming a process that is gone does.
   const pidfile = join(zetaRoot, ".cotal", "nats.pid");
@@ -459,7 +502,7 @@ const QUESTION = "Which one?";
     const stoppedText = run(["status"], half), stoppedJson = envelope(run(["status", "--json"], half)), stoppedPs = run(["ps", "--json"], half);
     check("after down --yes stops it, status and ps there target the selection and name the stopped space and its up",
       down.status === 0 && !brokerRuns() &&
-        /^Mesh: alpha\n {2}this folder holds the stopped space "half"; restart it with cotal up$/m.test(stoppedText.stdout) &&
+        /^Mesh: alpha\n {2}this folder holds the stopped space "half"; restart it with `cotal up`$/m.test(stoppedText.stdout) &&
         stoppedJson?.target?.space === "alpha" && stoppedJson.result?.meshes?.folder === null &&
         stoppedJson.warnings?.some((w: { code: string; target?: { space?: string; state?: string } }) => w.code === "FOLDER_SPACE_NOT_RUNNING" && w.target?.space === "half" && w.target.state === "stopped") === true &&
         envelope(stoppedPs)?.target?.space === "alpha", { down: shown(down), text: stoppedText.stdout.slice(0, 1600), json: stoppedJson?.target, ps: shown(stoppedPs) });

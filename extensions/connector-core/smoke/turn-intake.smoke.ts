@@ -45,6 +45,7 @@ import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/
 import * as connectorCoreRoot from "../src/index.js";
 import { MeshAgent } from "../src/agent.js";
 import { TURN_PULL_RETRY_MS } from "../src/turn-poll.js";
+import { cotalToolSpecs } from "../src/tool-specs.js";
 import { configFromEnv, type AgentConfig } from "../src/config.js";
 import { launchEnv } from "../src/launch.js";
 
@@ -212,6 +213,25 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
     await tick();
     return r.state.yields.some((y) => y.goalId === "g3d" && y.status === "done");
   })(), "the yield after a failed presence write");
+}
+
+// A public status update is not the host's terminal, including when it writes idle.
+{
+  const { a, state, poll } = rig();
+  state.pending = [row("presence-only", "still working")];
+  await poll();
+  a.commitSurfacedTurns(["presence-only"]);
+  await a.setStatus("working");
+  const status = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_status")!;
+  await status.run(a, cfg, { status: "idle", activity: "work continues" });
+  await tick();
+  check("the public status tool updates presence without yielding the active goal",
+    a.status === "idle" && state.yields.length === 0, state.yields);
+  await a.setStatus("idle");
+  await tick();
+  check("the real host completion after a presence-only idle still yields done",
+    state.yields.length === 1 && state.yields[0]?.goalId === "presence-only" && state.yields[0]?.status === "done",
+    state.yields);
 }
 
 // ── 4) an unseen payload is never "done" ──────────────────────────────────────────────────────

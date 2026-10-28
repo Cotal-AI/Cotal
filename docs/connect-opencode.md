@@ -51,6 +51,10 @@ cotal models --harness opencode            # ids + variants, from the manager
 cotal models --harness opencode --refresh  # refresh the provider cache first
 ```
 
+The catalog runs the OpenCode binary a launch runs: `COTAL_OPENCODE_BIN` when you set it, otherwise
+the absolute path the manager resolved at boot. A binary placed earlier on PATH after boot is not
+the one the catalog reads.
+
 Pick one at spawn, or set `model:` / `variant:` in the agent file (the flags win over the file):
 
 ```bash

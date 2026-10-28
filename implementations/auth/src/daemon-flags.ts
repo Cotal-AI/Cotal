@@ -21,9 +21,10 @@ export const authCalloutOnlyFlag = {
   description: "answer only the auth callout, as one more member of its queue group (no HTTP listener, no auth-service.json); for a space whose auth service already runs",
 } as const satisfies FlagSpec;
 
-/** The multi-space manifest. With `--callout-only` it replaces `--space`: the process holds one
- *  callout lane per space the manifest names, all on the one `--server`. */
+/** The multi-space manifest. It replaces `--space`: the process holds one lane per space the
+ *  manifest names, all on the one `--server`, each a full auth service or, with `--callout-only`, a
+ *  callout lane. */
 export const authSpacesFlag = {
   name: "spaces", type: "string", value: "<manifest>",
-  description: "with --callout-only: serve every space in this JSON manifest from one process, one callout lane each (replaces --space)",
+  description: "serve every space in this JSON manifest from one process, one lane each (replaces --space): full auth services, or callout lanes with --callout-only",
 } as const satisfies FlagSpec;

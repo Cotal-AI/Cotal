@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendedLogTail, detachedArgs, terminateDetachedWeb, waitForDetachedWeb } from "../src/web.js";
@@ -88,6 +88,26 @@ try {
     }),
     /did not become HTTP-ready within 100ms \(pid \d+\); last probe http:\/\/127\.0\.0\.1:1\/api\/meta: .+/,
   );
+  // A pidfile that exists and cannot be read is not "not claimed yet". A directory at the name is
+  // EISDIR for every user, where mode 000 is not, and the wait names it instead of probing until
+  // the window ends.
+  rmSync(pidPath, { force: true });
+  mkdirSync(pidPath);
+  const unreadableStarted = Date.now();
+  await assert.rejects(
+    waitForDetachedWeb(child, {
+      pidPath,
+      sessionPath,
+      url: "http://127.0.0.1:1/",
+      space: "fixture",
+      timeoutMs: 1500,
+    }),
+    new RegExp(`cannot read ${pidPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: EISDIR`),
+    "an unreadable pidfile is named instead of waiting out the readiness window",
+  );
+  assert.ok(Date.now() - unreadableStarted < 1000, "an unreadable pidfile does not wait out the readiness window");
+  rmSync(pidPath, { recursive: true, force: true });
+  writeFileSync(pidPath, String(child.pid));
   // A different process on the bound port answers 200 with a huge space and pid whose JSON escaping
   // turns each character into six bytes: the last-probe text still stays within its 300-byte cap.
   const squatter = createServer((_req, res) => {

@@ -928,7 +928,10 @@ and re-binds the connection into the data account. A space's callout requests ar
 space's dedicated auth account, so a responder holds one subscription per auth account it serves. One
 process MAY serve several spaces, holding one such subscription and one set of signing keys per
 space; a response for a space MUST be signed only with that space's keys, and a bearer MUST be
-validated only against the issuer and audience of the space whose request it arrived on. The owner-token *derivation* (how a bearer maps to
+validated only against the issuer and audience of the space whose request it arrived on. A process
+MAY likewise serve several spaces' exchange and JWKS, as one full auth service per space: each
+space's exchange MUST be served on listeners of that space's own and mint only from that space's
+keys and ledger, and each space keeps its own authority plane (§13.13). The owner-token *derivation* (how a bearer maps to
 an owner token) is a pluggable identity adapter (any OIDC/IdP via a thin bridge), not fixed by this
 contract; the callout *mechanism* and the resulting grants are. From v0.4 every minted connection also carries its **lifecycle UID** (§13.1): the manager
 mints it for managed agents at provision, and the callout/exchange attaches it as a claim at
@@ -1706,7 +1709,8 @@ The plane and a hosted context expose `decide`, `revoke`, `name-bind`, `operatio
 `proposal-read` as one in-process function; a hosted context refuses it as `unavailable` while it is
 not ready. The host checks an owner granter's current interactive row but authenticates no caller:
 the embedder MUST authenticate the granter it passes, operator or owner. The stock auth service
-serves that function on `POST /service-endpoint-host` when started with `--service-endpoints`: the
+serves that function on `POST /service-endpoint-host` when started with `--service-endpoints`, or
+as a lane of `auth-service --spaces` whose manifest entry sets `serviceEndpoints`: the
 body is `{ idpToken, request }` with no granter, the route verifies the IdP token and derives the
 granter itself. `decide`, a revoke whose cause is `owner-request`, the four caller-policy operations
 (`caller-grant`, `caller-revoke`, `caller-policy-read`, `caller-policy-list`) and the reads
@@ -2737,6 +2741,9 @@ genuinely `unknown`.
   publication, any path where the caller cannot tell whether the request was handled. This is
   `unknown`, and it is the only local case that is.
 
+The reference connector reports an unanswered submitted persona definition as an unknown write
+outcome and directs the caller to read the catalog on the same manager before acting.
+
 A caller **MUST NOT infer execution from the mere arrival of a reply**: a reply proves the request
 was HANDLED, never that it executed. The two differ on every path where a responder refuses before
 the handler — the version, class, target, sender, authz, contract, and guard checks all publish
@@ -3033,6 +3040,12 @@ facts.
 ### 13.6 Composites
 
 Patterns over the verbs and contracts; zero new transport.
+
+The reference manager's spawn goal uses the submitted request's `id`. If the caller's
+submission wait ends before acceptance is observed, the reference client retains that id
+in its local error details and the spawn tool's unknown result. This is a readback
+coordinate, not evidence of acceptance or permission to retry. Existing caller-scoped
+goal reads resolve a later terminal without adding a command or transport kind.
 
 **Action**, a long-running command. `action` is a command **marker**, never a class: an
 action command's submissions are `class: journal` (§13.3).
@@ -3896,7 +3909,7 @@ unsplit atomic keys the table marks: the `lifecycle` head, `govern`, `uid`, `obl
 | `handle` | `handle.<issuerKeyId>.<id>` |
 | `contracts` | `contracts.<endpoint>` |
 | `goal` | `goal.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>` |
-| `goalidx` | `goalidx.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>` (atomic; an in-flight action's reconcile index, written create-only before the goal binds and deleted at its terminal, enumerated by a bounded boot-sweep authority so a superseded executor's orphaned goals settle; never caller-addressed). The reference local signer composition uses its ephemeral provisioner. The signerless remote-manager composition uses an authenticated host operation backed by a sealed, owner-filtered `goalidx.manager.<cOwner>.>` scan; no participant credential carries records consumer create or delete. Writer: the **goal-writer** principal (§13.9), which composes the commit principal with three additions, this index subtree among them, and NOT the bare commit principal, whose enumeration does not reach this kind. The two are separated because the index is created BEFORE the bind, so the principal that writes it is the one that also binds; a deployment that grants the index on the bare commit row has widened every commit principal to reach a key only the goal writer needs |
+| `goalidx` | `goalidx.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>` (atomic; an in-flight action's reconcile index, written create-only before the goal binds and deleted at its terminal, enumerated by a bounded boot-sweep authority so a superseded executor's orphaned goals settle; never caller-addressed). A deleted entry is not recorded again: a later record of the same goal is refused `failed-precondition`, since that goal settled or its acceptance was withdrawn. The reference local signer composition uses its ephemeral provisioner. The signerless remote-manager composition uses an authenticated host operation backed by a sealed, owner-filtered `goalidx.manager.<cOwner>.>` scan; no participant credential carries records consumer create or delete. Writer: the **goal-writer** principal (§13.9), which composes the commit principal with three additions, this index subtree among them, and NOT the bare commit principal, whose enumeration does not reach this kind. The two are separated because the index is created BEFORE the bind, so the principal that writes it is the one that also binds; a deployment that grants the index on the bare commit row has widened every commit principal to reach a key only the goal writer needs |
 | `goaleff` | `goaleff.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>.<gen>` (atomic; the at-most-one-launch election for one accepted action, written create-only by the effects executor that wins it and advanced by revision-CAS through its phases). `<gen>` is the accepted submission's **EPJ `sourceSeq`**, the sequence it was delivered at, carried verbatim into the acceptance fact; the only discriminator that exists at the EARLIEST coordinate, since `goalidx` is created before the bind and therefore before any decision fact exists, so a decision sequence cannot key it. The generation token is what keeps this kind out of the one-use-forever trap: a lawful later acceptance under the same `goalId` gets a different `<gen>` and a fresh key, never a permanent tombstone. Writer: the owning endpoint's **commit path** ONLY (§13.9), inherited by the goal-writer principal that composes it; the generic per-kind spec/status writer row does not reach it, because this kind is unsplit and has no `.spec`/`.status` to write. The value machine, including which actor may settle a row, is *The two coordination machines* below |
 | `epname` | `epname.<endpoint>.<nameToken>` (atomic; the durable claim on one name, keyed by the NAME rather than by a caller triple, because the thing being made exclusive is the name and two callers must contend on one key). Writer: the owning endpoint's **commit path** ONLY (§13.9); unsplit, so create-only for the claim and revision-CAS for every state change. The state machine, its actor roles, and the claimant union are *The two coordination machines* below |
 | `epmig` | `epmig.<endpoint>` (atomic; the endpoint's cutover manifest: the inventory a migration is performed against, and the durable record of the cutover runs performed against it, so a run generation is never reused by a later run). That run generation is **scoped to cutover and is key material nowhere else**: the `<gen>` token in the `goaleff` grammar is the accepted submission's EPJ `sourceSeq` and only that, the `goal`, `goalidx`, and `goal….result` grammars carry no generation token at all, and an implementation that keys any of them from this manifest has built an election two conforming peers can never meet inside. Writer: the owning endpoint's **commit path** ONLY (§13.9); unsplit, and its qualifier profile is `[qEndpoint]` alone, one manifest per endpoint, never one per caller or per run |
@@ -4645,7 +4658,7 @@ keeps the read's result from silently falsifying the CAS or effect it feeds.
 | Serve subscribe | the endpoint's serve credential | per registered command: `"ep.one.<endpoint>.<command>.> <endpoint>"` (queue-qualified ONLY), `ep.all.<endpoint>.<command>.>` plain, `ep.inst.<endpoint>.<instanceId>.<command>.>` exact (never a cross-command `>` | direct) name/instance/command-pinned; epoch deliberately absent (§13.1 barrier is the fence) |
 | Reply publish | the endpoint's serve credential | `ep.reply.<endpoint>.<instanceId>.<epoch>.*.*.*.*` | direct; attribution-pinned; addressing by nonce |
 | Versioned-rail request, reply, serve (§13.15) | as the four rows above | the same rows with `ep.v1` for `ep` and one more pinned token: the caller's `<generation>` literal in its request-publish and reply-subscribe rows (`ep.v1.reply.*.*.*.<cO>.<cA>.<cUid>.<generation>.*`), a spanned token in the serve credential's reply-publish row (`ep.v1.reply.<endpoint>.<instanceId>.<epoch>.*.*.*.*.*`) and its three serve-subscribe shapes per command | direct; broker-confined on the generation exactly as on the caller triple |
-| Issuance (§13.15) | the `issuer` principal, minted by the party holding the space signer: one auth-service session per account, space and authority plane for its callout's user-auth issuance, renewed before expiry; one-shot per issuance window or lifecycle terminal otherwise | `$KV.cotal_issued_<space>.>` and `$KV.cotal_accepted_<space>.>` publish, `STREAM.INFO`/`STREAM.MSG.GET` on `KV_cotal_issued_<space>`, its own ordered consumers on that store, and ONE leader-served `STREAM.MSG.GET` on `KV_cotal_auth_<space>` for source liveness; NO auth-store write, no rail row | mediated; create-only CAS on evidence, revision-CAS on the attempt row |
+| Issuance (§13.15) | the `issuer` principal, minted by the party holding the space signer: one auth-service session per account, space and authority plane for its callout's user-auth issuance, renewed before expiry; one-shot per issuance window or lifecycle terminal otherwise | `$KV.cotal_issued_<space>.>` and `$KV.cotal_accepted_<space>.>` publish, `STREAM.INFO`/`STREAM.MSG.GET` on `KV_cotal_issued_<space>`, `STREAM.INFO` on `KV_cotal_accepted_<space>` (the bind-time shape check of both stores), its own ordered consumers on that store, and ONE leader-served `STREAM.MSG.GET` on `KV_cotal_auth_<space>` for source liveness; NO auth-store write, no rail row | mediated; create-only CAS on evidence, revision-CAS on the attempt row |
 | Run admission (§14.8) | the `run-admitter` principal (one-shot, 60 s, minted per run by the hosting endpoint or the local operator) | exactly `$KV.cotal_admission_<space>.admission.v1.<endpoint>.<runId>` and `….revoked.v1.<endpoint>.<runId>` publish plus `STREAM.MSG.GET` on that store; nothing else | mediated; create-only |
 | Resume transfer write (§8) | the `transfer-writer` principal (one-shot, 5 min, per `cotal spawn --resume --detach --on` call after the CLI hashes the transcript: minted by the operator holding the space signer, or on a user-auth space exchanged as the `transfer-writer` view, §10) | publish exactly `$O.cotal_xfer_<space>_<instanceId>.C.<hex>` and `$O.cotal_xfer_<space>_<instanceId>.M.<name>` (one object of one instance's bucket), plus `$JS.API.DIRECT.GET.OBJ_cotal_xfer_<space>_<instanceId>.` followed by each of those two subjects; no consumer, no stream API, no other object | direct; object-pinned |
 | Resume transfer read (§8) | the `transfer-reader` principal (one-shot, 5 min, minted per `transcript-receive` or sweep by the receiving manager from the space signer, or issued to a remote manager by the host's `transferReader` authority operation for that manager's own instance) | `STREAM.CREATE`, `STREAM.INFO`, `STREAM.MSG.GET`, `STREAM.PURGE` and `CONSUMER.CREATE` on its own `OBJ_cotal_xfer_<space>_<instanceId>` only, publish `$O.cotal_xfer_<space>_<instanceId>.M.>` (the stock delete marker), `$JS.API.INFO`, and that stream's `$JS.FC.OBJ_cotal_xfer_<space>_<instanceId>.>` flow control; every other credential, seats, the spawn capability, the supervisor, the provisioner and other instances' readers included, holds nothing that names `OBJ_cotal_xfer_` or `$O.cotal_xfer_` | mediated; instance-pinned |
@@ -4945,8 +4958,8 @@ Per-space resources, created at space setup (`STREAM.CREATE` remains denied to a
 | (sessions: core-only, no stream) | `cotal.<space>.eps.>` | never captured; bounded in-memory window |
 | `cotal_records_<space>` KV | records: the §13.7 core-kind key grammars (`svc`, `signer`, `handle`, `contracts`, `goal`, `cp`, `lease`, `lifecycle`, `govern`, `uid`, `policy`, `oblig`, and the §14 kinds `run`, `answer`, `notice`, `migration`) | per-key CAS; `.spec`/`.status`-split keys EXCEPT the unsplit atomic keys `lifecycle.<owner>.<actor>`, `govern.<endpoint>`, `uid.<lifecycleUid>`, `policy.<endpoint>.<digest-hex>`, and `oblig.>` (§13.1/§13.7/§13.8/§13.9); `allow_direct=true`, but the heads and every fencing read are leader-served `STREAM.MSG.GET` (§13.9 read service). **No age retention on authority keys:** `lifecycle` heads, `govern`, `uid` reservations, `policy` versions, and `oblig` rows are NEVER-DELETED (no grant permits DEL/PURGE; an age-evicted reservation would reopen UID reuse, an evicted obligation would orphan accepted work); a deletion marker on any of them refuses loudly as corruption, never as absence. **Shape is proved at bind, not assumed:** the stream MUST be primary (never a mirror/sourced copy) and MUST carry no bucket-wide silent-eviction limit (no `max_age`, no finite `max_msgs`/`max_bytes`: under `DiscardOld` a finite global limit evicts a prior authority key's latest row the moment an unrelated key is written); every trusted consumer of this store (the minting authority, the mapping reader, the mediator) verifies exactly this via `STREAM.INFO` when it binds and refuses to serve otherwise |
 | `cotal_auth_<space>` KV | the credential ledger (`cred.<lifecycleUid>.<credentialId>` + issuance gates `gate.<lifecycleUid>` + the disjoint endpoint families `epgate.<endpoint>.<instanceId>` / `epcred.<endpoint>.<instanceId>.<credentialId>` + the staging family `stage.>` + source gates `srcgate.<issuerKeyId>.<id>` + lineage index `bysrc.…` + native-key issuance evidence `natkey.<userNkey>`, §13.1) + session ledger (`session.<sessionId>`, §13.6) | trusted auth path ONLY; no agent, endpoint, observer, admin, or host profile holds any grant (§13.9 matrix); **`allow_direct=false`** (every fence is a leader-served revision-pinned CAS write; Direct Get's follower/mirror reads would defeat read-your-writes, §13.1); CAS + monotonic states. **No bucket-wide age retention:** `gate.`, `epgate.`, `srcgate.`, and `session.` authority keys persist until their lifecycle/handle/session is explicitly terminal (an age-evicted `open` gate would silently reopen minting, or drop a `frozen`/`retired` fence); only `cred.`/`epcred.`/`bysrc.` rows carry a per-key TTL bounded by the credential TTL (NATS per-key message TTL, ≥ 2.12), never a bucket MaxAge; `stage.` rows follow their operation's retention, never a ledger row's. **Shape is proved at bind** (the records-store rule above, plus `allow_direct=false`): primary, un-mirrored, no bucket `max_age`, no finite `max_msgs`/`max_bytes`; the trusted auth path verifies this via `STREAM.INFO` when it binds and refuses to serve otherwise |
-| `cotal_issued_<space>` KV | issued-authority evidence (§13.15): `v1.<owner>.<actor>.<uid>.<generation>` (immutable evidence), `attempt.v1.…` (the one-field attempt row), `bysource.v1.<sha256>.…` (the reverse index from a source gate to the issuances depending on it) | Limits, file storage, no age eviction, **`allow_direct=false`** (every read is a fence); create-only evidence, revision-CAS attempt; never deleted while the issuance or anything admitted under it is resumable. Immutability is BROKER-ENFORCED the way the EPC store's is: `allow_rollup_hdrs=false, deny_delete=true, deny_purge=true`, set once at creation and verified by every provisioner that binds, so a holder of the issuer's own key row cannot replace evidence or empty the bucket with a `Nats-Rollup` header, a message delete, or a purge |
-| `cotal_accepted_<space>` KV | accepted rows (§13.15): `accepted.v1.<acceptedToken>`, one per issuance, written by the issuer at release | Limits, file storage, `allow_direct=true`: the client's per-key `DIRECT.GET` is the discovery read; create-only, with the same three broker-enforced flags as the evidence store |
+| `cotal_issued_<space>` KV | issued-authority evidence (§13.15): `v1.<owner>.<actor>.<uid>.<generation>` (immutable evidence), `attempt.v1.…` (the one-field attempt row), `bysource.v1.<sha256>.…` (the reverse index from a source gate to the issuances depending on it) | Limits, file storage, no stream-wide age eviction, **`allow_direct=false`** (every read is a fence); create-only evidence, revision-CAS attempt. **Bounded by per-message TTL:** `allow_msg_ttl=true` and no subject delete markers; each row carries its own TTL to its generation's horizon plus the retention margin (§13.15), and nothing else removes it, so no row goes while its generation can authorize anything (a run admitted under it keeps its ceiling in its admission, §14.8). A store without `allow_msg_ttl` predates bounded retention: every provisioner, issuer and resolver checks both stores' shape with `STREAM.INFO` when it binds and refuses it, before it reads or writes either, and it is recreated, never adopted. Immutability is BROKER-ENFORCED the way the EPC store's is: `allow_rollup_hdrs=false, deny_delete=true, deny_purge=true`, set once at creation and verified by every provisioner that binds, so a holder of the issuer's own key row cannot replace evidence or empty the bucket with a `Nats-Rollup` header, a message delete, or a purge |
+| `cotal_accepted_<space>` KV | accepted rows (§13.15): `accepted.v1.<acceptedToken>`, one per issuance, written by the issuer at release | Limits, file storage, `allow_direct=true`: the client's per-key `DIRECT.GET` is the discovery read; create-only, with the same three broker-enforced flags and the same per-message TTL retention as the evidence store: a row lives until the horizon of the generation it names plus the retention margin |
 | `cotal_admission_<space>` KV | run admissions and revocations (§14.8): `admission.v1.<endpoint>.<runId>`, `revoked.v1.<endpoint>.<runId>` | Limits, file storage, no age eviction, `allow_direct=false`; both keys create-only and the marker permanent, BROKER-ENFORCED by `allow_rollup_hdrs=false, deny_delete=true, deny_purge=true` (a run-admitter's own key row admits no `Nats-Rollup` replacement of the admission, and no purge empties another run's row); retained while the run, its program, its journal or its lineage is resumable |
 | `EPC_<space>` stream | `cotal.<space>.epc.>` (content-addressed contract artifacts, one per digest subject, §13.7) | Limits, no age eviction (artifacts are permanent); create-only mediated publication (`Nats-Expected-Last-Subject-Sequence: 0`); `allow_direct=true` (the subject-scoped last-by-subject read IS the fetch path; non-fencing, verify-on-read); permanence is BROKER-ENFORCED: `deny_delete=true, deny_purge=true` (the broker rejects the message-delete and purge APIs even from a stream-API-holding principal). Permanence is the COMBINATION of these flags, the retention floor's no-early-removal rule (below: the flags alone stop delete/purge but not age eviction or a whole-stream teardown), verify-on-read pinning WHAT a subject carries, and the stream-management surface held by no profile (§13.9); no single flag makes deletion structurally impossible |
 
@@ -4961,7 +4974,8 @@ conforming alternative that erases it while `MaxAge` still passes: a finite
 rollup/compaction, or a retention-policy change; for these families finite count/byte
 limits MUST fail loud or `DiscardNew` rather than evict protected history, and message TTL
 and rollup MUST be disabled on protected subjects (a per-key TTL is permitted only on
-non-protected keys, e.g. the auth bucket's `cred.`/`bysrc.` index rows above, never on a
+non-protected keys, e.g. the auth bucket's `cred.`/`bysrc.` index rows above and the
+issued-authority rows, whose TTL ends after their generation's horizon (§13.15), never on a
 protected fact, head, or gate). NO principal, including operator, setup, and system tooling,
 not only §13.9 profiles, may `MSG.DELETE`/`PURGE`, `STREAM.DELETE`, or issue a
 `STREAM.UPDATE` that weakens any of these limits; the never-deleted heads and gates carry
@@ -4999,7 +5013,8 @@ messages appear on `.fire` carrying `(timerId, generation)`.
 ### 13.13 Plane ownership (the sealed-scanner claim)
 
 At most ONE authority plane per space may hold the sealed scanners (§13.9's seventh-round
-seal). The scanners' serialization is process-local, so two same-space auth processes would
+seal). One process MAY hold the planes of several spaces, each with its own
+claim row, scanner connections and fence; the exclusion below is per space. The scanners' serialization is process-local, so two same-space auth processes would
 interleave the literal enumeration consumers' critical sections and return PARTIAL
 enumerations: a drain declares quiescence over undrained obligations and the retirement
 frontiers close over live work. The exclusion is broker-visible, not host-local:
@@ -5074,7 +5089,8 @@ frontiers close over live work. The exclusion is broker-visible, not host-local:
   authority plane: scan exposure is invalidated immediately, the sibling closes, every
   authority operation (connect authorization, credential mint) refuses from that moment, and
   the service goes DOWN loud rather than serving from a half-dead plane a successor may be
-  reclaiming; a still-live sibling correctly blocks a successor until it is closed or proven
+  reclaiming (in a process serving several spaces, that space's service goes down and the
+  others' planes are unaffected); a still-live sibling correctly blocks a successor until it is closed or proven
   absent.
 - **Clean close.** Scan-capable clients close FIRST, then the row CASes `held → released`
   (never released while either scanner can still act), then the barrier. A crash leaves
@@ -5150,9 +5166,12 @@ the ceiling as the issuer accepted it, immutable, and bound to the request by th
 than by anything the caller or a mutable ledger says. This section defines that binding.
 
 **The reference.** An issued authority is `{ space, owner, actor, uid, generation }`: the
-caller triple plus a **generation**, 32 lowercase hex characters of issuer-chosen entropy (at
-least 128 bits). A generation is an identifier, never a bearer secret. It is chosen by the
-issuer, never by the client, and is never reused: a reference is created once or refused.
+caller triple plus a **generation**, 32 lowercase hex characters. The first 8 are the
+generation's **horizon**, the unix second at and after which it authorizes nothing, in big-endian
+hex; the last 24 are issuer-chosen entropy (96 bits). A generation is an identifier, never a
+bearer secret. It is chosen by the issuer, never by the client, and is never reused: a reference
+is created once or refused. The horizon rides the generation, so the broker pins it on the
+request subject with the rest of the rail, and nothing written to a store can move it.
 
 **The rail.** An issued credential's request-publish and reply-subscribe rows ride the
 versioned rail (§13.2), with its generation pinned literally beside its triple. A request
@@ -5165,12 +5184,13 @@ caller establishes no binding.
 where `permissions` is the credential's final effective permission ceiling (publish and
 subscribe, each an explicit `all`, `none` or `patterns` allow plus a deny list, imported from the
 native permission fragment so an omitted list can never read as a narrow one) and `sources` are
-the gate coordinates the issuance depends on. Issuance is `prepare → release`: the evidence and
+the gate coordinates the issuance depends on. `expiresAt`, when present, is no later than the
+generation's horizon. Issuance is `prepare → release`: the evidence and
 a `prepared` attempt row are written create-only, the issuer performs its own finalization, and
 the attempt row is CAS-advanced to `active` at the revision the prepare observed. A prepare that
 loses its create is refused; a release whose CAS loses is `aborted`. The evidence store is
 append-only at the broker (§13.12: unlimited per-key history, no rollup header, no message delete,
-no purge), and the evidence and source-index rows are read as the FIRST message on their key, so a
+no purge; a row ends only by its own TTL, below), and the evidence and source-index rows are read as the FIRST message on their key, so a
 later write on the same key by a holder of the issuer's bucket-wide row is inert to every
 resolver; only the attempt row advances, by CAS. The issuer also writes the
 **accepted row** (`cotal_accepted_<space>`, keyed by a token the launching party chose) naming the
@@ -5178,15 +5198,33 @@ reference, create-only. A client learns which generation it was bound under by r
 row over a per-key `DIRECT.GET` grant its ceiling carries; it never trusts what it proposed or
 what a file says, and it refuses a row naming another owner, actor or lifecycle.
 
+**Retention.** Every row of a generation in either store (its evidence, each attempt state, each
+source-index row and its accepted row) is written with a per-message TTL (`Nats-TTL`) that keeps
+it until the generation's horizon plus a retention margin of 60 seconds, and no longer. Nothing
+else removes it. No resolution, renewal or retirement reads or writes a generation's keys at or
+after its horizon; it refuses the generation as expired first. A key the broker removed, and
+anything later written on it, is therefore never read as that generation's row. The margin
+covers the clock difference between a writer, the broker and a reader. It need not cover how long
+a resolution takes, because the horizon is checked again after the last read. A credential minted
+on a generation by a static issuer (a static incarnation's credential, an operator instrument)
+expires no later than the horizon. A static incarnation's generation has a horizon 30 days after
+its issuance; each renewal of its credential is capped at it, none is minted at or after it, and
+the incarnation is respawned to continue. A run admitted under a generation keeps its ceiling in
+its admission (§14.8), so removing the generation's rows after the horizon ends no run.
+
 **Renewal.** A renewal of an issued credential keeps its generation only when the ceiling being
 minted is byte-identical (RFC 8785) to the recorded evidence; a changed ceiling is refused as a
 renewal and is a fresh issuance on a fresh generation, which the client adopts only through a
 new connection. Refreshing a credential file never switches the generation of an already
-connected transport.
+connected transport. A renewal at or after the generation's horizon is refused before the store is
+read.
 
 **Resolution.** A host that admits an effect under an issued authority resolves it: the
-evidence exists, the attempt row is `active`, the evidence is unexpired, every source is live,
-and a second read of the attempt row returns the same revision. Any other outcome refuses. The
+generation is before its horizon, the evidence exists, the attempt row is `active`, the evidence
+is unexpired, every source is live, a second read of the attempt row returns the same revision,
+and the generation is still before its horizon after that read. Any other outcome refuses. A
+retirement of a generation at or past its horizon writes nothing, since every reader already
+refuses it. The
 one source shape this revision issues against is a static incarnation's credential ledger family
 (`cred.<lifecycleUid>` on `cotal_auth_<space>`), whose liveness is its issuance gate not being
 `retired`; a lifecycle terminal retires every issuance indexed to that family
@@ -5202,7 +5240,7 @@ grant. A missing, malformed, foreign-owner or no-run parent grants no issuance. 
 view, signer or authority door is added, and ordinary command grants still derive from signed
 `act.scope`, contained against the current child row. The issued view carries the per-key
 accepted-row read beside its instance-pinned rows. It chooses
-the generation, persists evidence whose permissions are the set it signs and whose one source is
+the generation, whose horizon is the bearer's expiry, persists evidence whose permissions are the set it signs and whose one source is
 that row, `{ space, bucket: "cotal_actors_<space>", key: "actor.<owner>.<actor>.<lifecycleUid>" }`,
 releases it, and writes the accepted row, all before it returns the JWT. The accepted token is the
 first 32 lowercase hex characters of SHA-256 over `"cotal.accepted.v1\0"` followed by the
@@ -5211,8 +5249,8 @@ read from a request body. The source is live while the auth service's actor ledg
 that owner and actor carrying that lifecycle UID; a revoked row, or a re-grant under another UID, is
 a dead source at the next resolution. Only the auth service attests this shape; every other host
 refuses it as a coordinate it cannot attest. A reconnect under the same nonce finds the existing
-accepted row. When the row names the same triple and the ceiling being minted is byte-identical to
-the recorded evidence, the callout renews that generation; otherwise it refuses the connect, and the
+accepted row. When the row names the same triple, the generation is before its horizon, and the
+ceiling being minted is byte-identical to the recorded evidence, the callout renews that generation; otherwise it refuses the connect, and the
 client adopts a fresh generation only through a new connection under a new nonce. A managed
 issuance's single source is the child's own actor row and lifecycle, not its parent. A managed seat
 missing either eligibility predicate keeps the legacy manager-caller mint for ordinary commands,
@@ -5233,7 +5271,7 @@ enrollment. The existing fixed manager actors, public nkeys and registration pro
 The host MUST cap every returned credential at the assignment expiry and refuse issuance after the
 assignment ends. The supervisor and executor registration ceilings MUST be persisted through the
 existing issued evidence and accepted-row stores before material is returned, with expiry as their
-recorded lifetime. The recorded permission set MUST be byte-identical to the native permission set
+recorded lifetime and as their generation's horizon. The recorded permission set MUST be byte-identical to the native permission set
 signed by the authority plane at issuance and every renewal. Renewal MUST resolve and confirm the
 original ceiling and MUST NOT widen it. These JWTs are signed by the authority plane, not the
 user-token callout. These registration
@@ -6392,6 +6430,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.FC.>`
 - `$KV.cotal_presence_<space>.<owner>.<actor>`
 - `$JS.API.STREAM.MSG.GET.<CHKV>`
+- `$JS.API.DIRECT.GET.<CHKV>` (the one-shot registry read of the headless CLI commands, which connect on the user's bearer on a user-auth mesh; the same reply-subject vector as the consumer create below)
 - `$JS.API.CONSUMER.CREATE.<CHKV>.>`
 - `$JS.API.CONSUMER.INFO.<CHKV>.>`
 - `$JS.API.STREAM.MSG.GET.<DLVKV>` (delivery lease/readiness; read-only, non-gating)
@@ -6442,6 +6481,7 @@ CHAT history, presence, and channel registry:
 - `$JS.API.CONSUMER.INFO.<CHKV>.>`
 - `$JS.API.STREAM.INFO.<MEMKV>`
 - `$JS.API.STREAM.MSG.GET.<MEMKV>`
+- `$JS.API.DIRECT.GET.<MEMKV>` (the membership snapshot read: paged batched Direct Gets that bind no consumer, since this profile may delete none)
 - `$JS.API.CONSUMER.CREATE.<MEMKV>.>`
 - `$JS.API.CONSUMER.INFO.<MEMKV>.>`
 - `$JS.API.STREAM.INFO.<DLVKV>`
@@ -6518,12 +6558,30 @@ single-function profiles, each granting only the verbs its function needs and no
   channels plus the channels the delivery daemon's read-only `lifecycleMemberships` admin verb
   lists for that exact `(principal, lifecycleUid)`. When that inventory cannot be read, rows on
   other channels stay retained, the teardown logs the inventory as incomplete, and retirement
-  remains held pending retry rather than releasing the alias.
+  remains held pending retry rather than releasing the alias. The daemon MUST NOT hold that verb
+  behind its other admin commands. Requests that arrive together MAY share one read of the members
+  bucket, provided that read began after each of them arrived. Before it asks for that inventory,
+  the manager MUST fence the lifecycle: it narrows the lifecycle's read-ACL row to an empty
+  `allowSubscribe` with a compare-and-set update of the existing row, keeping its ceiling and never
+  creating a row, under a deprovisioner credential pinned to that lifecycle. The daemon MUST read the
+  lifecycle's exact ACL row immediately before a `durableJoin` writes the row that creates or reopens
+  its membership, and again after that write. It MUST refuse the join when the channel is not within
+  that row, and after the write it MUST first remove the row by its exact key. Every other membership
+  write, such as a leave's tombstone or an activation, MUST update only the revision it read and MUST
+  NOT recreate a removed key. A row of a fenced lifecycle that the inventory does not list is then
+  never kept, whichever daemon process wrote it. The daemon also keeps its own fence, for a manager
+  that does not narrow: once it takes a lifecycle's inventory request, it MUST refuse every
+  `durableJoin` and `durableLeave` bound to that lifecycle, and it MUST begin the read only after the
+  joins and leaves of that lifecycle already running have finished.
 - `supervisor`: the always-on agent-lifecycle daemon (the manager process's own connection). It
   is the manager endpoint's serve credential (§13.9) and the ONLY holder of the capabilities for
   the delivery endpoint's admin commands (below).
 - `delivery`: the server-side Plane-3 infra: fan-out, trusted-reader re-authorization, and the
-  membership/ACL records the durable backstop authorizes against (§7). It is the `delivery`
+  membership/ACL records the durable backstop authorizes against (§7). One process MAY hold this role
+  for several spaces as one lane per space. Each lane presents only its own space's `delivery`
+  credential, which that space's account signs, on connections of its own, and holds its own
+  delivery lease, Plane-3 bindings and `$SYS` scan target; no credential, connection or lease is
+  shared across spaces or accounts. It is the `delivery`
   endpoint's serve credential (§13.9); its admin commands, `reloadCreds`, the explicit adoption
   step of standing credential renewal (the daemon re-reads its re-signed creds file, pins the
   identity, swaps its connection, and reconnects the membership feed's rw connection, replying
@@ -6590,7 +6648,8 @@ single-function profiles, each granting only the verbs its function needs and no
   callout-only replica on its own, MAY hold one `issuer` session per account, space and
   authority-plane lifetime for the user-auth issuance its callout performs. A callout-only replica
   is one space's membership of that space's callout queue group, and one process MAY hold several,
-  one session each. That session is private to its host and never shared across accounts or
+  one session each; a process serving several spaces as their full auth service likewise holds one
+  session per space. That session is private to its host and never shared across accounts or
   spaces. Its credential keeps the profile's five-minute
   expiry and is replaced with freshly minted credentials before it expires. Its connection never
   reconnects: it is closed and drained on a fence, a shutdown or a loss, and the next issuance dials
@@ -6668,6 +6727,12 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-28 | **A retiring lifecycle's fence is its ACL row (Appendix B).** The fence of the next entry lived only in one daemon's memory and was checked before a join wrote its row, so a join whose ACL lookup outlived the fence, a join from a still-connected seat after a daemon restart, or a join a quiesced predecessor finished after its successor's inventory each kept one row of a retired lifecycle. The manager now narrows the lifecycle's ACL row to an empty `allowSubscribe` before it asks for the inventory. The daemon re-reads that exact row before and after the write that creates a membership row, and removes the row and refuses the join when the channel is no longer within it. Other membership writes only update the revision they read. The daemon's own refusal and its wait for running writes stay, for a manager that does not narrow, as on a hosted daemon serving older managers. No wire change. |
+| 2026-10-28 | **A lifecycle's memberships stop changing once its inventory is requested (Appendix B).** A seat's eviction closes its connection but does not settle the daemon's own work: a `durableJoin` already running, or one queued on `ctl.delivery` and authorized after the inventory against the still-live ACL row, could commit a row the inventory never listed, and retirement then kept it. Once the daemon takes a lifecycle's `lifecycleMemberships` request, it MUST refuse every `durableJoin` and `durableLeave` bound to that lifecycle, and it MUST begin the read only after the ones already running have finished. No wire change. |
+| 2026-10-27 | **The membership inventory is not held behind other admin commands (Appendix B).** A manager stop retires many lifecycles at once, and each retirement asked the delivery daemon for its `lifecycleMemberships` inventory after its eviction. The daemon answered its admin commands one at a time, so the inventories waited behind every other seat's eviction, missed their deadline, and left rows retained. The daemon now MUST NOT hold that verb behind its other admin commands. Requests that arrive together MAY share one read of the members bucket, provided the read began after each of them arrived, so every answer stays as complete as a read of its own. No wire change. |
+| 2026-10-27 | **One auth service process MAY serve several spaces in full (§10, §13.13, Appendix B), additive.** One process may serve several spaces' exchange and JWKS as one full auth service per space. Each space's exchange is served on listeners of its own and mints only from that space's keys and ledger; each space keeps its own authority plane, claim row, scanner connections and fence, and a fence downs that space's service alone. Such a process holds one `issuer` session per space, never shared across spaces or accounts. |
+| 2026-10-27 | **Issued-authority rows are bounded by their generation's horizon (§13.12, §13.15).** The two issued-authority stores held every issuance forever, so their size was the cumulative number of exchanges. A generation now carries its horizon in its first 8 hex digits, and its last 24 are 96 bits of issuer entropy, so the 32-hex grammar is unchanged. The `issuer` gains only `STREAM.INFO` on the accepted store, so every issuer and resolver verifies both stores' shape when it binds. Every row of a generation in either store carries a per-message TTL to its horizon plus a 60-second margin, and both stores set `allow_msg_ttl` with no subject delete markers; `deny_delete`, `deny_purge` and the per-key shapes are unchanged. Every resolution, renewal and retirement refuses a generation at or past its horizon before it reads the store, and resolution checks the horizon again after its last read, so a removed key re-created later is never read. Horizons: the bearer expiry for a user-auth issuance, the credential expiry for an operator instrument, the assignment expiry for a platform supervisor duty, and 30 days after issuance for a static incarnation, whose renewals are capped at it. A store created before this revision is refused at bind and recreated. **Breaking pre-1.0 authority change: minor.** |
+| 2026-10-27 | **One delivery process MAY serve several spaces (Appendix B), additive.** One process may hold the `delivery` role for several spaces as one lane per space. Each lane presents only its own space's `delivery` credential on its own connections and holds its own delivery lease, Plane-3 bindings and `$SYS` scan target, never shared across spaces or accounts. The single-flight lease, its responder verdicts and the admin commands apply per lane unchanged. |
 | 2026-10-26 | **An operator instrument reads its pinned manager's `resolve-cwd` (§13.2, Appendix B), additive.** The folder question a managed launch asks had no caller that could make its check on a static mesh: `resolve-cwd` was carried by a `spawn` holder's `manager-caller` view and by no operator instrument, so every folder typed at that question was refused at the broker. Both instrument tiers now carry it on the instance their mint pins, beside the `spawn` row of the same `manager.spawn` capability class. The standing agent `spawn` set is unchanged, and no class, scatter or other-instance row is added. |
 | 2026-10-26 | **One callout process MAY serve several spaces (§10, Appendix B), additive.** A space's callout requests are served inside that space's dedicated auth account, so a responder holds one subscription per auth account it serves. One process may hold one subscription and one set of signing keys per space it serves. A response for a space must be signed only with that space's keys, and a bearer must be validated only against the issuer and audience of the space whose request it arrived on. Connect-limit buckets are per space, so a connect to one space never spends another's allowance. A callout-only replica is one space's membership of its queue group, and one process may hold several, one `issuer` session each. |
 | 2026-10-26 | **A held `issuer` session for user-auth issuance (§13.9, §13.15).** An auth service, and each callout-only replica on its own, may hold one `issuer` session per account, space and authority-plane lifetime for the user-auth issuance its callout performs, in place of one session per connect. It keeps the five-minute expiry and is replaced before it expires. It never reconnects, and it is closed and drained on a fence, a shutdown or a loss. Each issuance still makes its own reads and writes, and a write in flight at a loss is never sent again. Retirement at a lifecycle terminal and every other issuance window stay one-shot. The `issuer` principal is no longer one-shot only. |

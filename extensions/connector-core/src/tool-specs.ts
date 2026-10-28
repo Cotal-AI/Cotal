@@ -20,10 +20,12 @@ import { buildOrientation, presenceLiveness, renderOrientation, type Orientation
 import { runDocs } from "./docs.js";
 
 /** What a Cotal tool returns: text to show the model, flagged on failure. MCP wraps it in
- *  `content`; the OpenCode plugin returns the string. */
+ *  `content`; the OpenCode plugin returns the string. `structured` is the same answer as data for
+ *  hosts that show a tool's structured content in place of its text, so it repeats the text. */
 export interface ToolResult {
   text: string;
   isError?: boolean;
+  structured?: Record<string, unknown>;
 }
 
 const ok = (text: string): ToolResult => ({ text });
@@ -732,14 +734,14 @@ export function cotalToolSpecs(
       title: "Cotal: connection status",
       description:
         "Report this session's mesh connection as one of six states, plus the raw facts it is " +
-        "derived from. `ready` is bound with a live transport AND consuming its queue. `stalled` is " +
+        "derived from. `ready` is bound with a live transport, no repeated presence write failures, and a progressing queue. `stalled` is " +
         "bound with a live transport while automatic deliveries have been queued with no progress " +
         "for over ten minutes: the connection is fine and the seat is not consuming, so peer " +
         "messages are piling up behind it. Progress is measured at the HEAD of the queue, so a seat " +
         "that keeps committing fresh arrivals while its oldest deliveries never come off reports " +
-        "`stalled` rather than `ready`. `degraded` is bound while the " +
-        "transport underneath is DOWN, so sends queue or fail until the client reconnects; this is " +
-        "the state that needs attention. `connecting` is a live transport whose Cotal bind has not " +
+        "`stalled` rather than `ready`. `degraded` is bound while the transport is down or two or more " +
+        "consecutive presence writes have failed. A live core NATS connection does not prove JetStream " +
+        "accepts writes; `connectionIssue` names the observed write failure. `connecting` is a live transport whose Cotal bind has not " +
         "finished. `disconnected` is neither. `stopped` means this session was shut down " +
         "deliberately and is terminal, which is not a fault. Also reports the buffered inbox count " +
         "and the time of the latest successful non-empty inbox drain when one has occurred. A " +
@@ -759,14 +761,10 @@ export function cotalToolSpecs(
         // which one it is; `state` says which to expect.
         const issueField =
           issue === undefined ? {} : state === "stopped" ? { lastConnectionIssue: issue } : { connectionIssue: issue };
-        // #1356: a bound endpoint can be `ready` on every field above while its presence writes are
-        // being refused - it stays connected, keeps heartbeating into a stream that accepts nothing,
-        // and the roster keeps serving its last good row. Reported as its own fact rather than folded
-        // into connectionIssue, because `ready` and "presence has been unwritable for 47s" are BOTH
-        // true and a caller needs to see the pair. The name says what was observed; it does not bound
-        // the fault, since JetStream can be down account-wide with connected/transportConnected true.
+        // Presence write failures remain a separate measured fact beside the derived state and
+        // current issue. JetStream can refuse writes while connected/transportConnected remain true.
         // Gated on a live transport for the same reason the connector's retry line is: the field's
-        // own note tells a reader the connection is up, so it must not be reachable when it is not.
+        // own note describes a live connection, so it must not be reachable when it is not.
         // A machine-readable lie outranks a human-readable one - a caller PARSES this - so the guard
         // matters more here than in the log string, not less. The endpoint clears the record on every
         // connection teardown, which is the primary fix; this stops a transport that dropped without
@@ -1192,7 +1190,7 @@ export function cotalToolSpecs(
       name: "cotal_status",
       title: "Cotal: set your status / attention",
       description:
-        "Set your presence status (what you're doing, so peers can see) and/or your attention mode (how much peer traffic interrupts you). Both are optional: pass only the one you want to change; with neither, it reports your current status and attention. A connector that sees your turns also sets status itself, working when a turn starts and idle when it ends, so a status you set holds until your next turn starts.",
+        "Set your presence status (what you're doing, so peers can see) and/or your attention mode (how much peer traffic interrupts you). Both are optional: pass only the one you want to change; with neither, it reports your current status and attention. A connector that sees your turns also sets status itself, working when a turn starts and idle when it ends, so a status you set holds until your next turn starts. This changes presence only and does not complete a workflow turn.",
       schema: {
         status: z
           .enum(["idle", "working", "waiting"])
@@ -1210,7 +1208,7 @@ export function cotalToolSpecs(
       },
       async run(agent, _config, { status, attention, activity }: { status?: PresenceStatus; attention?: "open" | "dnd" | "focus"; activity?: string }) {
         try {
-          if (status) await agent.setStatus(status, activity);
+          if (status) await agent.resetStatus(status, activity);
           else if (activity !== undefined) await agent.setActivity(activity);
           if (attention) await agent.setAttention(attention);
           const lines: string[] = [];
@@ -1396,7 +1394,7 @@ export function cotalToolSpecs(
       name: "cotal_spawn",
       title: "Cotal: spawn a new teammate",
       description:
-        "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal watch` for a live terminal view. The dashboard service is configured and started separately; do not install or launch it implicitly.",
+        "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal watch` for a live terminal view. The dashboard service is configured and started separately; do not install or launch it implicitly. A partial result means the seat started but its requested model pin could not be read back: it names the seat and the `cotal ps --on <manager>` command that shows the pin, and spawning again would start a second agent.",
       schema: {
         name: z.string().describe("Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered with an underscore, e.g. socrates_2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name."),
         instance: z
@@ -1406,7 +1404,7 @@ export function cotalToolSpecs(
             catch { return false; }
           }, "instance must be a lifecycle token ([a-z0-9]{26,32})")
           .optional()
-          .describe("Optional manager instance id for a multi-manager space. Omitted uses class anycast. A pin that cannot be resolved is refused without falling back to another manager."),
+          .describe("Optional manager instance id for a multi-manager space. An open managed seat defaults to its launching manager; an unbound open or static caller uses class anycast. User-auth selection remains issuer-bound. A pin that cannot be resolved is refused without falling back to another manager."),
         role: z
           .string()
           .optional()
@@ -1421,7 +1419,7 @@ export function cotalToolSpecs(
           .string()
           .min(1)
           .optional()
-          .describe("Optional model override (e.g. opus, sonnet); it wins over the persona file's model:. The spawn fails if the manager does not record this pin. The result names the recorded model; do not treat a spawn as cross-vendor unless that name matches what you requested."),
+          .describe("Optional model override (e.g. opus, sonnet); it wins over the persona file's model:. The spawn fails if the manager does not record this pin. The result names the recorded model; do not treat a spawn as cross-vendor unless that name matches what you requested. If the pin cannot be read back, the result is partial and the seat still runs."),
         variant: z
           .string()
           .optional()
@@ -1465,8 +1463,18 @@ export function cotalToolSpecs(
           // An uncertain launch is still managed and may yet join. Reported as an error it reads as a
           // failed launch, and the caller's retry starts a second agent on the same work.
           const pending = reply.code === "uncertain";
+          const submission = reply.data as { goalId?: string; submissionUnknown?: boolean } | undefined;
+          if (!reply.ok && submission?.submissionUnknown && submission.goalId) {
+            const goalId = submission.goalId;
+            const next = `cotal_invoke(endpoint="manager", command="goal-result", args={"goalId":${JSON.stringify(goalId)}})`;
+            const message = `Spawn submission for ${name} has an unknown outcome for goal "${goalId}". Acceptance has not been confirmed; the seat may appear later. Do NOT retry: another submission could create a second lifecycle. ${reply.error ?? "The submission wait ended."} Next: ${next} as this same caller, or inspect 'ps'/'inspect'. A missing result does not prove the submission failed.`;
+            return { text: message, structured: { status: "unknown", name, goalId, next, message } };
+          }
           if (!reply.ok && !pending) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? "manager refused", reply)}`);
-          const d = reply.data as { name?: string; mode?: string; model?: string; actor?: string; executor?: { lifecycleUid: string } } | undefined;
+          const d = reply.data as {
+            name?: string; mode?: string; model?: string; id?: string; actor?: string; executor?: { lifecycleUid: string };
+            pinAudit?: { requested: string; error: string; unreported?: true };
+          } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
           const mode = d?.mode;
           const who = peerLabel({ name: actual, role });
@@ -1474,6 +1482,25 @@ export function cotalToolSpecs(
           // `actual`, not silently address the wrong peer later (the tool result is the only channel).
           const lead = actual !== name ? `"${name}" was taken — spawning ${who} instead` : `Spawning ${who}`;
           const pin = d?.model ? ` recorded model ${JSON.stringify(d.model)}` : "";
+          // The seat launched and only its pin read failed: a partial outcome naming the seat, so the
+          // caller reads the pin where the manager keeps it instead of spawning a second seat.
+          if (d?.pinAudit) {
+            const { requested, error, unreported } = d.pinAudit;
+            const id = d.id ?? d.actor;
+            const manager = d.executor?.lifecycleUid ?? reply.instanceId;
+            const next = `cotal ps --on ${manager}`;
+            const state = pending ? "it has not joined the mesh within its readiness window and may still be booting" : "it joined the mesh";
+            const audit = unreported ? "was not reported by this manager" : "could not be audited";
+            const message = `${lead} (id ${id}, manager ${manager}${mode ? `, runtime ${mode}` : ""}): ${state}, but its model pin ${JSON.stringify(requested)} ${audit} (${error}). ` +
+              `Do not spawn it again: a retry starts a second agent. Next: \`${next}\` shows the seat and the model its manager recorded.`;
+            return {
+              text: message,
+              structured: {
+                status: "partial", name: actual, id, manager, ...(mode ? { runtime: mode } : {}), joined: !pending,
+                model: { requested, audited: false, reported: !unreported, error }, next, message,
+              },
+            };
+          }
           if (pending)
             return ok(`${lead}${pin} (id ${d?.actor}, manager ${d?.executor?.lifecycleUid}), but it did not join the mesh within its readiness window. It may still be booting, so do not spawn it again: a retry starts a second agent. Watch cotal_roster for ${actual}, and cotal_despawn it if it never joins.`);
           return ok(`${lead}${mode ? ` (${mode})` : ""}${pin} — it will appear in the roster shortly.`);
@@ -1707,6 +1734,13 @@ export function cotalToolSpecs(
       ) {
         try {
           const reply = await agent.definePersona({ name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, announce });
+          if (reply.definitionOutcome === "unknown") {
+            const readback = `cotal_personas(name="${name}"${instance === undefined ? "" : `, instance="${instance}"`})`;
+            const message = `The definition outcome for persona \`${name}\` is unknown: ${reply.error ?? "the manager reply was not observed"}. ` +
+              `The file may already have been written or may still be written. Do not re-run this definition or spawn it on this result. ` +
+              `Read back with ${readback} on the same manager before acting. A missing readback alone does not prove the write will not land.`;
+            return { text: message, structured: { status: "unknown", name, ...(instance === undefined ? {} : { instance }), next: readback, message } };
+          }
           if (!reply.ok) return err(`Couldn't define ${name}: ${reply.error ?? "manager refused"}`);
           const spawnHint = `spawn it with cotal_spawn(name="${name}"${instance === undefined ? "" : `, instance="${instance}"`}) to bring it online`;
           // The persona is SAVED whenever we get here, so a failed announcement is a partial success,
@@ -1816,9 +1850,10 @@ export function cotalToolSpecs(
         endpoint: z.string().min(1).max(200).describe("The endpoint name, e.g. com.example.orders."),
         refresh: z.boolean().optional().describe("Resolve again instead of using this session's cached surface."),
       },
-      async run(agent, _config, { endpoint, refresh }: { endpoint: string; refresh?: boolean }) {
+      async run(agent, config, { endpoint, refresh }: { endpoint: string; refresh?: boolean }) {
         try {
-          const svc = await agent.ep.describeService(endpoint, { refresh });
+          const instanceId = endpoint === "manager" && !isAuthed(config) ? config.managerInstanceId : undefined;
+          const svc = await agent.ep.describeService(endpoint, { refresh, ...(instanceId !== undefined ? { instanceId } : {}) });
           const commands = [...svc.commands.values()]
             .sort((a, b) => a.command.localeCompare(b.command))
             .map((c) => ({
@@ -1848,9 +1883,10 @@ export function cotalToolSpecs(
         self: z.boolean().optional().describe("Targeted commands only: act on this session itself."),
         timeoutMs: z.number().int().min(1).max(120000).optional().describe("Reply deadline in milliseconds (default 30000)."),
       },
-      async run(agent, _config, { endpoint, command, args, self, timeoutMs }: { endpoint: string; command: string; args?: Record<string, unknown>; self?: boolean; timeoutMs?: number }) {
+      async run(agent, config, { endpoint, command, args, self, timeoutMs }: { endpoint: string; command: string; args?: Record<string, unknown>; self?: boolean; timeoutMs?: number }) {
         try {
-          const r = await agent.ep.invokeService(endpoint, command, args, { deadlineMs: timeoutMs ?? 30_000, ...(self ? { target: { mode: "self" as const } } : {}) });
+          const instanceId = endpoint === "manager" && self && !isAuthed(config) ? config.managerInstanceId : undefined;
+          const r = await agent.ep.invokeService(endpoint, command, args, { deadlineMs: timeoutMs ?? 30_000, ...(self ? { target: { mode: "self" as const } } : {}), ...(instanceId !== undefined ? { instanceId } : {}) });
           if (r.reply.ok !== true) {
             const e = r.reply.error;
             // An endpoint's error text is bounded like its data: nothing over the limit is cut, and

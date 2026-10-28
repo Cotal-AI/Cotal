@@ -30,7 +30,7 @@ export function resolveServiceAdapter(name: string, options: Readonly<Record<str
   const owner = owners[0];
   const cached = owner ? verifiedExtensionServiceProcesses(owner).find((component) => component.name === name) : registered;
   if (!cached?.service) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no installed local-process provider declares this service adapter; install or update its extension explicitly before adding or starting the definition");
-  if (owner?.pkg.startsWith("@cotal-ai/") && owner.version !== cliVersion()) throw new CommandFailure("refused", "CONFLICT", "the first-party service adapter and this CLI have different versions; run cotal update before use");
+  if (owner?.pkg.startsWith("@cotal-ai/") && owner.version !== cliVersion()) throw new CommandFailure("refused", "CONFLICT", "the first-party service adapter and this CLI have different versions; run `cotal update` before use");
   const declaration = serviceAdapterDeclaration(JSON.parse(JSON.stringify(cached.service)));
   if (checkOptions) { validateServiceAdapterOptions(declaration, options); validateServiceAdapterPaths(declaration, options); }
   const pin = { name, package: owner?.pkg ?? null, version: owner?.version ?? cliVersion(), declarationSha256: serviceMetadataDigest(declaration) };

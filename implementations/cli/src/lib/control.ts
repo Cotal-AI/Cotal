@@ -149,7 +149,9 @@ async function askManagerEp(
       : auth.epCaller!;
     // P2 item 3 `--on <instance>`: pin the resolve to the exact manager instance's `inst` route so a
     // multi-manager space addresses the intended manager, never whichever wins the class anycast.
-    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000, ...(instanceId !== undefined ? { instanceId } : {}), ...(pin?.signal ? { signal: pin.signal } : {}) });
+    const followsGoal = (GOAL_BEARING_COMMANDS as readonly string[]).includes(mapped.command);
+    const resolveCommands = [...new Set([mapped.command, ...(mapped.targeted ? ["inspect"] : []), ...(followsGoal ? ["goal-result"] : [])])];
+    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000, commands: resolveCommands, ...(instanceId !== undefined ? { instanceId } : {}), ...(pin?.signal ? { signal: pin.signal } : {}) });
     let target: EpVerbTarget | undefined;
     let sendArgs = args;
     if (mapped.self) target = { mode: "self" };
@@ -194,7 +196,6 @@ async function askManagerEp(
       const { name: _dropped, ...rest } = args ?? {};
       sendArgs = Object.keys(rest).length ? rest : undefined;
     }
-    const followsGoal = (GOAL_BEARING_COMMANDS as readonly string[]).includes(mapped.command);
     const blocked = followsGoal ? goalFollowRefusal(service) : undefined;
     if (blocked) return { ...controlReplyFrom(blocked.reply), nativeOutcome: "not-executed", managerInstanceId: service.responder.instanceId, managerEpoch: service.responder.epoch };
     const id = randomUUID();
@@ -221,7 +222,7 @@ async function askManagerEp(
         reconcile: async (goalId, accepted, context) => {
           // A class credential keeps its class route. An accepted instance ID grants no new rail;
           // the native follower still verifies the canonical fact against the original caller/goal.
-          const current = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, context.caller, { ...(instanceId !== undefined ? { instanceId: accepted.responder.instanceId } : {}), deadlineMs: context.deadlineMs, signal: context.signal });
+          const current = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, context.caller, { ...(instanceId !== undefined ? { instanceId: accepted.responder.instanceId } : {}), commands: ["goal-result"], deadlineMs: context.deadlineMs, signal: context.signal });
           const answer = await invokeRepairingSplit(nc, space, current, "goal-result", { goalId }, { deadlineMs: context.deadlineMs, signal: context.signal });
           if (!answer.reply.ok) {
             observationCause = { code: answer.reply.error?.code, outcome: answer.reply.error?.outcome };
@@ -283,7 +284,7 @@ export function managerFailure(reply: ManagerReply, operation: string, target: u
   const agent = (target as { agent?: unknown } | null)?.agent;
   const what = typeof agent === "string" ? `${operation} for agent "${oneLine(agent)}"` : operation;
   const reason = reply.error ? `: ${oneLine(reply.error)}` : "";
-  if (reply.preSubmitRefusal && code) return new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : `${operation} was not submitted because its target could not be resolved`, { target, native, remedy: "run cotal ps to check the selected manager and agent name" });
+  if (reply.preSubmitRefusal && code) return new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : `${operation} was not submitted because its target could not be resolved`, { target, native, remedy: "run `cotal ps` to check the selected manager and agent name" });
   if (reply.nativeOutcome === "not-executed" && code) return new CommandFailure("refused", code, `the manager refused ${what} before execution${reason}`, { target, native, remedy: "nothing ran; fix what the manager reported, then run the command again" });
   if (reply.nativeOutcome === "executed" && !reply.unanswered) return new CommandFailure("failed", "OPERATION_FAILED", `the manager reported that ${what} failed${reason}`, { target, native });
   return new CommandFailure("unknown", "OPERATION_UNKNOWN", `the manager did not confirm the outcome of ${what}; it was not submitted again${reason}`, { target, native, remedy: "inspect the recorded manager, request and target before retrying" });
@@ -702,6 +703,11 @@ export function scatterProbeMaterial(
   return { kind: "as-is" };
 }
 
+/** Commands whose closures one scatter run invokes: the scattered verb, plus status for host labels. */
+export function scatterResolveCommands(command: string, reportHosts: boolean): string[] {
+  return [...new Set([command, ...(reportHosts ? ["status"] : [])])];
+}
+
 /** The ep-rail CLASS SCATTER (P2 item 3, `cotal ps` default).
  *
  * TWO connections, because a connection's permissions are fixed at authentication and this command
@@ -786,7 +792,8 @@ async function askManagerScatterEp(
   try {
     return await withControlConnection(server, probeAuth, async (nc) => {
       const { probeLiveness, livenessOf } = pinnedLivenessProbe(nc, { space, endpoint: BASELINE_LIFECYCLE_ENDPOINT, caller, pinned: probed });
-      const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000 });
+      const commands = scatterResolveCommands(mapped.command, reportHosts);
+      const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000, commands });
       const result = await scatterCommand(nc, space, service, mapped.command, undefined, {
         deadlineMs: timeoutMs ?? 8_000,
         reconcileDeadlineMs: 3_000,
@@ -843,7 +850,7 @@ export async function refuseWithoutLiveManager(space: string, server: string, au
     return await liveManagerIds(space, server, auth);
   } catch (e) {
     if (!(e instanceof EpEnvelopeError) || !noLiveInstances(e)) return undefined;
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to ${purpose}`, { target, native: { code: e.code, detail: `${e.code}: ${e.message}` }, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to ${purpose}`, { target, native: { code: e.code, detail: `${e.code}: ${e.message}` }, remedy: "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none" });
   }
 }
 
@@ -881,7 +888,7 @@ export async function refuseUnregisteredManager(space: string, server: string, a
   const target = { space, requestedManagerInstance: on };
   // With none running this is the unpinned refusal, which names the same way out.
   if (running.length === 0)
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space, so --on ${on} names none. Nothing was sent`, { target, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space, so --on ${on} names none. Nothing was sent`, { target, remedy: "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none" });
   const which = running.length === 1 ? `the one running is ${running[0]}` : `the ones running are ${running.join(", ")}`;
   throw new CommandFailure("refused", "TARGET_NOT_FOUND", `--on ${on} names no manager running for space ${space}; ${which}. Nothing was sent`, {
     target,

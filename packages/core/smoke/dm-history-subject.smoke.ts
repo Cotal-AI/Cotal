@@ -19,6 +19,8 @@ import {
   setupSpaceStreams,
   unicastSubject,
   chatSubject,
+  anycastSubject,
+  type CotalMessage,
   type Part,
 } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -364,6 +366,39 @@ try {
   check("multiChannelHistory keeps the honest multicast", multi.some((r) => r.msg.id === chatHonest.id));
   check("multiChannelHistory drops a from.id mismatch", !multi.some((r) => r.msg.id === "chat-spoof-388"));
   check("multiChannelHistory tags the surviving row from the subject channel", multi.some((r) => r.msg.id === chatHonest.id && r.channel === "log"));
+
+  // ── #3219: an anycast reaches listeners with its routing fields derived from the svc subject,
+  //    the way the "to-spoof-388" DM cell above proves for `to`. The payload's toService/to/channel
+  //    are publisher-written; a listener that trusted them saw whatever role, DM or channel the
+  //    sender claimed. The subject is broker-policed, so the role it names is the only one that counts.
+  const worker = new CotalEndpoint({
+    space: SPACE, servers: SERVER, channels: [], registerPresence: false,
+    card: { name: "worker", kind: "endpoint", owner: "local", actor: "worker", role: "worker" },
+  });
+  worker.on("error", () => {});
+  const anycastSeen = new Promise<{ msg: CotalMessage; kind: string }>((resolve) => {
+    worker.on("message", (msg, delivery, meta) => {
+      if (msg.id !== "svc-spoof-3219") return;
+      delivery.ack();
+      resolve({ msg, kind: meta.kind });
+    });
+  });
+  await worker.start();
+  const rawSvc = await connect({ servers: SERVER });
+  rawSvc.publish(anycastSubject(SPACE, "worker", "local", "alice"), JSON.stringify(envelope({
+    id: "svc-spoof-3219",
+    toService: "reviewer",
+    to: "local.carol",
+    channel: "log",
+    parts: [{ kind: "text", text: "anycast-claims-another-role" }],
+  })));
+  await rawSvc.flush();
+  const anycast = await Promise.race([anycastSeen, wait(5000).then(() => undefined)]);
+  await rawSvc.close();
+  check("an anycast published on the worker role's svc subject reaches the worker's listener as anycast", anycast !== undefined && anycast.kind === "anycast", anycast);
+  check("the listener sees toService from the svc subject, not the payload's claimed role", anycast?.msg.toService === "worker", anycast?.msg.toService);
+  check("the payload's forged to and channel are stripped from the delivered anycast", anycast !== undefined && anycast.msg.to === undefined && anycast.msg.channel === undefined, anycast?.msg);
+  await worker.stop();
 
   await alice.stop();
   await bob.stop();

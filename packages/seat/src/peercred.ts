@@ -11,7 +11,10 @@ export interface PeerCredentials {
   gid: number;
 }
 
-type PeercredNative = { peercred: (fd: number) => PeerCredentials };
+type PeercredNative = {
+  peercred: (fd: number) => PeerCredentials;
+  flockExclusiveNb: (fd: number) => boolean;
+};
 
 export const LINUX_NATIVE_ARCHES = ["x64", "arm64"] as const;
 
@@ -60,4 +63,17 @@ export function socketFd(sock: Socket): number {
 
 export function peerCredentials(sock: Socket): PeerCredentials {
   return loadNative().peercred(socketFd(sock));
+}
+
+/**
+ * Take an exclusive `flock(2)` on `fd` without blocking. True when this process now holds it,
+ * false when another open file description does.
+ *
+ * The kernel owns the lock's lifetime: it is released when the last descriptor referring to it
+ * closes, which every way of dying includes. So a holder killed with SIGKILL, or one the OOM
+ * killer takes, leaves no lock behind, and the next acquirer learns the holder is gone from the
+ * kernel rather than inferring it from a recorded pid.
+ */
+export function flockExclusiveNb(fd: number): boolean {
+  return loadNative().flockExclusiveNb(fd);
 }

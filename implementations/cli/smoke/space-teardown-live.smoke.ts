@@ -356,7 +356,7 @@ try {
     const [readGone, sendGone] = [cli(root, "history", "general", "--space", space, "--json"), cli(root, "send", "-c", "general", "before the up", "--space", space, "--json")];
     check("before the up, history and send refuse TARGET_UNAVAILABLE: the streams are not on the broker, and cotal up there creates them",
       [readGone, sendGone].every((r) => r.status === 2 && r.env?.error?.code === "TARGET_UNAVAILABLE" && r.env.error.message?.startsWith(`the streams of ${space} are not on its broker; a space delete removes them`) === true
-        && r.env.error.remedy === `run cotal up in ${root} to create them again, empty`), { history: shown(readGone), send: shown(sendGone) });
+        && r.env.error.remedy === `run \`cotal up\` in ${root} to create them again, empty`), { history: shown(readGone), send: shown(sendGone) });
     const statusGone = cli(root, "status", "--json");
     const streamsGone = (statusGone.env?.result?.selected as { spaceStreams?: { state: string; stack: string | null } } | undefined)?.spaceStreams;
     check("status says the streams are not on the broker while the stack's other members are stopped", statusGone.status === 0 && streamsGone?.state === "absent" && streamsGone.stack === "stopped", shown(statusGone));
@@ -398,7 +398,7 @@ try {
     const nc = await connect({ servers: server, ...standaloneConnectOpts({ creds, tls: false }), inboxPrefix: `_INBOX_${identity.id}`, reconnect: false });
     try { await (await jetstreamManager(nc)).streams.delete(`KV_${deliveryBucket(space)}`); } finally { await nc.drain(); }
     const partial = cli(root, "up", "--no-manager", "--json");
-    check("up over a broker that lost one bucket refuses TARGET_NOT_FOUND, exit 2, naming the restart", partial.status === 2 && partial.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(partial.env.error.message.includes("missing some of this space's streams")) && Boolean(partial.env.error.remedy?.includes("cotal down --yes, then cotal up")), shown(partial));
+    check("up over a broker that lost one bucket refuses TARGET_NOT_FOUND, exit 2, naming the restart", partial.status === 2 && partial.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(partial.env.error.message.includes("missing some of this space's streams")) && Boolean(partial.env.error.remedy?.includes("`cotal down --yes`, then `cotal up`")), shown(partial));
     const down = cli(root, "down", "--yes", "--json");
     const back = cli(root, "up", "--no-manager", "--json");
     check("down --yes, then up, starts it again", down.status === 0 && back.status === 0, { down: shown(down), up: shown(back) });
@@ -506,7 +506,7 @@ try {
       const refused = cli(other, ...args, "--space", space, "--json");
       check(`${args[0]} refuses DEPENDENCY_UNAVAILABLE, naming the gone folder and cotal down --space ${space} --yes`,
         refused.status === 2 && refused.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && refused.env.target?.space === space && Boolean(refused.env.error.message.includes(`${root}, and that folder is gone`))
-          && refused.env.error.remedy === `stop the stack it left running and free its name with cotal down --space ${space} --yes`, shown(refused));
+          && refused.env.error.remedy === `stop the stack it left running and free its name with \`cotal down --space ${space} --yes\``, shown(refused));
     }
     const stopped = cli(other, "down", "--space", space, "--yes", "--json");
     const members = (stopped.env?.result?.members as { result: string }[] | undefined) ?? [];
@@ -552,7 +552,7 @@ try {
     check("its Space streams row says the space was deleted under the running stack, and Next leads with down --yes, then up",
       statusShown.stdout.includes("not on the broker · the space was deleted under its running stack") && /cotal down --yes +Stop the stack its space was deleted under/.test(next[0] ?? "") && /cotal up +Then start it again; up creates the space's streams, empty/.test(next[1] ?? ""), shown(statusShown));
     const message = `the streams of ${space} are not on its broker while its stack runs, so the space was deleted under it; nothing can be read or stored until they are created again`;
-    const remedy = `stop the stack with cotal down --yes in ${root}, then run cotal up there to create them again, empty`;
+    const remedy = `stop the stack with \`cotal down --yes\` in ${root}, then run \`cotal up\` there to create them again, empty`;
     const [readGone, sendGone] = [cli(root, "history", "general", "--json"), cli(root, "send", "-c", "general", "after the delete", "--json")];
     check("history and send refuse TARGET_UNAVAILABLE naming the deletion and down --yes, then up, where they read 0 messages and exited 3",
       [readGone, sendGone].every((r) => r.status === 2 && r.env?.error?.code === "TARGET_UNAVAILABLE" && r.env.error.message === message && r.env.error.remedy === remedy), { history: shown(readGone), send: shown(sendGone) });
@@ -575,11 +575,11 @@ try {
     for (const command of ["store", "space"]) {
       const typo = cli(home, "reset", command, "tear", "--dry-run", "--json");
       check(`reset ${command} of a name no space has refuses TARGET_NOT_FOUND, exit 2, saying so and naming cotal space first`,
-        typo.status === 2 && typo.env?.error?.code === "TARGET_NOT_FOUND" && typo.env.error.message === "no space this machine registered or prepared has this exact name; nothing was removed" && Boolean(typo.env.error.remedy?.startsWith("see the spaces with cotal space; if it ran from a legacy root")), shown(typo));
+        typo.status === 2 && typo.env?.error?.code === "TARGET_NOT_FOUND" && typo.env.error.message === "no space this machine registered or prepared has this exact name; nothing was removed" && Boolean(typo.env.error.remedy?.startsWith("see the spaces with `cotal space`; if it ran from a legacy root")), shown(typo));
       const unstarted = cli(home, "reset", command, space, "--dry-run", "--json");
       check(`reset ${command} of a prepared space no stack ran for refuses TARGET_NOT_FOUND, naming its root, cotal up and space forget`,
         unstarted.status === 2 && unstarted.env?.error?.code === "TARGET_NOT_FOUND" && unstarted.env.error.message === `reset ${command} found nothing to reset: no stack has run for "${space}" in ${root}, so no broker wrote a store; nothing was removed`
-          && unstarted.env.error.remedy === `start it with cotal up from ${root}, or remove its local record with cotal space forget ${space}`, shown(unstarted));
+          && unstarted.env.error.remedy === `start it with \`cotal up\` from ${root}, or remove its local record with \`cotal space forget ${space}\``, shown(unstarted));
     }
   }
 
@@ -608,13 +608,13 @@ try {
       }
       check("the send whose block the broker cannot create exits 3 naming the logged permission failure, and its Next makes the store writable, not free disk",
         failed?.status === 3 && failed.env?.error?.code === "OPERATION_UNKNOWN" && /broker logged a store write failure at .*: permission denied/.test(failed.env.error.message) &&
-          failed.env.error.remedy === `Make ${store} writable by this account again, as chmod -R u+w ${store} does, then restart the broker with cotal down and cotal up before sending again. The broker disabled JetStream, so if cotal down refuses because the manager's stop cannot be recorded, it names the manager process to end on this host first.`, failed && shown(failed));
+          failed.env.error.remedy === `Make ${store} writable by this account again, as chmod -R u+w ${store} does, then restart the broker with \`cotal down\` and \`cotal up\` before sending again. The broker disabled JetStream, so if \`cotal down\` refuses because the manager's stop cannot be recorded, it names the manager process to end on this host first.`, failed && shown(failed));
       const after = cli(root, "send", "-c", "general", "after the failure", "--json");
       const message = after.env?.error?.message ?? "";
       check("a later send refuses DEPENDENCY_UNAVAILABLE naming the write failure, and does not say the space was deleted",
         after.status === 2 && after.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && message.startsWith(`the broker of ${space} has answered no JetStream request since it logged a store write failure at `) && message.includes(": permission denied") && !/deleted/.test(message), shown(after));
       check("its Next makes the store writable and restarts the broker, which keeps the history, and creates nothing again empty",
-        after.env?.error?.remedy === `make ${store} writable by this account again, as chmod -R u+w ${store} does, then restart the broker with cotal down --yes and cotal up in ${root}, which keeps the history` && !/empty/.test(after.env.error.remedy), shown(after));
+        after.env?.error?.remedy === `make ${store} writable by this account again, as chmod -R u+w ${store} does, then restart the broker with \`cotal down --yes\` and \`cotal up\` in ${root}, which keeps the history` && !/empty/.test(after.env.error.remedy), shown(after));
       const status = cli(root, "status", "--json");
       const selected = status.env?.result?.selected as { spaceStreams?: { state: string } } | undefined;
       check("status names the write failure and does not report the streams absent", (status.env?.result?.store as { state?: string; cause?: string } | undefined)?.state === "write-failed" && selected?.spaceStreams?.state !== "absent", shown(status));

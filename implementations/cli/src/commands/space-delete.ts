@@ -11,7 +11,7 @@ import {
 } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
-  brokerAddressForDisplay, CommandFailure, findMesh, findPreparedSpace, getSpaceAuth, oneLine, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, workspaceSecretStore, writeResult, type MeshEntry, type Report, localProcessPath, type Block,
+  brokerAddressForDisplay, CommandFailure, findMesh, findPreparedSpace, getSpaceAuth, oneLine, presentationOf, renderReport, resolveNativeServiceTarget, workspaceSecretStore, writeResult, type MeshEntry, type Report, localProcessPath, type Block,
 } from "@cotal-ai/workspace";
 import { runningStackMembers } from "../lib/stack-members.js";
 import { readStackJournal } from "../lib/stack-journal.js";
@@ -56,7 +56,7 @@ function runBlocks(runs: readonly DeletionRun[], removed: boolean): Block[] {
     { kind: "table", columns: [{ key: "run", label: "Run" }, { key: "state", label: "State" }], rows: runs.slice(0, 100).map((row) => ({ run: row.runId, state: row.state })) },
     { kind: "lines", lines: [...(runs.length > 100 ? [`Showing 100 of ${runs.length} runs; --json retains every row.`] : []), removed
       ? "These runs had not finished and were removed with the streams. A run that was waiting for an answer cannot be answered or resumed."
-      : "Deleting the streams removes these runs. A run still waiting for an answer goes with it and cannot be answered or resumed afterwards. To read a run's open request first, run cotal up, then cotal run show <run>."] },
+      : "Deleting the streams removes these runs. A run still waiting for an answer goes with it and cannot be answered or resumed afterwards. To read a run's open request first, run `cotal up`, then `cotal run show <run>`."] },
   ];
 }
 
@@ -85,7 +85,7 @@ function liveStackRefusal(entry: MeshEntry, space: string, preview = false): Com
   }
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this space's stack still runs here (${users.join(", ")}) and uses these streams${deleted}`, { target: { space, root: entry.root, running: users }, remedy: controller
     ? `stop it with \`cotal down --yes\` from ${entry.root}, then remove its stored streams with \`cotal reset store ${space} --yes\``
-    : `stop it with cotal down from ${entry.root}, then remove its stored streams with cotal clean store --force there` });
+    : `stop it with \`cotal down\` from ${entry.root}, then remove its stored streams with \`cotal clean store --force\` there` });
 }
 
 /** A finite native observation. It does not authorize deletion or form an atomic impact plan. */
@@ -107,7 +107,7 @@ async function readSpaceDeletion(name: string) {
         ? `remove its stored streams with \`cotal reset store ${oneLine(name)} --yes\`, or remove only the local record with \`cotal space forget ${oneLine(name)}\``
         : `no stack has run for it in ${oneLine(prepared.root)}, so it has no stored streams; remove its local record with \`cotal space forget ${oneLine(name)}\`` });
     }
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no registered space has this exact name; no broker was contacted", { target: { space: name }, remedy: "see the registered spaces with cotal space" });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no registered space has this exact name; no broker was contacted", { target: { space: name }, remedy: "see the registered spaces with `cotal space`" });
   }
   if (entry.mode === "user") throw new CommandFailure("refused", "UNSUPPORTED", "this native deletion inventory has no supported user-auth view; no open or static identity was substituted", { target: { space: name } });
   try {
@@ -221,10 +221,10 @@ function interruptedDeletion(space: string, progress: DeletionProgress): Command
   const target = { space };
   const { acknowledged, submitted, postReadStarted } = progress;
   if (!acknowledged.length && submitted === null)
-    return new CommandFailure("failed", "OPERATION_FAILED", "space delete was interrupted before it deleted anything; the space's streams are as they were", { target, remedy: `run cotal space delete ${space} --yes again` });
+    return new CommandFailure("failed", "OPERATION_FAILED", "space delete was interrupted before it deleted anything; the space's streams are as they were", { target, remedy: `run \`cotal space delete ${space} --yes\` again` });
   if (postReadStarted)
-    return new CommandFailure("unknown", "OPERATION_UNKNOWN", `space delete was interrupted after all ${acknowledged.length} deletes were acknowledged, before its check that nothing remains`, { target, changed: acknowledged, remedy: `confirm that nothing remains with cotal space delete ${space} --dry-run` });
-  return new CommandFailure("partial", "OPERATION_PARTIAL", `space delete was interrupted after ${acknowledged.length} ${acknowledged.length === 1 ? "delete was" : "deletes were"} acknowledged${submitted === null ? "" : `, with the delete of ${submitted} unconfirmed`}; the other streams remain`, { target, changed: acknowledged, remedy: `see what remains with cotal space delete ${space} --dry-run, then run cotal space delete ${space} --yes to delete the rest` });
+    return new CommandFailure("unknown", "OPERATION_UNKNOWN", `space delete was interrupted after all ${acknowledged.length} deletes were acknowledged, before its check that nothing remains`, { target, changed: acknowledged, remedy: `confirm that nothing remains with \`cotal space delete ${space} --dry-run\`` });
+  return new CommandFailure("partial", "OPERATION_PARTIAL", `space delete was interrupted after ${acknowledged.length} ${acknowledged.length === 1 ? "delete was" : "deletes were"} acknowledged${submitted === null ? "" : `, with the delete of ${submitted} unconfirmed`}; the other streams remain`, { target, changed: acknowledged, remedy: `see what remains with \`cotal space delete ${space} --dry-run\`, then run \`cotal space delete ${space} --yes\` to delete the rest` });
 }
 
 /** Every effect is on an exact stream name admitted by the fresh native observation. */
@@ -343,13 +343,13 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
   const blocked = registered && liveStackRefusal(registered, name);
   if (blocked) throw blocked;
   if (!yes && (!canPrompt() || presentation === "json"))
-    throw new ConfirmationRequired("live space deletion requires a terminal to type the exact space name, or --yes with an exact positional name in a script", { target: { space: name }, remedy: `inspect cotal space delete ${name} --dry-run first, then run cotal space delete ${name} --yes` });
+    throw new ConfirmationRequired("live space deletion requires a terminal to type the exact space name, or --yes with an exact positional name in a script", { target: { space: name }, remedy: `inspect \`cotal space delete ${name} --dry-run\` first, then run \`cotal space delete ${name} --yes\`` });
   // From here an interrupt says what the deletion left, as `progress` records it.
   const progress: DeletionProgress = { acknowledged: [], alreadyAbsent: [], submitted: null, postReadStarted: false };
   const stopReporting = reportOnInterrupt(presentation, "space delete", () => interruptedDeletion(name, progress));
   const initial = await readSpaceDeletion(name);
   if (!yes) {
-    process.stderr.write(`${renderReport({ ...previewView(initial.result), space: name }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+    process.stderr.write(`${renderReport({ ...previewView(initial.result), space: name }, presentation === "plain" ? "plain" : "rich", process.stderr)}\n`);
     const pending = initial.result.runs.unfinished.length;
     const runs = pending ? ` Its ${pending} workflow run${pending === 1 ? " that has" : "s that have"} not finished go${pending === 1 ? "es" : ""} with it.` : "";
     const answer = await prompts.text({ message: `Permanently delete ${oneLine(name)} on ${oneLine(initial.result.recordedBroker ?? "the registered broker")}?${runs} Type the exact space name`, validate: (value) => value === name ? undefined : `Type ${oneLine(name)} to confirm, or cancel.` });
@@ -379,7 +379,7 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
     if (changed.length)
       throw new CommandFailure("refused", "CONFLICT", `the message counts changed while the confirmation waited (${changed.map((stream) => `${stream.name} holds ${count(stream.messages)}, ${count(reviewed.get(stream.name))} when reviewed`).join("; ")}); no delete request was submitted`, {
         target: { space: name, changed: changed.map((stream) => ({ name: stream.name, reviewed: reviewed.get(stream.name) ?? null, messages: stream.messages })) },
-        remedy: `review the new impact and confirm it with cotal space delete ${name}`,
+        remedy: `review the new impact and confirm it with \`cotal space delete ${name}\``,
       });
   }
   // A stack started while the impact was reviewed refuses here too.
@@ -395,9 +395,9 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
   try { controller = origin === "up" && readStackJournal(root)?.journal.space === name; } catch { /* an unreadable journal names the legacy stop */ }
   const next = controller
     ? [{ command: "cotal up", description: `Run in ${root}: create the space's streams again, empty, on the running broker` },
-      { command: "cotal down --yes", description: `Run in ${root} to stop the stack instead; cotal space forget ${name} then drops the space from this machine` }]
+      { command: "cotal down --yes", description: `Run in ${root} to stop the stack instead; \`cotal space forget ${name}\` then drops the space from this machine` }]
     : origin === "up"
-      ? [{ command: "cotal down", description: `Stop the stack in ${root}; the next cotal up there creates the space's streams again, empty` },
+      ? [{ command: "cotal down", description: `Stop the stack in ${root}; the next \`cotal up\` there creates the space's streams again, empty` },
         { command: `cotal space forget ${name}`, description: "After that stop, drop the space from this machine instead" }]
       : [{ command: `cotal space forget ${name}`, description: "Drop this machine's registration of the deleted space" }];
   // The runs go with the records bucket that holds them.

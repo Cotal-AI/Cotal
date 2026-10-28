@@ -246,7 +246,7 @@ try {
   mkdirSync(join(customRoot, "jetstream"));
   await assert.rejects(
     () => removeLocalState(customRoot, { includeAuth: false, storeDir: customRoot }),
-    (error: Error & { code?: string; remedy?: string }) => error.code === "CONFLICT" && error.remedy === `stop the space with cotal down, then remove the store's own entries by hand: rm -r ${join(realpathSync.native(customRoot), "jetstream")}`,
+    (error: Error & { code?: string; remedy?: string }) => error.code === "CONFLICT" && error.remedy === `stop the space with \`cotal down\`, then remove the store's own entries by hand: rm -r ${join(realpathSync.native(customRoot), "jetstream")}`,
   );
   check("a store in the project folder refuses CONFLICT, naming its entries to remove by hand", existsSync(join(customRoot, "jetstream")));
   const controlTree = join(customRoot, ".cotal", "manifests");
@@ -416,7 +416,7 @@ try {
   } finally { process.chdir(namedCwd); }
   check("store, all and restore-attempt with --space, --server or --creds each refuse USAGE_INVALID before any read",
     refusals.length === 6 && refusals.every((r) => r.code === "USAGE_INVALID" && /the mesh for clean history only; clean [a-z-]+ acts on the root of the folder it runs in, so nothing was removed$/.test(r.message ?? "")), refusals);
-  check("the refusal names its flag and the folder to run it in", refusals[0]?.message?.startsWith("--space picks ") === true && refusals[0].remedy === "run cotal clean store in the project folder of the root to clean, without --space", refusals[0]);
+  check("the refusal names its flag and the folder to run it in", refusals[0]?.message?.startsWith("--space picks ") === true && refusals[0].remedy === "run `cotal clean store` in the project folder of the root to clean, without --space", refusals[0]);
   check("...and the store and the space identity stay", existsSync(join(namedRoot, ".cotal", "nats", "jetstream", "stream.dat")) && existsSync(join(namedRoot, ".cotal", "auth", "auth.json")));
   rmSync(namedRoot, { recursive: true, force: true });
 
@@ -572,7 +572,7 @@ try {
   check("all: a user-auth space's state directory is named as its IdP trust and actor ledger, in the dry run and the receipt",
     userAuthOut.some((line) => line.includes(`would remove ${labeled}`)) && userAuthOut.some((line) => line.includes(`removed ${labeled}`)), userAuthOut);
   check("all: the dry run and the receipt say every actor grant is lost and what a later up needs",
-    /would remove the IdP trust and the actor ledger.*would need cotal up --user-auth --idp <auth base URL>/.test(notes[0] ?? "") && /removed the IdP trust and the actor ledger.*every actor grant is lost.*needs cotal up --user-auth --idp <auth base URL>/.test(notes[2] ?? ""), notes);
+    /would remove the IdP trust and the actor ledger.*would need `cotal up --user-auth --idp <auth base URL>`/.test(notes[0] ?? "") && /removed the IdP trust and the actor ledger.*every actor grant is lost.*needs `cotal up --user-auth --idp <auth base URL>`/.test(notes[2] ?? ""), notes);
   check("all: the receipt names the up a user-auth space needs for its fresh identity",
     userAuthOut.some((line) => line.includes("minted on the next `cotal up --user-auth --idp <auth base URL>`")), userAuthOut);
   check("all: the user-auth state directory is gone", !existsSync(userAuthDir));

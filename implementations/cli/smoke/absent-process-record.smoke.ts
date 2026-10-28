@@ -1,11 +1,12 @@
 /** Process record paths name evidence, never the computed location of an absent record. */
 import { strict as nodeAssert } from "node:assert";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   canonicalLocalProcessPath, commandIsCotalDelivery, DELIVERY_PIDFILE, localProcessPath,
-  MANAGER_PIDFILE, readProcessRecord,
+  MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, readProcessRecord,
 } from "@cotal-ai/workspace";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { assertManagerRecordReplaceable, managerRecordState } from "../src/lib/manager-proc.js";
@@ -20,7 +21,8 @@ const context = { root, space: "record-evidence" };
 const legacy = join(root, ".cotal", "manager.pid");
 const unexpectedProbe = (): never => { throw new Error("a record without a pid must not probe a process"); };
 const unexpectedCommand = (): never => { throw new Error("a record without a live pid must not read process argv"); };
-const manager = () => managerRecordState(unexpectedProbe, unexpectedCommand, context.space, root);
+const seams = { probe: unexpectedProbe, readCommand: unexpectedCommand };
+const manager = () => managerRecordState(context.space, root, seams);
 
 // Positive control first: a real record retains the spelling read and its content.
 writeFileSync(legacy, "not-a-pid\n");
@@ -43,7 +45,7 @@ const emptyContext = { root: emptyRoot, space: context.space };
 const canonical = canonicalLocalProcessPath(MANAGER_PIDFILE, emptyContext);
 assert.equal(localProcessPath(MANAGER_PIDFILE, emptyContext), canonical);
 assert.equal(existsSync(canonical), false);
-const absentManager = managerRecordState(unexpectedProbe, unexpectedCommand, context.space, emptyRoot);
+const absentManager = managerRecordState(context.space, emptyRoot, seams);
 console.log("missing manager record:", JSON.stringify(absentManager));
 assert.deepEqual(absent, { state: "absent" }, "missing process record must not advertise a read path");
 assert.deepEqual(absentManager, { state: "absent" }, "missing manager record must not advertise a canonical path");
@@ -78,16 +80,16 @@ assert.deepEqual(readProcessRecord(deliveryPath, commandIsCotalDelivery, () => "
 const previousCwd = process.cwd();
 try {
   process.chdir(emptyRoot);
-  assertManagerRecordReplaceable(unexpectedProbe, unexpectedCommand, context.space);
-  await stopOldHostingManagerIfPresent(unexpectedProbe, context.space);
+  assertManagerRecordReplaceable(context.space, emptyRoot, seams);
+  await stopOldHostingManagerIfPresent(unexpectedProbe, context.space, emptyRoot);
   assert.deepEqual(existsSync(canonical), false);
   writeFileSync(canonical, "not-a-pid\n");
-  assert.throws(() => assertManagerRecordReplaceable(unexpectedProbe, unexpectedCommand, context.space), (error: Error) => error.message.includes(canonical));
-  await assert.rejects(stopOldHostingManagerIfPresent(unexpectedProbe, context.space), (error: Error) => error.message.includes(canonical));
+  assert.throws(() => assertManagerRecordReplaceable(context.space, emptyRoot, seams), (error: Error) => error.message.includes(canonical));
+  await assert.rejects(stopOldHostingManagerIfPresent(unexpectedProbe, context.space, emptyRoot), (error: Error) => error.message.includes(canonical));
   writeFileSync(canonical, `${process.pid}\n`);
-  assert.throws(() => assertManagerRecordReplaceable(() => "unknown", unexpectedCommand, context.space), (error: Error) => error.message.includes(canonical));
-  await assert.rejects(stopOldHostingManagerIfPresent(() => "unknown", context.space), (error: Error) => error.message.includes(canonical));
-  assert.deepEqual(managerRecordState(() => "unknown", unexpectedCommand, context.space, emptyRoot), { state: "unknown", path: canonical, pid: process.pid });
+  assert.throws(() => assertManagerRecordReplaceable(context.space, emptyRoot, { probe: () => "unknown", readCommand: unexpectedCommand }), (error: Error) => error.message.includes(canonical));
+  await assert.rejects(stopOldHostingManagerIfPresent(() => "unknown", context.space, emptyRoot), (error: Error) => error.message.includes(canonical));
+  assert.deepEqual(managerRecordState(context.space, emptyRoot, { probe: () => "unknown", readCommand: unexpectedCommand }), { state: "unknown", path: canonical, pid: process.pid });
 } finally {
   process.chdir(previousCwd);
 }
@@ -96,6 +98,35 @@ try {
 const directory = join(root, "directory.pid");
 mkdirSync(directory);
 assert.throws(() => readProcessRecord(directory, () => true, unexpectedProbe, unexpectedCommand), (error: Error) => error.message.includes(directory));
+// A cutover names one root and uses it for the record, its marker, and the stop. Another
+// folder's marker neither hides the selected marker nor waives an unmarked manager there.
+const otherRoot = join(root, "other");
+mkdirSync(join(otherRoot, ".cotal"), { recursive: true });
+const fixture = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000000)", "supervise"], { stdio: "ignore" });
+try {
+  const fixturePid = fixture.pid;
+  assert.equal(typeof fixturePid, "number");
+  const pidFile = canonicalLocalProcessPath(MANAGER_PIDFILE, emptyContext);
+  const markerFile = canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, emptyContext);
+  const otherMarker = canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, { root: otherRoot, space: context.space });
+  writeFileSync(pidFile, `${fixturePid}\n`);
+  writeFileSync(markerFile, `${fixturePid}\n`);
+  process.chdir(otherRoot);
+  await stopOldHostingManagerIfPresent(() => "alive", context.space, emptyRoot);
+  assert.equal(existsSync(pidFile), true);
+  assert.equal(existsSync(markerFile), true);
+  assert.equal(readdirSync(join(otherRoot, ".cotal")).length, 0);
+  rmSync(markerFile);
+  writeFileSync(otherMarker, `${fixturePid}\n`);
+  await stopOldHostingManagerIfPresent(() => "alive", context.space, emptyRoot);
+  assert.equal(existsSync(pidFile), false);
+  assert.equal(existsSync(markerFile), false);
+  assert.equal(existsSync(otherMarker), true);
+} finally {
+  fixture.kill();
+  process.chdir(previousCwd);
+}
+
 console.log("PASS: absent records omit paths, non-absent records retain evidence, read errors throw");
 console.log(`Retained fixtures: ${root}`);
 emitSentinel({ passed: counted.cells(), failed: 0 });

@@ -20,7 +20,7 @@ import {
   type MeshEntry,
   type RefusalCode,
 } from "@cotal-ai/workspace";
-import { checkUserBundle, type UserBundle } from "./meshes-add.js";
+import { checkBundleDocument, type UserBundle } from "./meshes-add.js";
 import { c } from "../ui.js";
 
 export interface CatalogSpace {
@@ -113,7 +113,7 @@ export function validateCatalogSnapshot(value: unknown, account: AuthSpaceCatalo
     for (const key of ["id", "slug", "name", "kind", "role"] as const)
       if (typeof row[key] !== "string" || row[key].length === 0)
         throw new Error(`space catalog entry ${i + 1} has no ${key}`);
-    const checked = checkUserBundle(JSON.stringify(row.registration));
+    const checked = checkBundleDocument(row.registration);
     if (!checked.ok) throw new Error(`space catalog entry "${row.name}": ${checked.message.replace(/^✗ /, "")}`);
     assertRegistrationAccountBinding(checked.value, account, `space catalog entry "${row.name}"`);
     if (checked.value.space !== row.slug)

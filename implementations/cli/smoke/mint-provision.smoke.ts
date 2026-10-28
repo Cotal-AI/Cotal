@@ -633,7 +633,7 @@ try {
       bounded.code === 0 && bounded.out.split("\n").some((line) => /^\s*Replaced:\s+a credential with no expiry claim, key /.test(line) && line.endsWith(`key ${ewig}`)) && typeof credsClaims(readFileSync(standing("ewig"), "utf8")).exp === "number", bounded.out);
     check("  and removes the no-expiry record, which named the bytes it replaced", !existsSync(record));
     check("  and warns that a copy of the replaced credential stays valid, naming the revocation that stops it",
-      bounded.out.includes(`! the credential this replaced has no expiry claim, so a copy of it stays valid until its key ${ewig} is revoked; to stop it, run cotal down --yes, then cotal auth revoke-credential ${ewig} --yes, then cotal up`), bounded.out);
+      bounded.out.includes(`! the credential this replaced has no expiry claim, so a copy of it stays valid until its key ${ewig} is revoked; to stop it, run \`cotal down --yes\`, then \`cotal auth revoke-credential ${ewig} --yes\`, then \`cotal up\``), bounded.out);
     await runMint(["ewig2", "--no-expiry"]);
     const ewig2 = credsClaims(readFileSync(standing("ewig2"), "utf8")).sub;
     const boundedJson = await runMint(["ewig2", "--replace", "--json"]);
@@ -723,12 +723,12 @@ try {
     const unreadable = "/.cotal/agents/broken.md for this label could not be read as a persona, so no credential was minted; file values and secret material were not printed";
     const broken = await runMint(["broken"]);
     check("a persona file that cannot be read as a persona refuses the mint, naming the file and persona show",
-      broken.code === 1 && broken.out.includes(unreadable) && broken.out.includes("see what is wrong with it with cotal persona show broken, then fix it and mint again") && !broken.out.includes("geheim") && !existsSync(standing("broken")), broken.out);
+      broken.code === 1 && broken.out.includes(unreadable) && broken.out.includes("see what is wrong with it with `cotal persona show broken`, then fix it and mint again") && !broken.out.includes("geheim") && !existsSync(standing("broken")), broken.out);
     const flagged = await runMint(["broken", "--allow-subscribe", "general", "--allow-publish", "general", "--role", "ok"]);
     check("  every grant flag still reads the file, so the same refusal comes", flagged.code === 1 && flagged.out.includes(unreadable) && !existsSync(standing("broken")), flagged.out);
     const spaced = await runMint(["spaced"]);
     check("a persona role that is not one word refuses, naming the file and persona edit without the role",
-      spaced.code === 1 && spaced.out.includes("/.cotal/agents/spaced.md for this label sets a role that is not one word of letters, digits, _ or -") && spaced.out.includes("give it such a role with cotal persona edit spaced, then mint again") && !spaced.out.includes("bau meister") && !existsSync(standing("spaced")), spaced.out);
+      spaced.code === 1 && spaced.out.includes("/.cotal/agents/spaced.md for this label sets a role that is not one word of letters, digits, _ or -") && spaced.out.includes("give it such a role with `cotal persona edit spaced`, then mint again") && !spaced.out.includes("bau meister") && !existsSync(standing("spaced")), spaced.out);
     const roled = await runMint(["spaced", "--role", "ok"]);
     check("  a --role flag replaces that role and mints", roled.code === 0 && existsSync(standing("spaced")), roled.out);
   }

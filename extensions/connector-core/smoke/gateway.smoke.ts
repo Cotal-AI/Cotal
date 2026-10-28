@@ -92,6 +92,7 @@ const configFor = (name: string): AgentConfig => {
 const BEARERS: Record<string, string> = { "tok-a": "acct_a", "tok-b": "acct_b" };
 const live = new Map<string, { account: string; conn: GatewayConnection }>();
 const opened: string[] = [];
+const selections = new Map<string, unknown>();
 const reserved = new Set<string>();
 const pendingApproval = { requestId: "approval-request-0123456789012345", proposed: null,
   approval: { id: "a".repeat(26), url: `https://authority.example/approve/${"a".repeat(26)}`, expiresAt: "2099-01-01T00:00:00.000Z" } };
@@ -102,8 +103,9 @@ const host: GatewayHost = {
     if (typeof account !== "string") throw new Error("no valid bearer");
     return account;
   },
-  async open(account, name, _context, _selection, approvalId) {
+  async open(account, name, _context, selection, approvalId) {
     opened.push(`${account}/${name}`);
+    selections.set(`${account}/${name}`, selection);
     if (name === "approval_probe") {
       if (approvalId) {
         resumedApprovals.push(`${account}/${approvalId}`);
@@ -159,17 +161,20 @@ const http = createServer(async (req, res) => {
   const token = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
   const account = token ? BEARERS[token] : undefined;
   const auth: AuthInfo | undefined = account ? { token: token!, clientId: "smoke", scopes: [], extra: { account } } : undefined;
-  await handleGatewayRequest(host, { req, res, body: req.method === "POST" ? await readBody(req) : undefined, waitSeconds: WAIT, approvalResume: true, ...(auth ? { auth } : {}) });
+  // /mcp-selection is the same embedder with permission requests turned on, as Cotal Cloud serves it.
+  const selection = req.url === "/mcp-selection";
+  await handleGatewayRequest(host, { req, res, body: req.method === "POST" ? await readBody(req) : undefined, waitSeconds: WAIT, approvalResume: true, selection, ...(auth ? { auth } : {}) });
 });
 const httpPort = await new Promise<number>((resolve) => http.listen(0, "127.0.0.1", () => resolve((http.address() as { port: number }).port)));
 const url = new URL(`http://127.0.0.1:${httpPort}/mcp`);
 
 const clients: Client[] = [];
-const clientFor = async (token?: string): Promise<Client> => {
+const selectionUrl = new URL(`http://127.0.0.1:${httpPort}/mcp-selection`);
+const clientFor = async (token?: string, at = url): Promise<Client> => {
   const client = new Client({ name: "gateway-smoke-client", version: "0.0.0" });
   clients.push(client);
   const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
-  await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers } }));
+  await client.connect(new StreamableHTTPClientTransport(at, { requestInit: { headers } }));
   return client;
 };
 type CallResult = { text: string; isError: boolean };
@@ -234,6 +239,23 @@ try {
   );
   check("connect and disconnect are offered", names.has("cotal_connect") && names.has("cotal_disconnect"));
   check("a hosted gateway does not offer native space selection", tools.find((t) => t.name === "cotal_connect")?.inputSchema.properties?.space === undefined);
+  const plainConnect = tools.find((t) => t.name === "cotal_connect");
+  check("without selection a hosted connect offers no permission request",
+    ["channels", "role", "capabilities"].every((k) => plainConnect?.inputSchema.properties?.[k] === undefined) && !plainConnect?.description?.includes("Ask for what"),
+    plainConnect?.inputSchema.properties);
+  const selecting = await clientFor("tok-a", selectionUrl);
+  const selectingConnect = (await selecting.listTools()).tools.find((t) => t.name === "cotal_connect");
+  check("with selection a hosted connect takes channels, role and capabilities and says to ask up front",
+    ["channels", "role", "capabilities"].every((k) => selectingConnect?.inputSchema.properties?.[k] !== undefined) &&
+      selectingConnect?.inputSchema.properties?.space === undefined && !!selectingConnect?.description?.includes("Ask for what this conversation already knows it needs"),
+    selectingConnect);
+  const requested = await call(selecting, "cotal_connect", { name: "approval_probe",
+    channels: [{ channel: "team.>", access: "read-post" }, { channel: "lobby", access: "read" }], role: "reviewer", capabilities: ["spawn"] });
+  check("the requested permissions reach the host as one proposal and nothing is issued", !requested.isError && requested.text.includes('"status":"pending"') &&
+    JSON.stringify(selections.get("acct_a/approval_probe")) === JSON.stringify({ v: 1, channels: [{ channel: "lobby", access: "read" }, { channel: "team.>", access: "read-post" }], role: "reviewer", capabilities: ["role:reviewer", "spawn"], endpoints: [] }),
+    { requested, selection: selections.get("acct_a/approval_probe") });
+  opened.length = 0;
+  selections.clear();
   const hostedSpace = await call(a, "cotal_connect", { name: "space_probe", space: "another_mesh" }).catch(() => ({ isError: true, text: "schema refusal" }));
   check("a hosted caller cannot retarget its signed-in space", hostedSpace.isError && opened.length === 0, hostedSpace);
   check("seat authority is not offered", !["cotal_spawn", "cotal_despawn", "cotal_persona", "cotal_run", "cotal_reconnect", "cotal_yield"].some((n) => names.has(n)));

@@ -183,7 +183,8 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
         if (!missing && (code >= 400 || status !== ""))
           throw new Error(`callout permissions: the accepted-row read for this connection failed (${code || status})`);
         if (missing) {
-          const generation = mintGeneration();
+          // The generation ends with this bearer, which is already its resolution bound.
+          const generation = mintGeneration(t.exp);
           const perms = mint({ generation, acceptedToken });
           const ref = { space, owner, actor, uid, generation };
           const prepared = await session.store.stage({

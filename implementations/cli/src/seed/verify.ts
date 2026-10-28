@@ -45,6 +45,26 @@ export function seededInstallDiffers(name: string, generation: string, entry: In
 }
 
 /**
+ * Why `cotal update` still has to reinstall a first-party operator extension, or undefined when npm's
+ * own record in the prefix proves it installed at this generation: the entry is recorded at this
+ * generation with the spec the update would install, the prefix lock records the package at that
+ * version, and every package the lock records is on disk at its recorded version
+ * ({@link prefixLockDiffers}). Any doubt is a reason, and a reason runs the ordinary reinstall.
+ */
+export function operatorInstallDiffers(entry: InstalledExtension, generation: string): string | undefined {
+  const spec = `${entry.pkg}@${generation}`;
+  if (entry.version !== generation) return `recorded at ${entry.version}, not ${generation}`;
+  if (entry.spec !== spec) return `recorded spec ${entry.spec} is not ${spec}`;
+  const differs = prefixLockDiffers();
+  if (differs) return differs;
+  const lock = JSON.parse(readFileSync(join(extensionsDir(), "package-lock.json"), "utf8")) as { packages: Record<string, LockEntry> };
+  const locked = lock.packages[`node_modules/${entry.pkg}`]?.version;
+  if (locked === undefined) return "the prefix lock does not record it";
+  if (locked !== generation) return `the prefix lock records it at ${String(locked)}`;
+  return undefined;
+}
+
+/**
  * Why the extensions prefix is not the tree its lock records, or undefined when every recorded
  * package is on disk at its recorded version. This is the same comparison npm makes before it
  * decides a reinstall changes nothing, made once for the whole prefix rather than once per

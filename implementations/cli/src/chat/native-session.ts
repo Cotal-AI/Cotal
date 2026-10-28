@@ -32,7 +32,7 @@ import {
   type PresenceStatus,
   type PresenceView,
 } from "@cotal-ai/core";
-import type { RefusalCode } from "@cotal-ai/workspace";
+import { codeSpan, type RefusalCode } from "@cotal-ai/workspace";
 import { ParticipantEngine } from "./engine.js";
 import type {
   AdmittedChatSession,
@@ -90,7 +90,7 @@ const GAP_COALESCE_MS = 1_000;
 export function grantRefusal(grant: readonly string[], channel: string, use: "read" | "post", reopen: (channel: string) => string): Refused | undefined {
   if (channelInAllow([...grant], channel)) return undefined;
   const message = grant.length === 0
-    ? `this session was opened on no channel, so it cannot ${use === "read" ? "read" : "post to"} #${channel}. Leave and run ${reopen(channel)} to open a session on it`
+    ? `this session was opened on no channel, so it cannot ${use === "read" ? "read" : "post to"} #${channel}. Leave and run ${codeSpan(reopen(channel))} to open a session on it`
     : `#${channel} is outside this session's ${use} grant`;
   return { outcome: "refused", code: "PERMISSION_DENIED", message };
 }
@@ -135,7 +135,7 @@ export function resolveDmTarget(
     // reply by its name can reach none of them.
     const present = new Set(roster.filter((p) => p.status !== "offline").map((p) => p.card.id));
     if (rosterState === "current" && !ids.some((id) => present.has(id)))
-      return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names ${ids.length} senders that are no longer present (${ids.join(", ")}), such as one-shot cotal send commands, which exit once they have sent; answer one message with /reply, or over --stdio with to set to its from.id and replyTo to its id` };
+      return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names ${ids.length} senders that are no longer present (${ids.join(", ")}), such as one-shot \`cotal send\` commands, which exit once they have sent; answer one message with /reply, or over --stdio with to set to its from.id and replyTo to its id` };
     return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names more than one principal (${ids.join(", ")}); use the full principal` };
   }
   const only = [...named.values()][0];

@@ -4,7 +4,7 @@ import * as prompts from "../lib/prompts.js";
 import { parseCommandArgs, registry, type Command, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
-import { presetMaterialPath, presetMissingOptions, presetStartFlags, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
+import { findServicePreset, presetMaterialPath, presetMissingOptions, presetStartFlags, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
 import { forgetRefusedPresetService, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
@@ -16,7 +16,8 @@ import { managerLogPath } from "../lib/manager-proc.js";
 import { serviceInstanceId, serviceInstances, instanceProjection } from "../lib/service-instances.js";
 import { readLocalServiceAttempts } from "../lib/service-census.js";
 import { readOwnedLogTail, readinessAddressSurvivors, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecord, removeStoppedInstanceRecords } from "../lib/service-process.js";
-import { addedDefinitionStep, STACK_DEFINITION } from "../lib/stack-journal.js";
+import { addedDefinitionStep, STACK_ADAPTER, STACK_DEFINITION } from "../lib/stack-journal.js";
+import { assertManagerLogin } from "./stack-user-auth.js";
 import { localRecordName } from "../lib/protected-records.js";
 import { brokerServerProblem, brokerService } from "../lib/broker-service.js";
 
@@ -59,7 +60,16 @@ export function validateServiceArguments(args: ParsedArgs): void {
   if (mode === "uninstall" && args.values["dry-run"] && args.values.yes) throw new CommandFailure("refused", "USAGE_INVALID", "--yes cannot confirm a read-only native uninstall inspection");
   if ((args.values.tail !== undefined || args.values.follow !== undefined) && mode !== "logs") throw new CommandFailure("refused", "USAGE_INVALID", "--tail and --follow belong to service logs");
   if (args.values.tail !== undefined && (!/^[1-9][0-9]*$/.test(String(args.values.tail)) || Number(args.values.tail) > 1000)) throw new CommandFailure("refused", "USAGE_INVALID", "--tail needs an integer from 1 to 1000");
-  if (mode === "add" && (!name || args.values.file === undefined && args.values.preset === undefined && args.values.exec === undefined) && (!canPrompt() || args.values.json)) throw new CommandFailure("refused", "USAGE_INVALID", "scripted service add needs a name and --exec <command>, --preset <preset> or --file <definition.json>; guided input requires an interactive terminal", { remedy: `cotal service add ${name ?? "<name>"} --exec "<command>"` });
+  if (mode === "add" && (!name || args.values.file === undefined && args.values.preset === undefined && args.values.exec === undefined) && (!canPrompt() || args.values.json)) throw new CommandFailure("refused", "USAGE_INVALID", "scripted service add needs a name and --exec <command>, --preset <preset> or --file <definition.json>; guided input requires an interactive terminal", { remedy: `cotal service add ${name ?? "<name>"} --exec "<command>"`, remedyIsCommand: true });
+}
+
+/** Whether a start of `name` would launch a manager: its saved definition, or the preset it names,
+ *  runs the manager adapter, and no manager that `up` recorded by PID runs already. */
+function launchesManager(space: string, root: string, name: string, store: ReturnType<typeof serviceDefinitionStore>): boolean {
+  const saved = store.read(name)?.record.value.launch;
+  if ((saved ? saved.type === "adapter" && saved.adapter : findServicePreset(name)?.adapter) !== STACK_ADAPTER.manager) return false;
+  const manager = findServicePreset("manager");
+  return manager === undefined || recordedPresetProcess(space, root, manager) === undefined;
 }
 
 function legacyProcesses(context: LocalProcessContext) {
@@ -87,6 +97,10 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   const [mode = "list", suppliedName] = args.positionals;
   const target = { space, executionHost: "this-machine" };
   if (["start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode)) {
+    // A user-auth space's manager is read as your signed-in, granted login, so a start without one
+    // is refused here, before a definition is saved or a child launched.
+    if ((mode === "start" || mode === "restart") && launchesManager(space, root, suppliedName!, store))
+      await assertManagerLogin(root, space, commandName === "manager" ? `\`cotal manager ${mode}\`` : `\`cotal service ${mode} ${suppliedName}\``);
     const resolved = resolvePresetService(space, root, suppliedName!, mode, args.values);
     if (resolved?.recorded) return mode === "logs" && resolved.preset === "manager" ? recordedManagerLogs(resolved.requested, { ...resolved.recorded, state: "running" }, space, root, args.values, presentation, commandName) : recordedPresetProcessReport(resolved, resolved.recorded, space, mode, presentation, commandName);
     if (resolved?.stopped) return recordedManagerLogs(resolved.requested, { ...resolved.stopped, state: "stopped" }, space, root, args.values, presentation, commandName);
@@ -96,7 +110,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     catch (error) {
       // A definition this start saved goes again when the start was refused before any launch.
       if (resolved?.saved?.kind === "created" && isCommandFailure(error) && error.outcome === "refused" && presentation !== "json")
-        process.stderr.write(forgetRefusedPresetService(space, resolved.name) ? `forgot ${resolved.name} again, since its start was refused\n` : `kept the saved ${resolved.name}; forget it with cotal service remove ${resolved.name} --yes\n`);
+        process.stderr.write(forgetRefusedPresetService(space, resolved.name) ? `forgot ${resolved.name} again, since its start was refused\n` : `kept the saved ${resolved.name}; forget it with \`cotal service remove ${resolved.name} --yes\`\n`);
       else if (resolved?.saved?.kind === "created" && isCommandFailure(error) && error.outcome === "refused") forgetRefusedPresetService(space, resolved.name);
       throw error;
     }
@@ -130,12 +144,12 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       { title: "Services", blocks: [
         { kind: "fields", rows: [["Space", space], ["Folder", root]] },
         result.services.length ? { kind: "table", columns: [{ key: "name", label: "Service" }, { key: "kind", label: "Kind" }, { key: "state", label: "State" }, { key: "next", label: "Next" }], rows: result.services.map((row) => ({ name: { text: row.name, tone: "command" }, kind: row.preset ? row.preset === row.name ? "built-in" : `built-in ${row.preset}` : "yours", state: { text: row.state, tone: row.state.startsWith("running") ? "ok" : row.state === "not started" || row.state === "stopped" ? "waiting" : "failed" }, next: { text: row.next, tone: "command" } })) } : { kind: "lines", lines: [result.presetCatalogUnavailable ?? "No service is saved or built in here."] },
-        { kind: "lines", lines: [{ text: "A built-in service needs no add: its start saves it from its defaults. A start never starts another service for it.", tone: "hint" }, ...(result.presets.some((row) => row.name === "web") ? [] : [{ text: "The web dashboard is an extension: add it with cotal ext add @cotal-ai/web.", tone: "hint" as const }])] },
+        { kind: "lines", lines: [{ text: "A built-in service needs no add: its start saves it from its defaults. A start never starts another service for it.", tone: "hint" }, ...(result.presets.some((row) => row.name === "web") ? [] : [{ text: "The web dashboard is an extension: add it with `cotal ext add @cotal-ai/web`.", tone: "hint" as const }])] },
       ] },
       ...(result.services.some((row) => row.preset) ? [{ title: "What the built-in services do", blocks: [{ kind: "table" as const, columns: [{ key: "name", label: "Service" }, { key: "summary", label: "What it does" }], rows: result.presets.map((row) => ({ name: row.name, summary: row.summary })) }] }] : []),
       ...(result.instances.length ? [{ title: "Owned process instances", blocks: [{ kind: "table" as const, columns: [{ key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "host", label: "Execution host" }, { key: "process", label: "Process observation" }, { key: "supervisor", label: "Recorded supervisor" }, { key: "ready", label: "Readiness as recorded" }], rows: result.instances.map((row) => ({ definition: row.definition, instance: row.instanceId, host: row.executionHost, process: row.observedProcess, supervisor: row.supervisor, ready: `${row.readinessObservation} · ${row.readinessAsOf}` })) }, { kind: "lines" as const, lines: ["Instance control does not adopt legacy PID records or grant control over remote registrations."] }] }] : []),
       ...(result.attempts.length ? [{ title: "Retained native attempts", blocks: [{ kind: "table" as const, columns: [{ key: "kind", label: "Action" }, { key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "step", label: "Step" }, { key: "position", label: "Position" }, { key: "record", label: "Instance record" }], rows: result.attempts.slice(0, 100).map((row) => ({ kind: row.kind, definition: row.definition, instance: row.instanceId, step: row.step, position: row.position, record: row.instanceRecordPresent ? "present" : "absent" })) }, { kind: "lines" as const, lines: [...(result.attempts.length > 100 ? ["Additional retained attempts are in JSON."] : []), "A submitted or unknown step may have affected the original unit. An absent instance record does not settle its attempt. No native action was retried or reconciled."] }] }] : []),
-      ...(recordedOnly(result.processes, result.instances).length ? [{ title: "Processes cotal up recorded by PID", blocks: [{ kind: "table" as const, columns: [{ key: "name", label: "Component" }, { key: "process", label: "PID observation" }], rows: recordedOnly(result.processes, result.instances).map((row) => ({ name: row.component, process: { text: row.processState === "alive" ? `PID present · ${row.pid}` : row.processState, tone: row.processState === "unreadable" || row.processState === "unattributable" ? "failed" as const : "waiting" as const } })) }, { kind: "lines" as const, lines: [{ text: "These are not saved services: cotal down stops them with their stack. A PID record proves neither ownership nor a serving endpoint.", tone: "hint" as const }] }] }] : []),
+      ...(recordedOnly(result.processes, result.instances).length ? [{ title: "Processes `cotal up` recorded by PID", blocks: [{ kind: "table" as const, columns: [{ key: "name", label: "Component" }, { key: "process", label: "PID observation" }], rows: recordedOnly(result.processes, result.instances).map((row) => ({ name: row.component, process: { text: row.processState === "alive" ? `PID present · ${row.pid}` : row.processState, tone: row.processState === "unreadable" || row.processState === "unattributable" ? "failed" as const : "waiting" as const } })) }, { kind: "lines" as const, lines: [{ text: "These are not saved services: `cotal down` stops them with their stack. A PID record proves neither ownership nor a serving endpoint.", tone: "hint" as const }] }] }] : []),
       ...(result.presets.some((row) => row.problem) ? [{ title: "Preset problems", blocks: [{ kind: "lines" as const, lines: result.presets.filter((row) => row.problem).map((row) => `${row.name}: ${row.problem!.message}`) }] }] : []),
       { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal manager start", description: "Start the manager that runs your agents here" }, { command: "cotal service start <service>", description: "Start a built-in service from its defaults" }, { command: "cotal service add <name> --exec \"<command>\"", description: "Save your own program as a service, then start it by name" }] }] },
     ] }));
@@ -155,10 +169,10 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     if (args.values.instance !== undefined) {
       // One stopped instance record goes; the definition, its other instances and the logs stay.
       const id = String(args.values.instance), at = { ...target, name: row.name, instanceId: id };
-      if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's instance records stay with its stack; nothing was removed", { target: at, remedy: `they go with the stack: cotal down --yes, then cotal space forget ${space}` });
+      if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's instance records stay with its stack; nothing was removed", { target: at, remedy: `they go with the stack: \`cotal down --yes\`, then \`cotal space forget ${space}\`` });
       removableServiceInstances(space, row.name, id);
       if (!args.values.yes) {
-        if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing an instance record outside interactive input requires --yes", { target: at, remedy: `confirm with cotal svc remove ${row.name} --instance ${id} --yes` });
+        if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing an instance record outside interactive input requires --yes", { target: at, remedy: `confirm with \`cotal svc remove ${row.name} --instance ${id} --yes\`` });
         const answer = await prompts.confirm({ message: `Forget stopped instance ${id} of ${oneLine(row.name)}? No process or OS unit will be removed.`, initialValue: false });
         if (prompts.isCancel(answer) || !answer) return cancelled("Instance record kept");
       }
@@ -167,10 +181,10 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       return;
     }
     // A stack member's definition is the stack's: `up` and `down` read it, so it goes with the space.
-    if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's definition stays with its stack, whose up and down read it; nothing was removed", { target: { ...target, name: row.name }, remedy: `it goes with the stack: cotal down --yes, then cotal space forget ${space}` });
+    if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's definition stays with its stack, whose up and down read it; nothing was removed", { target: { ...target, name: row.name }, remedy: `it goes with the stack: \`cotal down --yes\`, then \`cotal space forget ${space}\`` });
     removableServiceInstances(space, row.name);
     if (!args.values.yes) {
-      if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing a service definition outside interactive input requires --yes", { target: { ...target, name: row.name }, remedy: `confirm with cotal svc remove ${row.name} --yes` });
+      if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing a service definition outside interactive input requires --yes", { target: { ...target, name: row.name }, remedy: `confirm with \`cotal svc remove ${row.name} --yes\`` });
       const answer = await prompts.confirm({ message: `Forget ${oneLine(row.name)} in ${oneLine(space)} and delete its instances' logs? No process or OS unit will be removed.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled("Service definition kept");
     }
@@ -192,13 +206,13 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   /** A refusal while the definition is built names the space and name it was for. */
   const forName = <T>(build: () => T): T => {
     try { return build(); }
-    catch (error) { throw isCommandFailure(error) && error.target === null ? new CommandFailure(error.outcome, error.code, error.message, { target: named, remedy: error.remedy, native: error.native, changed: error.changed }) : error; }
+    catch (error) { throw isCommandFailure(error) && error.target === null ? new CommandFailure(error.outcome, error.code, error.message, { target: named, remedy: error.remedy, native: error.native, changed: error.changed, remedyIsCommand: error.remedyIsCommand }) : error; }
   };
   // A file names its space, so a definition for another space is refused before its name is looked
   // up in the selected one, whose service of that name it does not concern.
   const file = args.values.file;
   const imported = typeof file === "string" ? forName(() => importServiceDefinition(resolve(file), space)) : undefined;
-  if (store.read(name)) throw new CommandFailure("refused", "CONFLICT", "this service definition already exists; it was not overwritten", { target: named, remedy: `to change it, stop its instances, forget it with cotal service remove ${name} --space ${oneLine(space)} --yes, then add it again` });
+  if (store.read(name)) throw new CommandFailure("refused", "CONFLICT", "this service definition already exists; it was not overwritten", { target: named, remedy: `to change it, stop its instances, forget it with \`cotal service remove ${name} --space ${oneLine(space)} --yes\`, then add it again` });
   let definition: ServiceDefinitionInput, chosenPreset: string | undefined;
   /** The broker's address is checked before a definition is saved, as its paths are, so a start does
    *  not record a failed instance for an address the broker cannot serve. */
@@ -289,7 +303,7 @@ function serviceRows(space: string, root: string, catalog: readonly ServicePrese
     } catch { needs = ["its options"]; }
     // A preset that runs many instances is added under a name of your own; any other starts by its name.
     const line = several ? `cotal service add <name> --preset ${preset.name}` : preset.name === "manager" ? "cotal manager start" : `cotal service start ${preset.name}`;
-    rows.push({ name: preset.name, preset: preset.name, definition: null, state: recorded ? `running, pid ${recorded.pid}, started by cotal up` : "not started", needs,
+    rows.push({ name: preset.name, preset: preset.name, definition: null, state: recorded ? `running, pid ${recorded.pid}, started by \`cotal up\`` : "not started", needs,
       next: recorded ? "cotal status" : [line, ...needs].join(" ") });
   }
   return rows;
@@ -300,8 +314,8 @@ function serviceRows(space: string, root: string, catalog: readonly ServicePrese
 export function announcePresetTarget(resolved: PresetServiceTarget, space: string, presentation: ReturnType<typeof presentationOf>): void {
   if (presentation === "json") return;
   const notes: string[] = [];
-  if (resolved.name !== resolved.requested) notes.push(`${resolved.requested} in space ${space} is the saved service ${resolved.name}${resolved.name.startsWith("stack-") ? ", which cotal up started" : ""}`);
-  if (resolved.saved?.kind === "created") notes.push(`saved ${resolved.name} in space ${space} from the ${resolved.preset} preset${resolved.saved.options.length ? ` with ${resolved.saved.options.map((name) => `--${name}`).join(", ")}` : " with its defaults"}; cotal service show ${resolved.name} reads it`);
+  if (resolved.name !== resolved.requested) notes.push(`${resolved.requested} in space ${space} is the saved service ${resolved.name}${resolved.name.startsWith("stack-") ? ", which `cotal up` started" : ""}`);
+  if (resolved.saved?.kind === "created") notes.push(`saved ${resolved.name} in space ${space} from the ${resolved.preset} preset${resolved.saved.options.length ? ` with ${resolved.saved.options.map((name) => `--${name}`).join(", ")}` : " with its defaults"}; \`cotal service show ${resolved.name}\` reads it`);
   if (resolved.saved?.kind === "redefined") notes.push(`saved ${resolved.name} again with the new ${resolved.saved.options.map((name) => `--${name}`).join(", ")}`);
   for (const note of notes) process.stderr.write(`${note}\n`);
 }
@@ -312,19 +326,19 @@ export function announcePresetTarget(resolved: PresetServiceTarget, space: strin
  *  where it is stopped. */
 function recordedPresetProcessReport(resolved: PresetServiceTarget, recorded: { pid: number; label: string }, space: string, mode: string, presentation: ReturnType<typeof presentationOf>, commandName: string): void {
   const target = { space, name: resolved.requested, executionHost: "this-machine", pid: recorded.pid };
-  const stop = "it stops with its stack through cotal down, or where cotal supervise runs it";
+  const stop = "it stops with its stack through `cotal down`, or where `cotal supervise` runs it";
   if (mode !== "start" && mode !== "status") throw recordedProcessRefusal(resolved.requested, recorded, space, `${commandName} ${mode}`);
   writeResult(presentation, { command: commandName, target, result: { kind: mode === "start" ? "service-start" : "service-status", name: resolved.requested, preset: resolved.preset, recordedProcess: { pid: recorded.pid, label: recorded.label, startedBy: "cotal up or cotal supervise", savedService: false }, started: false }, noOp: mode === "start" }, (): Report => ({ sections: [
-    { title: mode === "start" ? `The ${recorded.label} is already running; nothing was started` : `The ${recorded.label} is running`, blocks: [{ kind: "fields", rows: [["Space", space], ["PID", String(recorded.pid)], ["Started by", "cotal up or cotal supervise, not as a saved service"], ["Stop", stop]] }] },
+    { title: mode === "start" ? `The ${recorded.label} is already running; nothing was started` : `The ${recorded.label} is running`, blocks: [{ kind: "fields", rows: [["Space", space], ["PID", String(recorded.pid)], ["Started by", "cotal up or `cotal supervise`, not as a saved service"], ["Stop", stop]] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal status", description: "See it with the rest of this space" }, { command: "cotal ps", description: "List the agents it runs" }] }] },
   ] }));
 }
 
 /** Why `action` refuses a preset's process recorded by PID alone: no saved service owns it. */
 export function recordedProcessRefusal(name: string, recorded: { pid: number; label: string }, space: string, action: string): CommandFailure {
-  return new CommandFailure("refused", "UNSUPPORTED", `the ${recorded.label} running in space ${oneLine(space)} (pid ${recorded.pid}) was started by cotal up or cotal supervise, not as a saved service, so ${action} does not control it; nothing was changed`, {
+  return new CommandFailure("refused", "UNSUPPORTED", `the ${recorded.label} running in space ${oneLine(space)} (pid ${recorded.pid}) was started by \`cotal up\` or \`cotal supervise\`, not as a saved service, so ${action} does not control it; nothing was changed`, {
     target: { space, name, executionHost: "this-machine", pid: recorded.pid },
-    remedy: "it stops with its stack through cotal down, or where cotal supervise runs it",
+    remedy: "it stops with its stack through `cotal down`, or where `cotal supervise` runs it",
   });
 }
 
@@ -336,10 +350,10 @@ async function recordedManagerLogs(name: string, recorded: { pid: number | null;
   const path = managerLogPath(space, root), tail = values.tail === undefined ? 100 : Number(values.tail);
   if (values.follow) return followRecordedLog(path, recorded.pid, target, presentation, tail);
   const log = readOwnedLogTail(path, tail), stopped = recorded.state === "stopped";
-  writeResult(presentation, { command: commandName, target, result: { kind: "service-logs", name, recordedProcess: { pid: recorded.pid, label: recorded.label, state: recorded.state, startedBy: "cotal up or cotal supervise", savedService: false }, ...log, encoding: "utf8-with-replacement", collection: "the manager's output, in the log cotal up opened for it" }, ...(log.omittedBytes && log.lines.length < tail ? { completeness: "partial" as const, partial: { message: "The 16 MiB bounded read holds fewer lines than the requested tail; earlier bytes were omitted." } } : {}) }, (result): Report => ({ sections: [{ title: stopped ? "Manager log tail, from a stopped manager" : "Manager log tail", blocks: [
-    { kind: "fields", rows: [["Space", space], ["State", recorded.state], ["PID", recorded.pid === null ? "no longer recorded" : stopped ? `${recorded.pid}, no longer running` : String(recorded.pid)], ["Started by", "cotal up or cotal supervise, not as a saved service"], ["Log", path]] },
+  writeResult(presentation, { command: commandName, target, result: { kind: "service-logs", name, recordedProcess: { pid: recorded.pid, label: recorded.label, state: recorded.state, startedBy: "cotal up or cotal supervise", savedService: false }, ...log, encoding: "utf8-with-replacement", collection: "the manager's output, in the log `cotal up` opened for it" }, ...(log.omittedBytes && log.lines.length < tail ? { completeness: "partial" as const, partial: { message: "The 16 MiB bounded read holds fewer lines than the requested tail; earlier bytes were omitted." } } : {}) }, (result): Report => ({ sections: [{ title: stopped ? "Manager log tail, from a stopped manager" : "Manager log tail", blocks: [
+    { kind: "fields", rows: [["Space", space], ["State", recorded.state], ["PID", recorded.pid === null ? "no longer recorded" : stopped ? `${recorded.pid}, no longer running` : String(recorded.pid)], ["Started by", "cotal up or `cotal supervise`, not as a saved service"], ["Log", path]] },
     { kind: "lines", lines: result.lines.length ? result.lines : ["No captured log lines in this bounded read."] },
-    { kind: "lines", lines: [{ text: "A manager that cotal supervise runs in a terminal writes there instead. Its output may contain secrets. This is a local authorized read, not a secret-redacted log or an upload.", tone: "hint" }] },
+    { kind: "lines", lines: [{ text: "A manager that `cotal supervise` runs in a terminal writes there instead. Its output may contain secrets. This is a local authorized read, not a secret-redacted log or an upload.", tone: "hint" }] },
   ] }, ...(stopped ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: "cotal up", description: "Start the stack again" }] }] }] : [])] }));
 }
 

@@ -25,7 +25,7 @@ const { MemoryStore } = await import("./_hosted-auth-fixture.js");
 
 // A described snapshot contains validated contracts in production. This fixture constructs the
 // public shape only to isolate helper propagation, not to claim digest-verified native Describe.
-const id = core.newIdentity(), uid = core.mintLifecycleUid(), generation = core.mintGeneration();
+const id = core.newIdentity(), uid = core.mintLifecycleUid(), generation = core.mintGeneration(Math.floor(Date.now() / 1000) + 172_800);
 const caller = { owner: "local", actor: id.id, uid, generation }, instanceId = core.mintLifecycleUid();
 const digest = core.contractDigest({ empty: true });
 const contract = { input: { closureDigest: digest, validate: () => true }, output: { closureDigest: digest, validate: () => true } };

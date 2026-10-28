@@ -49,8 +49,8 @@
     {
       "name": "A5 skip manager instance lifecycle-token validation",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "      instance = opts?.instance === undefined ? undefined : assertLifecycleToken(opts.instance, \"instance\");",
-      "replace": "      instance = opts?.instance;",
+      "find": "      const selected = opts?.instance ?? this.openManagerInstance();\n      instance = selected === undefined ? undefined : assertLifecycleToken(selected, \"instance\");",
+      "replace": "      instance = opts?.instance ?? this.openManagerInstance();",
       "expectRed": "a malformed instance is refused before invoke"
     },
     {

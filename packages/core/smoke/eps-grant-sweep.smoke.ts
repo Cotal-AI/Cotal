@@ -115,6 +115,7 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   "channel-writer": via("channel-writer"),
   "channel-purger": via("channel-purger"),
   teardown: via("teardown"),
+  "issued-store-recreate": via("issued-store-recreate"),
   "control-caller-privileged": via("control-caller-privileged"),
   "control-caller-admin": via("control-caller-admin"),
   deployer: via("deployer"),

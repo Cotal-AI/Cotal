@@ -269,6 +269,17 @@ const sites: Site[] = [
     proof: "structural",
     limit: "delivery-renewal owns the daemon behavior; this census keeps the shipped registration in the full closure",
   },
+  {
+    cell: "Linear user-auth serve deliberately ignores recoverable side-channel warnings",
+    consumer: "Linear user-auth serve endpoint",
+    disposition: "ignore",
+    source: "implementations/linear/src/user-auth-serve.ts",
+    dist: "implementations/linear/dist/user-auth-serve.js",
+    sourceNeedle: 'ep.on("warning", () => {});',
+    distNeedle: 'ep.on("warning",()=>{});',
+    proof: "structural",
+    limit: "the explicit ignore is proven; the awaited ready confirmation and the connection handler own the serve verdict",
+  },
 ];
 
 let failures = 0;
@@ -298,10 +309,14 @@ assert.equal(distPopulation, sites.length, "the published-artifact census has no
 assert.ok(sites.some((site) => site.disposition === "ignore"), "the census cannot silently erase all deliberate ignores");
 assert.ok(sites.some((site) => site.proof === "behavioral"), "the census names its behavioral companions");
 
+// These are esbuild bundles built with `--minify-whitespace`, which also drops the parentheses
+// around a single arrow parameter, so the registration reads `e=>` here and `(e) =>` in the tsc
+// output the rows above name. Both spellings are the same registration; each side is matched
+// against what its own builder emits.
 for (const path of BUNDLED_MESH_AGENT_ARTIFACTS) {
   const body = compact(readFileSync(join(root, path), "utf8"));
   assert.equal(
-    occurrences(body, 'this.ep.on("warning",(e)=>this.handleEndpointWarning(e));'),
+    occurrences(body, 'this.ep.on("warning",e=>this.handleEndpointWarning(e));'),
     1,
     `${path} carries the MeshAgent warning registration in the actual customer-loaded bundle`,
   );

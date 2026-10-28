@@ -20,6 +20,8 @@ import {
   openPrivateAppend,
   writePrivateRecord,
   type CotalMessage,
+  type MembershipChange,
+  type MembershipSnapshot,
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
@@ -30,7 +32,7 @@ import {
   parsePid,
   probeLiveness,
   probeWebReadiness,
-  progressSignal,
+  readPidfile,
   readWebSession,
   removePidPair,
   userViewAuth,
@@ -853,7 +855,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   // both browser renderers can say so honestly without deriving progress from the heartbeat.
   const rosterSnapshot = () => ep.getRoster().map((presence) => ({
     ...presence,
-    progress: presence.status === "working" ? progressSignal(undefined, Date.now()) : undefined,
+    progress: presence.status === "working" ? { kind: "unknown" as const } : undefined,
   }));
 
   const clients = new Set<ServerResponse>();
@@ -877,15 +879,28 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   // feed (no delivery daemon, or provisioned before this feature) simply never emits, and the graph
   // degrades to traffic-only. The admin cred carries the read grant; agents never do.
   let membershipWatch: { stop(): Promise<void> } | undefined;
+  let lastMembership: MembershipSnapshot | undefined;
   const pushMembership = debounce(() => {
     // A swallowed rejection here left the graph showing its LAST GOOD snapshot indefinitely, which
     // is worse than the HTTP case: the display was not merely empty, it was stale and confident.
     void ep.readMembership()
-      .then((m) => broadcast("membership", m))
-      .catch((e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }));
+      .then((m) => { lastMembership = m; broadcast("membership", m); })
+      .catch((e) => { lastMembership = undefined; broadcast(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }); });
   }, 150);
+  // The daemon rewrites the heartbeat key every poll with nothing else changed; re-reading the whole
+  // bucket for it was a full ordered-consumer rescan per heartbeat per dashboard (#4904). The watch
+  // delivers the heartbeat's `asOf`, so only a member change (or a failed last read) costs a read.
+  const onMembership = (change: MembershipChange) => {
+    if (change.type === "replayed") return;
+    if (change.type === "heartbeat" && change.update && lastMembership) {
+      lastMembership = { ...lastMembership, asOf: change.asOf };
+      broadcast("membership", lastMembership);
+      return;
+    }
+    pushMembership();
+  };
   try {
-    membershipWatch = await ep.watchMembership(pushMembership, (e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: e.message }));
+    membershipWatch = await ep.watchMembership(onMembership, (e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: e.message }));
   } catch (e) {
     console.error(c.dim(`• membership feed unavailable - graph shows traffic only (${(e as Error).message})`));
   }
@@ -1328,7 +1343,7 @@ async function launchDetachedWeb(
   console.log(c.green(`✓ web dashboard ready at ${url} (pid ${child.pid})`));
   printLaunchLink(session.launchUrl, host, port, "(single-use link)");
   console.log(c.dim(`  log: ${logPath}`));
-  console.log(c.dim("  stop: cotal down web"));
+  console.log(c.dim("  stop: `cotal down web`"));
   if (!noOpen) openBrowser(session.launchUrl);
 }
 
@@ -1413,9 +1428,13 @@ export async function waitForDetachedWeb(
     if (spawnError) throw new Error(`web dashboard failed to start: ${spawnError.message}`);
     if (child.exitCode !== null || child.signalCode !== null || probeLiveness(pid) === "dead")
       throw new Error(`web dashboard exited before becoming ready (pid ${pid})`);
-    if (pidFileOwned(opts.pidPath, pid)) {
+    // Absent is "not claimed yet". A file that exists and cannot be read is not: treating that as
+    // absent waits out the whole window and then reports a timeout with no probe, over a dashboard
+    // that is up. `readPidfile` throws that error, naming the path.
+    const recorded = readPidfile(opts.pidPath);
+    if (recorded === String(pid)) {
       // The child writes its readiness nonce only after `listen()` succeeded, so an absent, empty or
-      // partial file simply means "not up yet" and the loop keeps waiting — exactly as it did
+      // partial file simply means "not up yet" and the loop keeps waiting, exactly as it did
       // before this surface required authentication. The probe is otherwise unchanged: a squatter on
       // the port still answers with its own space/pid and still fails the match below.
       const session = readWebSession(opts.sessionPath);
@@ -1456,11 +1475,6 @@ export async function terminateDetachedWeb(child: ChildProcess, pidPath: string)
     }
   }
   removePidPair(pidPath, String(pid));
-}
-
-function pidFileOwned(path: string, pid: number): boolean {
-  try { return readFileSync(path, "utf8").trim() === String(pid); }
-  catch { return false; }
 }
 
 async function waitForDeath(child: ChildProcess, pid: number, timeoutMs: number): Promise<boolean> {

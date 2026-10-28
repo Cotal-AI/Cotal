@@ -13,8 +13,8 @@ import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
-import { isCommandFailure, MeshTargetError, seededCommandsMismatch } from "@cotal-ai/workspace";
-import { executeUpdate, parseNpmVersion, reportRunningManagers, update, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
+import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch } from "@cotal-ai/workspace";
+import { executeUpdate, parseNpmVersion, printLegacyReport, reportRunningManagers, update, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
 
@@ -31,6 +31,7 @@ function updateRuntime(opts: {
   npm?: (args: string[], inherit?: boolean) => { status: number | null; stdout?: string; stderr?: string; error?: string };
   spawn?: (file: string, args: string[], env: NodeJS.ProcessEnv) => { status: number | null; stdout?: string; stderr?: string; error?: string };
   reportRunningManager?: () => Promise<"none" | "legacy">;
+  verifyExtension?: UpdateRuntime["verifyExtension"];
   checkout?: boolean;
 }) {
   const events: string[] = [];
@@ -47,6 +48,7 @@ function updateRuntime(opts: {
       return await opts.reportRunningManager?.() ?? "none";
     },
     extensions: () => opts.extensions ?? [],
+    verifyExtension: opts.verifyExtension ?? (() => "not installed on disk"),
     claimUpdatePass: () => {
       events.push("claim-mutation");
       return () => void events.push("release-mutation");
@@ -368,10 +370,10 @@ async function completionOut(positionals: string[]): Promise<string> {
   const denied = endpointFailure(new EpEnvelopeError("permission-denied", "refused by the broker", undefined, "not-executed"), { space: "s" }, true);
   const named = withPairedCallerRemedy(denied, "com.example.reviews", { space: "s" });
   assert.equal(`${named.outcome}/${named.code}`, "refused/PERMISSION_DENIED", "naming a paired caller keeps the refusal");
-  assert.equal(named.remedy, "issue a caller for com.example.reviews with cotal auth mint <name> --endpoint com.example.reviews --space s --out <private-file>, then rerun with --creds <private-file>", "a refused call to another endpoint names the caller file that makes it");
+  assert.equal(named.remedy, "issue a caller for com.example.reviews with `cotal auth mint <name> --endpoint com.example.reviews --space s --out <private-file>`, then rerun with --creds <private-file>", "a refused call to another endpoint names the caller file that makes it");
   assert.deepEqual([named.native, named.target], [denied.native, denied.target], "the remedy keeps the native cause and the target");
-  assert.equal(withPairedCallerRemedy(denied, "com.example.reviews", { space: "s", server: "nats://127.0.0.1:4333" }).remedy, "issue a caller for com.example.reviews with cotal auth mint <name> --endpoint com.example.reviews --space s --server nats://127.0.0.1:4333 --out <private-file>, then rerun with --creds <private-file>", "the caller remedy keeps the --server the call was given");
-  assert.equal(withPairedCallerRemedy(denied, "com.example.reviews", { space: "s", server: "nats://h:1 o'k" }).remedy, "issue a caller for com.example.reviews with cotal auth mint <name> --endpoint com.example.reviews --space s --server 'nats://h:1 o'\\''k' --out <private-file>, then rerun with --creds <private-file>", "a server a shell would split is quoted in the caller remedy");
+  assert.equal(withPairedCallerRemedy(denied, "com.example.reviews", { space: "s", server: "nats://127.0.0.1:4333" }).remedy, "issue a caller for com.example.reviews with `cotal auth mint <name> --endpoint com.example.reviews --space s --server nats://127.0.0.1:4333 --out <private-file>`, then rerun with --creds <private-file>", "the caller remedy keeps the --server the call was given");
+  assert.equal(withPairedCallerRemedy(denied, "com.example.reviews", { space: "s", server: "nats://h:1 o'k" }).remedy, "issue a caller for com.example.reviews with `cotal auth mint <name> --endpoint com.example.reviews --space s --server 'nats://h:1 o'\\''k' --out <private-file>`, then rerun with --creds <private-file>", "a server a shell would split is quoted in the caller remedy");
   assert.equal(withPairedCallerRemedy(denied, "manager", { space: "s" }).remedy, undefined, "a refused manager call names no caller file, because the operator instrument already requests the manager");
   const unknown = endpointFailure(new Error("lost"), { space: "s" }, true);
   assert.equal(withPairedCallerRemedy(unknown, "com.example.reviews", { space: "s" }), unknown, "only a refusal gains the caller-file remedy");
@@ -388,7 +390,7 @@ async function completionOut(positionals: string[]): Promise<string> {
   const read = endpointFailure(silent, target, false);
   assert.equal(`${read.outcome}/${read.code}`, "refused/TARGET_UNAVAILABLE", "an unanswered contract read is an unavailable target");
   assert.equal(read.message, "no instance of com.example.reviews answered its contract read, so nothing is serving it or none could be reached", "the refusal says no instance answered");
-  assert.equal(read.remedy, "start the service that serves com.example.reviews, then run the command again; cotal service --space s lists this space's services", "its Next names how to start what serves it");
+  assert.equal(read.remedy, "start the service that serves com.example.reviews, then run the command again; `cotal service --space s` lists this space's services", "its Next names how to start what serves it");
   assert.equal(endpointFailure(silent, target, true).outcome, "unknown", "an unanswered call that may have run stays unknown");
   assert.equal(endpointFailure(new EpEnvelopeError("deadline-exceeded", "the closure walk exhausted its budget"), target, false).code, "OPERATION_FAILED", "a deadline without the unanswered marker stays a failed read");
 }
@@ -703,6 +705,63 @@ async function completionOut(positionals: string[]): Promise<string> {
   );
 }
 
+// --- a first-party extension npm's prefix record proves current is verified, not reinstalled -------
+// Every `cotal update` used to spawn `ext __update-add` for each recorded extension, and the add deletes
+// the installed copy so npm must fetch and install it again: one npm install per extension per run on a
+// machine that was already current. Each case writes a real prefix and runs the production check.
+{
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  const xdg = mkdtempSync(join(tmpdir(), "cotal-update-verify-"));
+  process.env.XDG_CONFIG_HOME = xdg;
+  const prefix = join(xdg, "cotal", "extensions");
+  const pkg = "@cotal-ai/orca";
+  const installedDir = join(prefix, "node_modules", "@cotal-ai", "orca");
+  const prefixAt = (version: string, onDisk = version): void => {
+    rmSync(prefix, { recursive: true, force: true });
+    mkdirSync(installedDir, { recursive: true });
+    const meta = { name: pkg, version, peerDependencies: { "@cotal-ai/core": "*" } };
+    writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "cotal-extensions", private: true, dependencies: { [pkg]: `^${version}` } }));
+    writeFileSync(join(prefix, "package-lock.json"), JSON.stringify({
+      name: "cotal-extensions", lockfileVersion: 3,
+      packages: { "": { name: "cotal-extensions", dependencies: { [pkg]: `^${version}` } }, [`node_modules/${pkg}`]: meta },
+    }));
+    writeFileSync(join(installedDir, "package.json"), JSON.stringify({ ...meta, version: onDisk }));
+  };
+  const run = async (entry: InstalledExtension) => {
+    const r = updateRuntime({ extensions: [entry], verifyExtension: verifyCurrentExtension });
+    assert.equal(await executeUpdate(false, r.rt), 0);
+    return { ...r, replays: r.events.filter((event) => event.startsWith("spawn:")) };
+  };
+  try {
+    prefixAt("0.13.1");
+    const current = await run(installed(pkg, "0.13.1", `${pkg}@0.13.1`));
+    assert.deepEqual(current.replays, [], "an extension recorded and installed at this generation starts no reinstall child");
+    assert.ok(current.events.some((event) => event.startsWith("out:") && event.includes(`✓ verified ${pkg}@0.13.1`)), "the kept extension is reported as verified");
+    assert.equal(
+      realpathSync(join(installedDir, "node_modules", "@cotal-ai", "core")),
+      realpathSync(hostPackageDir("@cotal-ai/core")),
+      "the kept extension's shared peer is bound to this binary's copy, as its reinstall would bind it",
+    );
+
+    for (const [why, setup, entry, reason] of [
+      ["recorded at an older version", () => prefixAt("0.13.0"), installed(pkg, "0.13.0", `${pkg}@0.13.0`), "recorded at 0.13.0, not 0.13.1"],
+      ["installed at an older version than recorded", () => prefixAt("0.13.1", "0.13.0"), installed(pkg, "0.13.1", `${pkg}@0.13.1`), `node_modules/${pkg} is 0.13.0 on disk and 0.13.1 in the prefix lock`],
+      ["missing its package tree", () => { prefixAt("0.13.1"); rmSync(installedDir, { recursive: true }); }, installed(pkg, "0.13.1", `${pkg}@0.13.1`), `node_modules/${pkg} is recorded in the prefix lock but not installed`],
+    ] as const) {
+      setup();
+      const stale = await run(entry);
+      assert.equal(stale.replays.length, 1, `an extension ${why} is reinstalled`);
+      assert.ok(stale.replays[0].includes(`ext __update-add ${pkg} ${pkg}@0.13.1`), `an extension ${why} is reinstalled at this generation`);
+      assert.ok(stale.events.includes(`err:${pkg}: ${reason}; reinstalling`), `the reinstall of an extension ${why} names its reason`);
+      assert.ok(!stale.events.some((event) => event.includes("✓ verified")), `an extension ${why} is not reported as verified`);
+    }
+  } finally {
+    rmSync(xdg, { recursive: true, force: true });
+    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = priorXdg;
+  }
+}
+
 // --- a connector refresh that fails fails the update ----------------------------------------------
 {
   const failing = updateRuntime({});
@@ -721,6 +780,16 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(!legacy.events.includes("claim-mutation"), "legacy report refuses before extension replay can mutate packages");
   assert.ok(!legacy.events.some((event) => event.startsWith("spawn:")), "legacy report starts no extension replay subprocess");
   assert.equal(code, 1);
+}
+
+// --- #5027: the legacy verdict names the cold path past it, not just that this is not a hot update --
+{
+  const lines: string[] = [];
+  printLegacyReport({ custody: "legacy", seats: [{ name: "linkedin-animator", agent: "claude", continuity: "fork" }] }, "alpha", (line) => lines.push(line));
+  assert.ok(lines[0]?.includes("this update is not a hot update"), "the verdict line comes first");
+  assert.ok(lines[1]?.includes("linkedin-animator: fork"), "each seat's continuity class is printed");
+  assert.ok(lines[2]?.startsWith("  Next: stop that mesh with `cotal down --space alpha`"), `the next step names the stop for that space: ${lines[2]}`);
+  assert.ok(lines[2]?.includes("then run this update again"), "and the rerun after it");
 }
 
 // --- #1879: the continuity refusal carries the workspace renderer's remedy ------------------------
@@ -1443,6 +1512,44 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   assert.match(unreported, /tmux · terminal attach not reported/, "a manager that does not report it is shown as not reporting it, never as attachable");
   const activityOnly = managerOptions([{ ...candidates[0]!, runtime: null, activity: "busy", terminal: null }]).options[0]!.hint;
   assert.match(activityOnly, /busy/, "and one whose presence carries no runtime keeps the activity it does carry");
+}
+
+{
+  // The question offers the managers a refused selection names by what presence shows: the name, or
+  // <host>/<runtime> without one, most recently started first, with the instance id and host in each
+  // hint. A roster read that is refused leaves the instance ids and says why above the question.
+  const { CommandFailure } = await import("@cotal-ai/workspace");
+  const { managerOptions, severalLive } = await import("../src/lib/manager-choice.js");
+  const [tmuxNew, named, orca, tmuxOld] = ["2xs0pq4rk85tv8jbn3u5141f5cx943m", "66m64nqra6qn8q6xlakgpiwelikogaw", "ggpyg3ywn99ar1oj6bm0x96x4i3a2l", "r28s306ioyo368fsrkdhro2bxjb6b36"];
+  const selection = `signed in, but the exchange for actor "cli" (view "manager-caller") was refused: manager-caller selection found 4 live remote manager candidates for owner u_own (${tmuxNew}, ${named}, ${orca}, ${tmuxOld}); exactly one is required, so name one with --on <instanceId>`;
+  const refusal = new CommandFailure("refused", "PERMISSION_DENIED", selection);
+  const row = (id: string, name: string, activity: string, meta: Record<string, string>, startedAt?: number) => ({ card: { id: `u_own.manager_${id}`, name, kind: "endpoint", role: "manager", meta }, status: "idle", activity, ...(startedAt ? { runtime: { id: "r", startedAt, source: "process" } } : {}), ts: 0 }) as unknown as import("@cotal-ai/core").Presence;
+  const roster = [
+    row(tmuxNew, "manager", "supervisor (tmux)", {}, Date.UTC(2026, 9, 23)),
+    row(named, "n7401ze", "supervisor (pty)", { host: "david-n7401ze" }, Date.UTC(2026, 9, 27)),
+    row(orca, "manager", "supervisor (orca)", { host: "netcup-vps" }, Date.UTC(2026, 9, 25)),
+    row(tmuxOld, "manager", "supervisor (tmux)", {}),
+  ];
+  const read = await severalLive(refusal, async () => roster);
+  assert.equal(read?.unread, undefined, "a roster that is read leaves nothing to explain");
+  const { options } = managerOptions(read?.managers ?? []);
+  assert.deepEqual(options.map((o) => o.label), ["n7401ze", "netcup-vps/orca", "tmux", "tmux"], "each manager is offered by its name or <host>/<runtime>, never by its instance id, most recently started first");
+  assert.deepEqual(options.map((o) => o.hint.split(" · ").slice(0, 2)), [[named, "david-n7401ze"], [orca, "netcup-vps"], [tmuxNew, "host not reported (started by an older cotal)"], [tmuxOld, "host not reported (started by an older cotal)"]], "each hint starts with the instance id and the host");
+  assert.match(options[0]!.hint, / · most recent$/, "the first is marked most recent");
+
+  const denied = new CommandFailure("refused", "PERMISSION_DENIED", 'the connection the auth service of cotal_cloud minted for your user may not read the presence bucket or the channel registry with one batched read: Permissions Violation for Publish to "$JS.API.DIRECT.GET.KV_cotal_channels_cotal_cloud"', {
+    remedy: "update the auth service of cotal_cloud to a release whose agent profile grants $JS.API.DIRECT.GET.KV_cotal_channels_cotal_cloud",
+  });
+  const unread = await severalLive(refusal, async () => { throw denied; });
+  assert.deepEqual(unread?.managers.map((m) => m.instanceId), [tmuxNew, named, orca, tmuxOld], "a refused roster read still names the choice by instance id");
+  assert.equal(unread?.unread, `names unavailable: ${denied.message}; ${denied.remedy}`, "and says why, with the refusal's message and its remedy");
+  const asked = spawnSync(process.execPath, [...process.execArgv, join(import.meta.dirname, "manager-question.fixture.ts"), selection, denied.message, denied.remedy!], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_"))), NO_COLOR: "1" },
+  });
+  const shown = asked.stderr.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\n[│ ]*/g, " ");
+  assert.match(shown, /names unavailable: the connection the auth service of cotal_cloud minted for your user may not read .* update the auth service of cotal_cloud to a release whose agent profile grants .*4 of your managers are live\. Which one should run this\?/, `the question says why above itself, rather than offering bare ids with no reason: ${asked.stderr}`);
 }
 
 {

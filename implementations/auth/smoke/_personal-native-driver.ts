@@ -24,10 +24,10 @@ export async function runPersonalNativeAcceptance(input: {
   const plugin = join(fixture, "plugin");
   const source = resolve(import.meta.dirname, "../../../extensions/connector-claude-code");
   for (const dir of [fixture, plugin, join(plugin, "hooks"), join(plugin, "dist"), join(plugin, ".claude-plugin")]) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  for (const file of [".claude-plugin/plugin.json", "hooks/hooks.json", "hooks/native-wake.js", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"])
+  for (const file of [".claude-plugin/plugin.json", "hooks/hooks.json", "hooks/native-wake.js", "dist/seat.cjs", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"])
     copyFileSync(join(source, file), join(plugin, file));
   writeFileSync(join(plugin, "dist/cli.json"), JSON.stringify({ argv: input.cli }), { mode: 0o600 });
-  const deliveredFiles = ["hooks/native-wake.js", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"];
+  const deliveredFiles = ["hooks/native-wake.js", "dist/seat.cjs", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"];
   const productHashes = Object.fromEntries(deliveredFiles.map((file) => [file, createHash("sha256").update(readFileSync(join(plugin, file))).digest("hex")]));
   if (input.transitionRace) {
     const module = join(plugin, "hooks/native-wake.js");
@@ -57,7 +57,7 @@ export async function runPersonalNativeAcceptance(input: {
   const env: NodeJS.ProcessEnv = { ...input.env, CLAUDE_CONFIG_DIR: join(fixture, "config") };
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
-  const mcp = { mcpServers: { cotal: { command: process.execPath, args: [join(plugin, "dist/mcp.cjs")] } } };
+  const mcp = { mcpServers: { cotal: { command: process.execPath, args: [join(plugin, "dist/seat.cjs")] } } };
   const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--model", "claude-sonnet-5-5",
     "--session-id", session, "--plugin-dir", plugin, "--setting-sources", "", "--strict-mcp-config", "--mcp-config", JSON.stringify(mcp),
     "--permission-mode", "dontAsk", "--tools", "Bash", "--allowedTools", "mcp__cotal__*", "Bash(sleep *)"];
@@ -220,7 +220,7 @@ export async function runPersonalNativeAcceptance(input: {
     if (input.evidence) {
       mkdirSync(input.evidence, { recursive: true, mode: 0o700 });
       for (const file of ["native-stdout.jsonl", "native-stderr.log"]) copyFileSync(join(fixture, file), join(input.evidence, file), constants.COPYFILE_EXCL);
-      const files = ["hooks/native-wake.js", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"];
+      const files = ["hooks/native-wake.js", "dist/seat.cjs", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"];
       writeFileSync(join(input.evidence, "receipt.json"), JSON.stringify({ model: "claude-sonnet-5-5", session, principal: nativePrincipal,
         passed, markers, hostedAcceptance: false, loginCacheCopied: false, childExited: child.exitCode !== null || child.signalCode !== null,
         fixtureInstrumentation: { delayedClaim: input.transitionRace === true, receiptAndBoundaryTrace: input.traceInline === true, deliveryLogicUnchanged: true },

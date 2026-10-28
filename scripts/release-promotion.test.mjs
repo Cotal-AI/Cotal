@@ -22,25 +22,32 @@ test("real install-check entrypoint isolates two synthetic operator environments
     writeFileSync(join(bin, "npm"), `#!${process.execPath}\n` + `
 const fs = require("node:fs"), path = require("node:path");
 const env = process.env;
-fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({
-  home: env.HOME, cwd: process.cwd(), token: Boolean(env.GITHUB_TOKEN),
+fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify({
+  home: env.HOME, cwd: process.cwd(), token: Boolean(env.GITHUB_TOKEN), preferOnline: process.argv.includes("--prefer-online"), specs: process.argv.filter(arg => /@1\.2\.3$/.test(arg)),
   operatorState: (env.COTAL_HOME || "").includes("synthetic-operator"),
   privatePaths: ["USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "COTAL_HOME", "CLAUDE_CONFIG_DIR", "TMPDIR", "TMP", "TEMP", "npm_config_userconfig", "npm_config_globalconfig", "npm_config_cache"].every(key => env[key] === env.HOME || env[key]?.startsWith(env.HOME + path.sep)),
   emptyConfigs: [env.npm_config_userconfig, env.npm_config_globalconfig].every(file => fs.readFileSync(file, "utf8") === "")
-}));
+})+"\\n");
 const prefix = process.argv[process.argv.indexOf("--prefix") + 1];
 fs.mkdirSync(path.join(prefix, "bin"), { recursive: true });
 fs.writeFileSync(path.join(prefix, "bin", "cotal"), ${JSON.stringify(`#!${process.execPath}\nprocess.stdout.write("cotal-ai 1.2.3\\n");\n`)}, { mode: 0o755 });
 `, { mode: 0o755 });
     for (const session of ["first", "second", "late"]) {
       const flags = session === "late" ? [`--requested-at=${new Date(Date.now() - 3_600_000).toISOString()}`] : [];
-      const output = execFileSync(process.execPath, [join(import.meta.dirname, "verify-release-installable.mjs"), "1.2.3", "--deadline-ms=5000", ...flags], {
+      writeFileSync(capture, "");
+      const output = execFileSync(process.execPath, [join(import.meta.dirname, "verify-release-installable.mjs"), "1.2.3", "--deadline-ms=5000", "--closure", ...flags], {
         cwd: workspace, encoding: "utf8", timeout: 10_000,
         env: { ...coldOsEnvironment(), PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: join(root, session), GITHUB_TOKEN: "synthetic-not-a-credential", COTAL_HOME: join(root, "synthetic-operator", session), ...(session === "late" ? { RELEASE_ATTEMPT_STARTED_AT: new Date().toISOString() } : {}) },
       });
       assert.match(output, /VERDICT: INSTALLABLE/);
-      const captured = JSON.parse(readFileSync(capture, "utf8"));
+      const captures = readFileSync(capture, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      assert.equal(captures.length, 2);
+      const captured = captures.at(-1);
       assert.equal(captured.token, false); assert.equal(captured.operatorState, false);
+      assert.equal(captured.preferOnline, true, "registry install must request packument revalidation");
+      const fixed = JSON.parse(readFileSync(join(workspace, ".changeset/config.json"), "utf8")).fixed.flat().sort();
+      assert.deepEqual(captures[0].specs.sort(), fixed.map(name => `${name}@1.2.3`), "every fixed sibling must resolve through npm");
+      assert.deepEqual(captured.specs, ["cotal-ai@1.2.3"], "global CLI install must retain its supported dependency layout");
       assert.equal(captured.privatePaths, true); assert.equal(captured.emptyConfigs, true);
       assert.equal(captured.cwd, captured.home);
       assert.equal(existsSync(captured.home), false, "successful install probe must clean its private scratch root");

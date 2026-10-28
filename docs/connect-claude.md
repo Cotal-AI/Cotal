@@ -246,7 +246,11 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   cotal@cotal-mesh --scope user`), because its hooks bind only to an *installed* plugin. Earlier
   releases installed it per project, at local scope; the next `cotal setup` removes those installs and
   keeps the user-scope one. If Claude Code cannot change a project's settings, setup still removes
-  the others, then fails naming that project and the `claude plugin uninstall` command to run there. A session Cotal launches loads the package's own copy with `--plugin-dir`,
+  the others, then fails naming that project and the `claude plugin uninstall` command to run there.
+  `cotal update` does the same for a machine that has only per-project installs: it installs the plugin
+  at user scope and removes the per-project installs that had it on, keeping one a project turned off
+  and any project-scope install. An account that turned the plugin off in its user settings keeps its
+  per-project installs as they are. A session Cotal launches loads the package's own copy with `--plugin-dir`,
   which replaces the installed one for that session, so it still runs one cotal server.
   The repo's `.claude-plugin/marketplace.json` lists the committed plugin tree under
   `claude-plugin/`, which each release regenerates with the built bundles, the skills and the
@@ -299,11 +303,43 @@ The consuming connector holds a crash-safe claim for its broker target, space, p
 lifecycle on this OS user account. A second patched session on the same host refuses before
 pulling that inbox, even when its launch files and control socket differ. Reconnect keeps the
 claim. Hooks and non-consuming helper connections do not claim it. The control listener binds
-before the broker connection and never removes an existing socket path.
+before the broker connection. On Unix, a restart probes an occupied socket path and retries
+once after removing a leftover with no listener. A live listener, an inconclusive probe or
+a Windows named-pipe collision still refuses the bind.
 
 This is cooperative same-host containment. Other hosts, broker URL aliases and older clients
 are not fenced. Preserve the existing session before choosing a distinct actor for a new
 launch. An uncertain shutdown keeps custody until the consuming process exits.
+
+### The seat entry
+
+The launched entry is `dist/seat.cjs`. It enables Node's [module compile
+cache](https://nodejs.org/docs/latest-v22.x/api/module.html#modulenablecompilecachecachedir) and
+then loads `dist/mcp.cjs`, which holds the server. The cache stores V8's compiled form of that 5 MB
+bundle, so every launch after the first one skips parsing it, which keeps about 5.7 MiB per seat out
+of the process's malloc arena for as long as the seat runs.
+
+The cache lives in `~/.cotal/compile-cache` (`%LOCALAPPDATA%\Cotal\compile-cache` on Windows), the
+OS user's own Cotal directory, which `COTAL_HOME` never redirects. Node keys a subdirectory inside
+it, so a Node upgrade pays one compile and reads no stale entry. The directory grows to the size of one compiled bundle per Node version, under 1 MB each, and
+deleting it is safe at any time: the next seat writes it again.
+
+The directory is created with owner-only permissions, whatever the launching umask was, because a
+compiled bundle belongs to the user who ran the seat.
+
+Two things the cache never does. A cache it cannot open, such as a read-only home, prints one line
+to stderr with Node's reason and the seat serves without it. `NODE_DISABLE_COMPILE_CACHE=1` turns it
+off silently. Setting `NODE_COMPILE_CACHE` to a directory of your own takes precedence over both:
+Node enables the cache there at startup and the seat leaves it alone.
+
+This entry needs Node 22.10 or newer, which is where `module.flushCompileCache()` lands, and that is
+the floor `cotal-ai` declares. On anything older the entry prints one line naming the floor and the
+running version and exits without serving, rather than starting a seat that dies on its first
+flush.
+
+Nothing else moved. `node dist/mcp.cjs` is still a working seat launch for a config written before
+this entry existed, and it pays the compile on every start. It needs no compile cache, so it is also
+the way to serve from a Node older than the floor.
 
 ## Sessions Cotal did not launch
 
@@ -374,8 +410,8 @@ channel. These come with the identity and are not optional, so the approval page
 the person decides. Native activity sharing includes the messages the person types, assistant
 replies, and each tool call's name with its start and end, after activation. It is not only presence
 or status. Tool arguments and tool results are withheld from the event channel, as on every connector
-([Event plane](#event-plane)). While a tool waits for permission, presence names it with a short
-detail such as its command, and every roster reader sees that. Reasoning is not shared by default,
+([Event plane](#event-plane)). While a tool waits for permission, presence shares only its tool name,
+never its command or arguments, with every roster reader. Reasoning is not shared by default,
 and earlier or pre-approval history is not shared. The space's activity read permissions determine
 who can read the event channel. Decline the connection if you do not want this sharing.
 A request without a selection proposes nothing beyond these rights: no role,
@@ -663,9 +699,9 @@ A `SessionStart` during an open turn, including compaction, preserves the curren
 |---|---|
 | `SessionStart` | `idle` only when no turn is open (join; surfaces the inbox; captures the live model into `meta.model` when no pin) |
 | `UserPromptSubmit` | `working` (turn starts; surfaces the inbox) |
-| `PreToolUse` | no change; records *what* is about to run, so a permission wait can name it |
+| `PreToolUse` | `working` on the first main-agent tool if no turn is open, including a mesh turn without `UserPromptSubmit`; records only the tool name for a permission wait. A subagent tool does not open the main turn. |
 | `PostToolBatch` | `working` when the main agent's batch resolves after a prompt left the seat `waiting`, which clears its condition so the turn's `Stop` yields; a subagent's batch (it carries `agent_id`) or one relayed after the turn's terminal changes nothing |
-| `Notification` (`permission_prompt` / `agent_needs_input`) | `waiting` with condition `approval` / `input` (activity leads with the pending tool, e.g. `Bash: git push …`) |
+| `Notification` (`permission_prompt` / `agent_needs_input`) | `waiting` with condition `approval` / `input` (activity names only the pending tool, e.g. `Bash`, without command text or arguments) |
 | `Stop` / `StopFailure` | `idle` (turn done / died on an API error; flushes anything held while busy). `StopFailure` also relays Claude Code's native error value as `condition.source` and maps it to the closed condition vocabulary. On the [event plane](#event-plane) it closes the run with `RUN_ERROR`. |
 | `SessionEnd` | `offline` (graceful leave) |
 
@@ -1019,6 +1055,9 @@ await session.close();
 ```
 
 Loading the module only exports it; it serves its own stdio only when run, as `node dist/mcp.cjs`.
+A host that loads it this way compiles the bundle in its own process and is outside the seat entry's
+compile cache ([above](#the-seat-entry)); `module.enableCompileCache()` before
+the first load brings the host the same saving.
 The subpath ships CommonJS declarations so TypeScript hosts can use either module format,
 including CommonJS consumers with Node16 or Node18 module settings.
 Claude Code pushes `claude/channel` only to a stdio server it launched, so each `claude` still

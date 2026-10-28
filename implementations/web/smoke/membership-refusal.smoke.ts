@@ -393,14 +393,14 @@ const membershipWatchStmt = liftStmt(webTs, "membershipWatch = await ep.watchMem
 check("the membershipWatch statement was lifted out of web.ts", Boolean(membershipWatchStmt), { len: membershipWatchStmt?.length });
 
 const closedWireBytes = await sseWire(membershipWatchStmt!, {
-  pushMembership: () => {},
+  onMembership: () => {},
   ep: { watchMembership: async (_onChange: () => void, onClosed: (e: Error) => void) => { onClosed(new Error(REASON)); return { stop: async () => {} }; } },
 });
 check("a closed watch reaches the browser as the membership-read-failed frame, byte for byte",
   closedWireBytes === REFUSAL_FRAME, { closedWireBytes });
 
 const noCloseWireBytes = await sseWire(membershipWatchStmt!, {
-  pushMembership: () => {},
+  onMembership: () => {},
   ep: { watchMembership: async (_onChange: () => void, _onClosed: (e: Error) => void) => ({ stop: async () => {} }) },
 });
 check("CONTROL: a watch that never closes writes nothing",

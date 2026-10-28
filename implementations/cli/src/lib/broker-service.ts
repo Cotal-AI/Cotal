@@ -123,7 +123,7 @@ function brokerTarget(context: ServiceAdapterContext, purpose: BrokerPurpose = "
   const inside = relative(control, config);
   if (!inside || inside.startsWith(`..${sep}`) || inside === ".." || isAbsolute(inside)) refuse("CONFLICT", "the broker configuration is not inside the selected root's .cotal directory; another root's configuration was not used", { root, config });
   const problem = brokerServerProblem(server);
-  if (problem) refuse("UNSUPPORTED", `the definition's server option ${problem}`, undefined, `remove it with cotal service remove ${oneLine(context.definition)} --space ${oneLine(context.space)} --yes, then add it again with the one address its configuration serves, such as --server nats://127.0.0.1:<port>`);
+  if (problem) refuse("UNSUPPORTED", `the definition's server option ${problem}`, undefined, `remove it with \`cotal service remove ${oneLine(context.definition)} --space ${oneLine(context.space)} --yes\`, then add it again with the one address its configuration serves, such as --server nats://127.0.0.1:<port>`);
   const { protocol, host, port } = brokerListenAddress(server);
   let policy;
   try { policy = readBrokerPolicy(root); }

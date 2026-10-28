@@ -20,6 +20,28 @@ import type { AgentConfig } from "./config.js";
 
 type ManagerConfig = Pick<AgentConfig, "space" | "servers" | "tls" | "lifecycleUid" | "userAuth" | "managerInstanceId">;
 
+/** Credentials whose manager-call view the broker refused an accepted row for: legacy-rail views,
+ *  asked once per credential per {@link LEGACY_RAIL_RECHECK_MS}. Keyed by the credential the bearer
+ *  was minted from (its renewals keep it), else by the bearer itself. The recheck is what lets an
+ *  issuer that starts issuing for this credential be noticed without a seat restart. */
+const legacyRail = new Map<string, number>();
+const LEGACY_RAIL_RECHECK_MS = 60 * 60_000;
+const LEGACY_RAIL_MAX = 32;
+function onLegacyRail(key: string): boolean {
+  const until = legacyRail.get(key);
+  if (until === undefined) return false;
+  if (Date.now() < until) return true;
+  legacyRail.delete(key);
+  return false;
+}
+function rememberLegacyRail(key: string): void {
+  legacyRail.set(key, Date.now() + LEGACY_RAIL_RECHECK_MS);
+  if (legacyRail.size > LEGACY_RAIL_MAX) legacyRail.delete(legacyRail.keys().next().value!);
+}
+
+/** Forget every remembered legacy-rail verdict. For tests that reuse a process across stacks. */
+export function forgetLegacyRail(): void { legacyRail.clear(); }
+
 /** Runs a call's submission under a goal follow. `prepare` runs the bearer command, opens the
  *  control connection and resolves the manager by the follow's deadline. It publishes nothing, so
  *  its failures surface as their own: a describe that draws no reply reports itself as unanswered,
@@ -45,10 +67,13 @@ export async function invokeUserManager(
   let instanceId: string;
   let service: ResolvedService;
   const onAbort = () => { void nc?.close(); };
-  const resolve = (signal = opts.signal, deadlineMs = opts.deadlineMs ?? 10_000) => resolveService(nc!, config.space, endpoint, caller, { instanceId, deadlineMs, signal });
+  const resolve = (signal = opts.signal, deadlineMs = opts.deadlineMs ?? 10_000) => resolveService(nc!, config.space, endpoint, caller, {
+    instanceId, deadlineMs, signal, commands: opts.follow ? [command, "goal-result"] : [command],
+  });
   const connect = async (signal = opts.signal, deadline = Date.now() + (opts.deadlineMs ?? 10_000)) => {
     const token = await bearer(signal);
-    ({ caller, instanceId } = managerCallerBinding(token, {
+    let credentialId: string | undefined;
+    ({ caller, instanceId, credentialId } = managerCallerBinding(token, {
       space: config.space, owner: user.owner, actor: user.actor, lifecycleUid: config.lifecycleUid!, instanceId: config.managerInstanceId,
     }));
     const connectOpts = standaloneConnectOpts({ bearer: token, sentinelCreds: user.sentinelCreds, tls: config.tls });
@@ -68,11 +93,19 @@ export async function invokeUserManager(
     signal?.throwIfAborted();
     // Issued interactive views and eligible managed run views carry their own accepted-row read
     // (SPEC 13.15). A managed view without that issuance remains on its legacy rail: the broker
-    // refuses the read as a RequestError whose cause is the permission violation.
-    try {
-      caller = await issuedUserCaller(nc, config.space, String(connectOpts.name), caller);
-    } catch (e) {
-      if (!isPermissionDenied(e)) throw e;
+    // refuses the read as a RequestError whose cause is the permission violation. That verdict is
+    // the credential's, not the connection's (the issuer wrote a row for an issued view at every
+    // callout, and never for a legacy one), so it is asked once per credential and rechecked
+    // hourly: a seat that pulls its turns every 15 s on a legacy view used to put one refused
+    // request in the broker's log each time, forever (#5040).
+    const railKey = credentialId ?? token;
+    if (!onLegacyRail(railKey)) {
+      try {
+        caller = await issuedUserCaller(nc, config.space, String(connectOpts.name), caller);
+      } catch (e) {
+        if (!isPermissionDenied(e)) throw e;
+        rememberLegacyRail(railKey);
+      }
     }
   };
   // The describe spends what is left of the follow's deadline, so a silent manager reports itself.

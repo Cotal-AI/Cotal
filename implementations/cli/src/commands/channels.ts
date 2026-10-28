@@ -3,8 +3,8 @@ import { isAbsolute, join } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import {
   assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
-  ChannelRegistryConflict, channelBucket, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, validateChannelConfig,
-  type ChannelConfig, type ChannelRegistryFile, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
+  ChannelRegistryConflict, channelBucket, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, UndecodableRegistryEntry, validateChannelConfig,
+  type ChannelConfig, type ChannelRegistryFile, type ChannelRegistryRead, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
@@ -78,7 +78,7 @@ export function channelArguments(args: ParsedArgs): { action: string; name?: str
   const stray = named ? (extra.length === 1 ? extra[0] : undefined) : rawName;
   if ((values.replay !== undefined || values["no-replay"] !== undefined) && stray !== undefined && /^(on|off|true|false|yes|no)$/i.test(stray)) {
     const flag = /^(off|false|no)$/i.test(stray) ? "--no-replay" : "--replay";
-    throw new CommandFailure("refused", "USAGE_INVALID", `--replay takes no value, so "${stray}" was read as a channel name; --replay turns replay on and --no-replay turns it off`, { remedy: `run cotal channel ${action}${named && rawName ? ` ${rawName}` : ""} ${flag}` });
+    throw new CommandFailure("refused", "USAGE_INVALID", `--replay takes no value, so "${stray}" was read as a channel name; --replay turns replay on and --no-replay turns it off`, { remedy: `run \`cotal channel ${action}${named && rawName ? ` ${rawName}` : ""} ${flag}\`` });
   }
   if (extra.length || (named ? !rawName : rawName !== undefined))
     throw usage(named ? `cotal channel ${action} takes one channel name` : `cotal channel ${action} takes no channel name`);
@@ -145,7 +145,9 @@ export async function channels(args: ParsedArgs): Promise<void> {
   } catch (error) {
     // A write that kept losing the revision race to other writers saved nothing.
     if (error instanceof ChannelRegistryConflict)
-      throw new CommandFailure("refused", "CONFLICT", `${error.message}; this change was not saved`, { target, remedy: "read the channel with cotal ch show, then repeat the change" });
+      throw new CommandFailure("refused", "CONFLICT", `${error.message}; this change was not saved`, { target, remedy: "read the channel with `cotal ch show`, then repeat the change" });
+    if (error instanceof UndecodableRegistryEntry)
+      throw new CommandFailure("refused", "CONFLICT", error.message, { target, remedy: "read the key and replace the value; the bytes were left as they are" });
     // A write the broker refused before any purge was acknowledged applied nothing.
     if (purged === undefined && isPublishPermissionDenied(error)) {
       const write = action === "remove" ? values.purge ? `purge #${name}'s history and remove its metadata` : "remove channel metadata" : action === "defaults" ? "write channel defaults" : "write channel metadata";
@@ -200,19 +202,20 @@ function seedReapplies(space: string, action: string, name: string | undefined, 
 export async function refuseUnknownChannel(name: string, values: Values, target: object, action: "members" | "remove"): Promise<void> {
   const reader = await connectOrThrow(values, "operator");
   const auth = reader.bearer ? { bearer: reader.bearer, sentinelCreds: reader.sentinelCreds } : { creds: reader.creds };
-  let registry: ChannelRegistryFile;
-  try { registry = await readChannelRegistry({ servers: reader.server, space: reader.space, ...auth, directGet: !reader.bearer }); }
+  let registry: ChannelRegistryRead;
+  try { registry = await readChannelRegistry({ servers: reader.server, space: reader.space, ...auth, directGet: batchedRead(reader, channelBucket(reader.space)) }); }
   catch (error) {
     if (isPublishPermissionDenied(error)) return;
     throw error;
   }
   const registered = Object.keys(registry.channels ?? {}).sort();
-  if (registered.includes(name) || (await earlierMessages(values, name)) !== false) return;
+  const saved = new Set([...registered, ...(registry.undecodable ?? []).map((entry) => entry.key)]);
+  if (saved.has(name) || (await earlierMessages(values, name)) !== false) return;
   const spelled = registered.find((channel) => channel.toLowerCase() === name.toLowerCase());
   const known = registered.length ? `registered channels: ${registered.map((channel) => `#${channel}`).join(", ")}` : "this space registers no channels";
   throw new CommandFailure("refused", "TARGET_NOT_FOUND",
     `#${name} has ${action === "members" ? "no observed members, " : ""}no saved entry and no retained messages; ${spelled ? `channel names are case-sensitive, and the registered one is #${spelled}` : known}`,
-    { target, remedy: spelled ? `name it as registered: cotal channel ${action} ${spelled}` : "name a channel the space has; cotal ch lists the registered ones" });
+    { target, remedy: spelled ? `name it as registered: \`cotal channel ${action} ${spelled}\`` : "name a channel the space has; `cotal ch` lists the registered ones" });
 }
 
 /** A saved setting in the receipt, in the words `channel show` uses for it. */
@@ -234,26 +237,33 @@ function policyFields(config: ChannelConfig | undefined, defaults: ChannelRegist
   ];
 }
 
-function registryView(result: { action: string; name?: string; space: string; registry: ChannelRegistryFile }): Report {
+function registryView(result: { action: string; name?: string; space: string; registry: ChannelRegistryRead }): Report {
   const { registry, name } = result;
+  const bad = (key: string) => registry.undecodable?.find((entry) => entry.key === key);
   if (result.action === "show") {
     const config = Object.hasOwn(registry.channels ?? {}, name!) ? registry.channels![name!] : undefined;
+    const undecodable = bad(name!);
     return { sections: [
-      { title: `Channel · #${name}`, blocks: [{ kind: "fields", rows: [["Space", result.space], ["Metadata", config ? "configured" : "no saved entry"], ...policyFields(config, registry.defaults), ["Description", config?.description || "not set"]] }] },
+      { title: `Channel · #${name}`, blocks: [{ kind: "fields", rows: [["Space", result.space], ["Metadata", undecodable ? "not decoded" : config ? "configured" : "no saved entry"], ...policyFields(config, registry.defaults), ["Description", config?.description || "not set"]] }, ...(undecodable ? [{ kind: "lines" as const, lines: [{ text: `The saved entry does not decode (${undecodable.error}). The key was left as it is, and the channel resolves to the default policy.`, tone: "waiting" as const }] }] : [])] },
       ...(config?.instructions ? [{ title: "Instructions · advisory", blocks: [{ kind: "lines" as const, lines: config.instructions.split(/\r?\n/) }] }] : []),
       { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch members ${name}`, description: "Read broker-observed membership" }, { command: `cotal history ${name}`, description: "Read retained messages within your grant" }] }] },
     ] };
   }
-  if (result.action === "defaults") return { sections: [
-    { title: "Channel defaults", blocks: [{ kind: "fields", rows: [["Space", result.space], ...policyFields(registry.defaults, undefined)] }, { kind: "lines", lines: [{ text: "Per-channel settings override these defaults. Replay is not an access control.", tone: "hint" }] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ch defaults --replay --window 24h", description: "Set defaults for this space" }] }] },
-  ] };
+  if (result.action === "defaults") {
+    const undecodable = bad("=defaults");
+    return { sections: [
+      { title: "Channel defaults", blocks: [{ kind: "fields", rows: [["Space", result.space], ...(undecodable ? [["Saved entry", "not decoded"] as [string, string]] : []), ...policyFields(registry.defaults, undefined)] }, { kind: "lines", lines: [{ text: undecodable ? `The saved defaults do not decode (${undecodable.error}). The key was left as it is, and channels inherit the built-in policy.` : "Per-channel settings override these defaults. Replay is not an access control.", tone: undecodable ? "waiting" : "hint" }] }] },
+      { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ch defaults --replay --window 24h", description: "Set defaults for this space" }] }] },
+    ] };
+  }
   const entries = Object.entries(registry.channels ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  const undecodable = [...(registry.undecodable ?? [])].sort((a, b) => a.key.localeCompare(b.key));
   return { sections: [
     { title: `Channels · ${result.space}`, blocks: [entries.length ? {
       kind: "table", columns: [{ key: "name", label: "Channel" }, { key: "description", label: "Description" }, { key: "replay", label: "Replay" }, { key: "delivery", label: "Delivery" }],
       rows: entries.map(([channel, config]) => ({ name: { text: `#${channel}`, tone: "command" }, description: config.description ?? "not set", replay: `${effectiveReplay(config, registry.defaults) ? "on" : "off"}${config.replay === undefined ? " · default" : ""}`, delivery: effectiveDeliveryClass(config, registry.defaults) })),
     } : { kind: "lines", lines: ["No saved channel metadata."] }, { kind: "lines", lines: [{ text: "Configured entries only. Channels with traffic but no saved metadata are not included.", tone: "hint" }] }] },
+    ...(undecodable.length ? [{ title: "Not decoded", blocks: [{ kind: "table" as const, columns: [{ key: "key", label: "Key" }, { key: "error", label: "Error" }], rows: undecodable.map((entry) => ({ key: entry.key === "=defaults" ? "defaults" : `#${entry.key}`, error: entry.error })), }, { kind: "lines" as const, lines: [{ text: "These keys stay in the registry. Their channels resolve to the default policy until the value decodes.", tone: "hint" as const }] }] }] : []),
     { title: "Next", blocks: [{ kind: "commands", items: [
       { command: "cotal ch show <name>", description: "Read policy and advisory instructions" },
       { command: 'cotal ch set <name> --desc "…"', description: "Save channel metadata without changing access" },
@@ -264,7 +274,7 @@ function registryView(result: { action: string; name?: string; space: string; re
 
 async function confirmRemoval(name: string, space: string, values: Values, presentation: Presentation): Promise<boolean> {
   if (values.yes) return true;
-  if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(`${yesRequired("channel removal", presentation === "json")}; --purge also deletes retained history for that channel`, { remedy: `confirm with cotal channel remove ${name}${values.purge ? " --purge" : ""} --yes` });
+  if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(`${yesRequired("channel removal", presentation === "json")}; --purge also deletes retained history for that channel`, { remedy: `confirm with \`cotal channel remove ${name}${values.purge ? " --purge" : ""} --yes\`` });
   const question = `Remove #${name} from ${space}? ${values.purge ? "Its retained history will also be deleted." : "Its retained history will be kept."} Access grants and members are unchanged.`;
   if (presentation === "plain") return (await prompts.askLine(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
   const answer = await prompts.confirm({ message: question, initialValue: false });

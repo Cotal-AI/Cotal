@@ -135,7 +135,7 @@ export async function deleteSpace(opts: { servers?: string; creds?: string; auth
     const jsm = await jetstreamManager(nc);
     // Delete EVERY stream + KV bucket `setupSpaceStreams` creates — otherwise `down` leaves the DLV/INBOX
     // streams and the members/acl/membership/delivery/manager buckets orphaned (a space leak), and since
-    // `teardown` is the sole STREAM.DELETE holder, nothing else could ever reap them.
+    // `teardown` is the only STREAM.DELETE holder for every one of them, nothing else could ever reap them.
     // The same closed target list mints teardown's exact grants. Transfer streams are enumerated
     // under this account and filtered to this space, never inferred from a prefix alone.
     const streams = spaceDeletionStreams(opts.space, await listTransferStreams(nc, opts.space));

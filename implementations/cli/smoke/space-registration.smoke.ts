@@ -437,7 +437,7 @@ setCurrent("keep");
         warned.length === 1 && /stack-broker/.test(warned[0].message) && /never stopped cleanly/.test(warned[0].message), shown(unsettled));
     const kept = (unsettled.env?.warnings ?? []).filter((w: { code: string }) => w.code === "STACK_DEFINITIONS_KEPT");
     check("...its stack definition is kept, and the warning names the route that releases it",
-      kept.length === 1 && /stack-broker/.test(kept[0].message) && kept[0].message.includes(`cotal down --yes in ${goneRoot}, then run cotal space forget stackgone again`) &&
+      kept.length === 1 && /stack-broker/.test(kept[0].message) && kept[0].message.includes(`\`cotal down --yes\` in ${goneRoot}, then run \`cotal space forget stackgone\` again`) &&
         unsettled.env?.result.releasedDefinitions.length === 0 && serviceDefinitionStore("stackgone").read("stack-broker") !== undefined, shown(unsettled));
     check("...and its kept services do not repeat a stack definition the warning names", JSON.stringify(unsettled.env?.result.keptServices) === "[]", unsettled.env?.result);
 
@@ -570,7 +570,7 @@ if (process.platform === "linux") {
     if (selected === undefined) clearCurrent(); else setCurrent(selected);
     removeMesh("awaysel");
     check("ps and who there with another space selected still refuse with the COTAL_HOME step, naming no stopped space of this folder",
-      otherHome(read) && text.status === 2 && /another Cotal home/.test(text.stderr) && !/this folder holds|restart it with cotal up/.test(text.stdout + text.stderr) && unchanged(), { ps: shown(read), who: shown(text) });
+      otherHome(read) && text.status === 2 && /another Cotal home/.test(text.stderr) && !/this folder holds|restart it with `cotal up`/.test(text.stdout + text.stderr) && unchanged(), { ps: shown(read), who: shown(text) });
   }
   // A space this home prepared at the root does not hide the other home.
   recordPreparedSpace({ space: "away", root: awayRoot, ts });
@@ -852,7 +852,7 @@ if (process.platform === "linux") {
     const upInside = await json(["up", "--server", DEAD, "--no-manager"], control);
     check("up in a control directory that holds a .cotal of its own is CONFLICT, exit 2, naming the project, and starts nothing",
       refused(upInside, 2, "CONFLICT") && upInside.env?.error?.message === `${control} is the control directory ${control}, which holds the Cotal records of the project ${project}, so it cannot be a project folder; nothing was started or written` &&
-        upInside.env.error.remedy === `run cotal up from the project folder ${project}` && readdirSync(join(control, ".cotal")).length === 0, shown(upInside));
+        upInside.env.error.remedy === `run \`cotal up\` from the project folder ${project}` && readdirSync(join(control, ".cotal")).length === 0, shown(upInside));
     const upRoot = await json(["up", "--root", control, "--server", DEAD, "--no-manager"], outer);
     check("so is up --root naming it", refused(upRoot, 2, "CONFLICT") && (upRoot.env?.error?.message ?? "").startsWith(`${control} is the control directory ${control}`) && readdirSync(join(control, ".cotal")).length === 0, shown(upRoot));
     rmSync(join(control, ".cotal"), { recursive: true });
@@ -1181,7 +1181,7 @@ if (process.platform === "linux") {
   const moved = await json(["up", "--detach", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
   check("up --server naming another address is CONFLICT, exit 2, naming the recorded address and bare cotal up from the root",
     refused(moved, 2, "CONFLICT") && (moved.env?.error?.message ?? "").includes(`recorded at ${server}`) &&
-      moved.env?.error?.remedy === `run bare cotal up from ${recordedRoot} to start it at ${server}`, shown(moved));
+      moved.env?.error?.remedy === `run bare \`cotal up\` from ${recordedRoot} to start it at ${server}`, shown(moved));
   // While another program holds the recorded address, bare up refuses too, so this refusal names that
   // address and the process of this account that listens there, and says no command moves the stack.
   const occupier = createServer();
@@ -1190,12 +1190,12 @@ if (process.platform === "linux") {
     const held = await json(["up", "--detach", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
     check("...and while another program holds that address, it names the address and that process, and says no command moves the stack",
       refused(held, 2, "CONFLICT") && new RegExp(`a recorded stack is not moved to another address, and another process holds that address 127\\.0\\.0\\.1:${port}, where process ${process.pid} \\(\\S+\\) of this account listens$`).test(held.env?.error?.message ?? "") &&
-        held.env?.error?.remedy === `stop the process listening on 127.0.0.1:${port}, then run bare cotal up from ${recordedRoot}; no command moves a stack that ran to another address, so it starts only at ${server}`, shown(held));
+        held.env?.error?.remedy === `stop the process listening on 127.0.0.1:${port}, then run bare \`cotal up\` from ${recordedRoot}; no command moves a stack that ran to another address, so it starts only at ${server}`, shown(held));
   } finally { await new Promise<void>((done) => occupier.close(() => done())); }
   const bound = await json(["up", "--detach", "--no-manager", "--host", "127.0.0.1", "--server", server], fresh);
   check("up --host naming an unrecorded bind host is CONFLICT, exit 2, naming it, its recorded value and bare cotal up",
     refused(bound, 2, "CONFLICT") && (bound.env?.error?.message ?? "").includes("--host 127.0.0.1 (recorded: none)") &&
-      (bound.env?.error?.remedy ?? "").includes(`run bare cotal up from ${recordedRoot}`), shown(bound));
+      (bound.env?.error?.remedy ?? "").includes(`run bare \`cotal up\` from ${recordedRoot}`), shown(bound));
   check("none of these refusals changed the stack journal", readFileSync(stackJournalPath(fresh), "utf8") === journalBefore);
   // With no space selected, a start selects its own space and its JSON says so. The selection stays
   // through the space's down.
@@ -1209,16 +1209,16 @@ if (process.platform === "linux") {
   // After its down, the space reads as stopped with its last operation, as `status` reads it.
   const stoppedList = await json(["space"]), stoppedListHuman = await run(["space", "--plain"]);
   check("after down, space lists it as stopped with its last operation, under a State column",
-    stoppedList.env?.result.prepared.some((p: { space: string; state: string; lastOperation: unknown }) => p.space === "demo" && p.state === "stopped" && p.lastOperation === "cotal down, completed")
-      && /^Prepared spaces$/m.test(stoppedListHuman.stdout) && /demo \(selected\) +stopped - cotal down, completed/.test(stoppedListHuman.stdout), { json: stoppedList.env?.result.prepared, human: stoppedListHuman.stdout });
+    stoppedList.env?.result.prepared.some((p: { space: string; state: string; lastOperation: unknown }) => p.space === "demo" && p.state === "stopped" && p.lastOperation === "`cotal down`, completed")
+      && /^Prepared spaces$/m.test(stoppedListHuman.stdout) && /demo \(selected\) +stopped - `cotal down`, completed/.test(stoppedListHuman.stdout), { json: stoppedList.env?.result.prepared, human: stoppedListHuman.stdout });
   const stoppedShow = await json(["space", "show"], fresh), stoppedShowHuman = await run(["space", "show", "--plain"], {}, fresh);
   check("...space show gives the same state and names cotal up again in its root",
-    stoppedShow.env?.result.state === "stopped" && stoppedShow.env.result.lastOperation === "cotal down, completed"
-      && /^broker: +stopped - cotal down, completed$/m.test(stoppedShowHuman.stdout) && stoppedShowHuman.stdout.includes(`start it again with \`cotal up\` in ${fresh}`), { json: stoppedShow.env?.result, human: stoppedShowHuman.stdout });
+    stoppedShow.env?.result.state === "stopped" && stoppedShow.env.result.lastOperation === "`cotal down`, completed"
+      && /^broker: +stopped - `cotal down`, completed$/m.test(stoppedShowHuman.stdout) && stoppedShowHuman.stdout.includes(`start it again with \`cotal up\` in ${fresh}`), { json: stoppedShow.env?.result, human: stoppedShowHuman.stdout });
   const stoppedUse = await json(["use"]), stoppedUseHuman = await run(["use", "--plain"]);
   check("...and use reports it as stopped, not as prepared and not started",
-    stoppedUse.env?.result.preparedState === "stopped" && stoppedUse.env.result.lastOperation === "cotal down, completed"
-      && stoppedUseHuman.stdout.includes(`stopped; its last operation, cotal down, completed - start it again with \`cotal up\` in ${fresh}`) && !/not started/.test(stoppedUseHuman.stdout), { json: stoppedUse.env?.result, human: stoppedUseHuman.stdout });
+    stoppedUse.env?.result.preparedState === "stopped" && stoppedUse.env.result.lastOperation === "`cotal down`, completed"
+      && stoppedUseHuman.stdout.includes(`stopped; its last operation, \`cotal down\`, completed - start it again with \`cotal up\` in ${fresh}`) && !/not started/.test(stoppedUseHuman.stdout), { json: stoppedUse.env?.result, human: stoppedUseHuman.stdout });
   // A second bare down of the stopped stack stops nothing: it needs no --yes, writes nothing, and
   // every presentation shows the same no-op.
   const journalBytes = () => readFileSync(stackJournalPath(fresh), "utf8");

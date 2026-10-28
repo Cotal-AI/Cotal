@@ -179,7 +179,7 @@ export async function openStaticChatSession(target: MeshTarget, options: {
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the manager answered chat-session-open with a reply this CLI could not open or verify; the session was not used and could not be retired from here", {
       target: { space: mesh.space },
       native: { outcome: "unknown", detail: { managerInstanceId: managerInstanceId ?? null } },
-      remedy: "list the manager's slots with cotal ps --slots; the admitting manager retires an unretired chat_ slot at its expiry, at its stop, or at its next start",
+      remedy: "list the manager's slots with `cotal ps --slots`; the admitting manager retires an unretired chat_ slot at its expiry, at its stop, or at its next start",
     });
   }
   // The retire path never sees the credential bytes.

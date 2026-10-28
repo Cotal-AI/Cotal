@@ -1,0 +1,3 @@
+# `cotal up --max-payload <bytes>` renders and SERVES the broker's payload limit, a running broker
+# refuses a different one, and a plain later `up` renders the recorded limit again.
+smoke:up-max-payload:live

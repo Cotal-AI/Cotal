@@ -12,7 +12,6 @@ import {
   renderReport,
   streamRecord,
   targetFlags,
-  terminalWidth,
   writeResult,
   writeStreamRecord,
   type Cell,
@@ -47,7 +46,7 @@ const followFlag = { name: "follow", type: "boolean", description: "keep listeni
 export const historyFlags = [...targetFlags, dmsFlag, forceFlag, yesFlag, dryRunFlag, sinceFlag, limitFlag, fromFlag, grepFlag, followFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
 
 export const historySubcommands = [
-  { name: "clear", flagNames: ["space", "server", "creds", "dms", "yes", "dry-run", "json", "plain"], summary: "confirm and purge all retained channel history in the space it targets", usage: "cotal history clear [--dms] [-y|--yes|--dry-run] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
+  { name: "clear", flagNames: ["space", "server", "creds", "dms", "yes", "dry-run", "json", "plain"], summary: "confirm and purge all retained channel history in the space it targets", examples: [{ command: "cotal history clear --dry-run", note: "show what clearing history would delete" }, { command: "cotal history clear --yes", note: "delete the retained channel history" }], usage: "cotal history clear [--dms] [-y|--yes|--dry-run] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
 ] as const satisfies readonly Subcommand[];
 
 /** Complete `clear` and the channels the target space's personas declare, as `send -c` offers, then
@@ -229,7 +228,7 @@ const channelOf = (name: string): string => name.replace(/^#/, "");
 export function validateHistoryArguments(args: ParsedArgs): void {
   const values = args.values as FlagValues<typeof historyFlags>;
   presentationOf(values);
-  if (values.force !== undefined) throw usage("--force is no longer a history flag; use cotal history clear --yes");
+  if (values.force !== undefined) throw usage("--force is no longer a history flag; use `cotal history clear --yes`");
   if (args.positionals[0] === "clear") {
     if (args.positionals.length !== 1) throw usage("history clear takes no channel; it clears all retained channel history in the space it targets");
     if ((["since", "limit", "from", "grep", "follow"] as const).some((flag) => values[flag] !== undefined)) throw usage("history clear accepts no read-window or follow flags; use a separate history read");
@@ -536,7 +535,7 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
       });
       const line = (cell: Cell) => {
         const scoped = typeof cell === "string" ? `[${conn.space}] ${cell}` : { ...cell, text: `[${conn.space}] ${cell.text}` };
-        process.stdout.write(`${renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [scoped] }] }] }, presentation === "rich" ? "rich" : "plain", terminalWidth(process.stdout))}\n`);
+        process.stdout.write(`${renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [scoped] }] }] }, presentation === "rich" ? "rich" : "plain", process.stdout)}\n`);
       };
       let refusal: ConnectRefusal | undefined;
       // While the connection is down, one line says so and the raw failures that follow are not shown.

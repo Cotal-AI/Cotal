@@ -27,16 +27,6 @@ import type { AguiEmitterHolder } from "@cotal-ai/connector-core";
 import type { ClaudeEntry } from "./agui-map.js";
 import { recordCarriedFork } from "./carried.js";
 
-/** A short, human-readable preview of a tool call: its most salient input, else compact JSON. */
-function toolDetail(name: unknown, input: unknown): { name: string; detail: string } | undefined {
-  if (typeof name !== "string" || !name) return undefined;
-  const i = (input ?? {}) as Record<string, unknown>;
-  const salient = i.command ?? i.file_path ?? i.path ?? i.url ?? i.pattern ?? i.description;
-  let detail = typeof salient === "string" ? salient : Object.keys(i).length ? JSON.stringify(i) : "";
-  if (detail.length > 300) detail = `${detail.slice(0, 299)}…`;
-  return { name, detail };
-}
-
 /**
  * The failure a `StopFailure` hook reports, or `undefined` for any other turn end.
  *
@@ -224,10 +214,10 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
   };
   /**
    * Last tool Claude tried to use, captured on PreToolUse. When a permission Notification
-   * fires moments later, this is *what* it's blocked on — so the dashboard shows the actual
-   * command/action awaiting approval, not just "Claude needs your permission".
+   * fires moments later, publish only its name. Tool input can carry commands, paths or
+   * private question text and must not become activity visible to every roster reader.
    */
-  let pendingTool: { name: string; detail: string } | undefined;
+  let pendingTool: string | undefined;
   /** SessionStart can arrive during an open turn, including after compaction. */
   let turnOpen = false;
   /** A Notification raised a prompt in this turn that no main-agent tool batch has resolved yet. Kept
@@ -367,9 +357,17 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           return withContext(parts.length ? parts.join("\n\n") : undefined);
         }
         case "PreToolUse":
+          // A channel-started turn can reach its first tool without UserPromptSubmit. The
+          // main agent's tool is evidence of work; a successful nudge alone is not. Do not
+          // let a subagent open the main turn or a later tool clear an unresolved prompt.
+          if (!turnOpen && ev.agent_id === undefined) {
+            turnOpen = true;
+            promptOpen = false;
+            await safeStatus(agent, "working");
+          }
           // Remember what Claude is about to do; if it needs permission, the Notification
-          // below turns this into the "blocked on" detail. Auto-approved tools just overwrite it.
-          pendingTool = toolDetail(ev.tool_name, ev.tool_input);
+          // below names it without publishing its input. Auto-approved tools overwrite it.
+          pendingTool = typeof ev.tool_name === "string" && ev.tool_name ? ev.tool_name : undefined;
           flushEvents(ev.transcript_path); // near-live: each tool boundary ships the turn so far
           return {};
         case "PostToolBatch":
@@ -383,14 +381,10 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           return {};
         case "Notification": {
           // Claude Code's Notification carries the human-readable reason the session is
-          // blocked in `message`. When a tool permission is pending, lead with *what* it's
-          // waiting on (the actual command) so a one-line card preview stays informative — the
-          // `waiting` status + the dashboard's "BLOCKED ON" label already convey the *why*.
+          // blocked in `message`. Name a pending tool without exposing any tool arguments.
           // Otherwise (idle-input / elicitation, no tool) the message itself is the content.
           const msg = typeof ev.message === "string" ? ev.message : undefined;
-          const activity = pendingTool
-            ? `${pendingTool.name}${pendingTool.detail ? `: ${pendingTool.detail}` : ""}`
-            : msg;
+          const activity = pendingTool ?? msg;
           promptOpen = turnOpen;
           // Both writes are queued before either settles, so a batch relayed meanwhile queues its
           // `working` behind the condition; queued between them, the condition would outlive the turn.

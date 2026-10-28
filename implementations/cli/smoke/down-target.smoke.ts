@@ -346,11 +346,11 @@ try {
   const bareSpace = await rejection(run([], { space: "teamA" }));
   check("--space without components, for a space recorded elsewhere, refuses TARGET_NOT_FOUND naming its folder and the service stop",
     bareSpace?.code === "TARGET_NOT_FOUND" && (bareSpace.message ?? "").includes(`recorded at ${meshA.root}, not at this folder's root`) &&
-      (bareSpace.remedy ?? "").includes(`run cotal down in ${meshA.root}`) && /`cotal service stop <service-name> --space teamA`/.test(bareSpace.remedy ?? ""),
+      (bareSpace.remedy ?? "").includes(`run \`cotal down\` in ${meshA.root}`) && /`cotal service stop <service-name> --space teamA`/.test(bareSpace.remedy ?? ""),
     bareSpace && { code: bareSpace.code, message: bareSpace.message, remedy: bareSpace.remedy });
   const previewSpace = await rejection(run([], { space: "teamA", "dry-run": true }));
   check("...and its preview refuses the same way, naming the preview to run there",
-    previewSpace?.code === "TARGET_NOT_FOUND" && previewSpace.message === bareSpace?.message && (previewSpace.remedy ?? "").includes(`run cotal down --dry-run in ${meshA.root}`),
+    previewSpace?.code === "TARGET_NOT_FOUND" && previewSpace.message === bareSpace?.message && (previewSpace.remedy ?? "").includes(`run \`cotal down --dry-run\` in ${meshA.root}`),
     previewSpace && { code: previewSpace.code, message: previewSpace.message, remedy: previewSpace.remedy });
   const unknown = await rejection(run(["web"], { space: "nosuch" }));
   check("--space with an unknown space refuses TARGET_NOT_FOUND",

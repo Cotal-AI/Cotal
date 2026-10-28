@@ -106,8 +106,9 @@ const CHANNEL_REF = `server:${MCP_SERVER_NAME}`;
 /** Package root (parent of dist/), which doubles as the installable plugin dir: it carries
  *  .claude-plugin/, .mcp.json, hooks/ and the dist/*.cjs bundles. */
 const PLUGIN_ROOT = fileURLToPath(new URL("..", import.meta.url));
-/** The explicit mesh server remains available when a launch restricts native MCP discovery. */
-const MCP_CJS = resolve(PLUGIN_ROOT, "dist", "mcp.cjs");
+/** The explicit mesh server remains available when a launch restricts native MCP discovery. It
+ *  names the seat entry, which enables Node's compile cache and then loads `dist/mcp.cjs`. */
+const SEAT_ENTRY = resolve(PLUGIN_ROOT, "dist", "seat.cjs");
 /** Preserve the operator's documented native MCP switches without choosing new values. */
 const CLAUDE_MCP_KEYS = ["ENABLE_CLAUDEAI_MCP_SERVERS", "ENABLE_TOOL_SEARCH", "MCP_TIMEOUT", "MCP_CONNECTION_NONBLOCKING"] as const;
 
@@ -262,7 +263,7 @@ export const claudeConnector: Connector = {
     // Keep Claude's native MCP sources and policy by default. Explicit sharing selections and
     // carried private homes remain isolated. The plugin stays enabled for hooks and channel wakes.
     // cotal is spread LAST so a shared server can never shadow the mesh server by reusing its name.
-    const mcpServers = { ...shared, [MCP_SERVER_NAME]: { command: "node", args: ["--optimize-for-size", "--max-semi-space-size=1", MCP_CJS] } };
+    const mcpServers = { ...shared, [MCP_SERVER_NAME]: { command: "node", args: ["--optimize-for-size", "--max-semi-space-size=1", SEAT_ENTRY] } };
     // Every refusal below runs before the first private file is written, so a refused launch leaves
     // none behind. An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus a
     // persona, which can only be applied to a `claude` session at launch.

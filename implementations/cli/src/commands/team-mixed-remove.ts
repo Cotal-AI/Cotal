@@ -55,7 +55,7 @@ export async function removeMixedTeam(deploymentId: string, values: TeamValues):
   ] });
   if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial" }, (data) => ({ sections: [...previewReport(data).sections, { blocks: [{ kind: "lines", lines: ["Native slots and card revisions were read in order, not atomically. The membership feed is display-only. Nothing was stopped or deleted."] }] }] })); return; }
   if (!values.yes) {
-    if (!canPrompt() || values.json) throw new ConfirmationRequired("scripted mixed team removal needs --yes after reviewing its retirements, policy fallback and impact", { target, remedy: `review it with cotal team remove ${deploymentId} --dry-run, then run cotal team remove ${deploymentId} --yes` });
+    if (!canPrompt() || values.json) throw new ConfirmationRequired("scripted mixed team removal needs --yes after reviewing its retirements, policy fallback and impact", { target, remedy: `review it with \`cotal team remove ${deploymentId} --dry-run\`, then run \`cotal team remove ${deploymentId} --yes\`` });
     const cardsText = `${receipt.createdChannels.length} recorded channel card(s) from ${oneLine(space)}`;
     const answer = await prompts.confirm({ message: `${resume ? `Remove ${cardsText}` : `Retire ${receipt.createdAgents.length} recorded agent incarnation(s), then remove ${cardsText}`}? The space defaults then apply to those channels (delivery ${previewCards.preview.defaults.deliveryClass}). History, grants and other readers are not changed.`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) { writeResult(presentationOf(values), { command: "team remove", target, result: { kind: "mixed-team-removal", removed: false }, noOp: true }, () => ({ sections: [{ title: "Team kept", blocks: [{ kind: "lines", lines: ["No removal intent, stop or delete was submitted."] }] }] })); return; }
@@ -120,7 +120,7 @@ async function reconcileMixedTeam(input: { root: string; space: string; deployme
     ] });
     if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial" }, (data) => ({ sections: [...view(data).sections, { blocks: [{ kind: "lines", lines: ["Native slots and card revisions were read in order, not atomically. Nothing was recorded, stopped or deleted."] }] }] })); return; }
     if (!values.yes) {
-      if (!canPrompt() || values.json) throw new ConfirmationRequired("scripted reconciliation needs --yes after reviewing which observations it records", { target, remedy: `review it with cotal team remove ${deploymentId} --dry-run, then run cotal team remove ${deploymentId} --yes` });
+      if (!canPrompt() || values.json) throw new ConfirmationRequired("scripted reconciliation needs --yes after reviewing which observations it records", { target, remedy: `review it with \`cotal team remove ${deploymentId} --dry-run\`, then run \`cotal team remove ${deploymentId} --yes\`` });
       const answer = await prompts.confirm({ message: "Record the observed outcomes for this unsettled mixed removal? Nothing is stopped, deleted or retried.", initialValue: false });
       if (prompts.isCancel(answer) || !answer) { writeResult(presentationOf(values), { command: "team remove", target, result: { kind: "mixed-team-removal-reconcile", recorded: false }, noOp: true }, () => ({ sections: [{ title: "Nothing recorded", blocks: [{ kind: "lines", lines: ["The unsettled intents are unchanged."] }] }] })); return; }
     }

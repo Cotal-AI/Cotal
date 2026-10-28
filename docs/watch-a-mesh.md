@@ -81,7 +81,8 @@ one-shot `channel-purger` credential minted from the
 resolved mesh's seed on a static mesh, a `channel-purger` view on a user mesh, a bare connection
 on an open one; no manager is involved. A wildcard is refused, so the one destructive control
 names one channel. A refusal, from the broker, the manager, or a user mesh's login, lands on the
-status line. Targeted actions (`D`, `status`, and `a`) locate the manager hosting the seat.
+status line, and so does selecting a palette action the session cannot take: a row marked
+`read-only` (no publish permission) or `no control path` answers Enter with that refusal. Targeted actions (`D`, `status`, and `a`) locate the manager hosting the seat.
 On static-auth and open meshes, `ps` gathers and merges the managers' rows. A silent manager's
 last known rows remain marked as silent; a manager's error withholds its old rows. The
 user-auth console uses the bearer-backed owner route for `ps` rather than this scatter.

@@ -14,6 +14,7 @@ import {
 } from "@cotal-ai/core";
 import { CustodialPtyRuntime } from "./custodial-pty.js";
 import { LegacyPtyRuntime } from "./pty.js";
+import { rejectionText } from "../rejection-text.js";
 import { unsupportedTransport } from "@cotal-ai/seat";
 
 export type { Runtime, RuntimeKind, AgentHandle, AttachSession } from "@cotal-ai/core";
@@ -214,7 +215,7 @@ function removeOwned(name: string, artifacts: readonly string[] | undefined): vo
       discardLaunchArtifacts(artifacts);
     } catch (e) {
       if (!retry) {
-        console.error(`! ${name}: ${(e as Error).message}; trying again every ${EXIT_POLL_MS / 1000}s`);
+        console.error(`! ${name}: ${rejectionText(e)}; trying again every ${EXIT_POLL_MS / 1000}s`);
         retry = setInterval(attempt, EXIT_POLL_MS);
         retry.unref();
       }

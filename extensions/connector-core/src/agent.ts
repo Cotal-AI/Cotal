@@ -20,6 +20,7 @@ import {
   EpEnvelopeError,
   isPublishPermissionDenied,
   unansweredRequest,
+  EP_UNANSWERED,
   controlReplyFrom,
   controlReplyFromThrown,
   runAgentBearer,
@@ -384,7 +385,7 @@ function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unkno
   const wanted = entries.length === 0 ? "" : `\nAnswer with a record with fields ${entries.map(([k, v]) => `${k}: ${String(v)}`).join(", ")}.`;
   const by = typeof c.deadlineAt === "number" ? ` It expires at ${new Date(c.deadlineAt).toISOString()}.` : "";
   return `\nThis turn is a checkpoint escalated to you at step ${String(p.step)}: ${String(c.prompt)}${by}${wanted}`
-    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json>'`;
+    + `\nAnswer with: \`cotal run answer ${String(p.run)} ${String(p.step)} --value '<json>'\``;
 }
 
 /** A bearer JWT's `exp` in milliseconds, or undefined when it names none. */
@@ -580,6 +581,8 @@ export class MeshAgent extends EventEmitter {
    *  call's puts start only after the earlier call's have settled. A rejected write must not
    *  poison the chain: the tail is swallowed and the next write still runs. */
   private presenceChain: Promise<void> = Promise.resolve();
+  /** Host lifecycle status is independent of presence-only updates such as cotal_status. */
+  private turnStatus: PresenceStatus | undefined;
 
   /** An explicit env scopes launch metadata and bearer subprocesses. Omitted preserves process inheritance. */
   constructor(config: AgentConfig, env?: NodeJS.ProcessEnv, options: MeshAgentOptions = {}) {
@@ -681,20 +684,24 @@ export class MeshAgent extends EventEmitter {
     return this._transportConnected;
   }
 
-  /** Latest pre-bind failure. A successful bind clears it; stop preserves it for post-mortem diagnosis. */
+  /** Current connection failure, including repeated presence writes refused on a live transport.
+   *  A successful write clears that diagnosis. Pre-bind failures survive stop for post-mortem use. */
   get connectionIssue(): string | undefined {
+    const presence = this._connected && this._transportConnected && !this._stopping
+      ? this.presenceWriteFailure
+      : undefined;
+    if (presence !== undefined && presence.consecutiveFailures >= 2) {
+      return `presence writes to bucket ${JSON.stringify(presence.bucket)} have failed ${presence.consecutiveFailures} consecutive times: ${presence.error ?? "write failed"}`;
+    }
     return this.lastConnectionError;
   }
 
   /** #1356: the space's presence bucket has been refusing writes since this time, or `undefined`.
    *
-   *  Deliberately NOT folded into {@link connectionIssue}. That field has a defined relationship to
-   *  readiness which existing callers already read, and a bound endpoint surviving refused heartbeats
-   *  IS still ready — the neighbouring decision at the `warning` listener is correct and stands. This
-   *  is a distinct fact that can be true at the same time as `ready`, which is the actual shape of the
-   *  incident: connected, serving, and silently unable to publish presence.
+   *  The endpoint can remain bound with a live transport while JetStream refuses its writes.
+   *  Two consecutive failures make the session degraded; a successful write clears the record.
    *
-   *  Presence writes are the CANARY, not the scope — see CotalEndpoint.presenceWriteFailure. */
+   *  Presence writes can fail alongside other publishes. See CotalEndpoint.presenceWriteFailure. */
   get presenceWriteFailure(): {
     since: number;
     forMs: number;
@@ -778,7 +785,9 @@ export class MeshAgent extends EventEmitter {
     return this._stopping;
   }
 
-  /** The three liveness facts combined, in one place. Every combination maps, so a caller never has
+  /** The connection and write-health facts combined. Repeated presence write failures degrade a
+   *  bound session even while its transport remains live.
+   *  Every combination maps, so a caller never has
    *  to guess what an unlisted pair means, and a caller that disagrees with this reading can still
    *  read {@link connected}, {@link transportConnected} and {@link stopping} directly.
    *
@@ -793,6 +802,7 @@ export class MeshAgent extends EventEmitter {
   get connectionState(): ConnectionState {
     if (this._stopping) return "stopped";
     if (this._connected) {
+      if ((this.presenceWriteFailure?.consecutiveFailures ?? 0) >= 2) return "degraded";
       if (!this._transportConnected) return "degraded";
       const held = this.automaticQueueStalledForMs();
       return held !== undefined && held >= AUTOMATIC_QUEUE_STALL_MS ? "stalled" : "ready";
@@ -1393,9 +1403,8 @@ export class MeshAgent extends EventEmitter {
 
   /** Normalize a wire message into an {@link InboxItem}. `kind` is the **authenticated** class
    *  from {@link MessageMeta} (subject-derived), never the forgeable payload `to`/`toService`;
-   *  core has already normalized `channel` from the authenticated chat subject, while `service`
-   *  remains a payload display label. Shared by live ingest and
-   *  focus recall ({@link recallAmbient}). */
+   *  core has already normalized `channel` and `toService` from the authenticated chat and svc
+   *  subjects. Shared by live ingest and focus recall ({@link recallAmbient}). */
   private toInboxItem(m: CotalMessage, kind: InboxItem["kind"], historical: boolean): InboxItem {
     const text = partsToText(m.parts);
     return {
@@ -1982,7 +1991,11 @@ export class MeshAgent extends EventEmitter {
   // ---- sending -------------------------------------------------------------
 
   async send(text: string, channel?: string, mentions?: string[]): Promise<CotalMessage> {
-    await this.requireConnected();
+    try {
+      await this.requireConnected();
+    } catch (error) {
+      throw new Error(`${(error as Error).message}. The message was not sent.`, { cause: error });
+    }
     const clean = normalizeMentions(mentions);
     if (clean) await this.assertKnownMentions(clean);
     return this.ep.multicast(text, { channel, mentions: clean, ...this.stamp().stamp });
@@ -2181,7 +2194,7 @@ export class MeshAgent extends EventEmitter {
    *  the agent and operator spawn doors share one control-op contract. (Session `resume` is
    *  intentionally NOT forwarded here: forking a host-local `~/.claude` transcript is an
    *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
-  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string; instance?: string }): Promise<ControlReply> {
+  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string; instance?: string }): Promise<ControlReply & { instanceId?: string }> {
     await this.requireConnected();
     const raw = opts?.model;
     if (raw !== undefined && !raw.trim())
@@ -2189,7 +2202,8 @@ export class MeshAgent extends EventEmitter {
     const requested = raw?.trim();
     let instance: string | undefined;
     try {
-      instance = opts?.instance === undefined ? undefined : assertLifecycleToken(opts.instance, "instance");
+      const selected = opts?.instance ?? this.openManagerInstance();
+      instance = selected === undefined ? undefined : assertLifecycleToken(selected, "instance");
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
@@ -2199,6 +2213,9 @@ export class MeshAgent extends EventEmitter {
     // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
     // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
     const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true, ...(instance !== undefined ? { instanceId: instance } : {}) });
+    // There is no allocated name to inspect before acceptance. Preserve the submission's goal
+    // rather than auditing the requested persona alias and discarding the unknown result.
+    if ((reply.data as { submissionUnknown?: boolean } | undefined)?.submissionUnknown) return reply;
     if (!requested) return reply;
     // A requested pin that the manager did not record is the silent-drop failure (#972): the spawn
     // looks successful, the seat comes up on the harness default, and nothing in the spawn result
@@ -2226,11 +2243,16 @@ export class MeshAgent extends EventEmitter {
         error: `${reply.error ?? "manager refused"} (requested model ${JSON.stringify(requested)}; ${recordedLabel} for "${seat}")`,
       };
     }
+    // The launch stands and only its audit failed. A refusal here reads as "nothing was spawned",
+    // and the caller's retry starts a second seat on the same work, so the seat is reported with
+    // the failed audit beside it. Nothing stands in for the pin that could not be read.
     if (!recorded.ok) {
       return {
-        ok: false,
-        error:
-          `requested model ${JSON.stringify(requested)} for "${seat}" but ${recordedLabel} — refusing to report a pin that cannot be audited`,
+        ...reply,
+        data: {
+          ...(reply.data as Record<string, unknown> | undefined),
+          pinAudit: { requested, error: recorded.error, ...(recorded.unreported ? { unreported: true } : {}) },
+        },
       };
     }
     return {
@@ -2240,10 +2262,15 @@ export class MeshAgent extends EventEmitter {
   }
 
   /** The manager's recorded model pin for a managed seat (`inspect.model`). Absence is a real
-   *  state: a launch may pin none. Distinct from a failed inspect, which cannot attest. */
-  async inspectModel(name: string, instance?: string): Promise<{ ok: true; model?: string } | { ok: false; error: string }> {
+   *  state: a launch may pin none. Distinct from a failed inspect, which cannot attest.
+   *  `unreported` marks a failure the manager side settled at once: it answered without the seat's
+   *  row, its surface has no `inspect` for this caller, or no responder took the request. */
+  async inspectModel(name: string, instance?: string): Promise<{ ok: true; model?: string } | { ok: false; error: string; unreported?: true }> {
     const info = await this.managerInvoke("inspect", { name }, instance === undefined ? undefined : { instanceId: instance });
-    if (!info.ok) return { ok: false, error: info.error ?? "inspect refused" };
+    if (!info.ok) {
+      const unreported = info.code === "not-found" || (info.code === "unavailable" && info.details?.some((d) => d.kind === EP_UNANSWERED) === true);
+      return { ok: false, error: info.error ?? "inspect refused", ...(unreported ? { unreported: true as const } : {}) };
+    }
     const model = (info.data as { model?: unknown } | undefined)?.model;
     if (model === undefined) return { ok: true };
     if (typeof model !== "string") return { ok: false, error: `inspect returned a non-string model for "${name}"` };
@@ -2280,7 +2307,7 @@ export class MeshAgent extends EventEmitter {
 
   /** One v0.4 manager-endpoint invoke (P2 item 1, 1c.2b): the generic {@link CotalEndpoint.invokeService}
    *  path (describe → §13.7 store fetch → digest-verified recompile → typed command), adapted back to
-   *  the {@link ControlReply} shape every tool above consumes. `undefined` args are stripped BEFORE the
+   *  the {@link ControlReply} shape every tool above consumes, with the instance that answered it. `undefined` args are stripped BEFORE the
    *  compiled input contract validates (closed schemas reject present-but-undefined keys; the ctl path
    *  shed them in JSON serialization). A broker-denied publish (a capability the caller's credential
    *  does not hold, e.g. a capability-less purge) has NO responder and surfaces as the deadline —
@@ -2289,7 +2316,7 @@ export class MeshAgent extends EventEmitter {
     command: string,
     args: Record<string, unknown> | undefined,
     opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; instanceId?: string } = {},
-  ): Promise<ControlReply> {
+  ): Promise<ControlReply & { instanceId?: string; outcome?: "executed" | "not-executed" | "unknown" }> {
     const clean = args === undefined ? undefined : Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
     let r: EpAttributedReply;
     let dropBearer: (() => void) | undefined;
@@ -2349,14 +2376,32 @@ export class MeshAgent extends EventEmitter {
       // duplicates a spawn. Only the marker distinguishes them, and core sets it exactly where it
       // observed silence.
       dropBearer?.();
-      if (e instanceof EpEnvelopeError)
-        return controlReplyFromThrown(e, unansweredRequest(e)
+      if (e instanceof EpEnvelopeError) {
+        const submitted = command === "spawn" && e.outcome === "unknown"
+          ? e.details?.find(d => d.kind === EP_UNANSWERED && d.endpoint === BASELINE_LIFECYCLE_ENDPOINT && d.command === command && typeof d.requestId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(d.requestId))
+          : undefined;
+        if (submitted) return {
+          ...controlReplyFromThrown(e, `${e.code}: ${e.message}`),
+          outcome: "unknown",
+          data: { goalId: submitted.requestId, submissionUnknown: true },
+        };
+        const unknownDefinition = command === "define-persona" && e.outcome !== "not-executed" &&
+          e.code === "deadline-exceeded" && e.details?.some(d => d.kind === EP_UNANSWERED && d.command === command);
+        const message = unknownDefinition
+          ? `${e.code}: ${e.message}`
+          : unansweredRequest(e)
           ? `${e.message} (no responder answered - a manager may be down, or this credential holds no "${command}" capability and the broker denied the request)`
-          : `${e.code}: ${e.message}`);
+          : `${e.code}: ${e.message}`;
+        return { ...controlReplyFromThrown(e, message), ...(e.outcome ? { outcome: e.outcome } : {}) };
+      }
       return { ok: false, error: (e as Error).message };
     }
     if (r.reply.ok !== true) dropBearer?.();
-    return controlReplyFrom(r.reply);
+    return {
+      ...controlReplyFrom(r.reply),
+      instanceId: r.responder?.instanceId,
+      ...(r.reply.error?.outcome ? { outcome: r.reply.error.outcome } : {}),
+    };
   }
 
   /** Resolve a managed agent's CURRENT principal triple (owner-mode targets are (owner, actor,
@@ -2400,7 +2445,13 @@ export class MeshAgent extends EventEmitter {
       if (this.config.turnRelay === false)
         return { ok: false, error: "this connection belongs to a conversation, not a managed seat, so it has no self to stop; disconnecting retires only this connection" };
       // self-halt: the baseline `stop` command, authz-mode self (the caller triple IS the target)
-      return this.managerInvoke("stop", { graceful }, { target: { mode: "self" } });
+      // Open seats can address their launching manager directly. Static credentials retain their
+      // class-only baseline grants; user-auth calls already select their manager through the issuer.
+      const instanceId = !this.config.creds ? this.config.managerInstanceId : undefined;
+      return this.managerInvoke("stop", { graceful }, {
+        target: { mode: "self" },
+        ...(instanceId !== undefined ? { instanceId } : {}),
+      });
     }
     const pin = this.managerPin(opts?.instance);
     if ("error" in pin) return pin.error;
@@ -2425,6 +2476,11 @@ export class MeshAgent extends EventEmitter {
       ...(verb === "answer" ? { target: { mode: "self" as const } } : {}),
       ...pin,
     });
+  }
+
+  /** Open managed seats use their launch address without changing credentialed routing. */
+  private openManagerInstance(): string | undefined {
+    return !this.config.creds && !this.config.userAuth ? this.config.managerInstanceId : undefined;
   }
 
   /** An explicit manager instance for a manager call, under `spawn`'s rules: a lifecycle token,
@@ -2606,7 +2662,11 @@ export class MeshAgent extends EventEmitter {
    *  the run reached first; a refused one stays for the poll to reconcile (the manager's answer,
    *  not a local guess, decides whether it is settled). */
   async yieldTurn(status: "done" | "blocked" | "handoff", opts: { to?: string; note?: string; turn?: string } = {}): Promise<ControlReply> {
-    await this.requireConnected();
+    try {
+      await this.requireConnected();
+    } catch (error) {
+      throw new Error(`${(error as Error).message}. The yield was not sent.`, { cause: error });
+    }
     const t = opts.turn !== undefined
       ? this.activeTurns.get(opts.turn)
       : [...this.activeTurns.values()].filter((x) => x.surfaced).sort((a, b) => a.acceptedAt - b.acceptedAt)[0];
@@ -2683,9 +2743,9 @@ export class MeshAgent extends EventEmitter {
     allowSubscribe?: string[];
     allowPublish?: string[];
     announce?: string;
-  }): Promise<ControlReply & { announceError?: string; announceOutcome?: "denied" | "unknown" }> {
+  }): Promise<ControlReply & { definitionOutcome?: "unknown"; announceError?: string; announceOutcome?: "denied" | "unknown" }> {
     await this.requireConnected();
-    const pin = this.managerPin(def.instance);
+    const pin = this.managerPin(def.instance ?? this.openManagerInstance());
     if ("error" in pin) return pin.error;
     // Validate the destination BEFORE the write, and here rather than only in the tool's schema —
     // this is the API every host's tool surface funnels through, so a caller that reaches
@@ -2725,6 +2785,12 @@ export class MeshAgent extends EventEmitter {
       allowPublish: def.allowPublish,
     };
     const reply = await this.managerInvoke("define-persona", args, pin);
+    // A command deadline observes no reply, not a refused write. A paused manager can still
+    // write the persona after this caller stops waiting. A describe deadline precedes the write,
+    // while broker no-responders and explicit pre-effect refusals prove it did not run.
+    if (!reply.ok && reply.outcome !== "not-executed" && (reply.outcome === "unknown" ||
+      reply.code === "deadline-exceeded" && reply.details?.some(d => d.kind === EP_UNANSWERED && d.command === "define-persona")))
+      return { ...reply, definitionOutcome: "unknown" };
     if (!reply.ok || !def.announce) return reply;
     // The persona IS saved by this point (the manager only replies ok after it writes the file), so
     // a failed announcement must NOT be reported as a failed definition. Reporting it as one names
@@ -2761,7 +2827,7 @@ export class MeshAgent extends EventEmitter {
    *  ownership rule as `definePersona`. */
   async listPersonas(instance?: string): Promise<ControlReply> {
     await this.requireConnected();
-    const pin = this.managerPin(instance);
+    const pin = this.managerPin(instance ?? this.openManagerInstance());
     if ("error" in pin) return pin.error;
     return this.managerInvoke("list-personas", undefined, pin);
   }
@@ -2769,7 +2835,7 @@ export class MeshAgent extends EventEmitter {
   /** Mesh-side persona catalog show of one card. Unauthorized / missing names are not-found. */
   async showPersona(name: string, instance?: string): Promise<ControlReply> {
     await this.requireConnected();
-    const pin = this.managerPin(instance);
+    const pin = this.managerPin(instance ?? this.openManagerInstance());
     if ("error" in pin) return pin.error;
     return this.managerInvoke("show-persona", { name }, pin);
   }
@@ -2835,7 +2901,7 @@ export class MeshAgent extends EventEmitter {
   async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
     await this.inOrder(async () => {
     await this.requireConnected();
-    const prev = this._status;
+    const prev = this.turnStatus;
     try {
       if (prev !== "working" && status === "working") await this.ep.setCondition(null);
       await this.publishStatus(status, activity);
@@ -2844,6 +2910,7 @@ export class MeshAgent extends EventEmitter {
       // assigning before the writes meant one failed publish (which every adapter swallows) left
       // `_status` idle with no boundary run, and the next real turn end saw no transition at all.
       this._status = status;
+      this.turnStatus = status;
       // The turn relay's boundary: an adapter funnels its turn-end through this transition (Stop
       // hooks set idle), so the automatic `done` yield and the immediate re-poll live here once
       // instead of per connector. `waiting` is not a boundary — a seat blocked on a permission has

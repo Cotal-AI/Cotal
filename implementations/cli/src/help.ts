@@ -4,7 +4,7 @@
  * connects, writes, seeds or imports an extension.
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, loadMeshes, loadPreparedSpaces, localeIsUtf8, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, heldSpaceNote, loadMeshes, loadPreparedSpaces, localeIsUtf8, MIN_FILE_STORE, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, paintFor, renderReport, resolvePreference, terminalWidth, upCommand, wrapWords, type Section } from "@cotal-ai/workspace";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
@@ -149,6 +149,12 @@ export function printCommandList(commands: readonly Command[]): void {
   console.log(out);
 }
 
+/** The words a Start here label adds beside an `up` that names `--max-file-store`: the command runs as
+ *  written, and the label says the cap it names is the least that works. */
+function capLabel(up: string): string {
+  return up.includes("--max-file-store") ? ` with a store cap of ${MIN_FILE_STORE} or more` : "";
+}
+
 /** The approved compact entry screen. Its context comes from local records only. With `listing`, the
  *  command groups follow it, so it leaves out the lines that point to them. */
 export function printEntry(commands: readonly Command[], listing = false): void {
@@ -164,7 +170,10 @@ export function printEntry(commands: readonly Command[], listing = false): void 
   let outside: string | undefined;
   // The `up` that starts a prepared space: no other command works on it until it runs.
   let start: string | undefined;
-  // What this folder holds that is not running, when a command here targets the selection instead.
+  // The `up` that starts this folder's space, when commands here target the selection instead.
+  let folderStart: string | undefined;
+  // What this folder holds that is not running, and the `up` that starts it, when a command here
+  // targets the selection instead.
   let folderHeld: string | undefined;
   // What a copy or a moved folder holds, with the step the commands here refuse with.
   let elsewhere: string | undefined;
@@ -194,7 +203,13 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     if (holds) elsewhere = `${holds}; ${records!.stackRemedy}`;
     space = folder ?? selected ?? (preparedHere && canonicalRoot(preparedHere.root) === canonicalRoot(held!.root) ? held!.space : undefined);
     if (selected && folder !== undefined && folder !== selected) outside = selected;
-    if (held) start = canonicalRoot(held.root) === canonicalRoot(root) ? "cotal up" : `cotal up --root ${shellWord(held.root)}`;
+    // The same `up` the note under a command's heading names, with `--root` from another folder.
+    const upAt = (dir: string, name: string): string => upCommand(dir, name, ...(canonicalRoot(dir) === canonicalRoot(root) ? [] : ["--root", shellWord(dir)]));
+    if (held) {
+      const up = upAt(held.root, held.space);
+      if (held.space === space) start = up;
+      else folderStart = up;
+    }
     if (space) {
       const mesh = readMesh(space);
       const prepared = mesh === undefined ? findPreparedSpace(space) : undefined;
@@ -202,8 +217,8 @@ export function printEntry(commands: readonly Command[], listing = false): void 
       const preferences = cachedPreferences();
       const harness = resolvePreference("harness", { space, preferences }).value;
       context = [space, mesh ? mesh.origin === "catalog" || mesh.origin === "manual" ? "registered" : "local" : here ? "prepared here" : prepared ? "prepared" : "not recorded", harness ? `default agent ${harness}` : "no default application"].join(" · ");
-      if (prepared) start = here ? "cotal up" : `cotal up --root ${shellWord(prepared.root)}`;
-      if (held && held.space !== space) folderHeld = `this folder holds the ${held.state} space "${held.space}"`;
+      if (prepared) start = upAt(prepared.root, space);
+      if (held && held.space !== space) folderHeld = heldSpaceNote(held);
     } else anySpace = loadMeshes().length > 0 || loadPreparedSpaces().length > 0;
   } catch {
     unreadable = true;
@@ -221,9 +236,10 @@ export function printEntry(commands: readonly Command[], listing = false): void 
   sections.push({ title: "Usage", blocks: [{ kind: "lines", lines: [{ text: "cotal <command> [options]", tone: "command" }] }] });
   sections.push(actions("Start here", space ? [
     // A folder's `up` starts THAT folder's space, not the one commands here target, so it is named
-    // as the folder's and the selection keeps its own first action.
-    ...(start ? [["up", start, folderHeld ? "Start this folder's space" : "Start this space"] as [string, string, string]] : []),
-    ...(start && !folderHeld ? [] : [["spawn", "cotal spawn", "Open your default agent"] as [string, string, string]]),
+    // as the folder's. The selection keeps its own first action: its `up` while it is prepared or
+    // stopped, else spawn.
+    ...(start ? [["up", start, `Start this space${capLabel(start)}`] as [string, string, string]] : folderStart ? [["up", folderStart, `Start this folder's space${capLabel(folderStart)}`] as [string, string, string]] : []),
+    ...(start ? [] : [["spawn", "cotal spawn", "Open your default agent"] as [string, string, string]]),
     ["setup", "cotal setup", "Review setup and defaults"],
     ["use", "cotal use", "Choose another space"],
   ] : anySpace ? [
@@ -251,10 +267,11 @@ export function printEntry(commands: readonly Command[], listing = false): void 
   console.log(renderReport({ sections }, "rich", width));
 }
 
-/** One command's help, or one subcommand's when `sub` is given: summary, usage, aliases,
- *  subcommands, flags, structured outputs and examples, all from the declared specs. Each line goes
- *  to `out`, which a usage refusal points at stderr, wrapped to `width`; the usage breaks only where
- *  {@link usageLines} allows, and examples are never wrapped, so each stays one line to copy. */
+/** One command's help, or one subcommand's when `sub` is given: summary, usage, aliases, examples,
+ *  subcommands, flags and structured outputs, all from the declared specs. Each line goes to `out`,
+ *  which a usage refusal points at stderr, wrapped to `width`; the usage breaks only where
+ *  {@link usageLines} allows, and an example's command is never wrapped, so each stays one line to
+ *  copy, with its note beside it or under it. */
 export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: string) => void = console.log, width = terminalWidth(process.stdout)): void {
   const path = sub ? `${cmd.name} ${sub.name}` : cmd.name;
   const selected = sub ?? cmd;
@@ -266,6 +283,8 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
     { title: "Usage", blocks: [{ kind: "lines", lines: usage.split("\n").flatMap((form) => usageLines(usageTokens(form), width - 2)).map((text) => ({ text, tone: "command" as const })) }] },
   ];
   if (selected.aliases?.length) sections.push({ title: "Shorthands", blocks: [{ kind: "lines", lines: [{ text: selected.aliases.map((alias) => `cotal ${sub ? `${cmd.name} ${sub.name.split(" ").slice(0, -1).map((word) => word + " ").join("")}` : ""}${alias}`).join(" · "), tone: "command" }] }] });
+  const examples = selected.examples ?? [];
+  if (examples.length) sections.push({ title: "Examples", blocks: [{ kind: "commands", items: examples.map((example) => typeof example === "string" ? { command: example, description: "" } : { command: example.command, description: example.note }) }] });
   const subs = (sub ? sub.subcommands ?? [] : cmd.subcommands ?? []).filter((item) => !item.hidden);
   if (subs.length) sections.push({ title: "Commands", blocks: [{ kind: "commands", items: subs.map((item) => ({ command: label(item), description: item.summary })) }] });
   const flagNames = selected.flagNames;
@@ -277,11 +296,6 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
   const outputs = selected.outputs ?? [];
   if (outputs.length) sections.push({ blocks: [{ kind: "lines", lines: [{ text: `Structured output: ${outputs.join(", ")}`, tone: "hint" }] }] });
   out(renderReport({ sections }, "rich", width));
-  const examples = selected.examples ?? [];
-  if (examples.length) {
-    out(`\n${c.bold("Examples")}`);
-    for (const example of examples) out(`  ${c.blue(example)}`);
-  }
 }
 
 /** Resolve only declared literal metadata. Neither aliases nor nesting import provider code. */
@@ -292,10 +306,13 @@ export function printHelpPath(cmd: Command, words: readonly string[], out: (line
   for (const word of words) {
     const sub = findSubcommand(surface, word);
     if (!sub || sub.hidden) {
-      // The parser's usage error for the same word: the reason, then the help of the path that exists.
+      // The parser's usage error for the same word: the reason, then the help of the path that exists,
+      // both on stderr, so painted for it whatever stream the caller paints for.
       const at = [cmd.name, ...path].join(" ");
-      for (const line of hang("✗ ", unknownSubcommandMessage(at, surface, word), terminalWidth(process.stderr))) console.error(c.red(line));
-      printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, (line) => console.error(line), terminalWidth(process.stderr));
+      paintFor(process.stderr, () => {
+        for (const line of hang("✗ ", unknownSubcommandMessage(at, surface, word), terminalWidth(process.stderr))) console.error(c.red(line));
+        printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, (line) => console.error(line), terminalWidth(process.stderr));
+      });
       process.exit(1);
     }
     path.push(sub.name); selected = sub; surface = sub;

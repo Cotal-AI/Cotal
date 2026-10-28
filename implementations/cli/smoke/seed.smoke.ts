@@ -14,6 +14,8 @@
  *  - concurrent first boots do not collide or falsely report "interrupted"
  *  - the binary invoked through a bin SYMLINK (how every global install runs) still resolves its
  *    generation and payloads
+ *  - `cotal update` removes group write from a config folder an earlier seed left group-writable, and
+ *    the web seed still refuses a group-writable folder above it
  *
  * Requires the binary built (`pnpm --filter cotal-ai... build`); `pnpm smoke:seed` does that first.
  * Run: pnpm smoke:seed
@@ -115,7 +117,8 @@ const files = [
   "parallel-boots.smoke.ts",
   "symlinked-bin.smoke.ts",
   "downgrade.smoke.ts",
-  "downgrade-hint.smoke.ts"
+  "downgrade-hint.smoke.ts",
+  "config-modes.smoke.ts"
 ];
 const excluded: Record<string, string> = {};
 if (process.platform === "win32") {
@@ -125,6 +128,8 @@ if (process.platform === "win32") {
   }
   files.splice(files.indexOf("failed-seed.smoke.ts"), 1);
   excluded["failed-seed.smoke.ts"] = "its PATH holds only a symlink to node, which needs a privilege on Windows";
+  files.splice(files.indexOf("config-modes.smoke.ts"), 1);
+  excluded["config-modes.smoke.ts"] = "POSIX folder modes; Windows has no group write to repair";
 }
 
 const scratch = mkdtempSync(join(tmpdir(), "seed-run-"));
@@ -152,7 +157,7 @@ try {
     process.exitCode = 1;
   } else {
     const passed = unit.passed + result.results.reduce((sum, row) => sum + row.cells, 0);
-    const expected = process.platform === "win32" ? 84 : 98;
+    const expected = process.platform === "win32" ? 84 : 108;
     if (passed !== expected) throw new Error(`seed smoke: expected ${expected} checks, observed ${passed}`);
     console.log(`seed smoke: ${passed} passed, 0 failed`);
     emitSentinel({ passed, failed: 0 });

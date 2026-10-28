@@ -13,8 +13,8 @@
  * No broker. Run: pnpm smoke:ep-invoke
  */
 import {
-  compileContract, describeEndpoint, epReplySubject, invokeCommand, parseEpSubject, resolveService,
-  unansweredRequest, type EpCaller, type ResolvedService,
+  CotalEndpoint, compileContract, describeEndpoint, epReplySubject, invokeCommand, parseEpSubject, resolveService,
+  unansweredRequest, epCall, EpEnvelopeError, EP_UNANSWERED, submitAndFollowGoal, type EpCaller, type ResolvedService,
 } from "../src/index.js";
 
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -297,7 +297,19 @@ console.log("describe REQUEST-BINDING (freelance HIGH #1):");
     (timedOut.e as { code?: string })?.code === "deadline-exceeded" && unansweredRequest(timedOut.e), timedOut.e);
 }
 
-// 8) The retry above is confined to reserved, read-only describe. A resolved command rides epCall
+// 8) A narrowed resolve validates its command list before touching the transport. These options are
+//    a public API boundary, so malformed values fail as envelope preconditions rather than leaking a
+//    lower-level token assertion or attempting a describe.
+{
+  await rejects("a narrowed resolve refuses an empty command list before transport", () =>
+    resolveService(fakeNc(() => { throw new Error("transport must not be touched"); }), SPACE, ENDPOINT, CALLER, { commands: [] }), "failed-precondition");
+  await rejects("a narrowed resolve refuses a non-array command list before transport", () =>
+    resolveService(fakeNc(() => { throw new Error("transport must not be touched"); }), SPACE, ENDPOINT, CALLER, { commands: "mutate" as unknown as readonly string[] }), "failed-precondition");
+  await rejects("a narrowed resolve refuses an invalid command token before transport", () =>
+    resolveService(fakeNc(() => { throw new Error("transport must not be touched"); }), SPACE, ENDPOINT, CALLER, { commands: ["bad command"] }), "failed-precondition");
+}
+
+// 9) The retry above is confined to reserved, read-only describe. A resolved command rides epCall
 //    and is published exactly once, including after the describe retry interval has elapsed.
 {
   const input = compileContract({ root: { type: "null" } });
@@ -315,6 +327,88 @@ console.log("describe REQUEST-BINDING (freelance HIGH #1):");
   await wait(350);
   c("a resolved command is published exactly ONCE; describe readiness retry never widens to caller-supplied commands",
     publishes === 1 && result.reply.ok === true, { publishes, result });
+}
+
+// A pinned describe must not borrow a class handle or replace it. The pin has no responder here,
+// so the real describe path must time out while the cached unpinned control keeps resolving.
+{
+  const ep = new CotalEndpoint({ space: SPACE, servers: "nats://127.0.0.1:1", lifecycleUid: CALLER.uid, card: { name: "cache-probe", kind: "agent" }, channels: [] });
+  const service: ResolvedService = { endpoint: ENDPOINT, owner: "local", caller: CALLER, responder: HONEST, commands: new Map() };
+  const cache = new Map([[ENDPOINT, service]]);
+  const commandCache = new Map([[ENDPOINT, new Map([["mutate", service]])]]);
+  (ep as unknown as { nc: unknown }).nc = fakeNc(() => []);
+  (ep as unknown as { resolvedServices: Map<string, ResolvedService> }).resolvedServices = cache;
+  (ep as unknown as { resolvedCommandServices: Map<string, Map<string, ResolvedService>> }).resolvedCommandServices = commandCache;
+  c("CONTROL: unpinned describe uses the existing class cache", await ep.describeService(ENDPOINT) === service);
+  await rejects("pinned describe bypasses the class cache and addresses its missing instance",
+    () => ep.describeService(ENDPOINT, { instanceId: ATTACKER.instanceId, deadlineMs: 100 }), "deadline-exceeded");
+  c("a failed pinned describe leaves the class cache intact", cache.get(ENDPOINT) === service);
+  c("an unpinned describe still returns its original class handle after the pinned refusal", await ep.describeService(ENDPOINT) === service);
+}
+
+// Narrow invocation handles and the complete discovery handle have independent cache slots. Exercise
+// the public methods against those slots so core owns the cache contract, while the manager smoke
+// separately proves the same sequence through live resolveService writes.
+{
+  const ep = new CotalEndpoint({ space: SPACE, servers: "nats://127.0.0.1:1", lifecycleUid: CALLER.uid, card: { name: "command-cache-probe", kind: "agent" }, channels: [] });
+  const contract = { input: compileContract({ root: { type: "null" } }), output: compileContract({ root: { type: "object", properties: { ran: { type: "boolean" } }, required: ["ran"], additionalProperties: false } }) };
+  const resolved = (command: string): ResolvedService => ({
+    endpoint: ENDPOINT, owner: "local", caller: CALLER, responder: HONEST,
+    commands: new Map([[command, { command, contract, class: "ephemeral", targeted: false, modes: [], capability: `endpoint.${command}` }]]),
+  });
+  const mutate = resolved("mutate"), query = resolved("query");
+  const full: ResolvedService = { ...mutate, commands: new Map([...mutate.commands, ...query.commands]) };
+  let publishes = 0;
+  (ep as unknown as { nc: unknown }).nc = fakeInvokeNc(() => { publishes++; });
+  const fullCache = new Map<string, ResolvedService>();
+  (ep as unknown as { resolvedServices: Map<string, ResolvedService> }).resolvedServices = fullCache;
+  (ep as unknown as { resolvedCommandServices: Map<string, Map<string, ResolvedService>> }).resolvedCommandServices =
+    new Map([[ENDPOINT, new Map([["mutate", mutate], ["query", query]])]]);
+  await ep.invokeService(ENDPOINT, "mutate");
+  await ep.invokeService(ENDPOINT, "query");
+  await ep.invokeService(ENDPOINT, "mutate");
+  c("alternating invokeService calls retain and reuse each command-specific handle", publishes === 3, publishes);
+  fullCache.set(ENDPOINT, full);
+  const described = await ep.describeService(ENDPOINT);
+  c("invokeService command handles do not truncate describeService's complete surface",
+    described === full && described.commands.size === 2 && described.commands.has("mutate") && described.commands.has("query"), [...described.commands]);
+}
+
+// Submitted identity survives both the call's timer and the follower's earlier timer/stop.
+// These constructed connections grade races and correlation, not real manager acceptance.
+{
+  const contract = { input: compileContract({ root: { type: "null" } }), output: compileContract({ root: { type: "null" } }) };
+  const op = { endpoint: ENDPOINT, command: "spawn", contract, caller: CALLER };
+  const detail = (e: unknown) => e instanceof EpEnvelopeError ? e.details?.find(d => d.kind === EP_UNANSWERED) : undefined;
+  let sent: string | undefined;
+  const nc = { ...fakeNc(() => [], req => { sent = req.id; }), flush: async () => {} };
+  const errorOf = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e);
+  const direct = await errorOf(epCall(nc as never, SPACE, { mode: "one" }, op, { deadlineMs: 20, currentEpoch: () => HONEST.epoch }));
+  c("an unanswered call retains the actual generated envelope id with unknown outcome", detail(direct)?.requestId === sent && typeof sent === "string" && direct instanceof EpEnvelopeError && direct.outcome === "unknown", direct);
+  const ctl = new AbortController();
+  const call = epCall(nc as never, SPACE, { mode: "one" }, op, { deadlineMs: 1000, currentEpoch: () => HONEST.epoch, signal: ctl.signal });
+  ctl.abort();
+  const cancelled = await errorOf(call);
+  c("a cancelled published call retains its own envelope id", detail(cancelled)?.requestId === sent && cancelled instanceof EpEnvelopeError && cancelled.outcome === "unknown", cancelled);
+  const followed = await errorOf(submitAndFollowGoal(nc as never, SPACE, ENDPOINT, CALLER, 20,
+    signal => epCall(nc as never, SPACE, { mode: "one" }, op, { deadlineMs: 1000, currentEpoch: () => HONEST.epoch, signal })));
+  c("the follower deadline wins before epCall but retains the submitted id", detail(followed)?.requestId === sent && followed instanceof EpEnvelopeError && followed.code === "deadline-exceeded" && followed.outcome === "unknown", followed);
+  const innerTimeout = await errorOf(submitAndFollowGoal(nc as never, SPACE, ENDPOINT, CALLER, 1000,
+    signal => epCall(nc as never, SPACE, { mode: "one" }, op, { deadlineMs: 20, currentEpoch: () => HONEST.epoch, signal })));
+  c("an epCall deadline winning first keeps both request id and generic no-retry guidance", detail(innerTimeout)?.requestId === sent && innerTimeout instanceof EpEnvelopeError && innerTimeout.message.includes("do NOT retry"), innerTimeout);
+  const stop = new AbortController();
+  const waiting = submitAndFollowGoal(nc as never, SPACE, ENDPOINT, CALLER, 1000,
+    signal => epCall(nc as never, SPACE, { mode: "one" }, op, { deadlineMs: 1000, currentEpoch: () => HONEST.epoch, signal }), { signal: stop.signal });
+  await wait(10); stop.abort();
+  const stopped = await errorOf(waiting);
+  c("stopping an in-flight follower retains id without asserting acceptance", detail(stopped)?.requestId === sent && stopped instanceof EpEnvelopeError && stopped.outcome === "unknown" && !stopped.message.includes("was accepted"), stopped);
+  const before = await errorOf(submitAndFollowGoal(nc as never, SPACE, ENDPOINT, CALLER, 20, async () => { throw new Error("must not submit"); }, {
+    prepare: async () => { throw new EpEnvelopeError("deadline-exceeded", "no describe reply", [{ kind: EP_UNANSWERED, endpoint: ENDPOINT, command: "describe" }]); },
+  }));
+  c("a preparation refusal never invents a submitted request id", detail(before)?.command === "describe" && detail(before)?.requestId === undefined, before);
+  const refusal = new EpEnvelopeError("unavailable", "broker no responders", [{ kind: EP_UNANSWERED, endpoint: ENDPOINT, command: "spawn" }], "not-executed");
+  const refused = await errorOf(submitAndFollowGoal(nc as never, SPACE, ENDPOINT, CALLER, 100, async () => { throw refusal; }));
+  c("a concrete pre-effect refusal survives unchanged without a submitted goal", refused === refusal && detail(refused)?.requestId === undefined, refused);
 }
 
 console.log(`\n${fail === 0 ? "ENDPOINT-INVOKE BINDING SMOKE OK ✅" : "ENDPOINT-INVOKE BINDING SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);

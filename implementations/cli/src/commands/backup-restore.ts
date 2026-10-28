@@ -32,7 +32,7 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
     const held = heldRestoreAttempt(root);
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", message, {
       target: { ...target, root, ...(held ? { attemptId: held.attemptId, journalState: held.journalState } : {}) },
-      remedy: held?.remedy ?? "this root's maintenance journal names no restore attempt; check it with cotal status before another restore",
+      remedy: held?.remedy ?? "this root's maintenance journal names no restore attempt; check it with `cotal status` before another restore",
     });
   }
   // A registry restore leaves chat and DM history and workflow runs empty, a full restore of an
