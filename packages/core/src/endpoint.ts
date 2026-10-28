@@ -6248,6 +6248,19 @@ export class CotalEndpoint extends EventEmitter {
     })().catch((e) => { if (!this.stopped) this.emit("error", e as Error); });
   }
 
+  /** Remove a retired lifecycle's member row for `channel`, when one exists. Best effort: the row
+   *  authorizes nothing (its ACL row is retired), and the next entry fan-out writes against it
+   *  brings the reader back here. */
+  private async removeRetiredMemberRow(channel: string, owner: string, lifecycleUid: string): Promise<void> {
+    try {
+      const kv = await this.membersRegistry();
+      if (await readMember(kv, channel, owner, lifecycleUid) === undefined) return;
+      await deleteMember(kv, channel, owner, lifecycleUid);
+    } catch (e) {
+      this.emit("warning", new Error(`plane-3 reader: could not remove retired lifecycle ${owner}.${lifecycleUid}'s "${channel}" member row: ${(e as Error).message}`));
+    }
+  }
+
   /** Re-authorize ONE mixed-inbox entry and transfer it to the owner's DELIVER store. Deny (drop) on a
    *  revoked/narrowed ACL or out-of-interval seq; on transfer success, ack the mixed entry (durability
    *  has moved to DLV — an §8 equivalent per-member at-least-once mechanism). The agent acks DLV. */
@@ -6293,6 +6306,13 @@ export class CotalEndpoint extends EventEmitter {
           m.nak(2000);
           return;
         }
+        // The member row that addressed this entry is one a daemon left behind when it died between
+        // its create and its post-write ACL read (#4994). It authorizes nothing, but fan-out copies
+        // every later message on the channel into this inbox until it goes, and this reader then
+        // removes each copy. Remove the row where that cost is paid, by its exact key, only when it
+        // exists: a purge of an absent key would write a marker per dropped entry.
+        if (entry.reason === "durable-channel") await this.removeRetiredMemberRow(entry.channel, owner, pr.lifecycleUid);
+        if (!this.plane3MayAct()) return;
         m.ack();
         return;
       }
