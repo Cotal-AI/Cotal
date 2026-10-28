@@ -1,5 +1,11 @@
 # @cotal-ai/connector-claude-code
 
+## 0.119.2
+
+### Patch Changes
+
+- 99d87c9: Keep command text and tool arguments out of permission-wait presence activity. Report working when a main-agent tool begins a turn without a prompt hook, while preserving permission waits and terminal status handling.
+
 ## 0.119.1
 
 No changes in this release.

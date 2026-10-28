@@ -1,5 +1,23 @@
 # cotal-ai
 
+## 0.119.2
+
+### Patch Changes
+
+- b02acfc: `cotal daemon serve` no longer removes a live socket that another process bound at its path after a crash. A filesystem such as ext4 can give that socket the dead daemon's inode number, which the recovery matched alone. `serve` now removes the dead daemon's socket only when a connect to it is refused, and otherwise refuses `CONFLICT` (`ALREADY_RUNNING`) and leaves the socket in place.
+- Updated dependencies [4c61283]
+- Updated dependencies [c7f80a1]
+- Updated dependencies [068cecc]
+  - @cotal-ai/workspace@0.119.2
+  - @cotal-ai/cli@0.119.2
+  - @cotal-ai/manager@0.119.2
+  - @cotal-ai/delivery@0.119.2
+  - @cotal-ai/auth@0.119.2
+  - @cotal-ai/runtime@0.119.2
+  - @cotal-ai/connector-core@0.119.2
+  - @cotal-ai/core@0.119.2
+  - @cotal-ai/seat@0.119.2
+
 ## 0.119.1
 
 ### Patch Changes
