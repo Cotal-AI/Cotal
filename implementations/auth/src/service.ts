@@ -3423,7 +3423,7 @@ async function handleInteractiveLifecycleRetirement(
   if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
     return send(res, 415, { error: "content-type must be application/json", ...before });
   if (req.headers.authorization !== `Bearer ${ctx.cap}`)
-    return send(res, 401, { error: "missing/invalid exchange capability - interactive lifecycle retirement is a loopback operator action", ...before });
+    return refuseCapability(res, ctx, "missing/invalid exchange capability - interactive lifecycle retirement is a loopback operator action", { ...before });
   const body = await readJsonBody(req);
   if (body === null || typeof body !== "object" || Array.isArray(body))
     return send(res, 400, { error: "interactive lifecycle retirement needs { owner, actor, lifecycleUid }", ...before });
@@ -3467,7 +3467,7 @@ async function handleManagedLifecycleRetirement(
   if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
     return send(res, 415, { error: "content-type must be application/json" });
   if (req.headers.authorization !== `Bearer ${ctx.cap}`)
-    return send(res, 401, { error: "missing/invalid exchange capability - managed lifecycle retirement is a loopback host action" });
+    return refuseCapability(res, ctx, "missing/invalid exchange capability - managed lifecycle retirement is a loopback host action");
   const body = await readJsonBody(req);
   if (body === null || typeof body !== "object" || Array.isArray(body))
     return send(res, 400, { error: "managed lifecycle retirement needs { owner, actor, lifecycleUid }" });
@@ -3525,7 +3525,7 @@ async function handleVerifyManagedAgentEnrollment(
   if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
     return send(res, 415, { error: "content-type must be application/json" });
   if (req.headers.authorization !== `Bearer ${ctx.cap}`)
-    return send(res, 401, { error: "missing/invalid exchange capability - managed agent enrollment verification is a loopback host action" });
+    return refuseCapability(res, ctx, "missing/invalid exchange capability - managed agent enrollment verification is a loopback host action");
   const body = await readJsonBody(req);
   if (body === null || typeof body !== "object" || Array.isArray(body))
     return send(res, 400, { error: "managed agent enrollment verification needs { owner, request }" });

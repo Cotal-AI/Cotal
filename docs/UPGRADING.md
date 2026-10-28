@@ -62,6 +62,20 @@ serve and exits nonzero.
   one lane attempt every 5 seconds. Keep it off callout host manifests: `admitsServiceEndpoints({
   space, server, secrets })` from `@cotal-ai/auth` returns `true` for each such space.
 
+## Loopback host doors share the invalid-capability budget
+
+`POST /interactive-lifecycle/retire`, `POST /managed-lifecycle/retire` and
+`POST /manager-service-authority/verify-enrollment` now count a missing or wrong loopback capability
+in the same invalid-capability window as `POST /exchange`. The first 30 in a rolling minute answer
+401 with the route's own reason. A further one answers 429, `too many invalid-capability attempts -
+wait a minute and retry`, and each refusal is logged. Before, these three routes answered 401 for
+every attempt and never filled the window. A correct capability is unchanged, and a running mesh
+needs nothing.
+
+The interactive retirement route still states `outcome: "not-executed"` on that refusal, including
+the 429, because nothing was retired. The other two routes keep the 401 body they answered before
+and add no outcome field.
+
 ## Service endpoints on a multi-space auth service host after 0.114.0
 
 `cotal auth-service --spaces <manifest>` now takes service endpoints per space, from each space's
