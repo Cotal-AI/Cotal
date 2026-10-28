@@ -266,7 +266,8 @@ such as an identity, starts on the line under the label. A word wider than the l
 keeps a line of its own and is never split. A command wraps as one word, so a copied line never holds
 part of one: a command under Next, and a command a sentence names in backticks after other words,
 from its `cotal` (or the `cd` that precedes it) to its closing backtick, whatever words its arguments
-are. A command that holds a
+are. A remedy, Next line, hint or message that names a command after other words writes it in
+backticks, so it wraps whole and `--json` carries the same text. A command that holds a
 backtick itself, as a quoted path can, is named between double backticks, as Markdown writes such code,
 and wraps whole to the matching pair. A line that starts with a command, such as a usage line, wraps at
 its spaces. Help wraps the same way, including the title of `cotal help`.
@@ -3818,7 +3819,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--expect-owner <u_…>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the owner the handoff must carry |
 | `--expect-lifecycle-uid <uid>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the lifecycle UID the handoff must carry |
 
-`spawn` refuses `--allow-stale` with "manifest deployment options belong to cotal team deploy <file>, not spawn".
+`spawn` refuses `--allow-stale` with "manifest deployment options belong to `cotal team deploy <file>`, not spawn".
 `--runtime` is a per-seat choice on a managed launch. Omitted, the seat uses the runtime that manager
 was started with. `auto` names a manager's own runtime, so it is refused for one seat. Any other
 runtime has to be installed and reachable on the host the manager runs on, and the CLI can check

@@ -23,7 +23,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, agentGrants, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, spaceStreamsExpected, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, agentGrants, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, spaceStreamsExpected, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { batchedRead, openTransient } from "../lib/transient.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
@@ -93,7 +93,7 @@ export function sendArguments(args: ParsedArgs): SendInput {
   const flag = destination.mode === "msg" ? "-c" : destination.mode === "ask" ? "-r" : "-t";
   if (!destination.target.trim()) {
     const [option, what] = destination.mode === "msg" ? ["--channel/-c", "channel"] : destination.mode === "ask" ? ["--role/-r", "role"] : ["--to/-t", "agent"];
-    throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: `run cotal send ${flag} <${what}> "<message>"` });
+    throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: `run \`cotal send ${flag} <${what}> "<message>"\`` });
   }
   const again = (body: string) => sendAgain(destination, body);
   if (args.positionals.length > 1 || bodies !== 1 || values.file === "")
@@ -128,7 +128,7 @@ export function sendArguments(args: ParsedArgs): SendInput {
 
 /** A remedy's rerun of the destination the caller gave, with another body. */
 function sendAgain(destination: Pick<SendInput, "mode" | "target">, body: string): string {
-  return `run cotal send ${destination.mode === "msg" ? "-c" : destination.mode === "ask" ? "-r" : "-t"} ${shellWord(destination.target)} ${body}`;
+  return `run ${codeSpan(`cotal send ${destination.mode === "msg" ? "-c" : destination.mode === "ask" ? "-r" : "-t"} ${shellWord(destination.target)} ${body}`)}`;
 }
 
 /** How a refused message file is reported: with the mesh the send was aimed at, as a refusal after
@@ -267,7 +267,7 @@ async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], s
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no matching participant was found in the authorized presence view", { target: { space, name }, remedy: `list the participants with cotal who --all --space ${space}, then use one name or full identity` });
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no matching participant was found in the authorized presence view", { target: { space, name }, remedy: `list the participants with \`cotal who --all --space ${space}\`, then use one name or full identity` });
 }
 
 /** How long a role send waits for the presence snapshot before it says nothing about holders. */
@@ -323,7 +323,7 @@ function storeFullRefusal(error: unknown, root: string | undefined, space: strin
   try { store = root ? recordedStore(root, space) : undefined; } catch { store = undefined; }
   return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker's JetStream store${store ? ` ${store.path}` : ""} is full${store?.cap !== undefined ? ` at its --max-file-store cap of ${store.cap} bytes` : ""}, so it refused the message; nothing was stored`, {
     target, native: { code: "10023" },
-    remedy: `make room with cotal history clear --yes, which purges this space's channel history (--dms also purges its direct messages), then send again${store?.cap !== undefined ? "; to raise the cap afterwards, run cotal down and cotal up --max-file-store <bytes>" : ""}`,
+    remedy: `make room with \`cotal history clear --yes\`, which purges this space's channel history (--dms also purges its direct messages), then send again${store?.cap !== undefined ? "; to raise the cap afterwards, run `cotal down` and `cotal up --max-file-store <bytes>`" : ""}`,
   });
 }
 
@@ -439,7 +439,7 @@ export async function send(args: ParsedArgs): Promise<void> {
       let named: Presence | undefined;
       try { named = resolvePeer(ep.getRoster(), peer.card.name); } catch { named = undefined; }
       if (named?.card.id !== peer.card.id)
-        throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "a mention carries the agent's name, and this name does not name only that participant", { target: { space, name: peer.card.name }, remedy: `send to that participant with cotal send -t ${peer.card.id} instead` });
+        throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "a mention carries the agent's name, and this name does not name only that participant", { target: { space, name: peer.card.name }, remedy: `send to that participant with \`cotal send -t ${peer.card.id}\` instead` });
       mentions.push(peer.card.name);
     }
     const peer = input.mode === "dm" ? await directPeer(ep, space, input.target, "to") : undefined;
@@ -467,7 +467,7 @@ export async function send(args: ParsedArgs): Promise<void> {
       const store = connection.root ? brokerStoreWrite(connection.root, space) : undefined;
       if (store?.state === "write-failed") {
         const repair = storeWriteRepair(store, connection.root, space);
-        throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `No storage acknowledgement was established, and the broker logged a store write failure at ${store.at}: ${store.cause}${store.path ? ` (${store.path})` : ""}. The message was probably not stored; it was not retried.`, { target, remedy: `${repair[0]!.toUpperCase()}${repair.slice(1)}, then restart the broker with cotal down and cotal up before sending again.${store.jetStreamDisabled ? " The broker disabled JetStream, so if cotal down refuses because the manager's stop cannot be recorded, it names the manager process to end on this host first." : ""}` });
+        throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `No storage acknowledgement was established, and the broker logged a store write failure at ${store.at}: ${store.cause}${store.path ? ` (${store.path})` : ""}. The message was probably not stored; it was not retried.`, { target, remedy: `${repair[0]!.toUpperCase()}${repair.slice(1)}, then restart the broker with \`cotal down\` and \`cotal up\` before sending again.${store.jetStreamDisabled ? " The broker disabled JetStream, so if `cotal down` refuses because the manager's stop cannot be recorded, it names the manager process to end on this host first." : ""}` });
       }
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "No storage acknowledgement was established. The message may have been stored; it was not retried.", { target, remedy: "Inspect the destination before sending again. The native publisher did not return a message identifier." });
     }

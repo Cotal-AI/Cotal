@@ -78,7 +78,7 @@ export function channelArguments(args: ParsedArgs): { action: string; name?: str
   const stray = named ? (extra.length === 1 ? extra[0] : undefined) : rawName;
   if ((values.replay !== undefined || values["no-replay"] !== undefined) && stray !== undefined && /^(on|off|true|false|yes|no)$/i.test(stray)) {
     const flag = /^(off|false|no)$/i.test(stray) ? "--no-replay" : "--replay";
-    throw new CommandFailure("refused", "USAGE_INVALID", `--replay takes no value, so "${stray}" was read as a channel name; --replay turns replay on and --no-replay turns it off`, { remedy: `run cotal channel ${action}${named && rawName ? ` ${rawName}` : ""} ${flag}` });
+    throw new CommandFailure("refused", "USAGE_INVALID", `--replay takes no value, so "${stray}" was read as a channel name; --replay turns replay on and --no-replay turns it off`, { remedy: `run \`cotal channel ${action}${named && rawName ? ` ${rawName}` : ""} ${flag}\`` });
   }
   if (extra.length || (named ? !rawName : rawName !== undefined))
     throw usage(named ? `cotal channel ${action} takes one channel name` : `cotal channel ${action} takes no channel name`);
@@ -145,7 +145,7 @@ export async function channels(args: ParsedArgs): Promise<void> {
   } catch (error) {
     // A write that kept losing the revision race to other writers saved nothing.
     if (error instanceof ChannelRegistryConflict)
-      throw new CommandFailure("refused", "CONFLICT", `${error.message}; this change was not saved`, { target, remedy: "read the channel with cotal ch show, then repeat the change" });
+      throw new CommandFailure("refused", "CONFLICT", `${error.message}; this change was not saved`, { target, remedy: "read the channel with `cotal ch show`, then repeat the change" });
     if (error instanceof UndecodableRegistryEntry)
       throw new CommandFailure("refused", "CONFLICT", error.message, { target, remedy: "read the key and replace the value; the bytes were left as they are" });
     // A write the broker refused before any purge was acknowledged applied nothing.
@@ -215,7 +215,7 @@ export async function refuseUnknownChannel(name: string, values: Values, target:
   const known = registered.length ? `registered channels: ${registered.map((channel) => `#${channel}`).join(", ")}` : "this space registers no channels";
   throw new CommandFailure("refused", "TARGET_NOT_FOUND",
     `#${name} has ${action === "members" ? "no observed members, " : ""}no saved entry and no retained messages; ${spelled ? `channel names are case-sensitive, and the registered one is #${spelled}` : known}`,
-    { target, remedy: spelled ? `name it as registered: cotal channel ${action} ${spelled}` : "name a channel the space has; cotal ch lists the registered ones" });
+    { target, remedy: spelled ? `name it as registered: \`cotal channel ${action} ${spelled}\`` : "name a channel the space has; `cotal ch` lists the registered ones" });
 }
 
 /** A saved setting in the receipt, in the words `channel show` uses for it. */
@@ -274,7 +274,7 @@ function registryView(result: { action: string; name?: string; space: string; re
 
 async function confirmRemoval(name: string, space: string, values: Values, presentation: Presentation): Promise<boolean> {
   if (values.yes) return true;
-  if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(`${yesRequired("channel removal", presentation === "json")}; --purge also deletes retained history for that channel`, { remedy: `confirm with cotal channel remove ${name}${values.purge ? " --purge" : ""} --yes` });
+  if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(`${yesRequired("channel removal", presentation === "json")}; --purge also deletes retained history for that channel`, { remedy: `confirm with \`cotal channel remove ${name}${values.purge ? " --purge" : ""} --yes\`` });
   const question = `Remove #${name} from ${space}? ${values.purge ? "Its retained history will also be deleted." : "Its retained history will be kept."} Access grants and members are unchanged.`;
   if (presentation === "plain") return (await prompts.askLine(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
   const answer = await prompts.confirm({ message: question, initialValue: false });

@@ -49,6 +49,7 @@ import { pathToFileURL } from "node:url";
 import { findCommand, findSubcommand, parseCommandArgs, registry, type Command, type ParsedArgs, type Subcommand } from "@cotal-ai/core";
 import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { displayWidth } from "@cotal-ai/workspace";
+import ts from "typescript";
 
 const REPO = join(import.meta.dirname, "..", "..", "..");
 const BIN = join(REPO, "bin", "dist", "cotal.js");
@@ -217,6 +218,72 @@ for (const [args, usage, foreign] of [
   for (const cmd of commands) census(cmd, [], cmd);
   console.log(`  examples census: ${paths.length} commands and subcommands`);
 
+  // At 60 columns an option's description wraps without splitting a `--flag <value>` unit or a
+  // command it names. Up's -d named cotal down bare and spawn's --allow-stale cotal team deploy
+  // <file>, and both split after `cotal`.
+  for (const [name, named] of [["up", "`cotal down`"], ["spawn", "`cotal team deploy <file>`"]] as const) {
+    const help = (width: number): string[] => {
+      const lines: string[] = [];
+      printHelpPath(registry.resolve<Command>("command", name), [], (line) => lines.push(...line.replace(/\x1b\[[0-9;]*m/g, "").split("\n")), width);
+      return lines;
+    };
+    const narrow = help(60), whole = help(Number.POSITIVE_INFINITY).join("\n");
+    const count = (text: string, unit: string): number => text.split(unit).length - 1;
+    const units = [...new Set([...whole.matchAll(/(?<![\w-])--?[a-zA-Z][\w-]* (?:<[^>]+>|"[^"]*")|`cotal [^`]+`/g)].map((match) => match[0]))];
+    const split = units.filter((unit) => narrow.reduce((sum, line) => sum + count(line, unit), 0) !== count(whole, unit));
+    check(`cotal ${name} --help at 60 columns keeps every --flag <value> unit and every command it names, ${named} included, on one line`,
+      units.length > 10 && units.includes(named) && split.length === 0 && narrow.every((line) => displayWidth(line) <= 60), { split, narrow });
+  }
+
+  // Every string literal in the CLI and workspace sources that names a command after other words, as
+  // a remedy, a Next, a hint or a message does, writes it in backticks, so the renderer keeps it
+  // whole and --json carries the same text. A command is `cotal` and a registered command name, or an
+  // interpolated one; `displayCmd()`, or a const bound to it, prints as `cotal`. Comments are not
+  // string literals, and a usage line or a literal that starts with its command is not a sentence
+  // naming one. This file is not under the sources it reads.
+  {
+    const names = new Set(registry.all<Command>("command").flatMap((cmd) => [cmd.name, ...(cmd.aliases ?? [])]));
+    // Literals that are code or a data value, or name cotal itself: a file and the literal's text.
+    const exempt: readonly (readonly [string, RegExp])[] = [
+      ["implementations/cli/src/lib/completion-scripts.ts", /(?:)/], // shell completion scripts
+      ["implementations/cli/src/lib/completion-install.ts", /^# (>>>|<<<) cotal completion (>>>|<<<)$/], // the startup-file markers
+      ["implementations/cli/src/lib/setup-log.ts", /^\n=== cotal setup - /], // the setup log's header
+      ["implementations/cli/src/seed/paths.ts", /can take an installed cotal down\.|cannot determine the cotal version: /], // cotal, the program
+      ["implementations/cli/src/seed/reconcile.ts", /and this cotal \$\{\} does not move it back/],
+      ["implementations/cli/src/commands/service-registry.ts", /^cotal up or cotal supervise$/], // startedBy, a data value
+      ["packages/workspace/src/mesh-target.ts", /^a preserving cotal down$/], // part of lastOperation, a documented --json value
+    ];
+    const sources = spawnSync("git", ["ls-files", "--", "implementations/cli/src/*.ts", "packages/workspace/src/*.ts"], { cwd: REPO, encoding: "utf8" }).stdout.split("\n").filter(Boolean);
+    const offenders: string[] = [];
+    for (const file of sources) {
+      const source = readFileSync(join(REPO, file), "utf8");
+      const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+      const display = new Set(["displayCmd()"]);
+      const bind = (node: ts.Node): void => {
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer?.getText(tree) === "displayCmd()") display.add(node.name.text);
+        ts.forEachChild(node, bind);
+      };
+      bind(tree);
+      const visit = (node: ts.Node): void => {
+        const text = ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text
+          : ts.isTemplateExpression(node) ? node.head.text + node.templateSpans.map((span) => (display.has(span.expression.getText(tree)) ? "cotal" : "${}") + span.literal.text).join("") : undefined;
+        if (text !== undefined && !exempt.some(([path, literal]) => path === file && literal.test(text))) {
+          for (const match of text.matchAll(/(?<=[ ("'])cotal (\S+)/g)) {
+            // Environment assignments before a command, as in ZDOTDIR=<dir> cotal completion, are part of it.
+            const before = text.slice(0, match.index), line = before.slice(before.lastIndexOf("\n") + 1).replace(/^(?:[A-Z_][A-Z0-9_]*=\S* )+/, "");
+            const word = match[1]!.replace(/[,;:.)"']+$/, "");
+            const command = names.has(word) || names.has(word.replace(/\$\{\}.*$/, "")) || word.startsWith("${}");
+            if (!command || !/[A-Za-z]/.test(line) || /(usage: |\| )$/.test(before) || (before.match(/`/g) ?? []).length % 2 === 1) continue;
+            offenders.push(`${file}:${tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1}: ${JSON.stringify(text.slice(Math.max(0, match.index - 40), match.index + 40))}`);
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(tree);
+    }
+    check(`every source string literal that names a command after other words writes it in backticks (${sources.length} files)`, sources.length > 100 && offenders.length === 0, offenders);
+  }
+
   // `cotal <path> --help` and `cotal help <path>` reach the help through two routes, the dispatcher's
   // and the help command's, and print one help. Run a few at a time; each is a process of its own.
   const binary = (args: string[]) => new Promise<ReturnType<typeof run>>((resolve) => {
@@ -284,11 +351,11 @@ writeFileSync(join(project, ".cotal", "agents", "p1.md"), "---\nname: p1\n---\nh
 const confirmShape = (r: ReturnType<typeof run>, message: RegExp, remedy: string) =>
   r.status === 1 && r.stdout === "" && /^✗ /m.test(r.stderr) && message.test(r.stderr) && r.stderr.includes(remedy) && !/Usage|Options/.test(r.stderr);
 for (const [args, message, remedy] of [
-  [["persona", "remove", "p1"], /removing 'p1' .* requires --yes/, "confirm with cotal persona remove p1 --yes"],
-  [["history", "clear", "--dms"], /history clear requires --yes/, "then confirm it with cotal history clear --dms --yes"],
-  [["space", "delete", "nosuch"], /live space deletion requires a terminal/, "then run cotal space delete nosuch --yes"],
-  [["reset", "store", "nosuch"], /reset store needs a terminal confirmation/, "then run cotal reset store nosuch --yes"],
-  [["reset", "space", "nosuch"], /reset space needs a terminal confirmation/, "then run cotal reset space nosuch --yes"],
+  [["persona", "remove", "p1"], /removing 'p1' .* requires --yes/, "confirm with `cotal persona remove p1 --yes`"],
+  [["history", "clear", "--dms"], /history clear requires --yes/, "then confirm it with `cotal history clear --dms --yes`"],
+  [["space", "delete", "nosuch"], /live space deletion requires a terminal/, "then run `cotal space delete nosuch --yes`"],
+  [["reset", "store", "nosuch"], /reset store needs a terminal confirmation/, "then run `cotal reset store nosuch --yes`"],
+  [["reset", "space", "nosuch"], /reset space needs a terminal confirmation/, "then run `cotal reset space nosuch --yes`"],
 ] as const) {
   const r = run([...args], {}, project);
   check(`${args.join(" ")} without --yes prints its refusal and remedy without the help`, confirmShape(r, message, remedy), shown(r));

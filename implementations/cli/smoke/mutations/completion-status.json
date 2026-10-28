@@ -41,8 +41,8 @@
     {
       "name": "completion <shell> still prints the stub",
       "file": "implementations/cli/src/commands/completion.ts",
-      "find": "  if (Object.hasOwn(SCRIPTS, sub)) throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `cotal completion ${sub} is now cotal completion script ${sub}`",
-      "replace": "  if (Object.hasOwn(SCRIPTS, sub)) { process.stdout.write(SCRIPTS[sub]!); process.exit(0); }\n  if (false) throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `cotal completion ${sub} is now cotal completion script ${sub}`",
+      "find": "  if (Object.hasOwn(SCRIPTS, sub)) throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `cotal completion ${sub} is now \\`cotal completion script ${sub}\\``",
+      "replace": "  if (Object.hasOwn(SCRIPTS, sub)) { process.stdout.write(SCRIPTS[sub]!); process.exit(0); }\n  if (false) throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `cotal completion ${sub} is now \\`cotal completion script ${sub}\\``",
       "expectRed": "completion bash exits 1 and writes nothing on stdout",
       "cell": "completion bash exits 1 and writes nothing on stdout",
       "afterRestore": "pnpm --filter cotal-ai... build"

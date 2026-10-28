@@ -18,6 +18,7 @@ import {
 } from "./mesh-registry.js";
 import { ProtectedRecordStore, shellPath } from "./protected-records.js";
 import { rootNamesNoSpace } from "./space.js";
+import { codeSpan } from "./text-wrap.js";
 
 /**
  * One coherent answer to "which mesh does this command act on, and where do its creds + personas
@@ -514,7 +515,7 @@ export function stackAdoptionBlock(root: string, recordedRoot: string, space: st
   const known = journalInstanceIds(members).find((id) => instances.read(id) !== undefined);
   if (known) return { kind: "known", message: `this machine records instance ${known} of the stack that ${recordedRoot} recorded, so that stack is this machine's own`, remedy: movedRootRemedy(recordedRoot) };
   const registered = findMesh(space), recorded = registered?.root ?? findPreparedSpace(space)?.root;
-  if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with cotal space forget ${space}, then run cotal space create ${space} --adopt --root ${shellPath(root)}` };
+  if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with \`cotal space forget ${space}\`, then run ${codeSpan(`cotal space create ${space} --adopt --root ${shellPath(root)}`)}` };
   return undefined;
 }
 
@@ -531,7 +532,7 @@ export function stackElsewhereRemedy(root: string, recordedRoot: string, space: 
   try { block = stackAdoptionBlock(root, recordedRoot, space, members); } catch { block = null; }
   const adopt = block === undefined ? `adopt it with \`cotal space create ${space} --adopt --root ${shellPath(root)}\`` : block?.kind === "recorded" ? block.remedy : undefined;
   if (adopt === undefined) return movedRootRemedy(recordedRoot);
-  if (rootPathProblem(recordedRoot) !== undefined) return `to run it from this folder, ${adopt}; cotal up refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`;
+  if (rootPathProblem(recordedRoot) !== undefined) return `to run it from this folder, ${adopt}; \`cotal up\` refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`;
   return block === undefined
     ? `${adopt}; this machine records neither "${space}" nor an instance of its stack, so moving the folder back would not start it`
     : `${movedRootRemedy(recordedRoot)}; or, to run it from this folder, ${adopt}`;
@@ -758,7 +759,7 @@ function noteFolderSpaceHeld(folder: { root: string; registered: readonly string
 
 /** What a folder holds that is not running, and the step that starts it with {@link upCommand}. */
 export function heldSpaceNote(held: { space: string; root: string; state: "prepared" | "stopped" }): string {
-  return `this folder holds the ${held.state} space "${held.space}"; ${held.state === "prepared" ? "start" : "restart"} it with ${upCommand(held.root, held.space)}${upNeedsCap(held.root, held.space) ? " or more" : ""}`;
+  return `this folder holds the ${held.state} space "${held.space}"; ${held.state === "prepared" ? "start" : "restart"} it with \`${upCommand(held.root, held.space)}\`${upNeedsCap(held.root, held.space) ? " or more" : ""}`;
 }
 
 /** Whether a bare `cotal up` of `space` at `root` fails on the file store cap its stopped stack

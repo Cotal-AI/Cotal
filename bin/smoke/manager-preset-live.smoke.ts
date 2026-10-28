@@ -237,7 +237,7 @@ try {
     const refused = cotal(["down"]);
     check("bare down refuses while the service runs, names its stop then down, and stops nothing",
       refused.status === 2 && out(refused).includes("LIFECYCLE_BLOCKED") && out(refused).includes(`mgr instance ${live?.name}: running`)
-        && out(refused).includes(`${stopCommand}, then run cotal down again`) && !out(refused).includes("Service stopped")
+        && out(refused).includes(`\`${stopCommand}\`, then run \`cotal down\` again`) && !out(refused).includes("Service stopped")
         && liveState() === "running" && await isReachable(SERVER) && findMesh(SPACE) !== undefined, out(refused));
     const stop = cotal(stopCommand.split(" ").slice(1));
     check("the stop the refusal names stops the service", stop.status === 0 && liveState() === "stopped", out(stop));

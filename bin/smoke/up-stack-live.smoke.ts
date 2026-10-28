@@ -111,13 +111,13 @@ try {
     delivery: false,
     authService: false,
     manager: false,
-  }) === "✓ running in the background: nats-server (pid 42) - stop with: cotal down");
+  }) === "✓ running in the background: nats-server (pid 42) - stop with: `cotal down`");
   ok("detached summary reports partial component availability independently", renderDetachedSummary({
     pid: 42,
     delivery: true,
     authService: false,
     manager: false,
-  }) === "✓ running in the background: nats-server (pid 42), delivery daemon - stop with: cotal down");
+  }) === "✓ running in the background: nats-server (pid 42), delivery daemon - stop with: `cotal down`");
   // Bare `down` refuses the machine home, so the home stack's summary names the stop that works.
   ok("a machine-home summary names down --preserve-state, the stop that reaches the home stack", renderDetachedSummary({
     pid: 42,
@@ -125,7 +125,7 @@ try {
     authService: false,
     manager: true,
     machineHome: true,
-  }) === "✓ running in the background: nats-server (pid 42), delivery daemon, manager - stop with: cotal down --preserve-state");
+  }) === "✓ running in the background: nats-server (pid 42), delivery daemon, manager - stop with: `cotal down --preserve-state`");
   // With no manager, --preserve-state refuses until one serves the space, so the summary names both steps.
   ok("a machine-home summary with no manager names cotal up before down --preserve-state", renderDetachedSummary({
     pid: 42,
@@ -133,7 +133,7 @@ try {
     authService: false,
     manager: false,
     machineHome: true,
-  }) === "✓ running in the background: nats-server (pid 42), delivery daemon - stop with: cotal up to start its manager, then cotal down --preserve-state");
+  }) === "✓ running in the background: nats-server (pid 42), delivery daemon - stop with: `cotal up` to start its manager, then `cotal down --preserve-state`");
 
   // Default-port collision: `up` without an explicit `--server` should allocate a free port and
   // record it, not fail with "use --server ...:<port>". If the developer already has a real :4222
@@ -180,7 +180,7 @@ try {
   ok("up --detach exits 0", up.status === 0, up.stdout + up.stderr);
   ok(
     "auth up reports the exact running component set",
-    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: cotal down$/m.test(plain(up.stdout)),
+    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: `cotal down`$/m.test(plain(up.stdout)),
     up.stdout,
   );
   ok("old generic background wording is absent", !/mesh running in the background/.test(up.stdout), up.stdout);
@@ -393,7 +393,7 @@ try {
   const restart = cli("up", "--detach", "--server", SERVER);
   if (existsSync(join(root, ".cotal", "nats.pid"))) pids.push(pidOf("nats.pid"));
   ok("a bare up starts it again on the retained launcher, with no stack journal",
-    restart.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: cotal down$/m.test(plain(restart.stdout)) && !existsSync(join(root, ".cotal", "stack-controller.json")),
+    restart.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: `cotal down`$/m.test(plain(restart.stdout)) && !existsSync(join(root, ".cotal", "stack-controller.json")),
     restart.stdout + restart.stderr);
   // A read of a registration whose address this running stack serves is refused by the holder's
   // name, and the record stays: deleting it would leave its folder naming no space at all, and the
@@ -422,7 +422,7 @@ try {
   ok("open up --detach exits 0", open.status === 0, open.stdout + open.stderr);
   ok(
     "open up reports the exact running component set",
-    /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: cotal down$/m.test(plain(open.stdout)),
+    /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `cotal down`$/m.test(plain(open.stdout)),
     open.stdout,
   );
   ok("open summary omits auth-only components", !/running in the background:.*(?:delivery daemon|user-auth service)/.test(open.stdout), open.stdout);
@@ -438,7 +438,7 @@ try {
   ok("broker-only up --detach exits 0", brokerOnly.status === 0, brokerOnly.stdout + brokerOnly.stderr);
   ok(
     "broker-only up reports the exact running component set (no manager)",
-    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon - stop with: cotal down$/m.test(brokerOnlyOut),
+    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon - stop with: `cotal down`$/m.test(brokerOnlyOut),
     brokerOnly.stdout,
   );
   ok("broker-only boot writes no manager pidfile", !existsSync(record(MANAGER_PIDFILE)), record(MANAGER_PIDFILE));
@@ -464,7 +464,7 @@ try {
   const noManagerSpawnOut = plain(noManagerSpawn.stdout + noManagerSpawn.stderr);
   ok("a broker-only spawn -d refuses TARGET_UNAVAILABLE, exit 2, before sending and naming bare cotal up",
     noManagerSpawn.status === 2 && /no manager is running for this space to launch an agent/.test(noManagerSpawnOut) && /Code:\s+TARGET_UNAVAILABLE/.test(noManagerSpawnOut)
-      && /start the stack's manager with bare cotal up/.test(noManagerSpawnOut) && Date.now() - spawnStarted < 9_000,
+      && /start the stack's manager with bare `cotal up`/.test(noManagerSpawnOut) && Date.now() - spawnStarted < 9_000,
     { status: noManagerSpawn.status, ms: Date.now() - spawnStarted, out: noManagerSpawnOut });
   const brokerOnlyDown = cli("down");
   ok("broker-only down exits 0", brokerOnlyDown.status === 0, brokerOnlyDown.stdout + brokerOnlyDown.stderr);
@@ -542,7 +542,7 @@ try {
       const running = MEMBERS.filter((m) => !stopped.includes(m));
       const done = stopped.length ? `${stopped.map((m) => LABEL[m]).join(", ")} ${stopped.length === 1 ? "was" : "were"} stopped` : "no member was stopped";
       const left = running.length ? `${running.map((m) => LABEL[m]).join(", ")} ${running.length === 1 ? "is" : "are"} still running` : "no member is running";
-      const next = signals === 2 ? `The stop of ${LABEL[window as Member]} is not confirmed. Run cotal down --yes to finish the stop.` : running.length ? "Run cotal down --yes to finish the stop." : "Run cotal up to start it again.";
+      const next = signals === 2 ? `The stop of ${LABEL[window as Member]} is not confirmed. Run \`cotal down --yes\` to finish the stop.` : running.length ? "Run `cotal down --yes` to finish the stop." : "Run `cotal up` to start it again.";
       const notice = `Interrupted while stopping the stack in ${realpathSync(irRoot)}; ${done}, and ${left}. ${next}`;
       ok(`${name}: the notice names the members it stopped, the ones still running and the next step`, plain(err).includes(notice), { notice, err });
       if (signals === 1) ok(`${name}: the members it did not stop are still running`, running.every((m) => alive(pid[m])), running);

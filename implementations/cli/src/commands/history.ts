@@ -229,7 +229,7 @@ const channelOf = (name: string): string => name.replace(/^#/, "");
 export function validateHistoryArguments(args: ParsedArgs): void {
   const values = args.values as FlagValues<typeof historyFlags>;
   presentationOf(values);
-  if (values.force !== undefined) throw usage("--force is no longer a history flag; use cotal history clear --yes");
+  if (values.force !== undefined) throw usage("--force is no longer a history flag; use `cotal history clear --yes`");
   if (args.positionals[0] === "clear") {
     if (args.positionals.length !== 1) throw usage("history clear takes no channel; it clears all retained channel history in the space it targets");
     if ((["since", "limit", "from", "grep", "follow"] as const).some((flag) => values[flag] !== undefined)) throw usage("history clear accepts no read-window or follow flags; use a separate history read");

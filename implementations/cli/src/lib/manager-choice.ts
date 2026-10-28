@@ -100,7 +100,7 @@ export class ManagerPinUnmatched extends CommandFailure {
       : `--on ${selector} is not the name, host or instance id of a live manager of yours`, {
       target: { on: selector },
       native: { detail: { managers } },
-      remedy: managers.length ? "rerun it with --on naming one of the managers listed" : "start a manager with cotal manager start, then rerun it",
+      remedy: managers.length ? "rerun it with --on naming one of the managers listed" : "start a manager with `cotal manager start`, then rerun it",
     });
   }
 }
@@ -150,7 +150,7 @@ export async function managerPin(values: { on?: unknown; space?: unknown; server
     try { onInstanceId(on, verb); } catch (error) {
       throw new CommandFailure("refused", "USAGE_INVALID", `${(error as Error).message}. A manager's name or host is taken only on a user-auth mesh`, {
         target: { on },
-        remedy: `cotal ps prints each manager's instance id; rerun it as ${verb} --on <instance>`,
+        remedy: `cotal ps prints each manager's instance id; rerun it as \`${verb} --on <instance>\``,
         selfContained: true,
       });
     }

@@ -375,7 +375,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
         target: { space },
         remedy: values.creds
           ? "ask the space's owner to mint the credential again with `cotal auth mint <name> --provision`, then join with the lifecycle UID that mint reports"
-          : "run the same cotal join again to start a new session",
+          : "run the same `cotal join` again to start a new session",
       }));
     print(c.yellow(`! ${e.message}`));
   });

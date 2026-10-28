@@ -483,7 +483,7 @@ try {
   const shownRemote = await cotal(["persona", "show", "remote-rev", "--on", IID2, "--space", space], root2);
   mustHaveRun(shownRemote, "`persona show --on` by a later caller");
   check("a later show --on is refused not-found and names the local show for the file in this root",
-    shownRemote.status === 2 && /TARGET_NOT_FOUND/.test(strip(shownRemote.out)) && strip(shownRemote.out).includes("read it here with cotal p show remote-rev"),
+    shownRemote.status === 2 && /TARGET_NOT_FOUND/.test(strip(shownRemote.out)) && strip(shownRemote.out).includes("read it here with `cotal p show remote-rev`"),
     { status: shownRemote.status, out: strip(shownRemote.out).slice(-600) });
   const remoteListed = await cotal(["persona", "--on", IID2, "--space", space], root2);
   mustHaveRun(remoteListed, "`persona --on`");
@@ -720,7 +720,7 @@ try {
   const expectedEnv = {
     schemaVersion: 1, command: "invoke", target: { space, endpoint: "nosuch", command: "ping", requestedInstanceId: null, requestId: "<id>", accepted: null },
     outcome: "refused", completeness: "not-checked", result: null, warnings: [],
-    error: { code: "TARGET_UNAVAILABLE", message: unservedMessage, remedy: `start the service that serves nosuch, then run the command again; cotal service --space ${space} lists this space's services`, cause: { code: "deadline-exceeded" } },
+    error: { code: "TARGET_UNAVAILABLE", message: unservedMessage, remedy: `start the service that serves nosuch, then run the command again; \`cotal service --space ${space}\` lists this space's services`, cause: { code: "deadline-exceeded" } },
   };
   check("...and its --json envelope keeps its shape, within 5s",
     unservedJson.status === 2 && unservedJsonMs < 5000 && typeof unservedEnv?.target?.requestId === "string" &&
@@ -746,7 +746,7 @@ try {
   check("invoke manager ps whose contract read outruns --timeout fails OPERATION_FAILED, exit 5, naming the flag, the read and a longer --timeout",
     short.run.status === 5 && /Code:\s+OPERATION_FAILED/.test(shortOut) &&
       shortOut.includes(`the ${short.ms}ms --timeout ran out during the endpoint contract read; no command was published`) &&
-      /^Next\n\s+rerun it with a longer --timeout and the same other flags, such as cotal invoke manager ps --timeout 10000$/m.test(shortOut),
+      /^Next\n\s+rerun it with a longer --timeout and the same other flags, such as `cotal invoke manager ps --timeout 10000`$/m.test(shortOut),
     { timeoutMs: short.ms, status: short.run.status, out: shortOut.slice(-900) });
   const shortJson = await ranOut(["endpoint", "invoke", "manager", "ps", "--json"]);
   let shortEnv: { target?: { requestId?: unknown } } | undefined;
@@ -754,7 +754,7 @@ try {
   const expectedShortEnv = {
     schemaVersion: 1, command: "endpoint", target: { space, endpoint: "manager", command: "ps", requestedInstanceId: null, requestId: "<id>", accepted: null },
     outcome: "failed", completeness: "not-checked", result: null, warnings: [],
-    error: { code: "OPERATION_FAILED", message: `the ${shortJson.ms}ms --timeout ran out during the endpoint contract read; no command was published`, remedy: "rerun it with a longer --timeout and the same other flags, such as cotal endpoint invoke manager ps --timeout 10000", cause: { code: "deadline-exceeded" } },
+    error: { code: "OPERATION_FAILED", message: `the ${shortJson.ms}ms --timeout ran out during the endpoint contract read; no command was published`, remedy: "rerun it with a longer --timeout and the same other flags, such as `cotal endpoint invoke manager ps --timeout 10000`", cause: { code: "deadline-exceeded" } },
   };
   check("...and endpoint invoke --json carries that failure, its Next as the remedy and the native deadline-exceeded cause",
     shortJson.run.status === 5 && typeof shortEnv?.target?.requestId === "string" &&

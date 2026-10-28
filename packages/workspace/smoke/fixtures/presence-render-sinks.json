@@ -2981,7 +2981,7 @@
     {
       "path": "implementations/cli/src/commands/completion.ts",
       "kind": "status-token",
-      "anchor": "W[shell.shell]}`, tone: \"waiting\" as const })),\n         ",
+      "anchor": "[shell.shell])}`, tone: \"waiting\" as const })),\n         ",
       "class": "non-render/control",
       "rationale": "Completion report note: \"waiting\" is the color tone for the custom-wiring migration line, not any peer's presence."
     },
@@ -3023,14 +3023,14 @@
     {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "status-token",
-      "anchor": " login --idp ${l.idp}`, \"waiting\")]);\n    if (l?.subject)",
+      "anchor": "gin --idp ${l.idp}`)}`, \"waiting\")]);\n    if (l?.subject)",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "status-token",
-      "anchor": "b ${l.subject} --full`, \"waiting\")]);\n      else if (l.ac",
+      "anchor": "{l.subject} --full`)}`, \"waiting\")]);\n      else if (l.ac",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -4242,7 +4242,7 @@
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
       "kind": "derived-output",
-      "anchor": "`stop space ${holder.space} with cotal down from ${holder.root}`",
+      "anchor": "`stop space ${holder.space} with \\`cotal down\\` from ${holder.root}`",
       "class": "non-render/control",
       "rationale": "Stack up refusal remedy: names the local space that holds the address and its root; a registration record, not presence."
     },
@@ -4270,14 +4270,14 @@
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
       "kind": "derived-output",
-      "anchor": "`start this stack at another address with cotal up --server ${address.protocol}//${address.hostname}:<port> from ${root}, or ${stopHolder} and run cotal up again`",
+      "anchor": "`start this stack at another address with \\`cotal up --server ${address.protocol}//${address.hostname}:<port>\\` from ${root}, or ${stopHolder} and run \\`cotal up\\` again`",
       "class": "non-render/control",
       "rationale": "Stack up refusal remedy: start at another address or free this one; a registration record, not presence."
     },
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
       "kind": "derived-output",
-      "anchor": "`${stopHolder}, then run bare cotal up from ${root}; this stack keeps its recorded address`",
+      "anchor": "`${stopHolder}, then run bare \\`cotal up\\` from ${root}; this stack keeps its recorded address`",
       "class": "non-render/control",
       "rationale": "Stack up refusal remedy: how to free the stack's recorded broker address; a registration record, not presence."
     },
@@ -5090,7 +5090,7 @@
     {
       "path": "implementations/cli/src/lib/stack-journal.ts",
       "kind": "derived-output",
-      "anchor": "`stop its running members with ${running.map((row) => `cotal service stop ${row.name} --instance ${row.instanceId} --space ${row.space} --yes`).join(\", then \")}, then remove ${path} and run cotal up from ${root}`",
+      "anchor": "`stop its running members with ${running.map((row) => `\\`cotal service stop ${row.name} --instance ${row.instanceId} --space ${row.space} --yes\\``).join(\", then \")}, then remove ${path} and run \\`cotal up\\` from ${root}`",
       "class": "non-render/control",
       "rationale": "Stack journal refusal remedy: names the service stop commands for the running members; a local stack record, not presence."
     },
@@ -5202,7 +5202,7 @@
     {
       "path": "implementations/cli/src/commands/spawn.ts",
       "kind": "derived-output",
-      "anchor": "`nothing was launched; stop one of this owner's seats with cotal stop --name <name>, or ask the operator who runs that manager to restart it with a higher --seat-cap (it admits ${cap.cap} per owner)`",
+      "anchor": "`nothing was launched; stop one of this owner's seats with \\`cotal stop --name <name>\\`, or ask the operator who runs that manager to restart it with a higher --seat-cap (it admits ${cap.cap} per owner)`",
       "class": "non-render/control",
       "rationale": "Spawn seat-cap remedy: names the cap the manager admits per owner; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
@@ -5247,6 +5247,13 @@
       "anchor": "observer.ready(result, warnings)",
       "class": "non-render/control",
       "rationale": "Spawn composite readiness: hands the launch result to the observing command; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "iginal lifecycle with ${codeSpan(ps)} before another startup",
+      "class": "non-render/control",
+      "rationale": "Spawn partial remedy: names the ps command for the original lifecycle in a code span; no peer presence is rendered."
     },
     {
       "path": "implementations/cli/src/commands/up.ts",

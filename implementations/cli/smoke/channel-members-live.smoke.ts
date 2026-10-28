@@ -89,11 +89,11 @@ try {
   check("an unknown name is refused TARGET_NOT_FOUND, exit 2, naming the registered channels",
     unknown.status === 2 && refusal?.outcome === "refused" && refusal.error?.code === "TARGET_NOT_FOUND"
       && refusal.error.message === "#nosuch has no observed members, no saved entry and no retained messages; registered channels: #general"
-      && refusal.error.remedy === "name a channel the space has; cotal ch lists the registered ones", unknown.out.slice(-600));
+      && refusal.error.remedy === "name a channel the space has; `cotal ch` lists the registered ones", unknown.out.slice(-600));
   const cased = cotal("channel", "members", "General");
   check("General names the registered #general and the command for it, with no census",
     cased.status === 2 && cased.out.includes("channel names are case-sensitive, and the registered one is #general")
-      && cased.out.includes("name it as registered: cotal channel members general") && !cased.out.includes("Members ·"), cased.out.slice(-600));
+      && cased.out.includes("name it as registered: `cotal channel members general`") && !cased.out.includes("Members ·"), cased.out.slice(-600));
   const lounge = census("lounge");
   check("#lounge, with no saved entry and no message, still lists its member", lounge?.asOf !== null && named(lounge, "bert"), lounge);
   const archive = cotal("channel", "members", "archive");

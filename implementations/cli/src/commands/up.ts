@@ -87,6 +87,7 @@ import {
   identityRecord,
   parseRecord,
   CommandFailure,
+  codeSpan,
   commandFailureReport,
   isCommandFailure,
   protectedLocalDirectory,
@@ -324,7 +325,7 @@ export async function startRestore(values: { restore: string; "restore-only"?: s
   await up({ values: { ...values }, positionals: [], raw: [] }, undefined, false, (result) => { returned = result; });
   if (!returned) {
     const root = cotalRoot(), held = heldRestoreAttempt(root);
-    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the guarded restore returned without its activation result; the journal records its state and no step was repeated", { target: { root, ...(held ? { attemptId: held.attemptId, journalState: held.journalState } : {}) }, remedy: held?.remedy ?? "this root's maintenance journal names no restore attempt; check it with cotal status" });
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the guarded restore returned without its activation result; the journal records its state and no step was repeated", { target: { root, ...(held ? { attemptId: held.attemptId, journalState: held.journalState } : {}) }, remedy: held?.remedy ?? "this root's maintenance journal names no restore attempt; check it with `cotal status`" });
   }
   return returned;
 }
@@ -376,7 +377,7 @@ export const upFlags: FlagSpec[] = [
   { name: "agent-provisioning-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the deployment's remote agent-provisioning endpoint the public bundle advertises" },
   { name: "rotate-sys", type: "boolean", description: "renew the expired/expiring $SYS creds by rotating the system account (agents, data and creds survive; needs a stopped mesh)" },
   { name: "recreate-issued-stores", type: "string", value: "<backup-dir>", description: "back up this space's issued-authority stores created before 0.111.0 into a new <backup-dir>, delete them and create them again (needs a stopped stack and every other issuer of the space stopped)" },
-  { name: "detach", type: "boolean", short: "d", description: "run in the background (the default; stop with cotal down)" },
+  { name: "detach", type: "boolean", short: "d", description: "run in the background (the default; stop with `cotal down`)" },
   { name: "foreground", type: "boolean", description: "keep a non-manifest native stack in this terminal; -f currently refuses" },
   { name: "runtime", type: "string", value: "<name>", description: "agent runtime for the mesh manager (default pty; extension runtimes are explicit-only, see `cotal runtimes`); with -f overrides the manifest's runtime" },
   { name: "max-sessions", type: "string", value: "<n>", description: "live-session ceiling for the mesh manager (default 64; one session per console pane, so size for agents × panes). Recorded and reused by later manager launches" },
@@ -431,7 +432,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (args.values.foreground === true && args.values.detach === true) throw new CommandFailure("refused", "USAGE_INVALID", "choose --foreground or --detach, not both");
   // Only a manifest launch has a plan to print; without -f every route would start the stack.
   if (args.values["dry-run"] === true && !args.values.file)
-    throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run previews a manifest launch and needs -f <cotal.yaml>; nothing was started or written", { remedy: "pass -f <cotal.yaml> to print that manifest's plan; cotal status shows what this folder records" });
+    throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run previews a manifest launch and needs -f <cotal.yaml>; nothing was started or written", { remedy: "pass -f <cotal.yaml> to print that manifest's plan; `cotal status` shows what this folder records" });
   // The stack passes its space to its own children as `--space <name>`, which a leading - breaks.
   const named = typeof args.values.space === "string" ? checkSpaceFlagValue(args.values.space) : undefined;
   if (named && !named.ok) throw new CommandFailure("refused", "USAGE_INVALID", `${named.message.replace(/^✗ /, "")}; nothing was started or written`, { remedy: named.remedy });
@@ -470,9 +471,9 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (restoreOnly !== undefined && restoreOnly !== "registry") throw new CommandFailure("refused", "USAGE_INVALID", `--restore-only takes registry (got ${JSON.stringify(restoreOnly)})`);
   if (!args.values.restore && (restoreOnly !== undefined || args.values["accept-missing-source"] === true)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore-only and --accept-missing-source require --restore <dir>");
   if (args.values.restore && (args.values.file !== undefined || args.values.channels !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --file/-f or --channels");
-  if (args.values.restore && args.values["rotate-sys"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --rotate-sys", { remedy: "restore the space and verify it first, then rotate: cotal down, then cotal up --rotate-sys" });
+  if (args.values.restore && args.values["rotate-sys"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --rotate-sys", { remedy: "restore the space and verify it first, then rotate: `cotal down`, then `cotal up --rotate-sys`" });
   if (args.values["recreate-issued-stores"] !== undefined) {
-    if (args.values.file !== undefined || args.values.restore !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--recreate-issued-stores cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}; nothing was started`, { remedy: "run cotal up --space <space> --recreate-issued-stores <backup-dir> on its own first" });
+    if (args.values.file !== undefined || args.values.restore !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--recreate-issued-stores cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}; nothing was started`, { remedy: "run `cotal up --space <space> --recreate-issued-stores <backup-dir>` on its own first" });
     assertIssuedBackupDirArgument(String(args.values["recreate-issued-stores"]));
   }
   if (args.values.root !== undefined) preparedUpRoot(String(args.values.root));
@@ -480,11 +481,11 @@ export function validateUpArguments(args: ParsedArgs): void {
     const inheritedRoot = inheritedMachineHomeRoot();
     if (inheritedRoot) {
       if (!freshFolderRoot(args.values))
-        throw new CommandFailure("refused", "CONFLICT", "this folder inherits the machine's home .cotal; up did not start a stack in that home root", { target: { root: process.cwd(), inheritedRoot }, remedy: "prepare this folder with cotal space create <space> --root ., then run cotal up again from this folder" });
+        throw new CommandFailure("refused", "CONFLICT", "this folder inherits the machine's home .cotal; up did not start a stack in that home root", { target: { root: process.cwd(), inheritedRoot }, remedy: "prepare this folder with `cotal space create <space> --root .`, then run `cotal up` again from this folder" });
     } else {
       const home = machineHomeRoot();
       if (home && !homeHoldsStack(home))
-        throw new CommandFailure("refused", "CONFLICT", `${home} is your home folder, whose .cotal holds this machine's own records, so up started no stack there`, { target: { root: home }, remedy: "prepare a project folder with cotal space create <space> --root <dir>, then run cotal up there, or pass --root <dir> from here" });
+        throw new CommandFailure("refused", "CONFLICT", `${home} is your home folder, whose .cotal holds this machine's own records, so up started no stack there`, { target: { root: home }, remedy: "prepare a project folder with `cotal space create <space> --root <dir>`, then run `cotal up` there, or pass --root <dir> from here" });
     }
   }
   if (args.values.restore !== undefined) refuseControllerCut(args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot(), "up --restore");
@@ -492,11 +493,11 @@ export function validateUpArguments(args: ParsedArgs): void {
     const root = args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : freshFolderRoot(args.values) ?? cotalRoot();
     // A path with a control character or a bidirectional formatting mark is refused before any write.
     const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
-    if (pathProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${pathProblem}; nothing was started or written`, { target: { root }, remedy: "rename the folder without those characters, then run cotal up there" });
+    if (pathProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${pathProblem}; nothing was started or written`, { target: { root }, remedy: "rename the folder without those characters, then run `cotal up` there" });
     const control = rootControlProblem(root);
     if (control) throw new CommandFailure("refused", "CONFLICT", `${control.message}; nothing was started or written`, { target: { root, controlDirectory: control.controlDirectory }, remedy: control.project === undefined
-      ? "prepare a project folder with cotal space create <space> --root <dir>, then run cotal up there"
-      : `run cotal up from the project folder ${shellWord(control.project)}` });
+      ? "prepare a project folder with `cotal space create <space> --root <dir>`, then run `cotal up` there"
+      : `run \`cotal up\` from the project folder ${shellWord(control.project)}` });
     assertUpRootWritable(root);
     // A restore and a manifest name their own store.
     if (args.values.restore === undefined && args.values.file === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : undefined);
@@ -605,11 +606,11 @@ function folderNamedSpace(values: ParsedArgs["values"]): string | undefined {
   const checked = checkSpaceName(space);
   const invalid = spaceNameTooLong(space) ?? (checked.ok ? undefined : checked.message.replace(/^✗ /, ""));
   if (invalid)
-    throw new CommandFailure("refused", "USAGE_INVALID", `${named} the folder name ${JSON.stringify(space)} cannot be one: ${invalid}; nothing was started or written`, { target: { root }, remedy: "name the space with cotal up --space <name>", selfContained: true });
+    throw new CommandFailure("refused", "USAGE_INVALID", `${named} the folder name ${JSON.stringify(space)} cannot be one: ${invalid}; nothing was started or written`, { target: { root }, remedy: "name the space with `cotal up --space <name>`", selfContained: true });
   assertSelectionNotMoved(root, space);
   const held = findMesh(space) ?? findPreparedSpace(space);
   if (held)
-    throw new CommandFailure("refused", "CONFLICT", `${named} "${space}" is already ${"server" in held ? `registered at ${held.server}` : "prepared"} for ${held.root}; nothing was started or written`, { target: { root, space, heldBy: held.root }, remedy: "name this folder's space with cotal up --space <name>, naming one this machine does not use; cotal space lists the names in use" });
+    throw new CommandFailure("refused", "CONFLICT", `${named} "${space}" is already ${"server" in held ? `registered at ${held.server}` : "prepared"} for ${held.root}; nothing was started or written`, { target: { root, space, heldBy: held.root }, remedy: "name this folder's space with `cotal up --space <name>`, naming one this machine does not use; `cotal space` lists the names in use" });
   checkLocalSpace(space, root, "--root", false);
   return space;
 }
@@ -649,10 +650,10 @@ export function preparedUpRoot(value: string): string {
     const cotal = lstatSync(join(root, ".cotal"));
     if (!cotal.isDirectory() || cotal.isSymbolicLink()) throw new Error("not a private project directory");
   } catch {
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "--root must name an existing prepared local project with its own .cotal directory; no ancestor or other space was selected", { target: { root: resolve(value) }, remedy: "prepare it with cotal space create <space> --root <dir>, then retry with that root" });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "--root must name an existing prepared local project with its own .cotal directory; no ancestor or other space was selected", { target: { root: resolve(value) }, remedy: "prepare it with `cotal space create <space> --root <dir>`, then retry with that root" });
   }
   if (canonicalRoot(root) === canonicalRoot(homedir()) || canonicalRoot(join(root, ".cotal")) === canonicalRoot(homeCotalDir()))
-    throw new CommandFailure("refused", "CONFLICT", "--root names the machine's home store, not a prepared project; no stack was started there", { target: { root }, remedy: "prepare the space in a project folder with cotal space create <space> --root <dir>" });
+    throw new CommandFailure("refused", "CONFLICT", "--root names the machine's home store, not a prepared project; no stack was started there", { target: { root }, remedy: "prepare the space in a project folder with `cotal space create <space> --root <dir>`" });
   return root;
 }
 
@@ -924,8 +925,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     __folderNamed?: boolean;
   };
   if (freshTeamBoot && (!values.file || values.restore || values.__restoreAttempt || values.__ordinaryResumeAttempt || values["rotate-sys"] || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "fresh team boot accepts one manifest and its selected lifetime, not a restore, rotation or manager-free override");
-  if (values["manager-name"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--manager-name names the manager a plain cotal up starts; it cannot be combined with --restore, --file or --no-manager");
-  if (values["seat-cap"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--seat-cap caps the manager a plain cotal up starts; it cannot be combined with --restore, --file or --no-manager");
+  if (values["manager-name"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--manager-name names the manager a plain `cotal up` starts; it cannot be combined with --restore, --file or --no-manager");
+  if (values["seat-cap"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--seat-cap caps the manager a plain `cotal up` starts; it cannot be combined with --restore, --file or --no-manager");
   // `space create` and `down` refuse a root other local accounts can write, so `up` refuses it too,
   // before anything is written: a stack started there could not be stopped from it.
   protectedLocalDirectory(canonicalRoot(cotalRoot()), "the project root");
@@ -1019,7 +1020,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     if (values["rotate-sys"] && readMaintenanceJournal(root))
       throw new Error("--rotate-sys is refused while this root has a maintenance attempt to recover - finish or roll back that attempt (`cotal up` alone recovers it), then `cotal down` and `cotal up --rotate-sys`");
     if (values["recreate-issued-stores"] !== undefined && readMaintenanceJournal(root))
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--recreate-issued-stores needs a fresh broker start, and this root has a maintenance attempt to recover; nothing was started", { target: { root }, remedy: "finish or roll back that attempt first (cotal up alone recovers it)" });
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--recreate-issued-stores needs a fresh broker start, and this root has a maintenance attempt to recover; nothing was started", { target: { root }, remedy: "finish or roll back that attempt first (`cotal up` alone recovers it)" });
     // Raised here for the stronger reason the journal itself carries: a pending maintenance attempt
     // means the store is mid-recovery, and a broker-only boot over it is wrong with or without the
     // manager half. The manager half is why the FLAG specifically cannot apply. A settled active
@@ -1065,7 +1066,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         const attempt = journal.restore.attemptId;
         const assessment = assessRestoreClaim(journal, { unrecordedOwnersDead: attemptProcessesGone(root) });
         if (assessment !== "stale") throw heldClaim(root, attempt, journal.claim, "cotal up", assessment);
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `cotal up is refused: restore attempt ${attempt} stopped before it committed and still holds the store; nothing was changed`, { target: { root, attemptId: attempt }, remedy: `roll it back with cotal backup recover ${attempt} --yes, then run cotal up; or run the restore again` });
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `cotal up is refused: restore attempt ${attempt} stopped before it committed and still holds the store; nothing was changed`, { target: { root, attemptId: attempt }, remedy: `roll it back with \`cotal backup recover ${attempt} --yes\`, then run \`cotal up\`; or run the restore again` });
       }
       const controllerCut = journal ? cutController(journal.cut) : undefined;
       if (journal && controllerCut && journal.state !== "cut-intent" && journal.state !== "cut-committed" && journal.state !== "resume-retired") {
@@ -1097,9 +1098,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         if (status === "alive") throw restoredBrokerRuns(root, journal.restore.attemptId, journal.listenerProof.processOwner.pid);
       } else if (journal?.state === "ready") {
         const source = preservedSourceState(root, journal.source);
-        if (source.state === "moved") throw movedFolderRefusal(root, journal.space, journal.source.path, source, "run cotal up");
+        if (source.state === "moved") throw movedFolderRefusal(root, journal.space, journal.source.path, source, "run `cotal up`");
         if (source.state === "missing")
-          throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the preserved store recorded at ${journal.source.path} is missing, so up cannot resume it; nothing was started`, { target: { root, space: journal.space, recordedStore: journal.source.path }, remedy: "if this folder was moved, move it back so that path exists again; if the store is lost, restore a backup here with cotal backup restore <dir> --accept-missing-source" });
+          throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the preserved store recorded at ${journal.source.path} is missing, so up cannot resume it; nothing was started`, { target: { root, space: journal.space, recordedStore: journal.source.path }, remedy: "if this folder was moved, move it back so that path exists again; if the store is lost, restore a backup here with `cotal backup restore <dir> --accept-missing-source`" });
         const resume = readMaintenanceResumeDocument(root, journal.resume);
         const attemptId = `resume-${randomUUID()}`;
         const launch = resume.launch as { server?: unknown; storeDir?: unknown; maxFileStore?: unknown };
@@ -1111,7 +1112,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // follows a normal `down` of the resumed mesh.
         const preservedOnly = (flag: string, given: string | number, what: string, preserved: string) => new CommandFailure("refused", "CONFLICT", `${flag} ${given} is not the ${what} that down --preserve-state recorded here (${preserved}), and a resume starts what it recorded; nothing was started`, {
           target: { root, space: journal.space, flag, given: String(given), preserved },
-          remedy: `resume with cotal up without ${flag}; to use ${given}, stop the resumed mesh with cotal down, then run cotal up ${flag} ${given}`,
+          remedy: `resume with \`cotal up\` without ${flag}; to use ${given}, stop the resumed mesh with \`cotal down\`, then run \`cotal up ${flag} ${given}\``,
         });
         if (values.server !== undefined && values.server !== resumeServer) throw preservedOnly("--server", values.server, "broker address", resumeServer);
         const givenStore = values["store-dir"];
@@ -1145,7 +1146,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // The resumed broker binds this address, so another listener there would leave the resume
         // degraded. It is refused here, before anything is journalled or started, as backup create does.
         await assertEndpointUnreachable(resumeServer).catch((error: Error) => {
-          throw new CommandFailure("refused", "CONFLICT", `${error.message}; the resumed broker needs that address, so nothing was started`, { target: { root, space: journal.space, server: resumeServer }, remedy: `stop the process that listens on ${resumeServer}, then run cotal up again` });
+          throw new CommandFailure("refused", "CONFLICT", `${error.message}; the resumed broker needs that address, so nothing was started`, { target: { root, space: journal.space, server: resumeServer }, remedy: `stop the process that listens on ${resumeServer}, then run \`cotal up\` again` });
         });
         // Admit every seat checkpoint the cut wrote and take custody, BEFORE the resume attempt is
         // journalled and long before a manager starts. A refusal here costs nothing because
@@ -1261,7 +1262,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         const attempt = journal.claim.attemptId;
         const assessment = assessMaintenanceClaim(journal.claim, { unrecordedOwnersDead: attemptProcessesGone(root) });
         if (assessment !== "stale") throw heldClaim(root, attempt, journal.claim, "cotal up", assessment);
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `cotal up is refused: backup attempt ${attempt} stopped before it finished and still holds this root; nothing was changed`, { target: { root, attemptId: attempt }, remedy: `release it with cotal backup recover ${attempt} --yes, then run cotal up` });
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `cotal up is refused: backup attempt ${attempt} stopped before it finished and still holds this root; nothing was changed`, { target: { root, attemptId: attempt }, remedy: `release it with \`cotal backup recover ${attempt} --yes\`, then run \`cotal up\`` });
       } else if (journal) {
         throw new Error(`cotal up is refused while maintenance state is ${journal.state}; follow the recorded recovery`);
       }
@@ -1380,7 +1381,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const named = { root: cotalRoot(), space: values.space ?? folderSpace() };
     if (readManagerName(named) !== name) {
       if (managerRecordState(named.space, named.root).state === "alive")
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${named.space}, and it keeps the name it started with`, { target: { root: named.root, space: named.space }, remedy: `stop it with cotal down, then run cotal up --manager-name ${shellWord(name)}` });
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${named.space}, and it keeps the name it started with`, { target: { root: named.root, space: named.space }, remedy: `stop it with \`cotal down\`, then run ${codeSpan(`cotal up --manager-name ${shellWord(name)}`)}` });
       if (!values["dry-run"]) recordManagerName(named, name);
     }
   }
@@ -1392,7 +1393,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const capped = { root: cotalRoot(), space: values.space ?? folderSpace() };
     if (readManagerSeatCap(capped) !== cap) {
       if (managerRecordState(capped.space, capped.root).state === "alive")
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${capped.space}, and it keeps the seat cap it started with`, { target: { root: capped.root, space: capped.space }, remedy: `stop it with cotal down, then run cotal up --seat-cap ${seatCapText(cap)}` });
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${capped.space}, and it keeps the seat cap it started with`, { target: { root: capped.root, space: capped.space }, remedy: `stop it with \`cotal down\`, then run \`cotal up --seat-cap ${seatCapText(cap)}\`` });
       if (!values["dry-run"]) recordManagerSeatCap(capped, cap);
     }
   }
@@ -1462,7 +1463,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // one, it takes that stack's lifetime over and says so before it blocks.
     const holder = values.foreground ? foregroundHolder(meshRoot) : undefined;
     if (holder !== undefined)
-      throw new CommandFailure("refused", "CONFLICT", `a foreground cotal up in process ${holder} already holds this stack's lifetime; this terminal did not take it over and nothing was started`, { target: { root: meshRoot, space: stackSpace, holderPid: holder }, remedy: `use the terminal that runs process ${holder}, where Ctrl-C stops the stack, or stop it with cotal down --yes from ${meshRoot} and run cotal up --foreground again` });
+      throw new CommandFailure("refused", "CONFLICT", `a foreground \`cotal up\` in process ${holder} already holds this stack's lifetime; this terminal did not take it over and nothing was started`, { target: { root: meshRoot, space: stackSpace, holderPid: holder }, remedy: `use the terminal that runs process ${holder}, where Ctrl-C stops the stack, or stop it with \`cotal down --yes\` from ${meshRoot} and run \`cotal up --foreground\` again` });
     const takeover = values.foreground === true && STACK_ROLES.some((role) => serviceInstances(stackSpace, STACK_DEFINITION[role]).some((row) => observeServiceProcess(row.record.value) === "running"));
     // A signal ends a detached start where it is, after it records a launch it had not yet pinned to
     // its child, and the notice names what it left running. It is installed before the lock, so no
@@ -1514,7 +1515,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const controller = freshTeamBoot ? undefined : readStackJournal(meshRoot);
     if (controller) throw new CommandFailure("refused", "CONFLICT", `this root holds the controller stack of space ${controller.journal.space}, and up -f does not start a manifest beside it; nothing was started`, {
       target: { root: meshRoot, space: controller.journal.space },
-      remedy: `add the manifest's channels and agents to the running stack with cotal team deploy ${values.file}, or stop it with cotal down --yes and start the manifest through the controller with cotal team boot ${values.file}`,
+      remedy: `add the manifest's channels and agents to the running stack with \`cotal team deploy ${values.file}\`, or stop it with \`cotal down --yes\` and start the manifest through the controller with \`cotal team boot ${values.file}\``,
     });
     if (values["dry-run"]) {
       await upManifest(values.file, {
@@ -1639,7 +1640,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       console.log(c.dim("starting this folder's stopped stack in the mode it last ran: open"));
     } else if (implicit) {
       const cleaned = cleanedManifestStart(cotalRoot(), recordedSpace, values.open === true);
-      if (cleaned) throw new CommandFailure("refused", "CONFLICT", `this folder was deployed from a manifest as "${cleaned.space}" at ${cleaned.server} in ${cleaned.mode === "open" ? "open" : "static auth"} mode, and its identity and broker configuration were removed, so a bare up would not start it as it was deployed; nothing was started`, { target: { root: cotalRoot(), space: cleaned.space, server: cleaned.server }, remedy: `deploy it again with ${cleaned.command}` });
+      if (cleaned) throw new CommandFailure("refused", "CONFLICT", `this folder was deployed from a manifest as "${cleaned.space}" at ${cleaned.server} in ${cleaned.mode === "open" ? "open" : "static auth"} mode, and its identity and broker configuration were removed, so a bare up would not start it as it was deployed; nothing was started`, { target: { root: cotalRoot(), space: cleaned.space, server: cleaned.server }, remedy: `deploy it again with ${codeSpan(cleaned.command)}` });
     }
     // A registered address stays as recorded, so a running stack is still found by it.
     const implicitServer = registeredServer ?? serving(retained?.server ?? DEFAULT_SERVER);
@@ -1771,7 +1772,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         process.exit(1);
       }
       if (values["recreate-issued-stores"] !== undefined)
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `mesh "${held.space}" is already running at ${server}, and its issued-authority stores are recreated only on a fresh broker start, before any issuer runs; nothing was changed`, { target: { space: held.space }, remedy: "stop the stack first, then run cotal up --recreate-issued-stores <backup-dir> again" });
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `mesh "${held.space}" is already running at ${server}, and its issued-authority stores are recreated only on a fresh broker start, before any issuer runs; nothing was changed`, { target: { space: held.space }, remedy: "stop the stack first, then run `cotal up --recreate-issued-stores <backup-dir>` again" });
       // `--foreground` asks this terminal to hold the stack's lifetime, but this branch starts
       // nothing here: it used to print `✓ already running`, restart a missing manager detached and
       // exit 0. A service unit relying on `--foreground` read that exit as the stack ending, stopped
@@ -2234,7 +2235,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         clearManagerArtifacts(space);
       } catch (e) {
         console.error(c.red(`! teardown: ${(e as Error).message}`));
-        console.error(c.red(`the stack is still running; to take managed agents with it, run: cotal down --with-agents`));
+        console.error(c.red(`the stack is still running; to take managed agents with it, run: \`cotal down --with-agents\``));
         stopping = false;
         return;
       }
@@ -2393,7 +2394,7 @@ async function unrecordedStackServer(root: string, space: string, host: string |
     return host ? reconcileHostAndServer(host, undefined, "--host", "--server", saved) : saved;
   }
   if (listSpaceAccounts(authDir(root)).includes(space) || existsSync(join(root, ".cotal", "nats")))
-    throw new MissingFlags(`no stack journal, registration or saved broker definition records the address "${space}" ran at in ${root}, which holds its earlier trust or store; nothing was started`, "run cotal up --server <url> with the address it ran at", { root, space });
+    throw new MissingFlags(`no stack journal, registration or saved broker definition records the address "${space}" ran at in ${root}, which holds its earlier trust or store; nothing was started`, "run `cotal up --server <url>` with the address it ran at", { root, space });
   return freshStackServer(host ? reconcileHostAndServer(host, undefined) : DEFAULT_SERVER, host);
 }
 
@@ -2402,7 +2403,7 @@ async function unrecordedStackServer(root: string, space: string, host: string |
 function restoredBrokerRuns(root: string, attempt: string, pid: number, manifest?: string, retire?: string): CommandFailure {
   return new CommandFailure("refused", "CONFLICT", `the broker that restore attempt ${attempt} started still runs here (pid ${pid}), and a new start does not run beside it; nothing was started`, {
     target: { root, attempt, pid },
-    remedy: manifest !== undefined ? `stop the restored stack with cotal down, retire the restore with ${retire}, then run cotal up -f ${manifest} again` : "stop the restored stack with cotal down, then run cotal up again",
+    remedy: manifest !== undefined ? `stop the restored stack with \`cotal down\`, retire the restore with ${retire}, then run \`cotal up -f ${manifest}\` again` : "stop the restored stack with `cotal down`, then run `cotal up` again",
   });
 }
 
@@ -2428,9 +2429,9 @@ function assertOrdinaryUpAllowed(root: string, storeDir?: string, manifest?: str
       throw new Error(`restore attempt ${attempt} active listener ownership is ${status}; refusing ordinary startup`);
     // `up -f` boots a fresh mesh, so the restore it would start over is retired first.
     if (manifest !== undefined)
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore attempt ${attempt} is still active here, and cotal up -f boots a fresh mesh, which does not start over a restore that is not retired; nothing was started`, {
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore attempt ${attempt} is still active here, and \`cotal up -f\` boots a fresh mesh, which does not start over a restore that is not retired; nothing was started`, {
         target: { root, attempt },
-        remedy: `retire the restore with ${retire}, then run cotal up -f ${manifest} again; bare cotal up starts the restored stack instead`,
+        remedy: `retire the restore with ${retire}, then run \`cotal up -f ${manifest}\` again; bare \`cotal up\` starts the restored stack instead`,
       });
     // Relaunching after restore must serve the exact recorded active target, not whatever store the
     // caller happens to name — the journal's provenance would otherwise describe a different mesh.
@@ -2704,7 +2705,7 @@ async function resumeControllerStack(lock: MaintenanceLock, root: string, values
   if (!("restore" in journal)) {
     if (values.server !== undefined && values.server !== journal.cut.launch.server) throw new CommandFailure("refused", "USAGE_INVALID", "a controller resume takes its broker address from the cut; --server is refused", { target: { root, space } });
     if (values["store-dir"] !== undefined || values["max-file-store"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a controller resume takes its store and cap from the cut; --store-dir and --max-file-store are refused", { target: { root, space } });
-    if (values["auth-timeout"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a controller resume renders this root's recorded auth callout timeout; --auth-timeout is refused", { target: { root, space }, remedy: "run cotal up without --auth-timeout" });
+    if (values["auth-timeout"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a controller resume renders this root's recorded auth callout timeout; --auth-timeout is refused", { target: { root, space }, remedy: "run `cotal up` without --auth-timeout" });
     const runtimes = [...new Set(agents.map((agent) => agent.launch?.runtime).filter((value): value is string => typeof value === "string"))];
     if (runtimes.length > 1 || (values.runtime !== undefined && runtimes[0] !== undefined && values.runtime !== runtimes[0]))
       throw new CommandFailure("refused", "USAGE_INVALID", "--runtime must equal the preserved inventory's runtime; a controller resume does not change it", { target: { root, space } });
@@ -3236,7 +3237,7 @@ async function startUserAuthService(
     const base = typeof raw.publicUrl === "string" ? raw.publicUrl : String(raw.url);
     const endpoints = { url: base, ...(typeof raw.publicUrl === "string" ? { managerAuthorityUrl: `${base.replace(/\/$/, "")}/manager-service-authority` } : {}) };
     const info = assertUserAuthInfo({ ...setup.prepared.publicAuth, endpoints });
-    if (!quietBoot) console.log(c.green("✓ user-auth service up") + c.dim(` - sign in with: cotal login --idp ${info.idp.url}`));
+    if (!quietBoot) console.log(c.green("✓ user-auth service up") + c.dim(` - sign in with: \`cotal login --idp ${info.idp.url}\``));
     return { userAuth: info, ok: true };
   } catch (e) {
     stderrLine("✗ ", `user-auth service did not come up (${(e as Error).message}) - user connects to "${space}" will fail until a re-\`cotal up\` succeeds`, c.red);
@@ -3636,7 +3637,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   }
   console.log(c.green(`✓ mesh "${m.space}" up at ${server}`) + c.dim(` (broker pid ${pid})`));
   console.log(c.dim(`  seeded ${m.channels.length} channel(s): ${m.channels.map((ch) => "#" + ch.name).join(", ")}`));
-  if (summaryRecorded) console.log(c.dim(`  fresh deployment ${deploymentId} recorded; cotal team show ${deploymentId} reads its launch summary, not live ownership`));
+  if (summaryRecorded) console.log(c.dim(`  fresh deployment ${deploymentId} recorded; \`cotal team show ${deploymentId}\` reads its launch summary, not live ownership`));
   // Never claim a launch the control plane can't deliver: the manager carries the launch spec, so a
   // degraded control plane (announced above) means the agents are NOT coming up.
   if (effectiveNoManager) {
@@ -3648,7 +3649,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     // The manager launches them after this command returns, so nothing here knows whether one joined:
     // no success mark, and name where the outcome shows.
     console.log(`  launch pending: the manager (${runtime}) starts ${eff.agents.length} agent(s)${owner ? ` as you (owner ${owner})` : ""} after this returns; up -f does not wait for them to join`);
-    console.log(c.dim(`  who joined: cotal ps --space ${m.space}   ·   a failed launch and its reason: ${managerLogDisplayPath(m.space)}`));
+    console.log(c.dim(`  who joined: \`cotal ps --space ${m.space}\`   ·   a failed launch and its reason: ${managerLogDisplayPath(m.space)}`));
   } else {
     stderrLine("✗ ", `${eff.agents.length} agent(s) NOT launched - the control plane did not come up (see above)`, c.red);
   }
@@ -3866,7 +3867,7 @@ function exitedBeforeReady(l: { child: ChildProcess; executable: NatsServer; ser
   const { path, source } = l.executable;
   return new CommandFailure("failed", "OPERATION_FAILED", `${natsServerLabel(l.executable)} ${exit} before it answered at ${l.server}; see ${l.log}`, {
     target: { executable: path, ...(exitCode !== null ? { exitCode } : { signal: signalCode }), server: l.server, log: l.log },
-    remedy: source === "path" ? `read ${l.log}, then fix ${path} or take it off PATH so cotal uses its bundled nats-server, and run cotal up again` : `read ${l.log}, then run cotal up again`,
+    remedy: source === "path" ? `read ${l.log}, then fix ${path} or take it off PATH so cotal uses its bundled nats-server, and run \`cotal up\` again` : `read ${l.log}, then run \`cotal up\` again`,
   });
 }
 
@@ -4089,7 +4090,7 @@ export function openBrokerLog(path: string): number {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
     throw new CommandFailure("refused", "PERMISSION_DENIED", `no broker was started: ${(error as Error).message}`,
-      { target: { path }, remedy: `remove ${path} or replace it with a regular file you own, then run cotal up again` });
+      { target: { path }, remedy: `remove ${path} or replace it with a regular file you own, then run \`cotal up\` again` });
   }
 }
 
@@ -4150,7 +4151,7 @@ async function assertBrokerAddressFree(server: string, command: string): Promise
   const { says, frees } = addressHolder("the broker address", host, port);
   throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
     target: { root: cotalRoot(), server, bindError: bindError.code },
-    remedy: `start it at another address with ${command} --server ${address.protocol}//${address.hostname}:<port>, or ${frees} and run ${command} again`,
+    remedy: `start it at another address with ${codeSpan(`${command} --server ${address.protocol}//${address.hostname}:<port>`)}, or ${frees} and run ${codeSpan(command)} again`,
   });
 }
 
@@ -4362,9 +4363,9 @@ export async function claimSpace(space: string, server: string, root: string): P
     if (canonicalRoot(existing.root) === canonicalRoot(root) && existing.server !== server)
       throw new CommandFailure("refused", "CONFLICT", `space "${space}" already runs from this project at ${existing.server}, and this start names ${server}; nothing was started`, {
         target,
-        remedy: `run cotal up here with no --server or --host to reach the mesh at ${existing.server}, or stop it first with cotal down${controller ? " --yes" : ""} in ${shellWord(existing.root)}`,
+        remedy: `run \`cotal up\` here with no --server or --host to reach the mesh at ${existing.server}, or stop it first with \`cotal down${controller ? " --yes" : ""}\` in ${shellWord(existing.root)}`,
       });
-    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is already in use by a mesh at ${existing.server} (${existing.root})`, { target, remedy: `start a separate space in this folder with cotal up --space <name>, naming one no other folder uses, or stop "${space}" first with cotal down${controller ? " --yes" : ""} in ${shellWord(existing.root)}` });
+    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is already in use by a mesh at ${existing.server} (${existing.root})`, { target, remedy: `start a separate space in this folder with \`cotal up --space <name>\`, naming one no other folder uses, or stop "${space}" first with \`cotal down${controller ? " --yes" : ""}\` in ${shellWord(existing.root)}` });
   }
   // The recorded root is this root only where it physically resolves, so it is resolved before any
   // comparison, and one that cannot be resolved refuses. A dead holder at another root keeps its name
@@ -4552,8 +4553,8 @@ async function refuseUntrustedListener(server: string, creds?: string): Promise<
   throw new CommandFailure("failed", "OPERATION_FAILED", `nats-server answered at ${server}, but this client refused its TLS certificate in the handshake (${reason}); up stopped it and recorded nothing`, {
     native: { code: String(code) },
     remedy: untrusted
-      ? "trust the certificate's CA, or a self-signed certificate itself, by setting NODE_EXTRA_CA_CERTS to that PEM file for cotal up and every cotal command of this space, then run cotal up again"
-      : /^tls:/i.test(server) ? `serve a certificate that names ${hostname}, then run cotal up again` : `pass --server tls://${hostname}:${port}, so every dial checks the certificate against ${hostname}`,
+      ? "trust the certificate's CA, or a self-signed certificate itself, by setting NODE_EXTRA_CA_CERTS to that PEM file for `cotal up` and every cotal command of this space, then run `cotal up` again"
+      : /^tls:/i.test(server) ? `serve a certificate that names ${hostname}, then run \`cotal up\` again` : `pass --server tls://${hostname}:${port}, so every dial checks the certificate against ${hostname}`,
   });
 }
 
@@ -4788,7 +4789,7 @@ async function postStart(
   } catch (error) {
     // Nothing of the stack runs yet, and the caller stops this broker again, so this is a refusal.
     if (error instanceof IssuedStoreBeforeRetentionError)
-      throw new CommandFailure("refused", "CONFLICT", error.message, { target: { space, store: error.bucket }, remedy: `stop every other issuer and resolver of space ${space}, then add --recreate-issued-stores <backup-dir> to the cotal up that starts it` });
+      throw new CommandFailure("refused", "CONFLICT", error.message, { target: { space, store: error.bucket }, remedy: `stop every other issuer and resolver of space ${space}, then add --recreate-issued-stores <backup-dir> to the \`cotal up\` that starts it` });
     throw error;
   }
   try {
@@ -4941,7 +4942,7 @@ async function refuseRunningElsewhere(space: string, root: string): Promise<void
   if (!owner || owner.origin === "manual" || owner.origin === "catalog" || !isAbsolute(owner.root) || canonicalRoot(owner.root) === canonicalRoot(root) || !(await isReachable(owner.server))) return;
   let controller = false;
   try { controller = readStackJournal(owner.root)?.journal.space === space; } catch { /* named with the legacy stop */ }
-  throw new CommandFailure("refused", "CONFLICT", `space "${space}" runs at ${owner.server}, started in ${owner.root}, so up did not start it again`, { target: { space, root: owner.root, server: owner.server }, remedy: `use it from here with --space ${space}, or stop it with cotal down${controller ? " --yes" : ""} in ${owner.root}` });
+  throw new CommandFailure("refused", "CONFLICT", `space "${space}" runs at ${owner.server}, started in ${owner.root}, so up did not start it again`, { target: { space, root: owner.root, server: owner.server }, remedy: `use it from here with --space ${space}, or stop it with \`cotal down${controller ? " --yes" : ""}\` in ${owner.root}` });
 }
 
 /** Refuses a bare `up` in a folder holding the records of a space this machine registers for another
@@ -4956,7 +4957,7 @@ async function refuseRecordsElsewhere(root: string): Promise<void> {
   const takeover = !existsSync(records.recordedRoot) && !(await isReachable(findMesh(space)?.server ?? records.server ?? DEFAULT_SERVER));
   throw new CommandFailure("refused", "CONFLICT", `this folder holds the records of "${space}", which is registered for ${records.recordedRoot}, not for this folder, so up did not start it here`, {
     target: { root, space, recordedRoot: records.recordedRoot },
-    remedy: takeover ? `${records.stackRemedy}; or, to run it from this folder, take the name over with cotal up --space ${space}` : records.stackRemedy,
+    remedy: takeover ? `${records.stackRemedy}; or, to run it from this folder, take the name over with \`cotal up --space ${space}\`` : records.stackRemedy,
   });
 }
 
@@ -5297,7 +5298,7 @@ function writeBrokerConfig(path: string, text: string): void {
     const entry = lstatSync(path, { throwIfNoEntry: false });
     const what = entry?.isSymbolicLink() ? "is a symlink" : entry?.isDirectory() ? "is a folder" : code === "EACCES" ? "cannot be written by this account" : "is not a regular file this account owns";
     throw new CommandFailure("refused", "PERMISSION_DENIED", `the broker configuration ${path} ${what}, so up cannot write it; it was left as it is and nothing was started`, {
-      target: { path }, remedy: `move it aside, as mv ${shellWord(path)} ${shellWord(`${path}.old`)} does, then run cotal up again, which writes it from the space's trust`,
+      target: { path }, remedy: `move it aside, as mv ${shellWord(path)} ${shellWord(`${path}.old`)} does, then run \`cotal up\` again, which writes it from the space's trust`,
     });
   }
 }
@@ -5308,7 +5309,7 @@ function unreadableTrust(error: unknown): unknown {
   const { code, path } = error as NodeJS.ErrnoException;
   if (code !== "EACCES" && code !== "EPERM" || typeof path !== "string") return error;
   return new CommandFailure("refused", "PERMISSION_DENIED", `the space's trust record ${path} cannot be read by this account (${code}); nothing was started`, {
-    target: { path }, remedy: `make it readable by you again, as chmod 600 ${shellWord(path)} does, then run cotal up again; it holds the space's keys, so keep it`,
+    target: { path }, remedy: `make it readable by you again, as chmod 600 ${shellWord(path)} does, then run \`cotal up\` again; it holds the space's keys, so keep it`,
   });
 }
 

@@ -147,7 +147,7 @@ export function validateDownArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   if (args.positionals.length) {
     for (const name of args.positionals) localRecordName(name);
-    if (args.values["with-agents"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "named down does not accept --with-agents; no flag was dropped", { remedy: "use cotal service stop <manager-name> --instance <full-id> --with-agents for the exact owned manager and its native impact review" });
+    if (args.values["with-agents"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "named down does not accept --with-agents; no flag was dropped", { remedy: "use `cotal service stop <manager-name> --instance <full-id> --with-agents` for the exact owned manager and its native impact review" });
     if (args.values.instance !== undefined && args.positionals.length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", "--instance qualifies one service name, never a multi-service set");
     const allowed = new Set(["space", "instance", "yes", "dry-run", "json", "plain"]);
     if (Object.keys(args.values).some((name) => !allowed.has(name))) throw new CommandFailure("refused", "USAGE_INVALID", "named down accepts only space, instance, confirmation, preview and presentation flags; no whole-stack or manifest option was ignored");
@@ -191,7 +191,7 @@ function refuseStackElsewhere(values: ParsedArgs["values"]): void {
 }
 
 /** The one route that stops the stack `up` starts from the machine home. */
-const MACHINE_HOME_STOP = "stop the machine-home stack with cotal down --preserve-state, which keeps its state for the next cotal up";
+const MACHINE_HOME_STOP = "stop the machine-home stack with `cotal down --preserve-state`, which keeps its state for the next `cotal up`";
 
 /** A bare stack preview is a local record census, never an effect plan or stop authority. */
 function previewWholeStack(args: ParsedArgs): void {
@@ -270,7 +270,7 @@ function previewWholeStack(args: ParsedArgs): void {
     { title: "Recorded native supervisors", blocks: [data.supervisors.length ? { kind: "table", columns: [{ key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "mechanism", label: "Mechanism" }, { key: "unit", label: "Recorded unit" }], rows: data.supervisors.slice(0, 100).map((row) => ({ definition: row.definition, instance: row.instanceId, mechanism: row.mechanism, unit: row.unit })) } : { kind: "lines", lines: ["No supervisor receipts in this space's workstation store."] }, { kind: "lines", lines: [...(data.supervisors.length > 100 ? ["Additional supervisor receipts are in JSON."] : []), "A receipt is not a live unit observation or authority to stop it. No native service status request was made."] }] },
     { title: "Retained native attempts", blocks: [data.nativeAttempts.length ? { kind: "table", columns: [{ key: "kind", label: "Action" }, { key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "step", label: "Step" }, { key: "position", label: "Position" }], rows: data.nativeAttempts.slice(0, 100).map((row) => ({ kind: row.kind, definition: row.definition, instance: row.instanceId, step: row.step, position: row.position })) } : { kind: "lines", lines: ["No retained install, uninstall or unit-action attempts in this space's workstation store."] }, { kind: "lines", lines: [...(data.nativeAttempts.length > 100 ? ["Additional attempts and their full IDs are in JSON."] : []), "A submitted or unknown step may already have changed native state. This preview neither reconciles nor retries it."] }] },
     ...(!home ? [] : homeRuns
-      ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: "cotal down --preserve-state", description: "Stop the machine-home stack and keep its state for the next cotal up" }] }] }]
+      ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: "cotal down --preserve-state", description: "Stop the machine-home stack and keep its state for the next `cotal up`" }] }] }]
       : [{ title: "Next", blocks: [{ kind: "lines" as const, lines: ["No process of the machine-home stack is running, so there is nothing to stop."] }] }]),
   ] }));
 }
@@ -468,9 +468,9 @@ function refuseSpaceElsewhere(root: string, space: string, dryRun: boolean): voi
   let controller = false;
   try { controller = readStackJournal(at)?.journal.space === space; } catch { /* named with the legacy stop */ }
   const stop = dryRun ? "cotal down --dry-run" : controller ? "cotal down --yes" : "cotal down";
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the stack of space "${space}" is recorded at ${at}, not at this folder's root, and cotal down stops only the stack recorded where it runs`, {
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the stack of space "${space}" is recorded at ${at}, not at this folder's root, and \`cotal down\` stops only the stack recorded where it runs`, {
     target: { root, space, spaceRoot: at },
-    remedy: `run ${stop} in ${at}; to stop one saved service, run \`cotal service stop <service-name> --space ${space}\``,
+    remedy: `run \`${stop}\` in ${at}; to stop one saved service, run \`cotal service stop <service-name> --space ${space}\``,
   });
 }
 
@@ -645,9 +645,9 @@ function legacyStopInterruptNotice(members: readonly LocalProcess[], context: Lo
   const done = stopped.length ? `${stopped.join(", ")} ${stopped.length === 1 ? "was" : "were"} stopped` : "no member was stopped";
   const left = running.length ? `${running.join(", ")} ${running.length === 1 ? "is" : "are"} still running` : "no member is running";
   const head = `Interrupted while stopping the stack in ${canonicalRoot(context.root)}; ${done}, and ${left}.`;
-  if (cut) return `${head} The stop of ${cut.label} is not confirmed. Run cotal down --yes to finish the stop.`;
-  if (running.length) return `${head} Run cotal down --yes to finish the stop.`;
-  return cleaned ? `${head} Run cotal up to start it again.` : `${head} Run cotal down --yes to finish its cleanup.`;
+  if (cut) return `${head} The stop of ${cut.label} is not confirmed. Run \`cotal down --yes\` to finish the stop.`;
+  if (running.length) return `${head} Run \`cotal down --yes\` to finish the stop.`;
+  return cleaned ? `${head} Run \`cotal up\` to start it again.` : `${head} Run \`cotal down --yes\` to finish its cleanup.`;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

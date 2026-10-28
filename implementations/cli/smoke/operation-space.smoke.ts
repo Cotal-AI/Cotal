@@ -141,7 +141,7 @@ for (const [argv, rerun] of [
   const pinned = cotal(...argv, "--json");
   const said = `${pinned.envelope?.error?.message ?? ""} ${pinned.envelope?.error?.remedy ?? ""}`;
   check(`${argv.slice(0, -2).join(" ")} --on bad names ${rerun} and never --on twice`,
-    pinned.status === 1 && pinned.envelope?.error?.code === "USAGE_INVALID" && (pinned.envelope.error.remedy ?? "").endsWith(`rerun it as ${rerun}`) && !said.includes("--on --on"), shown(pinned));
+    pinned.status === 1 && pinned.envelope?.error?.code === "USAGE_INVALID" && (pinned.envelope.error.remedy ?? "").endsWith(`rerun it as \`${rerun}\``) && !said.includes("--on --on"), shown(pinned));
 }
 
 // The seeded default's agents launch as default_agent, so no create takes that name.
@@ -178,7 +178,7 @@ const removedOther = cotal("persona", "remove", "goodrole", "--yes", "--json");
 check("removing another persona does not call it the seeded default", removedOther.status === 0 && !removedOther.stdout.includes("seededDefault"), shown(removedOther));
 const removedDefault = cotal("persona", "remove", "default", "--yes", "--plain");
 check("removing the seeded default says so and names what writes a fresh copy",
-  removedDefault.status === 0 && removedDefault.stdout.includes("This was the seeded default persona, which a bare cotal spawn launches") && !existsSync(agentFilePath(root, "default")), shown(removedDefault));
+  removedDefault.status === 0 && removedDefault.stdout.includes("This was the seeded default persona, which a bare `cotal spawn` launches") && !existsSync(agentFilePath(root, "default")), shown(removedDefault));
 
 // A launch preview refuses a missing persona as the launch does, naming where it looked: the catalog
 // for a name, the file for a path, and for the default also the command that writes one.

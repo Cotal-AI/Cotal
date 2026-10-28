@@ -27,7 +27,7 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
   try { assertSingleSpaceBroker(authDir(root), `cotal backup ${mode}`); recorded = readMaintenanceJournal(root); }
   catch (error) { throw new CommandFailure("refused", isMaintenanceError(error) && error.code === "journal-missing" ? "TARGET_NOT_FOUND" : "LIFECYCLE_BLOCKED", "the local root has no safely readable single-space maintenance record; no recovery or cleanup was attempted", { target: { root, attemptId } }); }
   if (attemptId.startsWith("backup-")) return recoverBackupAttempt(args, root, recorded, attemptId);
-  if (!recorded || !("restore" in recorded) || recorded.restore.attemptId !== attemptId) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no maintenance record at this root names that full restore attempt; no source manifest or prefix was used", { target: { root, attemptId }, remedy: recorded && "restore" in recorded ? `this root holds restore attempt ${recorded.restore.attemptId} (state ${recorded.state}); ${restoreNextStep(recorded.state, recorded.restore.attemptId, restoreLeftOut(recorded))}` : mode === "cleanup-fallback" ? "this root holds no restore attempt; a completed cleanup-fallback retires its journal, so a repeated cleanup finds nothing to do" : "this root holds no restore attempt; cotal status shows its maintenance state" });
+  if (!recorded || !("restore" in recorded) || recorded.restore.attemptId !== attemptId) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no maintenance record at this root names that full restore attempt; no source manifest or prefix was used", { target: { root, attemptId }, remedy: recorded && "restore" in recorded ? `this root holds restore attempt ${recorded.restore.attemptId} (state ${recorded.state}); ${restoreNextStep(recorded.state, recorded.restore.attemptId, restoreLeftOut(recorded))}` : mode === "cleanup-fallback" ? "this root holds no restore attempt; a completed cleanup-fallback retires its journal, so a repeated cleanup finds nothing to do" : "this root holds no restore attempt; `cotal status` shows its maintenance state" });
   if (mode === "recover" && recorded.state !== "restore-ready") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "pre-commit recovery requires restore-ready; a committed, active or degraded restore must recover forward instead of rolling back", { target: { root, space: recorded.space, attemptId, state: recorded.state }, remedy: restoreNextStep(recorded.state, attemptId, restoreLeftOut(recorded)) });
   if (mode === "cleanup-fallback" && recorded.state !== "active") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "fallback cleanup requires the matching healthy active restore; no stopped or degraded state was promoted", { target: { root, space: recorded.space, attemptId, state: recorded.state }, remedy: restoreNextStep(recorded.state, attemptId, restoreLeftOut(recorded)) });
   const snapshot = recorded as RecoveryRecord;
@@ -60,11 +60,11 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
     ] }] }));
     return;
   }
-  if (foreign.length) throw foreignEntriesRefusal(oldStore!, foreign, "the previous store", "nothing was deleted", retry, target);
+  if (foreign.length) throw foreignEntriesRefusal(oldStore!, foreign, "the previous store", "nothing was deleted", `\`${retry}\``, target);
   if (onlyCopy && !args.values["discard-history"])
-    throw new MissingFlags(`${onlyCopyText}, and cleanup deletes it only with --discard-history; nothing was deleted`, `keep that store, or delete it and the ${leftOut} it holds with cotal backup cleanup-fallback ${attemptId} --yes --discard-history`, target);
+    throw new MissingFlags(`${onlyCopyText}, and cleanup deletes it only with --discard-history; nothing was deleted`, `keep that store, or delete it and the ${leftOut} it holds with \`cotal backup cleanup-fallback ${attemptId} --yes --discard-history\``, target);
   if (!args.values.yes) {
-    if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("scripted maintenance recovery/cleanup requires --yes after reviewing the exact attempt and paths", { target, remedy: `review it with cotal backup ${mode} ${attemptId} --dry-run, then run cotal backup ${mode} ${attemptId} --yes${onlyCopy ? " --discard-history" : ""}` });
+    if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("scripted maintenance recovery/cleanup requires --yes after reviewing the exact attempt and paths", { target, remedy: `review it with \`cotal backup ${mode} ${attemptId} --dry-run\`, then run \`cotal backup ${mode} ${attemptId} --yes${onlyCopy ? " --discard-history" : ""}\`` });
     const confirmed = await prompts.confirm({ message: `${mode === "recover" ? "Recover the stale pre-commit attempt" : restore.method === "disaster" ? "Retire the completed restore journal for" : onlyCopy ? `Remove the unchanged retained old source, the only copy of the ${leftOut} the restore left out, for` : "Remove only the unchanged retained old source for"} ${oneLine(attemptId)} in ${oneLine(snapshot.space)}? Root ${oneLine(root)}; source ${oneLine(mode === "recover" ? snapshot.source.path : restore.previousSource?.identity.path ?? "not recorded")}. No live-owner, identity or journal guard is bypassed.`, initialValue: false });
     if (prompts.isCancel(confirmed) || !confirmed) {
       writeResult(presentation, { command: `backup ${mode}`, target, result: { kind: "backup-maintenance-cancelled", operation: mode, changed: false }, noOp: true }, () => ({ sections: [{ title: "Maintenance state kept", blocks: [{ kind: "lines", lines: ["No recovery, cleanup or process signal was requested."] }] }] }));
@@ -97,7 +97,7 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
   } catch (error) {
     // A file put into the old store after the check above is refused by the cleanup itself, which
     // moves that store back first.
-    if (isMaintenanceError(error) && error.code === "store-holds-foreign-entries") error = new CommandFailure("refused", "CONFLICT", `${error.message}; it was not deleted`, { target, remedy: `move them out of that store, then run ${retry} again` });
+    if (isMaintenanceError(error) && error.code === "store-holds-foreign-entries") error = new CommandFailure("refused", "CONFLICT", `${error.message}; it was not deleted`, { target, remedy: `move them out of that store, then run \`${retry}\` again` });
     fatal = isCommandFailure(error) ? error : new CommandFailure(invoked ? "unknown" : "refused", invoked ? "OPERATION_UNKNOWN" : "LIFECYCLE_BLOCKED", invoked ? "the native maintenance operation did not confirm completion; the original attempt was not retried" : "the native maintenance preflight or lock refused before operation submission", { target, ...(isMaintenanceError(error) ? { native: { code: error.code } } : {}), remedy: "re-read the original maintenance attempt and retain both source and target until its native recovery state is established" });
   } finally {
     if (lock) {
@@ -124,7 +124,7 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
 async function recoverBackupAttempt(args: ParsedArgs, root: string, recorded: ReturnType<typeof readMaintenanceJournal>, attemptId: string): Promise<void> {
   const presentation = presentationOf(args.values);
   if (recorded?.state !== "claimed" || recorded.claim.attemptId !== attemptId)
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no maintenance record at this root names that backup attempt; nothing was removed", { target: { root, attemptId }, remedy: recorded?.state === "claimed" ? `this root holds backup attempt ${recorded.claim.attemptId}; release it with cotal backup recover ${recorded.claim.attemptId} --yes` : "cotal status shows this root's maintenance state" });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no maintenance record at this root names that backup attempt; nothing was removed", { target: { root, attemptId }, remedy: recorded?.state === "claimed" ? `this root holds backup attempt ${recorded.claim.attemptId}; release it with \`cotal backup recover ${recorded.claim.attemptId} --yes\`` : "cotal status shows this root's maintenance state" });
   const target = { root, space: recorded.space, attemptId, revision: recorded.revision };
   const claim = recorded.claim, paths = (claim.ownedPaths ?? []).map((owned) => owned.path);
   if (args.values["dry-run"]) {
@@ -136,7 +136,7 @@ async function recoverBackupAttempt(args: ParsedArgs, root: string, recorded: Re
     return;
   }
   if (!args.values.yes) {
-    if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("scripted maintenance recovery/cleanup requires --yes after reviewing the exact attempt and paths", { target, remedy: `review it with cotal backup recover ${attemptId} --dry-run, then run cotal backup recover ${attemptId} --yes` });
+    if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("scripted maintenance recovery/cleanup requires --yes after reviewing the exact attempt and paths", { target, remedy: `review it with \`cotal backup recover ${attemptId} --dry-run\`, then run \`cotal backup recover ${attemptId} --yes\`` });
     const confirmed = await prompts.confirm({ message: `Release the interrupted backup ${oneLine(attemptId)} in ${oneLine(recorded.space)}? Root ${oneLine(root)}; removes ${paths.map(oneLine).join(", ") || "nothing"}. No live-owner, identity or journal guard is bypassed.`, initialValue: false });
     if (prompts.isCancel(confirmed) || !confirmed) {
       writeResult(presentation, { command: "backup recover", target, result: { kind: "backup-maintenance-cancelled", operation: "recover", changed: false }, noOp: true }, () => ({ sections: [{ title: "Maintenance state kept", blocks: [{ kind: "lines", lines: ["No recovery, cleanup or process signal was requested."] }] }] }));
@@ -151,7 +151,7 @@ async function recoverBackupAttempt(args: ParsedArgs, root: string, recorded: Re
     catch (error) {
       if (isMaintenanceError(error) && ["claim-not-expired", "claim-live", "claim-owner-ambiguous"].includes(error.code))
         throw heldClaim(root, attemptId, current.claim, "cotal backup recover", error.code === "claim-owner-ambiguous" ? "ambiguous" : "live");
-      throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the interrupted backup's removal did not confirm; its claim is kept for a retry", { target, ...(isMaintenanceError(error) ? { native: { code: error.code } } : {}), remedy: `run cotal backup recover ${attemptId} --yes again` });
+      throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the interrupted backup's removal did not confirm; its claim is kept for a retry", { target, ...(isMaintenanceError(error) ? { native: { code: error.code } } : {}), remedy: `run \`cotal backup recover ${attemptId} --yes\` again` });
     }
   } finally {
     releaseMaintenanceLock(lock);

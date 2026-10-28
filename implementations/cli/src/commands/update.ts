@@ -111,7 +111,7 @@ const runtime: UpdateRuntime = {
     if (completion.changed.length || completion.preserved.length) process.stdout.write(`${renderReport({ sections: [
       { title: "Owned shell completion", blocks: [
         { kind: "fields", rows: [["Changed files", String(completion.changed.length)], ["Preserved integrations", String(completion.preserved.length)]] },
-        { kind: "lines", lines: [...completion.preserved.map((entry) => ({ text: `${entry.shell}: ${entry.reason}`, tone: "waiting" as const })), { text: "Startup files were not rewritten. Run cotal completion to inspect local integration.", tone: "hint" }] },
+        { kind: "lines", lines: [...completion.preserved.map((entry) => ({ text: `${entry.shell}: ${entry.reason}`, tone: "waiting" as const })), { text: "Startup files were not rewritten. Run `cotal completion` to inspect local integration.", tone: "hint" }] },
       ] },
     ] }, "rich", terminalWidth(process.stdout))}\n`);
   },
@@ -400,7 +400,7 @@ async function stoppedController(d: MeshTargetErrorDetails): Promise<boolean> {
   if (journal.members.some((member) => member.instanceId !== null &&
       !instances.some((row) => row.name === member.instanceId && row.record.value.definition === member.definition))) return false;
   if (instances.some((row) => !["stopped", "failed"].includes(row.record.value.state) || !processGone(observeServiceProcess(row.record.value)))) return false;
-  stackScopeRefusals(journal, `cotal update --space ${d.space}`);
+  stackScopeRefusals(journal, `\`cotal update --space ${d.space}\``);
   if (supervisorMayServe(d.space)) return false;
   return assertEndpointUnreachable(journal.server).then(() => true, () => false);
 }

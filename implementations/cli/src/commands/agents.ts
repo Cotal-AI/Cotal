@@ -1,5 +1,6 @@
 import { DEV_OWNER, assertLifecycleToken, dialerFor, mintCreds, newIdentity, openSessionRail, peerLabel, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type Presence, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
 import {
+  codeSpan,
   CommandFailure,
   ConnectRefusal,
   divergentCwdAnchor,
@@ -93,15 +94,15 @@ export function managedAgentComplete(argv: string[]): CompletionResult {
 export function managedTarget(args: ParsedArgs, operation: "stop" | "attach", allowPicker = false): string | undefined {
   const named = typeof args.values.name === "string" ? args.values.name : undefined;
   if (args.positionals.length > 1 || (args.positionals.length && named !== undefined))
-    throw new CommandFailure("refused", "USAGE_INVALID", `choose one agent: cotal ${operation} <name>`);
+    throw new CommandFailure("refused", "USAGE_INVALID", `choose one agent: \`cotal ${operation} <name>\``);
   const name = args.positionals[0] ?? named;
   if (typeof args.values.on === "string") onInstance(args.values.on, `cotal ${operation}`);
   if (name === undefined && operation === "attach" && allowPicker) {
-    if (!canPrompt()) throw new CommandFailure("refused", "USAGE_INVALID", "name the agent to attach without an interactive terminal", { remedy: "run cotal ps, then cotal attach <name>", selfContained: true });
+    if (!canPrompt()) throw new CommandFailure("refused", "USAGE_INVALID", "name the agent to attach without an interactive terminal", { remedy: "run `cotal ps`, then `cotal attach <name>`", selfContained: true });
     return undefined;
   }
   if (name !== undefined && /[\u0000-\u001f\u007f]/u.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "the agent name contains terminal control characters");
-  if (!name?.trim()) throw new CommandFailure("refused", "USAGE_INVALID", `name the agent to ${operation}`, { remedy: "run cotal ps, then cotal " + operation + " <name>" });
+  if (!name?.trim()) throw new CommandFailure("refused", "USAGE_INVALID", `name the agent to ${operation}`, { remedy: "run `cotal ps`, then `cotal " + operation + " <name>`" });
   return name;
 }
 
@@ -370,7 +371,7 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
   // Refused before anything is sent, as `ps` refuses, rather than after a describe no manager can answer.
   if (loc.kind === "no-manager") {
     recordOperationSpace(loc.space);
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to reach agent "${oneLine(String(v.name))}"`, { target: { space: loc.space, managerInstanceId: null, agent: String(v.name) }, native: loc.native, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to reach agent "${oneLine(String(v.name))}"`, { target: { space: loc.space, managerInstanceId: null, agent: String(v.name) }, native: loc.native, remedy: "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none" });
   }
   // Refused before anything is sent, as the same miss with `--on` refuses: a whole space that answered
   // proves the name absent; one that did not cannot say where it is. A name held on several managers,
@@ -378,7 +379,7 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
   if (loc.space !== undefined) recordOperationSpace(loc.space);
   const agent = String(v.name), message = seatMissRefusal(agent, verb, loc);
   if (loc.kind === "absent")
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target: { space: loc.space ?? null, agent, managerInstanceIds: loc.instances }, remedy: "run cotal ps to see the agents each manager runs" });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target: { space: loc.space ?? null, agent, managerInstanceIds: loc.instances }, remedy: "run `cotal ps` to see the agents each manager runs" });
   const shown = oneLine(agent);
   if (loc.kind === "several")
     throw new AgentManagerUnsettled(`"${shown}" is held on each of these ${loc.instances.length} managers. Which one should run this?`, managersByInstance(loc.instances, loc.managers), "TARGET_AMBIGUOUS", message, { space: loc.space ?? null, agent, managerInstanceIds: loc.instances });
@@ -458,8 +459,8 @@ function silentManager(liveness: ScatterInstanceLiveness | undefined, instanceId
     return {
       state: { text: "registration is stale (the broker reports nothing subscribed on its rail; its host is gone and never deregistered)", tone: "failed" },
       remedy: mode === "auth"
-        ? `remove the record from this space's own root: cotal endpoint deregister manager ${instanceId} --yes`
-        : "if its host is still available, start that manager there again and stop it cleanly, as with cotal service start <name> then cotal service stop <name> --yes; if the host is gone, no supported command removes this record",
+        ? `remove the record from this space's own root: \`cotal endpoint deregister manager ${instanceId} --yes\``
+        : "if its host is still available, start that manager there again and stop it cleanly, as with `cotal service start <name>` then `cotal service stop <name> --yes`; if the host is gone, no supported command removes this record",
     };
   const why =
     liveness === "probe-refused"
@@ -751,9 +752,9 @@ async function psFromPresence(v: FlagValues<typeof psFlags>, presentation: Retur
  *  manager that does not answer, or bare `cotal up`. Anywhere else, `cotal manager start`. */
 function startManagerNext(root: string | undefined, space: string, named: boolean): { command: string; description: string } {
   const at = named ? ` --space ${space}` : "";
-  if (root !== undefined && stackManagerStarting(root, space)) return { command: `cotal ps${at}`, description: "List again once cotal up reports the manager started" };
+  if (root !== undefined && stackManagerStarting(root, space)) return { command: `cotal ps${at}`, description: "List again once `cotal up` reports the manager started" };
   const pid = root === undefined ? undefined : runningStackManagerPid(root, space);
-  if (pid !== undefined) return { command: `kill -KILL ${pid}`, description: "End the stack manager that does not answer; bare cotal up then starts it again" };
+  if (pid !== undefined) return { command: `kill -KILL ${pid}`, description: "End the stack manager that does not answer; bare `cotal up` then starts it again" };
   const entry = findMesh(space);
   if (root !== undefined && (stackManagerAbsent(root, space) || (entry?.origin === "up" && entry.root === root))) return { command: "cotal up", description: "Start the stack's manager" };
   return { command: `cotal manager start${at}`, description: "Start a manager for this space" };
@@ -776,7 +777,7 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
   // `manager` and an answering manager's instance id name the manager itself, which runs no row of
   // its own, so the refusal says where its state is read.
   const managerItself = name === "manager" || census.managers.some((manager) => manager.state === "answered" && manager.instanceId === name);
-  if (!matches.length && !census.partial) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { ...census.target, name }, ...(managerItself ? { remedy: `${name} is this space's manager, which is answering, not an agent it runs; cotal status shows the manager's state, and cotal endpoint describe manager reads its commands` } : {}) });
+  if (!matches.length && !census.partial) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { ...census.target, name }, ...(managerItself ? { remedy: `${name} is this space's manager, which is answering, not an agent it runs; \`cotal status\` shows the manager's state, and \`cotal endpoint describe manager\` reads its commands` } : {}) });
   const item = matches[0] ?? null;
   const managerInstanceId = item ? [...census.rowsOf].find(([, rows]) => rows.includes(item))?.[0] ?? census.target.managerInstanceId ?? item.instanceId ?? null : null;
   let managerHint = "";
@@ -892,13 +893,13 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
   if (!scatter.ok && (scatter.code === "failed-precondition" || scatter.unanswered === true) && t.root !== undefined) {
     const native = { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) };
     if (stackManagerStarting(t.root, t.space))
-      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the stack's manager is starting, so it has no managed agents to list yet", { target, native, remedy: "run cotal ps again once cotal up reports the manager started" });
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the stack's manager is starting, so it has no managed agents to list yet", { target, native, remedy: "run `cotal ps` again once `cotal up` reports the manager started" });
     if (stackManagerAbsent(t.root, t.space))
-      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native, remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none" });
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native, remedy: "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none" });
   }
   const silentPid = !scatter.ok && scatter.unanswered === true && t.root !== undefined ? runningStackManagerPid(t.root, t.space) : undefined;
   if (!scatter.ok && silentPid !== undefined)
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `this space's stack manager (pid ${silentPid}) is running but did not answer, so no agents were listed`, { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: `if it stays unresponsive, end that process with kill -KILL ${silentPid}; then bare cotal up starts the manager again` });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `this space's stack manager (pid ${silentPid}) is running but did not answer, so no agents were listed`, { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: `if it stays unresponsive, end that process with kill -KILL ${silentPid}; then bare \`cotal up\` starts the manager again` });
   if (!scatter.ok) throw readFailure(scatter, target);
   return seatCensus(target, scatter.instances, command, t.mode);
 }
@@ -987,7 +988,7 @@ export class NoManagerAnswered extends CommandFailure {
   constructor(cause: CommandFailure) {
     super("refused", "TARGET_UNAVAILABLE", "none of your managers in this space answered", {
       target: cause.target,
-      remedy: "start a manager for this space with cotal manager start",
+      remedy: "start a manager for this space with `cotal manager start`",
       ...(cause.native ? { native: cause.native } : {}),
       cause,
     });
@@ -1237,7 +1238,7 @@ async function establishAttachSession(
       throw new CommandFailure("refused", "UNSUPPORTED", reply.error ? oneLine(reply.error) : "the seat's runtime streams no terminal, so there is none to attach", {
         target: { space: t.space, agent: v.name, managerInstanceId: reply.managerInstanceId ?? on ?? null },
         native: { code: reply.code, outcome: reply.nativeOutcome },
-        remedy: `nothing was attached and the agent was not touched; follow the runtime's own guidance above, or reach the seat over the mesh with ${displayCmd()} send -t ${shellWord(v.name)} "<message>" and ${displayCmd()} watch --space ${shellWord(t.space)}`,
+        remedy: `nothing was attached and the agent was not touched; follow the runtime's own guidance above, or reach the seat over the mesh with ${codeSpan(`${displayCmd()} send -t ${shellWord(v.name)} "<message>"`)} and ${codeSpan(`${displayCmd()} watch --space ${shellWord(t.space)}`)}`,
       });
     if (first && (reply.preSubmitRefusal || reply.nativeOutcome === "not-executed"))
       throw managerFailure(reply, "terminal attach", { space: t.space, agent: v.name, managerInstanceId: reply.managerInstanceId ?? on ?? null });
@@ -1823,7 +1824,7 @@ async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ nam
     return { name: row.name, on, expectedTarget: { id: row.id, lifecycleUid: row.lifecycleUid }, status: typeof row.status === "string" ? row.status : "not reported" };
   });
   if (census.partial) console.error(renderReport({ space: census.target.space, sections: [{ title: "Agent list is partial", blocks: [{ kind: "lines", lines: [{ text: census.partial.message, tone: "waiting" }] }] }] }, "rich", terminalWidth(process.stderr)));
-  if (!choices.length) throw new CommandFailure("refused", census.partial ? "TARGET_UNAVAILABLE" : "TARGET_NOT_FOUND", census.partial ? "no attachable agent was returned; some managers did not answer" : "the answering managers report no agents to attach", { target: census.target, remedy: "run cotal ps, or launch an agent with cotal spawn" });
+  if (!choices.length) throw new CommandFailure("refused", census.partial ? "TARGET_UNAVAILABLE" : "TARGET_NOT_FOUND", census.partial ? "no attachable agent was returned; some managers did not answer" : "the answering managers report no agents to attach", { target: census.target, remedy: "run `cotal ps`, or launch an agent with `cotal spawn`" });
   const choice = await prompts.select({
     message: `Return to an agent in ${oneLine(census.target.space)}`,
     options: choices.map((item, index) => ({ value: index, label: oneLine(`${item.name} · ${item.status}`), hint: oneLine(`${item.expectedTarget.id} · manager ${item.on}`) })),
@@ -1854,7 +1855,7 @@ export async function attach(args: ParsedArgs): Promise<void> {
   const detached = verdict.kind === "ended" && verdict.reason === "detached";
   console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target no longer available" : detached ? "Detached" : "Attach session ended", blocks: [
     { kind: "fields", rows: [["Agent", v.name]] },
-    { kind: "lines", lines: [{ text: verdict.kind === "gone" ? "The selected agent or incarnation was not available to this attach request." : detached ? "Detaching did not send a stop request." : "The terminal session ended. This view sent no agent stop request; run cotal ps to check the agent's current state.", tone: "hint" }] },
+    { kind: "lines", lines: [{ text: verdict.kind === "gone" ? "The selected agent or incarnation was not available to this attach request." : detached ? "Detaching did not send a stop request." : "The terminal session ended. This view sent no agent stop request; run `cotal ps` to check the agent's current state.", tone: "hint" }] },
   ] }] }, "rich", terminalWidth(process.stderr)));
 }
 
@@ -1874,7 +1875,7 @@ export function inputArguments(args: ParsedArgs): { name: string; text: string }
   const [positionalName, positionalText, ...extra] = args.positionals;
   const values = args.values as FlagValues<typeof inputFlags>;
   if (extra.length || (positionalName !== undefined && values.name !== undefined) || (positionalText !== undefined && values.text !== undefined))
-    throw new CommandFailure("refused", "USAGE_INVALID", "choose one agent and one text source: cotal input <agent> <text>, or --name and --text");
+    throw new CommandFailure("refused", "USAGE_INVALID", "choose one agent and one text source: `cotal input <agent> <text>`, or --name and --text");
   const name = positionalName ?? values.name;
   const text = positionalText ?? values.text;
   if (!name?.trim() || /[\u0000-\u001f\u007f]/u.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "input needs one concrete agent name without terminal control characters");

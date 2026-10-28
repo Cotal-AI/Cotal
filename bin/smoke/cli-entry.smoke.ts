@@ -304,7 +304,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const replayOff = cotal(["channel", "set", "general", "--replay", "off", "--json"]);
   check("`channel set <name> --replay off` names the stray value and points to --no-replay",
     envelopes(replayOff)[0]?.error?.code === "USAGE_INVALID" && envelopes(replayOff)[0]?.error?.message?.startsWith('--replay takes no value, so "off" was read as a channel name') === true
-      && envelopes(replayOff)[0]?.error?.remedy === "run cotal channel set general --no-replay", shown(replayOff));
+      && envelopes(replayOff)[0]?.error?.remedy === "run `cotal channel set general --no-replay`", shown(replayOff));
   const human = cotal(["version", "--bogus"]);
   refused("a usage error without --json is refused", human, /Unknown option '--bogus'/);
   check("a usage error without --json writes no envelope and prints the help on stderr", envelopes(human).length === 0 && human.stdout === "" && /^Usage\n  cotal version /m.test(human.stderr), shown(human));
@@ -405,7 +405,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   // A refusal only a terminal could lift gives its fix, not the command's help.
   for (const argv of [["persona", "edit", "x", "--no-input"], ["persona", "remove", "x", "--no-input"]]) {
     const r = cotal(argv, persona, editor);
-    check(`${argv.join(" ")} refuses with its fix and no help`, r.status === 1 && /^✗ .*\n {2}(edit interactively|confirm with cotal persona remove x --yes)/.test(r.stderr) && !r.stderr.includes("Usage"), shown(r));
+    check(`${argv.join(" ")} refuses with its fix and no help`, r.status === 1 && /^✗ .*\n {2}(edit interactively|confirm with `cotal persona remove x --yes`)/.test(r.stderr) && !r.stderr.includes("Usage"), shown(r));
   }
   // A refusal of a value that names its own fix gives that fix, not the command's help.
   for (const [argv, said] of [
@@ -414,7 +414,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     [["ps", "--on", "local.UABCDEFG"], /^✗ "local\.UABCDEFG" is a principal id/],
     [["spawn", "dev", "--on", "a".repeat(30)], /^✗ attaching to a manager's launch needs usable input and output terminals.*\n {2}add -d to wait for readiness/],
     [["spawn", "dev", "--foreground", "--on", "a".repeat(30)], /^✗ a spawn in this terminal takes no structured receipt, manager credential or manager pin\n {2}add -d to launch it through a manager/],
-    [["attach"], /^✗ name the agent to attach without an interactive terminal\n {2}run cotal ps, then cotal attach <name>/],
+    [["attach"], /^✗ name the agent to attach without an interactive terminal\n {2}run `cotal ps`, then `cotal attach <name>`/],
     [["run", "show"], /^✗ run show takes one identifier\n {2}cotal run lists the runs; run cotal run show <run-id>/],
     [["run", "yield"], /^✗ run yield takes one identifier\n {2}cotal run turns lists your turns; run cotal run yield <turn-id>/],
   ] as const) {

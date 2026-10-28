@@ -100,7 +100,7 @@ try {
     const live = cli(root, "auth", "revoke-credential", leaked, "--yes", "--json");
     check("on a running stack it refuses LIFECYCLE_BLOCKED, exit 2", live.status === 2 && live.env?.error?.code === "LIFECYCLE_BLOCKED", shown(live));
     check("its next step is down, the revocation, then up, and says the store stays",
-      live.env?.error?.remedy === `cotal down --yes, then cotal auth revoke-credential ${leaked} --yes, then cotal up, from ${root}; the store stays`, live.env?.error);
+      live.env?.error?.remedy === `cotal down --yes, then \`cotal auth revoke-credential ${leaked} --yes\`, then \`cotal up\`, from ${root}; the store stays`, live.env?.error);
     check("and the account record is unchanged", accountDigest(root) === before);
   }
 
@@ -157,7 +157,7 @@ try {
       check(`the stack's own ${file} refuses UNSUPPORTED as a system-account credential, with --rotate-sys as its Next`,
         sys.status === 2 && sys.env?.error?.code === "UNSUPPORTED"
           && sys.env.error.message === `the credential was issued by space ${space}'s system account, and auth revoke-credential revokes only credentials the space's own account issued; nothing was revoked`
-          && sys.env.error.remedy === `cotal down --yes, then cotal up --rotate-sys, from ${root}, issues a new system account and retires this one's credentials; full backups taken before it can no longer be restored`, shown(sys));
+          && sys.env.error.remedy === `cotal down --yes, then \`cotal up --rotate-sys\`, from ${root}, issues a new system account and retires this one's credentials; full backups taken before it can no longer be restored`, shown(sys));
     }
     check("  and none of them changes the account record", accountDigest(root) === unchanged);
     const labelRevoked = cli(root, "auth", "revoke-credential", labelFile, "--yes", "--json");
@@ -188,7 +188,7 @@ try {
     const labelSend = cli(root, "send", "-c", "general", "with the new label key", "--json", "--creds", labelFile, "--space", space, "--server", server);
     check("  and the label's file posts again", labelSend.status === 0, shown(labelSend));
     check("  and its Next is a new key with the grants the file held",
-      refused.env?.error?.remedy === "a revoked key is not signed again; mint a new key with the grants it held: cotal auth mint <label> --allow-subscribe general --allow-publish general --role rev --out <new file>", refused.env?.error);
+      refused.env?.error?.remedy === "a revoked key is not signed again; mint a new key with the grants it held: `cotal auth mint <label> --allow-subscribe general --allow-publish general --role rev --out <new file>`", refused.env?.error);
     const sendRevoked = cli(root, "send", "-c", "general", "after the revocation", "--json", "--creds", leaked, "--space", space, "--server", server);
     check("send with the revoked file names the revocation too", sendRevoked.status === 2 && sendRevoked.env?.error?.message === refused.env?.error?.message, shown(sendRevoked));
     const whoRevoked = cli(root, "whoami", "--creds", leaked, "--json");

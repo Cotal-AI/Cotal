@@ -165,7 +165,7 @@ try {
   check("up announces the user-auth service + login line", up.out.includes("user-auth service up") && up.out.includes(`cotal login --idp ${base}`), up.out);
   check(
     "up summary reports the complete user-auth component set",
-    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, user-auth service, manager - stop with: cotal down$/m.test(plain(up.out)),
+    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, user-auth service, manager - stop with: `cotal down`$/m.test(plain(up.out)),
     up.out,
   );
   const stateDir = userAuthStateDir(root, SPACE);
@@ -725,7 +725,7 @@ try {
     const refusedStart = await cotal(["manager", "start"], { cwd: root2, env });
     const refusedText = plain(refusedStart.out);
     check("manager start with no sign-in exits 2 under a Mesh: heading with AUTH_REQUIRED, and Next signs in, then starts it",
-      refusedStart.status === 2 && refusedText.includes(`Mesh: ${SPACE}\n`) && field(refusedStart.out, "Code", "AUTH_REQUIRED") && refusedText.includes(`cotal login --idp ${base}, then cotal manager start`), refusedStart.out);
+      refusedStart.status === 2 && refusedText.includes(`Mesh: ${SPACE}\n`) && field(refusedStart.out, "Code", "AUTH_REQUIRED") && refusedText.includes(`cotal login --idp ${base}, then \`cotal manager start\``), refusedStart.out);
     const shown = await cotal(["service", "show", "manager"], { cwd: root2, env });
     check("…before anything was saved or launched",
       !refusedText.includes("saved manager") && !refusedText.includes("forgot manager") && shown.status === 2 && field(shown.out, "Code", "TARGET_NOT_FOUND") && !existsSync(managerPid), { start: refusedStart.out, show: shown.out });
@@ -814,7 +814,7 @@ try {
   check("down --yes stops the controller stack", stackDown.status === 0, stackDown.out);
   const resetPreview = await cotal(["reset", "space", STACK, "--dry-run"]);
   check("reset space --dry-run names the IdP trust and the actor ledger, and what a later up needs",
-    resetPreview.status === 0 && plain(resetPreview.out).includes("Removes the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs cotal up --user-auth --idp <auth base URL>") && !resetPreview.out.includes("a later up starts it with a new identity"), resetPreview.out);
+    resetPreview.status === 0 && plain(resetPreview.out).includes("Removes the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs `cotal up --user-auth --idp <auth base URL>`") && !resetPreview.out.includes("a later up starts it with a new identity"), resetPreview.out);
   const reset = await cotal(["reset", "space", STACK, "--yes"]);
   check("…and its receipt names them the same way",
     reset.status === 0 && plain(reset.out).includes(`.cotal/auth/${spaceSegment(STACK)} (IdP trust and actor ledger)`) && plain(reset.out).includes("Removed the IdP trust and the actor ledger of this user-auth space") && !reset.out.includes("A later up creates a new local identity"), reset.out);

@@ -369,7 +369,7 @@ async function controllerHoldCell(): Promise<void> {
     }, 120_000, () => holder.io.err.slice(-3000));
     assert.ok(holder.child.pid);
     const second = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground"], 60_000);
-    assert.ok(second.code === 2 && second.err.includes(`a foreground cotal up in process ${holder.child.pid} already holds this stack's lifetime`) && !holder.state.exited, `a second foreground up refuses CONFLICT, naming the holder, and the holder keeps the stack: ${second.out}${second.err}`); passed++;
+    assert.ok(second.code === 2 && second.err.includes(`a foreground \`cotal up\` in process ${holder.child.pid} already holds this stack's lifetime`) && !holder.state.exited, `a second foreground up refuses CONFLICT, naming the holder, and the holder keeps the stack: ${second.out}${second.err}`); passed++;
     // A killed holder leaves its record and the running stack, which the next foreground up takes over.
     process.kill(holder.child.pid, "SIGKILL");
     await until(() => holder.state.exited, 10_000, () => "the killed foreground up did not exit");

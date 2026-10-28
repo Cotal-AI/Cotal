@@ -25,7 +25,7 @@ export function validateServiceDefinition(input: unknown, space: string, checkRe
   if (value.launch.type === "adapter") resolveServiceAdapter(value.launch.adapter, value.launch.options);
   else {
     // `add` saves a bare name as the absolute path it finds, so only an earlier release saved one.
-    if (bareName(value.launch.executable)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the definition names its executable by a bare name, which each start would look up on its own PATH; no launch or write was attempted", { remedy: "remove it with cotal service remove and add it again; add saves the absolute path it finds on PATH" });
+    if (bareName(value.launch.executable)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the definition names its executable by a bare name, which each start would look up on its own PATH; no launch or write was attempted", { remedy: "remove it with `cotal service remove` and add it again; add saves the absolute path it finds on PATH" });
     assertLaunchPath(value.launch.cwd, "working directory", space, saved);
     const executable = isAbsolute(value.launch.executable) ? value.launch.executable : resolve(value.launch.cwd, value.launch.executable);
     assertLaunchPath(executable, "executable", space, saved);
@@ -42,7 +42,7 @@ function assertLaunchPath(path: string, kind: "executable" | "working directory"
   const shown = oneLine(path), folder = kind === "working directory";
   const restore = saved === undefined ? `correct launch.${folder ? "cwd" : "executable"} in the definition` : folder ? `create ${shown} or put it back` : `put it back at ${shown}`;
   const refusal = (problem: string, fix: string, replaceable: boolean) => {
-    const replace = replaceable && saved !== undefined ? `; to use another ${folder ? "folder" : "file"}, forget the service with cotal service remove ${saved} --space ${oneLine(space)} --yes and add it again` : "";
+    const replace = replaceable && saved !== undefined ? `; to use another ${folder ? "folder" : "file"}, forget the service with \`cotal service remove ${saved} --space ${oneLine(space)} --yes\` and add it again` : "";
     return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the declared ${kind} ${shown} ${problem}; no launch or write was attempted`, { remedy: `${fix}, then run the command again${replace}` });
   };
   let stat: Stats;
@@ -101,7 +101,7 @@ export function execServiceDefinition(words: readonly string[], cwd: string, spa
 function pinnedExecutable(value: ServiceDefinitionInput): ServiceDefinitionInput {
   if (value.launch.type !== "process" || !bareName(value.launch.executable)) return value;
   if ((process.env.PATH ?? "").split(delimiter).some((entry) => !isAbsolute(entry)))
-    throw new CommandFailure("refused", "UNSUPPORTED", "a bare executable name is looked up on PATH as the definition is saved, and this PATH has a relative or empty entry; nothing was saved", { remedy: "give the executable as an absolute path, or run cotal service add with a PATH of absolute entries only" });
+    throw new CommandFailure("refused", "UNSUPPORTED", "a bare executable name is looked up on PATH as the definition is saved, and this PATH has a relative or empty entry; nothing was saved", { remedy: "give the executable as an absolute path, or run `cotal service add` with a PATH of absolute entries only" });
   const found = resolveOnPath(value.launch.executable);
   if (!found) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the declared executable is not on this PATH; nothing was saved");
   return { ...value, launch: { ...value.launch, executable: found } };
@@ -121,7 +121,7 @@ export function assertDefinitionRoot(row: ServiceDefinitionSnapshot, space: stri
   if (added === undefined || added === root) return;
   throw new CommandFailure("refused", "CONFLICT", `${row.name} was added in ${added}, not in this space's root ${root}; an earlier space named ${space} left it, and it was not ${action === "install" ? "installed" : `${action}ed`}`, {
     target: { space, name: row.name, addedIn: added, root },
-    remedy: `forget it with cotal service remove ${row.name} --space ${space} --yes, then add it again here if this project needs it`,
+    remedy: `forget it with \`cotal service remove ${row.name} --space ${space} --yes\`, then add it again here if this project needs it`,
   });
 }
 

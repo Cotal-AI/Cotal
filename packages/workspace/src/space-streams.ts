@@ -30,9 +30,9 @@ export function spaceStreamsAbsent(space: string, root: string | undefined, stac
     ? `the streams of ${space} are not on its broker while its stack runs, so the space was deleted under it; nothing can be read or stored until they are created again`
     : `the streams of ${space} are not on its broker; a space delete removes them, and nothing can be read or stored until they are created again`;
   const remedy = stack === "running"
-    ? `stop the stack with cotal down --yes ${where}, then run cotal up there to create them again, empty`
+    ? `stop the stack with \`cotal down --yes\` ${where}, then run \`cotal up\` there to create them again, empty`
     : stack === "stopped"
-      ? `run cotal up ${where} to create them again, empty`
-      : `run cotal up ${where} to create them again, empty; while its stack runs, stop it first with cotal down --yes`;
+      ? `run \`cotal up\` ${where} to create them again, empty`
+      : `run \`cotal up\` ${where} to create them again, empty; while its stack runs, stop it first with \`cotal down --yes\``;
   return new CommandFailure("refused", "TARGET_UNAVAILABLE", message, { target: { space }, remedy });
 }

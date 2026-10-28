@@ -50,7 +50,7 @@ export async function refuseLiveUnrecordedDaemons(
     `${them} ${live.length === 1 ? "has" : "have"} no pidfile and ${live.length === 1 ? "is" : "are"} still renewing a lease, so the broker was not stopped`,
     {
       target: { root: context.root, space: context.space, daemons: live },
-      remedy: "stop that process, or put its pidfile back, then run cotal down again",
+      remedy: "stop that process, or put its pidfile back, then run `cotal down` again",
     },
   );
 }

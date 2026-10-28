@@ -167,7 +167,7 @@ try {
   const second = cotal(s, "team", "boot", "live.yaml", "--json");
   const blocked = envelope(second.stdout)?.error;
   check("team boot on the running stack refuses LIFECYCLE_BLOCKED and says the space is already up",
-    second.status === 2 && blocked?.code === "LIFECYCLE_BLOCKED" && blocked.message === `"${SPACE}" is already up at this root and no cotal down has stopped it; a team boot starts only a stopped stack, so nothing was booted`, second.out.slice(-800));
+    second.status === 2 && blocked?.code === "LIFECYCLE_BLOCKED" && blocked.message === `"${SPACE}" is already up at this root and no \`cotal down\` has stopped it; a team boot starts only a stopped stack, so nothing was booted`, second.out.slice(-800));
   check("its Next offers team deploy with the same manifest, or cotal down",
     blocked?.remedy === `add this manifest's channels and agents to the running stack with \`cotal team deploy ${join(s, "live.yaml")}\`, or stop it with \`cotal down\` before a team boot`, blocked);
 
@@ -187,7 +187,7 @@ try {
   const removeBoot = cotal(b, "team", "remove", bootId, "--dry-run", "--json");
   const bootRefusal = envelope(removeBoot.stdout)?.error;
   check("team remove <boot id> refuses CONFLICT and offers cotal down with the space filled in",
-    removeBoot.status === 2 && bootRefusal?.code === "CONFLICT" && bootRefusal.remedy === `stop the booted stack with cotal down; preview that stop with cotal down --space ${SPACE_B} --dry-run`, removeBoot.out.slice(-800));
+    removeBoot.status === 2 && bootRefusal?.code === "CONFLICT" && bootRefusal.remedy === `stop the booted stack with \`cotal down\`; preview that stop with \`cotal down --space ${SPACE_B} --dry-run\``, removeBoot.out.slice(-800));
   const freshJson = envelope(cotal(b, "team", "show", bootId, "--json").stdout)?.result;
   check("its JSON keeps the recorded values", freshJson?.recordedState === "broker-boot-returned" && freshJson.nextAction === "inspect-selected-stack" && freshJson.authMode === "auth", freshJson);
   const freshList = cotal(b, "team");
@@ -200,7 +200,7 @@ try {
   const againError = envelope(again.stdout)?.error;
   check("a second team boot after down refuses LIFECYCLE_BLOCKED, naming cotal up and the earlier boot's ID",
     stopped.status === 0 && again.status === 2 && againError?.code === "LIFECYCLE_BLOCKED" &&
-      againError.remedy === `start this stack again with cotal up in ${realpathSync(b)}, or inspect the earlier boot with cotal team show ${bootId}`, { down: stopped.out.slice(-400), again: again.out.slice(-800) });
+      againError.remedy === `start this stack again with \`cotal up\` in ${realpathSync(b)}, or inspect the earlier boot with \`cotal team show ${bootId}\``, { down: stopped.out.slice(-400), again: again.out.slice(-800) });
   const restarted = cotal(b, "up");
   check("cotal up there starts that stack again", restarted.status === 0 && /Controller stack started/.test(restarted.stdout), restarted.out.slice(-800));
   const additiveShow = cotal(s, "team", "show", deployment);
@@ -210,7 +210,7 @@ try {
   console.log("\nH. a deployment ID that no record names");
   const missing = (run: ReturnType<typeof cotal>, message: string) => {
     const error = envelope(run.stdout)?.error;
-    return run.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.message === message && error.remedy === "list the deployments recorded here with cotal team";
+    return run.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.message === message && error.remedy === "list the deployments recorded here with `cotal team`";
   };
   const unknown = "0000000000000000";
   check("team show <unknown id> is TARGET_NOT_FOUND and names the ID", missing(cotal(s, "team", "show", unknown, "--json"), `no team deployment "${unknown}" is recorded in this root`));
@@ -222,18 +222,18 @@ try {
   const other = cotal(s, "team", "boot", "other.yaml", "--dry-run");
   check("the boot preview says this folder belongs to the running space", other.status === 0 && new RegExp(`Root source:\\s+this folder, which belongs to "${SPACE}"\\n`).test(other.stdout), other.stdout.slice(0, 900));
   check("its hint says the apply needs the space's own folder, with no placeholder",
-    other.stdout.includes(`the apply refuses until "${OTHER}" has its own folder: prepare one with cotal space create ${OTHER} --root <project-directory>`) && !other.stdout.includes("--root ."), other.stdout.slice(-900));
+    other.stdout.includes(`the apply refuses until "${OTHER}" has its own folder: prepare one with \`cotal space create ${OTHER} --root <project-directory>\``) && !other.stdout.includes("--root ."), other.stdout.slice(-900));
   const otherJson = envelope(cotal(s, "team", "boot", "other.yaml", "--dry-run", "--json").stdout)?.result;
   check("its JSON root source is invoking-folder-of-other-space", otherJson?.rootSource === "invoking-folder-of-other-space", otherJson?.rootSource);
   const unprepared = cotal(c, "team", "boot", "other.yaml", "--dry-run");
   check("in a folder prepared for no space, the preview says so and names --root . with the space filled in",
-    unprepared.status === 0 && /Root source:\s+this folder, not prepared\n/.test(unprepared.stdout) && unprepared.stdout.includes(`the apply refuses until "${OTHER}" is prepared: prepare this folder with cotal space create ${OTHER} --root .`), unprepared.stdout.slice(-900));
+    unprepared.status === 0 && /Root source:\s+this folder, not prepared\n/.test(unprepared.stdout) && unprepared.stdout.includes(`the apply refuses until "${OTHER}" is prepared: prepare this folder with \`cotal space create ${OTHER} --root .\``), unprepared.stdout.slice(-900));
 
   console.log("\nJ. the stack that took a team deploy, after a clean down");
   const stoppedS = cotal(s, "down", "--yes");
   const removeStopped = envelope(cotal(s, "team", "remove", deployment, "--dry-run", "--json").stdout)?.error;
   check("team remove on the stopped stack refuses CONFLICT, naming cotal up in its root and then the remove again",
-    stoppedS.status === 0 && removeStopped?.code === "CONFLICT" && removeStopped.remedy === `no registration names ${SPACE}, as after cotal down; start the stack again with cotal up in ${realpathSync(s)}, which registers it, then run cotal team remove ${deployment} again`, { down: stoppedS.out.slice(-400), removeStopped });
+    stoppedS.status === 0 && removeStopped?.code === "CONFLICT" && removeStopped.remedy === `no registration names ${SPACE}, as after \`cotal down\`; start the stack again with \`cotal up\` in ${realpathSync(s)}, which registers it, then run \`cotal team remove ${deployment}\` again`, { down: stoppedS.out.slice(-400), removeStopped });
   const restartedS = cotal(s, "up");
   const kept = cotal(s, "team", "show", deployment);
   check("a bare up starts that stack again and keeps the deployment's records as they are",

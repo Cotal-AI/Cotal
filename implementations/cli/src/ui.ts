@@ -76,9 +76,9 @@ export function staleStoreHint(msg: string, root?: string): string | undefined {
   if (!/consumer already exists|stream already exists/i.test(msg)) return undefined;
   let held: string | undefined;
   try { held = readMaintenanceJournal(root ?? findCotalRoot())?.state; } catch { held = "unreadable"; }
-  if (held) return `this root's maintenance journal holds a restore or a preserved cut (state ${held}), so its store holds that data and must not be cleaned; check it with cotal status before any recovery`;
+  if (held) return `this root's maintenance journal holds a restore or a preserved cut (state ${held}), so its store holds that data and must not be cleaned; check it with \`cotal status\` before any recovery`;
   // The recipe must not promise a configuration-preserving restart: a bare `cotal up` would turn
   // a named/open/user-auth mesh into the default authenticated one, and a custom --store-dir is
   // not recorded - so both variable parts are called out instead of implied.
-  return "likely stale on-disk mesh state from an older Cotal version - reset: cotal down, cotal clean store --force (repeat any custom --store-dir), then `cotal up` with your usual flags";
+  return "likely stale on-disk mesh state from an older Cotal version - reset: `cotal down`, `cotal clean store --force` (repeat any custom --store-dir), then `cotal up` with your usual flags";
 }

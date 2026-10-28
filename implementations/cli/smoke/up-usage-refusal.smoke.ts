@@ -195,7 +195,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const linked = run(["up", "--server", "nats://127.0.0.1:1", "--json"], root);
   check("up over a server.conf that is a symlink refuses PERMISSION_DENIED, exit 2, naming it and the mv that moves it aside",
     createdConf.status === 0 && linked.status === 2 && linked.envelope?.error?.code === "PERMISSION_DENIED" && (linked.envelope.error.message ?? "").includes(`the broker configuration ${conf} is a symlink, so up cannot write it`)
-      && linked.envelope.error.remedy === `move it aside, as mv ${conf} ${conf}.old does, then run cotal up again, which writes it from the space's trust`, shown(linked));
+      && linked.envelope.error.remedy === `move it aside, as mv ${conf} ${conf}.old does, then run \`cotal up\` again, which writes it from the space's trust`, shown(linked));
   check("the link and the file it names are left as they were", lstatSync(conf).isSymbolicLink() && readFileSync(outside, "utf8") === "# not a broker configuration\n");
   const trust = join(root, ".cotal", "auth", "broker.json");
   check("rig: that up wrote the space's trust record", existsSync(trust));
@@ -204,7 +204,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   chmodSync(trust, 0o600);
   check("up over a trust record this account cannot read refuses PERMISSION_DENIED, exit 2, with the chmod that makes it readable",
     unreadable.status === 2 && unreadable.envelope?.error?.code === "PERMISSION_DENIED" && (unreadable.envelope.error.message ?? "").includes(`the space's trust record ${trust} cannot be read by this account (EACCES)`)
-      && unreadable.envelope.error.remedy === `make it readable by you again, as chmod 600 ${trust} does, then run cotal up again; it holds the space's keys, so keep it`, shown(unreadable));
+      && unreadable.envelope.error.remedy === `make it readable by you again, as chmod 600 ${trust} does, then run \`cotal up\` again; it holds the space's keys, so keep it`, shown(unreadable));
 }
 
 // Port 1 cannot be bound, so a regression here starts no usable broker.
@@ -232,7 +232,7 @@ if (process.platform !== "win32") {
   check("a bare up in a fresh folder under the home makes the folder's own .cotal and reaches its own checks", runtimeUp.status === 2 && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(runtimeUp.stderr) && runtimeUp.stderr.includes(`made ${nestedRecords} for this folder's records; the machine's home .cotal was not used`), shown(runtimeUp));
   check("that refused up removed the .cotal it made and wrote nothing in the home's", !existsSync(nestedRecords) && homeWrites().length === 0, homeWrites());
   const inherited = "this folder inherits the machine's home .cotal; up did not start a stack in that home root";
-  const prepare = "prepare this folder with cotal space create <space> --root ., then run cotal up again from this folder";
+  const prepare = "prepare this folder with `cotal space create <space> --root .`, then run `cotal up` again from this folder";
   const manifestUp = run(["up", "-f", "cotal.yaml", "--json"], nested);
   check("up -f there still refuses CONFLICT, exit 2, naming space create and up from the folder, and writes nothing", manifestUp.status === 2 && manifestUp.envelope?.error?.code === "CONFLICT" && manifestUp.envelope.error.message === inherited && manifestUp.envelope.error.remedy === prepare && !existsSync(nestedRecords), shown(manifestUp));
   const { findMesh, recordMesh, removeMesh } = await import("@cotal-ai/workspace");
@@ -267,11 +267,11 @@ if (process.platform !== "win32") {
   const spaced = project("My Project");
   const invalid = run(["up", "--server", "nats://127.0.0.1:1", "--json"], spaced);
   check("a folder name that is no valid space name refuses USAGE_INVALID, exit 1, naming --space, and writes nothing",
-    invalid.status === 1 && invalid.envelope?.error?.code === "USAGE_INVALID" && invalid.envelope.target?.space === undefined && invalid.envelope.error.remedy === "name the space with cotal up --space <name>"
+    invalid.status === 1 && invalid.envelope?.error?.code === "USAGE_INVALID" && invalid.envelope.target?.space === undefined && invalid.envelope.error.remedy === "name the space with `cotal up --space <name>`"
       && invalid.envelope.error.message === `${named} the folder name "My Project" cannot be one: a space name is 1 to 64 letters, digits, underscores or hyphens, which \`cotal up\` needs to start it; nothing was started or written` && !records(spaced), shown(invalid));
   const invalidText = run(["up", "--server", "nats://127.0.0.1:1"], spaced);
   check("its text form is the refusal and the --space step, without the help", invalidText.status === 1 && invalidText.stdout === ""
-    && invalidText.stderr === `✗ ${invalid.envelope?.error?.message}\n  name the space with cotal up --space <name>\n` && !records(spaced), shown(invalidText));
+    && invalidText.stderr === `✗ ${invalid.envelope?.error?.message}\n  name the space with \`cotal up --space <name>\`\n` && !records(spaced), shown(invalidText));
   const override = run(["up", "--space", "custom", ...probe], spaced);
   check("--space names the space there", resolved(override, "custom") && !records(spaced), shown(override));
   const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
@@ -284,7 +284,7 @@ if (process.platform !== "win32") {
   check("a folder name another folder registered refuses CONFLICT, exit 2, naming --space, and writes nothing",
     registered.status === 2 && registered.envelope?.error?.code === "CONFLICT" && registered.envelope.target?.heldBy === gammaRoot
       && registered.envelope.error.message === `${named} "gamma" is already registered at nats://127.0.0.1:1 for ${gammaRoot}; nothing was started or written`
-      && registered.envelope.error.remedy === "name this folder's space with cotal up --space <name>, naming one this machine does not use; cotal space lists the names in use" && !records(join(desktop, "gamma")), shown(registered));
+      && registered.envelope.error.remedy === "name this folder's space with `cotal up --space <name>`, naming one this machine does not use; `cotal space` lists the names in use" && !records(join(desktop, "gamma")), shown(registered));
   const deltaHome = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-delta-")));
   process.on("exit", () => rmSync(deltaHome, { recursive: true, force: true }));
   const preparedDelta = run(["space", "create", "delta", "--root", "."], deltaHome);
@@ -357,9 +357,9 @@ try {
   const rotate = run(["up", "--server", `nats://127.0.0.1:${held}`, "--rotate-sys", "--json"], prepared);
   check("a prepared root refuses an option the controller stack has no route for, UNSUPPORTED, exit 2, naming it and why",
     rotate.status === 2 && rotate.envelope?.outcome === "refused" && rotate.envelope.error?.code === "UNSUPPORTED"
-      && /prepared for a controller-owned stack, which has no route for --rotate-sys/.test(rotate.envelope.error.message ?? "") && /run cotal up without --rotate-sys; a first start mints the space's \$SYS creds/.test(rotate.envelope.error.remedy ?? ""), shown(rotate));
+      && /prepared for a controller-owned stack, which has no route for --rotate-sys/.test(rotate.envelope.error.message ?? "") && /run `cotal up` without --rotate-sys; a first start mints the space's \$SYS creds/.test(rotate.envelope.error.remedy ?? ""), shown(rotate));
   const tls = run(["up", "--server", `tls://127.0.0.1:${held}`, "--tls-cert", join(prepared, "c.pem"), "--tls-key", join(prepared, "k.pem"), "--json"], prepared);
-  const tlsRoute = /serve TLS from a manifest whose broker\.servers names a tls:\/\/ address, with cotal up -f <cotal\.yaml> --tls-cert <cert\.pem> --tls-key <key\.pem>/;
+  const tlsRoute = /serve TLS from a manifest whose broker\.servers names a tls:\/\/ address, with `cotal up -f <cotal\.yaml> --tls-cert <cert\.pem> --tls-key <key\.pem>`/;
   check("…and names both TLS options, the tls:// address and the -f route that serves TLS", tls.status === 2 && tls.envelope?.error?.code === "UNSUPPORTED" && /no route for --tls-cert, --tls-key and --server tls:\/\//.test(tls.envelope.error.message ?? "") && tlsRoute.test(tls.envelope.error.remedy ?? ""), shown(tls));
   // Each TLS form refuses the same way first, so no refusal sends it to another form that refuses too.
   const plainTls = run(["up", "--server", `nats://127.0.0.1:${held}`, "--tls-cert", join(prepared, "c.pem"), "--tls-key", join(prepared, "k.pem"), "--json"], prepared);
@@ -409,7 +409,7 @@ try {
     check("a port an open connection holds with no listener refuses CONFLICT on both routes, saying so and naming no process to stop",
       open.status === 2 && open.envelope?.error?.code === "CONFLICT"
         && (open.envelope.error.message ?? "").includes(`nothing listens at the stack's broker address 127.0.0.1:${port}, but an open connection's local end holds its port (bind failed: address already in use)`)
-        && (open.envelope.error.remedy ?? "").includes(`close the connection that holds 127.0.0.1:${port} and run cotal up again`) && !(open.envelope.error.remedy ?? "").includes("stop the process")
+        && (open.envelope.error.remedy ?? "").includes(`close the connection that holds 127.0.0.1:${port} and run \`cotal up\` again`) && !(open.envelope.error.remedy ?? "").includes("stop the process")
         && openLegacy.status === 2 && openLegacy.stderr.includes(`nothing listens at the broker address 127.0.0.1:${port}, but an open connection's local end holds its port`) && !started(unprepared), { open: shown(open), legacy: shown(openLegacy) });
     client.end();
     await once(client, "close");
@@ -421,7 +421,7 @@ try {
     check("a port in TIME-WAIT with no listener refuses CONFLICT on both routes, saying so, with waiting as the next step",
       timeWait.status === 2 && timeWait.envelope?.error?.code === "CONFLICT"
         && (timeWait.envelope.error.message ?? "").includes(`nothing listens at the stack's broker address 127.0.0.1:${port}, but a closed connection in TIME-WAIT still holds its port (bind failed: address already in use)`)
-        && (timeWait.envelope.error.remedy ?? "").includes("wait up to a minute for the TIME-WAIT to clear and run cotal up again") && !(timeWait.envelope.error.remedy ?? "").includes("stop the process")
+        && (timeWait.envelope.error.remedy ?? "").includes("wait up to a minute for the TIME-WAIT to clear and run `cotal up` again") && !(timeWait.envelope.error.remedy ?? "").includes("stop the process")
         && timeWaitLegacy.status === 2 && timeWaitLegacy.stderr.includes(`nothing listens at the broker address 127.0.0.1:${port}, but a closed connection in TIME-WAIT still holds its port`) && !started(unprepared), { timeWait: shown(timeWait), legacy: shown(timeWaitLegacy) });
   }
 
@@ -481,7 +481,7 @@ try {
   greeter.kill();
   check("a bare up whose folder names a space that runs from another folder refuses CONFLICT, exit 2, naming cotal up --space <name> and the down in that folder",
     inUse.status === 2 && /Code:\s+CONFLICT/.test(inUse.stderr) && inUse.stderr.includes(`space "main" is already in use by a mesh at nats://127.0.0.1:${greeting} (${other})`)
-      && inUse.stderr.includes(`start a separate space in this folder with cotal up --space <name>, naming one no other folder uses, or stop "main" first with cotal down in ${other}`), shown(inUse));
+      && inUse.stderr.includes(`start a separate space in this folder with \`cotal up --space <name>\`, naming one no other folder uses, or stop "main" first with \`cotal down\` in ${other}`), shown(inUse));
 
   // THE SAME SPACE, RUNNING FROM THIS VERY PROJECT, started again at another address. The refusal
   // above belongs to a name another folder holds; here the folder IS that space's project, so the
@@ -504,7 +504,7 @@ try {
     check(`up --server naming another address, run from ${where} of a space that runs there, refuses CONFLICT, exit 2, naming the address it runs at and the bare up that reaches it`,
       r.status === 2 && /Code:\s+CONFLICT/.test(r.stderr)
         && r.stderr.includes(`space "main" already runs from this project at nats://127.0.0.1:${here}, and this start names ${elsewhereAddress}`)
-        && r.stderr.includes(`run cotal up here with no --server or --host to reach the mesh at nats://127.0.0.1:${here}, or stop it first with cotal down in ${legacy}`)
+        && r.stderr.includes(`run \`cotal up\` here with no --server or --host to reach the mesh at nats://127.0.0.1:${here}, or stop it first with \`cotal down\` in ${legacy}`)
         && !r.stderr.includes("start a separate space in this folder"), shown(r));
 } finally {
   holder.close();

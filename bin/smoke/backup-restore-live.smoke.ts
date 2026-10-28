@@ -221,7 +221,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       assert.equal(driftedRoot.status, 2, "valid root-chain drift refuses a full restore with exit 2, not an unknown outcome");
       assert.match(driftedRoot.stderr, /authority fingerprint does not match current trust state/);
       assert.match(driftedRoot.stderr, /CONFLICT/, "root-chain drift is a CONFLICT refusal");
-      assert.ok(driftedRoot.stderr.includes(`its channel registry still restores here with cotal backup restore ${artifact} --only registry`), `its Next names the registry restore, which does not check the trust state\n${driftedRoot.stderr}`);
+      assert.ok(driftedRoot.stderr.includes(`its channel registry still restores here with \`cotal backup restore ${artifact} --only registry\``), `its Next names the registry restore, which does not check the trust state\n${driftedRoot.stderr}`);
       assert.equal(readFileSync(journalPath, "utf8"), journalBefore, "root-chain drift leaves the ready journal byte-identical");
       const sourceAfterDrift = lstatSync(join(root, ".cotal", "nats"), { bigint: true });
       assert.equal(sourceAfterDrift.dev, sourceBefore.dev);
@@ -357,12 +357,12 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     const running = run("up", "-f", "cotal.yaml");
     assert.equal(running.status, 2, `${mode} up -f while the restored stack runs refuses, exit 2\n${running.stdout}\n${running.stderr}`);
     assert.match(running.stderr, /Code: +CONFLICT/);
-    assert.ok(running.stderr.includes(`stop the restored stack with cotal down, retire the restore with cotal backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history, which deletes the previous store and the ${leftOut} only it holds, then run cotal up -f cotal.yaml again`), `${mode} up -f names the way out\n${running.stderr}`);
+    assert.ok(running.stderr.includes(`stop the restored stack with \`cotal down\`, retire the restore with \`cotal backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history\`, which deletes the previous store and the ${leftOut} only it holds, then run \`cotal up -f cotal.yaml\` again`), `${mode} up -f names the way out\n${running.stderr}`);
     // Any other `up` over the restored broker refuses before it touches the journal, which stays active.
     for (const args of [["up"], ["up", "--server", server]]) {
       const again = run(...args);
       assert.equal(again.status, 2, `${mode} ${args.join(" ")} while the restored stack runs refuses, exit 2\n${again.stdout}\n${again.stderr}`);
-      assert.ok(/Code: +CONFLICT/.test(again.stderr) && again.stderr.includes("stop the restored stack with cotal down, then run cotal up again"), `${mode} ${args.join(" ")} names the way out\n${again.stderr}`);
+      assert.ok(/Code: +CONFLICT/.test(again.stderr) && again.stderr.includes("stop the restored stack with `cotal down`, then run `cotal up` again"), `${mode} ${args.join(" ")} names the way out\n${again.stderr}`);
       assert.equal((JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as { state: string }).state, "active", `${mode} ${args.join(" ")} leaves the restore journal active`);
     }
     // `status` names the same cleanup for the attempt it shows under Maintenance.
@@ -373,7 +373,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     const stopped = run("up", "-f", "cotal.yaml");
     assert.equal(stopped.status, 2, `${mode} up -f after the restored stack stopped refuses, exit 2\n${stopped.stdout}\n${stopped.stderr}`);
     assert.match(stopped.stderr, /Code: +LIFECYCLE_BLOCKED/);
-    assert.ok(stopped.stderr.includes(`retire the restore with cotal backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history, which deletes the previous store and the ${leftOut} only it holds, then run cotal up -f cotal.yaml again`), `${mode} up -f names the cleanup\n${stopped.stderr}`);
+    assert.ok(stopped.stderr.includes(`retire the restore with \`cotal backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history\`, which deletes the previous store and the ${leftOut} only it holds, then run \`cotal up -f cotal.yaml\` again`), `${mode} up -f names the cleanup\n${stopped.stderr}`);
     rmSync(manifest);
     if (mode === "open") {
       // The committed journal survives the broker's death; a later bare `up` relaunches over the
@@ -416,7 +416,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       assert.ok(foreign.status === 2 && (JSON.parse(foreign.stdout) as { error?: { code?: string } }).error?.code === "CONFLICT", `${mode} cleanup-fallback over a foreign file is refused\n${foreign.stdout}${foreign.stderr}`);
       const foreignByClean = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force", "--discard-history");
       assert.ok(foreignByClean.status === 2 && foreignByClean.stderr.includes(`the previous store ${previous} also holds notes.txt, which no Cotal store writes; nothing was deleted`)
-        && foreignByClean.stderr.includes(`move it out of ${previous}, then run cotal clean restore-fallback --attempt ${active.restore.attemptId} --force --discard-history again`), `${mode} clean restore-fallback names the file and the way out\n${foreignByClean.stderr}`);
+        && foreignByClean.stderr.includes(`move it out of ${previous}, then run \`cotal clean restore-fallback --attempt ${active.restore.attemptId} --force --discard-history\` again`), `${mode} clean restore-fallback names the file and the way out\n${foreignByClean.stderr}`);
       assert.equal(readFileSync(join(previous, "notes.txt"), "utf8"), "kept", `${mode} the refused cleanups keep the file`);
       renameSync(join(previous, "notes.txt"), join(root, "notes.txt"));
       must("cleanup fallback", run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force", "--discard-history"));
@@ -763,7 +763,7 @@ async function missingPidfileListenerScenario(): Promise<void> {
     assert.equal(refusedBackup.status, 2, "backup refuses a pidless listener immediately before cloning, exit 2");
     assert.match(refusedBackup.stderr, /recorded NATS endpoint .* no listener; a process there may still be changing the preserved store, so nothing was copied/);
     assert.match(refusedBackup.stderr, /CONFLICT/, "it is a CONFLICT, as restore and resume refuse it");
-    assert.ok(refusedBackup.stderr.includes(`stop the process that listens on ${server}, then run cotal backup create ${artifact} --only registry again`), `its Next says to stop that process and names the same create\n${refusedBackup.stderr}`);
+    assert.ok(refusedBackup.stderr.includes(`stop the process that listens on ${server}, then run \`cotal backup create ${artifact} --only registry\` again`), `its Next says to stop that process and names the same create\n${refusedBackup.stderr}`);
     assert.equal(existsSync(artifact), false, "listener refusal happens before artifact creation");
     await closeServer(foreign);
     foreign = undefined;

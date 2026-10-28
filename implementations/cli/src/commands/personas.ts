@@ -135,7 +135,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   if (!entries.length) {
     console.log(
       c.dim(`no personas in ${personaDir(root)}\n`) +
-        c.dim('create one:  cotal personas new <name> --prompt "<who they are>"'),
+        c.dim('create one:  `cotal personas new <name> --prompt "<who they are>"`'),
     );
     return;
   }
@@ -261,7 +261,7 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
   const bytes = await serializePersona({ name, role: v.role, model: v.model, persona, subscribe });
   commitPersona(path, expected, bytes);
   console.log(c.green(`✓ wrote persona "${name}"`));
-  console.log(c.dim(`${path}\nspawn it:  cotal spawn ${name}${v.role ? ` --role ${v.role}` : ""}`));
+  console.log(c.dim(`${path}\nspawn it:  \`cotal spawn ${name}${v.role ? ` --role ${v.role}` : ""}\``));
 }
 
 function remove(name: string | undefined, force: boolean, values: { space?: string; server?: string }): void {

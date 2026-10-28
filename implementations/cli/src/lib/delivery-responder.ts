@@ -132,6 +132,6 @@ export function deliveryRowSuffix(live: boolean, state: DeliveryResponderState, 
       // record belongs to a daemon that is gone points at the actual next move.
       return ` · RESPONDER NOT BOUND - ${RESPONDER_STALE_TEXT}`;
     case "unknown":
-      return ` · responder state unchecked (${componentsHint})`;
+      return ` · responder state unchecked (\`${componentsHint}\`)`;
   }
 }

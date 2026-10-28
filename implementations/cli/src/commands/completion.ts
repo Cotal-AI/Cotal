@@ -10,7 +10,7 @@ import {
   type ParsedArgs,
   type Subcommand,
 } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, presentationOf, writeResult, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, isCommandFailure, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, presentationOf, writeResult, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
 import { metadataPositionals } from "../lib/command-path.js";
 import { fileCompletion, spaceCompletion } from "../lib/completion.js";
 import { debugFlag } from "../lib/debug-flag.js";
@@ -147,7 +147,7 @@ export function validateCompletionArguments(args: ParsedArgs): void {
   if (args.positionals.length > 2) throw new CommandFailure("refused", "USAGE_INVALID", "completion takes one operation and one shell");
   if (args.values.force && sub !== "install" && sub !== "uninstall") throw new CommandFailure("refused", "USAGE_INVALID", "--force applies to completion install and uninstall");
   if (sub === undefined) return;
-  if (Object.hasOwn(SCRIPTS, sub)) throw new CommandFailure("refused", "USAGE_INVALID", `cotal completion ${sub} is now cotal completion script ${sub}`, { remedy: `load it with: ${LOAD_NOW[sub]}` });
+  if (Object.hasOwn(SCRIPTS, sub)) throw new CommandFailure("refused", "USAGE_INVALID", `cotal completion ${sub} is now \`cotal completion script ${sub}\``, { remedy: `load it with: ${codeSpan(LOAD_NOW[sub])}` });
   if (!["script", "install", "uninstall"].includes(sub)) throw new CommandFailure("refused", "USAGE_INVALID", "choose completion script, install or uninstall");
   if (sub === "script" && (args.values.json || args.values.plain)) throw new CommandFailure("refused", "USAGE_INVALID", "completion script prints raw shell code, without --json or --plain");
   if ((sub === "script" && shell === undefined) || (shell !== undefined && !Object.hasOwn(SCRIPTS, shell))) throw new CommandFailure("refused", "USAGE_INVALID", "choose a supported shell", { remedy: `pass one of: ${Object.keys(SCRIPTS).join(", ")}` });
@@ -162,7 +162,7 @@ export async function completion(args: ParsedArgs): Promise<void> {
     const { status, unread, unsafe } = completionStatus();
     const count = unread.length + unsafe.reduce((sum, folder) => sum + folder.unopened, 0);
     const warnings = [...unsafe.map(folderWarning), ...unread];
-    const partial = count ? { completeness: "partial" as const, warnings, partial: { message: `completion could not read ${count === 1 ? "one file" : `${count} files`}`, remedy: unread.length ? "review each named file without overwriting custom startup content" : "fix the folder the warning names, then run cotal completion again" } } : warnings.length ? { warnings } : {};
+    const partial = count ? { completeness: "partial" as const, warnings, partial: { message: `completion could not read ${count === 1 ? "one file" : `${count} files`}`, remedy: unread.length ? "review each named file without overwriting custom startup content" : "fix the folder the warning names, then run `cotal completion` again" } } : warnings.length ? { warnings } : {};
     return writeResult(presentation, { command: "completion", target: null, result: status, ...partial }, (result) => statusView(result, unsafe));
   }
   if (sub === "script") { process.stdout.write(SCRIPTS[shell!]!); return; }
@@ -172,7 +172,7 @@ export async function completion(args: ParsedArgs): Promise<void> {
     ? new CommandFailure("refused", "UNSUPPORTED", `completion does not support ${sh}, the shell SHELL names`, { target: { shell: sh }, remedy: "pass one of: bash, zsh, fish, powershell" })
     : new CommandFailure("refused", "USAGE_INVALID", "SHELL is not set, so the current shell is unknown", { remedy: "pass one of: bash, zsh, fish, powershell" });
   const paths = stubPaths(sh);
-  if (!paths) throw new CommandFailure("refused", "UNSUPPORTED", "owned PowerShell profile installation is unavailable on this host or the shell is not installed; no profile path was guessed", { remedy: `review your profile manually; the supported loading command is: ${LOAD_NOW.powershell}` });
+  if (!paths) throw new CommandFailure("refused", "UNSUPPORTED", "owned PowerShell profile installation is unavailable on this host or the shell is not installed; no profile path was guessed", { remedy: `review your profile manually; the supported loading command is: ${codeSpan(LOAD_NOW.powershell)}` });
   if (sh === "zsh" && process.env.ZDOTDIR && !isAbsolute(process.env.ZDOTDIR)) throw new CommandFailure("refused", "USAGE_INVALID", "relative ZDOTDIR makes the startup target depend on the shell's working directory", { remedy: "use an absolute ZDOTDIR or manage the printed script manually" });
   const operation = sub as "install" | "uninstall";
   const result = changeCompletion(operation, sh, paths, SCRIPTS[sh]!, Boolean(values.force));
@@ -324,7 +324,7 @@ function statusView(status: CompletionStatus, unsafe: readonly UnsafeFolder[] = 
         { kind: "table", columns: [{ key: "shell", label: "Shell" }, { key: "state", label: "Integration" }], rows: status.shells.map((shell) => ({ shell: shell.shell, state: completionCell(shell) })) },
         { kind: "lines", lines: [
           ...dangling.map((shell) => ({ text: `${shell.wiredIn} sources ${shell.stub}, which is missing.`, tone: "waiting" as const })),
-          ...status.shells.filter((shell) => shell.legacyWiring).map((shell) => ({ text: `Custom ${shell.shell} wiring needs manual migration to: ${LOAD_NOW[shell.shell]}`, tone: "waiting" as const })),
+          ...status.shells.filter((shell) => shell.legacyWiring).map((shell) => ({ text: `Custom ${shell.shell} wiring needs manual migration to: ${codeSpan(LOAD_NOW[shell.shell])}`, tone: "waiting" as const })),
           { text: "Files only. The running shell was not inspected or changed.", tone: "hint" },
         ] },
       ] },

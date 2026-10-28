@@ -82,7 +82,7 @@ function replacedStillValid(replaced: Replaced | undefined, identity: string, sp
   const key = replaced.publicKey;
   const message = key === identity
     ? `the credential this replaced has no expiry claim and this credential's key ${key}, so a copy of it stays valid until that key is revoked, which stops this credential too`
-    : `the credential this replaced has no expiry claim, so a copy of it stays valid until its key ${key} is revoked; to stop it, run cotal down --yes, then cotal auth revoke-credential ${key} --yes, then cotal up`;
+    : `the credential this replaced has no expiry claim, so a copy of it stays valid until its key ${key} is revoked; to stop it, run \`cotal down --yes\`, then \`cotal auth revoke-credential ${key} --yes\`, then \`cotal up\``;
   return [{ code: "REPLACED_CREDENTIAL_VALID", target: { space, name, publicKey: key }, message }];
 }
 
@@ -181,7 +181,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       const unusable = (problem: string, remedy: string) => new CommandFailure("refused", "SCHEMA_INVALID", `the persona file ${path} for this label ${problem}, so no credential was minted; file values and secret material were not printed`, { target: { ...target, persona: path }, remedy });
       let definition;
       try { definition = existsSync(path) ? loadAgentFile(path) : undefined; }
-      catch { throw unusable("could not be read as a persona", `see what is wrong with it with cotal persona show ${name}, then fix it and mint again`); }
+      catch { throw unusable("could not be read as a persona", `see what is wrong with it with \`cotal persona show ${name}\`, then fix it and mint again`); }
       // A flag wins, then the grants of the --identity credential, then the persona.
       const readFlag = csv(values["allow-subscribe"]);
       allowSubscribe = readFlag === undefined && carried ? carried.read : resolveReadAcl(definition?.subscribe ?? [], readFlag ?? definition?.allowSubscribe);
@@ -189,7 +189,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       role = values.role ?? (carried ? carried.role ?? undefined : definition?.role);
       if (values.role === undefined && !carried && role !== undefined) {
         try { assertValidRole(role); }
-        catch { throw unusable("sets a role that is not one word of letters, digits, _ or -", `give it such a role with cotal persona edit ${name}, then mint again`); }
+        catch { throw unusable("sets a role that is not one word of letters, digits, _ or -", `give it such a role with \`cotal persona edit ${name}\`, then mint again`); }
       }
       lifecycleUid = mintLifecycleUid();
     }

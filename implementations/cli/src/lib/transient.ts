@@ -77,9 +77,9 @@ function jetStreamUnanswered(conn: Connection): CommandFailure {
   if (failed?.state === "write-failed")
     return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker of ${conn.space} has answered no JetStream request since it logged a store write failure at ${failed.at}: ${failed.cause}${failed.path ? ` (${failed.path})` : ""}; nats-server stops JetStream after such a write and keeps the streams and their history in its store`, {
       target: { space: conn.space },
-      remedy: `${storeWriteRepair(failed, conn.root, conn.space)}, then restart the broker with cotal down --yes and cotal up in ${conn.root}, which keeps the history`,
+      remedy: `${storeWriteRepair(failed, conn.root, conn.space)}, then restart the broker with \`cotal down --yes\` and \`cotal up\` in ${conn.root}, which keeps the history`,
     });
-  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker of ${conn.space} answered no JetStream read, and the space's streams were not found missing`, { target: { space: conn.space }, remedy: "run cotal status, which names a store write failure its broker logged on this machine" });
+  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker of ${conn.space} answered no JetStream read, and the space's streams were not found missing`, { target: { space: conn.space }, remedy: "run `cotal status`, which names a store write failure its broker logged on this machine" });
 }
 
 /** Open a transient endpoint: it holds the roster and channel registry on return but never registers
