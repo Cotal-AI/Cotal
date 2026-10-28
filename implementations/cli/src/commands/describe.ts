@@ -143,7 +143,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     // A contract read that was answered and then ran out of time spent this deadline. An unanswered
     // read stays the TARGET_UNAVAILABLE refusal; under a `--timeout` the user set it names the flag,
     // which may be what ran out. `endpointFailure` adds the target to all three.
-    const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: budgetMs, ...(instanceId === undefined ? {} : { instanceId }) }).catch((error: unknown) => {
+    const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: budgetMs, commands: [command], ...(instanceId === undefined ? {} : { instanceId }) }).catch((error: unknown) => {
       if (!(error instanceof EpEnvelopeError) || error.code !== "deadline-exceeded" || unansweredRequest(error) && values.timeout === undefined) throw error;
       const longer = budgetMs < 10_000 ? 10_000 : Math.min(budgetMs * 2, 2_147_483_647);
       if (unansweredRequest(error)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no instance of ${endpoint} answered its contract read within the ${budgetMs}ms --timeout, so nothing is serving it, none could be reached, or the deadline was too short`, {
@@ -165,7 +165,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     const canonicalInput = input === undefined && !declaration.contract.input.validate(null) && declaration.contract.input.validate({}) ? {} : input ?? null;
     if (!declaration.contract.input.validate(canonicalInput)) throw new CommandFailure("refused", "SCHEMA_INVALID", "arguments do not match the fetched native input contract; no command was published", { target, remedy: "read describe --json for the declared schema; the argument body is not echoed" });
     // A static-root operator instrument can request only the manager. A paired caller file makes
-    // this call to another endpoint when the call and the whole surface fit that file's mode.
+    // this call to another endpoint when the selected command fits that file's mode.
     pairedCaller = connection.mode === "auth" && !callerCredential && !selection.reference && on === undefined && nativeTarget === undefined
       && !values.admin && !values.all && !values.cast && !values.wait && [...service.commands.values()].every(pairedCallerCommand);
     selection.check();

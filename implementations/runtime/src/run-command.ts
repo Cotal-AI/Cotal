@@ -778,6 +778,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
       : who.caller;
     const service = await resolveService(nc, t.space, BASELINE_LIFECYCLE_ENDPOINT, caller, {
       deadlineMs: 10_000,
+      commands: [command],
       ...(auth.managerInstanceId !== undefined ? { instanceId: auth.managerInstanceId } : {}),
     });
     // A start or resume is answered only once the drive has activated, which the manager waits on

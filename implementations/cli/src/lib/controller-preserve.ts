@@ -112,7 +112,7 @@ async function provePreservedExitCapability(journal: StackJournal, manager: Memb
     if (!auth) epoch = await openReceiptEpoch(context, value.process!, binding.native, unsupported);
     else {
       const caller = auth.bearer !== undefined && auth.managerInstanceId !== undefined ? await issuedUserCaller(nc, journal.space, String(options.name), auth.epCaller!) : auth.epCaller!;
-      const service = await resolveService(nc, journal.space, MANAGER_ENDPOINT, caller, { instanceId: value.instanceId, deadlineMs: 5000 });
+      const service = await resolveService(nc, journal.space, MANAGER_ENDPOINT, caller, { instanceId: value.instanceId, deadlineMs: 5000, commands: ["status"] });
       if (service.responder.instanceId !== binding.native.instanceId || service.owner !== binding.native.principal.owner) return unsupported("its attributed instance differs");
       if (service.commands.get("status")?.contract.output.closureDigest !== statusRow.outputDigest)
         refuse("CONFLICT", "the instance's described status contract differs from its served-contract file; nothing was changed", { space: journal.space, instanceId: value.instanceId });

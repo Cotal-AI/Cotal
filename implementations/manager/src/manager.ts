@@ -5147,7 +5147,7 @@ export class Manager {
         // The service resolves FRESH on every attempt (never cached on `this`): a plane restart
         // mid-despawn then lands on the new epoch through an ordinary resolve, rather than a
         // caller pinned to a now-superseded incarnation.
-        const service = await resolveService(nc, this.space, AUTH_ENDPOINT, caller, { deadlineMs: 10_000 });
+        const service = await resolveService(nc, this.space, AUTH_ENDPOINT, caller, { deadlineMs: 10_000, commands: [EP_CMD_RETIRE_LIFECYCLE] });
         // The TARGET rides the invoke's own target (authz mode `exact`, arity 3) — broker-enforced,
         // and pinned by the grant minted above, so it is not a body claim the caller can vary.
         const attributed = await invokeCommand(nc, this.space, service, EP_CMD_RETIRE_LIFECYCLE, {

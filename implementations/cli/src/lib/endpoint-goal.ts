@@ -27,7 +27,7 @@ export async function followEndpointAction(nc: NatsConnection, space: string, se
     }
     return reply;
   }, { signal: options.signal, reconcile: async (goalId, receipt, context) => {
-    const current = await resolveService(nc, space, service.endpoint, context.caller, { instanceId: receipt.responder.instanceId, deadlineMs: context.deadlineMs, signal: context.signal });
+    const current = await resolveService(nc, space, service.endpoint, context.caller, { instanceId: receipt.responder.instanceId, deadlineMs: context.deadlineMs, signal: context.signal, commands: ["goal-result"] });
     const reply = await invokeCommand(nc, space, current, "goal-result", { goalId }, { deadlineMs: context.deadlineMs, signal: context.signal });
     if (!reply.reply.ok) throw new Error("the accepting endpoint did not confirm the canonical goal-result read");
     return reply.reply.data as { goalId: string; result?: GoalResultFact };

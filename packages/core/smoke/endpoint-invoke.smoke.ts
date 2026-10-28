@@ -297,7 +297,19 @@ console.log("describe REQUEST-BINDING (freelance HIGH #1):");
     (timedOut.e as { code?: string })?.code === "deadline-exceeded" && unansweredRequest(timedOut.e), timedOut.e);
 }
 
-// 8) The retry above is confined to reserved, read-only describe. A resolved command rides epCall
+// 8) A narrowed resolve validates its command list before touching the transport. These options are
+//    a public API boundary, so malformed values fail as envelope preconditions rather than leaking a
+//    lower-level token assertion or attempting a describe.
+{
+  await rejects("a narrowed resolve refuses an empty command list before transport", () =>
+    resolveService(fakeNc(() => { throw new Error("transport must not be touched"); }), SPACE, ENDPOINT, CALLER, { commands: [] }), "failed-precondition");
+  await rejects("a narrowed resolve refuses a non-array command list before transport", () =>
+    resolveService(fakeNc(() => { throw new Error("transport must not be touched"); }), SPACE, ENDPOINT, CALLER, { commands: "mutate" as unknown as readonly string[] }), "failed-precondition");
+  await rejects("a narrowed resolve refuses an invalid command token before transport", () =>
+    resolveService(fakeNc(() => { throw new Error("transport must not be touched"); }), SPACE, ENDPOINT, CALLER, { commands: ["bad command"] }), "failed-precondition");
+}
+
+// 9) The retry above is confined to reserved, read-only describe. A resolved command rides epCall
 //    and is published exactly once, including after the describe retry interval has elapsed.
 {
   const input = compileContract({ root: { type: "null" } });
@@ -323,13 +335,43 @@ console.log("describe REQUEST-BINDING (freelance HIGH #1):");
   const ep = new CotalEndpoint({ space: SPACE, servers: "nats://127.0.0.1:1", lifecycleUid: CALLER.uid, card: { name: "cache-probe", kind: "agent" }, channels: [] });
   const service: ResolvedService = { endpoint: ENDPOINT, owner: "local", caller: CALLER, responder: HONEST, commands: new Map() };
   const cache = new Map([[ENDPOINT, service]]);
+  const commandCache = new Map([[ENDPOINT, new Map([["mutate", service]])]]);
   (ep as unknown as { nc: unknown }).nc = fakeNc(() => []);
   (ep as unknown as { resolvedServices: Map<string, ResolvedService> }).resolvedServices = cache;
+  (ep as unknown as { resolvedCommandServices: Map<string, Map<string, ResolvedService>> }).resolvedCommandServices = commandCache;
   c("CONTROL: unpinned describe uses the existing class cache", await ep.describeService(ENDPOINT) === service);
   await rejects("pinned describe bypasses the class cache and addresses its missing instance",
     () => ep.describeService(ENDPOINT, { instanceId: ATTACKER.instanceId, deadlineMs: 100 }), "deadline-exceeded");
   c("a failed pinned describe leaves the class cache intact", cache.get(ENDPOINT) === service);
   c("an unpinned describe still returns its original class handle after the pinned refusal", await ep.describeService(ENDPOINT) === service);
+}
+
+// Narrow invocation handles and the complete discovery handle have independent cache slots. Exercise
+// the public methods against those slots so core owns the cache contract, while the manager smoke
+// separately proves the same sequence through live resolveService writes.
+{
+  const ep = new CotalEndpoint({ space: SPACE, servers: "nats://127.0.0.1:1", lifecycleUid: CALLER.uid, card: { name: "command-cache-probe", kind: "agent" }, channels: [] });
+  const contract = { input: compileContract({ root: { type: "null" } }), output: compileContract({ root: { type: "object", properties: { ran: { type: "boolean" } }, required: ["ran"], additionalProperties: false } }) };
+  const resolved = (command: string): ResolvedService => ({
+    endpoint: ENDPOINT, owner: "local", caller: CALLER, responder: HONEST,
+    commands: new Map([[command, { command, contract, class: "ephemeral", targeted: false, modes: [], capability: `endpoint.${command}` }]]),
+  });
+  const mutate = resolved("mutate"), query = resolved("query");
+  const full: ResolvedService = { ...mutate, commands: new Map([...mutate.commands, ...query.commands]) };
+  let publishes = 0;
+  (ep as unknown as { nc: unknown }).nc = fakeInvokeNc(() => { publishes++; });
+  const fullCache = new Map<string, ResolvedService>();
+  (ep as unknown as { resolvedServices: Map<string, ResolvedService> }).resolvedServices = fullCache;
+  (ep as unknown as { resolvedCommandServices: Map<string, Map<string, ResolvedService>> }).resolvedCommandServices =
+    new Map([[ENDPOINT, new Map([["mutate", mutate], ["query", query]])]]);
+  await ep.invokeService(ENDPOINT, "mutate");
+  await ep.invokeService(ENDPOINT, "query");
+  await ep.invokeService(ENDPOINT, "mutate");
+  c("alternating invokeService calls retain and reuse each command-specific handle", publishes === 3, publishes);
+  fullCache.set(ENDPOINT, full);
+  const described = await ep.describeService(ENDPOINT);
+  c("invokeService command handles do not truncate describeService's complete surface",
+    described === full && described.commands.size === 2 && described.commands.has("mutate") && described.commands.has("query"), [...described.commands]);
 }
 
 // Submitted identity survives both the call's timer and the follower's earlier timer/stop.
