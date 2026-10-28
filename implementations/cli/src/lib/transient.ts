@@ -87,7 +87,8 @@ function jetStreamUnanswered(conn: Connection): CommandFailure {
  *  both buckets with a batched Direct Get ({@link batchedRead}) reads them once, leaving no watch
  *  consumer behind. Any other, such as a user bearer or an agent credential passed with `--creds`,
  *  watches them and waits for the presence replay; the consumer lasts until the broker's inactive
- *  threshold. `watch` keeps both watches for every
+ *  threshold. `presenceOnly` holds the roster alone and opens no channel registry, so only the
+ *  presence bucket's grant decides whether it is read once. `watch` keeps both watches for every
  *  credential, for a caller that reports the watch's own state (`cotal who`); that caller waits for
  *  the presence replay itself, on its own bound. `throwOnRefusal` hands connection refusals to the
  *  command kernel, and `report` takes endpoint errors and warnings instead of printing them. A
@@ -95,10 +96,11 @@ function jetStreamUnanswered(conn: Connection): CommandFailure {
 export async function openTransient(
   values: ConnectValues,
   name: string,
-  opts: { throwOnRefusal?: boolean; watch?: boolean; report?: (level: "error" | "warning", e: Error) => void } = {},
+  opts: { throwOnRefusal?: boolean; watch?: boolean; presenceOnly?: boolean; report?: (level: "error" | "warning", e: Error) => void } = {},
 ): Promise<{ ep: CotalEndpoint; space: string; connection: Connection }> {
   const conn = opts.throwOnRefusal ? await connectOrThrow(values, "operator") : await resolveConnect(values);
   const readOnce = batchedRead(conn, presenceBucket(conn.space)) && batchedRead(conn, channelBucket(conn.space));
+  const once = !opts.watch && (opts.presenceOnly ? batchedRead(conn, presenceBucket(conn.space)) : readOnce);
   const report = opts.report ?? ((level, e) => console.error(level === "error" ? c.red("! " + e.message) : c.yellow("! " + e.message)));
   // A connect the broker refuses or does not complete in time sends nothing, so it is tried again
   // with a new endpoint. What a failed attempt reported is dropped with it; a failure after the
@@ -116,7 +118,8 @@ export async function openTransient(
         consume: false,
         registerPresence: false,
         watchPresence: true,
-        readOnce: readOnce && !opts.watch,
+        watchChannels: !opts.presenceOnly,
+        readOnce: once,
         transportConnectTimeoutMs: DIAL_TIMEOUT_MS,
         onConnection: () => { opened = true; },
         // Display name only. The wire principal comes from the resolved static credential or user
@@ -128,7 +131,7 @@ export async function openTransient(
       attempt.on("warning", (e: Error) => { if (opened) report("warning", e); else held.push(["warning", e]); });
       try {
         await attempt.start();
-        if (!readOnce && !opts.watch) await attempt.waitForPresenceSnapshot();
+        if (!once && !opts.watch) await attempt.waitForPresenceSnapshot();
       } catch (e) {
         await attempt.stop().catch(() => {});
         throw opened ? new AfterOpen(e) : e;
@@ -146,15 +149,15 @@ export async function openTransient(
       });
     // The user's connection is minted by the space's auth service. One that refuses the batched read
     // predates the agent profile row that grants it; the command never falls back to a watch.
-    if (conn.bearer !== undefined && readOnce && !opts.watch && isPublishPermissionDenied(e))
-      throw new CommandFailure("refused", "PERMISSION_DENIED", `the connection the auth service of ${conn.space} minted for your user may not read the presence bucket or the channel registry with one batched read: ${(e as Error).message}`, {
+    if (conn.bearer !== undefined && once && isPublishPermissionDenied(e))
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the connection the auth service of ${conn.space} minted for your user may not read ${opts.presenceOnly ? "the presence bucket" : "the presence bucket or the channel registry"} with one batched read: ${(e as Error).message}`, {
         target: { space: conn.space },
-        remedy: `update the auth service of ${conn.space} to a release whose agent profile grants $JS.API.DIRECT.GET.KV_${channelBucket(conn.space)}`,
+        remedy: `update the auth service of ${conn.space} to a release whose agent profile grants $JS.API.DIRECT.GET.KV_${(opts.presenceOnly ? presenceBucket : channelBucket)(conn.space)}`,
       });
     // A one-time read is a Direct Get, which nothing answers when the bucket's stream is gone, and
     // nothing answers either while the broker's JetStream is stopped, as nats-server stops it after a
     // store write it could not make. Only the chat stream's own not-found says the streams are gone.
-    if (readOnce && !opts.watch && noResponders(e)) throw await chatStreamGoneAt(conn) ? streamsAbsent(conn) : jetStreamUnanswered(conn);
+    if (once && noResponders(e)) throw await chatStreamGoneAt(conn) ? streamsAbsent(conn) : jetStreamUnanswered(conn);
     throw e;
   }
   return { ep, space: conn.space, connection: conn };
