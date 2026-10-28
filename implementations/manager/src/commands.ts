@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
 import * as prompts from "@clack/prompts";
@@ -29,7 +29,7 @@ import {
 import {
   assertManagerName, authDir, canonicalLocalProcessPath, canonicalRoot, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, parseSeatCapFlag, publishManagerSpareCapability, readManagerName, readManagerSeatCap, reclaimDeadPreUpgradeRecord, recordManagerName, recordManagerSeatCap, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
   c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, untilInputEnds,
-  brokerAddressForDisplay, brokerUrlCredentialRefusal, brokerUrlHasUserinfo, CommandFailure, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, writeResult, type Report,
+  brokerAddressForDisplay, brokerUrlCredentialRefusal, brokerUrlHasUserinfo, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
   ConfirmationRequired, findMesh, folderSpace, getCurrent, targetErrorCode, targetErrorSpace, workspaceErrorParts, type MeshEntry, type MeshTargetError, type SeatCap,
   deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY,
@@ -312,7 +312,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     if (execution === "none" && target.remoteUser)
       throw new Error("execution: none on supervise requires a genuine hosting user-auth root, not a participant registration");
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
+    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e });
     if (isWorkspaceTargetError(e)) throw managerTargetRefusal(e, v, managerRoot);
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
@@ -544,7 +544,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         },
       };
     } catch (e) {
-      if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm hosted authority preparation; it was not retried");
+      if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm hosted authority preparation; it was not retried", { cause: e });
       console.error(c.red(
         `✗ remote supervision for space "${space}" was refused: ${rejectionText(e)}. ` +
         `Foreground \`cotal spawn\` remains available; detached/managed agents require a live host-approved manager-service authority.`,
@@ -578,7 +578,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   try {
     eventsRequired = (await refreshRegistrationPolicy(target))?.events === "required";
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
+    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e });
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
@@ -598,7 +598,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   try {
     maxSessions = parsePositiveIntegerFlag("--max-sessions", v["max-sessions"]);
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
+    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e });
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
@@ -610,7 +610,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   try {
     seatCap = parseSeatCapFlag("--seat-cap", v["seat-cap"]) ?? readManagerSeatCap({ root: managerRoot, space });
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
+    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e });
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
@@ -620,7 +620,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   try {
     name = v.name !== undefined ? assertManagerName(v.name) : readManagerName({ root: managerRoot, space });
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
+    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e });
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
   }
@@ -651,7 +651,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       ...(service ? { workspaceRoot: managerRoot, onServiceIdentity: bindManagerServiceIdentity(service) } : {}),
     });
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
+    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e });
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
@@ -932,6 +932,12 @@ async function runSeats(args: ParsedArgs): Promise<void> {
   writeResult(presentation, { command: "manager", target, result: { kind: "manager-seat-drain", entries, preview: false, drainSubmitted: true }, ...(incomplete ? { completeness: "partial" as const, failure: new CommandFailure("unknown", "OPERATION_UNKNOWN", "some native drains did not confirm completion; confirmed removals are retained, but an unresolved custodian effect was not treated as unchanged", { target, changed, remedy: "re-read the full seat IDs; no drain was retried" }) } : { noOp: changed.length === 0 }) }, view);
 }
 
+/** A failure on one line: its code, message, the error it wraps and its remedy; another error's message. */
+function failureLine(error: unknown): string {
+  if (!isCommandFailure(error)) return rejectionText(error);
+  return `${error.code}: ${error.message}${error.cause === undefined ? "" : `; cause: ${failureLine(error.cause)}`}${error.remedy ? `; next: ${error.remedy}` : ""}`;
+}
+
 const maintenanceOutputFlags = [jsonFlag, plainFlag,
   { name: "yes", short: "y", type: "boolean", description: "confirm the selected guarded gate repair or childless-seat drain" },
   { name: "dry-run", type: "boolean", description: "review the selected maintenance scope without submitting repair or drain effects" },
@@ -973,7 +979,12 @@ const managerCommands: Command[] = [
     run: async (args) => {
       const service = managerServiceChild(args);
       try { await runManager(args, "auto", service); }
-      catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not establish its complete startup receipt; no replacement was launched and no diagnostic body was copied to stdout"); }
+      catch (error) {
+        // The controller quotes the last line this child logs, so that line names the cause: in its
+        // log in the background, on the terminal in the foreground.
+        writeSync(2, `✗ the manager did not start: ${failureLine(error)}\n`);
+        process.exit(exitCode("unknown", "OPERATION_UNKNOWN"));
+      }
     },
   },
   {

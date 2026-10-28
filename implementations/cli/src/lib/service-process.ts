@@ -696,7 +696,9 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       await Promise.race([exit, delay(1000)]);
       const failed = transition(row, { state: "failed", readiness: "not-checked", ...(exited ? { exit: { code: exitCode, signal: exitSignal } } : {}) });
       const last = logFrom === undefined ? undefined : lastLoggedLine(path, logFrom);
-      throw new CommandFailure("failed", "OPERATION_FAILED", `the owned service process exited before readiness was established${exited ? ` (exit code ${exitCode ?? "none"}, signal ${exitSignal ?? "none"})` : ""}; ${last ? `the last line it logged is: ${last}` : "its log records the cause"}`, { target: instanceProjection(failed), remedy: `read its log with \`cotal service logs ${definition.name} --instance ${id} --space ${value.space}\`` });
+      // A foreground child wrote to this terminal, so its log holds nothing from this launch.
+      const where = options.foreground ? "its output went to this terminal and was not captured in its log" : last ? `the last line it logged is: ${last}` : "its log records the cause";
+      throw new CommandFailure("failed", "OPERATION_FAILED", `the owned service process exited before readiness was established${exited ? ` (exit code ${exitCode ?? "none"}, signal ${exitSignal ?? "none"})` : ""}; ${where}`, { target: instanceProjection(failed), ...(options.foreground ? {} : { remedy: `read its log with \`cotal service logs ${definition.name} --instance ${id} --space ${value.space}\`` }) });
     }
     return { instance: running, noOp: false, child, exit: { done: exit, observed: () => exited, result: () => ({ code: exitCode, signal: exitSignal }) } };
   } finally { if (unpinned) unpinnedLaunches.delete(unpinned); if (!held) hold.release(); }
