@@ -1,5 +1,17 @@
 # @cotal-ai/workspace
 
+## 0.113.0
+
+### Patch Changes
+
+- f3460b3: The user-mode control connect decides its `--creds` and non-user-mode refusals once. `connectUserControlOrExit` prints that sentence and exits, so it can no longer drop the recovery clause or skip the `--creds` refusal.
+- Updated dependencies [38fc031]
+- Updated dependencies [c1ff7d8]
+- Updated dependencies [29c67fe]
+- Updated dependencies [a9cd2f5]
+- Updated dependencies [41fb2de]
+  - @cotal-ai/core@0.113.0
+
 ## 0.112.0
 
 ### Minor Changes
