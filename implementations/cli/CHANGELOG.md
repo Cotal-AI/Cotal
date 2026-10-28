@@ -1,5 +1,13 @@
 # @cotal-ai/cli
 
+## 0.120.2
+
+### Patch Changes
+
+- bf946f3: Warn on authenticated `up --no-manager` starts and refreshes that no local process renews the daemon credentials, naming their stored expiry times and the same-store manager requirement.
+- @cotal-ai/core@0.120.2
+  - @cotal-ai/workspace@0.120.2
+
 ## 0.120.1
 
 ### Patch Changes
