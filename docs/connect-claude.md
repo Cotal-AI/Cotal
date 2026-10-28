@@ -305,6 +305,36 @@ This is cooperative same-host containment. Other hosts, broker URL aliases and o
 are not fenced. Preserve the existing session before choosing a distinct actor for a new
 launch. An uncertain shutdown keeps custody until the consuming process exits.
 
+### The seat entry
+
+The launched entry is `dist/seat.cjs`. It enables Node's [module compile
+cache](https://nodejs.org/docs/latest-v22.x/api/module.html#modulenablecompilecachecachedir) and
+then loads `dist/mcp.cjs`, which holds the server. The cache stores V8's compiled form of that 5 MB
+bundle, so every launch after the first one skips parsing it, which keeps about 5.7 MiB per seat out
+of the process's malloc arena for as long as the seat runs.
+
+The cache lives in `~/.cotal/compile-cache` (`%LOCALAPPDATA%\Cotal\compile-cache` on Windows), the
+OS user's own Cotal directory, which `COTAL_HOME` never redirects. Node keys a subdirectory inside
+it, so a Node upgrade pays one compile and reads no stale entry. The directory grows to the size of one compiled bundle per Node version, under 1 MB each, and
+deleting it is safe at any time: the next seat writes it again.
+
+The directory is created with owner-only permissions, whatever the launching umask was, because a
+compiled bundle belongs to the user who ran the seat.
+
+Two things the cache never does. A cache it cannot open, such as a read-only home, prints one line
+to stderr with Node's reason and the seat serves without it. `NODE_DISABLE_COMPILE_CACHE=1` turns it
+off silently. Setting `NODE_COMPILE_CACHE` to a directory of your own takes precedence over both:
+Node enables the cache there at startup and the seat leaves it alone.
+
+This entry needs Node 22.10 or newer, which is where `module.flushCompileCache()` lands, and that is
+the floor `cotal-ai` declares. On anything older the entry prints one line naming the floor and the
+running version and exits without serving, rather than starting a seat that dies on its first
+flush.
+
+Nothing else moved. `node dist/mcp.cjs` is still a working seat launch for a config written before
+this entry existed, and it pays the compile on every start. It needs no compile cache, so it is also
+the way to serve from a Node older than the floor.
+
 ## Sessions Cotal did not launch
 
 A Claude Code session you start yourself, where the `cotal` plugin is installed, gets the tools the
@@ -1019,6 +1049,9 @@ await session.close();
 ```
 
 Loading the module only exports it; it serves its own stdio only when run, as `node dist/mcp.cjs`.
+A host that loads it this way compiles the bundle in its own process and is outside the seat entry's
+compile cache ([above](#the-seat-entry)); `module.enableCompileCache()` before
+the first load brings the host the same saving.
 The subpath ships CommonJS declarations so TypeScript hosts can use either module format,
 including CommonJS consumers with Node16 or Node18 module settings.
 Claude Code pushes `claude/channel` only to a stdio server it launched, so each `claude` still

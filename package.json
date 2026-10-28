@@ -6,7 +6,7 @@
   "type": "module",
   "packageManager": "pnpm@11.28.2",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.10"
   },
   "scripts": {
     "typecheck": "pnpm build && pnpm -r typecheck",
@@ -819,6 +819,8 @@
     "smoke:down-pidfile-liveness:live": "tsx implementations/cli/smoke/down-pidfile-liveness-live.smoke.ts",
     "smoke:flag-inventory": "tsx bin/smoke/flag-inventory.smoke.ts",
     "smoke:capability-census": "tsx bin/smoke/capability-census.smoke.ts",
+    "smoke:connector-bundle-text": "tsx bin/smoke/connector-bundle-text.smoke.ts",
+    "smoke:seat-compile-cache": "tsx bin/smoke/seat-compile-cache.smoke.ts",
     "smoke:capability-census:live": "tsx bin/smoke/capability-census-live.smoke.ts",
     "smoke:launch-matrix:live": "tsx bin/smoke/launch-matrix-live.smoke.ts",
     "smoke:deprecated-daemon-entries": "tsx bin/smoke/deprecated-daemon-entries.smoke.ts",

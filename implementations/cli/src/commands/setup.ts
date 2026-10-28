@@ -533,7 +533,7 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
     await resolveNatsServer();
   } catch (e) {
     if (e instanceof CommandFailure) throw e;
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", (e as Error).message.split("\n")[0]!, { target, remedy: "install nats-server and put it on PATH, or reinstall cotal-ai under Node 22 or newer" });
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", (e as Error).message.split("\n")[0]!, { target, remedy: "install nats-server and put it on PATH, or reinstall cotal-ai under Node 22.10 or newer" });
   }
   return { inputs, runtimes, candidate, space: { kind: "local", state } };
 }

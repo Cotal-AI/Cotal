@@ -94,7 +94,7 @@
       "find": "        const bearer = (signal?: AbortSignal) => this.managerCallBearer(bearerArgv, signal).catch((e: unknown) => {",
       "replace": "        const bearer = (signal?: AbortSignal) => runAgentBearer(bearerArgv, { signal }).catch((e: unknown) => {",
       "command": "pnpm smoke:user-manager-transport",
-      "expectRed": "✗ actual MeshAgent.spawn over real wire to real Manager succeeded"
+      "expectRed": "\u2717 actual MeshAgent.spawn over real wire to real Manager succeeded"
     },
     {
       "name": "endpoint ignores explicit presence environment",
@@ -135,7 +135,7 @@
     {
       "name": "public MCP exports the dependency crypto namespace",
       "file": "extensions/connector-claude-code/package.json",
-      "find": " --footer:js=\\\"module.exports = { serveClaudeSession: module.exports.serveClaudeSession };\\\"",
+      "find": " --footer:js=\\\"module.exports = { serveClaudeSession: module.exports.serveClaudeSession, runClaudeSeat: module.exports.runClaudeSeat };\\\"",
       "replace": "",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_public_exports_only",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"

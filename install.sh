@@ -9,7 +9,7 @@
 #
 # WHAT IT DOES
 #   1. Works out your platform, and refuses to guess if it is one we do not ship for.
-#   2. Finds a Node >= 22. If your machine has one, it uses it. If not, it downloads the
+#   2. Finds a Node >= 22.10. If your machine has one, it uses it. If not, it downloads the
 #      official Node LTS build into Cotal's own directory and verifies it against the
 #      SHASUMS256.txt published beside it on nodejs.org.
 #   3. Installs the `cotal-ai` package from npm into a prefix Cotal owns.
@@ -45,7 +45,8 @@ set -eu
 # ---------------------------------------------------------------------------------------
 
 COTAL_PKG="cotal-ai"
-NODE_MIN_MAJOR=22               # cotal-ai's engines floor
+NODE_MIN="22.10"                # cotal-ai's engines floor
+NODE_MIN_RANK=22010             # the same floor as major*1000+minor, for one integer compare
 NODE_PIN="v24.18.0"             # Node LTS ("Krypton"), vendored only when the box has none
 NODE_DIST="https://nodejs.org/dist"
 DOCS_URL="https://docs.cotal.ai"
@@ -353,7 +354,7 @@ require_unprivileged() {
 require_download_tools() {
   have curl || have wget ||
     die "Need curl or wget to download the Node runtime." \
-      "This machine has no Node $NODE_MIN_MAJOR+, so one has to be fetched." \
+      "This machine has no Node $NODE_MIN+, so one has to be fetched." \
       "Install curl or wget and run this again."
   have tar || die "Need tar to unpack the Node runtime." "Install tar and run this again."
   have mktemp || die "Need mktemp to stage the download safely." \
@@ -421,14 +422,14 @@ detect_platform() {
     Linux) OS="linux" ;;
     MINGW* | MSYS* | CYGWIN*)
       die "Windows shells are not supported by this installer." \
-        "On Windows, install Node 22+ from https://nodejs.org and then run:" \
+        "On Windows, install Node 22.10+ from https://nodejs.org and then run:" \
         "  npm install -g cotal-ai" \
         "Cotal itself runs fine on Windows; only this shell installer does not."
       ;;
     *)
       die "Unsupported operating system: $_uname_s" \
         "Cotal ships builds for macOS and Linux." \
-        "If you have Node 22+ already: npm install -g cotal-ai"
+        "If you have Node 22.10+ already: npm install -g cotal-ai"
       ;;
   esac
 
@@ -438,7 +439,7 @@ detect_platform() {
     *)
       die "Unsupported CPU architecture: $_uname_m" \
         "Cotal ships x86_64 and arm64 builds." \
-        "If you have Node 22+ already: npm install -g cotal-ai"
+        "If you have Node 22.10+ already: npm install -g cotal-ai"
       ;;
   esac
 
@@ -555,15 +556,16 @@ canonical_file() {
 NODE_BIN="" NPM_BIN="" NODE_LABEL="" NODE_VENDORED=0
 LOG=""
 
-node_major() { "$1" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0; }
+# `22.10.0` ranks 22010 and `22.9.0` ranks 22009, so the floor's minor is part of the compare.
+node_rank() { "$1" -p 'const [m,n]=process.versions.node.split(".");m*1000+ +n' 2>/dev/null || echo 0; }
 
 # Prefer a Node already on the box: it is instant, and it is the Node the user maintains.
 # Fall through to a vendored runtime only when there is nothing here good enough.
 resolve_node() {
   if [ "$OPT_VENDOR_NODE" = 0 ] && have node && have npm; then
     _sys_node=$(canonical_file "$(command -v node)")
-    _sys_major=$(node_major "$_sys_node")
-    if [ "$_sys_major" -ge "$NODE_MIN_MAJOR" ] 2>/dev/null; then
+    _sys_rank=$(node_rank "$_sys_node")
+    if [ "$_sys_rank" -ge "$NODE_MIN_RANK" ] 2>/dev/null; then
       NODE_BIN="$_sys_node"
       NPM_BIN=$(canonical_file "$(command -v npm)")
       NODE_LABEL="$("$NODE_BIN" -v) $S_SEP already on this machine"
@@ -597,7 +599,7 @@ vendor_node() {
     if [ "$OPT_VENDOR_NODE" = 1 ]; then
       _why="--vendor-node"
     else
-      _why="this machine has no Node $NODE_MIN_MAJOR+"
+      _why="this machine has no Node $NODE_MIN+"
     fi
     printf '  %s%s%s Downloading Node %s (%s)\n' \
       "$C_BRAND" "$S_DOT" "$C_OFF" "$NODE_PIN" "$_why"
@@ -641,7 +643,7 @@ vendor_node() {
       "Looked in: $_dir/bin"
   fi
 
-  # A correct checksum says the bytes are authentic, not that they run here. Official Node 22+
+  # A correct checksum says the bytes are authentic, not that they run here. Official Node 22.10+
   # is built against glibc 2.28, so on an older distribution the download and the checksum both
   # succeed and npm then dies with "version GLIBC_2.28 not found" several steps later, after we
   # have already announced the runtime as good. Ask the binary itself, now.
@@ -650,10 +652,10 @@ vendor_node() {
     die "Node $NODE_PIN downloaded and verified, but it cannot run on this system." \
       "$(printf '%s' "$_node_check" | head -1)" \
       "" \
-      "Official Node $NODE_MIN_MAJOR+ builds require glibc 2.28 or newer (Debian 10," \
+      "Official Node $NODE_MIN+ builds require glibc 2.28 or newer (Debian 10," \
       "Ubuntu 18.10, RHEL 8 and later). This machine is older than that." \
       "" \
-      "Install a Node $NODE_MIN_MAJOR+ built for this distribution, then run this again;" \
+      "Install a Node $NODE_MIN+ built for this distribution, then run this again;" \
       "it will use yours instead of downloading one."
   fi
 
@@ -1158,7 +1160,7 @@ main() {
   if [ "$OPT_DRY_RUN" = 1 ]; then
     # Report the runtime decision without acting on it: probe the system Node only.
     if [ "$OPT_VENDOR_NODE" = 0 ] && have node && have npm &&
-      [ "$(node_major "$(command -v node)")" -ge "$NODE_MIN_MAJOR" ] 2>/dev/null; then
+      [ "$(node_rank "$(command -v node)")" -ge "$NODE_MIN_RANK" ] 2>/dev/null; then
       NODE_LABEL="$(node -v) $S_SEP already on this machine"
     else
       NODE_VENDORED=1

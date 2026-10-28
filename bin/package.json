@@ -30,7 +30,7 @@
     "cotal": "./dist/cotal.js"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.10"
   },
   "scripts": {
     "test": "tsx smoke/dep-pins.smoke.ts && tsx smoke/capability-census.smoke.ts",
