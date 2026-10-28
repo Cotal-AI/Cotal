@@ -16,9 +16,12 @@
  *  C3  two concurrent connects while connected share it: both connected, still one renewal record;
  *  C4  connect for a refused proposal: `refused`; for a space without service endpoints: not
  *      connected;
- *  C5  explicit disconnect: `disconnected`, and status agrees;
- *  C6  restart: a new daemon over the same machine home starts not connected, then reconnects under
- *      the same persisted activate and renew ids from its private store;
+ *  C5  explicit disconnect: `disconnected`, status agrees, and the recorded connect intent is gone,
+ *      so the disconnect outlives a restart;
+ *  C6  restart resumes by itself: a connected space records its intent 0600; a new daemon over the
+ *      same machine home reaches `connected` with nothing run against it, reports exactly 1 resumed
+ *      connection, and reuses the same persisted activate and renew ids. After an explicit
+ *      disconnect a restart resumes nothing;
  *  C7  outage: with the authority door unreachable, a fresh connect is not `connected`; once the
  *      door is back it is `connected` again;
  *  C8  terminal: the owner revokes; the state becomes `ended approval-revoked`, never connected again;
@@ -43,7 +46,7 @@
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
-import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -61,6 +64,7 @@ import {
 import { recordMesh, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
 import { daemonPaths } from "../daemon/endpoint.js";
+import { daemonConnectIntentFile } from "../daemon/service.js";
 import { serveDaemon } from "../daemon/server.js";
 
 if (process.platform !== "linux") skipSuite(`daemon-service-connect smoke: Linux only; skipped on ${process.platform}`);
@@ -264,6 +268,8 @@ try {
 
   // ---- independent observations (the fixture's own stock clients, never the daemon's) ----
   const daemonDir = join(home, "daemon");
+  /** Where a space's resume intent is recorded, read the way the daemon derives it. */
+  const intentFile = (space: string) => daemonConnectIntentFile(space, home);
   const filesUnder = (dir: string) => existsSync(dir) ? readdirSync(dir, { recursive: true }).map(String) : [];
   const identityOf = (space: string) => {
     const f = filesUnder(daemonDir).find((p) => p.includes(Buffer.from(space).toString("hex")) && p.endsWith("service-identity.json"));
@@ -407,24 +413,37 @@ try {
     });
 
     await cell("C5 explicit disconnect", async () => {
+      check("C5 instrument: the connection recorded its intent before the disconnect", existsSync(intentFile(ON)));
       const r = await disconnectS(ON);
       check("C5 disconnected", stateOf(r) === "disconnected", r);
       check("C5 status agrees", stateOf(await statusS(ON)) === "disconnected");
+      check("C5 the recorded connect intent is gone, so the disconnect outlives a restart", !existsSync(intentFile(ON)));
       let unanswered = false;
       try { await probeMachine(); } catch (e) { unanswered = unansweredRequest(e); }
       check("C5 the disconnected daemon no longer answers an authorized caller", unanswered);
     });
 
-    await cell("C6 a restarted daemon reconnects from its private store under the same ids", async () => {
+    await cell("C6 a restarted daemon resumes its connection by itself, under the same ids", async () => {
+      // C5 disconnected ON and forgot its intent, so re-establish it and prove it was recorded.
+      check("C6 instrument: no intent is recorded after C5's disconnect", !existsSync(intentFile(ON)));
+      check("C6 instrument: connected again", stateOf(await connectS(ON)) === "connected");
+      check("C6 a connection that the space accepted records its intent 0600", existsSync(intentFile(ON)) && (statSync(intentFile(ON)).mode & 0o777) === 0o600, existsSync(intentFile(ON)) ? (statSync(intentFile(ON)).mode & 0o777).toString(8) : "absent");
       const before = filesUnder(daemonDir).filter((p) => p.includes("service-renewal") && p.endsWith(".json")).map((p) => readFileSync(join(daemonDir, p), "utf8"));
       const ids0 = before.map((t) => { const o = JSON.parse(t) as Record<string, string>; return `${o.activateRequestId}/${o.renewRequestId}`; });
       await d.close();
       d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
-      check("C6 a fresh daemon starts disconnected (no claim without a connection)", stateOf(await statusS(ON)) !== "connected");
-      const r = await connectS(ON);
+      // Nothing is run against this daemon: the state it reports is the one its own resume reached.
+      const st = await waitState(ON, (x) => x === "connected", 90_000);
+      check("C6 it reaches connected with nothing run against it", st === "connected", st);
+      check("C6 it reports exactly 1 resumed connection", d.counters.connectionsResumed === 1, d.counters);
       const after = filesUnder(daemonDir).filter((p) => p.includes("service-renewal") && p.endsWith(".json")).map((p) => JSON.parse(readFileSync(join(daemonDir, p), "utf8")) as Record<string, string>);
-      check("C6 connected again", stateOf(r) === "connected", r);
       check("C6 the same activate and renew ids", ids0.length === 1 && after.length === 1 && ids0[0] === `${after[0]!.activateRequestId}/${after[0]!.renewRequestId}`, { ids0, after: after.map((o) => `${o.activateRequestId}/${o.renewRequestId}`) });
+      // And the other direction: an explicit disconnect must not come back.
+      check("C6 instrument: an explicit disconnect forgets the intent", stateOf(await disconnectS(ON)) === "disconnected" && !existsSync(intentFile(ON)));
+      await d.close();
+      d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+      check("C6 a restart after an explicit disconnect resumes 0 connections and is not connected", d.counters.connectionsResumed === 0 && stateOf(await statusS(ON)) !== "connected", { counters: d.counters, state: stateOf(await statusS(ON)) });
+      check("C6 instrument: connected again for the cells that follow", stateOf(await connectS(ON)) === "connected");
     });
 
     await cell("C12 held past two access-bearer lifetimes: the space keeps it ready and connected returns after each reconnect", async () => {
@@ -497,11 +516,12 @@ try {
         check("C14 the daemon wrote nothing secret to stderr", ![SESSION, ...jwtsIssued].some((t) => childErr.includes(t)) && !/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(childErr));
       } finally {
         if (child.exitCode === null) { child.kill("SIGTERM"); await childExit; }
-        // A crashed child leaves its socket behind (the defect under test). Remove only that file,
-        // known to be this suite's own stale socket, so the later cells keep their daemon.
-        if (child.exitCode !== 0 && existsSync(paths.socket)) unlinkSync(paths.socket);
       }
+      // A crashed child leaves its socket behind; the successor removes exactly that one under the
+      // lifetime lock, with no step from this fixture.
+      const crashed = child.exitCode !== 0 && existsSync(paths.socket);
       d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+      if (crashed) check("C14 the successor recovered the crashed child's socket by itself (1 recovery)", d.counters.socketsRecovered === 1, d.counters);
     });
 
     await cell("C8 the owner revokes: ended, never connected again", async () => {
@@ -540,7 +560,9 @@ try {
         return { status, doc, out };
       };
       const st = await cli("service-status", "--space", ON);
-      check("C11 after a daemon restart `service-status` is not connected (state is per daemon process), exit 2", st.status === 2 && st.doc.error?.code === "TARGET_UNAVAILABLE" && st.doc.error?.cause?.code === "DISCONNECTED", { status: st.status, out: st.out.slice(0, 400) });
+      // The owner revoked in C8, so the restart's own resume cannot reach connected: a revoked
+      // registration is refused however the connect was started.
+      check("C11 after a daemon restart `service-status` for the revoked registration is not connected, exit 2", st.status === 2 && st.doc.result === null && st.doc.error?.code !== undefined && st.doc.error.code !== "OK", { status: st.status, out: st.out.slice(0, 400) });
       const re = await cli("service-connect", "--space", ON);
       check("C11 `service-connect` for the revoked registration refuses (exit 2) and never connects", re.status === 2 && re.doc.outcome === "refused" && re.doc.result === null, { status: re.status, out: re.out.slice(0, 400) });
       const off = await cli("service-connect", "--space", OFF);

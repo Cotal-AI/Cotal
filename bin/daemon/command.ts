@@ -4,8 +4,8 @@
  * without one implementation importing another (AGENTS.md, repository map).
  *
  * This slice serves a local, authenticated endpoint for status, sign-in, a connection check and a
- * registration request, and nothing else: no activation or serving, no Manager, no mesh or Cloud
- * connection, no service install. Linux
+ * registration request, and installs itself as a systemd user service. It starts no Manager and
+ * serves no command on its service. Linux
  * only. Sign-in runs inside the
  * daemon through stock `establishIdpSession`, so the session lands in the machine-home Cotal
  * directory where `cotal login` keeps it, and no token ever crosses the local endpoint. The
@@ -13,11 +13,13 @@
  * own per-space identity, never a Manager's. The registration request (`register.ts`) sends one stock
  * `register` for that identity and reports the space's answer; approval stays with the space owner. The
  * service connection (`service.ts`) connects that approved identity as a stock service through the stock
- * renewal source and reports it connected only once the broker and the space's ready both accept it. It is a
- * foreground foundation, not a resilient machine service: a daemon killed without cleanup leaves
- * its socket behind, and the next start refuses until the operator removes it (see the
- * ALREADY_RUNNING remedy). `state: "ready"` means the local control listener is bound and
- * verified; it says nothing about any mesh or Cloud connection.
+ * renewal source and reports it connected only once the broker and the space's ready both accept it. A
+ * connection it reached records that intent, so a restarted daemon connects those spaces again.
+ * `install` (`install.ts`) runs it as a systemd user service that starts at login, restarts on its
+ * own and survives logout through linger. A killed daemon comes back by itself: its lifetime lock
+ * is kernel-held, so the restart knows its predecessor is gone and removes the exact socket that
+ * predecessor published (`lifetime.ts`). `state: "ready"` means the local control listener is bound
+ * and verified; it says nothing about any mesh or Cloud connection.
  */
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
@@ -30,6 +32,7 @@ import type { Socket } from "node:net";
 import { EndpointRefusal, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { connectCheckViaDaemon, loginViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
+import { applyInstall, applyUninstall, planInstall, planUninstall } from "./install.js";
 import type { ConnectCheckResult, DaemonStatus, LoginResult, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
 export const daemonFlags = [
@@ -38,6 +41,8 @@ export const daemonFlags = [
   { name: "idp", type: "string", value: "<auth base URL>", description: "login: the provider's auth base URL, e.g. <origin>/api/auth" },
   { name: "client-id", type: "string", value: "<id>", description: "login: the OAuth device-flow client id" },
   { name: "daemon-home", type: "string", value: "<abs dir>", description: "run or reach the daemon whose state lives in this directory (absolute, yours, mode 0700, not the Cotal home): its own sign-in, identity and registration, its own socket and lifetime lock. Without it, the default daemon" },
+  { name: "dry-run", type: "boolean", description: "install, uninstall: report the unit it would write or remove, and change nothing" },
+  { name: "yes", type: "boolean", short: "y", description: "uninstall: confirm in a script" },
   spaceFlag,
 ] as const satisfies readonly FlagSpec[];
 
@@ -97,7 +102,7 @@ const REFUSAL: Record<EndpointProblemCode, { code: "UNSUPPORTED" | "TARGET_UNAVA
   SOCKET_WRONG_MODE: { code: "PERMISSION_DENIED", remedy: "inspect the socket; nothing was sent" },
   PEER_UID_MISMATCH: { code: "PERMISSION_DENIED", remedy: "another user's process holds the daemon endpoint; nothing was sent" },
   PEER_NOT_LOCK_OWNER: { code: "PERMISSION_DENIED", remedy: "the process at this daemon home's socket is not the daemon holding its lock; nothing was sent" },
-  LOCK_HELD: { code: "CONFLICT", remedy: "a daemon already serves this daemon home; run cotal daemon status with the same --daemon-home" },
+  LOCK_HELD: { code: "CONFLICT", remedy: "a daemon already holds this lifetime lock; run cotal daemon status, with the same --daemon-home when you passed one" },
 };
 
 function asFailure(e: unknown): unknown {
@@ -275,6 +280,37 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
   ] }));
 }
 
+/** Install or remove the daemon's systemd user service. Both forms report the exact unit. */
+async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promise<void> {
+  const presentation = presentationOf(args.values);
+  const values = args.values as { "dry-run"?: boolean; yes?: boolean };
+  const { paths, home } = resolveTarget(args);
+  if (op === "install") {
+    const dry = values["dry-run"] === true;
+    const r = dry ? { ...planInstall(paths, home), state: "would-install" as const } : applyInstall(paths, home);
+    writeResult(presentation, { command: "daemon install", target: { unit: r.unit }, result: r }, () => ({ sections: [
+      { title: dry ? "Would install" : "Installed", blocks: [
+        { kind: "fields", rows: [["Unit", r.unit], ["Path", r.unitPath], ["Digest", r.sha256], ["User", r.user], ["Linger", r.lingerAlready ? "already enabled" : dry ? "would be enabled" : "enabled by this install"], ["Restart", r.restart], ["Started by", r.wantedBy], ...(r.daemonHome ? [["Daemon home", r.daemonHome] as [string, string]] : [])] },
+        { kind: "lines", lines: [{ text: dry
+          ? "Nothing was written, enabled or started."
+          : "It starts at login, restarts on its own, and keeps running after you log out. Read it with cotal daemon status, and remove it with cotal daemon uninstall.", tone: "hint" }] },
+      ] },
+    ] }));
+    return;
+  }
+  const dry = values["dry-run"] === true;
+  if (!dry && values.yes !== true && !process.stdout.isTTY) throw new CommandFailure("refused", "USAGE_INVALID", "cotal daemon uninstall needs --yes outside a terminal; nothing was removed");
+  const r = dry ? { ...planUninstall(paths), state: "would-remove" as const } : applyUninstall(paths);
+  writeResult(presentation, { command: "daemon uninstall", target: { unit: r.unit }, result: r }, () => ({ sections: [
+    { title: dry ? "Would remove" : "Removed", blocks: [
+      { kind: "fields", rows: [["Unit", r.unit], ["Path", r.unitPath], ["Installed", r.installedAt]] },
+      { kind: "lines", lines: [{ text: dry
+        ? "Nothing was stopped, disabled or removed."
+        : "The daemon is stopped and will not start at login. Linger is left enabled, because other user services may rely on it.", tone: "hint" }] },
+    ] },
+  ] }));
+}
+
 async function serve(args: ParsedArgs): Promise<void> {
   const { paths, home } = resolveTarget(args);
   let running;
@@ -300,19 +336,22 @@ async function run(args: ParsedArgs): Promise<void> {
   if (mode === "connect-check") return connectCheckCommand(args);
   if (mode === "register") return registerCommand(args);
   if (mode === "service-connect" || mode === "service-disconnect" || mode === "service-status") return serviceCommand(args, mode);
-  throw new CommandFailure("refused", "USAGE_INVALID", mode === undefined ? "cotal daemon needs a mode: status, serve, login, connect-check, register, service-connect, service-disconnect or service-status" : `unknown daemon mode ${JSON.stringify(mode)}`, { remedy: "cotal daemon status" });
+  if (mode === "install" || mode === "uninstall") return unitCommand(args, mode);
+  throw new CommandFailure("refused", "USAGE_INVALID", mode === undefined ? "cotal daemon needs a mode: status, serve, install, uninstall, login, connect-check, register, service-connect, service-disconnect or service-status" : `unknown daemon mode ${JSON.stringify(mode)}`, { remedy: "cotal daemon status" });
 }
 
 const daemonCommand: Command = {
   kind: "command",
   name: "daemon",
   group: "Manager",
-  summary: "the local machine daemon (Linux): serve its control endpoint, read its status, sign it in, check and request its own registration with a space, and connect it as its own service",
-  positionals: "<status|serve|login|connect-check|register|service-connect|service-disconnect|service-status>",
+  summary: "the local machine daemon (Linux): install it as a user service, serve its control endpoint, read its status, sign it in, check and request its own registration with a space, and connect it as its own service",
+  positionals: "<status|serve|install|uninstall|login|connect-check|register|service-connect|service-disconnect|service-status>",
   flags: daemonFlags,
   subcommands: [
     { name: "status", summary: "ask the running daemon for its status over the local endpoint", examples: [{ command: "cotal daemon status", note: "ask the running daemon for its status" }, { command: "cotal daemon status --json", note: "the same as one JSON document" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
     { name: "serve", summary: "run the daemon in the foreground and serve its local endpoint (refusals honor --json)", examples: [{ command: "cotal daemon serve", note: "run the machine daemon in this terminal" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
+    { name: "install", summary: "install the daemon as a systemd user service that starts at login, restarts on its own and survives logout", examples: [{ command: "cotal daemon install", note: "run it as a persistent user service" }, { command: "cotal daemon install --dry-run", note: "show the unit it would write" }], flagNames: ["daemon-home", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
+    { name: "uninstall", summary: "stop the daemon's user service, disable autostart and remove its unit", examples: [{ command: "cotal daemon uninstall", note: "remove its login unit" }], flagNames: ["daemon-home", "yes", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "login", summary: "sign the running daemon in to a provider with device approval; the daemon keeps the session", examples: [{ command: "cotal daemon login --idp <url>", note: "sign the daemon in with device approval" }], flagNames: ["idp", "client-id", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "connect-check", summary: "ask the running daemon whether it could register with a space as its own service; registers nothing", examples: [{ command: "cotal daemon connect-check --space <space>", note: "check whether it could register" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
     { name: "register", summary: "ask the running daemon to request its own service registration with a space; the space owner must approve it, and it does not connect", examples: [{ command: "cotal daemon register --space <space>", note: "ask a space to approve it as a service" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
@@ -321,7 +360,7 @@ const daemonCommand: Command = {
     { name: "service-status", summary: "read the running daemon's service connection to a space, without contacting it", examples: [{ command: "cotal daemon service-status --space <space>", note: "read the state of that connection" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
   ],
   prepareMeshTarget: false,
-  examples: [{ command: "cotal daemon serve", note: "run the machine daemon in this terminal" }, { command: "cotal daemon status", note: "ask the running daemon for its status" }, { command: "cotal daemon login --idp <url>", note: "sign the daemon in with device approval" }],
+  examples: [{ command: "cotal daemon install", note: "run the machine daemon as a persistent user service" }, { command: "cotal daemon status", note: "ask the running daemon for its status" }, { command: "cotal daemon login --idp <url>", note: "sign the daemon in with device approval" }],
   run,
 };
 
