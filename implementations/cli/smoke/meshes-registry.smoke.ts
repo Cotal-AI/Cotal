@@ -1154,6 +1154,13 @@ try {
   recordMesh({ space: "a2", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   const multi = await run(["rm", "a1", "a2"]);
   check("rm takes several names at once", multi.code === 0 && loadMeshes().length === 0, loadMeshes());
+  // A name the registry does not hold is reported, and the names it does hold are still removed:
+  // resolving the whole line first is what lets one removal cover every accepted name.
+  recordMesh({ space: "kept", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  recordMesh({ space: "dropped", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  const mixed = await run(["rm", "kept", "never-existed", "dropped"]);
+  check("rm removes the known names of a line that also names an unknown one",
+    mixed.code === 1 && mixed.out.includes("no mesh named") && findMesh("kept") === undefined && findMesh("dropped") === undefined, mixed.out);
 
   // A mesh RUNNING here: `rm` is the wrong verb — it would leave a live broker with no record.
   // "Running here" must be LOCAL PROCESS OWNERSHIP, not a reachable address: any broker answers on

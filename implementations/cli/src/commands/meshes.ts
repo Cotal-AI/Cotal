@@ -5,12 +5,11 @@ import {
   checkDiscoveryDocument,
   clearCurrent,
   discoveryDocumentUrl,
-  findMesh,
   getCurrent,
   keepsRegistration,
   loadMeshes,
   pinnedFetch,
-  removeMesh,
+  removeMeshes as removeMeshRecords,
   renderReport,
   terminalWidth,
   type MeshEntry,
@@ -421,14 +420,20 @@ async function removeMeshes(names: string[], v: Values): Promise<void> {
     process.exit(1);
   }
   let failed = false;
-  let clearedCurrent = false;
+  const accepted: MeshEntry[] = [];
+  const seen = new Set<string>();
+  // One read of the registry answers every name. Looking each one up on its own listed it again.
+  const recorded = new Map(loadMeshes().map((m) => [m.space, m]));
   for (const space of names) {
-    const m = findMesh(space);
+    const m = recorded.get(space);
     if (!m) {
       stderrLine("✗ ", `no mesh named "${space}" is registered - see \`cotal meshes\``, c.red);
       failed = true;
       continue;
     }
+    // A name given twice is one record, removed once and reported once.
+    if (seen.has(m.space)) continue;
+    seen.add(m.space);
     // Refuse only when THIS MACHINE demonstrably runs the mesh — a live recorded pid under its
     // root. Reachability was the wrong test: any broker on that address answers, including a
     // reused port or a foreign NATS, which produced a refusal plus a `cotal down` instruction that
@@ -463,14 +468,17 @@ async function removeMeshes(names: string[], v: Values): Promise<void> {
       failed = true;
       continue;
     }
-    removeMesh(space);
-    if (getCurrent() === space) {
-      clearCurrent();
-      clearedCurrent = true;
-    }
-    console.log(c.green(`✓ unregistered "${space}"`), c.dim(m.server));
+    accepted.push(m);
   }
-  if (clearedCurrent) console.log(c.dim("there is no default mesh now - `cotal use <name>` to set one"));
+  // One removal for the whole accepted set: each name on its own would scan the registry again.
+  // The pointer is read once, before that removal, and cleared only when it names one of them.
+  const current = getCurrent();
+  removeMeshRecords(accepted.map((m) => m.space));
+  if (current !== undefined && accepted.some((m) => m.space === current)) {
+    clearCurrent();
+    console.log(c.dim("there is no default mesh now - `cotal use <name>` to set one"));
+  }
+  for (const m of accepted) console.log(c.green(`✓ unregistered "${m.space}"`), c.dim(m.server));
   if (failed) process.exit(1);
 }
 
