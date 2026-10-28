@@ -194,6 +194,146 @@ else { process.stderr.write("Orca runtime unavailable"); process.exit(2); }
       diagnostic = (err as Error).message;
     }
     ok("non-envelope failures preserve stderr diagnostics", diagnostic.includes("useful Orca diagnostic"), diagnostic);
+
+    const payloadFile = join(stubDir, "read-payload.json");
+    const callLog = join(stubDir, "read-calls.log");
+    writeFileSync(
+      stub,
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(callLog)}, args.join(" ") + "\\n");
+if (args[0] === "status") process.stdout.write(JSON.stringify({ ok: true, result: { runtime: { reachable: true } } }));
+else if (args[0] === "worktree" && args[1] === "current") process.stdout.write(JSON.stringify({ ok: true, result: { worktree: { id: "wt_read", path: ${JSON.stringify(stubDir)} } } }));
+else if (args[0] === "terminal" && args[1] === "create") process.stdout.write(JSON.stringify({ ok: true, result: { terminal: { handle: "term_1", ptyId: "pty_read", connected: true } } }));
+else if (args[0] === "terminal" && args[1] === "list") process.stdout.write(JSON.stringify({ ok: true, result: { terminals: [{ handle: "term_1", ptyId: "pty_read", connected: true }] } }));
+else if (args[0] === "terminal" && args[1] === "read") {
+  const raw = fs.readFileSync(${JSON.stringify(payloadFile)}, "utf8");
+  const parsed = JSON.parse(raw);
+  process.stdout.write(raw);
+  if (parsed && parsed.ok === false) process.exit(1);
+} else process.stdout.write(JSON.stringify({ ok: true, result: {} }));
+`,
+      { mode: 0o700 },
+    );
+
+    writeFileSync(
+      payloadFile,
+      JSON.stringify({ ok: true, result: { terminal: { tail: ["booting", "WARNING: Loading development channels"] } } }),
+    );
+    ok(
+      "readScreen joins a valid terminal tail",
+      orca.readScreen("term_1") === "booting\nWARNING: Loading development channels",
+    );
+
+    writeFileSync(payloadFile, JSON.stringify({ ok: false, error: { code: "read_refused", message: "read refused" } }));
+    let refusedErr: unknown;
+    try {
+      orca.readScreen("term_1");
+    } catch (err) {
+      refusedErr = err;
+    }
+    ok(
+      "readScreen preserves OrcaCliError on ok:false envelopes",
+      refusedErr instanceof orca.OrcaCliError &&
+        refusedErr.code === "read_refused" &&
+        refusedErr.message === "orca terminal read --terminal term_1 --screen --json failed: read refused",
+      refusedErr,
+    );
+
+    const malformedPayloads: [string, unknown][] = [
+      ["null result", { ok: true, result: null }],
+      ["empty result", { ok: true, result: {} }],
+      ["null terminal", { ok: true, result: { terminal: null } }],
+      ["empty terminal", { ok: true, result: { terminal: {} } }],
+      ["null tail", { ok: true, result: { terminal: { tail: null } } }],
+      ["string tail", { ok: true, result: { terminal: { tail: "not an array" } } }],
+      ["non-string tail line", { ok: true, result: { terminal: { tail: ["booting", null] } } }],
+    ];
+    for (const [label, payload] of malformedPayloads) {
+      writeFileSync(payloadFile, JSON.stringify(payload));
+      let readErr: unknown;
+      try {
+        orca.readScreen("term_1");
+      } catch (err) {
+        readErr = err;
+      }
+      ok(
+        `readScreen rejects ${label} with a read diagnostic naming the terminal`,
+        readErr instanceof Error &&
+          !(readErr instanceof TypeError) &&
+          readErr.message === "orca terminal read --terminal term_1 --screen --json returned no terminal tail",
+        readErr,
+      );
+    }
+
+    const stubbedRuntime = registry.resolve<RuntimeProvider>("runtime", "orca").create({ session: "cotal" });
+    const runConfirm = async (
+      seatName: string,
+      payload: unknown,
+      settled: (errors: string[], calls: string[]) => boolean,
+    ): Promise<{ errors: string[]; calls: string[] }> => {
+      writeFileSync(callLog, "");
+      writeFileSync(payloadFile, JSON.stringify(payload));
+      const errors: string[] = [];
+      const originalError = console.error;
+      console.error = (...args: unknown[]) => errors.push(args.map(String).join(" "));
+      const readCalls = () => readFileSync(callLog, "utf8").trim().split("\n").filter(Boolean);
+      try {
+        const handle = stubbedRuntime.spawn(
+          seatName,
+          {
+            command: process.execPath,
+            args: ["-e", ""],
+            env: { PATH: process.env.PATH ?? "" },
+            confirm: "WARNING: Loading development channels",
+          },
+          stubDir,
+        );
+        try {
+          for (let waited = 0; waited < 5_000 && !settled(errors, readCalls()); waited += 50) {
+            await sleep(50);
+          }
+        } finally {
+          handle.stop({ graceful: false });
+        }
+      } finally {
+        console.error = originalError;
+      }
+      return {
+        errors,
+        calls: readCalls(),
+      };
+    };
+    const confirmGood = await runConfirm(
+      "confirm-good",
+      {
+        ok: true,
+        result: { terminal: { tail: ["booting", "WARNING: Loading development channels"] } },
+      },
+      (errors, calls) => errors.length > 0 || calls.includes("terminal send --terminal term_1 --enter --json"),
+    );
+    ok(
+      "startup confirm sends Enter when terminal.tail matches the confirm prompt",
+      confirmGood.errors.length === 0 &&
+        confirmGood.calls.includes("terminal send --terminal term_1 --enter --json"),
+      JSON.stringify(confirmGood),
+    );
+    const confirmNull = await runConfirm(
+      "confirm-null",
+      {
+        ok: true,
+        result: { terminal: { tail: null } },
+      },
+      (errors, calls) => errors.length > 0 && calls.includes("terminal close --terminal term_1 --json"),
+    );
+    ok(
+      "startup confirm reports the terminal read diagnostic and closes the terminal when tail is null",
+      confirmNull.errors.includes(
+        'orca runtime: "confirm-null": Cotal startup confirmation failed: orca terminal read --terminal term_1 --screen --json returned no terminal tail',
+      ) && confirmNull.calls.includes("terminal close --terminal term_1 --json"),
+      JSON.stringify(confirmNull),
+    );
   } finally {
     if (previousBin === undefined) delete process.env.COTAL_ORCA_BIN;
     else process.env.COTAL_ORCA_BIN = previousBin;
