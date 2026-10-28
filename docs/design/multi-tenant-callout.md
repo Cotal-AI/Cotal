@@ -6,8 +6,8 @@ Status: implemented by #4819 and included in published version 0.103.1. `openCal
 are `runSpaceHost` in `packages/workspace/src/space-host.ts`, shared with the delivery host
 ([multi-tenant-delivery.md](multi-tenant-delivery.md)). `cotal auth-service --callout-only --spaces
 <manifest>` is documented under [server daemons](../cli.md#server-daemons). SPEC §10 and Appendix B
-were amended in the same change. `pnpm smoke:callout-multi-tenant:auth` drives two spaces through
-one process on a live broker. The shipped code settles or extends the text below in three places:
+were amended in the same change. `pnpm smoke:callout-multi-tenant:auth` drives three spaces through
+one process on a live broker. The shipped code settles or extends the text below in four places:
 
 - Reconcile also runs when a lane is lost and a fixed 5 seconds after a lane fails to open, and its
   backstop interval is 60 seconds. A manifest that cannot be read or parsed whole is reported and
@@ -15,6 +15,11 @@ one process on a live broker. The shipped code settles or extends the text below
 - Decision 1 is settled as one `--server` per host. A manifest entry that is not a space name string
   is refused with a message to run one host process per broker.
 - The single-space journal line carries `space=<space>`, as decision 4 proposed.
+- Startup now serves the spaces it can and names and retries the rest, as the full auth service host
+  and the delivery host do, so decision 2 and the all-or-nothing text of section 5 no longer hold. Open
+  service endpoint admission never closes, so under all-or-nothing one space that once ran with
+  service endpoints kept every space in the manifest unanswered by the host (#5003). `admitsServiceEndpoints`
+  exports the lane's admission check for the manifest writer.
 
 The record below is the design as written before implementation.
 

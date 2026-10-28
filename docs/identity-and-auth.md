@@ -342,7 +342,9 @@ members; restart it with the unit that runs it. It refuses the HTTP flags and `-
 A replica cannot issue a service-endpoint connection, so it refuses to start in a space that admits
 service endpoints: one whose full service has run with `--service-endpoints`, or as a lane whose
 manifest entry sets `serviceEndpoints`. That first run opens the space's admission and nothing closes
-it, so the refusal stays after the setting is dropped.
+it, so the refusal stays after the setting is dropped. A callout host serving several spaces names
+such a space, retries it every 5 seconds and keeps answering for the others;
+`admitsServiceEndpoints` from `@cotal-ai/auth` answers the same check for a manifest writer.
 
 The loopback face also serves four host-only doors, all capability-gated and never on the public
 face. Two retire a lifecycle: `/interactive-lifecycle/retire` (used by `cotal actor grant/revoke`)

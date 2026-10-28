@@ -217,10 +217,11 @@ Rejected: all-or-none for the full primary, for the reasons above. The argument 
 manifest should be loud" is met by the per-space lines; it does not need every other tenant to go
 down with it.
 
-The callout host keeps all-or-none. The shared loop takes the startup policy as an option. The same
-reasoning applies to the delivery host, whose lanes answer the oracle this host's restarts depend on:
-one bad tenant at a restart could hold every tenant's auth down through it. The delivery host moved
-to servable startup in the change after this one.
+The callout host kept all-or-none in this change. The shared loop takes the startup policy as an
+option. The same reasoning applies to the delivery host, whose lanes answer the oracle this host's
+restarts depend on: one bad tenant at a restart could hold every tenant's auth down through it. The
+delivery host moved to servable startup in the change after this one, and the callout host after
+#5003, where one space with open service endpoint admission kept every space's callout lanes down.
 
 ## 8. Per-space failure isolation
 
@@ -337,7 +338,9 @@ manifest from, and its mint fence for a space includes them (section 9).
 
 One constraint, named: a callout replica cannot issue a service-endpoint connection and refuses a
 space that admits service endpoints (`openCalloutLane`). Such spaces are answered by the primary's
-loop alone until that is lifted, which is a separate change. Cloud's unit sets
+loop alone until that is lifted, which is a separate change. A callout host names and retries such a
+space and serves the rest, and `admitsServiceEndpoints` tells the writer which spaces to leave off
+its list. Cloud's unit sets
 `--service-endpoints` when `COTAL_SERVICE_ENDPOINTS=1`.
 
 Other levers, unchanged by this design: `--auth-timeout` widens the window a burst must fit in, and

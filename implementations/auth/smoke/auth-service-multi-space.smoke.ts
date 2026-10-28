@@ -448,8 +448,12 @@ if (process.argv[2] === "__daemon-auth-service") {
       const replicaC = join(home, "callout-c.json");
       writeManifest(replicaC, { version: 1, spaces: [C.name] });
       const refusedReplica = startDaemon("refused:replica-c", ["--callout-only", "--spaces", replicaC]);
-      check("a callout host naming that space still refuses it, since its admission record is open",
-        await exited(refusedReplica.child) !== 0 && refusedReplica.text().includes(`space "${C.name}" admits service endpoints`), refusedReplica.text().trim().split("\n").at(-1)?.slice(0, 160));
+      await until(() => refusedReplica.text().includes("✓ auth callout host up") || refusedReplica.child.exitCode !== null, `the callout host naming C did not come up: ${refusedReplica.text()}`);
+      check("a callout host naming that space still refuses it, since its admission record is open: it answers for no space and retries it",
+        refusedReplica.child.exitCode === null && refusedReplica.text().includes(`(0 of 1 space(s) answering; retrying ${C.name})`)
+          && refusedReplica.text().includes(`space "${C.name}" admits service endpoints`) && !(await calloutMembers(C.name)).some((m) => m.startsWith("cotal:auth-callout-replica:")),
+        refusedReplica.text().trim().split("\n").at(-1)?.slice(0, 160));
+      await stopDaemon("refused:replica-c");
       const on = await flip({ serviceEndpoints: true });
       const routesOn = await serviceRoutes(C, portC);
       check("adding serviceEndpoints back reopens only that space's lane", on.onlyC, on.log.slice(0, 300));

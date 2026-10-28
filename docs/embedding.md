@@ -1480,10 +1480,17 @@ On a multi-space host the setting is per space. The manifest entry's `serviceEnd
 place it is set, and `--service-endpoints` refuses beside `--spaces`
 ([server daemons](cli.md#server-daemons)). Check a manifest you write with
 `parseAuthHostManifest(text)` from `@cotal-ai/auth` before you rename it into place: it is the parser
-the host applies. A callout replica cannot issue a service-endpoint connection, so it refuses to start
-in a space whose admission is open. The first open with service endpoints opens it and nothing closes
-it, so keep every space that has ever run with service endpoints off replica manifests, also after
-its entry drops the field.
+the host applies. A callout replica cannot issue a service-endpoint connection, so it refuses a space
+whose admission is open: a single-space replica refuses to start, and a callout host names the space
+and retries it every 5 seconds while it answers for the others. The first open with service endpoints
+opens the admission and nothing closes it, so keep every space that has ever run with service
+endpoints off replica manifests, also after its entry drops the field. `admitsServiceEndpoints({ space,
+server, secrets })` from `@cotal-ai/auth` tells you which: it resolves `true` for the spaces a
+callout lane refuses for their admission, with the read the lane makes on the lane's own store grant,
+and throws when the space's service keys are missing or its stores cannot be read. Nothing turns a
+`true` answer back to `false`. To turn service endpoints on for a space a replica lists, remove it from
+every replica manifest and wait for each `<manifest>.applied` first: a lane checks at open, so a lane
+already open keeps answering and denies the service connects the broker hands it.
 
 With `serviceEndpoints`, both faces also serve `/service-endpoint-authority`, and without it that
 route answers 404. `GET` returns the receiver's account and space, the exact `iss` its service

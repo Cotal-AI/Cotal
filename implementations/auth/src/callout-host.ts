@@ -18,8 +18,9 @@ import type { AuthCalloutLimits } from "./callout.js";
 
 export { parseSpaceManifest, type SpaceManifest } from "@cotal-ai/workspace";
 
-/** Run one multi-space callout host until a signal ends it. Every space in the manifest must open at
- *  startup: one that cannot is a configuration error naming the space, not a host serving the rest. */
+/** Run one multi-space callout host until a signal ends it. At startup it answers for every space it
+ *  can, names each one it cannot with the reason, and retries those, so one space's refusal, such as
+ *  open service-endpoint admission, keeps no other space's connects unanswered. */
 export async function runCalloutHost(args: { manifest: string; server: string; root: string; limits?: AuthCalloutLimits }, store?: SecretStore): Promise<void> {
   const { server, root } = args;
   const log = (l: string) => console.error(l);
@@ -28,11 +29,13 @@ export async function runCalloutHost(args: { manifest: string; server: string; r
   const host = await runSpaceHost({
     manifest: args.manifest,
     open: (space) => openCalloutLane({ ...laneOptions, space }),
+    startup: "servable",
     label: "auth callout host",
     entry: "auth-service --callout-only --spaces",
     serving: "answering",
     log,
   });
-  console.log(`✓ auth callout host up (${host.lanes.size} space(s): ${[...host.lanes.keys()].join(", ")}) - answering the callout on ${server}${args.limits?.authTimeoutMs !== undefined ? ` with a ${args.limits.authTimeoutMs / 1000}s authorization timeout` : ""}; no HTTP listener, no auth-service.json`);
+  const waiting = host.named.filter((space) => !host.lanes.has(space));
+  console.log(`✓ auth callout host up (${host.lanes.size} of ${host.named.length} space(s) answering${host.lanes.size ? `: ${[...host.lanes.keys()].join(", ")}` : ""}${waiting.length ? `; retrying ${waiting.join(", ")}` : ""}) - answering the callout on ${server}${args.limits?.authTimeoutMs !== undefined ? ` with a ${args.limits.authTimeoutMs / 1000}s authorization timeout` : ""}; no HTTP listener, no auth-service.json`);
   process.exit(await host.ended);
 }
