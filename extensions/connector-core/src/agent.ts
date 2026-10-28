@@ -2404,7 +2404,13 @@ export class MeshAgent extends EventEmitter {
       if (this.config.turnRelay === false)
         return { ok: false, error: "this connection belongs to a conversation, not a managed seat, so it has no self to stop; disconnecting retires only this connection" };
       // self-halt: the baseline `stop` command, authz-mode self (the caller triple IS the target)
-      return this.managerInvoke("stop", { graceful }, { target: { mode: "self" } });
+      // Open seats can address their launching manager directly. Static credentials retain their
+      // class-only baseline grants; user-auth calls already select their manager through the issuer.
+      const instanceId = !this.config.creds ? this.config.managerInstanceId : undefined;
+      return this.managerInvoke("stop", { graceful }, {
+        target: { mode: "self" },
+        ...(instanceId !== undefined ? { instanceId } : {}),
+      });
     }
     const pin = this.managerPin(opts?.instance);
     if ("error" in pin) return pin.error;
