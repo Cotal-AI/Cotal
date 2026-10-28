@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.118.3
+
+### Patch Changes
+
+- e9b85f5: Recover a Unix control socket left by a crashed connector when the host restarts its MCP server with the same launch environment. Probe before retrying so a live listener still refuses the replacement.
+
 ## 0.118.2
 
 No changes in this release.
