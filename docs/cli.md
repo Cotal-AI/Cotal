@@ -8930,7 +8930,7 @@ and an unconfirmed native stop cannot be forgotten just because its process disa
 
 ## Resolving endpoint targets
 
-`endpoint describe <target>` and `endpoint invoke <target> <command> [--args '<json>']` use the
+`endpoint describe <target>` and `endpoint invoke <target> <command> [--args '<json>'] [--timeout <ms>]` use the
 existing native caller and digest-verified contracts. `ref:<name>` requires a saved reference.
 `ep:<class>` bypasses local references. An unprefixed name checks the selected space's saved
 references first, then uses the native class only when no reference exists. An unreadable or
@@ -8941,10 +8941,12 @@ resolved native class, instance and epoch. The CLI holds its cooperative writer 
 the same bytes before invocation. `--on` must agree with a saved instance pin. A missing pinned
 instance does not fall back to the class queue. Unknown native effects are not blindly retried.
 
-Both read the endpoint's contract first, and so does `auth mint --endpoint`. When no instance
-answers that read within 10 seconds, the command refuses with `TARGET_UNAVAILABLE`: nothing is
-serving the endpoint, or nothing could reach this caller. Its Next says to start the service that
-serves the endpoint. Nothing was invoked or issued.
+Both read the endpoint's contract first, and so do `describe`, `invoke` and `auth mint --endpoint`.
+`endpoint invoke` and `invoke` give that read their `--timeout` (default 10000 ms), the one deadline
+for the whole call. `endpoint describe`, `describe` and `auth mint --endpoint` have no `--timeout`
+and give it 10 seconds. When no instance answers that read within its deadline, the command refuses
+with `TARGET_UNAVAILABLE`: nothing is serving the endpoint, or nothing could reach this caller. Its
+Next says to start the service that serves the endpoint. Nothing was invoked or issued.
 
 A reference's file credential uses the [paired native caller adapter](#endpoint-caller-credentials).
 It must match the selected registered static root, space, endpoint and signed native scope. A
