@@ -158,5 +158,61 @@ function polling(provable: boolean): AgentHandle & { waits: number } {
   check("CONTROL: a handle that can neither stream nor prove an exit makes the watch return false", returnedBare === false);
 }
 
+// (e) a session may replay its exit before onExit returns. The callback then runs while the
+// unsubscribe binding is still being initialized.
+{
+  const replay = (): { handle: AgentHandle; unsubscribed: () => number } => {
+    const state = { unsubscribed: 0 };
+    const handle = streaming("exited");
+    handle.attach = () => {
+      const session = streaming("exited").attach();
+      const onExit = session.onExit.bind(session);
+      session.onExit = (fn) => {
+        const unsubscribe = onExit(fn);
+        fn();
+        return () => { state.unsubscribed++; return unsubscribe(); };
+      };
+      return session;
+    };
+    return { handle, unsubscribed: () => state.unsubscribed };
+  };
+  const off = replay();
+  let offCalls = 0;
+  let threw: unknown;
+  let returnedOff = false;
+  try {
+    returnedOff = watchProvedExit(off.handle, () => { offCalls++; }, () => false);
+  } catch (e) { threw = e; }
+  check(
+    "#3595: a session that replays its exit while watching is false returns true and calls nothing",
+    threw === undefined && returnedOff === true && offCalls === 0 && off.unsubscribed() === 1,
+    { threw: threw === undefined ? null : String(threw), returnedOff, offCalls, unsubscribed: off.unsubscribed() },
+  );
+  const on = replay();
+  let onCalls = 0;
+  const returnedOn = watchProvedExit(on.handle, () => { onCalls++; }, () => true);
+  check("CONTROL: the same replay delivers the exit while watching is true", returnedOn === true && onCalls >= 1, { returnedOn, onCalls });
+}
+
+// (f) a polling proof already in flight resolves after watching turns false
+{
+  let watching = true;
+  let release: () => void = () => {};
+  const proof = new Promise<void>((resolve) => { release = resolve; });
+  const handle = polling(true);
+  handle.waitForExit = () => proof;
+  let calls = 0;
+  const returned = pollProvedExit(handle, () => { calls++; }, () => watching, 20);
+  await new Promise((r) => setTimeout(r, 50));
+  watching = false;
+  release();
+  await new Promise((r) => setTimeout(r, 20));
+  check(
+    "#3595: a polling proof that resolves after watching turns false calls nothing",
+    returned === true && calls === 0,
+    { returned, calls },
+  );
+}
+
 console.log(`\nWATCH-PROVED-EXIT ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

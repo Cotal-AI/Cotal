@@ -252,9 +252,12 @@ export function watchProvedExit(handle: AgentHandle, onExit: () => void, watchin
     return pollProvedExit(handle, onExit, watching, EXIT_POLL_MS);
   }
   // A backend may deliver an exit that already happened, either by an event or by leaving none,
-  // so the status is read once here too. `onExit` runs from either only while `watching` is true,
-  // and a delivery that finds it false drops the subscriber.
-  const unsubscribe = session.onExit(() => {
+  // so the status is read once here too. `onExit` runs from either only while `watching` is true.
+  // The callback does not close over the unsubscribe binding: a session may replay its exit before
+  // `onExit` returns, and the binding does not exist until then. A caller that has already stopped
+  // watching is removed once the binding does exist, so the subscriber does not stay.
+  let unsubscribe = () => {};
+  unsubscribe = session.onExit(() => {
     if (watching()) onExit();
     else unsubscribe();
   });
@@ -281,7 +284,9 @@ export function pollProvedExit(handle: AgentHandle, onExit: () => void, watching
     proof.then(
       () => {
         clearInterval(poll);
-        onExit();
+        // The proof was started while `watching` was true. It may resolve after that changed,
+        // and a caller that stopped watching gets no exit.
+        if (watching()) onExit();
       },
       () => {
         waiting = false;
