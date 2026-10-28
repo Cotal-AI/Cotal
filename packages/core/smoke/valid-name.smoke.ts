@@ -17,7 +17,9 @@
  *
  * Run: pnpm smoke:valid-name
  */
-import { assertValidName, MAX_NAME_LENGTH } from "../src/resolve.js";
+import { assertValidKind, assertValidName, MAX_NAME_LENGTH } from "../src/resolve.js";
+import { CotalEndpoint } from "../src/endpoint.js";
+import type { EndpointKind } from "../src/types.js";
 import { assertValidChannel, MAX_CHANNEL_LENGTH } from "../src/subjects.js";
 
 let ok = 0, fail = 0;
@@ -123,6 +125,20 @@ refusesChannel("a segment holding * names the whole-segment wildcards", "team.ge
 refusesChannel("a segment holding > names the whole-segment wildcards", "team.ge>", /segment "ge>" must be a NATS-safe token \(\[A-Za-z0-9_-\]\), '\*', or '>' - /);
 acceptsChannel("a whole * segment and a final > segment stay valid", "team.*.x");
 acceptsChannel("a final > segment stays valid", "team.>");
+
+// ── Endpoint kind (#3243): closed set ("agent" | "endpoint") enforced at assertValidKind and CotalEndpoint.
+c("assertValidKind accepts agent", assertValidKind("agent") === "agent");
+c("assertValidKind accepts endpoint", assertValidKind("endpoint") === "endpoint");
+for (const bad of ["agnet", "Agent", ""]) {
+  let err: unknown;
+  try { assertValidKind(bad); } catch (e) { err = e; }
+  c(`assertValidKind refuses "${bad}"`, err instanceof Error && /"kind" must be "agent" or "endpoint"$/.test(err.message), err);
+  let ctorErr: unknown;
+  try { new CotalEndpoint({ space: "main", servers: "nats://127.0.0.1:1", card: { name: "kind-probe", kind: bad as EndpointKind } }); } catch (e) { ctorErr = e; }
+  c(`CotalEndpoint constructor refuses card.kind "${bad}"`, ctorErr instanceof Error && /"kind" must be "agent" or "endpoint"$/.test(ctorErr.message), ctorErr);
+}
+c("CotalEndpoint constructor accepts card.kind agent", new CotalEndpoint({ space: "main", servers: "nats://127.0.0.1:1", card: { name: "kind-probe", kind: "agent" } }).card.kind === "agent");
+c("CotalEndpoint constructor accepts card.kind endpoint", new CotalEndpoint({ space: "main", servers: "nats://127.0.0.1:1", card: { name: "kind-probe", kind: "endpoint" } }).card.kind === "endpoint");
 
 console.log(`valid-name smoke: ${ok} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

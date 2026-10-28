@@ -10,7 +10,7 @@
  * `/` is reserved in a name ({@link assertValidName}) so they slot in without a migration.
  * See .internal/plans/peer-addressing.md.
  */
-import type { Presence, PresenceStatus } from "./types.js";
+import type { EndpointKind, Presence, PresenceStatus } from "./types.js";
 import { LINE_BREAK } from "./peer-label.js";
 import { peerLabel } from "./peer-label.js";
 
@@ -169,4 +169,13 @@ export function assertValidName(name: string): void {
         `cannot survive UTF-8 encoding — it is replaced with U+FFFD — so distinct names would ` +
         `silently become one identity.`,
     );
+}
+
+/**
+ * Validate an endpoint kind (`"agent"` or `"endpoint"`). Returns the kind unchanged when valid.
+ */
+export function assertValidKind(kind: unknown, where?: string): EndpointKind {
+  if (kind !== "agent" && kind !== "endpoint")
+    throw new Error(`${where ? `${where}: ` : ""}"kind" must be "agent" or "endpoint"`);
+  return kind;
 }

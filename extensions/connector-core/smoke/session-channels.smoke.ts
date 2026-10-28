@@ -83,5 +83,18 @@ check("a COTAL_SERVERS with no user or password still resolves", configFromEnv({
 const linked = configFromEnv({ COTAL_NAME: "p", COTAL_LINK: "cotal://u:pw0rdX@127.0.0.1:4222/demo" });
 check("a join link still carries a user and password to the endpoint", linked.user === "u" && linked.pass === "pw0rdX" && linked.servers === "nats://127.0.0.1:4222", linked);
 
+// #3243: COTAL_KIND is validated against the closed "agent" | "endpoint" set rather than cast.
+check("an unset COTAL_KIND defaults to agent", bare.kind === "agent", bare.kind);
+check("COTAL_KIND=endpoint resolves to endpoint", configFromEnv({ COTAL_NAME: "p", COTAL_KIND: "endpoint" }).kind === "endpoint");
+check("COTAL_KIND=agent resolves to agent", configFromEnv({ COTAL_NAME: "p", COTAL_KIND: "agent" }).kind === "agent");
+check(
+  "a persona file's kind: endpoint is used when COTAL_KIND is unset",
+  configFromEnv({ COTAL_NAME: "p", COTAL_AGENT_FILE: persona("ep-persona", "kind: endpoint\n") }).kind === "endpoint",
+);
+for (const bad of ["agnet", "Agent"]) {
+  const msg = refusal({ COTAL_KIND: bad });
+  check(`COTAL_KIND=${bad} is refused naming the valid kinds`, msg === 'COTAL config: "kind" must be "agent" or "endpoint"', msg);
+}
+
 console.log(`\nsession-channels: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

@@ -244,5 +244,22 @@ for (const [label, bytes] of [["UTF-16LE", Buffer.concat([Buffer.from([0xff, 0xf
   ok(`a ${label} file is refused by its encoding`, error === `agent file ${file}: it is saved as UTF-16, and Cotal reads only UTF-8; save it as UTF-8`, error);
 }
 
+// 12) #3243: kind is validated against the closed "agent" | "endpoint" set on load and save, empty string included.
+for (const bad of ["agnet", "Agent", '""']) {
+  const file = join(dir, `kind-${bad.replaceAll('"', "empty")}.md`);
+  writeFileSync(file, `---\nname: kind-probe\nkind: ${bad}\n---\nbody\n`);
+  let err = "";
+  try { loadAgentFile(file); } catch (e) { err = (e as Error).message; }
+  ok(`loadAgentFile refuses kind ${bad}`, err === `agent file ${file}: "kind" must be "agent" or "endpoint"`, err);
+}
+for (const bad of ["agnet", "Agent", ""] as const) {
+  let err = "";
+  try { saveAgentFile(join(dir, "bad-kind-save.md"), { name: "kind-probe", kind: bad as AgentDef["kind"], subscribe: [] }); } catch (e) { err = (e as Error).message; }
+  ok(`saveAgentFile refuses kind "${bad}"`, err === 'saveAgentFile: "kind" must be "agent" or "endpoint"', err);
+}
+const epKindFile = join(dir, "kind-endpoint.md");
+saveAgentFile(epKindFile, { name: "kind-probe", kind: "endpoint", subscribe: [] });
+ok("kind: endpoint round-trips through saveAgentFile and loadAgentFile", loadAgentFile(epKindFile).kind === "endpoint");
+
 console.log(`\nagent-file yaml smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

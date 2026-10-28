@@ -29,7 +29,7 @@ import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
-import { assertValidName } from "./resolve.js";
+import { assertValidKind, assertValidName } from "./resolve.js";
 import { writePrivateRecord } from "./secret-fs.js";
 import { utf16Problem } from "./text-encoding.js";
 import { assertValidChannel, assertValidOwnerToken, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
@@ -175,9 +175,8 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
   const model = str("model");
   const variant = str("variant");
   assertLaunchSelectors({ model, variant }, `agent file ${path}`);
-  const kind = str("kind");
-  if (kind && kind !== "agent" && kind !== "endpoint")
-    throw new Error(`agent file ${path}: "kind" must be "agent" or "endpoint"`);
+  const rawKind = str("kind");
+  const kind = rawKind === undefined ? undefined : assertValidKind(rawKind, `agent file ${path}`);
 
   // The pre-ACL field names were renamed (channels→subscribe, publish→allowPublish, +allowSubscribe).
   // Fail loud on the old names rather than silently sweeping them into meta and ignoring them —
@@ -251,7 +250,7 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
   return {
     name,
     role: str("role"),
-    kind: kind as EndpointKind | undefined,
+    kind,
     description: str("description"),
     tags: list("tags"),
     agent: str("agent"),
@@ -278,6 +277,7 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
 export function saveAgentFile(path: string, def: AgentDef): void {
   if (!def.name) throw new Error('saveAgentFile: "name" is required');
   assertValidName(def.name);
+  if (def.kind !== undefined) assertValidKind(def.kind, "saveAgentFile");
   assertLaunchSelectors(def, "saveAgentFile");
   for (const k of Object.keys(def.meta ?? {}))
     if (MODELED_KEYS.has(k) || RENAMED_KEYS.includes(k))
