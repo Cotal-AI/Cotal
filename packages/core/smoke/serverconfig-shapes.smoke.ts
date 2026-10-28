@@ -62,6 +62,21 @@ for (const s of shapes) {
   // guards the shapes; the compiler guards the omission.
 }
 
+// Native broker file logging and rotation render identically on open and authenticated brokers.
+{
+  const logFile = "/tmp/shapes-nats.log";
+  for (const [name, unset, set] of [
+    ["openServerConfig", openServerConfig({ transport: { kind: "plaintext" }, port: 4340, storeDir }), openServerConfig({ transport: { kind: "plaintext" }, port: 4340, storeDir, logFile, logfileSizeLimit: 2048, logfileMaxNum: 3 })],
+    ["serverConfig", serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: 4341, storeDir }), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: 4341, storeDir, logFile, logfileSizeLimit: 2048, logfileMaxNum: 3 })],
+  ] as const) {
+    const block = `log_file: ${JSON.stringify(logFile)}\nlogfile_size_limit: 2048\nlogfile_max_num: 3\n`;
+    assert.ok(set.includes(`\n${block}`), `${name}: native logging directives render`);
+    assert.equal(set.replace(block, ""), unset, `${name}: logging changes only its directive block`);
+  }
+  assert.throws(() => openServerConfig({ transport: { kind: "plaintext" }, port: 4340, storeDir, logfileSizeLimit: 2048 }), /require logFile/);
+  assert.throws(() => serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: 4341, storeDir, logFile: "/tmp/bad\nlog" }), /without control characters/);
+}
+
 // TLS renders on both renderers, and `allow_non_tls` NEVER appears in either. Mixed mode is the
 // one configuration that would let a client decline the upgrade and be served in cleartext, so its
 // absence is asserted rather than assumed — including on the plaintext path, where a stray emit
