@@ -2519,8 +2519,9 @@ async function runAuthServiceHost(args: { manifest: string; server: string; root
     serving: "serving",
     log,
   });
-  const waiting = host.named.filter((space) => !host.lanes.has(space));
-  console.log(`✓ auth service host up (${host.lanes.size} of ${host.named.length} space(s) serving${host.lanes.size ? `: ${[...host.lanes.keys()].join(", ")}` : ""}${waiting.length ? `; retrying ${waiting.join(", ")}` : ""}) - callout on ${server}${args.limits?.authTimeoutMs !== undefined ? ` with a ${args.limits.authTimeoutMs / 1000}s authorization timeout` : ""}, each space's exchange/JWKS in its own auth-service.json`);
+  const opening = host.named.filter((space) => host.opening.has(space));
+  const waiting = host.named.filter((space) => !host.lanes.has(space) && !host.opening.has(space));
+  console.log(`✓ auth service host up (${host.lanes.size} of ${host.named.length} space(s) serving${host.lanes.size ? `: ${[...host.lanes.keys()].join(", ")}` : ""}${opening.length ? `; still opening ${opening.join(", ")}` : ""}${waiting.length ? `; retrying ${waiting.join(", ")}` : ""}) - callout on ${server}${args.limits?.authTimeoutMs !== undefined ? ` with a ${args.limits.authTimeoutMs / 1000}s authorization timeout` : ""}, each space's exchange/JWKS in its own auth-service.json`);
   process.exit(await host.ended);
 }
 

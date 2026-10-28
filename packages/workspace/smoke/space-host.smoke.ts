@@ -8,7 +8,9 @@
  * acknowledgment names the manifest's SHA-256 only once every space it does not name has closed; a
  * lane whose close rejects holds back every acknowledgment, is not opened again while it may still
  * serve, and is closed on a retry; the default startup refuses unless every space opens and closes
- * what it opened; a host that cannot write its acknowledgment refuses to start.
+ * what it opened; a host that cannot write its acknowledgment refuses to start; an open that hangs
+ * holds back neither the other spaces nor the ready line, is not started twice, and its late lane
+ * is taken, or closed when its space has gone or the host refused.
  *
  * Run: pnpm smoke:space-host
  */
@@ -41,12 +43,17 @@ const applied = (path: string): string | undefined => {
 type Event = { space: string; what: "open" | "open-failed" | "closed" | "close-rejected"; port?: number };
 const events: Event[] = [];
 const count = (space: string, what: Event["what"]) => events.filter((e) => e.space === space && e.what === what).length;
-/** Per space: how many opens to fail, how many closes to reject, and how long a close takes. */
-const faults = new Map<string, { openFailures?: number; closeRejections?: number; closeMs?: number }>();
+/** Per space: how many opens to fail, how many closes to reject, how long a close takes, and a
+ *  promise an open waits on before it returns (a hung open, released by the cell). */
+const faults = new Map<string, { openFailures?: number; closeRejections?: number; closeMs?: number; holdOpen?: Promise<void> }>();
+/** How many times each space's open was entered, held ones included. */
+const starts = new Map<string, number>();
 const logLines: string[] = [];
 
 const openStub = async (space: string, settings: { port: number }): Promise<SpaceLane> => {
+  starts.set(space, (starts.get(space) ?? 0) + 1);
   const f = faults.get(space) ?? {};
+  if (f.holdOpen) await f.holdOpen;
   if ((f.openFailures ?? 0) > 0) {
     f.openFailures!--;
     events.push({ space, what: "open-failed" });
@@ -156,6 +163,53 @@ try {
   chmodSync(locked, 0o755);
   check("a host that cannot write its acknowledgment refuses to start and opens no lane",
     lockedRefusal?.includes("cannot write") === true && lockedRefusal.includes("no lane was opened") && count("z", "open") === 0, lockedRefusal);
+
+  // ---- an open that hangs holds back neither the other spaces nor the ready line --------------------
+  const slow = join(dir, "slow.json");
+  let releaseH!: () => void;
+  faults.set("h", { holdOpen: new Promise<void>((r) => { releaseH = r; }) });
+  const slowSha = write(slow, entries({ h: 11, i: 12 }));
+  const t0 = Date.now();
+  const slowHost = await runSpaceHost({
+    manifest: slow, settings, startup: "servable", openDeadlineSeconds: 1, open: openStub,
+    label: "slow host", entry: "slow --spaces", serving: "serving", log: (l) => logLines.push(l),
+  });
+  const startupMs = Date.now() - t0;
+  check("servable startup returns at the deadline with the other spaces served while one open hangs",
+    startupMs >= 1_000 && startupMs < 2_500 && slowHost.lanes.has("i") && !slowHost.lanes.has("h") && slowHost.opening.has("h") && applied(slow) === slowSha, { startupMs, lanes: [...slowHost.lanes.keys()] });
+  check("the host said which space did not open within the deadline", logLines.some((l) => l.includes('space "h" did not open within 1s')));
+  const movedI = write(slow, entries({ h: 11, i: 13 }));
+  check("a later pass reconciles the other spaces and does not start a second open for the hung one",
+    await until(() => applied(slow) === movedI && count("i", "open") === 2, 5_000) && starts.get("h") === 1, { starts: starts.get("h"), events: events.slice(-3) });
+  releaseH();
+  check("the open that settles after its deadline is taken as that space's lane, opened once",
+    await until(() => slowHost.lanes.has("h"), 3_000) && !slowHost.opening.has("h") && count("h", "open") === 1 && starts.get("h") === 1 && logLines.some((l) => l.includes('space "h" opened after its deadline')), events.slice(-3));
+
+  // ---- a late open for a space the manifest dropped meanwhile is closed ---------------------------------
+  let releaseJ!: () => void;
+  faults.set("j", { holdOpen: new Promise<void>((r) => { releaseJ = r; }) });
+  write(slow, entries({ h: 11, i: 13, j: 14 }));
+  await until(() => logLines.some((l) => l.includes('space "j" did not open within 1s')), 5_000);
+  const withoutJ = write(slow, entries({ h: 11, i: 13 }));
+  await until(() => applied(slow) === withoutJ, 5_000);
+  releaseJ();
+  check("a lane that opens after its space left the manifest is closed by the next pass and never served",
+    await until(() => count("j", "closed") === 1, 5_000) && !slowHost.lanes.has("j") && count("j", "open") === 1, events.slice(-3));
+
+  // ---- the default startup refuses a hung open at the deadline ------------------------------------------
+  const strictSlow = join(dir, "strict-slow.json");
+  let releaseK!: () => void;
+  faults.set("k", { holdOpen: new Promise<void>((r) => { releaseK = r; }) });
+  write(strictSlow, entries({ k: 21, l: 22 }));
+  let slowRefusal: string | undefined;
+  try {
+    await runSpaceHost({ manifest: strictSlow, settings, openDeadlineSeconds: 1, open: openStub, label: "strict slow host", entry: "strict-slow --spaces", serving: "serving", log: (l) => logLines.push(l) });
+  } catch (e) { slowRefusal = e instanceof Error ? e.message : String(e); }
+  check("the default startup refuses when a space does not open within the deadline and opens nothing after",
+    slowRefusal?.includes('space "k" did not open within 1s') === true && slowRefusal.includes("no lane was left running") && starts.get("l") === undefined, slowRefusal);
+  releaseK();
+  check("the lane that open settles with after the refusal is closed, not served",
+    await until(() => count("k", "closed") === 1, 3_000) && count("k", "open") === 1, events.slice(-2));
 
   // ---- a signal closes every lane ---------------------------------------------------------------------
   process.kill(process.pid, "SIGTERM");

@@ -71,7 +71,8 @@ export async function runDeliveryHost(args: ParsedArgs): Promise<void> {
       }, STOP_BOUND_MS).unref();
     },
   });
-  const waiting = host.named.filter((space) => !host.lanes.has(space));
-  console.log(`✓ delivery host up (${host.lanes.size} space(s)${host.lanes.size ? `: ${[...host.lanes.keys()].join(", ")}` : ""}${waiting.length ? `; retrying ${waiting.join(", ")}` : ""}) - one delivery lane per space on ${server}${tls ? " with TLS required" : ""}`);
+  const opening = host.named.filter((space) => host.opening.has(space));
+  const waiting = host.named.filter((space) => !host.lanes.has(space) && !host.opening.has(space));
+  console.log(`✓ delivery host up (${host.lanes.size} space(s)${host.lanes.size ? `: ${[...host.lanes.keys()].join(", ")}` : ""}${opening.length ? `; still opening ${opening.join(", ")}` : ""}${waiting.length ? `; retrying ${waiting.join(", ")}` : ""}) - one delivery lane per space on ${server}${tls ? " with TLS required" : ""}`);
   process.exit(await host.ended);
 }
