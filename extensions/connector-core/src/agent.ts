@@ -1975,7 +1975,11 @@ export class MeshAgent extends EventEmitter {
   // ---- sending -------------------------------------------------------------
 
   async send(text: string, channel?: string, mentions?: string[]): Promise<CotalMessage> {
-    await this.requireConnected();
+    try {
+      await this.requireConnected();
+    } catch (error) {
+      throw new Error(`${(error as Error).message}. The message was not sent.`, { cause: error });
+    }
     const clean = normalizeMentions(mentions);
     if (clean) await this.assertKnownMentions(clean);
     return this.ep.multicast(text, { channel, mentions: clean, ...this.stamp().stamp });
@@ -2642,7 +2646,11 @@ export class MeshAgent extends EventEmitter {
    *  the run reached first; a refused one stays for the poll to reconcile (the manager's answer,
    *  not a local guess, decides whether it is settled). */
   async yieldTurn(status: "done" | "blocked" | "handoff", opts: { to?: string; note?: string; turn?: string } = {}): Promise<ControlReply> {
-    await this.requireConnected();
+    try {
+      await this.requireConnected();
+    } catch (error) {
+      throw new Error(`${(error as Error).message}. The yield was not sent.`, { cause: error });
+    }
     const t = opts.turn !== undefined
       ? this.activeTurns.get(opts.turn)
       : [...this.activeTurns.values()].filter((x) => x.surfaced).sort((a, b) => a.acceptedAt - b.acceptedAt)[0];
