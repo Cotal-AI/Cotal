@@ -146,6 +146,14 @@ try {
   const held = (await kv.get(SERVICE_CALLER_PAYLOAD_KEY))!;
   c.check("a withdrawn record refuses issuance across a reload, and re-binding never overwrites it",
     !afterWithdraw.admitted && held.revision === withdrawnRevision && JSON.parse(dec.decode(held.value)).state === "withdrawn", { why: afterWithdraw.why, revision: held.revision, expected: withdrawnRevision });
+  // 8. THE OTHER SIDE OF THE RE-BIND, and it runs last because it ends this broker: a RESTART is a
+  //    new incarnation, not a reload. `server_id`, `start` and the auth store's identity all move,
+  //    and that set is compared for exact equality before anything else, so it refuses.
+  await fx.stopBroker();
+  await fx.restartBroker();
+  const restarted = await gate();
+  c.check("a broker RESTART refuses issuance, naming the incarnation rather than re-binding to it",
+    !restarted.admitted && restarted.why.includes("broker incarnation or auth store changed"), restarted.why);
 } finally {
   await hold?.release().catch(() => {});
   await reader?.close().catch(() => {});
