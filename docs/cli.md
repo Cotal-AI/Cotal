@@ -288,8 +288,11 @@ on the line before it whenever it fits there. A compact `|`, such as the one in
 `<persona.md>|--prompt`, is a break point too: the line ends right after it, the next line starts
 with the following option, and no space is added or lost. A usage too wide for the line breaks after
 its own ` | ` or compact `|` alternatives first. A group too wide for the line, such as
-`(--to/-t <agent> | --channel/-c <channel> | --role/-r <role>)`, takes lines of its own and breaks
-the same way inside, and so does a group nested in it. A group that fits, such as
+`(--to/-t <agent> | --channel/-c <channel> | --role/-r <role>)`, breaks the same way inside, and so
+does a group nested in it. When its first piece opens a bracket, as `(--to/-t <agent> |` does, and
+fits on the line before the group, the group continues that line, so on a narrow terminal the usage
+starts `cotal send (--to/-t <agent> |`. Otherwise the group starts a line, which keeps two words
+such as `cotal stop` together. What follows the group starts a new line. A group that fits, such as
 `[--json|--plain]`, stays whole. Only a single option with its argument that is wider than the line
 breaks at its spaces. An example's command is not wrapped, so each stays one line to copy.
 
