@@ -25,6 +25,18 @@
  * auth service's own CPU and make the bottleneck unreadable. Credentials reach a child over stdin,
  * never argv.
  *
+ * OFF-BOX LOAD. On a small host the children are the bottleneck: on a 2 vCPU VPS they cost about
+ * three times what serving the connects costs, so past roughly half a core they starve the box and
+ * the run reports broker `authentication timeout` refusals that measure the generator rather than
+ * the service. `--load-host` runs the same children on other machines over ssh, with the job still
+ * on stdin, which leaves the broker and the auth service alone on the host under test. It needs
+ * `--listen <addr>:<port>`, because a child on another machine cannot reach `127.0.0.1` — and the
+ * port is given rather than picked so an operator exposing a non-loopback address can put the
+ * firewall rule up BEFORE the listener exists. Monitoring stays on loopback either way.
+ *
+ *   pnpm smoke:callout-load --scenario burst --burst 500 \
+ *     --listen 203.0.113.7:34222 --load-host gen1,gen2 --load-dir /srv/cotal
+ *
  * The main arm runs at the production connect limits unless `--connect-limits <actor>,<owner>,<host>`
  * (connects a minute) sets others. A capacity run sets them above its offered rate: the harness signs
  * every bearer for one owner, so past 10 connects a second the default owner limit refuses by design.
@@ -335,8 +347,53 @@ const ENDPOINTS = num("endpoints", "100");
 const STALL_MS = num("stall-ms", "4000");
 const USERS = num("users", "64");
 /** Load generator processes. One generator saturates at about 450 connects/s on one core, so a
- *  capacity run on a many-core host needs more than the default; the cap is the host's core count. */
-const LOAD_PROCS = Math.max(1, Math.min(availableParallelism(), num("load-procs", "4")));
+ *  capacity run on a many-core host needs more than the default. The cap is the core count of the
+ *  host that actually runs them, which off-box is not this one, so it is applied after the
+ *  generators have been probed. */
+const LOAD_PROCS_ASKED = Math.max(1, num("load-procs", "4"));
+/** `<addr>:<port>` that off-box load children dial. Absent, the broker binds loopback on a free
+ *  port and nothing outside this host can reach it. Given, the listener binds `0.0.0.0` and this
+ *  address is what the children are told — the listener has to answer on loopback too, because the
+ *  auth callout and this process reach the broker there, and in production the service under test
+ *  IS co-located with its broker. Routing its own traffic over the NIC would measure a different
+ *  system. The port is given rather than picked so that an operator widening the bind can put a
+ *  firewall rule up BEFORE the listener exists. */
+const LISTEN = flag("listen", "");
+/** ssh destinations that run the `load` children, comma-separated. Absent, they run here.
+ *
+ *  An entry may carry its own checkout as `target=/abs/path`, because two generators are often two
+ *  accounts with different home directories and one `--load-dir` cannot name both. Listing a target
+ *  more than once is how an offered rate is split unevenly: children are dealt round-robin, so a
+ *  generator that appears twice takes twice the share — which is what a small generator beside a
+ *  large one needs. */
+const LOAD_HOSTS = flag("load-host", "").split(",").map((h) => h.trim()).filter(Boolean);
+/** The checkout to use for any `--load-host` entry that does not name its own. */
+const LOAD_DIR = flag("load-dir", "");
+/** Command prefix for each off-box child, for a generator that shares its host with real services:
+ *  a cgroup cap and a nice level keep the load children from taking CPU the host owes elsewhere.
+ *  The cap belongs on a SHARED slice, not on each child's own scope — a per-scope `CPUQuota=150%`
+ *  gives every child 1.5 cores rather than 1.5 between them, and this harness runs several children
+ *  (`--load-procs`, default 4, at most one per core):
+ *
+ *    systemd-run --user --slice=load.slice --scope -q -p CPUQuota=150% nice -n 19
+ *
+ *  with `CPUQuota` also set on `load.slice` itself, which is what binds. A child that hits the cap
+ *  bounds the OFFERED rate, so a run under one reports a generator-bound rate, never a ceiling;
+ *  the slice's `cpu.stat` `throttled_usec` is how to tell which happened. */
+const LOAD_EXEC = flag("load-exec", "");
+if (LOAD_HOSTS.length && !LISTEN)
+  throw new Error("callout-load: --load-host needs --listen <addr>:<port>; a load child on another machine cannot reach 127.0.0.1");
+if (LOAD_HOSTS.length && !LOAD_DIR && LOAD_HOSTS.some((h) => !h.includes("=")))
+  throw new Error("callout-load: --load-host needs --load-dir, or a `target=/abs/path` entry, for every generator");
+if (LOAD_DIR && !LOAD_DIR.startsWith("/")) throw new Error(`callout-load: --load-dir must be absolute, got ${LOAD_DIR}`);
+/** The parsed `--listen`. Undefined keeps the loopback-plus-free-port default, which is the only
+ *  shape that exposes nothing. */
+const listen = ((): { host: string; port: number } | undefined => {
+  if (!LISTEN) return undefined;
+  const m = /^(.+):(\d+)$/.exec(LISTEN);
+  if (!m) throw new Error(`callout-load: --listen must be <addr>:<port>, got ${LISTEN}`);
+  return { host: m[1], port: Number(m[2]) };
+})();
 /** How many auth-callout service PROCESSES to run behind the queue group. The service is
  *  single-threaded, so this is the only way its throughput crosses one core. */
 const CALLOUTS = Math.max(1, num("callouts", "1"));
@@ -383,11 +440,63 @@ const procRssMb = (pid: number): number => {
   return m ? Number(m[1]) / 1024 : NaN;
 };
 
+// ---- load generators ---------------------------------------------------------------------------
+/** Single-quote one argument for a shell. */
+const shq = (a: string): string => `'${a.replace(/'/g, `'\\''`)}'`;
+const SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
+/** ssh argv that runs `cmd` in a LOGIN shell on `host`.
+ *
+ *  ssh joins everything after the destination with spaces and hands the result to the remote login
+ *  shell, so a command split across argv elements is re-parsed there: passing `["sh", "-lc", cmd]`
+ *  makes the remote run `sh -lc cd /path && …`, where only the bare `cd` is the `-c` argument and
+ *  the rest runs in the home directory. The whole remote command therefore has to arrive as ONE
+ *  already-quoted word. The login shell is what puts the generator's own toolchain on PATH. */
+const sshArgs = (host: string, cmd: string): string[] => [...SSH_OPTS, host, `sh -lc ${shq(cmd)}`];
+/** A generator host, its checkout, and the core count the `--load-procs` cap reads from it. */
+interface LoadGenerator { host: string; dir: string; cores: number }
+/** Probe every generator once, before anything is measured. A generator on a different commit is a
+ *  different client library and so a different measurement: a mismatch refuses the run rather than
+ *  reporting it, the same rule the stock arm's pinned blob follows. The core count comes from here
+ *  too, because off-box the parent's `availableParallelism()` describes the wrong machine. */
+const generators: LoadGenerator[] = LOAD_HOSTS.map((entry) => {
+  const eq = entry.indexOf("=");
+  const host = eq < 0 ? entry : entry.slice(0, eq);
+  const dir = eq < 0 ? LOAD_DIR : entry.slice(eq + 1);
+  if (!dir.startsWith("/")) throw new Error(`callout-load: generator ${host} needs an absolute checkout path, got ${dir}`);
+  let out: string;
+  try {
+    out = execFileSync("ssh", sshArgs(host, `cd ${shq(dir)} && git rev-parse HEAD && nproc`), { encoding: "utf8" });
+  } catch (e) {
+    throw new Error(`callout-load: generator ${host} failed the preflight in ${dir}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const [sha, cores] = out.trim().split("\n");
+  if (sha !== SHA)
+    throw new Error(`callout-load: generator ${host} has ${dir} at ${sha}, this process is ${SHA} - a generator on another commit is a different client library`);
+  return { host, dir, cores: Number(cores) };
+});
+// One host listed twice for weighting is still one machine, so its cores count once.
+const genCores = [...new Map(generators.map((g) => [g.host, g.cores])).values()].reduce((a, c) => a + c, 0);
+const LOAD_PROCS = Math.min(LOAD_PROCS_ASKED, generators.length ? genCores : availableParallelism());
+/** Non-idle CPU seconds on a generator since boot. An off-box row is valid when the generator HOST
+ *  is not saturated, and the children's own `process.cpuUsage()` cannot answer that: it reports
+ *  what the children spent, not what was left on the machine they shared. */
+const genBusyS = (host: string): number => {
+  const f = execFileSync("ssh", sshArgs(host, "head -1 /proc/stat"), { encoding: "utf8" }).trim().split(/\s+/).slice(1).map(Number);
+  return (f.reduce((a, b) => a + b, 0) - (f[3] + f[4])) / CLK_TCK; // total - (idle + iowait)
+};
+
 // ---- space, callout account, broker -----------------------------------------------------------
 const space = `load-${randomUUID().slice(0, 8)}`;
-const PORT = await pickFreePort();
+const PORT = listen ? listen.port : await pickFreePort();
+/** Where the client listener binds: loopback, or every interface when `--listen` asked for an
+ *  off-box generator. nats-server takes one bind address, and loopback is not optional here (see
+ *  `LISTEN`), so widening means `0.0.0.0` and the allowlist belongs in the operator's firewall. */
+const BIND = listen ? "0.0.0.0" : "127.0.0.1";
 const MON_PORT = await pickFreePort();
+/** What THIS host dials: the auth callout and the readiness probe, always over loopback. */
 const SERVERS = `nats://127.0.0.1:${PORT}`;
+/** What a load child dials. The same loopback address until `--listen` names a reachable one. */
+const CHILD_SERVERS = listen ? `nats://${listen.host}:${PORT}` : SERVERS;
 const auth = await createSpaceAuth(space);
 const callout = await createCalloutAuth({ space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
@@ -395,7 +504,7 @@ const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 // here and nowhere else: /varz is how broker-side connection counts are read independently of the
 // client's own tally, and the `authorization { timeout }` block is the production setting under test.
 const conf = serverConfig(auth, [auth], {
-  transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js"),
+  transport: { kind: "plaintext" }, host: BIND, port: PORT, storeDir: join(dir, "js"),
   extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }],
 }) + `\nhttp: 127.0.0.1:${MON_PORT}\n` + (AUTH_TIMEOUT ? `authorization { timeout: ${AUTH_TIMEOUT} }\n` : "");
 writeFileSync(join(dir, "server.conf"), conf);
@@ -495,13 +604,47 @@ const children: ChildProcess[] = [];
  *  /proc before they are killed. */
 const calloutChildren: ChildProcess[] = [];
 
-/** Run one load child. Its job (which carries credentials) goes over stdin, never argv. */
+/** Hosts in deal order, and the share each takes: a host listed twice in `--load-host` takes twice
+ *  the children. */
+const genHosts = [...new Map(generators.map((g) => [g.host, g])).values()];
+const genShare = new Map(genHosts.map((g) => [g.host, generators.filter((x) => x.host === g.host).length]));
+const genDealt = new Map(genHosts.map((g) => [g.host, 0]));
+/** Give the next child to whichever generator is furthest below its share.
+ *
+ *  A `n++ % generators.length` counter cannot honour a share: the warm-up child takes index 0 and
+ *  offsets every later deal, and a child count that is not a multiple of the entry count leaves the
+ *  last entries short. Dealing by deficit is exact whenever the counts allow it and self-corrects
+ *  when they do not. */
+const dealGenerator = (): LoadGenerator => {
+  let best = genHosts[0];
+  let bestRatio = Infinity;
+  for (const g of genHosts) {
+    const ratio = genDealt.get(g.host)! / genShare.get(g.host)!;
+    if (ratio < bestRatio) { bestRatio = ratio; best = g; }
+  }
+  genDealt.set(best.host, genDealt.get(best.host)! + 1);
+  return best;
+};
+/** Forget the warm-up child's deal, so the measured phase starts from an even board. */
+const resetDeal = (): void => { for (const h of genDealt.keys()) genDealt.set(h, 0); };
+
+/** Run one load child. Its job (which carries credentials) goes over stdin, never argv.
+ *
+ *  Off-box it is the same file, the same `load` argv and the same job on stdin, reached by ssh:
+ *  only the spawn's own argv changes, and that carries no secret, so no credential touches a
+ *  command line or the generator's disk. `exec` makes the remote node the sshd child directly, so
+ *  the hangup that follows this process killing its ssh reaches the child rather than a shell. */
 const runLoad = (job: ChildJob): Promise<ChildResult> =>
   new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [...process.execArgv, import.meta.filename, "load"], {
-      stdio: ["pipe", "pipe", "inherit"],
-      env: { ...cleanEnv, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off" },
-    });
+    const gen = generators.length ? dealGenerator() : undefined;
+    const child = gen
+      ? spawn("ssh", sshArgs(gen.host,
+          `cd ${shq(gen.dir)} && DO_NOT_TRACK=1 COTAL_TELEMETRY=off exec ${LOAD_EXEC ? `${LOAD_EXEC} ` : ""}node --import tsx implementations/auth/smoke/callout-load.smoke.ts load`),
+          { stdio: ["pipe", "pipe", "inherit"], env: cleanEnv })
+      : spawn(process.execPath, [...process.execArgv, import.meta.filename, "load"], {
+          stdio: ["pipe", "pipe", "inherit"],
+          env: { ...cleanEnv, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off" },
+        });
     children.push(child);
     let out = "";
     child.stdout.setEncoding("utf8");
@@ -597,11 +740,13 @@ try {
 
   // Warm the path: the first callout after startup pays module/JIT warm-up that belongs to neither
   // arm's steady state, and on a loaded box can be dropped outright.
-  await runLoad({ mode: "churn", servers: SERVERS, sentinelCreds: callout.sentinelCreds, bearers: bearers.slice(0, 4), connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: 4, seconds: 1 });
+  await runLoad({ mode: "churn", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers: bearers.slice(0, 4), connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: 4, seconds: 1 });
   handlerMs.length = 0; served = 0; answers.length = 0;
+  resetDeal();
   const broker0 = { ...brokerLog };
 
   const v0 = await varz();
+  const genBusy0 = generators.map((g) => genBusyS(g.host));
   const brokerCpu0 = procCpuMs(srv.pid!);
   const selfCpu0 = process.cpuUsage();
   const t0 = performance.now();
@@ -613,26 +758,31 @@ try {
     const secs = SCENARIO === "burst" ? 1 : SECONDS;
     const procs = Math.min(LOAD_PROCS, Math.max(1, Math.ceil(offered / 25)));
     result = merge(await Promise.all(Array.from({ length: procs }, () =>
-      runLoad({ mode: "churn", servers: SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: offered / procs, seconds: secs }))));
+      runLoad({ mode: "churn", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: offered / procs, seconds: secs }))));
     note = `${procs} load process(es), ${offered}/s offered for ${secs}s`;
   } else if (SCENARIO === "idle-seats") {
-    result = await runLoad({ mode: "seats", servers: SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, seats: SEATS, pollMs: POLL_MS, seconds: SECONDS });
+    result = await runLoad({ mode: "seats", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, seats: SEATS, pollMs: POLL_MS, seconds: SECONDS });
     note = `${SEATS} seats, one reconnect per ${POLL_MS}ms each, ${SECONDS}s`;
   } else if (SCENARIO === "expired-bearer") {
     // One actor loops with an EXPIRED bearer while the steady load runs: the question is what a
     // permanently-denied client costs everyone else.
     const expired = await mintBearer("agent_expired", { expiredBy: BEARER_TTL_S + 300 });
+    // One process is spent on the expired-bearer loop, so a single-process budget leaves nothing to
+    // drive the valid load. Refuse rather than report a rate that never ran: the row would name
+    // `RATE/s valid` over a run with no valid client in it.
+    if (LOAD_PROCS < 2)
+      throw new Error(`callout-load: --scenario expired-bearer needs at least 2 load processes (one drives the expired loop); --load-procs resolved to ${LOAD_PROCS}`);
     const procs = Math.min(LOAD_PROCS - 1, Math.max(1, Math.ceil(RATE / 25)));
     const [good, bad] = await Promise.all([
-      Promise.all(Array.from({ length: procs }, () => runLoad({ mode: "churn", servers: SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: RATE / procs, seconds: SECONDS }))),
-      runLoad({ mode: "churn", servers: SERVERS, sentinelCreds: callout.sentinelCreds, bearers: [expired], connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: 20, seconds: SECONDS }),
+      Promise.all(Array.from({ length: procs }, () => runLoad({ mode: "churn", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: RATE / procs, seconds: SECONDS }))),
+      runLoad({ mode: "churn", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers: [expired], connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: 20, seconds: SECONDS }),
     ]);
     result = merge([...good, bad]);
     note = `${RATE}/s valid + 20/s expired-bearer loop for ${SECONDS}s`;
   } else if (SCENARIO === "ledger-stall") {
     const procs = Math.min(LOAD_PROCS, Math.max(1, Math.ceil(RATE / 25)));
     const load = Promise.all(Array.from({ length: procs }, () =>
-      runLoad({ mode: "churn", servers: SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: RATE / procs, seconds: SECONDS })));
+      runLoad({ mode: "churn", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: RATE / procs, seconds: SECONDS })));
     // Stall the ledger in the middle of the run, so the table carries both sides of the stall.
     await wait((SECONDS * 1000) / 3);
     let release!: () => void;
@@ -645,7 +795,7 @@ try {
     note = `${RATE}/s for ${SECONDS}s, auth ledger stalled ${STALL_MS}ms starting at t=${((SECONDS * 1000) / 3 / 1000).toFixed(1)}s`;
   } else if (SCENARIO === "msgrate") {
     result = await runLoad({
-      mode: "hold", servers: SERVERS, sentinelCreds: callout.sentinelCreds, bearers,
+      mode: "hold", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers,
       connectTimeoutMs: CONNECT_TIMEOUT_MS, endpoints: ENDPOINTS, seconds: SECONDS,
       subSubject: chatSubject(space, "*", "*", CHANNEL),
       pubSubjects: bearers.map((_, i) => chatSubject(space, OWNER, `agent_${i}`, CHANNEL)),
@@ -656,6 +806,7 @@ try {
   }
 
   const elapsedS = (performance.now() - t0) / 1000;
+  const genBusy1 = generators.map((g) => genBusyS(g.host));
   const loadS = result.loadMs / 1000;
   const selfCpu = process.cpuUsage(selfCpu0);
   const brokerCpuMs = procCpuMs(srv.pid!) - brokerCpu0;
@@ -668,6 +819,10 @@ try {
   row("git sha", SHA);
   row("nats-server", `${serverVersion} (${NATS_BIN})`);
   row("scenario", `${SCENARIO} — ${note}`);
+  row("broker listen", listen ? `${BIND}:${PORT} - children dial ${CHILD_SERVERS}, this host ${SERVERS}` : `${SERVERS} (loopback, free port)`);
+  row("load generator", generators.length
+    ? `${generators.map((g) => `${g.host} (${g.cores} cores, ${g.dir})`).join(", ")} over ssh${LOAD_EXEC ? `, under \`${LOAD_EXEC}\`` : ""}`
+    : "co-located with the broker and the auth service");
   row("arm", ARM === "main" ? "main (native Ed25519 signer, maxInFlight 32)" : `stock ${STOCK_REF} (pure-JS signer, serial)`);
   row("auth callout processes", CALLOUTS);
   const limits = (connectLimiter ?? new ConnectLimiter()).limits;
@@ -704,6 +859,9 @@ try {
   row("auth service CPU (cores, all processes)", authCpuMs / 1000 / elapsedS);
   row("broker CPU (cores)", brokerCpuMs / 1000 / elapsedS);
   row("load generators CPU (cores)", result.cpuMs / 1000 / elapsedS);
+  // The children's own CPU is not the generator host's: a row is valid when the HOST had headroom.
+  for (const [i, g] of [...new Map(generators.map((g, i) => [g.host, { i, g }])).values()].map((v) => [v.i, v.g] as const))
+    row(`generator host CPU (cores): ${g.host}`, `${n2((genBusy1[i] - genBusy0[i]) / elapsedS)} of ${g.cores}`);
   row("auth service CPU per callout (ms)", served ? authCpuMs / served : NaN);
   row("broker CPU per connect (ms)", result.attempts ? brokerCpuMs / result.attempts : NaN);
   row("auth service RSS (MB)", process.memoryUsage().rss / 1048576);
