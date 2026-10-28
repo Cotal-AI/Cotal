@@ -759,7 +759,7 @@ try {
     const stoppedHere = await cotal(["supervise", "--space", SPACE, "--server", SERVER], { cwd: root2, env });
     check("supervise from that stopped root is refused as stopped, not as stale state to remove",
       stoppedHere.status === 2 && plain(stoppedHere.out).includes(`Mesh: ${SPACE}\n`) && preConnect(stoppedHere.out, "TARGET_UNAVAILABLE") &&
-        plain(stoppedHere.out).includes(`"${SPACE}" is stopped; its last operation, cotal down, completed, so no manager started`) &&
+        plain(stoppedHere.out).includes(`"${SPACE}" is stopped; its last operation, \`cotal down\`, completed, so no manager started`) &&
         plain(stoppedHere.out).includes(`start it again with \`cotal up\` in ${root2}, or start the manager from the folder whose cotal up started the broker at ${SERVER}`), stoppedHere.out);
     second.bare = mkdtempSync(join(tmpdir(), "cotal-ua-no-records-"));
     const elsewhere = await cotal(["supervise", "--space", SPACE, "--server", SERVER], { cwd: second.bare });

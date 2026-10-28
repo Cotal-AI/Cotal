@@ -377,7 +377,7 @@ function notStarted(space: string, cwd?: string): void {
 /** What the root a space was prepared in records about its stack, as a command that targets it
  *  reports it: `unsettled` when the last whole-stack `up` or `down` recorded no outcome, `stopped`
  *  once a stack that launched a member recorded one, else `prepared`. `lastOperation` names that
- *  operation and how it ended, such as `cotal down, completed`. */
+ *  operation and how it ended, such as `` `cotal down`, completed ``. */
 export type PreparedLifecycle =
   | { state: "prepared"; lastOperation: null }
   | { state: "stopped"; lastOperation: string; stopped: NonNullable<MeshTargetErrorDetails["stopped"]> }
@@ -387,12 +387,12 @@ export type PreparedLifecycle =
 export function preparedLifecycle(root: string, space: string): PreparedLifecycle {
   const stopped = stoppedStack(root, space);
   const unsettled = unsettledStackOperation(root, space);
-  if (unsettled) return { state: "unsettled", lastOperation: `cotal ${unsettled}, with no recorded outcome`, unsettled, ...(stopped ? { stopped } : {}) };
+  if (unsettled) return { state: "unsettled", lastOperation: `${codeSpan(`cotal ${unsettled}`)}, with no recorded outcome`, unsettled, ...(stopped ? { stopped } : {}) };
   if (stopped) return { state: "stopped", lastOperation: `${stopped.operation}, ${stopped.outcome}`, stopped };
   return { state: "prepared", lastOperation: null };
 }
 
-const OPERATION: Record<string, string> = { up: "cotal up", down: "cotal down", preserve: "a preserving cotal down", resume: "a resume" };
+const OPERATION: Record<string, string> = { up: codeSpan("cotal up"), down: codeSpan("cotal down"), preserve: `a preserving ${codeSpan("cotal down")}`, resume: "a resume" };
 const OUTCOME: Record<string, string> = { completed: "completed", failed: "failed", refused: "was refused", partial: "applied in part", unknown: "has an unknown outcome", applying: "did not finish", planned: "did not finish" };
 
 /** The last operation and recorded store cap of `space`'s controller stack at `root`, when its

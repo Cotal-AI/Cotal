@@ -20,10 +20,17 @@ const {
   commandFailureReport,
   CommandFailure,
   heldSpaceNote,
+  MeshTargetError,
+  stackJournalPath,
+  stoppedStack,
+  workspaceErrorParts,
   wrapWords,
   writeResult,
 } = await import("@cotal-ai/workspace");
 import type { Report } from "@cotal-ai/workspace";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 let failed = 0;
 function check(name: string, cond: boolean, extra?: unknown): void {
@@ -204,6 +211,20 @@ check(`a refusal whose remedy is one ${wide.length}-column command keeps it on o
   commandRemedy.at(-1) === `  ${wide}` && commandRemedy.at(-2) === "Next" && !wideRemedy.some((line) => line.includes(wide)), { commandRemedy, wideRemedy });
 const prose = nextLines("cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid");
 check("a remedy that starts with a command and goes on as prose wraps at its spaces", prose.slice(prose.indexOf("Next") + 1).length > 1 && fits(prose.join("\n"), 80), prose);
+// A stopped space's line names its last operation's command in backticks after other words, so at 80
+// columns, as `status` prints it, a 36-character space name leaves that command whole. It split after
+// `cotal`.
+const stoppedRoot = mkdtempSync(join(tmpdir(), "cotal-present-"));
+process.on("exit", () => rmSync(stoppedRoot, { recursive: true, force: true }));
+const stoppedName = `lastop-${"q".repeat(29)}`;
+mkdirSync(dirname(stackJournalPath(stoppedRoot)), { recursive: true });
+for (const { kind, phase } of [{ kind: "down", phase: "completed" }, { kind: "up", phase: "failed" }] as const) {
+  writeFileSync(stackJournalPath(stoppedRoot), JSON.stringify({ space: stoppedName, members: [{ instanceId: "member-1" }], operation: { kind, phase } }));
+  const { message } = workspaceErrorParts({ kind: "target", error: new MeshTargetError("not-started", "stopped", { space: stoppedName, root: stoppedRoot, stopped: stoppedStack(stoppedRoot, stoppedName) }) });
+  const lines = renderReport({ sections: [{ title: "Selected space", blocks: [{ kind: "lines", lines: [{ text: message, tone: "hint", mark: "○" }] }] }] }, "rich", 80).replace(/\x1b\[[0-9;]*m/g, "").split("\n");
+  check(`a stopped space with a 36-character name keeps \`cotal ${kind}\` whole in backticks at 80 columns when its last ${kind} ${phase}`,
+    stoppedName.length === 36 && message === `"${stoppedName}" is stopped; its last operation, \`cotal ${kind}\`, ${phase}` && lines.some((line) => line.includes(`\`cotal ${kind}\`, ${phase}`)) && fits(lines.join("\n"), 80), lines);
+}
 const longFields = { sections: [{ blocks: [{ kind: "fields" as const, rows: [["id", "x"], ["server", "nats://broker.example.com:4222 with a note that runs well past the line"]] as [string, string][] }] }] };
 const longField = renderReport(longFields, "plain", 60);
 check("a long field value fits the width", fits(longField, 60), longField);

@@ -261,13 +261,25 @@ for (const [args, usage, foreign] of [
     check(`cotal ${name} --help at 60 columns keeps every --flag <value> unit and every command it names, ${named} included, on one line`,
       units.length > 10 && units.includes(named) && split.length === 0 && narrow.every((line) => displayWidth(line) <= 60), { split, narrow });
   }
+  // At 40 columns run's --on names `cotal ps` in backticks on one line, in run's help and its hosted
+  // verbs'. It named it bare.
+  for (const path of [[], ["start"], ["show"], ["answer"], ["amend"]]) {
+    const lines: string[] = [];
+    printHelpPath(registry.resolve<Command>("command", "run"), path, (line) => lines.push(...line.replace(/\x1b\[[0-9;]*m/g, "").split("\n")), 40);
+    const text = lines.join("\n");
+    check(`cotal ${["run", ...path].join(" ")} --help at 40 columns names \`cotal ps\` under --on in backticks on one line`,
+      lines.some((line) => line.includes("`cotal ps`") && displayWidth(line) <= 40) && text.split("cotal ps").length === text.split("`cotal ps`").length, lines);
+  }
 
   // Every string literal in the CLI and workspace sources that names a command after other words, as
   // a remedy, a Next, a hint or a message does, writes it in backticks, so the renderer keeps it
-  // whole and --json carries the same text. A command is `cotal` and a registered command name, or an
+  // whole and --json carries the same text, and so does every option description a registered command
+  // declares, which its help prints. A command is `cotal` and a registered command name, or an
   // interpolated one; `displayCmd()`, or a const bound to it, prints as `cotal`. Comments are not
   // string literals, and a usage line or a literal that starts with its command is not a sentence
-  // naming one. This file is not under the sources it reads.
+  // naming one, unless that command is interpolated and words follow it: such a literal is a clause
+  // another sentence holds, as a last operation's "cotal up, with no recorded outcome" was. This file
+  // is not under the sources it reads.
   {
     const names = new Set(registry.all<Command>("command").flatMap((cmd) => [cmd.name, ...(cmd.aliases ?? [])]));
     // Literals that are code or a data value, or name cotal itself: a file and the literal's text.
@@ -277,9 +289,20 @@ for (const [args, usage, foreign] of [
       ["implementations/cli/src/lib/setup-log.ts", /^\n=== cotal setup - /], // the setup log's header
       ["implementations/cli/src/seed/paths.ts", /can take an installed cotal down\.|cannot determine the cotal version: /], // cotal, the program
       ["implementations/cli/src/seed/reconcile.ts", /and this cotal \$\{\} does not move it back/],
+      ["implementations/cli/src/commands/status.ts", /^cotal \$\{\} {2}· {2}Node \$\{\}/], // cotal, the program, and its version
+      ["implementations/cli/src/lib/nearest-word.ts", /^cotal \$\{\} has no subcommand /], // a refusal that starts with its command
       ["implementations/cli/src/commands/service-registry.ts", /^cotal up or cotal supervise$/], // startedBy, a data value
-      ["packages/workspace/src/mesh-target.ts", /^a preserving cotal down$/], // part of lastOperation, a documented --json value
     ];
+    // Where `text` names a command after other words, or leads with an interpolated one that words
+    // follow, outside backticks.
+    const bare = (text: string): number[] => [...text.matchAll(/(?:^|(?<=[ ("']))cotal (\S+)/g)].flatMap((match) => {
+      // Environment assignments before a command, as in ZDOTDIR=<dir> cotal completion, are part of it.
+      const before = text.slice(0, match.index), line = before.slice(before.lastIndexOf("\n") + 1).replace(/^(?:[A-Z_][A-Z0-9_]*=\S* )+/, "");
+      const word = match[1]!.replace(/[,;:.)"']+$/, "");
+      const command = names.has(word) || names.has(word.replace(/\$\{\}.*$/, "")) || word.startsWith("${}");
+      const clause = word.startsWith("${}") && /[A-Za-z]/.test(text.slice(match.index + match[0].length).split("\n")[0]!.replace(/\$\{\}|--?[\w-]+|<[^>]*>|\[[^\]]*\]/g, ""));
+      return !command || !(/[A-Za-z]/.test(line) || clause) || /(usage: |\| )$/.test(before) || (before.match(/`/g) ?? []).length % 2 === 1 ? [] : [match.index];
+    });
     const sources = spawnSync("git", ["ls-files", "--", "implementations/cli/src/*.ts", "packages/workspace/src/*.ts"], { cwd: REPO, encoding: "utf8" }).stdout.split("\n").filter(Boolean);
     const offenders: string[] = [];
     for (const file of sources) {
@@ -294,21 +317,15 @@ for (const [args, usage, foreign] of [
       const visit = (node: ts.Node): void => {
         const text = ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text
           : ts.isTemplateExpression(node) ? node.head.text + node.templateSpans.map((span) => (display.has(span.expression.getText(tree)) ? "cotal" : "${}") + span.literal.text).join("") : undefined;
-        if (text !== undefined && !exempt.some(([path, literal]) => path === file && literal.test(text))) {
-          for (const match of text.matchAll(/(?<=[ ("'])cotal (\S+)/g)) {
-            // Environment assignments before a command, as in ZDOTDIR=<dir> cotal completion, are part of it.
-            const before = text.slice(0, match.index), line = before.slice(before.lastIndexOf("\n") + 1).replace(/^(?:[A-Z_][A-Z0-9_]*=\S* )+/, "");
-            const word = match[1]!.replace(/[,;:.)"']+$/, "");
-            const command = names.has(word) || names.has(word.replace(/\$\{\}.*$/, "")) || word.startsWith("${}");
-            if (!command || !/[A-Za-z]/.test(line) || /(usage: |\| )$/.test(before) || (before.match(/`/g) ?? []).length % 2 === 1) continue;
-            offenders.push(`${file}:${tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1}: ${JSON.stringify(text.slice(Math.max(0, match.index - 40), match.index + 40))}`);
-          }
-        }
+        if (text !== undefined && !exempt.some(([path, literal]) => path === file && literal.test(text)))
+          for (const at of bare(text)) offenders.push(`${file}:${tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1}: ${JSON.stringify(text.slice(Math.max(0, at - 40), at + 40))}`);
         ts.forEachChild(node, visit);
       };
       visit(tree);
     }
-    check(`every source string literal that names a command after other words writes it in backticks (${sources.length} files)`, sources.length > 100 && offenders.length === 0, offenders);
+    const options = registry.all<Command>("command").flatMap((cmd) => (cmd.flags ?? []).map((flag) => [`cotal ${cmd.name} --${flag.name}`, flag.description ?? ""] as const));
+    for (const [option, description] of options) for (const at of bare(description)) offenders.push(`${option}: ${JSON.stringify(description.slice(Math.max(0, at - 40), at + 40))}`);
+    check(`every source string literal and option description that names a command after other words writes it in backticks (${sources.length} files, ${options.length} options)`, sources.length > 100 && options.length > 300 && offenders.length === 0, offenders);
   }
 
   // `cotal <path> --help` and `cotal help <path>` reach the help through two routes, the dispatcher's
