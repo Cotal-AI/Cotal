@@ -65,7 +65,15 @@ import {
   waitConsumerName,
   DEV_OWNER,
   type CotalMessage,
+  CotalEndpoint,
+  provisionAgent,
+  principalKey,
+  fenceLifecycleAcl,
+  openMembersRegistry,
+  readMember,
+  memberKey,
 } from "@cotal-ai/core";
+import type { KV } from "@nats-io/kv";
 import { MeshHandler, EpfSettleWatcher, startRun, driveRun, planFork, commitFork, RunJournalStore } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { Cancelled, parseDuration, Journal, resolvePins, run as runProgram } from "@cotal-ai/lang";
@@ -982,6 +990,85 @@ const A = await driver(RUN_A, TK_A);
   c("a single-credential local CLI attempt reaches the named refusal", result.status === 1 && output.includes("single --creds"), output.slice(-1200));
   c("the local credential refusal gives a concrete next command", output.includes("omit --creds") && output.includes("cotal run start --local --space"), output.slice(-1200));
   c("the local credential refusal renders without a stack trace", !/^\s+at /m.test(output) && result.status === 1, output.slice(-1200));
+}
+// ── a conclave's membership write is fenced by the member's exact read-ACL row (#4995) ──────────
+// The conclave commits third-party rows under the mediator's members-bucket grant, outside the
+// delivery daemon and so outside the fence a retirement relies on (#4984): the manager narrows the
+// retiring lifecycle's ACL row before it reads the inventory. The write now reads that row before
+// the commit and again after it, on real seats with real ACL rows and self-published presence.
+{
+  const prov = new CotalEndpoint({ space: S, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "provisioner"), card: { name: "prov", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false });
+  prov.on("error", () => {});
+  await prov.start();
+  const seats: CotalEndpoint[] = [];
+  const member = async (name: string) => {
+    const id = newIdentity();
+    const uid = mintLifecycleUid();
+    const creds = await provisionAgent(prov, auth, id, { subscribe: [], allowSubscribe: [CHANNEL], lifecycleUid: uid });
+    const ep = new CotalEndpoint({ space: S, servers: SERVERS, creds, lifecycleUid: uid, card: { id: id.id, name, kind: "agent" }, channels: [], consume: false, registerPresence: true, watchPresence: false, watchChannels: false });
+    ep.on("error", () => {});
+    await ep.start();
+    seats.push(ep);
+    return { id, uid, name, principal: principalKey(DEV_OWNER, id.id).key, handle: `${name}#${uid}` };
+  };
+  const fence = (m: { id: { id: string }; uid: string }) =>
+    fenceLifecycleAcl({ servers: SERVERS, space: S, targetId: m.id.id, lifecycleUid: m.uid, creds: provCreds });
+  const provCreds = await mintCreds(auth, newIdentity(), "provisioner");
+  const program = (handle: string) =>
+    `await conclave([{ agent: ${JSON.stringify(handle)}, persona: "dev" }], async (room) => { log("room", room.channel); }, { name: "room", channel: ${JSON.stringify(CHANNEL)} }); log("done", true);`;
+  try {
+    // PRE-WRITE: the member's row was narrowed before the conclave executed (its retirement's
+    // inventory already read), so the conclave writes no row for it.
+    const m1 = await member("fenced-pre");
+    const fencedPre = await fence(m1);
+    const runPre = "run-conclave-acl-pre";
+    const takeoverPre = newTakeoverId();
+    const P = await driver(runPre, takeoverPre);
+    const membersKv = await openMembersRegistry(P.hostPlanes.nc, S);
+    const outPre = await withDeadline(startRun(P.js, P.jsm, { space: S, endpoint: EP, runId: runPre, source: program(m1.handle), kv: P.kv, lease: lease(takeoverPre, 1), handler: P.handler })
+      .then((o) => ({ o }), (e: unknown) => ({ e })), 20_000, "the pre-fenced conclave run");
+    const rowPre = await readMember(membersKv, CHANNEL, m1.principal, m1.uid);
+    c("a conclave over a member whose read ACL was narrowed before it executed completes",
+      fencedPre === "fenced" && outPre !== undefined && "o" in outPre && outPre.o.status === "completed", { fencedPre, out: outPre && ("o" in outPre ? outPre.o.status : short(outPre.e)) });
+    c("…and writes no membership row for that member (#4995: the pre-write ACL read refuses it)", rowPre === undefined, rowPre?.record);
+
+    // POST-WRITE: the create is held after the pre-write read passed; the retirement narrows the row
+    // meanwhile; the create lands, and the post-write read takes the row back by its exact key.
+    const m2 = await member("fenced-post");
+    const runPost = "run-conclave-acl-post";
+    const takeoverPost = newTakeoverId();
+    const Q = await driver(runPost, takeoverPost);
+    const handler = new MeshHandler(
+      Q.hostPlanes.nc, Q.hostPlanes.kv, Q.hostPlanes.js, Q.hostPlanes.jsm,
+      { space: S, endpoint: EP, runId: runPost, caller: runDriverCaller(runPost), instanceId: IID, epoch: EPOCH, holder: { id: "manager", lifecycleUid: "u_rdauth" }, defaultCheckpointTimeout: "1h" },
+      new EpfSettleWatcher(Q.hostPlanes.jsm, S, 1_000),
+      () => Date.now(),
+    );
+    const membersKvH = await (handler as unknown as { membersRegistry(): Promise<KV> }).membersRegistry();
+    const create = membersKvH.create.bind(membersKvH);
+    const key = memberKey(CHANNEL, m2.principal, m2.uid);
+    let entered!: () => void, release!: () => void;
+    const held = { entered: new Promise<void>((r) => { entered = r; }), released: new Promise<void>((r) => { release = r; }) };
+    let fencedPost: "fenced" | "absent" | undefined;
+    membersKvH.create = async (k, data, ...rest) => {
+      if (k === key) { entered(); await held.released; }
+      return create(k, data, ...rest);
+    };
+    const drivenPost = startRun(Q.js, Q.jsm, { space: S, endpoint: EP, runId: runPost, source: program(m2.handle), kv: Q.kv, lease: lease(takeoverPost, 1), handler })
+      .then((o) => ({ o }), (e: unknown) => ({ e }));
+    const reached = await withDeadline(held.entered.then(() => true), 20_000, "the held create");
+    if (reached) { fencedPost = await fence(m2); release(); }
+    const outPost = await withDeadline(drivenPost, 20_000, "the post-fenced conclave run");
+    membersKvH.create = create;
+    const rowPost = await readMember(membersKv, CHANNEL, m2.principal, m2.uid);
+    const lastOp = (await membersKv.get(key))?.operation;
+    c("a conclave whose member row was created after its retirement narrowed the ACL row completes",
+      reached === true && fencedPost === "fenced" && outPost !== undefined && "o" in outPost && outPost.o.status === "completed", { reached, fencedPost, out: outPost && ("o" in outPost ? outPost.o.status : short(outPost.e)) });
+    c("…and the post-write ACL read took that row back by its exact key (#4995)", rowPost === undefined && lastOp === "PURGE", { row: rowPost?.record, lastOp });
+  } finally {
+    for (const ep of seats) await ep.stop().catch(() => {});
+    await prov.stop().catch(() => {});
+  }
 }
 } catch (error) {
   fail++;

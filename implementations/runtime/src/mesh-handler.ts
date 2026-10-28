@@ -44,9 +44,13 @@ import {
   IncompleteKvScan,
   openMembersRegistry,
   openChannelRegistry,
+  openAclRegistry,
+  readAcl,
+  channelInAllow,
+  memberKey,
   writeChannelConfig,
   readMember,
-  commitMember,
+  commitMemberRevision,
   tombstoneMember,
   StaleMembershipWrite,
   runNoticeId,
@@ -86,6 +90,7 @@ import {
   assertAdmittedPublish,
   assertAdmittedSubscribe,
   assertNotRevoked,
+  isStreamNotFound,
 } from "@cotal-ai/core";
 import { renderRunContext } from "./run-context.js";
 import { migrationSeats } from "./migrate.js";
@@ -393,6 +398,49 @@ export class MeshHandler {
       throw e;
     });
     return this.channelsKvOpen;
+  }
+
+  /** The lifecycle read-ACL registry a conclave's membership write is fenced on (#4995). Opened,
+   *  never created. A mesh without one (open mode) records no read ACLs, so there is nothing to
+   *  fence on and the write proceeds as before: opening a bucket is lazy, so its absence is found
+   *  by the first read, which marks the registry absent here. Any other failure stays loud. */
+  private aclKvOpen: Promise<KV | undefined> | undefined;
+  private aclRegistry(): Promise<KV | undefined> {
+    this.aclKvOpen ??= openAclRegistry(this.nc, this.binding.space).then((kv) => kv, (e: unknown) => {
+      if (isStreamNotFound(e)) return undefined;
+      this.aclKvOpen = undefined;
+      throw e;
+    });
+    return this.aclKvOpen;
+  }
+
+  /** Whether the member lifecycle's exact read-ACL row allows `channel` now; true when the space has
+   *  no ACL registry at all (open mode), which the read is the first to find out. */
+  private async memberAclAllows(aclKv: KV, m: { principal: string; uid: string }, channel: string): Promise<boolean> {
+    let row: Awaited<ReturnType<typeof readAcl>>;
+    try {
+      row = await readAcl(aclKv, m.principal, m.uid);
+    } catch (e) {
+      if (!isStreamNotFound(e)) throw e;
+      this.aclKvOpen = Promise.resolve(undefined);
+      return true;
+    }
+    return row !== undefined && channelInAllow(row.record.allowSubscribe, channel);
+  }
+
+  /** The post-write half of the conclave's ACL fence: keep the row just written (at `revision`) only
+   *  on proof the member's ACL row still allows the channel. A row the ACL proves disallowed goes by
+   *  its exact key, whoever wrote its latest revision. When the read fails nothing is proven, so only
+   *  this write is taken back (a later revision belongs to another writer) and the failure is thrown. */
+  private async keepMemberRowIfAclAllows(aclKv: KV, membersKv: KV, m: { principal: string; uid: string }, channel: string, revision: number): Promise<void> {
+    let allowed: boolean | undefined;
+    let readFailure: unknown;
+    try { allowed = await this.memberAclAllows(aclKv, m, channel); } catch (e) { readFailure = e; }
+    if (allowed === true) return;
+    const key = memberKey(channel, m.principal, m.uid);
+    if (allowed === false) { await membersKv.purge(key); return; }
+    try { await membersKv.purge(key, { previousSeq: revision }); } catch { /* a later write replaced it: that write's row */ }
+    throw new Error(`conclave ${channel}: the read ACL of member ${m.principal} (lifecycle ${m.uid}) could not be re-read after its row was written; the write was taken back`, { cause: readFailure });
   }
 
   /** The chat stream's current last sequence — a conclave join/leave cursor (SPEC §7 interval). */
@@ -2233,8 +2281,16 @@ export class MeshHandler {
     for (const m of joins) {
       const existing = await readMember(membersKv, plan.channel, m.principal, m.uid);
       if (existing !== undefined && existing.record.generation >= m.generation) continue;
+      const aclKv = await this.aclRegistry();
+      // The member lifecycle's exact read-ACL row is the fence a retirement relies on: it is narrowed
+      // before the retirement's membership inventory is read, so a row created after that read must
+      // refuse itself (#4984). This write is a creating writer outside the delivery daemon (#4995), so
+      // it reads that row just before the commit and again after it, as the daemon's join does: a
+      // member the row no longer covers gets no row, and a row written while it was narrowed goes.
+      if (aclKv !== undefined && !(await this.memberAclAllows(aclKv, m, plan.channel))) continue;
+      let written: { revision: number };
       try {
-        await commitMember(membersKv, {
+        written = await commitMemberRevision(membersKv, {
           channel: plan.channel,
           owner: m.principal,
           lifecycleUid: m.uid,
@@ -2252,7 +2308,9 @@ export class MeshHandler {
         // A concurrent newer write won between the read and the commit — same verdict as the
         // read-side skip above: the membership is the newer writer's now.
         if (!(e instanceof StaleMembershipWrite)) throw e;
+        continue;
       }
+      if (aclKv !== undefined) await this.keepMemberRowIfAclAllows(aclKv, membersKv, m, plan.channel, written.revision);
     }
   }
 
