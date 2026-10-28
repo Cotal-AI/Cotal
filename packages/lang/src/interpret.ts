@@ -267,16 +267,18 @@ class Frame {
     readonly keys: KeyScope,
     readonly clock: RunClock,
     readonly signal: Signal,
-    /** How many CONCURRENT scopes deep. See {@link Env.depth}: this is L2032's runtime half. */
-    readonly depth: number = 0,
   ) {}
+
+  /** How many CONCURRENT scopes deep. See {@link Env.depth}: this is L2032's runtime half. */
+  get depth(): number {
+    return this.keys.path.length;
+  }
 
   branch(kind: PathKind, name: string | null, occurrence: number, branchKey: string): Frame {
     return new Frame(
       this.keys.branch(kind, name, occurrence, branchKey),
       this.clock.fork(),
       this.signal.child(),
-      this.depth + 1,
     );
   }
 }
