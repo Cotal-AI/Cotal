@@ -1713,6 +1713,12 @@ that command. `--preserve-state` takes its agent inventory from the manager that
 When no manager holds the space's lease, as on a stack started with `--no-manager`, it refuses
 `TARGET_UNAVAILABLE`, exit 2, before it stops anything or writes a maintenance record. Start the
 manager with `cotal up`, then run `cotal down --preserve-state` again.
+The cut stops the delivery daemon before it takes the manager's inventory, so no durable join or
+leave can race it. A refusal after that point (the manager refuses to prepare, an endpoint the
+manager does not manage is live, or a seat cannot be checkpointed) starts the daemon again and
+leaves the mesh running and unfenced; a live unmanaged endpoint refuses `LIFECYCLE_BLOCKED`, exit 2,
+and names the endpoints. When the daemon cannot be started again, the refusal says so and names
+`cotal up`.
 It also refuses `LIFECYCLE_BLOCKED`, exit 2, before it stops anything, while a saved service in the
 space still runs or cannot be verified, because the service depends on the broker it would stop.
 The refusal names each one and the `cotal service stop <name> --instance <id> --space <space> --yes`
