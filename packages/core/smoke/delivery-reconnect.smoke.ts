@@ -168,7 +168,8 @@ try {
     for (let i = 0; i < 40 && !deletion(); i++) await wait(50);
     const heartbeat = later().find((c) => c.type === "heartbeat");
     check("a heartbeat write is delivered as the feed's asOf, not as a member", heartbeat?.type === "heartbeat" && heartbeat.asOf === heartbeatAt && heartbeat.update, later());
-    check("a deleted member is delivered as a member change with no record", deletion()?.type === "member" && deletion()?.operation === "DEL" && deletion()?.member === undefined && deletion()?.update === true, later());
+    const deleted = deletion();
+    check("a deleted member is delivered as a member change with no record", deleted?.type === "member" && deleted.operation === "DEL" && deleted.member === undefined && deleted.update === true, later());
   } finally {
     await membershipNc.drain();
   }
