@@ -4996,11 +4996,13 @@ says to keep `supervise` for that run instead. It keeps its flags and its run fo
 scripts and containers. The manager that `cotal up` starts
 runs the same code through a hidden entry. Without `--space` it
 supervises the space other commands target here: `COTAL_SPACE`, else the running space this folder
-hosts or is registered for, else the one `cotal use` selected, else the space this folder hosts. A
-space the folder only holds, such as a prepared or stopped one or one a `cotal up` in a folder above
-it left, does not take the run from the selection. A registered or selected space keeps its manager
-records in the folder that space is registered at, so a start from any folder is the same manager,
-with the same instance and name.
+hosts or is registered for, else the one `cotal use` selected, else the space this folder holds or
+hosts. A space the folder only holds, such as a prepared or stopped one or one a `cotal up` in a
+folder above it left, does not take the run from the selection. With nothing selected, a prepared or
+stopped space is refused as not started, and the refusal names the `cotal up` that starts it. A
+registered or selected space runs its manager
+in the folder that space is registered at, with that folder's records and signer, so a start from
+any folder is the same manager, with the same instance and name.
 
 | Flag | Default | Meaning |
 |---|---|---|

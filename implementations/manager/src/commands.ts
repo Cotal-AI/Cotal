@@ -31,7 +31,7 @@ import {
   c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, untilInputEnds,
   brokerAddressForDisplay, brokerUrlCredentialRefusal, brokerUrlHasUserinfo, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
-  ConfirmationRequired, findMesh, folderSpace, getCurrent, targetErrorCode, targetErrorSpace, workspaceErrorParts, type MeshEntry, type MeshTargetError, type SeatCap,
+  ConfirmationRequired, findMesh, folderSpace, folderSpaceHeld, getCurrent, targetErrorCode, targetErrorSpace, workspaceErrorParts, type MeshEntry, type MeshTargetError, type SeatCap,
   deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
@@ -140,12 +140,13 @@ function spaceFor(v: Values, root = findCotalRoot()): string {
  *  targets here, this folder's registered space or else the `cotal use` selection, and the manager
  *  runs in the root that space is registered at, so its identity and name are the same whichever
  *  folder it is started from. A space a folder only holds on disk, such as a stopped one or one a
- *  `cotal up` in a parent folder left, does not take the run from the selection. With neither,
- *  {@link superviseTarget} supervises the space this folder hosts. */
+ *  `cotal up` in a parent folder left, does not take the run from the selection. With nothing
+ *  selected that held space takes the run, so a prepared or stopped one is refused as not started.
+ *  With none, {@link superviseTarget} supervises the space this folder hosts. */
 function superviseSelection(v: Values): { values: Values; root: string } {
   const root = findCotalRoot();
   if (v.space !== undefined || process.env.COTAL_SPACE !== undefined) return { values: v, root };
-  const space = folderSpace(process.cwd()) ?? getCurrent();
+  const space = folderSpace(process.cwd()) ?? getCurrent() ?? folderSpaceHeld(process.cwd())?.space;
   if (space === undefined) return { values: v, root };
   return { values: { ...v, space }, root: findMesh(space)?.root ?? root };
 }
@@ -255,10 +256,9 @@ function hostFolderStep(space: string, root: string, broker: string): string {
 
 /** The broker's refusal of the credential a starting manager presented, as a classified refusal:
  *  which credential, which broker, and where a manager that broker trusts starts. A local manager
- *  signs with the space signer of the folder it runs in, so a folder whose signer the broker does
+ *  signs with the space signer of the root it runs in, so a root whose signer the broker does
  *  not trust, or that has none, is told to start it from the folder that hosts the space. */
-async function refusedManagerCredential(error: Error, space: string, server: string, remote: boolean): Promise<CommandFailure> {
-  const root = findCotalRoot();
+async function refusedManagerCredential(error: Error, space: string, root: string, server: string, remote: boolean): Promise<CommandFailure> {
   const broker = brokerAddressForDisplay(server) ?? "the broker";
   const target = { space, root, broker };
   const native = { code: error.name, detail: error.message };
@@ -654,7 +654,10 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       resumeAttemptId: v["resume-attempt"],
       resumeDurableCommitToken,
       remoteAuthority,
-      ...(service ? { workspaceRoot: managerRoot, onServiceIdentity: bindManagerServiceIdentity(service) } : {}),
+      // The root resolved above holds the manager's identity, records and signer. For a registered
+      // or selected space that is its registered root, whichever folder the run started from.
+      workspaceRoot: managerRoot,
+      ...(service ? { onServiceIdentity: bindManagerServiceIdentity(service) } : {}),
     });
   } catch (e) {
     if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e, remedy: UNCONFIRMED_START });
@@ -733,7 +736,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     // settles, so wait for it to release the lease first; the start error still decides the exit.
     startFailed = true;
     await stopped;
-    throw !service && isAuthRejection(error) ? await refusedManagerCredential(error as Error, space, server, target.remoteUser) : error;
+    throw !service && isAuthRejection(error) ? await refusedManagerCredential(error as Error, space, managerRoot, server, target.remoteUser) : error;
   }
   // A stop that arrived during start owns the exit; this process never announces itself ready.
   if (shuttingDown) return;
