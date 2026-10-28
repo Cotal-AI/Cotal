@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, sep } from "node:path";
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 import { watchSandboxRoot } from "./stack-watchdog.js";
 
@@ -200,6 +200,64 @@ export function assertSmokeSandboxDown(
   if (requested.includes("web"))
     throw new Error("target-addressed `down web` requires assertSmokeSandboxTargetDown");
   assertRecordedSandboxDown(anchor, args, options, parsed);
+}
+
+/**
+ * Guard a down run in a folder whose `.cotal` is a link, which the CLI refuses before any effect.
+ * The folder must sit below the recorded root, whose marker is still held, so a walk to a root that
+ * passes over the link ends inside the sandbox. A link that leads somewhere must lead below the root
+ * too, and COTAL_HOME and XDG_CONFIG_HOME must be the recorded ones. It reads only the recorded
+ * identities and that one link, and never resolves a mesh target.
+ */
+export function assertSmokeSandboxLinkedDown(
+  anchor: SmokeSandboxAnchor | undefined,
+  args: readonly string[],
+  options: SmokeCommandOptions,
+): void {
+  const parsed = parseSmokeDown(args);
+  if (!parsed) return;
+  if (parsed.positionals.includes("web"))
+    throw new Error("target-addressed `down web` requires assertSmokeSandboxTargetDown");
+  const folder = options.cwd;
+  if (!anchor) {
+    throw new Error(
+      `smoke sandbox refused cotal down: observed folder ${JSON.stringify(folder ?? "<missing>")}, ` +
+        `expected root "<missing anchor>"`,
+    );
+  }
+
+  const expected = anchor[smokeSandboxAnchor];
+  const below = (path: string): boolean => path.startsWith(expected.root.physicalPath + sep);
+  const cotalHome = options.env?.COTAL_HOME;
+  const xdgConfigHome = options.env?.XDG_CONFIG_HOME;
+  const rootIdentity = sameDirectory(expected.root, expected.root.path);
+  const markerIdentity = sameDirectory(expected.marker, expected.marker.path);
+  const homeIdentity = cotalHome === expected.cotalHome.path ? sameDirectory(expected.cotalHome, cotalHome) : "foreign";
+  const configIdentity = xdgConfigHome === expected.xdgConfigHome.path ? sameDirectory(expected.xdgConfigHome, xdgConfigHome) : "foreign";
+  let folderVerdict = "missing";
+  let linkVerdict = "missing";
+  if (typeof folder === "string") {
+    try {
+      folderVerdict = below(realpathSync.native(folder)) ? "below" : "outside";
+      const link = join(folder, ".cotal");
+      if (!lstatSync(link).isSymbolicLink()) linkVerdict = "not-a-link";
+      else if (!existsSync(link)) linkVerdict = "dangling";
+      else linkVerdict = below(realpathSync.native(link)) ? "below" : "outside";
+    } catch {
+      // A folder or .cotal that cannot be read keeps its missing verdict.
+    }
+  }
+  if (rootIdentity === "same" && markerIdentity === "same" && homeIdentity === "same" && configIdentity === "same" &&
+    folderVerdict === "below" && (linkVerdict === "below" || linkVerdict === "dangling")) return;
+
+  throw new Error(
+    `smoke sandbox refused cotal down: observed folder ${JSON.stringify(folder ?? "<missing>")}, ` +
+      `expected a folder below root ${JSON.stringify(expected.root.path)} whose .cotal is a link; ` +
+      `COTAL_HOME ${JSON.stringify(cotalHome ?? "<missing>")}, expected ${JSON.stringify(expected.cotalHome.path)}; ` +
+      `XDG_CONFIG_HOME ${JSON.stringify(xdgConfigHome ?? "<missing>")}, expected ${JSON.stringify(expected.xdgConfigHome.path)}; ` +
+      `identity verdicts root=${rootIdentity}, folder=${folderVerdict}, link=${linkVerdict}, ` +
+      `COTAL_HOME=${homeIdentity}, XDG_CONFIG_HOME=${configIdentity}, marker=${markerIdentity === "same" ? "held" : markerIdentity}`,
+  );
 }
 
 /**
