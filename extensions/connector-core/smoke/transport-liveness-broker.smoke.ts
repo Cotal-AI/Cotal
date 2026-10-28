@@ -19,6 +19,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { connect } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import type { AgentConfig } from "../src/config.js";
 import { isReachable } from "@cotal-ai/core";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
@@ -831,6 +832,8 @@ try {
     check("core NATS still answers after the owned broker disables JetStream", refusedJs && jsAgent.transportConnected, jsAgent.presenceWriteFailure);
   } finally { await coreConnection.close(); }
   const failedJs = await jsStatus();
+  const degradedInbox = await tool("cotal_inbox");
+  check("a REAL presence-degraded inbox identifies its local-only view", degradedInbox.text.includes("Mesh connection is not ready (degraded)") && degradedInbox.text.includes("empty buffer does not mean no new mesh messages"), degradedInbox);
   check(
     "repeated REAL JetStream write failures report degraded despite bound and live transport",
     failedJs.state === "degraded" && failedJs.connected === true && failedJs.transportConnected === true,
@@ -862,6 +865,94 @@ try {
       !("connectionIssue" in restoredJs) && !("presenceWriteFailure" in restoredJs),
     { restoredReconnect, restoredJs },
   );
+  const fresh = new MeshAgent({ ...jsCfg, name: "not-started" });
+  const freshServer = new McpServer({ name: "unbound-inbox", version: "0.0.0" });
+  registerCotalTools(freshServer, fresh, jsCfg, "smoke");
+  const [freshCt, freshSt] = InMemoryTransport.createLinkedPair();
+  const freshClient = new Client({ name: "unbound-inbox", version: "0.0.0" });
+  await Promise.all([freshClient.connect(freshCt), freshServer.connect(freshSt)]);
+  try {
+    const reply = await freshClient.callTool({ name: "cotal_inbox", arguments: {} });
+    check("an unbound inbox does not present its empty buffer as a live mesh read", JSON.stringify(reply).includes("Mesh connection is not ready (disconnected)"), reply);
+  } finally { await freshClient.close(); await freshServer.close(); await fresh.stop(); }
+
+  // Reject the first presence write with the broker's native sealed-stream guard.
+  // This owned bucket is never reused; sealing cannot be undone.
+  const sealedNc = await connect({ servers: jsServers });
+  const sealedJsm = await jetstreamManager(sealedNc);
+  const sealedInfo = await sealedJsm.streams.info(`KV_cotal_presence_${jsCfg.space}`);
+  const sealedConfig = { ...sealedInfo.config, sealed: true };
+  await sealedJsm.streams.update(sealedInfo.config.name, sealedConfig);
+  const refused = new MeshAgent({ ...jsCfg, name: "first-write-refused" });
+  const refusedStart = refused.start().catch(() => {});
+  const refusedServer = new McpServer({ name: "refused-presence", version: "0.0.0" });
+  registerCotalTools(refusedServer, refused, jsCfg, "smoke");
+  const [refusedCt, refusedSt] = InMemoryTransport.createLinkedPair();
+  const refusedClient = new Client({ name: "refused-presence", version: "0.0.0" });
+  await Promise.all([refusedClient.connect(refusedCt), refusedServer.connect(refusedSt)]);
+  try {
+    check("first-write fixture observes the REAL presence registration refusal", await until(() => refused.connectionIssue?.includes("presence registration failed") === true), refused.connectionIssue);
+    for (const [name, args] of [
+      ["cotal_send", { channel: "test", text: "refused" }],
+      ["cotal_dm", { to: "js-health-agent", text: "refused" }],
+    ] as const) {
+      const reply = await refusedClient.callTool({ name, arguments: args });
+      const text = JSON.stringify(reply);
+      check(`${name} names the recorded first presence write refusal rather than broker-start advice`, reply.isError === true && text.includes("presence registration failed") && text.includes(`cotal_presence_${jsCfg.space}`) && text.includes("sealed stream") && !text.includes("cotal up"), reply);
+    }
+  } finally {
+    await refused.stop(); await refusedStart;
+    await refusedClient.close(); await refusedServer.close(); await sealedNc.close();
+  }
+
+  // A real accepted put with its acknowledgement withheld, not a rejected put stub.
+  // Only this owned TCP proxy drops downstream bytes, and no endpoint timing changes.
+  const ackPort = await pickFreePort();
+  const ackSpace = `ack-loss-${ackPort}`;
+  let holdAck = false;
+  const ackSockets: Socket[] = [];
+  const ackProxy = createServer((client) => {
+    const upstream = netConnect(port, "127.0.0.1");
+    ackSockets.push(client, upstream);
+    client.on("error", () => {}); upstream.on("error", () => {});
+    client.pipe(upstream);
+    upstream.on("data", (bytes) => { if (!holdAck) client.write(bytes); });
+    client.on("close", () => upstream.destroy()); upstream.on("close", () => client.destroy());
+  });
+  await new Promise<void>((resolve) => ackProxy.listen(ackPort, "127.0.0.1", resolve));
+  const ackCfg = { ...cfg, space: ackSpace, servers: `nats://127.0.0.1:${ackPort}`, name: "ack-loss-agent" };
+  const ackAgent = new MeshAgent(ackCfg);
+  const observer = new MeshAgent({ ...cfg, space: ackSpace, name: "ack-loss-observer" });
+  const ackServer = new McpServer({ name: "ack-loss", version: "0.0.0" });
+  registerCotalTools(ackServer, ackAgent, ackCfg, "smoke");
+  const [ackCt, ackSt] = InMemoryTransport.createLinkedPair();
+  const ackClient = new Client({ name: "ack-loss", version: "0.0.0" });
+  try {
+    await ackAgent.start(); await observer.start();
+    await Promise.all([ackClient.connect(ackCt), ackServer.connect(ackSt)]);
+    await ackAgent.setActivity("healthy control");
+    check("ack-loss fixture starts with a successfully stored presence control", (await observer.readRoster()).roster.some((p) => p.card.name === "ack-loss-agent" && p.activity === "healthy control"));
+    holdAck = true;
+    const marker = `accepted-${ackPort}`;
+    const pending = ackClient.callTool({ name: "cotal_status", arguments: { activity: marker } });
+    const accepted = await (async () => {
+      for (let i = 0; i < 30; i++) {
+        if ((await observer.readRoster()).roster.some((p) => p.card.name === "ack-loss-agent" && p.activity === marker)) return true;
+        await sleep(50);
+      }
+      return false;
+    })();
+    const reply = await pending;
+    holdAck = false;
+    check("an accepted status whose REAL acknowledgement times out reports outcome unknown", accepted && reply.isError === true && JSON.stringify(reply).includes("presence write outcome is unknown") && JSON.stringify(reply).includes("Read the roster before retrying"), reply);
+    await ackAgent.setActivity("recovery control");
+    check("ack-loss fixture can store presence again after the proxy releases replies", (await observer.readRoster()).roster.some((p) => p.card.name === "ack-loss-agent" && p.activity === "recovery control"));
+  } finally {
+    holdAck = false;
+    await ackAgent.stop(); await observer.stop(); await ackClient.close(); await ackServer.close();
+    for (const socket of ackSockets) socket.destroy();
+    await new Promise<void>((resolve) => ackProxy.close(() => resolve()));
+  }
 } finally {
   await jsClient?.close().catch(() => {});
   await jsServer?.close().catch(() => {});
@@ -882,7 +973,7 @@ try {
   for (const release of releases) release();
 }
 
-const EXPECTED_CELLS = 34;
+const EXPECTED_CELLS = 42;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

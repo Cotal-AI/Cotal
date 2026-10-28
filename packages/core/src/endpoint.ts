@@ -7343,6 +7343,11 @@ export class CotalEndpoint extends EventEmitter {
         this.presenceWriteFailures++;
         this.escalatePresenceWriteFailureIfStuck();
       }
+      if (e instanceof TimeoutError)
+        throw new Error(
+          `${e.message}. The presence write outcome is unknown: the broker may have stored the update. Read the roster before retrying.`,
+          { cause: e },
+        );
       throw e;
     }
     // A late SUCCESS cannot erase a refusal from newer evidence. Two fences, each answering half:

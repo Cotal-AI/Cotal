@@ -31,6 +31,14 @@ export interface ToolResult {
 const ok = (text: string): ToolResult => ({ text });
 const err = (text: string): ToolResult => ({ text, isError: true });
 
+/** A local inbox read cannot establish that a session is receiving from the mesh. */
+function inboxConnectionWarning(agent: MeshAgent): string {
+  const state = agent.connectionState;
+  if (state === "ready" || state === "stalled") return "";
+  const issue = agent.connectionIssue;
+  return `Mesh connection is not ready (${state})${issue ? `: ${issue.slice(0, 500)}` : "."}\nLocally buffered messages are still readable; an empty buffer does not mean no new mesh messages.`;
+}
+
 /** Cap on the JSON text a generic endpoint tool returns into the session. */
 const ENDPOINT_RESULT_MAX_CHARS = 200_000;
 
@@ -911,7 +919,8 @@ export function cotalToolSpecs(
       name: "cotal_inbox",
       title: "Cotal: read incoming messages",
       description:
-        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus.",
+        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus. " +
+        "When the connection is not ready, the reply says so and still returns locally buffered messages; an empty local buffer does not prove no new mesh messages exist.",
       schema: {
         peek: z.boolean().optional().describe("If true, show messages without clearing them."),
       },
@@ -930,10 +939,12 @@ export function cotalToolSpecs(
         // MeshAgent.buffer), unchanged by this path; an evicted directed message is never acked.
         const automaticPending = scope ? agent.inboxCount("automatic") : 0;
         if (agent.attention !== "focus") {
+          const warning = inboxConnectionWarning(agent);
           const buffered = agent.peekInbox(inboxScope);
           const { text, shown, held, stuck } = renderInbox({
             items: buffered,
             peek,
+            warning,
             head: (s) =>
               scope
                 ? `${s.length} pull-only message${s.length === 1 ? "" : "s"} (cleared; automatic traffic remains connector-managed):`
@@ -941,9 +952,9 @@ export function cotalToolSpecs(
           });
           if (!buffered.length)
             return ok(
-              scope
+              [warning, scope
                 ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
-                : "Inbox empty, no new messages.",
+                : warning ? "Local inbox buffer is empty." : "Inbox empty, no new messages."].filter(Boolean).join("\n\n"),
             );
           if (!shown.length) {
             const part = partReply({
@@ -952,6 +963,7 @@ export function cotalToolSpecs(
               offered: buffered,
               stuck,
               peek: keeps(),
+              warning,
               last: (i) => agent.drainInboxDeliveries([i.recvKey]),
             });
             if (part) return ok(part);
@@ -1015,7 +1027,8 @@ export function cotalToolSpecs(
         aheadFresh.sort(byTsThenId);
         const fresh = [...clocked, ...aheadFresh];
         const aheadIds = new Set(aheadFresh.map((i) => i.recvKey));
-        const warning = [droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
+        const connectionWarning = inboxConnectionWarning(agent);
+        const warning = [connectionWarning, droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
           .filter(Boolean)
           .join(" ");
         const { text, shown: all, stuck } = renderInbox({
@@ -1030,9 +1043,9 @@ export function cotalToolSpecs(
         });
         if (!buffered.length && !fresh.length && !recall.droppedChannels.length && !aheadWithheld.length)
           return ok(
-            scope
+            [connectionWarning, scope
               ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
-              : "Inbox empty, no new messages, and no channel chatter since you entered focus.",
+              : connectionWarning ? "Local inbox buffer and available focus recall are empty." : "Inbox empty, no new messages, and no channel chatter since you entered focus."].filter(Boolean).join("\n\n"),
           );
         if (!all.length) {
           // A recalled message goes out in parts too, and its last part moves what a whole one would

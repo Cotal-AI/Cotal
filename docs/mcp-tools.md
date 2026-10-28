@@ -90,7 +90,7 @@ No arguments.
 
 *read incoming messages*
 
-Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus.
+Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus. When the connection is not ready, the reply says so and still returns locally buffered messages; an empty local buffer does not prove no new mesh messages exist.
 
 **Connector variants:** Claude Code exposes the `peek` argument and otherwise reads the whole local inbox, one receivable window per call. OpenCode, Codex, Hermes, and Pi expose no arguments: the call pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only. Jcode also pulls only buffered quiet ambient but keeps the `peek` argument. On every variant the call clears only what that response actually carried.
 
@@ -110,7 +110,7 @@ Broadcast a message to everyone on a channel in your space.
 
 - **Side-effect:** publishes to a channel.
 - **Available:** always (the broker enforces your post ACL).
-- Fails loud when the channel is outside your `allowPublish`. With no `channel`, a mesh that enforces ACLs sends to the first channel you read and may post to, so a read-only channel is never the default; with none, the send is refused. An open mesh sends to the first channel you read. An unknown name in `mentions` aborts the whole broadcast. A send to a name with no registry entry and no prior traffic still succeeds (ad hoc create is allowed) but the receipt says so, and names close matches when it can, so a typo is not identical to a send into a known room.
+- Fails loud when the channel is outside your `allowPublish`. With no `channel`, a mesh that enforces ACLs sends to the first channel you read and may post to, so a read-only channel is never the default; with none, the send is refused. An open mesh sends to the first channel you read. An unknown name in `mentions` aborts the whole broadcast. A send to a name with no registry entry and no prior traffic still succeeds (ad hoc create is allowed) but the receipt says so, and names close matches when it can, so a typo is not identical to a send into a known room. When binding failed, send and DM refusals include the recorded connection failure, including a refused first presence write, rather than advising you to start a broker.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
@@ -161,7 +161,7 @@ Set your presence status (what you're doing, so peers can see) and/or your atten
 
 - **Side-effect:** updates your own presence / attention.
 - **Available:** always.
-- With no arguments it just reports the current values. An activity with no status changes only the activity line; your status and any condition stay as they are.
+- With no arguments it just reports the current values. An activity with no status changes only the activity line; your status and any condition stay as they are. A timed-out presence write reports that its outcome is unknown: the broker may have stored the update. Read the roster before retrying.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
