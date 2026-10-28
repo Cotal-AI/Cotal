@@ -2741,6 +2741,9 @@ genuinely `unknown`.
   publication, any path where the caller cannot tell whether the request was handled. This is
   `unknown`, and it is the only local case that is.
 
+The reference connector reports an unanswered submitted persona definition as an unknown write
+outcome and directs the caller to read the catalog on the same manager before acting.
+
 A caller **MUST NOT infer execution from the mere arrival of a reply**: a reply proves the request
 was HANDLED, never that it executed. The two differ on every path where a responder refuses before
 the handler — the version, class, target, sender, authz, contract, and guard checks all publish

@@ -2293,7 +2293,7 @@ export class MeshAgent extends EventEmitter {
     command: string,
     args: Record<string, unknown> | undefined,
     opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; instanceId?: string } = {},
-  ): Promise<ControlReply & { instanceId?: string }> {
+  ): Promise<ControlReply & { instanceId?: string; outcome?: "executed" | "not-executed" | "unknown" }> {
     const clean = args === undefined ? undefined : Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
     let r: EpAttributedReply;
     let dropBearer: (() => void) | undefined;
@@ -2353,14 +2353,24 @@ export class MeshAgent extends EventEmitter {
       // duplicates a spawn. Only the marker distinguishes them, and core sets it exactly where it
       // observed silence.
       dropBearer?.();
-      if (e instanceof EpEnvelopeError)
-        return controlReplyFromThrown(e, unansweredRequest(e)
+      if (e instanceof EpEnvelopeError) {
+        const unknownDefinition = command === "define-persona" && e.outcome !== "not-executed" &&
+          e.code === "deadline-exceeded" && e.details?.some(d => d.kind === EP_UNANSWERED && d.command === command);
+        const message = unknownDefinition
+          ? `${e.code}: ${e.message}`
+          : unansweredRequest(e)
           ? `${e.message} (no responder answered - a manager may be down, or this credential holds no "${command}" capability and the broker denied the request)`
-          : `${e.code}: ${e.message}`);
+          : `${e.code}: ${e.message}`;
+        return { ...controlReplyFromThrown(e, message), ...(e.outcome ? { outcome: e.outcome } : {}) };
+      }
       return { ok: false, error: (e as Error).message };
     }
     if (r.reply.ok !== true) dropBearer?.();
-    return { ...controlReplyFrom(r.reply), instanceId: r.responder?.instanceId };
+    return {
+      ...controlReplyFrom(r.reply),
+      instanceId: r.responder?.instanceId,
+      ...(r.reply.error?.outcome ? { outcome: r.reply.error.outcome } : {}),
+    };
   }
 
   /** Resolve a managed agent's CURRENT principal triple (owner-mode targets are (owner, actor,
@@ -2698,7 +2708,7 @@ export class MeshAgent extends EventEmitter {
     allowSubscribe?: string[];
     allowPublish?: string[];
     announce?: string;
-  }): Promise<ControlReply & { announceError?: string; announceOutcome?: "denied" | "unknown" }> {
+  }): Promise<ControlReply & { definitionOutcome?: "unknown"; announceError?: string; announceOutcome?: "denied" | "unknown" }> {
     await this.requireConnected();
     const pin = this.managerPin(def.instance ?? this.openManagerInstance());
     if ("error" in pin) return pin.error;
@@ -2740,6 +2750,12 @@ export class MeshAgent extends EventEmitter {
       allowPublish: def.allowPublish,
     };
     const reply = await this.managerInvoke("define-persona", args, pin);
+    // A command deadline observes no reply, not a refused write. A paused manager can still
+    // write the persona after this caller stops waiting. A describe deadline precedes the write,
+    // while broker no-responders and explicit pre-effect refusals prove it did not run.
+    if (!reply.ok && reply.outcome !== "not-executed" && (reply.outcome === "unknown" ||
+      reply.code === "deadline-exceeded" && reply.details?.some(d => d.kind === EP_UNANSWERED && d.command === "define-persona")))
+      return { ...reply, definitionOutcome: "unknown" };
     if (!reply.ok || !def.announce) return reply;
     // The persona IS saved by this point (the manager only replies ok after it writes the file), so
     // a failed announcement must NOT be reported as a failed definition. Reporting it as one names
