@@ -13,7 +13,8 @@
  * another starter publishing a live one. Holding the lock removes the race: publishing requires the
  * lock, so while this process holds it nobody else can put a socket at the path. The one socket it
  * may then remove is the one its dead predecessor published, which the lock record names by
- * `(dev, ino)`. Any other socket, or an unreadable record, is refused and left alone.
+ * `(dev, ino)` and which nothing listens on any more. Any other socket, or an unreadable record, is
+ * refused and left alone.
  *
  * The record is written through the locked descriptor, so it is always the record of the file this
  * process locked. It carries no secret: a pid, its start token, a start time and an inode number.
@@ -26,6 +27,7 @@
  */
 import { closeSync, fstatSync, ftruncateSync, lstatSync, openSync, readFileSync, writeSync } from "node:fs";
 import { constants } from "node:fs";
+import { createConnection } from "node:net";
 import { processStartToken } from "@cotal-ai/core";
 import { flockExclusiveNb } from "@cotal-ai/seat";
 import { EndpointRefusal } from "./endpoint.js";
@@ -141,14 +143,25 @@ export function generationOf(path: string): SocketGeneration {
   return { path, dev: st.dev, ino: st.ino };
 }
 
+/** How a connect to the unix socket at `path` ends: `ECONNREFUSED` when nothing listens on it,
+ *  `answered` when a process accepts it, or the error code the kernel gave. Nothing is written. */
+function connectOutcome(path: string): Promise<string> {
+  return new Promise((resolve) => {
+    const s = createConnection(path);
+    s.once("connect", () => { s.destroy(); resolve("answered"); });
+    s.once("error", (e: NodeJS.ErrnoException) => resolve(e.code ?? e.message));
+  });
+}
+
 /**
  * Decide what to do with whatever sits at the public socket path, holding the lifetime lock.
  *
  * `clear` means nothing is there. `recover` means the socket there is the exact inode the dead
- * predecessor's record names, so this daemon may remove it. Anything else refuses: a non-socket
- * entry, or a socket this home's last daemon did not publish, is reported and left in place.
+ * predecessor's record names and nothing listens on it, so this daemon may remove it. Anything else
+ * refuses: a non-socket entry, a socket this home's last daemon did not publish, or one a process
+ * answers on, is reported and left in place.
  */
-export function claimSocketPath(path: string, previous: SocketGeneration | undefined): "clear" | "recover" {
+export async function claimSocketPath(path: string, previous: SocketGeneration | undefined): Promise<"clear" | "recover"> {
   let st;
   try {
     st = lstatSync(path);
@@ -157,7 +170,17 @@ export function claimSocketPath(path: string, previous: SocketGeneration | undef
     throw e;
   }
   if (!st.isSocket()) throw new EndpointRefusal("SOCKET_NOT_SOCKET", `${path} exists and is not a socket; nothing was removed`);
-  if (previous && previous.path === path && previous.dev === st.dev && previous.ino === st.ino) return "recover";
+  if (previous && previous.path === path && previous.dev === st.dev && previous.ino === st.ino) {
+    // A filesystem can give a new file the inode number of one it freed, so equal numbers alone do
+    // not prove this is the dead predecessor's socket. Its listener died with it, so the kernel
+    // refuses a connect; a socket anything still answers on belongs to a live process.
+    const outcome = await connectOutcome(path);
+    if (outcome === "ECONNREFUSED") return "recover";
+    throw new EndpointRefusal(
+      "ALREADY_RUNNING",
+      `${path} has the device and inode numbers this daemon home's last daemon published, but a connect to it ${outcome === "answered" ? "was answered" : `failed with ${outcome}`}, so it is not that daemon's dead socket; nothing was removed`,
+    );
+  }
   throw new EndpointRefusal(
     "ALREADY_RUNNING",
     `${path} already exists (uid ${st.uid}) and is not the socket this daemon home's last daemon published; nothing was removed`,

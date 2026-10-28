@@ -12,8 +12,8 @@
  *   included, so the next start learns its predecessor is gone without judging a recorded pid.
  * - A second serve for the same daemon refuses CONFLICT / LOCK_HELD naming the live holder.
  * - Holding the lock, a start removes the socket at the public path only when the lock record names
- *   that exact `(dev, ino)`. Any other socket, and any socket after a clean stop, is refused
- *   ALREADY_RUNNING and left in place.
+ *   that exact `(dev, ino)` and a connect to it is refused. Any other socket, one a process answers
+ *   on, and any socket after a clean stop, is refused ALREADY_RUNNING and left in place.
  * - `install` writes one systemd user unit with `Restart=always` and `WantedBy=default.target`,
  *   and refuses a second install. `uninstall` refuses with no recorded unit.
  * - `serve` prints one ready line, `daemon ready at <socket>`, on stdout and none on stderr.
@@ -27,12 +27,18 @@
  *  L2 the lock is kernel-held, not a pid record: an independent `flock` on the lock file is refused
  *     while the daemon serves and granted after SIGKILL, with the record still naming the dead pid.
  *     This is the cell that fails if the lock ever becomes an inferred-liveness record again;
- *  L3 recovery: after SIGKILL the socket survives with inode I; the next serve succeeds, reports
- *     `socketsRecovered === 1`, binds a different inode, and `status` answers the new pid;
+ *  L3 recovery: after SIGKILL the socket survives with inode I, which the suite pins under a second
+ *     name; the next serve succeeds, reports `socketsRecovered === 1`, leaves the pin as I's only
+ *     link, binds another inode at the path, and `status` answers the new pid;
  *  L4 a socket the record does not name is refused: after SIGKILL the operator replaces the stale
- *     socket with a different same-uid listener's. The next serve refuses CONFLICT / ALREADY_RUNNING,
- *     removes 0 files, the listener's inode is unchanged and it received 0 bytes. Its Next names
- *     `cotal daemon status` and `cotal daemon serve` in plain and --json;
+ *     socket with a different same-uid listener's, bound while the dead inode is pinned so its number
+ *     differs. The next serve refuses CONFLICT / ALREADY_RUNNING, removes 0 files, the listener's
+ *     inode is unchanged and it received 0 bytes. Its Next names `cotal daemon status` and
+ *     `cotal daemon serve` in plain and --json;
+ *  L4b a live socket with the recorded numbers is refused: after SIGKILL a same-uid listener replaces
+ *     the stale socket and the record names its device and inode numbers, as a filesystem that reuses
+ *     a freed inode number leaves it. The next serve refuses CONFLICT / ALREADY_RUNNING because a
+ *     connect to it was answered, removes 0 files, and the listener received 0 bytes;
  *  L5 a clean stop leaves no generation to recover: after `close()` the record names no socket and
  *     `status` refuses NOT_RUNNING naming `cotal daemon serve`, so a foreign socket placed at the path
  *     is refused ALREADY_RUNNING and kept;
@@ -65,7 +71,7 @@
  *
  * Run: tsx bin/smoke/daemon-lifetime.smoke.ts   (Linux only)
  */
-import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { constants } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
@@ -268,10 +274,16 @@ try {
     const stale = ino(paths.socket);
     const rec = lockRecord();
     check("L3 instrument: the record names the stale socket's inode", rec?.socket?.ino === stale && rec?.socket?.path === paths.socket, { rec, stale });
+    // A second name keeps the dead inode allocated through the restart, so the successor's socket
+    // cannot be given its number, which some filesystems hand straight back once it is freed. Its
+    // link count then shows whether the successor removed the public name.
+    const pin = join(paths.dir, "stale-pin");
+    linkSync(paths.socket, pin);
     const d = await serve();
     check("L3 the successor started with no operator step", d.status().state === "ready");
     check("L3 it reports exactly 1 recovered socket", d.counters.socketsRecovered === 1, d.counters);
-    check("L3 it bound a different inode, so it did not adopt the dead one", ino(paths.socket) !== stale, { now: ino(paths.socket), stale });
+    check("L3 it removed the dead socket and bound a new one: the pinned dead inode has lost its public name and the path holds another inode", lstatSync(pin).nlink === 1 && ino(paths.socket) !== stale, { pinLinks: lstatSync(pin).nlink, now: ino(paths.socket), stale });
+    rmSync(pin);
     const st = await cli("status", "--json");
     check("L3 status answers the successor's pid, exit 0", st.status === 0 && st.doc.result?.pid === process.pid, { status: st.status, pid: st.doc.result?.pid, expected: process.pid, out: st.out.slice(0, 300) });
     check("L3 the record now names the new generation", lockRecord()?.socket?.ino === ino(paths.socket));
@@ -286,10 +298,14 @@ try {
     await sleep(500);
     check("L4 instrument: the record names the killed daemon's socket", lockRecord()?.socket?.ino === published);
     // The operator removes that socket and something else binds the path: a generation this
-    // daemon home never published.
+    // daemon home never published. The dead inode is pinned meanwhile, so the listener gets another
+    // number on any filesystem; L4b covers a listener given the same numbers.
+    const pin = join(paths.dir, "stale-pin");
+    linkSync(paths.socket, pin);
     unlinkSync(paths.socket);
     const other = await impostor(paths.socket);
     const foreign = ino(paths.socket);
+    rmSync(pin);
     check("L4 instrument: a different same-uid process now holds the path with another inode", foreign !== published);
     const before = readdirSync(paths.dir).length;
     const r = await cli("serve", "--json");
@@ -299,6 +315,29 @@ try {
     check("L4 its Next names `cotal daemon status` and `cotal daemon serve` in backticks, in plain and --json alike", /^run `cotal daemon status`: .*confirm no `cotal daemon serve` process is running/.test(String(r.doc.error?.remedy)) && plain.status === 2 && sameText(r, plain), { remedy: r.doc.error?.remedy, plain: plain.out + plain.err });
     check("L4 that socket keeps its inode and 0 entries were removed", ino(paths.socket) === foreign && readdirSync(paths.dir).length === before);
     check("L4 the other process received 0 bytes", !other.gotBytes());
+    await kill(other.proc, "SIGTERM");
+    rmSync(paths.socket, { force: true });
+  });
+
+  await cell("L4b a live socket with the numbers the record names is refused, never removed", async () => {
+    const d = await serveChild();
+    await kill(d.proc, "SIGKILL");
+    await sleep(500);
+    unlinkSync(paths.socket);
+    const other = await impostor(paths.socket);
+    const live = lstatSync(paths.socket);
+    // A filesystem that hands a freed inode number straight back (ext4 does) gives the listener the
+    // dead socket's numbers by itself. Where it does not, the record is made to name them, which is
+    // the state such a filesystem leaves.
+    writeFileSync(paths.lock, `${JSON.stringify({ ...lockRecord(), socket: { path: paths.socket, dev: live.dev, ino: live.ino } })}\n`);
+    const rec = lockRecord();
+    check("L4b instrument: the killed daemon's record names the live listener's device and inode numbers", rec?.pid === d.pid && rec?.socket?.dev === live.dev && rec?.socket?.ino === live.ino, rec);
+    const before = readdirSync(paths.dir).length;
+    const r = await cli("serve", "--json");
+    check("L4b serve refuses CONFLICT / ALREADY_RUNNING, exit 2", r.status === 2 && r.doc.error?.code === "CONFLICT" && r.doc.error?.cause?.code === "ALREADY_RUNNING", { status: r.status, out: r.out.slice(0, 300) });
+    check("L4b the refusal says a connect to that socket was answered", String(r.doc.error?.message ?? "").includes("but a connect to it was answered"), r.doc.error?.message);
+    check("L4b that socket keeps its inode and 0 entries were removed", ino(paths.socket) === live.ino && readdirSync(paths.dir).length === before);
+    check("L4b the other process received 0 bytes", !other.gotBytes());
     await kill(other.proc, "SIGTERM");
     rmSync(paths.socket, { force: true });
   });
