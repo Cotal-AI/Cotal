@@ -58,6 +58,8 @@
  * refusal of a spawn pinned to it: the manager, host and file it names, and the manager its Next pins.
  * Cell 13 invokes an endpoint nothing serves with `--timeout 1000` and grades that the refusal comes
  * within that deadline, with the same code, message and `--json` envelope.
+ * Cell 14 invokes the manager with a `--timeout` its contract read outruns and grades the failure
+ * that names the flag and the read, with a Next naming a longer `--timeout`.
  *
  * Mutation-proof target `cli-on-mint`: drop the instance from the mint (in
  * `packages/workspace/src/connect.ts`, force `pinned` to `undefined`) and cell 3's
@@ -724,6 +726,40 @@ try {
     unservedJson.status === 2 && unservedJsonMs < 5000 && typeof unservedEnv?.target?.requestId === "string" &&
       JSON.stringify({ ...unservedEnv, target: { ...unservedEnv.target, requestId: "<id>" } }) === JSON.stringify(expectedEnv),
     { status: unservedJson.status, elapsedMs: unservedJsonMs, stdout: unservedJson.stdout.slice(-900) });
+
+  // The manager serves, so a contract read that runs out of `--timeout` after its describe was
+  // answered is the flag's deadline, not a missing service. A budget that short can also end before
+  // the describe is answered, which is cell 13's refusal, so the budget starts at 1ms and doubles
+  // until the describe was answered. `invoke` and `endpoint invoke` share this path and name
+  // themselves in the Next.
+  console.log("\n14. invoke --timeout says it ran out during the contract read of an endpoint that is served");
+  const unanswered = "no instance of manager answered its contract read, so nothing is serving it or none could be reached";
+  const ranOut = async (argv: string[]): Promise<{ ms: number; run: Run }> => {
+    for (let ms = 1; ; ms *= 2) {
+      const run = await cotal([...argv, "--timeout", String(ms), "--space", space], root1);
+      mustHaveRun(run, `\`${argv.join(" ")} --timeout ${ms}\``);
+      if (ms === 1024 || run.status !== 2 || !strip(run.out).includes(unanswered)) return { ms, run };
+    }
+  };
+  const short = await ranOut(["invoke", "manager", "ps"]);
+  const shortOut = strip(short.run.out);
+  check("invoke manager ps whose contract read outruns --timeout fails OPERATION_FAILED, exit 5, naming the flag, the read and a longer --timeout",
+    short.run.status === 5 && /Code:\s+OPERATION_FAILED/.test(shortOut) &&
+      shortOut.includes(`the ${short.ms}ms --timeout ran out during the endpoint contract read; no command was published`) &&
+      /^Next\n\s+rerun it with a longer --timeout and the same other flags, such as cotal invoke manager ps --timeout 10000$/m.test(shortOut),
+    { timeoutMs: short.ms, status: short.run.status, out: shortOut.slice(-900) });
+  const shortJson = await ranOut(["endpoint", "invoke", "manager", "ps", "--json"]);
+  let shortEnv: { target?: { requestId?: unknown } } | undefined;
+  try { shortEnv = JSON.parse(shortJson.run.stdout); } catch { shortEnv = undefined; }
+  const expectedShortEnv = {
+    schemaVersion: 1, command: "endpoint", target: { space, endpoint: "manager", command: "ps", requestedInstanceId: null, requestId: "<id>", accepted: null },
+    outcome: "failed", completeness: "not-checked", result: null, warnings: [],
+    error: { code: "OPERATION_FAILED", message: `the ${shortJson.ms}ms --timeout ran out during the endpoint contract read; no command was published`, remedy: "rerun it with a longer --timeout and the same other flags, such as cotal endpoint invoke manager ps --timeout 10000", cause: { code: "deadline-exceeded" } },
+  };
+  check("...and endpoint invoke --json carries that failure, its Next as the remedy and the native deadline-exceeded cause",
+    shortJson.run.status === 5 && typeof shortEnv?.target?.requestId === "string" &&
+      JSON.stringify({ ...shortEnv, target: { ...shortEnv.target, requestId: "<id>" } }) === JSON.stringify(expectedShortEnv),
+    { timeoutMs: shortJson.ms, status: shortJson.run.status, stdout: shortJson.run.stdout.slice(-900) });
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 } finally {

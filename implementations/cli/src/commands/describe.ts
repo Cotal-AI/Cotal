@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, assertCommandToken,
-  epCast, invokeCommand, invokeRepairingSplit, parsePrincipalKey, resolveService,
+  epCast, invokeCommand, invokeRepairingSplit, parsePrincipalKey, resolveService, unansweredRequest,
   type CompletionResult, type EpAttributedReply, type EpVerbTarget, type FlagSpec,
   type FlagValues, type ParsedArgs, type ResolvedService,
 } from "@cotal-ai/core";
@@ -13,7 +13,7 @@ import {
 } from "@cotal-ai/workspace";
 import { followEndpointAction, type AcceptedEndpointGoal } from "../lib/endpoint-goal.js";
 import { endpointResolution, resolveEndpointSelection, validateEndpointSelector } from "../lib/endpoint-selection.js";
-import { endpointFailure, NativeReplyError, withPairedCallerRemedy } from "../lib/endpoint-errors.js";
+import { endpointFailure, NativeReplyError, shellWord, withPairedCallerRemedy } from "../lib/endpoint-errors.js";
 import { refuseUnmappedHandle } from "../lib/endpoint-capability-gates.js";
 import { invokeEndpointScatter, writeEndpointScatter } from "../lib/endpoint-scatter.js";
 import { onInstanceId, onFlag } from "../lib/control.js";
@@ -140,7 +140,16 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
       if (left <= 0) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${budgetMs}ms --timeout ran out before the command was published`, { target });
       return left;
     };
-    const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: budgetMs, ...(instanceId === undefined ? {} : { instanceId }) });
+    // A contract read that was answered and then ran out of time spent this deadline. An unanswered
+    // read stays the TARGET_UNAVAILABLE refusal, and `endpointFailure` adds the target to both.
+    const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: budgetMs, ...(instanceId === undefined ? {} : { instanceId }) }).catch((error: unknown) => {
+      if (!(error instanceof EpEnvelopeError) || error.code !== "deadline-exceeded" || unansweredRequest(error)) throw error;
+      const longer = budgetMs < 10_000 ? 10_000 : Math.min(budgetMs * 2, 2_147_483_647);
+      throw new CommandFailure("failed", "OPERATION_FAILED", `the ${budgetMs}ms ${values.timeout === undefined ? "deadline" : "--timeout"} ran out during the endpoint contract read; no command was published`, {
+        native: { code: error.code, outcome: error.outcome }, cause: error,
+        remedy: `rerun it with a longer --timeout and the same other flags, such as cotal ${commandName === "endpoint" ? "endpoint invoke" : "invoke"} ${shellWord(selector)} ${shellWord(command)} --timeout ${longer}`,
+      });
+    });
     const declaration = service.commands.get(command);
     if (!declaration) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this command is not in the endpoint's authorized described surface", { target });
     if (callerCredential && (!callerCredential.commands.includes(command) || !pairedCallerCommand(declaration))) throw new CommandFailure("refused", "UNSUPPORTED", "this command is outside the file's native synchronous untargeted scope; no command was published and no operator, generation or broader authority was substituted", { target });
