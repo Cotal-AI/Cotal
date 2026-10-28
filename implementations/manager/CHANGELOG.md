@@ -1,5 +1,22 @@
 # @cotal-ai/manager
 
+## 0.116.1
+
+### Patch Changes
+
+- fa4b6ab: The manager's run hosting, transcript receive, console attach endpoint, runtime artifact removal, session bridge and instance probe now take a caught value's text the way the manager itself does. A host callback, transport or runtime that rejected with `null` or `undefined` used to make the handler throw: the boot reconcile and the remote run renewal rejected with a `TypeError` (the renewal recording no debt and skipping the remaining runs), and the transcript sweep and `POST /session/<name>` ended the process with no response sent. A rejected string now keeps its text in the log line, the recorded renewal debt and the attach reply's `error` field.
+- 643ae80: A manager spawn now resolves its `shareTools` selection when it reads the cotal config, before it accepts the spawn. A selection naming a server the connector does not declare used to be refused only after the spawn was accepted and provisioned, so the caller saw an acceptance, and a hosted run bound a goal, for a request that could never launch. The refusal text is unchanged.
+- 638e86b: A manager stop no longer waits out a broker outage while it retires its service-endpoint serve connection. Draining that connection's subscriptions and the connection itself waits for a reconnect, so a stop during an outage lasted as long as the outage, and `cotal down` could kill the manager before its endpoint and attach listener stopped. A serve connection whose transport is down is now closed without a drain.
+- Updated dependencies [31cb8e5]
+- Updated dependencies [c6be6dd]
+- Updated dependencies [331ea96]
+- Updated dependencies [211c572]
+- Updated dependencies [b695d8a]
+- Updated dependencies [f561850]
+  - @cotal-ai/core@0.116.1
+  - @cotal-ai/workspace@0.116.1
+  - @cotal-ai/seat@0.116.1
+
 ## 0.116.0
 
 ### Patch Changes

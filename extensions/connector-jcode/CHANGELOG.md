@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.116.1
+
+### Patch Changes
+
+- 802bb9d: Keep accepted role requests owned with native in-progress acknowledgements while Jcode turns run, and release unacknowledged batches on failure or shutdown.
+
 ## 0.116.0
 
 ### Minor Changes

@@ -1,5 +1,20 @@
 # @cotal-ai/cli
 
+## 0.116.1
+
+### Patch Changes
+
+- 8f64e53: The manager question names your managers again on a user-auth space whose auth service predates the channel registry grant. Its roster read now reads presence alone, so a user connection that may not read the channel registry with one batched read still gets each manager's name or `<host>/<runtime>`, host and start, newest first. It used to list bare instance ids in the refusal's order and drop the reason. A roster read that is still refused keeps the instance ids, and a `names unavailable:` line above the question gives the refusal and its remedy. `--on <name>` and the other reads of your live managers use the same presence read.
+- a65cad5: The console roster and the web dashboard roster no longer call `progressSignal` with a literal `undefined`. Neither surface has a last-assistant observation, so a working row renders `progress unknown` directly and every other row keeps its heartbeat age.
+- Updated dependencies [31cb8e5]
+- Updated dependencies [c6be6dd]
+- Updated dependencies [331ea96]
+- Updated dependencies [211c572]
+- Updated dependencies [b695d8a]
+- Updated dependencies [f561850]
+  - @cotal-ai/core@0.116.1
+  - @cotal-ai/workspace@0.116.1
+
 ## 0.116.0
 
 ### Minor Changes
