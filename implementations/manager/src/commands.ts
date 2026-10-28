@@ -224,7 +224,7 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
           target: { root },
           remedy: "for a space hosted elsewhere, run `cotal supervise --space <name>` or select it with `cotal use <name>`; to host one here, run `cotal up`",
         });
-      throw new Error(`neither hosting '${localSpace}' (no cotal up root here) nor registered to it (no meshes entry) — \`cotal up\` to host, or \`cotal meshes add\` to join`);
+      throw new Error(`neither hosting '${localSpace}' (no \`cotal up\` root here) nor registered to it (no meshes entry) — \`cotal up\` to host, or \`cotal meshes add\` to join`);
     }
     throw error;
   }
@@ -259,7 +259,7 @@ function hostFolderStep(space: string, root: string, broker: string): string {
   const host = findMesh(space);
   return host !== undefined && host.root !== root
     ? `start the manager from ${host.root}, the folder that hosts space "${space}": \`cd ${host.root} && cotal manager start\`${host.mode === "user" ? `. A manager on another machine joins a user-auth space as a signed-in participant (\`cotal meshes add\`, then \`cotal login\`) once its host grants the supervise scope` : ""}`
-    : `start the manager from the folder whose cotal up started the broker at ${broker}`;
+    : `start the manager from the folder whose \`cotal up\` started the broker at ${broker}`;
 }
 
 /** The broker's refusal of the credential a starting manager presented, as a classified refusal:
@@ -271,7 +271,7 @@ async function refusedManagerCredential(error: Error, space: string, root: strin
   const target = { space, root, broker };
   const native = { code: error.name, detail: error.message };
   if (remote)
-    return new CommandFailure("refused", "PERMISSION_DENIED", `the broker at ${broker} refused the manager-service credential the host issued for space "${space}", so no manager started`, { target, native, remedy: "sign in again with cotal login, then start the manager again; the space host must still grant your sign-in the supervise scope" });
+    return new CommandFailure("refused", "PERMISSION_DENIED", `the broker at ${broker} refused the manager-service credential the host issued for space "${space}", so no manager started`, { target, native, remedy: "sign in again with `cotal login`, then start the manager again; the space host must still grant your sign-in the supervise scope" });
   const credential = await getSpaceAuth(workspaceSecretStore(root), space)
     ? `the manager credential this folder's signer for space "${space}" minted (${root})`
     : `a manager with no credential, because this folder holds no signer for space "${space}" (${root})`;
@@ -614,7 +614,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     process.exit(1);
   }
   if (!(await isReachable(server))) {
-    console.error(c.red(`Can't reach NATS at ${server}. Run: cotal up`));
+    console.error(c.red(`Can't reach NATS at ${server}. Run: \`cotal up\``));
     process.exit(1);
   }
   const consolePort = v["console-port"] ? Number(v["console-port"]) : undefined;
@@ -782,7 +782,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     c.green("✓ manager up") +
       c.dim(` (space ${space} · ${name !== undefined ? `${name} · ` : ""}${mgr.runtimeKind})`) +
       `\n  console: ${mgr.consoleUrl}` +
-      c.dim("\n  spawn: cotal spawn --detach <persona>   ·   stop: cotal stop --name <n>   (Ctrl-C to shut down)"),
+      c.dim("\n  spawn: `cotal spawn --detach <persona>`   ·   stop: `cotal stop --name <n>`   (Ctrl-C to shut down)"),
   );
   if (service) {
     // The served-contract binding precedes the serving receipt, so a serving child always has it.
@@ -1096,7 +1096,7 @@ const managerCommands: Command[] = [
       { name: "instance", type: "string", value: "<id>", description: "instance id to deregister, the whole id as `cotal ps` prints it (default: this folder's persisted manager instance)" },
     ],
     validate: () => { throw new CommandFailure("refused", "USAGE_INVALID", "the legacy deregistration spelling no longer executes", { remedy: "use cotal endpoint deregister <class> <full-instance-id> [--space <space>] [--yes|--dry-run], which needs a static space's signing authority; an open or user-auth space has no command that removes a registration", selfContained: true }); },
-    run: async () => { throw new CommandFailure("refused", "USAGE_INVALID", "use cotal endpoint deregister <class> <full-instance-id> instead"); },
+    run: async () => { throw new CommandFailure("refused", "USAGE_INVALID", "use `cotal endpoint deregister <class> <full-instance-id>` instead"); },
   },
   {
     kind: "command",
@@ -1181,7 +1181,7 @@ const managerGroup: Command = {
     writeResult(presentationOf(args.values), { command: "manager", target: null, result: { kind: "manager-maintenance-commands", lifecycle: lifecycle.map(({ name, summary }) => ({ name, summary })), operations: maintenance.map(({ name, summary }) => ({ name, summary })), managerStarted: false } }, (): Report => ({ sections: [
       { title: "Manager", blocks: [{ kind: "commands", items: lifecycle.map((mode) => ({ command: `cotal manager ${mode.name}`, description: mode.summary })) }] },
       { title: "Maintenance", blocks: [{ kind: "commands", items: maintenance.map((mode) => ({ command: `cotal manager ${mode.name}`, description: mode.summary })) }] },
-      { blocks: [{ kind: "lines", lines: [{ text: "Bare manager starts nothing. cotal manager start is cotal service start manager; cotal service lists it with the other services.", tone: "hint" }] }] },
+      { blocks: [{ kind: "lines", lines: [{ text: "Bare manager starts nothing. `cotal manager start` is `cotal service start manager`; `cotal service` lists it with the other services.", tone: "hint" }] }] },
     ] }));
   },
 };

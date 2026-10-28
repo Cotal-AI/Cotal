@@ -111,7 +111,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
       try { resolve(JSON.parse(stdout.trim().split("\n").at(-1) ?? "") as Reply); }
       catch {
         reject(new Error(/Unknown option ['"]--require-approval['"]/.test(stderr)
-          ? "The recorded Cotal CLI cannot enforce permission approval. Update Cotal, run cotal setup, then reopen Claude. No connection was started."
+          ? "The recorded Cotal CLI cannot enforce permission approval. Update Cotal, run `cotal setup`, then reopen Claude. No connection was started."
           : "the Cotal CLI did not return an identity result; any saved request was retained for recovery"));
       }
     });

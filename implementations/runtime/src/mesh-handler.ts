@@ -809,7 +809,7 @@ export class MeshHandler {
       // between the acceptance and the bind). The seat — if one came up — is not addressable from
       // here, and no retry will ever learn more, so throwing would wedge every future sweep of
       // this run behind an answer that cannot arrive. Name the leak for the operator instead.
-      console.error(`! discharge: the spawn goal "${goalId}" settled ${fact.state} with no readable agent identity; if its seat is up it must be despawned by hand (cotal ps)`);
+      console.error(`! discharge: the spawn goal "${goalId}" settled ${fact.state} with no readable agent identity; if its seat is up it must be despawned by hand (\`cotal ps\`)`);
       return;
     }
     // The manager that committed the terminal allocated the seat, and a manager's target resolver

@@ -287,18 +287,21 @@ for (const [args, usage, foreign] of [
       lines.some((line) => line.includes("`cotal ps`") && displayWidth(line) <= 40) && text.split("cotal ps").length === text.split("`cotal ps`").length, lines);
   }
 
-  // Every string literal in the CLI and workspace sources that names a command after other words, as
-  // a remedy, a Next, a hint or a message does, writes it in backticks, so the renderer keeps it
-  // whole and --json carries the same text, and so does every option description a registered command
-  // declares, which its help prints. A command is `cotal` and a registered command name, or an
-  // interpolated one; `displayCmd()`, or a const bound to it, prints as `cotal`. Comments are not
-  // string literals, and a usage line or a literal that starts with its command is not a sentence
-  // naming one, unless that command is interpolated and words follow it: such a literal is a clause
-  // another sentence holds, as a last operation's "cotal up, with no recorded outcome" was. This file
-  // is not under the sources it reads.
+  // Every string literal in the shipped sources, under implementations/*/src, packages/*/src,
+  // extensions/*/src and bin, that names a command after other words, as a remedy, a Next, a hint or
+  // a message does, writes it in backticks, so the renderer keeps it whole and --json carries the same
+  // text, and so does every option description a registered command declares, which its help prints.
+  // A command is `cotal` and a registered command name, `linear` included, or an interpolated one;
+  // `displayCmd()`, or a const bound to it, prints as `cotal`. Comments are not string literals, and a
+  // usage line or a literal that starts with its command is not a sentence naming one, unless that
+  // command is interpolated and words follow it: such a literal is a clause another sentence holds, as
+  // a last operation's "cotal up, with no recorded outcome" was. The smoke-kit helpers ship nowhere,
+  // and this file is not under the sources it reads.
   {
+    await built("implementations/linear/dist/index.js");
     const names = new Set(registry.all<Command>("command").flatMap((cmd) => [cmd.name, ...(cmd.aliases ?? [])]));
-    // Literals that are code or a data value, or name cotal itself: a file and the literal's text.
+    // Literals that are code, a data value or a usage form, or name cotal itself or its config file:
+    // a file and the literal's text.
     const exempt: readonly (readonly [string, RegExp])[] = [
       ["implementations/cli/src/lib/completion-scripts.ts", /(?:)/], // shell completion scripts
       ["implementations/cli/src/lib/completion-install.ts", /^# (>>>|<<<) cotal completion (>>>|<<<)$/], // the startup-file markers
@@ -308,6 +311,10 @@ for (const [args, usage, foreign] of [
       ["implementations/cli/src/commands/status.ts", /^cotal \$\{\} {2}· {2}Node \$\{\}/], // cotal, the program, and its version
       ["implementations/cli/src/lib/nearest-word.ts", /^cotal \$\{\} has no subcommand /], // a refusal that starts with its command
       ["implementations/cli/src/commands/service-registry.ts", /^cotal up or cotal supervise$/], // startedBy, a data value
+      ["packages/core/src/connector-config.ts", /^modelPolicy\.\$\{\} in the cotal config$/], // the config file
+      ["extensions/connector-claude-code/src/setup.ts", /remove the heavy ones from the cotal config or spawn/],
+      ["implementations/auth/src/commands.ts", /^cotal \$\{\} grant <actor> --sub <IdP subject> --full {3}\(|^cotal \$\{\} revoke <actor> --sub <IdP subject>\|--owner <u_…>$/], // usage forms with alternatives
+      ["implementations/manager/src/commands.ts", /^use cotal endpoint deregister <class> <full-instance-id> \[--space <space>\] \[--yes\|--dry-run\], /],
     ];
     // Where `text` names a command after other words, or leads with an interpolated one that words
     // follow, outside backticks.
@@ -319,7 +326,8 @@ for (const [args, usage, foreign] of [
       const clause = word.startsWith("${}") && /[A-Za-z]/.test(text.slice(match.index + match[0].length).split("\n")[0]!.replace(/\$\{\}|--?[\w-]+|<[^>]*>|\[[^\]]*\]/g, ""));
       return !command || !(/[A-Za-z]/.test(line) || clause) || /(usage: |\| )$/.test(before) || (before.match(/`/g) ?? []).length % 2 === 1 ? [] : [match.index];
     });
-    const sources = spawnSync("git", ["ls-files", "--", "implementations/cli/src/*.ts", "packages/workspace/src/*.ts"], { cwd: REPO, encoding: "utf8" }).stdout.split("\n").filter(Boolean);
+    const roots = ["implementations/*/src", "packages/*/src", "extensions/*/src", "bin"];
+    const sources = spawnSync("git", ["ls-files", "--", ...roots.flatMap((root) => [`${root}/*.ts`, `${root}/*.tsx`]), ":(exclude)bin/smoke", ":(exclude)packages/smoke-kit"], { cwd: REPO, encoding: "utf8" }).stdout.split("\n").filter(Boolean);
     const offenders: string[] = [];
     for (const file of sources) {
       const source = readFileSync(join(REPO, file), "utf8");
@@ -341,7 +349,8 @@ for (const [args, usage, foreign] of [
     }
     const options = registry.all<Command>("command").flatMap((cmd) => (cmd.flags ?? []).map((flag) => [`cotal ${cmd.name} --${flag.name}`, flag.description ?? ""] as const));
     for (const [option, description] of options) for (const at of bare(description)) offenders.push(`${option}: ${JSON.stringify(description.slice(Math.max(0, at - 40), at + 40))}`);
-    check(`every source string literal and option description that names a command after other words writes it in backticks (${sources.length} files, ${options.length} options)`, sources.length > 100 && options.length > 300 && offenders.length === 0, offenders);
+    check(`every shipped source string literal and option description that names a command after other words writes it in backticks (${sources.length} files, ${options.length} options)`,
+      roots.every((root) => sources.some((file) => file.startsWith(`${root.split("/")[0]}/`))) && sources.length > 800 && options.length > 300 && offenders.length === 0, offenders);
   }
 
   // `cotal <path> --help` and `cotal help <path>` reach the help through two routes, the dispatcher's

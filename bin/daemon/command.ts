@@ -353,7 +353,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
       { kind: "fields", rows: [["Space", r.space], ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : []), ...(r.unit ? [["Unit", r.unit] as [string, string]] : [])] },
       { kind: "lines", lines: [
         ...r.steps.map((s) => ({ text: `${s.step}: ${s.outcome}`, tone: "hint" as const })),
-        { text: "The daemon runs as a user service, restarts on its own and reconnects after a restart. Read it with cotal daemon service-status, and close the connection with cotal daemon service-disconnect.", tone: "hint" as const },
+        { text: "The daemon runs as a user service, restarts on its own and reconnects after a restart. Read it with `cotal daemon service-status`, and close the connection with `cotal daemon service-disconnect`.", tone: "hint" as const },
       ] },
     ] },
   ] }));

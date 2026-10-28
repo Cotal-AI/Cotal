@@ -214,7 +214,7 @@ async function runLogout(args: ParsedArgs): Promise<void> {
   const local = args.values.local === true;
   if (!local) {
     try { await revokeIdpSession(idp, session.token); }
-    catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "server-side session revocation was not confirmed; the local login is kept so it can be retried", { target: { idp }, remedy: `retry logout for this provider, or revoke the session at the provider; to forget the login on this machine only, run cotal logout --idp ${idp} --local` }); }
+    catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "server-side session revocation was not confirmed; the local login is kept so it can be retried", { target: { idp }, remedy: `retry logout for this provider, or revoke the session at the provider; to forget the login on this machine only, run \`cotal logout --idp ${idp} --local\`` }); }
   }
   let localCleared = false;
   let removed: string[] = [];
@@ -437,7 +437,7 @@ async function runActor(args: ParsedArgs, target: AuthTarget, command: "auth" | 
       const { earlier, row } = withManagedGrantTransaction(dir, (tx) => {
         const read = tx.read(owner, actor!);
         if (read === undefined)
-          throw new CommandFailure("refused", "TARGET_NOT_FOUND", `"${owner}/${actor}" has no grant in this ledger; no label was written`, { target, remedy: `see the rows with cotal actor list --space ${space}` });
+          throw new CommandFailure("refused", "TARGET_NOT_FOUND", `"${owner}/${actor}" has no grant in this ledger; no label was written`, { target, remedy: `see the rows with \`cotal actor list --space ${space}\`` });
         if (read.kind !== "interactive")
           throw new CommandFailure("refused", "UNSUPPORTED", `"${owner}/${actor}" is a managed agent, and its row belongs to its spawn lifecycle; no label was written`, { target, remedy: "label the interactive row it was spawned from" });
         return { earlier: read.label ?? null, row: tx.relabelInteractive(owner, actor!, label)! };
@@ -653,7 +653,7 @@ function validateGrantUsage(command: "auth" | "actor", mode: string | undefined,
   const allowed = [...GRANT_COMMON_FLAGS, ...(mode === list ? ["sub"] : ["sub", "owner"]), ...(mode === "grant" ? ["scope", "allow-subscribe", "allow-publish", "role", "label", "parent", "full"] : [])];
   if (Object.keys(flags).some((key) => !allowed.includes(key))) throw new CommandFailure("refused", "USAGE_INVALID", `a flag does not belong to this ${command} action`);
   if (mode === list) {
-    if (flags.sub === "") throw new CommandFailure("refused", "USAGE_INVALID", `${command} ${list} --sub is empty, so no subject's rows can be listed`, { remedy: `name the IdP subject \`cotal login\` prints: cotal ${command} ${list} --sub <IdP subject>`, selfContained: true });
+    if (flags.sub === "") throw new CommandFailure("refused", "USAGE_INVALID", `${command} ${list} --sub is empty, so no subject's rows can be listed`, { remedy: `name the IdP subject \`cotal login\` prints: \`cotal ${command} ${list} --sub <IdP subject>\``, selfContained: true });
     return;
   }
   // A static or open space has no ledger on any machine, so it refuses before this asks for a subject
@@ -770,7 +770,7 @@ async function authGroup(args: ParsedArgs): Promise<void> {
     // Revoking the one credential keeps the store; rotating the space identity is the wider lever.
     throw new CommandFailure("refused", "UNSUPPORTED", "this CLI cannot retire a lifecycle: the registered auth endpoint accepts retirement only from the caller's own current serve identity and gate, so no request was sent", {
       target: { space: target.space, lifecycleUid: args.positionals[1] },
-      remedy: `to stop one minted credential and keep the space's store: cotal down, then cotal auth revoke-credential <its creds file or public key> --yes, then cotal up. To stop every credential the space issued, rotate its identity: cotal down, then cotal reset space ${target.space} (or cotal clean all --force from the root when down left no registration), then cotal up. That reset also removes the space's store, with its ${storeContentsText(STORE_CONTENTS)}; cotal reset space ${target.space} --dry-run shows them first`,
+      remedy: `to stop one minted credential and keep the space's store: \`cotal down\`, then \`cotal auth revoke-credential <its creds file or public key> --yes\`, then \`cotal up\`. To stop every credential the space issued, rotate its identity: \`cotal down\`, then \`cotal reset space ${target.space}\` (or \`cotal clean all --force\` from the root when down left no registration), then \`cotal up\`. That reset also removes the space's store, with its ${storeContentsText(STORE_CONTENTS)}; \`cotal reset space ${target.space} --dry-run\` shows them first`,
     });
   }
   if (mode === "redeem") {

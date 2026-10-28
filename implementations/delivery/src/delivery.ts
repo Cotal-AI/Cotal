@@ -581,7 +581,7 @@ async function runStartedDelivery(
       if (held) throw new Error(`delivery: no broker answered at ${server}`);
       process.exit(1);
     }
-    log.err(`✗ delivery: can't reach NATS at ${server}. Run: cotal up`);
+    log.err(`✗ delivery: can't reach NATS at ${server}. Run: \`cotal up\``);
     if (held) throw new Error(`delivery: can't reach NATS at ${server}`);
     process.exit(1);
   }
@@ -995,7 +995,7 @@ async function runStartedDelivery(
   // A lane's holder owns its stop and says so on its own lines; `cotal down` would stop every lane.
   log.out(owner.kind === "lane"
     ? `✓ delivery lane up (space ${space})`
-    : `✓ delivery daemon up (space ${space}${shards > 1 ? `, shard ${shard}/${shards}` : ""}) — stop with: cotal down`);
+    : `✓ delivery daemon up (space ${space}${shards > 1 ? `, shard ${shard}/${shards}` : ""}) — stop with: \`cotal down\``);
 
   // Broker-sourced graph membership: a SEPARATE module on its OWN connections (system-account CONNZ
   // reader + data-account feed writer), isolated from Plane-3. Fail-soft — a missing cred / start error

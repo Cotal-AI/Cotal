@@ -1343,7 +1343,7 @@ async function launchDetachedWeb(
   console.log(c.green(`✓ web dashboard ready at ${url} (pid ${child.pid})`));
   printLaunchLink(session.launchUrl, host, port, "(single-use link)");
   console.log(c.dim(`  log: ${logPath}`));
-  console.log(c.dim("  stop: cotal down web"));
+  console.log(c.dim("  stop: `cotal down web`"));
   if (!noOpen) openBrowser(session.launchUrl);
 }
 

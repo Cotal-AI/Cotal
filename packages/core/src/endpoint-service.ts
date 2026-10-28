@@ -443,7 +443,7 @@ export async function registerServiceInstance(
   if (obs.state !== "open" && !resuming) {
     if (typeof obs.op?.opId !== "string" || !ISSUANCE_GATE_OP_KINDS.has(obs.op.kind))
       throw new EpEnvelopeError("internal", `the issuance gate for "${args.instanceId}" is frozen without a valid op intent; a frozen gate is op-bound (SPEC 13.1)`);
-    throw lifecycleBlocked("conflict", `the issuance gate for "${args.instanceId}" is ${obs.state}; another barrier holds it; if the holder is a dead predecessor, run: cotal reconcile-gate (SPEC 13.8)`, {
+    throw lifecycleBlocked("conflict", `the issuance gate for "${args.instanceId}" is ${obs.state}; another barrier holds it; if the holder is a dead predecessor, run: \`cotal reconcile-gate\` (SPEC 13.8)`, {
       blockedOp: obs.op.kind,
       gateState: "frozen",
       opId: obs.op.opId,
@@ -914,7 +914,7 @@ async function assertForeignSlotIsOrphaned(
   if (observed < slot.generation)
     throw refuse("unavailable", "behind", `${held} at generation ${slot.generation}, ahead of its observed live gate generation ${observed}; refusing rather than treating an ahead or garbled observation as an abandoned slot (SPEC 13.7)`);
   if (observed === slot.generation)
-    throw refuse("conflict", "in-flight", `${held}; its issuance gate is still at generation ${slot.generation}, so that registration is IN FLIGHT and this one must wait; re-read and re-decide. If its holder is gone, reopen that instance's gate first (its own restart heals it on boot, or run: cotal reconcile-gate --instance ${slot.instanceId}), which advances the generation past the slot and lets this registration reclaim it (SPEC 13.7/13.8)`);
+    throw refuse("conflict", "in-flight", `${held}; its issuance gate is still at generation ${slot.generation}, so that registration is IN FLIGHT and this one must wait; re-read and re-decide. If its holder is gone, reopen that instance's gate first (its own restart heals it on boot, or run: \`cotal reconcile-gate --instance ${slot.instanceId}\`), which advances the generation past the slot and lets this registration reclaim it (SPEC 13.7/13.8)`);
   // observed > slot.generation: the holder's gate has reopened past the stamp, so the slot can
   // never satisfy the promote's generation equality. It is dead, and the slot-take replaces it.
 }

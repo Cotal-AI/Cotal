@@ -760,7 +760,7 @@ try {
     check("supervise from that stopped root is refused as stopped, not as stale state to remove",
       stoppedHere.status === 2 && plain(stoppedHere.out).includes(`Mesh: ${SPACE}\n`) && preConnect(stoppedHere.out, "TARGET_UNAVAILABLE") &&
         plain(stoppedHere.out).includes(`"${SPACE}" is stopped; its last operation, \`cotal down\`, completed, so no manager started`) &&
-        plain(stoppedHere.out).includes(`start it again with \`cotal up\` in ${root2}, or start the manager from the folder whose cotal up started the broker at ${SERVER}`), stoppedHere.out);
+        plain(stoppedHere.out).includes(`start it again with \`cotal up\` in ${root2}, or start the manager from the folder whose \`cotal up\` started the broker at ${SERVER}`), stoppedHere.out);
     second.bare = mkdtempSync(join(tmpdir(), "cotal-ua-no-records-"));
     const elsewhere = await cotal(["supervise", "--space", SPACE, "--server", SERVER], { cwd: second.bare });
     check("supervise from a folder with no records names the folder that hosts the space, and writes nothing there",
@@ -775,7 +775,7 @@ try {
     const staticStopped = await cotal(["supervise", "--space", RT, "--server", SERVER], { cwd: root3, env });
     check("supervise from the stopped static root is refused as stopped, naming its own up and the broker's folder",
       staticStopped.status === 2 && plain(staticStopped.out).includes(`Mesh: ${RT}\n`) && preConnect(staticStopped.out, "TARGET_UNAVAILABLE") &&
-        plain(staticStopped.out).includes(`start it again with \`cotal up\` in ${root3}, or start the manager from the folder whose cotal up started the broker at ${SERVER}`), staticStopped.out);
+        plain(staticStopped.out).includes(`start it again with \`cotal up\` in ${root3}, or start the manager from the folder whose \`cotal up\` started the broker at ${SERVER}`), staticStopped.out);
   }
 
   // ---------- E5. a participant joined by bundle starts a manager behind a local CA ----------

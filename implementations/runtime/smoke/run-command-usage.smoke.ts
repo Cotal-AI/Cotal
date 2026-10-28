@@ -60,8 +60,8 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
   const cases: [string, string[], Record<string, string | boolean>, string, string][] = [
     ["revoke --local --json", ["revoke", "run-1"], { local: true, by: "a", reason: "b", json: true }, "run revoke prints no --json output", "run it without --json: cotal run revoke run-1 --local --by <who> --reason <text>"],
     ["check --plain", ["check", "run-1", "p.cotal.js"], { plain: true }, "run check prints no --plain output", "run it without --plain: cotal run check run-1 <program>"],
-    ["start --local --json", ["start", "p.cotal.js"], { local: true, "admit-read": "none", "admit-publish": "none", json: true }, "run start --local prints no --json output", "drop --local to start it on the manager, which takes --json: cotal run start <file> --json"],
-    ["resume --local --json", ["resume", "run-1"], { local: true, json: true }, "run resume --local prints no --json output", "drop --local to resume it on the manager, which takes --json: cotal run resume run-1 --json"],
+    ["start --local --json", ["start", "p.cotal.js"], { local: true, "admit-read": "none", "admit-publish": "none", json: true }, "run start --local prints no --json output", "drop --local to start it on the manager, which takes --json: `cotal run start <file> --json`"],
+    ["resume --local --json", ["resume", "run-1"], { local: true, json: true }, "run resume --local prints no --json output", "drop --local to resume it on the manager, which takes --json: `cotal run resume run-1 --json`"],
   ];
   for (const [what, positionals, values, message, remedy] of cases) {
     const got = gate(positionals, values);
@@ -477,7 +477,7 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
 // An answer refused for a step key the run holds no open request at names the open keys whose step
 // name matches what was typed, as `frage` names `/checkpoint:frage#0`.
 {
-  const notFound = () => new CommandFailure("refused", "TARGET_NOT_FOUND", "the run has no open checkpoint at frage", { remedy: "read the run's open requests with cotal run show run-1" });
+  const notFound = () => new CommandFailure("refused", "TARGET_NOT_FOUND", "the run has no open checkpoint at frage", { remedy: "read the run's open requests with `cotal run show run-1`" });
   const row = (step: string, state: string, asks?: string) => ({ kind: "step", step, state, ...(asks ? { asks } : {}) });
   const view = (...journal: object[]) => async () => ({ journal }) as unknown as RunStatusView;
   const one = await withMatchingKeys(notFound(), "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "Proceed?"), row("/checkpoint:done#0", "pending", "Done?")));
@@ -503,8 +503,8 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
 {
   const finished = { code: "failed-precondition", message: "run run-1 is already completed, so there is nothing to resume; a resume continues a run that is running or released" };
   const blocked = managerRefusal("run-resume", "s", { runId: "run-1" }, finished);
-  c("a resume of a completed run is LIFECYCLE_BLOCKED with the manager's sentence, and Next reads the run", blocked.code === "LIFECYCLE_BLOCKED" && blocked.message === finished.message && blocked.remedy === "read the run's recorded state with cotal run show run-1", blocked);
-  c("the Next keeps an explicit --on", managerRefusal("run-resume", "s", { runId: "run-1" }, finished, "mgr-1").remedy === "read the run's recorded state with cotal run show run-1 --on mgr-1");
+  c("a resume of a completed run is LIFECYCLE_BLOCKED with the manager's sentence, and Next reads the run", blocked.code === "LIFECYCLE_BLOCKED" && blocked.message === finished.message && blocked.remedy === "read the run's recorded state with `cotal run show run-1`", blocked);
+  c("the Next keeps an explicit --on", managerRefusal("run-resume", "s", { runId: "run-1" }, finished, "mgr-1").remedy === "read the run's recorded state with `cotal run show run-1 --on mgr-1`");
   c("a start refused as a precondition gets no run show Next", managerRefusal("run-start", "s", { source: "log(1)" }, { code: "failed-precondition", message: "no" }).remedy === undefined);
 }
 

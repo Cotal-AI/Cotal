@@ -42,7 +42,7 @@ export function NewAgent({ space, width, height, applications, defaultPersona, o
       setReply(result);
     }, () => {
       terminal.current = true;
-      setReply({ ok: false, canRetry: false, message: "Launch outcome unconfirmed. Inspect cotal ps before another launch." });
+      setReply({ ok: false, canRetry: false, message: "Launch outcome unconfirmed. Inspect `cotal ps` before another launch." });
     }).finally(() => { inFlight.current = false; setBusy(false); });
   };
   useInput((input, key) => {

@@ -361,7 +361,7 @@ function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown; che
   const refused = typeof a.refused === "string" ? `\nYour last answer was refused: ${a.refused}` : "";
   return `\nThis turn is an ask: the run needs a record from you at step ${String(p.step)} with fields ${fields}`
     + ` (attempt ${String(a.attempt)} of ${String(a.attempts)}${by}).${refused}`
-    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json record>'`;
+    + `\nAnswer with: \`cotal run answer ${String(p.run)} ${String(p.step)} --value '<json record>'\``;
 }
 
 /** An escalated `checkpoint` relayed as a turn: the question, the record wanted when the pause
@@ -376,7 +376,7 @@ function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unkno
   const wanted = entries.length === 0 ? "" : `\nAnswer with a record with fields ${entries.map(([k, v]) => `${k}: ${String(v)}`).join(", ")}.`;
   const by = typeof c.deadlineAt === "number" ? ` It expires at ${new Date(c.deadlineAt).toISOString()}.` : "";
   return `\nThis turn is a checkpoint escalated to you at step ${String(p.step)}: ${String(c.prompt)}${by}${wanted}`
-    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json>'`;
+    + `\nAnswer with: \`cotal run answer ${String(p.run)} ${String(p.step)} --value '<json>'\``;
 }
 
 /** A bearer JWT's `exp` in milliseconds, or undefined when it names none. */
