@@ -14,7 +14,8 @@ Every connector bundle that loads into a long-running process now ships as one-b
 string at one byte per character only while every character is Latin-1, and a single character above
 U+00FF made each 5 MB bundle two-byte for the life of the process. The characters were em dashes and
 arrows in comments, so the bundles are built with esbuild's `--minify-whitespace`, which drops
-comments and keeps every identifier. `pnpm smoke:connector-bundle-text` reads the 19 built bundles
+comments and the parentheses around a single arrow parameter, and keeps every identifier. Anything
+matching text in a built bundle sees the second part: `(e) => f(e)` now reads `e=>f(e)`. `pnpm smoke:connector-bundle-text` reads the 19 built bundles
 and fails on any character above U+00FF. Stack-trace frames keep their function names and their line
 and column numbers move, because the bundle is now fewer, longer lines.
 

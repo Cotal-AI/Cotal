@@ -309,10 +309,14 @@ assert.equal(distPopulation, sites.length, "the published-artifact census has no
 assert.ok(sites.some((site) => site.disposition === "ignore"), "the census cannot silently erase all deliberate ignores");
 assert.ok(sites.some((site) => site.proof === "behavioral"), "the census names its behavioral companions");
 
+// These are esbuild bundles built with `--minify-whitespace`, which also drops the parentheses
+// around a single arrow parameter, so the registration reads `e=>` here and `(e) =>` in the tsc
+// output the rows above name. Both spellings are the same registration; each side is matched
+// against what its own builder emits.
 for (const path of BUNDLED_MESH_AGENT_ARTIFACTS) {
   const body = compact(readFileSync(join(root, path), "utf8"));
   assert.equal(
-    occurrences(body, 'this.ep.on("warning",(e)=>this.handleEndpointWarning(e));'),
+    occurrences(body, 'this.ep.on("warning",e=>this.handleEndpointWarning(e));'),
     1,
     `${path} carries the MeshAgent warning registration in the actual customer-loaded bundle`,
   );

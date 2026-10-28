@@ -60,8 +60,11 @@ async function child(): Promise<void> {
     serveClaudeSession(opts: ClaudeSessionOptions): Promise<ClaudeSession>;
   };
   check("hosted_env_module_loaded", typeof api.serveClaudeSession === "function");
-  // Bundled dependency UMD exports are private, including their mutable crypto API.
-  check("hosted_public_exports_only", Object.keys(api).join(",") === "serveClaudeSession");
+  // Bundled dependency UMD exports are private, including their mutable crypto API. The surface is
+  // two first-party functions: the one a host calls, and the one `dist/seat.cjs` calls to start a
+  // seat after it has enabled the compile cache. Still an exact key list, so a dependency export
+  // that reaches the surface fails here whichever name it arrives under.
+  check("hosted_public_exports_only", Object.keys(api).join(",") === "serveClaudeSession,runClaudeSeat");
   const { serveClaudeSession } = api;
   const root = process.cwd();
   const hostRepo = join(root, "host-repository"); mkdirSync(hostRepo, { mode: 0o700 });
