@@ -97,6 +97,7 @@ const adapter: LocalProcess = {
       count: { type: "integer", description: "a number with a default" },
       server: { type: "string", description: "the broker" },
       creds: { type: "string", description: "a file the space keeps" },
+      logFile: { type: "string", description: "a camelCase option, taken as --log-file" },
     } },
   },
 };
@@ -106,6 +107,7 @@ const flags = servicePresetFlags(preset);
 const flag = (name: string) => flags.find((row) => row.name === name)?.description ?? "";
 check("help shows each defaulted option's default", flag("root").includes("(default: this space's root)") && flag("count").includes("(default: 3)") && flag("creds").includes("(default: this space's fixture.creds)"), flags);
 check("  and no default for an option that has none", !flag("token").includes("(default:"), flag("token"));
+check("a camelCase option takes its dashed flag, as `cotal up --log-file` spells it", flags.some((row) => row.name === "log-file") && !flags.some((row) => row.name === "logFile"), flags.map((row) => row.name));
 
 const SPACE = "servicecommands";
 const missing = refusal(() => servicePresetDefinition(preset, SPACE, {}, root, "start"));
@@ -127,11 +129,15 @@ const filled = (() => { try { return presetDefaultOptions(preset, SPACE, root, {
 check("defaults resolve to the space's root, broker and file, and a literal number", JSON.stringify(filled) === JSON.stringify({ root, count: "3", server: SERVER, creds }), filled);
 const given = (() => { try { return presetDefaultOptions(preset, SPACE, root, { token: "t", root: "/elsewhere", count: "5" }, false); } catch (error) { return String(error); } })();
 check("an option the person gave is never replaced by its default", typeof given === "object" && given.root === undefined && given.count === undefined, given);
+const logged = (() => { try { return servicePresetDefinition(preset, SPACE, { token: "t", "log-file": "/var/log/fixture.log" }, root); } catch (error) { return String(error); } })();
+check("  and its value is saved under the adapter's own option name", typeof logged === "object" && logged.launch.type === "adapter" && (logged.launch.options as Record<string, unknown>).logFile === "/var/log/fixture.log", logged);
 
 // ---- The built-in presets declare defaults for everything a space already knows -----------------
 /** JSON with object keys in sorted order, so a declaration's key order does not matter. */
 const sorted = (value: unknown): string => JSON.stringify(value, (_, inner) => inner && typeof inner === "object" && !Array.isArray(inner) ? Object.fromEntries(Object.entries(inner).sort(([a], [b]) => a.localeCompare(b))) : inner);
 const builtIn = (name: string) => registry.all<ServicePreset>("service-preset").find((row) => row.name === name);
+const brokerFlags = (() => { try { return servicePresetFlags(builtIn("broker")!).map((row) => row.name); } catch (error) { return String(error); } })();
+check("the broker preset's flags include --log-file for its logFile option", Array.isArray(brokerFlags) && brokerFlags.includes("log-file") && brokerFlags.includes("server"), brokerFlags);
 check("the manager preset defaults to this space's root and the pty runtime",
   JSON.stringify(builtIn("manager")?.defaults) === JSON.stringify({ root: { space: "root" }, runtime: { value: "pty" } }), builtIn("manager")?.defaults);
 check("the delivery preset defaults to this space's root and its delivery credential file",

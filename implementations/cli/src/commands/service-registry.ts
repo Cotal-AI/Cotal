@@ -4,7 +4,7 @@ import * as prompts from "../lib/prompts.js";
 import { parseCommandArgs, registry, type Command, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
-import { findServicePreset, presetMaterialPath, presetMissingOptions, presetStartFlags, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
+import { findServicePreset, presetFlagName, presetMaterialPath, presetMissingOptions, presetStartFlags, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
 import { forgetRefusedPresetService, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
@@ -297,7 +297,7 @@ function serviceRows(space: string, root: string, catalog: readonly ServicePrese
     let needs: string[] = [], several = false;
     try {
       const flags = servicePresetFlags(preset), missing = new Set(presetMissingOptions(preset, {}));
-      for (const [name, fallback] of Object.entries(preset.defaults ?? {})) if ("space" in fallback && fallback.space === "material" && !existsSync(presetMaterialPath(fallback.kind, space, root, false))) missing.add(name);
+      for (const [name, fallback] of Object.entries(preset.defaults ?? {})) if ("space" in fallback && fallback.space === "material" && !existsSync(presetMaterialPath(fallback.kind, space, root, false))) missing.add(presetFlagName(name));
       needs = flags.filter((flag) => missing.has(flag.name)).map((flag) => `--${flag.name}${flag.value ? ` ${flag.value}` : ""}`);
       several = resolveServiceAdapter(preset.adapter, {}, false).declaration.capabilities.multiInstance;
     } catch { needs = ["its options"]; }
