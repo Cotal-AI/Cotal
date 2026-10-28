@@ -79,7 +79,6 @@ import {
   presentationOf,
   recordOperationSpace,
   renderReport,
-  terminalWidth,
   writeEnvelope,
   connectOrExit,
   controlCaller,
@@ -740,7 +739,7 @@ function reportInterruptedStart(values: RunValues, space: string): () => void {
       target: { space }, remedy: "list the recorded runs with cotal run before starting it again",
     });
     if (values.json) writeEnvelope(failureEnvelope("run", failure));
-    process.stderr.write(`${renderReport(commandFailureReport(failure), values.plain ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+    process.stderr.write(`${renderReport(commandFailureReport(failure), values.plain ? "plain" : "rich", process.stderr)}\n`);
     process.exit(signal === "SIGINT" ? 130 : 143);
   };
   const onInterrupt = () => exit("SIGINT");

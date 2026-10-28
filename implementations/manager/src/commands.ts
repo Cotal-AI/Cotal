@@ -29,7 +29,7 @@ import {
 import {
   assertManagerName, authDir, canonicalLocalProcessPath, canonicalRoot, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, parseSeatCapFlag, publishManagerSpareCapability, readManagerName, readManagerSeatCap, reclaimDeadPreUpgradeRecord, recordManagerName, recordManagerSeatCap, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
   c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, untilInputEnds,
-  brokerAddressForDisplay, brokerUrlCredentialRefusal, brokerUrlHasUserinfo, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, writeResult, type Report,
+  brokerAddressForDisplay, brokerUrlCredentialRefusal, brokerUrlHasUserinfo, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
   ConfirmationRequired, findMesh, folderSpace, folderSpaceHeld, getCurrent, targetErrorCode, targetErrorSpace, workspaceErrorParts, type MeshEntry, type MeshTargetError, type SeatCap,
   deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY,
@@ -843,7 +843,7 @@ async function confirmMaintenance(args: ParsedArgs, target: unknown, review: Rep
   if (args.values.yes === true) return true;
   const presentation = presentationOf(args.values);
   if (presentation === "json" || !process.stdin.isTTY || !process.stdout.isTTY || inputDisabledByFlag() || process.env.COTAL_NO_PROMPT === "1") throw new ConfirmationRequired("manager maintenance requires --yes outside an interactive terminal", { target, remedy: "inspect the same operation with --dry-run before confirming its scope, then run it with --yes" });
-  console.log(renderReport(review, presentation, terminalWidth(process.stdout)));
+  console.log(renderReport(review, presentation, process.stdout));
   const answer = await untilInputEnds((signal) => prompts.confirm({ message: question, initialValue: false, signal }));
   if (!prompts.isCancel(answer) && answer) return true;
   writeResult(presentation, { command: "manager", target, result: { kind: "manager-maintenance-cancelled", changed: false }, noOp: true }, (): Report => ({ sections: [{ title: "Manager maintenance cancelled", blocks: [{ kind: "lines", lines: ["The maintenance action was not submitted. No repair or seat drain was performed."] }] }] }));

@@ -1,4 +1,4 @@
-import { c } from "./colors.js";
+import { c, paintFor } from "./colors.js";
 import { oneLine } from "@cotal-ai/core";
 import { CommandFailure, exitCode, operationSpaceNote, operationWarnings, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
 import { codeSpan, displayWidth, terminalWidth, wrapWords } from "./text-wrap.js";
@@ -219,8 +219,10 @@ function renderCommands(block: Commands, style: Style, width: number, indent: st
 }
 
 /** A report as lines of text, fitted to `width` columns (unbounded when output is not a terminal):
- *  tables fit or become records, and long values and lines wrap at spaces. */
-export function renderReport(report: Report, style: Style, width = Number.POSITIVE_INFINITY): string {
+ *  tables fit or become records, and long values and lines wrap at spaces. Given the stream it is
+ *  written to in place of a width, it fits that stream's terminal and is painted for that stream. */
+export function renderReport(report: Report, style: Style, width: number | NodeJS.WriteStream = Number.POSITIVE_INFINITY): string {
+  if (typeof width !== "number") return paintFor(width, () => renderReport(report, style, terminalWidth(width)));
   const note = report.space ? operationSpaceNote(report.space) : undefined;
   const out: string[] = report.space ? drawWrapped({ text: `Mesh: ${report.space}`, tone: "selected" }, style, width) : [];
   if (note) out.push(...drawWrapped({ text: note, tone: "hint" }, style, width - 2).map((line) => `  ${line}`));
@@ -288,9 +290,9 @@ export function writeResult<R>(
   } else {
     const target = out.target !== null && typeof out.target === "object" && !Array.isArray(out.target) ? out.target as Record<string, unknown> : undefined;
     const report = view(out.result);
-    console.log(renderReport({ ...report, ...(typeof target?.space === "string" && target.space ? { space: target.space } : {}) }, presentation, terminalWidth(process.stdout)));
+    console.log(renderReport({ ...report, ...(typeof target?.space === "string" && target.space ? { space: target.space } : {}) }, presentation, process.stdout));
     const errWidth = terminalWidth(process.stderr);
-    const say = (cell: Styled, hang: number, whole?: boolean) => { for (const line of drawWrapped(cell, presentation, errWidth, hang, whole)) console.error(line); };
+    const say = (cell: Styled, hang: number, whole?: boolean) => { for (const line of paintFor(process.stderr, () => drawWrapped(cell, presentation, errWidth, hang, whole))) console.error(line); };
     // The run's own warnings were printed on stderr when they were recorded.
     for (const warning of warnings) say({ text: `! ${warning.message}`, tone: "waiting" }, 2);
     if (error) {

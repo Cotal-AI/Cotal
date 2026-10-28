@@ -7,7 +7,7 @@ import {
 } from "@cotal-ai/core";
 import { type NatsConnection } from "@nats-io/transport-node";
 import {
-  CommandFailure, codeSpan, commandFailureReport, exitCode, failureEnvelope, jsonFlag, plainFlag, presentationOf, renderReport, streamRecord, terminalWidth, writeEnvelope, writeResult, writeStreamRecord,
+  CommandFailure, codeSpan, commandFailureReport, exitCode, failureEnvelope, jsonFlag, plainFlag, presentationOf, renderReport, streamRecord, writeEnvelope, writeResult, writeStreamRecord,
   loadMeshes, targetFlags, type Report,
   recordOperationSpace,
 } from "@cotal-ai/workspace";
@@ -226,7 +226,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     }
     if (interrupted) {
       if (values.json) writeEnvelope(failureEnvelope(commandName, failure));
-      process.stderr.write(`${renderReport(commandFailureReport(failure), values.plain ? "plain" : "rich", terminalWidth(process.stderr))}
+      process.stderr.write(`${renderReport(commandFailureReport(failure), values.plain ? "plain" : "rich", process.stderr)}
 `);
       process.exitCode = interrupted === "SIGINT" ? 130 : 143;
       return;

@@ -156,8 +156,10 @@ rather than read as the value `=general`. An option typed with a typographic das
 typeset text, is refused naming the option it meant, rather than read as a positional.
 
 Command output, including error lines on stderr, the guided `setup` and `meshes add` prompts and
-the `console` screen, is colored only when stdout is a terminal, so piped or redirected output is
-plain text. A terminal whose `TERM` is `dumb` gets no color either. A non-empty `NO_COLOR` turns color off on a terminal too. `FORCE_COLOR` turns color on even when output is
+the `console` screen, is colored only on a terminal: a line on stdout only when stdout is a terminal
+and a line on stderr only when stderr is one, so a pipe or redirect of either stream is plain text.
+Some lines a command writes directly, such as progress notes, are colored only when both streams
+are terminals. A terminal whose `TERM` is `dumb` gets no color either. A non-empty `NO_COLOR` turns color off on a terminal too. `FORCE_COLOR` turns color on even when output is
 piped or `TERM` is `dumb`, unless it is `0` or `false` in any letter case, and it takes precedence over `NO_COLOR`
 with no Node warning about the pair. `--no-color` turns
 color off for that run, whatever the environment says. It sets no `NO_COLOR` for the programs the

@@ -1,5 +1,5 @@
 import { CotalEndpoint, subjectMatches, type FlagValues, type MembershipChange, type MembershipSnapshot } from "@cotal-ai/core";
-import { brokerAddressForDisplay, CommandFailure, exitCode, streamRecord, writeStreamRecord, writeResult, renderReport, terminalWidth, type ConnectRefusal, type Presentation, type Report } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, CommandFailure, exitCode, streamRecord, writeStreamRecord, writeResult, renderReport, type ConnectRefusal, type Presentation, type Report } from "@cotal-ai/workspace";
 import { connectOrThrow, credentialEnded, userViewAuthOrExit } from "../lib/connect.js";
 import { refuseUnknownChannel, type channelFlags } from "./channels.js";
 
@@ -59,7 +59,7 @@ export async function channelMembers(values: Values, channel: string, presentati
   };
   const show = (next: Members) => {
     emit("event", next);
-    if (presentation !== "json") console.log(renderReport(membersView(next, true), presentation, terminalWidth(process.stdout)));
+    if (presentation !== "json") console.log(renderReport(membersView(next, true), presentation, process.stdout));
   };
   // A dropped connection or a failed read ends the follow only once its credential can no longer
   // connect, with the refusal a one-shot command with it gets. Otherwise it is reported once, and the
@@ -144,7 +144,7 @@ export async function channelMembers(values: Values, channel: string, presentati
       process.once("SIGINT", interrupt);
       process.once("SIGTERM", terminate);
       emit("snapshot", last);
-      if (presentation !== "json") console.log(renderReport(membersView(last, true), presentation, terminalWidth(process.stdout)));
+      if (presentation !== "json") console.log(renderReport(membersView(last, true), presentation, process.stdout));
       if (last.asOf === null) emit("gap", { reason: "The membership feed has no successful poll yet." });
       watch = await ep.watchMembership(onMembership, watchClosed);
       await ended;

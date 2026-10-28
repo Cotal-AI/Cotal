@@ -11,7 +11,6 @@ import {
   jsonFlag,
   oneLine,
   renderReport,
-  terminalWidth,
   plainFlag,
   presentationOf,
   resolveSeatControlTarget,
@@ -1226,7 +1225,7 @@ async function establishAttachSession(
   recordOperationSpace(t.space);
   const reach = t.auth.bearer ? "owner" : "any";
   // A refusal's report names the mesh in its heading, so this block names it once, in a field.
-  if (first) console.error(renderReport({ sections: [{ title: "Attach", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Agent", v.name], ["Manager", on ?? t.auth.managerInstanceId ?? "native selection"]] }] }] }, "rich", terminalWidth(process.stderr)));
+  if (first) console.error(renderReport({ sections: [{ title: "Attach", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Agent", v.name], ["Manager", on ?? t.auth.managerInstanceId ?? "native selection"]] }] }] }, "rich", process.stderr));
   const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on, expectedTarget: v.expectedTarget });
   if (!reply.ok) {
     // The one refusal no attach can work around: this seat's runtime streams no terminal. It is
@@ -1823,7 +1822,7 @@ async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ nam
     if (!on) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the agent's manager instance was not established", { target: census.target });
     return { name: row.name, on, expectedTarget: { id: row.id, lifecycleUid: row.lifecycleUid }, status: typeof row.status === "string" ? row.status : "not reported" };
   });
-  if (census.partial) console.error(renderReport({ space: census.target.space, sections: [{ title: "Agent list is partial", blocks: [{ kind: "lines", lines: [{ text: census.partial.message, tone: "waiting" }] }] }] }, "rich", terminalWidth(process.stderr)));
+  if (census.partial) console.error(renderReport({ space: census.target.space, sections: [{ title: "Agent list is partial", blocks: [{ kind: "lines", lines: [{ text: census.partial.message, tone: "waiting" }] }] }] }, "rich", process.stderr));
   if (!choices.length) throw new CommandFailure("refused", census.partial ? "TARGET_UNAVAILABLE" : "TARGET_NOT_FOUND", census.partial ? "no attachable agent was returned; some managers did not answer" : "the answering managers report no agents to attach", { target: census.target, remedy: "run `cotal ps`, or launch an agent with `cotal spawn`" });
   const choice = await prompts.select({
     message: `Return to an agent in ${oneLine(census.target.space)}`,
@@ -1831,7 +1830,7 @@ async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ nam
   });
   if (prompts.isCancel(choice)) return undefined;
   const selected = choices[choice]!;
-  console.error(renderReport({ space: census.target.space, sections: [{ title: "Attaching", blocks: [{ kind: "fields", rows: [["Agent", selected.name], ["Identity", selected.expectedTarget.id], ["Manager", selected.on], ["Detach", `${detachKey().label} leaves the agent running`]] }] }] }, "rich", terminalWidth(process.stderr)));
+  console.error(renderReport({ space: census.target.space, sections: [{ title: "Attaching", blocks: [{ kind: "fields", rows: [["Agent", selected.name], ["Identity", selected.expectedTarget.id], ["Manager", selected.on], ["Detach", `${detachKey().label} leaves the agent running`]] }] }] }, "rich", process.stderr));
   return selected;
 }
 
@@ -1856,7 +1855,7 @@ export async function attach(args: ParsedArgs): Promise<void> {
   console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target no longer available" : detached ? "Detached" : "Attach session ended", blocks: [
     { kind: "fields", rows: [["Agent", v.name]] },
     { kind: "lines", lines: [{ text: verdict.kind === "gone" ? "The selected agent or incarnation was not available to this attach request." : detached ? "Detaching did not send a stop request." : "The terminal session ended. This view sent no agent stop request; run `cotal ps` to check the agent's current state.", tone: "hint" }] },
-  ] }] }, "rich", terminalWidth(process.stderr)));
+  ] }] }, "rich", process.stderr));
 }
 
 /**

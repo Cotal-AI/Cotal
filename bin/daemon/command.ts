@@ -26,7 +26,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, homeCotalDir, jsonFlag, plainFlag, presentationOf, renderReport, spaceFlag, terminalWidth, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, homeCotalDir, jsonFlag, plainFlag, presentationOf, renderReport, spaceFlag, writeResult, type Report } from "@cotal-ai/workspace";
 import { peerCredentials } from "@cotal-ai/seat";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import type { Socket } from "node:net";
@@ -155,7 +155,7 @@ async function login(args: ParsedArgs): Promise<void> {
         process.stderr.write(`${renderReport({ sections: [{ title: "Approve sign-in", blocks: [
           { kind: "fields", rows: [["Provider", idp], ["Open", p.verificationUriComplete], ["Or open", p.verificationUri], ["Approval code", p.userCode], ["Expires", p.expiresAt]] },
           { kind: "lines", lines: [{ text: "Waiting for the provider's approval. The daemon keeps the session. Ctrl-C cancels this sign-in on this machine. Do not share the approval link or code.", tone: "hint" }] },
-        ] }] }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+        ] }] }, presentation === "plain" ? "plain" : "rich", process.stderr)}\n`);
       },
     });
   } catch (e) {
@@ -342,7 +342,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
         process.stderr.write(`${renderReport({ sections: [{ title: "Approve this machine", blocks: [
           { kind: "fields", rows: [["Provider", idp!], ["Open", p.verificationUriComplete], ["Or open", p.verificationUri], ["Approval code", p.userCode], ["Expires", p.expiresAt]] },
           { kind: "lines", lines: [{ text: "Open that link on any device with a browser. This machine needs none. Do not share the approval link or code.", tone: "hint" }] },
-        ] }] }, plain ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+        ] }] }, plain ? "plain" : "rich", process.stderr)}\n`);
       },
     });
   } catch (e) {

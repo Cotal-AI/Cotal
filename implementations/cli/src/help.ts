@@ -4,7 +4,7 @@
  * connects, writes, seeds or imports an extension.
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, heldSpaceNote, loadMeshes, loadPreparedSpaces, localeIsUtf8, MIN_FILE_STORE, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, renderReport, resolvePreference, terminalWidth, upCommand, wrapWords, type Section } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, heldSpaceNote, loadMeshes, loadPreparedSpaces, localeIsUtf8, MIN_FILE_STORE, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, paintFor, renderReport, resolvePreference, terminalWidth, upCommand, wrapWords, type Section } from "@cotal-ai/workspace";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
@@ -306,10 +306,13 @@ export function printHelpPath(cmd: Command, words: readonly string[], out: (line
   for (const word of words) {
     const sub = findSubcommand(surface, word);
     if (!sub || sub.hidden) {
-      // The parser's usage error for the same word: the reason, then the help of the path that exists.
+      // The parser's usage error for the same word: the reason, then the help of the path that exists,
+      // both on stderr, so painted for it whatever stream the caller paints for.
       const at = [cmd.name, ...path].join(" ");
-      for (const line of hang("✗ ", unknownSubcommandMessage(at, surface, word), terminalWidth(process.stderr))) console.error(c.red(line));
-      printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, (line) => console.error(line), terminalWidth(process.stderr));
+      paintFor(process.stderr, () => {
+        for (const line of hang("✗ ", unknownSubcommandMessage(at, surface, word), terminalWidth(process.stderr))) console.error(c.red(line));
+        printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, (line) => console.error(line), terminalWidth(process.stderr));
+      });
       process.exit(1);
     }
     path.push(sub.name); selected = sub; surface = sub;

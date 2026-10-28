@@ -13,7 +13,6 @@ import {
   PinnedFetchRefused,
   removeMesh,
   renderReport,
-  terminalWidth,
   type MeshEntry,
 } from "@cotal-ai/workspace";
 import { c, stderrLine } from "../ui.js";
@@ -143,7 +142,7 @@ async function listMeshes(json: boolean): Promise<void> {
     { blocks: [{ kind: "table" as const, columns: rows.some((row) => row.notes) ? [...columns, { key: "notes", label: "NOTES" }] : columns, rows }] },
     ...(dangling ? [{ blocks: [{ kind: "lines" as const, lines: [{ text: dangling, tone: "hint" as const }] }] }] : []),
   ];
-  console.log(renderReport({ sections }, "rich", terminalWidth(process.stdout)));
+  console.log(renderReport({ sections }, "rich", process.stdout));
 }
 
 /** One `cotal meshes --json` row: what the table shows, as named fields. Origin and liveness stay

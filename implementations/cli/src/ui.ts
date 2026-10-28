@@ -1,5 +1,5 @@
 import { formatAge, oneLine, presenceAges, presenceText, type PresenceStamps, type PresenceStatus } from "@cotal-ai/core";
-import { c, findCotalRoot, localeIsUtf8, plainPunctuation, readMaintenanceJournal, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { c, findCotalRoot, localeIsUtf8, paintFor, plainPunctuation, readMaintenanceJournal, terminalWidth, wrapWords } from "@cotal-ai/workspace";
 
 // The ANSI helpers moved into `@cotal-ai/workspace` (stage 4), shared with @cotal-ai/web.
 // Re-exported so the CLI's many importers keep resolving them from here.
@@ -21,7 +21,7 @@ export function stderrLine(prefix: string, text: string, paint: (s: string) => s
   const lead = ascii ? plainPunctuation(prefix.replace("✗", "!")) : prefix;
   const shown = oneLine(text);
   const words = ascii ? plainPunctuation(shown) : shown;
-  for (const line of hang(lead, whole ? [words] : words, terminalWidth(process.stderr))) console.error(paint(line));
+  for (const line of hang(lead, whole ? [words] : words, terminalWidth(process.stderr))) console.error(paintFor(process.stderr, () => paint(line)));
 }
 
 /** A presence status in words, after its mark unless `marks` is false. */
