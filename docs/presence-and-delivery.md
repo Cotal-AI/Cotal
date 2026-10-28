@@ -65,7 +65,9 @@ it and never interprets it. Readers reject a row whose `card.id` does not match 
 `card.name` or `status` is missing or has the wrong type, whose `ts` is not a finite number, whose
 `card.role`, `activity` or `attention` is present and not a string, or whose `condition` is present and
 is not an object with a string `code`, such as `null`, a bare string or an object with no `code`. They
-report that rejection through the recoverable warning path. A kept row whose `ts` is missing or text
+report that rejection through the recoverable warning path. A writer refuses the same `activity`,
+`attention` and `condition.code` before it stores the row, so one bad call does not make later
+heartbeats unreadable. `null` clears a condition. A kept row whose `ts` is missing or text
 such as `"nope"` would never read as stale, so it would stay live after its key expired. A kept object such as
 `{"toString":null,"valueOf":null}` in a printed field would throw when converted and fail every
 reader's roster.

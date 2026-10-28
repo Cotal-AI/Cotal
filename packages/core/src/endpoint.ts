@@ -3176,6 +3176,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   async setActivity(activity: string): Promise<void> {
+    assertPresenceString(activity, "activity");
     if (activity !== this.activity) this.statusSince = this.activitySince = Date.now();
     this.activity = activity;
     await this.publishPresence();
@@ -3184,6 +3185,7 @@ export class CotalEndpoint extends EventEmitter {
   /** Set the status, and with `activity` the activity line too, in one presence write, so no peer sees
    *  the new activity beside the old status. */
   async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
+    if (activity !== undefined) assertPresenceString(activity, "activity");
     if (activity !== undefined && activity !== this.activity) this.statusSince = this.activitySince = Date.now();
     if (activity !== undefined) this.activity = activity;
     if (status !== this.status) this.statusSince = Date.now();
@@ -3199,6 +3201,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Publish a harness-reported condition, or clear it. Core stores the relay without interpretation. */
   async setCondition(condition: PresenceCondition | null): Promise<void> {
+    if (condition !== null) assertPresenceString(condition.code, "condition.code");
     this.condition = condition ?? undefined;
     this.conditionRevision++;
     await this.publishPresence();
@@ -3207,6 +3210,7 @@ export class CotalEndpoint extends EventEmitter {
   /** Publish the agent's global attention mode into presence (advisory observability). Mirror only —
    *  delivery decisions stay in the connector's authoritative state. */
   async setAttention(attention: AttentionMode): Promise<void> {
+    assertPresenceString(attention, "attention");
     this.attentionMode = attention;
     await this.publishPresence();
   }
@@ -8001,6 +8005,15 @@ function assertPartsSerializable(parts: readonly Part[]): void {
     if (problem !== undefined) {
       throw new Error(`cannot publish a data part carrying a non-JSON value (SPEC §5) - ${problem}`);
     }
+  }
+}
+
+/** A printed presence field a reader keeps only as a string (SPEC §6). An object stored in one makes
+ *  every later heartbeat of that writer unreadable, so the writer refuses it before the row is stored.
+ *  A valid string, including an empty one, is kept as given. */
+function assertPresenceString(value: unknown, field: string): void {
+  if (typeof value !== "string") {
+    throw new Error(`${field} must be a string (SPEC §6); a presence row carrying ${typeof value} is dropped by every reader`);
   }
 }
 
