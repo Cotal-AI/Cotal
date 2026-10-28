@@ -303,7 +303,9 @@ The consuming connector holds a crash-safe claim for its broker target, space, p
 lifecycle on this OS user account. A second patched session on the same host refuses before
 pulling that inbox, even when its launch files and control socket differ. Reconnect keeps the
 claim. Hooks and non-consuming helper connections do not claim it. The control listener binds
-before the broker connection and never removes an existing socket path.
+before the broker connection. On Unix, a restart probes an occupied socket path and retries
+once after removing a leftover with no listener. A live listener, an inconclusive probe or
+a Windows named-pipe collision still refuses the bind.
 
 This is cooperative same-host containment. Other hosts, broker URL aliases and older clients
 are not fenced. Preserve the existing session before choosing a distinct actor for a new
