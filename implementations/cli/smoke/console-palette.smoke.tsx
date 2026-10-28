@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import { render } from "ink";
 import type { MeshSnapshot } from "../src/view/mesh-view.js";
 import type { PsReply } from "../src/console/control.js";
+import { runCommand, type CommandCtx } from "../src/console/commands.js";
 import { CommandPalette } from "../src/console/ui/CommandPalette.js";
 
 const snapshot = {
@@ -42,16 +43,17 @@ async function screen(marker: string) {
 let query = "";
 let runs: string[] = [];
 let formsOpened = 0;
-function Harness({ initial, managed = readManaged }: { initial: string; managed?: () => Promise<PsReply> }) {
+type Grants = { canWrite?: boolean; canControl?: boolean };
+function Harness({ initial, managed = readManaged, canWrite = true, canControl = true }: { initial: string; managed?: () => Promise<PsReply> } & Grants) {
   const [value, setValue] = useState(initial);
   query = value;
-  return <CommandPalette active query={value} snapshot={snapshot} canWrite canControl width={120}
+  return <CommandPalette active query={value} snapshot={snapshot} canWrite={canWrite} canControl={canControl} width={120}
     readManaged={managed} onChange={setValue} onRun={(line) => runs.push(line)}
     onNewAgent={() => { formsOpened++; }} onCancel={() => {}} />;
 }
-async function scenario(initial: string, check: () => Promise<void>, managed?: () => Promise<PsReply>) {
+async function scenario(initial: string, check: () => Promise<void>, managed?: () => Promise<PsReply>, grants: Grants = {}) {
   frame = ""; runs = []; formsOpened = 0;
-  const app = render(<Harness initial={initial} managed={managed} />,
+  const app = render(<Harness initial={initial} managed={managed} {...grants} />,
     { stdin, stdout, debug: true, patchConsole: false, exitOnCtrlC: false });
   try { await screen("Commands"); await check(); }
   finally { app.unmount(); app.cleanup(); }
@@ -131,4 +133,33 @@ await scenario("dm @b", async () => {
   await screen("@bob"); await key("\t");
   assert.equal(query, "dm @bob ", "Existing @ token Tab completion still works");
 });
-console.log("✓ Command selection, recipient/seat/channel/role pickers, message entry and manager failure");
+// #4905: Enter on an action this session cannot take used to be swallowed by the palette, so the
+// operator saw the row's label and nothing else. The line now reaches the dispatcher, whose refusal
+// names the missing permission; the action stays blocked (no picker, no form, no send).
+const notices = (line: string, canWrite: boolean, canControl: boolean): string[] => {
+  const out: string[] = [];
+  runCommand(line, { notify: (msg: string) => out.push(msg) } as unknown as CommandCtx, canWrite, canControl);
+  return out;
+};
+for (const command of ["msg", "dm", "call", "ask"]) {
+  await scenario(command, async () => {
+    await screen("read-only");
+    await key("\r");
+    assert.deepEqual(runs, [command], `${command} without publish permission reaches the dispatcher instead of being swallowed`);
+    assert.equal(query, command, `${command} opens no picker while read-only`);
+    assert.deepEqual(notices(command, false, true), ["read-only - pass --creds to send"], `the dispatcher refuses ${command} with the publish notice`);
+  }, undefined, { canWrite: false });
+}
+await scenario("spawn", async () => {
+  await screen("no control path");
+  await key("\r");
+  assert.deepEqual(runs, ["spawn"], "Spawn without a control path reaches the dispatcher instead of being swallowed");
+  assert.equal(formsOpened, 0, "Spawn without a control path opens no form");
+  assert.match(notices("spawn", true, false)[0] ?? "", /^no control path - /, "the dispatcher refuses spawn with the control notice, not the publish one");
+}, undefined, { canControl: false });
+await scenario("msg", async () => {
+  await key("\r");
+  assert.equal(runs.length, 0, "CONTROL: with publish permission, msg advances to the channel picker rather than running");
+  assert.equal(query, "msg ", "CONTROL: the picker opened");
+});
+console.log("✓ Command selection, recipient/seat/channel/role pickers, message entry, manager failure and blocked-action feedback");
