@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.120.1
+
+### Patch Changes
+
+- a49bee6: Report a bound session as degraded when consecutive presence writes fail, even if core NATS remains connected. Include the observed bucket write failure in connection status and clear it when writes recover.
+
 ## 0.120.0
 
 No changes in this release.

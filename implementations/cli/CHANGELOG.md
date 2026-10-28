@@ -1,5 +1,13 @@
 # @cotal-ai/cli
 
+## 0.120.1
+
+### Patch Changes
+
+- 56e4520: Report degraded join health when a managed seat outlives its launch readiness deadline without joining. Keep process liveness separate and clear the diagnostic on a matching late join.
+- @cotal-ai/core@0.120.1
+  - @cotal-ai/workspace@0.120.1
+
 ## 0.120.0
 
 ### Patch Changes
