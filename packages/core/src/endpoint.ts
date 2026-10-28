@@ -641,6 +641,15 @@ export class CotalEndpoint extends EventEmitter {
    *  `DrainingConnectionError` out of `reset()` on a timer nothing awaits. */
   private presenceWatchIter?: Awaited<ReturnType<KV["watch"]>>;
   private channelWatchIter?: Awaited<ReturnType<KV["watch"]>>;
+  /** Consumer deletes of retired presence and channel-registry watches still in flight. A stop
+   *  alone leaves each watch's ordered consumer on the broker for its five-minute inactive
+   *  threshold (#3914), so {@link stop} and a live-epoch rebuild await these before they close the
+   *  connection that carries them, as they do for the lease watch. */
+  private readonly kvWatchDeletes = new Set<Promise<void>>();
+  /** Presence and channel-registry watch binds still awaiting the broker. One that lands after
+   *  {@link stop} or a rebuild moved the epoch retires its watch and starts that delete itself, so
+   *  the same two paths wait for these first. */
+  private readonly kvWatchBinds = new Set<Promise<unknown>>();
   /** The daemon's lease-loss watch (#1596): the INTENT that survives a connection rebuild, plus the
    *  live iterator. See {@link watchDeliveryLease}. */
   private leaseWatchIntent?: { shardIndex: number; onEvent: (info: DeliveryLeaseInfo | undefined) => void };
@@ -1884,17 +1893,9 @@ export class CotalEndpoint extends EventEmitter {
     this.streamMsgs.length = 0;
     this.presenceEpoch++;
     this.presenceRebind = undefined;
-    try {
-      this.presenceWatchIter?.stop();
-    } catch {
-      /* already closed with the connection */
-    }
+    if (this.presenceWatchIter) this.retireKvWatch(this.presenceWatchIter);
     this.presenceWatchIter = undefined;
-    try {
-      this.channelWatchIter?.stop();
-    } catch {
-      /* already closed with the connection */
-    }
+    if (this.channelWatchIter) this.retireKvWatch(this.channelWatchIter);
     this.channelWatchIter = undefined;
     this.stopDeliveryLeaseWatch();
     for (const sub of this.chatSubs.values()) {
@@ -2090,9 +2091,10 @@ export class CotalEndpoint extends EventEmitter {
     try {
       this.clearConnectionScoped();
       // Manual reconnect still has a live old epoch: complete broker-consumer cleanup before close.
-      // Terminal self-heal has an already-closed epoch: disarm retains stream/name for fresh cleanup.
+      // Terminal self-heal has an already-closed epoch: disarm retains stream/name for fresh cleanup,
+      // and the KV watch consumers that closed with it are left to the broker's inactive threshold.
       if (oldNc && !oldNc.isClosed())
-        await Promise.all([...[...this.membershipFeedWatches].map((watch) => watch.arm), this.settleDeliveryLeaseWatches()]);
+        await Promise.all([...[...this.membershipFeedWatches].map((watch) => watch.arm), this.settleDeliveryLeaseWatches(), this.settleKvWatches()]);
       this.nc = undefined;
       this.js = undefined;
       this.jsm = undefined;
@@ -2262,17 +2264,9 @@ export class CotalEndpoint extends EventEmitter {
         /* already closed */
       }
     }
-    try {
-      this.presenceWatchIter?.stop();
-    } catch {
-      /* already closed */
-    }
+    if (this.presenceWatchIter) this.retireKvWatch(this.presenceWatchIter);
     this.presenceWatchIter = undefined;
-    try {
-      this.channelWatchIter?.stop();
-    } catch {
-      /* already closed */
-    }
+    if (this.channelWatchIter) this.retireKvWatch(this.channelWatchIter);
     this.channelWatchIter = undefined;
     this.stopDeliveryLeaseWatch();
     try {
@@ -2283,7 +2277,7 @@ export class CotalEndpoint extends EventEmitter {
     } catch {
       /* best-effort graceful leave */
     }
-    await this.settleDeliveryLeaseWatches();
+    await Promise.all([this.settleDeliveryLeaseWatches(), this.settleKvWatches()]);
     // DM-only: the pull above is stopped, so no new copy reaches the handler. Let a running handler
     // settle while the connection is still open, so its ack can reach the broker; close either way.
     let dmOnlyUnsettled = false;
@@ -4910,6 +4904,51 @@ export class CotalEndpoint extends EventEmitter {
     await Promise.all(this.leaseWatchDeletes);
   }
 
+  /** Stop a presence or channel-registry watch and delete its ordered consumer, which the stop
+   *  alone leaves on the broker until its five-minute inactive threshold (#3914). A connection
+   *  that closed on its own cannot carry the delete, so that consumer is left to the threshold. A
+   *  failed delete is a warning: the broker still reaps the consumer, and a rejected {@link stop}
+   *  would read as unproved consumer custody. */
+  private retireKvWatch(iter: Awaited<ReturnType<KV["watch"]>>): void {
+    try { iter.stop(); } catch { /* already closed with its connection */ }
+    if (!this.nc || this.nc.isClosed()) return;
+    const deleting = this.deleteOwnConsumer(kvWatchConsumer(iter)).catch((e: Error) => this.emitRecoverable(
+      new Error(`a retired KV watch consumer was not deleted (${e.message}); the broker reaps it at its inactive threshold`),
+    ));
+    this.kvWatchDeletes.add(deleting);
+    void deleting.then(() => this.kvWatchDeletes.delete(deleting));
+  }
+
+  /** Wait for the presence and channel-registry watch binds still in flight, then for every retired
+   *  watch's consumer delete. {@link stop} and a live-epoch rebuild run this before they close the
+   *  connection those deletes need (#3914). */
+  private async settleKvWatches(): Promise<void> {
+    await Promise.allSettled(this.kvWatchBinds);
+    await Promise.all(this.kvWatchDeletes);
+  }
+
+  /** Bind a watch on `kv` for the current epoch and record its consumer as this connection's own.
+   *  A bind that {@link stop} or a rebuild overtook retires its late watch, consumer delete
+   *  included, and resolves undefined: the epoch that asked for it is gone, and the one that
+   *  replaced it binds its own through {@link connectAndBind}. A stopped endpoint binds nothing,
+   *  because its teardown may already have settled the flights it waits for. */
+  private bindKvWatch(kv: KV): Promise<{ iter: Awaited<ReturnType<KV["watch"]>>; info: ConsumerInfo } | undefined> {
+    if (this.stopped) return Promise.resolve(undefined);
+    const epoch = this.presenceEpoch;
+    const binding = (async () => {
+      const iter = await kv.watch();
+      const info = await kvWatchConsumer(iter).info(true);
+      this.recordOwnWatchConsumer(info);
+      if (epoch === this.presenceEpoch && !this.stopped) return { iter, info };
+      this.retireKvWatch(iter);
+      return undefined;
+    })();
+    const settled = () => { this.kvWatchBinds.delete(binding); };
+    this.kvWatchBinds.add(binding);
+    void binding.then(settled, settled);
+    return binding;
+  }
+
   /** Bind the lease watch on the current connection. A bind that lands after a newer watch replaced
    *  its intent, or after a stop or connection teardown moved the epoch, retires its watch instead of
    *  installing it: the epoch it was bound for is gone, and a rebuilt one binds its own. */
@@ -7362,24 +7401,21 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Bind a presence watch on the current connection. Resolves the bound consumer's info when
    *  the watch was installed, undefined when the endpoint stopped or rebuilt while the bind was
-   *  in flight: that bind's iterator is released here and nothing is installed, because the
-   *  epoch that asked for it is gone and the epoch that replaced it binds its own watch through
-   *  {@link connectAndBind}. Without this fence a bind that completes after {@link stop} would
-   *  resurrect a watch on a stopped endpoint, and one that completes after a rebuild would
-   *  overwrite the fresh epoch's watch with a dead-connection iterator. */
+   *  in flight: that bind's watch is retired by {@link bindKvWatch} and nothing is installed,
+   *  because the epoch that asked for it is gone and the epoch that replaced it binds its own
+   *  watch through {@link connectAndBind}. Without this fence a bind that completes after
+   *  {@link stop} would resurrect a watch on a stopped endpoint, and one that completes after a
+   *  rebuild would overwrite the fresh epoch's watch with a dead-connection iterator. */
   private async startPresenceWatch(): Promise<ConsumerInfo | undefined> {
     if (!this.kv) return undefined;
-    const epoch = this.presenceEpoch;
     let hydrated!: () => void;
     this.presenceSnapshot = new Promise<void>((resolve) => { hydrated = resolve; });
-    const iter = await this.kv.watch();
-    const info = await kvWatchConsumer(iter).info(true);
-    this.recordOwnWatchConsumer(info);
-    if (epoch !== this.presenceEpoch) {
-      try { iter.stop(); } catch { /* its connection may already be gone */ }
+    const bound = await this.bindKvWatch(this.kv);
+    if (!bound) {
       hydrated();
       return undefined;
     }
+    const { iter, info } = bound;
     this.presenceWatchIter = iter;
     // A bucket with no keys replays nothing, so no entry carries the end-of-replay marker. For an
     // observer that does not register, that empty replay is the whole snapshot: nobody is present.
@@ -7428,7 +7464,7 @@ export class CotalEndpoint extends EventEmitter {
    * next sweep exactly as if the watch had never stalled. Rate-limited to one attempt per TTL
    * per observer, never overlapping, never on a stopped or rebuilding endpoint (those own their
    * watch through {@link connectAndBind}). A stop or rebuild that lands while the bind is in
-   * flight retires it: {@link startPresenceWatch} releases the late iterator and reports
+   * flight retires it: {@link startPresenceWatch} retires the late watch and reports
    * nothing, since the epoch that was silent no longer exists. A failed bind is reported and
    * the view stays stale.
    */
@@ -7446,11 +7482,13 @@ export class CotalEndpoint extends EventEmitter {
         // watch is the one that recovers by itself, and its replay is still guarded against
         // expired PUTs. Only a successfully bound watch retires its predecessor.
         const info = await this.startPresenceWatch();
-        // Retired mid-bind (stop or rebuild moved the epoch): the late iterator is already
-        // released and the old watch was torn down by whoever moved the epoch. Nothing to
+        // Retired mid-bind (stop or rebuild moved the epoch): the late watch is already
+        // retired and the old watch was torn down by whoever moved the epoch. Nothing to
         // retire, nothing to report.
         if (!info) return;
-        if (old && old !== this.presenceWatchIter) { try { old.stop(); } catch { /* already closed with its consumer */ } }
+        // The predecessor's consumer goes with it: left alone, every rebind of a silent bucket
+        // would add one idle consumer to the presence stream per TTL (#3914).
+        if (old && old !== this.presenceWatchIter) this.retireKvWatch(old);
         // A bucket with no keys replays nothing, so the new watch cannot refresh
         // `lastPresenceWatchAt` by delivering. It IS current knowledge: nobody is present. The
         // bind's consumer info carries the initial pending count for that one fact; nats.js's KV
@@ -7476,8 +7514,9 @@ export class CotalEndpoint extends EventEmitter {
    *  reported as a `warning` and dropped, so its channel resolves to the default policy. */
   private async startChannelWatch(): Promise<void> {
     if (!this.channelKv) return;
-    const iter = await this.channelKv.watch();
-    this.recordOwnWatchConsumer(await kvWatchConsumer(iter).info(true));
+    const bound = await this.bindKvWatch(this.channelKv);
+    if (!bound) return;
+    const { iter } = bound;
     this.channelWatchIter = iter;
     void (async () => {
       for await (const e of iter) this.handleChannelEntry(e);
