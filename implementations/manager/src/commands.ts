@@ -142,7 +142,8 @@ function spaceFor(v: Values, root = findCotalRoot()): string {
  *  folder it is started from. A space a folder only holds on disk, such as a stopped one or one a
  *  `cotal up` in a parent folder left, does not take the run from the selection. With nothing
  *  selected that held space takes the run, so a prepared or stopped one is refused as not started.
- *  With none, {@link superviseTarget} supervises the space this folder hosts. */
+ *  With none, {@link superviseTarget} supervises the space this folder hosts, and refuses a folder
+ *  that hosts none. */
 function superviseSelection(v: Values): { values: Values; root: string } {
   const root = findCotalRoot();
   if (v.space !== undefined || process.env.COTAL_SPACE !== undefined) return { values: v, root };
@@ -216,6 +217,13 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
       // the flag/env, exactly what a service unit's EnvironmentFile supplies.
       if (loadSpaceAccountAuth(authDir(root), localSpace))
         return { space: localSpace, server: ve.server ?? DEFAULT_SERVER, remoteUser: false, tlsRequired: false, eventsRequired: false };
+      // Nothing named or selected a space and this folder hosts none, so the default name is no one's
+      // space and the refusal does not name it.
+      if (ve.space === undefined)
+        throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this folder holds no space and none is selected, so no manager started", {
+          target: { root },
+          remedy: "for a space hosted elsewhere, run `cotal supervise --space <name>` or select it with `cotal use <name>`; to host one here, run `cotal up`",
+        });
       throw new Error(`neither hosting '${localSpace}' (no cotal up root here) nor registered to it (no meshes entry) — \`cotal up\` to host, or \`cotal meshes add\` to join`);
     }
     throw error;
@@ -282,12 +290,13 @@ function managerTargetRefusal(error: MeshTargetError, v: Values, root: string): 
   return new CommandFailure("refused", targetErrorCode(error.code), `${message}, so no manager started`, { target: { space, root }, ...(next ? { remedy: next } : {}) });
 }
 
-/** A user-auth space that another folder hosts, named before this folder writes a manager identity:
- *  this folder holds no signer for it, so a manager started here would have no credential. */
+/** A static or user-auth space that another folder hosts, named before this folder writes a manager
+ *  identity: this folder holds no signer for it, so a manager started here would have no credential. */
 function foreignHostRefusal(space: string, root: string, server: string): CommandFailure | undefined {
   const host = findMesh(space);
-  if (host?.mode !== "user" || host.userAuth?.remote === true || hasUserAuthState(root, space) || canonicalRoot(host.root) === canonicalRoot(root)) return undefined;
-  return new CommandFailure("refused", "PERMISSION_DENIED", `this folder holds no signer for user-auth space "${space}" (${root}), so no manager started`, { target: { space, root }, remedy: hostFolderStep(space, root, brokerAddressForDisplay(server) ?? "the broker") });
+  if (host === undefined || host.mode === "open" || host.userAuth?.remote === true || canonicalRoot(host.root) === canonicalRoot(root)) return undefined;
+  if (host.mode === "user" ? hasUserAuthState(root, space) : loadSpaceAccountAuth(authDir(root), space)) return undefined;
+  return new CommandFailure("refused", "PERMISSION_DENIED", `this folder holds no signer for ${host.mode === "user" ? "user-auth " : ""}space "${space}" (${root}), so no manager started`, { target: { space, root }, remedy: hostFolderStep(space, root, brokerAddressForDisplay(server) ?? "the broker") });
 }
 
 /** The next step for a native manager child whose startup did not confirm, in the words the
@@ -320,6 +329,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   } catch (e) {
     if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e, remedy: UNCONFIRMED_START });
     if (isWorkspaceTargetError(e)) throw managerTargetRefusal(e, v, managerRoot);
+    if (isCommandFailure(e)) throw e;
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
