@@ -115,8 +115,8 @@
  *     `status` leads Next with `down --abandon-stop <request> --yes`, and its `Delivery responder`
  *     row names the block instead of `up`. Its blocked line labels that stop request and the
  *     operation, and `down --abandon-stop` given the operation ID refuses `TARGET_NOT_FOUND`, naming
- *     that stop request and its command, and abandons nothing. Its fields label the operation ID
- *     `Given ID`, and `--json` keeps it as `target.requestId`.
+ *     that stop request and its command, and abandons nothing. Without `--yes` it refuses the same
+ *     way. Its fields label the operation ID `Given ID`, and `--json` keeps it as `target.requestId`.
  * 10. A repeated `down --with-agents --yes`. After one that completed it is a no-op, exit 0. After a
  *     `down` without `--with-agents` it still refuses `LIFECYCLE_BLOCKED`.
  * 11. A first `up` under `ulimit -n 32`. Its broker cannot create the space's streams, so the `up`
@@ -1414,6 +1414,9 @@ try {
     const blocked = status.stdout.split("\n").find((line) => line.includes("Stack blocked · ")) ?? "";
     check(`${space}: its blocked line labels the stop request Next names, and the operation it also names`,
       request !== undefined && operation !== undefined && operation !== request && blocked.includes(`with stop request ${request} `) && blocked.includes(`(operation ${operation})`), { request, operation, blocked });
+    const unconfirmed = cli(root, "down", "--abandon-stop", operation ?? "none", "--plain");
+    check(`${space}: without --yes, down --abandon-stop with the operation ID refuses TARGET_NOT_FOUND the same way, before it asks for --yes`,
+      unconfirmed.status === 2 && unconfirmed.stderr.includes("TARGET_NOT_FOUND") && unconfirmed.stderr.includes(`stack-delivery retains stop request ${request};`) && unconfirmed.stderr.includes(`cotal down --abandon-stop ${request} --yes`) && !unconfirmed.stderr.includes("needs --yes") && serviceInstances(space, "stack-delivery")[0]?.record.value.state === "stopping", { ...shown(unconfirmed), operation });
     const wrong = cli(root, "down", "--abandon-stop", operation ?? "none", "--yes", "--plain");
     check(`${space}: down --abandon-stop with the operation ID refuses TARGET_NOT_FOUND, naming the stop request and its command, and abandons nothing`,
       wrong.status === 2 && wrong.stderr.includes("TARGET_NOT_FOUND") && wrong.stderr.includes(`stack-delivery retains stop request ${request};`) && wrong.stderr.includes(`cotal down --abandon-stop ${request} --yes`) && serviceInstances(space, "stack-delivery")[0]?.record.value.state === "stopping", { ...shown(wrong), operation });
