@@ -672,20 +672,24 @@ export class MeshAgent extends EventEmitter {
     return this._transportConnected;
   }
 
-  /** Latest pre-bind failure. A successful bind clears it; stop preserves it for post-mortem diagnosis. */
+  /** Current connection failure, including repeated presence writes refused on a live transport.
+   *  A successful write clears that diagnosis. Pre-bind failures survive stop for post-mortem use. */
   get connectionIssue(): string | undefined {
+    const presence = this._connected && this._transportConnected && !this._stopping
+      ? this.presenceWriteFailure
+      : undefined;
+    if (presence !== undefined && presence.consecutiveFailures >= 2) {
+      return `presence writes to bucket ${JSON.stringify(presence.bucket)} have failed ${presence.consecutiveFailures} consecutive times: ${presence.error ?? "write failed"}`;
+    }
     return this.lastConnectionError;
   }
 
   /** #1356: the space's presence bucket has been refusing writes since this time, or `undefined`.
    *
-   *  Deliberately NOT folded into {@link connectionIssue}. That field has a defined relationship to
-   *  readiness which existing callers already read, and a bound endpoint surviving refused heartbeats
-   *  IS still ready — the neighbouring decision at the `warning` listener is correct and stands. This
-   *  is a distinct fact that can be true at the same time as `ready`, which is the actual shape of the
-   *  incident: connected, serving, and silently unable to publish presence.
+   *  The endpoint can remain bound with a live transport while JetStream refuses its writes.
+   *  Two consecutive failures make the session degraded; a successful write clears the record.
    *
-   *  Presence writes are the CANARY, not the scope — see CotalEndpoint.presenceWriteFailure. */
+   *  Presence writes can fail alongside other publishes. See CotalEndpoint.presenceWriteFailure. */
   get presenceWriteFailure(): {
     since: number;
     forMs: number;
@@ -769,7 +773,9 @@ export class MeshAgent extends EventEmitter {
     return this._stopping;
   }
 
-  /** The three liveness facts combined, in one place. Every combination maps, so a caller never has
+  /** The connection and write-health facts combined. Repeated presence write failures degrade a
+   *  bound session even while its transport remains live.
+   *  Every combination maps, so a caller never has
    *  to guess what an unlisted pair means, and a caller that disagrees with this reading can still
    *  read {@link connected}, {@link transportConnected} and {@link stopping} directly.
    *
@@ -784,6 +790,7 @@ export class MeshAgent extends EventEmitter {
   get connectionState(): ConnectionState {
     if (this._stopping) return "stopped";
     if (this._connected) {
+      if ((this.presenceWriteFailure?.consecutiveFailures ?? 0) >= 2) return "degraded";
       if (!this._transportConnected) return "degraded";
       const held = this.automaticQueueStalledForMs();
       return held !== undefined && held >= AUTOMATIC_QUEUE_STALL_MS ? "stalled" : "ready";

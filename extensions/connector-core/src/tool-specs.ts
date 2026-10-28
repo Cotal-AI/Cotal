@@ -732,14 +732,14 @@ export function cotalToolSpecs(
       title: "Cotal: connection status",
       description:
         "Report this session's mesh connection as one of six states, plus the raw facts it is " +
-        "derived from. `ready` is bound with a live transport AND consuming its queue. `stalled` is " +
+        "derived from. `ready` is bound with a live transport, no repeated presence write failures, and a progressing queue. `stalled` is " +
         "bound with a live transport while automatic deliveries have been queued with no progress " +
         "for over ten minutes: the connection is fine and the seat is not consuming, so peer " +
         "messages are piling up behind it. Progress is measured at the HEAD of the queue, so a seat " +
         "that keeps committing fresh arrivals while its oldest deliveries never come off reports " +
-        "`stalled` rather than `ready`. `degraded` is bound while the " +
-        "transport underneath is DOWN, so sends queue or fail until the client reconnects; this is " +
-        "the state that needs attention. `connecting` is a live transport whose Cotal bind has not " +
+        "`stalled` rather than `ready`. `degraded` is bound while the transport is down or two or more " +
+        "consecutive presence writes have failed. A live core NATS connection does not prove JetStream " +
+        "accepts writes; `connectionIssue` names the observed write failure. `connecting` is a live transport whose Cotal bind has not " +
         "finished. `disconnected` is neither. `stopped` means this session was shut down " +
         "deliberately and is terminal, which is not a fault. Also reports the buffered inbox count " +
         "and the time of the latest successful non-empty inbox drain when one has occurred. A " +
@@ -759,14 +759,10 @@ export function cotalToolSpecs(
         // which one it is; `state` says which to expect.
         const issueField =
           issue === undefined ? {} : state === "stopped" ? { lastConnectionIssue: issue } : { connectionIssue: issue };
-        // #1356: a bound endpoint can be `ready` on every field above while its presence writes are
-        // being refused - it stays connected, keeps heartbeating into a stream that accepts nothing,
-        // and the roster keeps serving its last good row. Reported as its own fact rather than folded
-        // into connectionIssue, because `ready` and "presence has been unwritable for 47s" are BOTH
-        // true and a caller needs to see the pair. The name says what was observed; it does not bound
-        // the fault, since JetStream can be down account-wide with connected/transportConnected true.
+        // Presence write failures remain a separate measured fact beside the derived state and
+        // current issue. JetStream can refuse writes while connected/transportConnected remain true.
         // Gated on a live transport for the same reason the connector's retry line is: the field's
-        // own note tells a reader the connection is up, so it must not be reachable when it is not.
+        // own note describes a live connection, so it must not be reachable when it is not.
         // A machine-readable lie outranks a human-readable one - a caller PARSES this - so the guard
         // matters more here than in the log string, not less. The endpoint clears the record on every
         // connection teardown, which is the primary fix; this stops a transport that dropped without
