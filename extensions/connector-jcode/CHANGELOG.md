@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.119.1
+
+### Patch Changes
+
+- 9f32677: Clarify that a timed-out channel publish has an unknown outcome and that a disconnected send or yield refused before submission was not sent. Keep the Jcode user-auth tool catalog aligned with the host's capability gates without exposing credentials.
+
 ## 0.119.0
 
 No changes in this release.
