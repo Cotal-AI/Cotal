@@ -7599,7 +7599,8 @@ broker config renders, which `cotal up` passes from `--auth-timeout`.
 recover one by hand.
 `--callout-only` runs a callout replica beside the full service: it answers connects alongside it
 and serves no HTTP, so it refuses `--port`, the public-face flags and `--service-endpoints`. It
-refuses to start in a space that admits service endpoints. It never writes `auth-service.json`, and
+refuses to start in a space that admits service endpoints: one whose full service has ever run with
+them. It never writes `auth-service.json`, and
 it exits non-zero when it loses a store connection or the broker. Give it the same `--auth-timeout`
 as the full service, the value the broker config renders.
 See [callout replicas](identity-and-auth.md#per-user-authentication).
@@ -7618,8 +7619,18 @@ different brokers runs one host process per broker rather than naming a server p
 
 Each lane applies the per-space refusals a single-space replica applies, so a space with missing
 material, a mismatched issuer pin, an unreachable broker or open service-endpoint admission refuses.
-At startup the host serves every space in the manifest or none: one that cannot be served is an
-error naming that space, and no lane is left running.
+At startup the host answers for every space it can, names each one it cannot with the reason, and
+retries those every 5 seconds; its ready line counts the spaces answering against the spaces named
+and lists the ones it retries:
+
+```
+✓ auth callout host up (2 of 3 space(s) answering: <s>, <s>; retrying <s>) - answering the callout on <server>; no HTTP listener, no auth-service.json
+```
+
+A refused space gets no lane in this process, so its connects are answered by its other members
+only. Open service-endpoint admission does not close, so keep such a space off this host's manifest:
+`admitsServiceEndpoints` from `@cotal-ai/auth` answers the check the lane makes
+([embedding](embedding.md#native-service-custody-guards)).
 
 The host rereads the manifest when it changes on disk, on `SIGHUP`, and on a slow backstop interval,
 and opens or closes the difference. Write a replacement and rename it into place: a manifest that

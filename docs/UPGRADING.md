@@ -34,6 +34,34 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Multi-space callout host startup after 0.115.0
+
+`cotal auth-service --callout-only --spaces <manifest>` now starts with the spaces it can serve. It
+names each space it cannot serve with the reason and retries that space every 5 seconds. Up to
+0.114.x the host exited nonzero unless every space in the manifest opened, so one space whose
+service endpoint admission was open, or whose material was missing, kept the callout of every other
+space in the manifest unanswered by this host, and a supervisor that restarts it looped.
+
+A supervisor, health check or script that read that nonzero exit as "a space could not open" no
+longer sees it: the host stays up. Read its ready line, which counts the spaces answering and names
+the spaces it retries, or its per-space lines:
+
+```
+✓ auth callout host up (2 of 3 space(s) answering: <s>, <s>; retrying <s>) - answering the callout on <server>; no HTTP listener, no auth-service.json
+✗ auth callout host: space "<s>" could not be served (<reason>) - retrying in 5s
+```
+
+A manifest that does not read or parse whole still refuses startup, and so does a manifest directory
+the host cannot write. `auth-service --callout-only --space <s>` still refuses a space it cannot
+serve and exits nonzero.
+
+### Before the upgrade
+
+- Nothing has to change unless something relied on the old exit.
+- A space whose service endpoint admission is open is now named and retried for the life of the host,
+  one lane attempt every 5 seconds. Keep it off callout host manifests: `admitsServiceEndpoints({
+  space, server, secrets })` from `@cotal-ai/auth` returns `true` for each such space.
+
 ## Service endpoints on a multi-space auth service host after 0.114.0
 
 `cotal auth-service --spaces <manifest>` now takes service endpoints per space, from each space's
