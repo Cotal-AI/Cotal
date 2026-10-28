@@ -43,7 +43,7 @@ import {
   type MeshTargetErrorDetails,
 } from "@cotal-ai/workspace";
 import { refreshOwnedCompletions } from "../lib/completion-install.js";
-import { legacyManagerReport } from "../lib/legacy-manager-report.js";
+import { legacyManagerReport, type LegacyManagerReport } from "../lib/legacy-manager-report.js";
 
 const UPDATE_TARGET_ENV = "COTAL_UPDATE_TARGET_VERSION";
 const UPDATE_PARENT_ENV = "COTAL_UPDATE_PARENT";
@@ -549,10 +549,18 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
       : [],
   );
   if (!report) return "none";
-  console.log(c.yellow("! legacy manager custody: PTY continuity is impossible; this update is not a hot update"));
-  for (const seat of report.seats)
-    console.log(c.dim(`  ${seat.name}: ${seat.continuity}`));
+  printLegacyReport(report, target.space);
   return "legacy";
+}
+
+/** What a `legacy` verdict prints: the verdict, each seat's continuity class, and the cold path past
+ *  it as the next step. The verdict alone left the operator with no way on (#5027): the update exits
+ *  nonzero, and the path the docs name, `cotal down` then `cotal update`, was nowhere on the screen. */
+export function printLegacyReport(report: LegacyManagerReport, space: string, out: (line: string) => void = console.log): void {
+  out(c.yellow("! legacy manager custody: PTY continuity is impossible; this update is not a hot update"));
+  for (const seat of report.seats)
+    out(c.dim(`  ${seat.name}: ${seat.continuity}`));
+  out(`  Next: stop that mesh with \`cotal down --space ${space}\`, then run this update again; the stop ends the seats above, and the update after it is a cold one`);
 }
 
 /** The registry's latest tag, read through a throwaway npm cache with npm's log files and update

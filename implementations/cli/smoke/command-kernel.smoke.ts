@@ -14,7 +14,7 @@ import "../src/index.js"; // self-register the CLI commands (for the completion 
 import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
 import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch } from "@cotal-ai/workspace";
-import { executeUpdate, parseNpmVersion, reportRunningManagers, update, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
+import { executeUpdate, parseNpmVersion, printLegacyReport, reportRunningManagers, update, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
 
@@ -780,6 +780,16 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(!legacy.events.includes("claim-mutation"), "legacy report refuses before extension replay can mutate packages");
   assert.ok(!legacy.events.some((event) => event.startsWith("spawn:")), "legacy report starts no extension replay subprocess");
   assert.equal(code, 1);
+}
+
+// --- #5027: the legacy verdict names the cold path past it, not just that this is not a hot update --
+{
+  const lines: string[] = [];
+  printLegacyReport({ custody: "legacy", seats: [{ name: "linkedin-animator", agent: "claude", continuity: "fork" }] }, "alpha", (line) => lines.push(line));
+  assert.ok(lines[0]?.includes("this update is not a hot update"), "the verdict line comes first");
+  assert.ok(lines[1]?.includes("linkedin-animator: fork"), "each seat's continuity class is printed");
+  assert.ok(lines[2]?.startsWith("  Next: stop that mesh with `cotal down --space alpha`"), `the next step names the stop for that space: ${lines[2]}`);
+  assert.ok(lines[2]?.includes("then run this update again"), "and the rerun after it");
 }
 
 // --- #1879: the continuity refusal carries the workspace renderer's remedy ------------------------
