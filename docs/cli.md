@@ -1832,6 +1832,10 @@ is named. A `--dry-run` does not run this probe.
 
 `down` reads each process record once. A component that exits and removes its own record while
 `down` runs counts as having no record, so the stop goes on. Any other failed read is an error.
+An extension-removal reservation in a component's pidfile refuses the stop: it reports the removal in
+progress while the owner is live, calls the reservation stale only when the owner is proven gone or is
+not a pid, and otherwise refuses without advising deletion because the owner's liveness could not be
+confirmed.
 Whole-stack shutdown keeps delivery credentials until every required component has stopped.
 A refused stop preserves both the space-scoped credential and its legacy copy. Credential removal
 errors remain failures. `down` removes the manager's delivery-aware marker, shutdown intent and
