@@ -3659,7 +3659,9 @@ counts for a manager selection, so the question comes up only when `spawn -d` wo
 manager to use. Each manager's row gives its instance id, the host it reports, the runtime it
 spawns through and whether a terminal attaches to its seats (`pty · terminal attach`, or
 `tmux · no terminal attach`), so the choice is made before anything is launched. A manager whose
-presence does not carry it reads as `tmux · terminal attach not reported`.
+presence does not carry it reads as `tmux · terminal attach not reported`. When presence cannot
+be read, each manager is listed by its instance id, and a line above the question starts with
+`names unavailable:` and gives the refusal and its remedy.
 `This terminal` is the default and runs it as above. Picking a manager launches the
 agent there and attaches this terminal, as `--on` does, and a `Manager chosen` receipt names the
 `--on` that skips the question. No manager credential is held while you answer. `--foreground`,
@@ -4544,9 +4546,10 @@ whose read fails counts as one that did not answer. A name every manager answere
 refused `TARGET_NOT_FOUND`, naming the managers searched. On a terminal, `spawn -d`, `models` and
 `persona` ask instead of refusing. Every manager the exchange counts is one of yours in the space the command
 resolved, from the folder or `--space`, so the question lists those managers with the most recently
-started first, and that one is the default. The command then runs on the manager you pick, as the
-Next would run it. The question and a `Manager chosen` receipt, with the manager, its instance id
-and the `--on` that skips the question, go to stderr. Cancelling the question does nothing and
+started first, and that one is the default. When presence cannot be read, the managers are listed
+by instance id under a `names unavailable:` line, as for a bare `spawn`. The command then runs on
+the manager you pick, as the Next would run it. The question and a `Manager chosen` receipt, with
+the manager, its instance id and the `--on` that skips the question, go to stderr. Cancelling the question does nothing and
 exits 0. Without a terminal on stdin and stdout, with `--no-input`, with `--json`, which implies
 `--no-input`, or with `COTAL_NO_PROMPT=1`, the command refuses as above. A `--json` caller passes
 `--on`, and the result's `target.managerInstanceId` names the manager that answered. A bare `spawn` asks where the agent runs

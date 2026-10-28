@@ -997,7 +997,7 @@ export class NoManagerAnswered extends CommandFailure {
 /** The managers an unpinned manager selection refused to choose between, when `e` is that refusal. */
 async function refusedManagers(e: unknown, v: ConnectFlags): Promise<ManagerCandidate[] | undefined> {
   const failure = isCommandFailure(e) ? e : isConnectRefusal(e) ? e.failure() : undefined;
-  return failure ? severalLive(failure, () => rosterOf(v)) : undefined;
+  return failure ? (await severalLive(failure, () => rosterOf(v)))?.managers : undefined;
 }
 
 /** Each of `managers` asked `command` through its own one-instance view, one after another, as the

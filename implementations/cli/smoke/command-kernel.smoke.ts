@@ -1515,6 +1515,44 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 }
 
 {
+  // The question offers the managers a refused selection names by what presence shows: the name, or
+  // <host>/<runtime> without one, most recently started first, with the instance id and host in each
+  // hint. A roster read that is refused leaves the instance ids and says why above the question.
+  const { CommandFailure } = await import("@cotal-ai/workspace");
+  const { managerOptions, severalLive } = await import("../src/lib/manager-choice.js");
+  const [tmuxNew, named, orca, tmuxOld] = ["2xs0pq4rk85tv8jbn3u5141f5cx943m", "66m64nqra6qn8q6xlakgpiwelikogaw", "ggpyg3ywn99ar1oj6bm0x96x4i3a2l", "r28s306ioyo368fsrkdhro2bxjb6b36"];
+  const selection = `signed in, but the exchange for actor "cli" (view "manager-caller") was refused: manager-caller selection found 4 live remote manager candidates for owner u_own (${tmuxNew}, ${named}, ${orca}, ${tmuxOld}); exactly one is required, so name one with --on <instanceId>`;
+  const refusal = new CommandFailure("refused", "PERMISSION_DENIED", selection);
+  const row = (id: string, name: string, activity: string, meta: Record<string, string>, startedAt?: number) => ({ card: { id: `u_own.manager_${id}`, name, kind: "endpoint", role: "manager", meta }, status: "idle", activity, ...(startedAt ? { runtime: { id: "r", startedAt, source: "process" } } : {}), ts: 0 }) as unknown as import("@cotal-ai/core").Presence;
+  const roster = [
+    row(tmuxNew, "manager", "supervisor (tmux)", {}, Date.UTC(2026, 9, 23)),
+    row(named, "n7401ze", "supervisor (pty)", { host: "david-n7401ze" }, Date.UTC(2026, 9, 27)),
+    row(orca, "manager", "supervisor (orca)", { host: "netcup-vps" }, Date.UTC(2026, 9, 25)),
+    row(tmuxOld, "manager", "supervisor (tmux)", {}),
+  ];
+  const read = await severalLive(refusal, async () => roster);
+  assert.equal(read?.unread, undefined, "a roster that is read leaves nothing to explain");
+  const { options } = managerOptions(read?.managers ?? []);
+  assert.deepEqual(options.map((o) => o.label), ["n7401ze", "netcup-vps/orca", "tmux", "tmux"], "each manager is offered by its name or <host>/<runtime>, never by its instance id, most recently started first");
+  assert.deepEqual(options.map((o) => o.hint.split(" · ").slice(0, 2)), [[named, "david-n7401ze"], [orca, "netcup-vps"], [tmuxNew, "host not reported (started by an older cotal)"], [tmuxOld, "host not reported (started by an older cotal)"]], "each hint starts with the instance id and the host");
+  assert.match(options[0]!.hint, / · most recent$/, "the first is marked most recent");
+
+  const denied = new CommandFailure("refused", "PERMISSION_DENIED", 'the connection the auth service of cotal_cloud minted for your user may not read the presence bucket or the channel registry with one batched read: Permissions Violation for Publish to "$JS.API.DIRECT.GET.KV_cotal_channels_cotal_cloud"', {
+    remedy: "update the auth service of cotal_cloud to a release whose agent profile grants $JS.API.DIRECT.GET.KV_cotal_channels_cotal_cloud",
+  });
+  const unread = await severalLive(refusal, async () => { throw denied; });
+  assert.deepEqual(unread?.managers.map((m) => m.instanceId), [tmuxNew, named, orca, tmuxOld], "a refused roster read still names the choice by instance id");
+  assert.equal(unread?.unread, `names unavailable: ${denied.message}; ${denied.remedy}`, "and says why, with the refusal's message and its remedy");
+  const asked = spawnSync(process.execPath, [...process.execArgv, join(import.meta.dirname, "manager-question.fixture.ts"), selection, denied.message, denied.remedy!], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_"))), NO_COLOR: "1" },
+  });
+  const shown = asked.stderr.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\n[│ ]*/g, " ");
+  assert.match(shown, /names unavailable: the connection the auth service of cotal_cloud minted for your user may not read .* update the auth service of cotal_cloud to a release whose agent profile grants .*4 of your managers are live\. Which one should run this\?/, `the question says why above itself, rather than offering bare ids with no reason: ${asked.stderr}`);
+}
+
+{
   // A bare spawn runs the application in this terminal; a manager runs it only with -d or --on.
   // This process has no terminal, so an attaching launch is refused and a spawn in this terminal is not.
   const { validateSpawnArguments } = await import("../src/commands/spawn.js");
