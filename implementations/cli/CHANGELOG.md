@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.115.3
+
+### Patch Changes
+
+- 4e84742: `identityUncertaintyRefusal` now accepts only a torn pin, a torn pairing, or an unpinned live pid. A match, a gone pid, a legacy record, a mismatch, or a pidfile with no pid is a compile error instead of a refusal that names the identity state as unsupported. The three refusing kinds keep their own sentences. A stop whose verification rereads the pidfile and finds no pid refuses before any signal and keeps the record.
+- 7e8126b: `cotal invoke` and `cotal endpoint invoke` now say when their deadline ran out during the endpoint contract read. When the endpoint answered but the read did not finish in time, the call used to fail `OPERATION_FAILED` with "the endpoint contract read did not complete" and no Next. It now names the deadline, for example "the 100ms --timeout ran out during the endpoint contract read; no command was published", and its Next suggests a longer `--timeout`. The code, the exit status and the native `deadline-exceeded` cause in `--json` are unchanged. An endpoint nothing serves is still refused `TARGET_UNAVAILABLE`.
+- Updated dependencies [4e84742]
+  - @cotal-ai/workspace@0.115.3
+  - @cotal-ai/core@0.115.3
+
 ## 0.115.2
 
 ### Patch Changes
