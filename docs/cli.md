@@ -4956,6 +4956,13 @@ only a direct-process service. It names the `ExecStart=` line for a unit of your
 or not a manager was started, with one exception: while a manager that `cotal up` started with no
 saved service runs, `install` refuses it as `stop` does and names `cotal down`.
 
+A manager that fails while it starts writes one last line that names the cause:
+`the manager did not start`, then the failure's code and message, the error it wraps and its
+remedy. `start` fails `OPERATION_FAILED`, exit 5, and quotes that line, and
+`cotal service logs manager --instance <id>` shows it. With `--foreground` the line goes to this
+terminal, and the refusal says
+`its output went to this terminal and was not captured in its log` and names no log.
+
 `manager start` and `manager restart` run the first-run connector seed, as `cotal supervise` does,
 so a fresh machine or container has its connectors before the manager boots; `status`, `logs`,
 `stop` and the maintenance verbs install nothing.
@@ -9301,7 +9308,8 @@ Process readiness waits up to one second, or its deadline when that is shorter, 
 exit. One that exits by then fails the start with `OPERATION_FAILED`, exit 5, and its exit code is
 recorded; a restart whose replacement exits so is partial, exit 4, and names that exit code. A
 background start also quotes the last line the process logged during that launch, and says its log
-records the cause when it logged nothing. A live
+records the cause when it logged nothing. A foreground start says its output went to this terminal
+and was not captured in its log, and names no log to read. A live
 creation-pinned direct process is reported Running. HTTP readiness uses
 a bounded loopback request with credentials omitted and redirects disabled. Its success is
 Reachable, not proof that the child owns that listener or serves a native endpoint. Status labels
