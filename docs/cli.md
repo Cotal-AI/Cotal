@@ -5004,9 +5004,14 @@ hosts or is registered for, else the one `cotal use` selected, else the space th
 hosts. A space the folder only holds, such as a prepared or stopped one or one a `cotal up` in a
 folder above it left, does not take the run from the selection. With nothing selected, a prepared or
 stopped space is refused as not started, and the refusal names the `cotal up` that starts it. A
-registered or selected space runs its manager
+folder that holds no space, with nothing selected, is refused `TARGET_NOT_FOUND`, and Next names
+`cotal supervise --space <name>` or `cotal use <name>` for a space hosted elsewhere, and `cotal up`
+to host one here. A registered or selected space runs its manager
 in the folder that space is registered at, with that folder's records and signer, so a start from
-any folder is the same manager, with the same instance and name.
+any folder is the same manager, with the same instance and name. With `--space` or `COTAL_SPACE`
+the manager runs in this folder. For a static or user-auth space that another folder hosts, a
+folder that holds no signer for it is refused `PERMISSION_DENIED` before anything is written, and
+Next names the folder that hosts the space.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -5069,8 +5074,8 @@ under a `Mesh:` heading that names the credential and the broker, and its Next n
 that hosts the space. Before it connects, `supervise` refuses the same way, with exit 2 under a
 `Mesh:` heading, and writes nothing in this folder. A space whose own stack in this folder is
 stopped or not started gets `TARGET_UNAVAILABLE` and `cotal up` there, and with `--server` also the
-folder whose `cotal up` started that broker. A user-auth space that another folder hosts gets
-`PERMISSION_DENIED` and the folder that hosts it.
+folder whose `cotal up` started that broker. A static or user-auth space that another folder hosts
+gets `PERMISSION_DENIED` and the folder that hosts it, when this folder holds no signer for it.
 
 On a normal `SIGINT`/`SIGTERM`, the manager stops every seat and requires the selected runtime to
 prove the seat is gone before it releases the manager lease or service registration. A stop that

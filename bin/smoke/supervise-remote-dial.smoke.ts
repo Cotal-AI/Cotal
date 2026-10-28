@@ -97,7 +97,7 @@ const kids: ChildProcess[] = [];
 
 const { createSpaceAuth, mintCreds, mintLifecycleUid, newIdentity, probeConnect, remoteManagerActors, serverConfig, setupSpaceStreams } =
   await import("@cotal-ai/core");
-const { authDir, loadManagerInstanceIdentity, putSpaceAuth, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { authDir, findCotalRoot, loadManagerInstanceIdentity, putSpaceAuth, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { MANAGER_ENDPOINT } = await import("../../implementations/manager/src/manager-service-contract.js");
 const { makeManagerEndpointHolderEvictor } = await import("../../implementations/manager/src/endpoint-evict.js");
 const { registerRemoteManagerAuthority } = await import("../../implementations/manager/src/remote-register.js");
@@ -742,6 +742,53 @@ try {
     [emptyRun, nestedRun].every((run) => run.hostedId !== undefined && servedId(run.out) === run.hostedId),
     [emptyRun, nestedRun].map((run) => ({ hosted: run.hostedId, served: servedId(run.out) })));
   ok("M: neither folder nor the parent's .cotal changed", JSON.stringify(localAfter) === JSON.stringify(localBefore), { localBefore, localAfter });
+
+  // O: `cotal supervise --space` runs in this folder, so for a space this home hosts in another root
+  // it is refused before it connects from an empty folder, and from an empty folder under a parent
+  // whose `.cotal` holds an unrelated space, because neither holds a signer for it. The refusal names
+  // the root that hosts the space. Neither folder, the parent's `.cotal` nor the hosting root changes.
+  const namedRoot = scratch("named-root"), namedHome = scratch("named-home");
+  saveSpaceAuth(authDir(namedRoot), auth);
+  const previousHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = namedHome;
+  try { recordMesh({ space, server: tcpServer, root: namedRoot, mode: "auth", ts: new Date().toISOString() }); }
+  finally { process.env.COTAL_HOME = previousHome; }
+  const namedEmpty = scratch("named-empty");
+  const namedParent = scratch("named-parent");
+  saveSpaceAuth(authDir(namedParent), await createSpaceAuth("otherspace"));
+  const namedNested = join(namedParent, "bare-cwd");
+  mkdirSync(namedNested);
+  const namedListings = (): string[] => [listing(namedEmpty), listing(namedNested), listing(join(namedParent, ".cotal")), listing(join(namedRoot, ".cotal"))];
+  const namedBefore = namedListings();
+  const namedRuns = [
+    { shape: "an empty folder", root: namedEmpty, run: await homeCli(namedHome, namedEmpty, "supervise", "--space", space) },
+    { shape: "an empty folder under an unrelated parent", root: namedParent, run: await homeCli(namedHome, namedNested, "supervise", "--space", space) },
+  ];
+  const namedAfter = namedListings();
+  for (const { shape, root: folderRoot, run } of namedRuns)
+    ok(`O: supervise --space from ${shape} is refused PERMISSION_DENIED before it connects, naming the root that hosts the space`,
+      run.code === 2 && /Code:\s+PERMISSION_DENIED/.test(run.out) && run.out.includes(`this folder holds no signer for space "${space}" (${folderRoot}), so no manager started`)
+        && run.out.includes(`\`cd ${namedRoot} && cotal manager start\``) && !/manager up|Native detail/.test(run.out), run.out.slice(-900));
+  ok("O: neither folder, the parent's .cotal nor the hosting root changed", JSON.stringify(namedAfter) === JSON.stringify(namedBefore), { namedBefore, namedAfter });
+
+  // P: in an empty folder with nothing selected and no `.cotal` above it, a bare `cotal supervise` is
+  // refused because the folder holds no space, with the commands that name a space hosted elsewhere or
+  // host one here. It names no `main` and prints no log line. `supervise` takes no `--json`, so that run
+  // is refused as an unknown option. Neither run writes anything in the folder.
+  const nothingHome = scratch("nothing-home"), nothingCwd = scratch("nothing-cwd");
+  const nothingSelected = await homeCli(nothingHome, nothingCwd, "use");
+  must("P: nothing is selected, and no folder above the empty one holds a .cotal",
+    /no space is selected/.test(nothingSelected.out) && findCotalRoot(nothingCwd) === resolve(nothingCwd), { use: nothingSelected.out, root: findCotalRoot(nothingCwd) });
+  const nothingBefore = listing(nothingCwd);
+  const nothing = await homeCli(nothingHome, nothingCwd, "supervise");
+  ok("P: a bare supervise there is refused TARGET_NOT_FOUND, exit 2, saying the folder holds no space, with the commands that name or host one",
+    nothing.code === 2 && /Code:\s+TARGET_NOT_FOUND/.test(nothing.out) && nothing.out.includes("this folder holds no space and none is selected, so no manager started")
+      && nothing.out.includes("for a space hosted elsewhere, run `cotal supervise --space <name>` or select it with `cotal use <name>`; to host one here, run `cotal up`")
+      && !/'main'|"main"|\d{4}-\d\d-\d\dT\d\d:\d\d/.test(nothing.out), nothing.out.slice(-900));
+  const nothingJson = await homeCli(nothingHome, nothingCwd, "supervise", "--json");
+  ok("P: supervise takes no --json, so that run is refused as an unknown option, exit 1",
+    nothingJson.code === 1 && nothingJson.out.includes("Unknown option '--json'") && !/manager up|neither hosting/.test(nothingJson.out), nothingJson.out.slice(-900));
+  ok("P: neither run wrote anything in the folder", listing(nothingCwd) === nothingBefore && nothingBefore === "[]", { nothingBefore, after: listing(nothingCwd) });
 
   // K: a managed spawn the host refuses at enrollment is refused, not unknown. The caller's grant no
   // longer carries admin, so the envelope walk applies, and the persona's role is not in its scope.
