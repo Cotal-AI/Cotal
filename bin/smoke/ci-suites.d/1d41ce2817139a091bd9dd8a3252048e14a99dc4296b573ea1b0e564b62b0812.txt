@@ -1,0 +1,3 @@
+# The Claude Code session-start hook hands the seat its orientation card, or owes it to the next
+# prompt when the seat was not bound at the start.
+smoke:claude-orientation-boot

@@ -1,0 +1,49 @@
+{
+  "suite": [
+    "extensions/connector-claude-code/smoke/orientation-boot.smoke.ts"
+  ],
+  "guard": "the session-start hook hands the seat its orientation card at every SessionStart, or with the next prompt when the seat was not bound at the start, and hands an owed card over once",
+  "command": "pnpm smoke:claude-orientation-boot",
+  "completionMarker": "claude-orientation-boot smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/orientation-boot.json",
+  "why": [
+    "The briefing in the system prompt tells the model to orient; the card is the orienting. A model",
+    "that has to ask spends its first turn on it, and after a compaction it has forgotten the answer",
+    "while the instruction survived. The hook is the only place that fires on both.",
+    "",
+    "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports the handle by RELATIVE SOURCE",
+    "PATH (../src/hooks.js), so the bytes mutated are the bytes graded. Its package-name imports",
+    "(MeshAgent, the types, the sentinel) carry no behaviour under test.",
+    "",
+    "K1 is the plain omission. K2 is the race that a startup hook loses: SessionStart arrives before",
+    "the broker bind, so a card not owed to the next prompt is a card never handed over. K3 is the",
+    "owed flag that never clears, which hands the card over with every prompt for the rest of the",
+    "session."
+  ],
+  "mutations": [
+    {
+      "name": "K1 the session start drops the card",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "const parts = [await orientation(), agent.channelBriefing(),",
+      "replace": "const parts = [agent.channelBriefing(),",
+      "expectRed": "a bound session start hands over the orientation card",
+      "cell": "a bound session start hands over the orientation card"
+    },
+    {
+      "name": "K2 an owed card is never delivered",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "const parts = [cardOwed ? await orientation() : undefined, surfaceAutomatic(agent, ev),",
+      "replace": "const parts = [surfaceAutomatic(agent, ev),",
+      "expectRed": "an unbound session start owes the card to the next prompt",
+      "cell": "an unbound session start owes the card to the next prompt"
+    },
+    {
+      "name": "K3 the owed flag never clears",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "cardOwed = deps.orientation !== undefined && card === undefined;",
+      "replace": "cardOwed = deps.orientation !== undefined;",
+      "expectRed": "the owed card is handed over once",
+      "cell": "the owed card is handed over once"
+    }
+  ]
+}

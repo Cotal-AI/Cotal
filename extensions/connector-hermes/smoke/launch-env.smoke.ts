@@ -16,7 +16,7 @@ import { skipSuite } from "@cotal-ai/smoke-kit";
 import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
 import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
-import { CHANNEL_GUIDANCE, ORIENTATION_BOOTSTRAP } from "@cotal-ai/connector-core";
+import { briefing } from "@cotal-ai/connector-core";
 
 /**
  * Count every assertion, so the terminal tally is derived from what actually ran.
@@ -315,28 +315,29 @@ assert.equal(readFileSync(join(opBare, "config.yaml"), "utf8"), BARE_CONFIG, "a 
 // holds no key for that provider only found out mid-turn, from a provider refusal whose advice pointed
 // at their own credentials. A launch with no model is refused, naming what sets one, and writes no
 // profile at all, so nothing is left behind that a later spawn could take for a working one.
+const mgdConfig = { name: "reviewer", role: "review", space: "smoke" };
 const mgdNone = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-none-"));
 assert.throws(
-  () => setupProfile(mgdNone, { model: undefined }),
+  () => setupProfile(mgdNone, { model: undefined, config: mgdConfig }),
   /no model was resolved/,
   "a managed profile with no resolved model refuses the launch",
 );
-assert.throws(() => setupProfile(mgdNone, { model: undefined }), new RegExp(ADOPT_HOME_ENV), "and names the variable that runs the gateway on the operator's own profile instead");
+assert.throws(() => setupProfile(mgdNone, { model: undefined, config: mgdConfig }), new RegExp(ADOPT_HOME_ENV), "and names the variable that runs the gateway on the operator's own profile instead");
 assert.equal(existsSync(mgdNone), true, "the probe's own directory is still there");
 assert.equal(existsSync(join(mgdNone, "plugins")), false, "a refused launch installs no plugin, so nothing under the profile says a gateway was ever set up here");
 assert.equal(existsSync(join(mgdNone, "config.yaml")), false, "and writes no config.yaml");
 const mgdFresh = join(tmpdir(), `cotal-hermes-managed-fresh-${process.pid}`);
 rmSync(mgdFresh, { recursive: true, force: true });
-assert.throws(() => setupProfile(mgdFresh, { model: undefined }), LaunchRefused, "the refusal is the connector's own class, so the launcher prints it as a diagnosis rather than a stack");
+assert.throws(() => setupProfile(mgdFresh, { model: undefined, config: mgdConfig }), LaunchRefused, "the refusal is the connector's own class, so the launcher prints it as a diagnosis rather than a stack");
 assert.equal(existsSync(mgdFresh), false, "a profile directory that did not exist before the refusal does not exist after it");
 
 const mgdSet = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-set-"));
-setupProfile(mgdSet, { model: "vendor/some-model" });
+setupProfile(mgdSet, { model: "vendor/some-model", config: mgdConfig });
 assert.match(readFileSync(join(mgdSet, "config.yaml"), "utf8"), /^model: "vendor\/some-model"$/m, "a resolved model is written as a quoted scalar");
 const mgdPersona = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-persona-"));
-setupProfile(mgdPersona, { model: "vendor/some-model", persona: "I review changes." });
+setupProfile(mgdPersona, { model: "vendor/some-model", persona: "I review changes.", config: mgdConfig });
 const soul = readFileSync(join(mgdPersona, "SOUL.md"), "utf8");
-assert.ok(soul.includes(ORIENTATION_BOOTSTRAP) && soul.includes(CHANNEL_GUIDANCE), "a managed persona's SOUL.md carries the shared orientation and channel guidance");
+assert.equal(soul, `I review changes.\n\n${briefing(mgdConfig, "hermes")}\n`, "a managed persona's SOUL.md is the persona followed by the shared briefing for Hermes");
 rmSync(mgdPersona, { recursive: true, force: true });
 rmSync(mgdNone, { recursive: true, force: true });
 rmSync(mgdSet, { recursive: true, force: true });

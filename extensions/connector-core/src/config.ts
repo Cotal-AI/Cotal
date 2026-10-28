@@ -387,7 +387,7 @@ export function eventPlaneArmed(config: Pick<AgentConfig, "eventsRequired">, env
 }
 
 /** Beta-feedback guidance folded into connector instructions. */
-export function feedbackLine(config: AgentConfig): string {
+export function feedbackLine(config: Pick<AgentConfig, "feedbackKey">): string {
   const dest = config.feedbackKey
     ? ""
     : `Without a feedback key it goes to the public cotal.ai intake and needs a contact email — ` +

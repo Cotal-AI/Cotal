@@ -112,6 +112,10 @@ export interface ClaudeHandleDeps {
   surfaced?: (items: readonly InboxItem[]) => void;
   /** False when native ingress owns delivery and these hooks observe lifecycle only. */
   delivery?: boolean;
+  /** This seat's orientation card, or undefined while the seat is not bound yet. Handed over at
+   *  every session start (startup, resume, fork, clear, compact), so the model has its bearings
+   *  without asking for them; a card not ready at the start is owed to the next prompt. */
+  orientation?: () => Promise<string | undefined>;
 }
 
 /** Prefixed to a batch containing anything whose previous delivery went unconfirmed. */
@@ -230,6 +234,13 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
   let pendingTool: { name: string; detail: string } | undefined;
   /** SessionStart can arrive during an open turn, including after compaction. */
   let turnOpen = false;
+  /** A session start found the seat unbound, so its card goes with the next prompt instead. */
+  let cardOwed = false;
+  const orientation = async (): Promise<string | undefined> => {
+    const card = await deps.orientation?.();
+    cardOwed = deps.orientation !== undefined && card === undefined;
+    return card;
+  };
   /** A Notification raised a prompt in this turn that no main-agent tool batch has resolved yet. Kept
    *  here rather than read off `agent.status`: relays overlap, and a batch that arrives while the
    *  `waiting` write is still in flight would read `working` and miss the wait it resolves. It opens
@@ -347,11 +358,11 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           } catch {
             /* best-effort */
           }
-          // Boot push: a one-line note per subscribed channel (if the registry has loaded),
-          // plus any messages waiting. Both are advisory context.
+          // Boot push: the orientation card, a one-line note per subscribed channel (if the
+          // registry has loaded), plus any messages waiting. All advisory context.
           // Order matters: surfaceAutomatic creates this frame's inFlight record; surfaceTurns
           // extends it (or creates a message-less one), so it must evaluate second.
-          const parts = [agent.channelBriefing(), surfaceAutomatic(agent, ev), surfaceTurns(agent, ev)].filter(Boolean);
+          const parts = [await orientation(), agent.channelBriefing(), surfaceAutomatic(agent, ev), surfaceTurns(agent, ev)].filter(Boolean);
           return withContext(parts.length ? parts.join("\n\n") : undefined);
         }
         case "UserPromptSubmit": {
@@ -363,7 +374,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // Run turns ride the same frame as peer messages: this is an injectable boundary, and
           // the frame's delivery verdict is what commits them as surfaced (arming the automatic
           // `done` at the coming Stop). surfaceAutomatic first — it creates the inFlight record.
-          const parts = [surfaceAutomatic(agent, ev), surfaceTurns(agent, ev)].filter(Boolean);
+          const parts = [cardOwed ? await orientation() : undefined, surfaceAutomatic(agent, ev), surfaceTurns(agent, ev)].filter(Boolean);
           return withContext(parts.length ? parts.join("\n\n") : undefined);
         }
         case "PreToolUse":

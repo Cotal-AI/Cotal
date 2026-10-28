@@ -21,11 +21,8 @@ import {
   type GatewayConnection,
   startControlServer,
   registerCotalTools,
-  feedbackLine,
-  ORIENTATION_BOOTSTRAP,
-  MESH_FIRST_STEER,
-  WORKFLOW_STEER,
-  CHANNEL_GUIDANCE,
+  briefing,
+  orientationCard,
   type AguiEmitterHolder,
   controlFromEnv,
   GATEWAY_CONNECTING,
@@ -226,7 +223,13 @@ async function startSession(
   /** Claude Code lifecycle events → presence + (on inject-capable events) queued peer messages.
    *  Read `events` and `wake` lazily: they are assigned after this handler is built. `onReply` is
    *  the commit half — an injected batch is acked only once its reply is confirmed delivered. */
-  const claude = createClaudeHandle({ env, events: () => events, surfaced: (items) => wake?.surfaced(items) });
+  const claude = createClaudeHandle({
+    env,
+    events: () => events,
+    surfaced: (items) => wake?.surfaced(items),
+    // Read lazily too: `agent` and `config` are built below. Unbound, there is no card to hand over yet.
+    orientation: async () => (agent.connected ? orientationCard(agent, config, "claude-code", env) : undefined),
+  });
 
   const config = configFromEnv(env);
   config.connector = "claude"; // advertise the host harness on our AgentCard (meta.connector)
@@ -313,30 +316,7 @@ async function startSession(
       // `claude/channel` makes this MCP server a Claude Code *channel*: peer
       // messages can be pushed straight into the session (waking it if idle).
       capabilities: { experimental: { "claude/channel": {} } },
-      instructions:
-        `You are connected to the Cotal mesh as "${config.name}"` +
-        `${config.role ? ` (role: ${config.role})` : ""} in space "${config.space}". ` +
-        `${ORIENTATION_BOOTSTRAP} ` +
-        feedbackLine(config) +
-        `${MESH_FIRST_STEER} ` +
-        `${WORKFLOW_STEER} ` +
-        `${CHANNEL_GUIDANCE} ` +
-        `Other agents coordinate with you here as lateral peers. ` +
-        `Peer messages may arrive as <channel source="cotal" from="<name>" role="<role>" ` +
-        `kind="dm|channel|anycast" channel="<name>">…</channel> — read them and, when a reply is ` +
-        `warranted, respond with cotal_dm (back to that peer), cotal_send (to a channel), or ` +
-        `cotal_anycast (to a role). Use cotal_roster to see who is present, cotal_inbox to pull ` +
-        `anything you may have missed, and cotal_status to report what you are doing. ` +
-        `If you need to concentrate, cotal_status also sets your attention — dnd (channel ` +
-        `chatter stops waking you; it still arrives on your next turn) or focus (only DMs and ` +
-        `@mentions reach your context — pull the held chatter with cotal_inbox). ` +
-        `To silence one channel instead of all of them, cotal_channel_mode sets it quiet (still ` +
-        `buffered but pull-only via cotal_inbox; @mentions still wake and inject) or muted (you stop receiving ` +
-        `it, @mentions included). ` +
-        `Reply only when a reply is actually needed — a silent acknowledgement is correct; ` +
-        `"agreed/thanks/good point" messages are noise. And @-mention a peer only when you need ` +
-        `THAT specific peer to act: a mention wakes them, so mentioning in acknowledgements or ` +
-        `sign-offs makes peers ping-pong wake-ups in an endless loop.`,
+      instructions: briefing(config, "claude-code"),
     },
   );
 
