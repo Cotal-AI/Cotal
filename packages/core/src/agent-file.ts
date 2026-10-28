@@ -25,7 +25,7 @@
  * session reads its own card from it. Part of the wire contract's onboarding
  * half, alongside the join link.
  */
-import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
@@ -440,27 +440,69 @@ export interface PersonaCatalogEntry {
   path: string;
   def?: AgentDef;
   error?: string;
+  /** Why the file cannot be read when it was saved as UTF-16: the one parse reason that quotes nothing
+   *  from the file, so a list that keeps `error` private can still name it. */
+  encoding?: string;
+  /** Set when the file is not a regular file, such as a FIFO, so it was not opened. */
+  notRegular?: true;
+  /** The file a persona that is a symbolic link names. */
+  link?: string;
 }
 
-/** The workspace persona catalog: every `.cotal/agents/*.md` under `root`, sorted by filename
- *  stem. Filesystem-only — no mesh. Missing directory ⇒ empty catalog, not an error. */
-export function listPersonaCatalog(root: string): PersonaCatalogEntry[] {
+/** The file `path` links to when it is a symbolic link: its resolved path, or the link's own text
+ *  when that does not resolve. Undefined for anything else. */
+export function personaLinkTarget(path: string): string | undefined {
+  try {
+    if (!lstatSync(path).isSymbolicLink()) return undefined;
+  } catch {
+    return undefined;
+  }
+  try { return realpathSync(path); } catch { /* a dangling link or a loop */ }
+  try { return readlinkSync(path); } catch { return undefined; }
+}
+
+/** Every `.cotal/agents/*.md` under `root`, sorted by filename stem. Filesystem-only, no mesh.
+ *  An absent directory is an empty catalog. Any other failure to read the directory throws, so a
+ *  catalog that exists and cannot be read is not reported as empty. A malformed file, and a file
+ *  that is not a regular file, is an `error` row rather than a throw. */
+export function readPersonaCatalog(root: string): PersonaCatalogEntry[] {
   const dir = personaDir(root);
   let files: string[];
   try {
     files = readdirSync(dir).filter((f) => f.endsWith(".md"));
-  } catch {
-    return [];
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw e;
   }
   return files.sort().map((f) => {
     const name = f.slice(0, -3);
     const path = join(dir, f);
+    const link = personaLinkTarget(path);
+    const linked = link !== undefined ? { link } : {};
     try {
-      return { name, path, def: loadAgentFile(path) };
+      // A FIFO or a device would block the read, so only a regular file is opened. A link is
+      // followed, as the read follows it.
+      if (!statSync(path).isFile()) return { name, path, error: `persona is not a regular file: ${path}`, notRegular: true as const, ...linked };
+      return { name, path, def: loadAgentFile(path), ...linked };
     } catch (e) {
-      return { name, path, error: (e as Error).message };
+      let encoding: string | undefined;
+      try { encoding = utf16Problem(readFileSync(path, "utf8")); } catch { /* unreadable: `error` says so */ }
+      return { name, path, error: (e as Error).message, ...(encoding ? { encoding } : {}), ...linked };
     }
   });
+}
+
+/** The workspace persona catalog, as {@link readPersonaCatalog} reads it, except that a directory
+ *  which is absent, is not a directory, or cannot be read is an empty catalog rather than a throw.
+ *  The manager's catalog read and `cotal personas list` use this: a peer asking who is defined gets
+ *  no names when the folder cannot be read, and the refusal stays with the operator surfaces that
+ *  must name it. */
+export function listPersonaCatalog(root: string): PersonaCatalogEntry[] {
+  try {
+    return readPersonaCatalog(root);
+  } catch {
+    return [];
+  }
 }
 
 /** The one-line description `cotal personas list` prints: `description:` if set, else the
