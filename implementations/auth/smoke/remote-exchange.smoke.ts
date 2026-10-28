@@ -594,6 +594,21 @@ try {
   const MRD = `${LOOPBACK}/managed-lifecycle/retire`;
   const mrdProbe = { owner: "u_" + "a".repeat(26), actor: "ghost", lifecycleUid: "a".repeat(26) };
   const capHdr = { authorization: `Bearer ${info!.cap}` };
+  // A JSON null, array, or string is a body the exchange can read and must refuse by name. Before
+  // the shape check, destructuring it threw and both faces answered 400 with the raw TypeError,
+  // which never reached the refused-exchange budget.
+  const publicNull = await post(`${PUBLIC}/exchange`, "null");
+  const loopbackNull = await post(`${LOOPBACK}/exchange`, "null", capHdr);
+  check("a JSON null body is a named 400 on the public exchange, not a raw TypeError",
+    publicNull.status === 400 && publicNull.body.error === "exchange needs a JSON object", publicNull.body);
+  check("a JSON null body is the same named 400 on the loopback exchange",
+    loopbackNull.status === 400 && loopbackNull.body.error === "exchange needs a JSON object", loopbackNull.body);
+  const publicArray = await post(`${PUBLIC}/exchange`, "[]");
+  const publicString = await post(`${PUBLIC}/exchange`, '"nope"');
+  check("a JSON array and a JSON string are the same named 400 on the public exchange",
+    publicArray.status === 400 && publicArray.body.error === "exchange needs a JSON object" &&
+    publicString.status === 400 && publicString.body.error === "exchange needs a JSON object",
+    { array: publicArray.body, string: publicString.body });
   check("managed-retire door: GET is refused (POST only)", (await get(MRD)).status === 405);
   check("managed-retire door: a browser Origin is refused (403)", (await post(MRD, mrdProbe, { ...capHdr, origin: "https://evil.example" })).status === 403);
   check("managed-retire door: a non-JSON content type is refused (415)", (await post(MRD, JSON.stringify(mrdProbe), { ...capHdr, "content-type": "text/plain" })).status === 415);
@@ -725,6 +740,18 @@ try {
     if (r.status === 429) { aThrottled = true; break; }
   }
   check("peer A's refusal flood throttles peer A (429)", aThrottled);
+  // A null body is a refused exchange, so it spends the same budget a wrong secret does. Thirty-one
+  // of them from one peer must end at 429 rather than keep answering the named 400.
+  const nullPeer = asPeer("203.0.113.77");
+  let nullNamed = 0;
+  let nullThrottled = false;
+  for (let i = 0; i < 40; i++) {
+    const r = await post(`${PUBLIC}/exchange`, "null", nullPeer);
+    if (r.status === 400 && r.body.error === "exchange needs a JSON object") nullNamed++;
+    if (r.status === 429) { nullThrottled = true; break; }
+  }
+  check("a JSON null flood spends the public refusal budget and then answers 429",
+    nullNamed > 0 && nullNamed <= 30 && nullThrottled, { nullNamed, nullThrottled });
   // In that same window: peer B is untouched. Both probes below are REFUSALS on purpose. Since #802 a
   // valid credential mints even from a full bucket, so a valid probe stays green when every peer
   // shares one bucket; only a refusal shows which budget it landed in (its own 401 sentence, or 429).
@@ -824,7 +851,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 120;
+const EXPECTED = 124;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);

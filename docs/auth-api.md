@@ -46,7 +46,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -96,7 +96,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -159,7 +159,7 @@ Content type: `application/json`.
 
 #### HTTP 400
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -171,7 +171,7 @@ Content type: `application/json`.
 
 #### HTTP 401
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -183,7 +183,7 @@ Content type: `application/json`.
 
 #### HTTP 403
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -195,7 +195,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -207,7 +207,7 @@ Content type: `application/json`.
 
 #### HTTP 413
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -219,7 +219,7 @@ Content type: `application/json`.
 
 #### HTTP 415
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -231,7 +231,7 @@ Content type: `application/json`.
 
 #### HTTP 429
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -294,7 +294,7 @@ Content type: `application/json`.
 
 #### HTTP 400
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -306,7 +306,7 @@ Content type: `application/json`.
 
 #### HTTP 403
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -318,7 +318,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -330,7 +330,7 @@ Content type: `application/json`.
 
 #### HTTP 409
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -342,7 +342,7 @@ Content type: `application/json`.
 
 #### HTTP 413
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -354,7 +354,7 @@ Content type: `application/json`.
 
 #### HTTP 415
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -366,7 +366,7 @@ Content type: `application/json`.
 
 #### HTTP 429
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -429,7 +429,7 @@ Content type: `application/json`.
 
 #### HTTP 400
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -441,7 +441,7 @@ Content type: `application/json`.
 
 #### HTTP 401
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -453,7 +453,7 @@ Content type: `application/json`.
 
 #### HTTP 403
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -465,7 +465,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -477,7 +477,7 @@ Content type: `application/json`.
 
 #### HTTP 413
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -489,7 +489,7 @@ Content type: `application/json`.
 
 #### HTTP 415
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -501,7 +501,7 @@ Content type: `application/json`.
 
 #### HTTP 429
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -551,7 +551,7 @@ Content type: `application/json`.
 
 #### HTTP 400
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -563,7 +563,7 @@ Content type: `application/json`.
 
 #### HTTP 403
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -575,7 +575,7 @@ Content type: `application/json`.
 
 #### HTTP 404
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -587,7 +587,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -662,7 +662,7 @@ Content type: `application/json`.
 
 #### HTTP 400
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -705,7 +705,7 @@ Content type: `application/json`.
 
 #### HTTP 404
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -717,7 +717,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -741,7 +741,7 @@ Content type: `application/json`.
 
 #### HTTP 413
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -753,7 +753,7 @@ Content type: `application/json`.
 
 #### HTTP 415
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -840,7 +840,7 @@ Content type: `application/json`.
 
 #### HTTP 400
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -852,7 +852,7 @@ Content type: `application/json`.
 
 #### HTTP 403
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -864,7 +864,7 @@ Content type: `application/json`.
 
 #### HTTP 404
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -876,7 +876,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -888,7 +888,7 @@ Content type: `application/json`.
 
 #### HTTP 413
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -900,7 +900,7 @@ Content type: `application/json`.
 
 #### HTTP 415
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -912,7 +912,7 @@ Content type: `application/json`.
 
 #### HTTP 429
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -924,7 +924,7 @@ Content type: `application/json`.
 
 #### HTTP 500
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -1035,7 +1035,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -1230,7 +1230,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -1425,7 +1425,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 
@@ -1557,7 +1557,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.
 
 Content type: `application/json`.
 

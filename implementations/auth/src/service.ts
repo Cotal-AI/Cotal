@@ -3360,9 +3360,12 @@ function notExecuted(e: unknown, code: EpErrorCode): EpEnvelopeError {
     : new EpEnvelopeError(code, e instanceof Error ? e.message : String(e), undefined, "not-executed");
 }
 
+/** A body the route refused to read keeps its status. Anything else reached a route catch, so it is a
+ *  server fault: the client gets one fixed sentence, and the exception stays on the server log. */
 function sendRequestError(res: ServerResponse, e: unknown): void {
   if (e instanceof RequestBodyError) return send(res, e.status, { error: e.message });
-  send(res, 400, { error: e instanceof Error ? e.message : String(e) });
+  console.error(`auth-service: a route failed: ${e instanceof Error ? e.stack ?? e.message : String(e)}`);
+  send(res, 500, { error: "internal error" });
 }
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx) => void | Promise<void>;
@@ -3683,6 +3686,14 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   const peer = policy.peerKey(req);
   const peerThrottled = policy.throttled(ctx, peer);
   const body = await readJsonBody(req);
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    policy.recordFailure(ctx, peer);
+    const reason = "exchange needs a JSON object";
+    console.error(`auth-service: refused an exchange: ${reason}`);
+    if (peerThrottled)
+      return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
+    return send(res, 400, { error: reason });
+  }
   const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant, transferWriter } = body as {
     idpToken?: unknown;
     actor?: unknown;

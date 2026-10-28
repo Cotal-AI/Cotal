@@ -2206,7 +2206,7 @@
     },
     "responses": {
       "RequestError": {
-        "description": "JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.",
+        "description": "JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 500 with a fixed message unless a route handles it separately.",
         "content": {
           "application/json": {
             "schema": {
