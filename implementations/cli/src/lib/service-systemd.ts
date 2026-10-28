@@ -21,7 +21,7 @@ export function isOwnedUnitName(unit: string): boolean {
 export function systemdUserUnitDirectory(): string {
   if (process.platform !== "linux") throw new CommandFailure("refused", "UNSUPPORTED", "this native unit directory read requires a Linux systemd user manager");
   const result = spawnSync("systemctl", ["--user", "show-environment"], { encoding: "utf8", timeout: 2000, maxBuffer: 64 * 1024, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-  if (result.error || result.signal || result.status !== 0 || typeof result.stdout !== "string") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the systemd user manager did not answer its bounded environment read; no unit directory was guessed");
+  if (result.error || result.signal || result.status !== 0 || typeof result.stdout !== "string") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the systemd user manager did not answer `systemctl --user show-environment`; no unit directory was guessed", { remedy: "run from a logged-in session whose XDG_RUNTIME_DIR is the user manager's runtime directory (systemd-logind sets it), where `systemctl --user show-environment` answers" });
   const paths = new Map<string, string>();
   for (const line of result.stdout.split("\n")) {
     if (!line) continue;

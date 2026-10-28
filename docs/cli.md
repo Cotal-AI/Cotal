@@ -5199,8 +5199,16 @@ terminal `uninstall` needs `--yes`. `uninstall` acts on the unit `install` recor
 that is gone refuses `TARGET_NOT_FOUND`, and one whose bytes changed refuses `CONFLICT`, with
 nothing removed either way.
 
-`serve` runs in the foreground and prints `daemon ready at <socket>` once the endpoint is bound
-and checked. That success line is plain text; `--json` shapes its refusals. `status` prints the
+`install`, `--dry-run` included, needs a logged-in session of the user who will run the daemon. It
+reads that user from `USER`, or from `LOGNAME` when `USER` is unset, and the user manager's config
+directory from `systemctl --user show-environment`. When neither variable names a user it refuses
+`TARGET_UNAVAILABLE` and names both. When the user manager does not answer, as from a shell whose
+`XDG_RUNTIME_DIR` is not the user manager's runtime directory, it refuses `DEPENDENCY_UNAVAILABLE`
+and names that command. Each refusal's Next says to run it from a logged-in session.
+
+`serve` runs in the foreground and prints one ready line, `daemon ready at <socket>`, on stdout once
+the endpoint is bound and checked. Its log lines, such as a recovered socket, go to stderr. That
+success line is plain text; `--json` shapes its refusals. `status` prints the
 state, version, protocol, process ID, start time and uptime. `state: "ready"` means only that the
 local control listener is bound and verified, not that a mesh or Cloud connection exists.
 
@@ -9206,6 +9214,9 @@ On Linux, `service install <name> --instance <full-id> --dry-run` asks the
 systemd user manager for its config directory, then renders a
 bounded direct-process unit and private environment candidates and reports
 their paths and digests without printing their bytes or the inherited `PATH`.
+A user manager that does not answer `systemctl --user show-environment` refuses
+`DEPENDENCY_UNAVAILABLE`, naming that command, with a Next to run from a
+logged-in session.
 With no existing instance, the inspection checks the declared process,
 durable CLI entry and user manager, then reports that apply would allocate a
 stopped full ID; it

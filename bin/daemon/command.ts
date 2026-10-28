@@ -94,8 +94,8 @@ function resolveTarget(args: ParsedArgs): Target {
 const REFUSAL: Record<EndpointProblemCode, { code: "UNSUPPORTED" | "TARGET_UNAVAILABLE" | "CONFLICT" | "PERMISSION_DENIED"; remedy?: string }> = {
   UNSUPPORTED_PLATFORM: { code: "UNSUPPORTED" },
   NO_RUNTIME_DIR: { code: "TARGET_UNAVAILABLE", remedy: "run from a logged-in session with a per-user runtime directory (systemd-logind sets XDG_RUNTIME_DIR)" },
-  NOT_RUNNING: { code: "TARGET_UNAVAILABLE", remedy: "start it with cotal daemon serve" },
-  ALREADY_RUNNING: { code: "CONFLICT", remedy: "run cotal daemon status: if it answers, a daemon is already running. If it refuses NOT_RUNNING, a previous daemon exited without cleanup and the entry is stale; confirm no cotal daemon process is running, then remove the socket path named above by hand and start again. The daemon never removes it for you" },
+  NOT_RUNNING: { code: "TARGET_UNAVAILABLE", remedy: "start it with `cotal daemon serve`" },
+  ALREADY_RUNNING: { code: "CONFLICT", remedy: "run `cotal daemon status`: if it answers, a daemon is already running. If it refuses NOT_RUNNING, a previous daemon exited without cleanup and the entry is stale; confirm no `cotal daemon serve` process is running, then remove the socket path named above by hand and start again. The daemon never removes it for you" },
   DIR_NOT_DIRECTORY: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was changed" },
   DIR_SYMLINK: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was changed" },
   DIR_WRONG_OWNER: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was changed" },
@@ -105,7 +105,7 @@ const REFUSAL: Record<EndpointProblemCode, { code: "UNSUPPORTED" | "TARGET_UNAVA
   SOCKET_WRONG_MODE: { code: "PERMISSION_DENIED", remedy: "inspect the socket; nothing was sent" },
   PEER_UID_MISMATCH: { code: "PERMISSION_DENIED", remedy: "another user's process holds the daemon endpoint; nothing was sent" },
   PEER_NOT_LOCK_OWNER: { code: "PERMISSION_DENIED", remedy: "the process at this daemon home's socket is not the daemon holding its lock; nothing was sent" },
-  LOCK_HELD: { code: "CONFLICT", remedy: "a daemon already holds this lifetime lock; run cotal daemon status, with the same --daemon-home when you passed one" },
+  LOCK_HELD: { code: "CONFLICT", remedy: "a daemon already holds this lifetime lock; run `cotal daemon status`, with the same --daemon-home when you passed one" },
 };
 
 function asFailure(e: unknown): unknown {
@@ -296,7 +296,7 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
         { kind: "fields", rows: [["Unit", r.unit], ["Path", r.unitPath], ["Digest", r.sha256], ["User", r.user], ["Linger", r.lingerAlready ? "already enabled" : dry ? "would be enabled" : "enabled by this install"], ["Restart", r.restart], ["Started by", r.wantedBy], ...(r.daemonHome ? [["Daemon home", r.daemonHome] as [string, string]] : [])] },
         { kind: "lines", lines: [{ text: dry
           ? "Nothing was written, enabled or started."
-          : "It starts at login, restarts on its own, and keeps running after you log out. Read it with cotal daemon status, and remove it with cotal daemon uninstall.", tone: "hint" }] },
+          : "It starts at login, restarts on its own, and keeps running after you log out. Read it with `cotal daemon status`, and remove it with `cotal daemon uninstall`.", tone: "hint" }] },
       ] },
     ] }));
     return;

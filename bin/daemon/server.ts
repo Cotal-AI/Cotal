@@ -311,7 +311,6 @@ async function serveLocked(opts: ServeOptions, uid: number, lock: HeldLifetime):
     return abort(e);
   }
   const { dev: boundDev, ino: boundIno } = generationOf(paths.socket);
-  log(`daemon: ready at ${paths.socket}`);
 
   // Resume what this daemon home was connected to before it stopped. This runs after the endpoint
   // is published, so a space that is slow or unreachable never delays readiness; `service-status`
