@@ -161,6 +161,9 @@ function gatewayAnnotations(name: string): ToolAnnotations {
 
 /** What `cotal_connect` says about selection when the embedder enables it. */
 const SELECTION_TEXT =
+  "Ask for what this conversation already knows it needs, in this call: the channels the person named or the " +
+  "task needs, a role it should answer, and spawn or run if it will start agents or workflow runs. The person " +
+  "then approves one request instead of a second one later. " +
   "Channels, role and capabilities are a proposal for the person to review, edit and approve in Cotal, " +
   "not permission to connect. Without them the proposal has no ordinary channel access or role, but still " +
   "allows direct messages and publication of this conversation's own activity. Only the person's approved " +
@@ -669,6 +672,8 @@ export interface GatewayRequest {
   connectContext?: boolean;
   /** See {@link GatewayOptions.approvalResume}. */
   approvalResume?: boolean;
+  /** See {@link GatewayOptions.selection}. */
+  selection?: boolean;
   /** See {@link GatewayOptions.waitSeconds}. */
   waitSeconds?: number;
 }
@@ -691,7 +696,7 @@ export async function handleGatewayRequest(host: GatewayHost, r: GatewayRequest)
     return;
   }
   const server = new McpServer({ name: "cotal", version: DOCS_VERSION }, { instructions: r.instructions ?? GATEWAY_INSTRUCTIONS });
-  registerCotalGatewayTools(server, host, r.source, { approvalResume: r.approvalResume, ...(r.waitSeconds === undefined ? {} : { waitSeconds: r.waitSeconds }) });
+  registerCotalGatewayTools(server, host, r.source, { approvalResume: r.approvalResume, selection: r.selection, ...(r.waitSeconds === undefined ? {} : { waitSeconds: r.waitSeconds }) });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   r.res.on("close", () => {
     void transport.close();
