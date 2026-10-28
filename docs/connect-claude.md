@@ -374,8 +374,8 @@ channel. These come with the identity and are not optional, so the approval page
 the person decides. Native activity sharing includes the messages the person types, assistant
 replies, and each tool call's name with its start and end, after activation. It is not only presence
 or status. Tool arguments and tool results are withheld from the event channel, as on every connector
-([Event plane](#event-plane)). While a tool waits for permission, presence names it with a short
-detail such as its command, and every roster reader sees that. Reasoning is not shared by default,
+([Event plane](#event-plane)). While a tool waits for permission, presence shares only its tool name,
+never its command or arguments, with every roster reader. Reasoning is not shared by default,
 and earlier or pre-approval history is not shared. The space's activity read permissions determine
 who can read the event channel. Decline the connection if you do not want this sharing.
 A request without a selection proposes nothing beyond these rights: no role,
@@ -663,9 +663,9 @@ A `SessionStart` during an open turn, including compaction, preserves the curren
 |---|---|
 | `SessionStart` | `idle` only when no turn is open (join; surfaces the inbox; captures the live model into `meta.model` when no pin) |
 | `UserPromptSubmit` | `working` (turn starts; surfaces the inbox) |
-| `PreToolUse` | no change; records *what* is about to run, so a permission wait can name it |
+| `PreToolUse` | `working` on the first main-agent tool if no turn is open, including a mesh turn without `UserPromptSubmit`; records only the tool name for a permission wait. A subagent tool does not open the main turn. |
 | `PostToolBatch` | `working` when the main agent's batch resolves after a prompt left the seat `waiting`, which clears its condition so the turn's `Stop` yields; a subagent's batch (it carries `agent_id`) or one relayed after the turn's terminal changes nothing |
-| `Notification` (`permission_prompt` / `agent_needs_input`) | `waiting` with condition `approval` / `input` (activity leads with the pending tool, e.g. `Bash: git push …`) |
+| `Notification` (`permission_prompt` / `agent_needs_input`) | `waiting` with condition `approval` / `input` (activity names only the pending tool, e.g. `Bash`, without command text or arguments) |
 | `Stop` / `StopFailure` | `idle` (turn done / died on an API error; flushes anything held while busy). `StopFailure` also relays Claude Code's native error value as `condition.source` and maps it to the closed condition vocabulary. On the [event plane](#event-plane) it closes the run with `RUN_ERROR`. |
 | `SessionEnd` | `offline` (graceful leave) |
 

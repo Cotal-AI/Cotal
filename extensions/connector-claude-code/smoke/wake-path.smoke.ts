@@ -239,6 +239,50 @@ try {
   check("SessionStart injects the messages that arrived before the session was up", injected(boot).includes("pre-handshake dm"), injected(boot));
   check("a delivered SessionStart batch is committed", !stillPending("pre-handshake dm"));
 
+  // Real relay presence: permission waits name the tool, never its command or other input.
+  const presence = () => pub.getRoster().find((p) => p.card.id === ottoId);
+  await fireHookViaRealRelay({ hook_event_name: "UserPromptSubmit" });
+  const privateCommand = "printf '%s\\n' private-command-marker";
+  await fireHookViaRealRelay({
+    hook_event_name: "PreToolUse", tool_name: "Bash",
+    tool_input: { command: privateCommand, description: "private-description-marker" },
+  });
+  const permission = await fireHookViaRealRelay({
+    hook_event_name: "Notification", notification_type: "permission_prompt", message: "Claude needs permission to use Bash",
+  });
+  check("the real permission hook exits cleanly", permission.code === 0);
+  await waitFor("the permission wait in the observer roster", () => presence()?.status === "waiting");
+  check("permission activity names only Bash and carries no command or description", presence()?.activity === "Bash");
+  const permissionRow = presence();
+  check("permission waiting retains the native approval condition",
+    permissionRow?.condition?.code === "approval" && permissionRow.condition.source === "permission_prompt" &&
+    permissionRow.condition.message === "Claude needs permission to use Bash");
+  await fireHookViaRealRelay({ hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "private-path-marker" } });
+  check("another tool in the open turn does not clear an unresolved permission wait", agent.status === "waiting");
+  await fireHook({ hook_event_name: "PostToolBatch" });
+  await fireHook({ hook_event_name: "Stop" });
+
+  // Channel work need not supply UserPromptSubmit. A real main-agent tool proves work began;
+  // neither a subagent nor a notification merely written to stdio proves that about the main turn.
+  const subagent = await fireHookViaRealRelay({
+    hook_event_name: "PreToolUse", agent_id: "child", tool_name: "Bash", tool_input: { command: "true" },
+  });
+  check("the subagent hook exits cleanly", subagent.code === 0);
+  check("a subagent tool does not open the main agent turn", agent.status === "idle");
+  const noPrompt = await fireHookViaRealRelay({ hook_event_name: "PreToolUse", tool_name: "mcp__cotal__cotal_inbox", tool_input: {} });
+  check("the main tool hook without UserPromptSubmit exits cleanly", noPrompt.code === 0);
+  await waitFor("working after the first main tool without a prompt", () => presence()?.status === "working");
+  check("the first main tool without UserPromptSubmit publishes working", presence()?.status === "working");
+  await fireHook({ hook_event_name: "SessionStart", source: "compact" });
+  check("compaction preserves a tool-started open turn", agent.status === "working");
+  await fireHookViaRealRelay({ hook_event_name: "Stop" });
+  await waitFor("idle after the tool-started turn stops", () => presence()?.status === "idle");
+  check("Stop closes the tool-started turn as idle", presence()?.status === "idle");
+  await fireHookViaRealRelay({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "true" } });
+  await fireHookViaRealRelay({ hook_event_name: "StopFailure", error: "rate_limit" });
+  await waitFor("the failed tool-started turn to stop", () => presence()?.status === "idle" && presence()?.condition?.code === "rate_limit");
+  check("StopFailure closes a tool-started turn and keeps its native failure condition", presence()?.status === "idle" && presence()?.condition?.code === "rate_limit");
+
   // ---- 1. a DM wakes an idle session -----------------------------------------------------------
   const nudgesBeforeFirstDm = nudges.length;
   await dmOtto("dm-one: wake me");
