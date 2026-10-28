@@ -14,6 +14,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MeshAgent } from "../src/agent.js";
+import { registerCotalTools } from "../src/tools.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { connect } from "@nats-io/transport-node";
 import type { AgentConfig } from "../src/config.js";
 import { isReachable } from "@cotal-ai/core";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
@@ -81,6 +86,10 @@ let overlapAgent: MeshAgent | undefined;
 let blockerAgent: MeshAgent | undefined;
 let blocker2Agent: MeshAgent | undefined;
 let orderingAgent: MeshAgent | undefined;
+let jsAgent: MeshAgent | undefined;
+let jsBroker: ChildProcess | undefined;
+let jsClient: Client | undefined;
+let jsServer: McpServer | undefined;
 
 try {
   check("the owned throwaway broker starts", await until(() => false, 0) || await (async () => {
@@ -781,7 +790,83 @@ try {
     stragglerRefusal === "agent is stopping; presence writes are refused" && !offlineStartedWhileHeldStraggler && !putAfterOffline,
     { stragglerRefusal, offlineStartedWhileHeldStraggler, putAfterOffline },
   );
+  // JetStream can fail while core NATS continues answering. Exercise an actual broker reload,
+  // not a replaced KV put, and read the registered MCP route that connectors expose.
+  const jsPort = await pickFreePort();
+  const jsServers = `nats://127.0.0.1:${jsPort}`;
+  assertEphemeralBroker(jsServers);
+  const jsConfig = join(dir, "js-health.conf");
+  const writeJsConfig = (enabled: boolean): void => writeFileSync(jsConfig,
+    `host: 127.0.0.1\nport: ${jsPort}\n${enabled ? `jetstream { store_dir: "${join(dir, "js-health")}" }` : "jetstream: disabled"}\n`);
+  writeJsConfig(true);
+  jsBroker = startBroker(jsConfig);
+  releases.push(teardownOnSignal(jsBroker, dir));
+  for (let i = 0; i < 80; i++) { if (await isReachable(jsServers)) break; await sleep(50); }
+  const jsCfg = { ...cfg, servers: jsServers, space: `js-health-${jsPort}`, name: "js-health-agent" };
+  jsAgent = new MeshAgent(jsCfg);
+  await jsAgent.start();
+  await jsAgent.waitUntilConnected();
+  jsServer = new McpServer({ name: "js-health", version: "0.0.0" });
+  registerCotalTools(jsServer, jsAgent, jsCfg, "smoke");
+  const [jsClientTransport, jsServerTransport] = InMemoryTransport.createLinkedPair();
+  jsClient = new Client({ name: "js-health-client", version: "0.0.0" });
+  await Promise.all([jsClient.connect(jsClientTransport), jsServer.connect(jsServerTransport)]);
+  const tool = async (name: string): Promise<{ text: string; isError?: boolean }> => {
+    const reply = await jsClient!.callTool({ name, arguments: {} });
+    const content = reply.content as Array<{ type: string; text?: string }>;
+    const text = content.find((part) => part.type === "text")?.text;
+    if (text === undefined) throw new Error(`${name} returned no text`);
+    return { text, isError: reply.isError === true };
+  };
+  const jsStatus = async (): Promise<Record<string, unknown>> => JSON.parse((await tool("cotal_connection_status")).text);
+  const healthyJs = await jsStatus();
+  check("a live JetStream-enabled MCP session starts ready", healthyJs.state === "ready", healthyJs);
+
+  writeJsConfig(false);
+  jsBroker.kill("SIGHUP");
+  const refusedJs = await until(() => (jsAgent!.presenceWriteFailure?.consecutiveFailures ?? 0) >= 2, 15_000);
+  const coreConnection = await connect({ servers: jsServers });
+  try {
+    await coreConnection.flush();
+    check("core NATS still answers after the owned broker disables JetStream", refusedJs && jsAgent.transportConnected, jsAgent.presenceWriteFailure);
+  } finally { await coreConnection.close(); }
+  const failedJs = await jsStatus();
+  check(
+    "repeated REAL JetStream write failures report degraded despite bound and live transport",
+    failedJs.state === "degraded" && failedJs.connected === true && failedJs.transportConnected === true,
+    failedJs,
+  );
+  check(
+    "the degraded MCP status names the current presence bucket and broker refusal",
+    typeof failedJs.connectionIssue === "string" &&
+      failedJs.connectionIssue.includes(`cotal_presence_${jsCfg.space}`) &&
+      failedJs.connectionIssue.includes("jetstream is not enabled"),
+    failedJs,
+  );
+  const refusedReconnect = await tool("cotal_reconnect");
+  check(
+    "reconnect while JetStream remains unavailable does not claim success",
+    refusedReconnect.isError === true && refusedReconnect.text.startsWith("Reconnect failed: ") &&
+      !refusedReconnect.text.includes("Reconnected ✓") && (await jsStatus()).state !== "ready",
+    refusedReconnect,
+  );
+
+  writeJsConfig(true);
+  jsBroker.kill("SIGHUP");
+  await sleep(500);
+  const restoredReconnect = await tool("cotal_reconnect");
+  const restoredJs = await jsStatus();
+  check(
+    "a successful REAL rebind clears the write failure and restores ready",
+    restoredReconnect.isError !== true && restoredJs.state === "ready" &&
+      !("connectionIssue" in restoredJs) && !("presenceWriteFailure" in restoredJs),
+    { restoredReconnect, restoredJs },
+  );
 } finally {
+  await jsClient?.close().catch(() => {});
+  await jsServer?.close().catch(() => {});
+  await jsAgent?.stop().catch(() => {});
+  if (jsBroker) { jsBroker.kill("SIGKILL"); await awaitExit(jsBroker); }
   await orderingAgent?.stop().catch(() => {});
   await blocker2Agent?.stop().catch(() => {});
   await blockerAgent?.stop().catch(() => {});
@@ -797,7 +882,7 @@ try {
   for (const release of releases) release();
 }
 
-const EXPECTED_CELLS = 28;
+const EXPECTED_CELLS = 34;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);
