@@ -356,6 +356,9 @@ If the mandatory readiness turn receives a provider `invalid_request` refusal fo
 reasoning-effort value, the launch diagnostic names only the provider error code and rejected
 value. Other provider response text remains scrubbed, so an external observer/UI can correct
 connector-visible input without exposing private harness output.
+An OpenAI-compatible HTTP 404 with structured `model_not_found` and `param: model` is also named
+when Jcode wraps it in `internal`. That diagnostic uses the requested model pin and fixed provider
+code. Endpoint, authentication details and provider prose remain private.
 
 The following fail loud before a new session is provisioned where the manager can preflight them,
 or at connector launch as a backstop:
