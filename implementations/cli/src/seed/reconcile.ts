@@ -404,6 +404,9 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
       if (refresh) {
         seedOne(name, generation, nonce, true);
         verifyInstalled(name, generation);
+        // The absence was read before this reinstall. verifyInstalled threw if the package is not back,
+        // so the cleanup below must not treat that earlier reading as the package still being gone.
+        absentPkgs.delete(entry.pkg);
         refreshed.push(name);
       }
     } else if (manifestRebuilt && installState(name) !== "absent") {
@@ -424,8 +427,9 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
 
   // A maintenance run is the recovery for a manifest entry whose package directory is gone. The
   // add above skips linking its peers so the reseed can finish; the entry itself is not installed,
-  // so it does not stay recorded. A built-in the check above already read is not read again. A
-  // package.json that is present but corrupt still throws here.
+  // so it does not stay recorded. A built-in the check above already read is not read again, and one
+  // this run put back is no longer recorded absent. A package.json that is present but corrupt still
+  // throws here.
   if (mode === "repair" || mode === "reset") dropAbsentExtensions(checkedPkgs, absentPkgs);
 
   // Commit: authority (+ backup) → witness → stamp (LAST); THEN drop the cursor + recovery obligation

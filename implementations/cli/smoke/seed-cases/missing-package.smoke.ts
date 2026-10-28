@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync, join, check, cotal, freshCfg, manifestPath, readJson, seedDir, listNames, track, finishScenario } from "./harness.js";
+import { existsSync, mkdirSync, rmSync, writeFileSync, join, check, cotal, freshCfg, manifestPath, readJson, seedDir, listNames, track, finishScenario } from "./harness.js";
 
 /**
  * A readable manifest entry whose package directory is gone must not fail `ext seed --reset`.
@@ -49,6 +49,19 @@ try {
     plant(cfg, false);
     const repair = cotal(cfg, ["ext", "seed", "--repair"]);
     check("missing package: repair exits 0 and removes the entry", repair.status === 0 && repair.stderr.includes(`removed ${fake} from the extensions manifest`) && !pkgs(cfg).includes(fake) && !existsSync(join(seedDir(cfg), "reconcile.cursor.json")), repair.stderr);
+  }
+
+  {
+    // A seeded built-in whose package directory is gone is reinstalled by repair. The absence was
+    // observed before that reinstall, and the cleanup must not delete the entry it just restored.
+    const cfg = track(freshCfg());
+    listNames(cfg);
+    const hermes = "@cotal-ai/connector-hermes";
+    const dir = join(cfg, "cotal", "extensions", "node_modules", "@cotal-ai", "connector-hermes");
+    rmSync(dir, { recursive: true, force: true });
+    const repair = cotal(cfg, ["ext", "seed", "--repair"]);
+    check("missing seeded built-in: repair exits 0 and keeps the restored entry", repair.status === 0 && pkgs(cfg).includes(hermes) && existsSync(join(dir, "package.json")) && !existsSync(join(seedDir(cfg), "reconcile.cursor.json")), repair.stderr);
+    check("missing seeded built-in: a later boot still lists the connector", listNames(cfg).includes("hermes"));
   }
 } finally {
   finishScenario();
