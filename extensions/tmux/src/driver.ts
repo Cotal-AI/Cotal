@@ -83,7 +83,8 @@ function failureText(err: unknown): string {
 }
 
 /** Run a tmux command that prints nothing on success, keeping its stderr. A failure throws
- *  `tmux: couldn't <operation>` with tmux's report and the original error as `cause`. */
+ *  `tmux: couldn't <operation>` with tmux's report, or Node's own message when tmux wrote none,
+ *  and the original error as `cause`. */
 function run(operation: string, args: string[], opts: { timeout?: number } = {}): void {
   try {
     execFileSync("tmux", ["-u", ...args], {
@@ -93,7 +94,8 @@ function run(operation: string, args: string[], opts: { timeout?: number } = {})
     });
   } catch (err) {
     const stderr = String((err as { stderr?: unknown }).stderr ?? "").trim();
-    throw new Error(`tmux: couldn't ${operation}: ${stderr}`, { cause: err });
+    const reason = stderr || String((err as { message?: unknown }).message ?? "");
+    throw new Error(`tmux: couldn't ${operation}: ${reason}`, { cause: err });
   }
 }
 
