@@ -272,8 +272,9 @@ try {
     { operatorSend, before: consumersAfterList, after: consumersAfterOperator },
   );
   check(
-    "an agent credential passed with --creds, which holds no Direct Get row, watches presence and its channel send is stored",
-    agentSend.code === 0 && got.some((m) => m.route === "#general" && m.text === agentReadText) && consumersAfterAgent.presence > consumersAfterOperator.presence,
+    "an agent credential passed with --creds holds both batched reads, so it reads once, leaves no consumer, and its channel send is stored (#4091)",
+    agentSend.code === 0 && got.some((m) => m.route === "#general" && m.text === agentReadText) &&
+      consumersAfterAgent.presence === consumersAfterOperator.presence && consumersAfterAgent.channels === consumersAfterOperator.channels,
     { agentSend, before: consumersAfterOperator, after: consumersAfterAgent },
   );
   check(

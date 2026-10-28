@@ -5785,15 +5785,16 @@ is the OS login and host, not `COTAL_NAME`. A one-shot sender never registers as
 The broker and native channel policy still decide which publications are authorized.
 
 The transient endpoint never joins the roster and binds no inbox. With the static credential this
-machine records for the space, or on an open mesh, it reads the roster and the channel registry once
-when it connects and binds no watch consumer, so it leaves nothing on the broker when it exits. On a
-user-auth mesh it runs on your user bearer, which has no batched read of those buckets, so it watches
-them instead, and each watch's consumer stays on the broker for five minutes after the send exits.
-A `--creds` credential reads once when its own grant allows the batched read, and watches otherwise,
-as an agent credential from `cotal auth mint` does. A sustained send rate on a watch can reach the
-broker's limit of 1000 consumers per stream, and the broker refuses further sends until the old
-consumers expire. A channel send also reads that channel's policy, with one Direct Get where the
-credential allows it and with one more scan consumer otherwise. A `--creds` credential that may not
+machine records for the space, on an open mesh, or on a user-auth mesh on your user bearer, it reads
+the roster and the channel registry once when it connects and binds no watch consumer, so it leaves
+nothing on the broker when it exits. A `--creds` credential reads once when its own grant allows the
+batched read, as an agent credential from `cotal auth mint` does, and watches otherwise; each watch's
+consumer stays on the broker for five minutes after the send exits, and a sustained send rate on a
+watch can reach the broker's limit of 1000 consumers per stream, after which the broker refuses
+further sends until the old consumers expire. A channel send also reads that channel's policy, with
+one Direct Get where the credential allows it and with one more scan consumer otherwise. On a
+user-auth mesh whose auth service predates the batched registry read, the send refuses with
+`PERMISSION_DENIED` and names the release to update to. A `--creds` credential that may not
 read the roster and the channel registry at all refuses with `PERMISSION_DENIED` (exit 2) before
 anything is sent, and the remedy says to run without `--creds`.
 

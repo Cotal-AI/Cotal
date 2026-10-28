@@ -30,11 +30,11 @@ export async function resolveConnect(values: ConnectValues): Promise<Connection>
 }
 
 /** Whether this connection may read a KV bucket with one batched Direct Get, whose request subject
- *  is the bare stream. An open mesh may, and a user bearer holds no such row. A static credential may
- *  when its own grant allows that subject: the operator credential this machine mints does, and an
- *  agent credential from `cotal auth mint` does not. */
+ *  is the bare stream. An open mesh may. A user bearer may: the auth service mints its connection
+ *  with the agent profile, which carries that read on the presence bucket and the channel registry.
+ *  A static credential may when its own grant allows that subject: the operator credential this
+ *  machine mints and an agent credential from `cotal auth mint` do. */
 export function batchedRead(conn: Connection, bucket: string): boolean {
-  if (conn.bearer !== undefined) return false;
   if (conn.creds === undefined) return true;
   const subject = `$JS.API.DIRECT.GET.KV_${bucket}`;
   const pub = credsClaims(conn.creds).nats?.pub;
@@ -143,6 +143,13 @@ export async function openTransient(
       throw new CommandFailure("refused", "PERMISSION_DENIED", `this identity may not read the presence or channel registry of ${conn.space}: ${(e as Error).message}`, {
         target: { space: conn.space },
         remedy: values.creds === undefined ? `use a credential that may read both in ${conn.space}` : `run it without --creds to use the credential this machine records for ${conn.space}, or use one that may read both`,
+      });
+    // The user's connection is minted by the space's auth service. One that refuses the batched read
+    // predates the agent profile row that grants it; the command never falls back to a watch.
+    if (conn.bearer !== undefined && readOnce && !opts.watch && isPublishPermissionDenied(e))
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the connection the auth service of ${conn.space} minted for your user may not read the presence bucket or the channel registry with one batched read: ${(e as Error).message}`, {
+        target: { space: conn.space },
+        remedy: `update the auth service of ${conn.space} to a release whose agent profile grants $JS.API.DIRECT.GET.KV_${channelBucket(conn.space)}`,
       });
     // A one-time read is a Direct Get, which nothing answers when the bucket's stream is gone, and
     // nothing answers either while the broker's JetStream is stopped, as nats-server stops it after a

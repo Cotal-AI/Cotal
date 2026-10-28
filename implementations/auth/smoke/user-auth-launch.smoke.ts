@@ -68,7 +68,8 @@ childEnv.COTAL_NAME = "cli";
 childEnv.COTAL_ID = "cli_send";
 
 const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-io/transport-node");
-const { chatSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity } = await import("@cotal-ai/core");
+const { jetstreamManager } = await import("@nats-io/jetstream");
+const { channelBucket, chatSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity, presenceBucket } = await import("@cotal-ai/core");
 const { authDir, loadSoleSpaceAuth, loadSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { cotalAuthProvider, deleteIdpSession, establishIdpSession, INTERACTIVE_RETIRE_PATH, loadActorLedger, loadAuthServiceInfo } = await import("../src/index.js");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
@@ -318,8 +319,32 @@ try {
   });
   await witnessNc.flush();
 
+  // #4091: on the user's bearer the one-shot sender reads the roster and the channel registry once,
+  // so it leaves no watch consumer on either bucket. Counted on an admin tap of its own, whose reply
+  // inbox is the connection-scoped one its grant allows.
+  const inspectorId = newIdentity();
+  const inspector = await connect({
+    servers: SERVER,
+    authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, inspectorId, "admin"))),
+    inboxPrefix: `_INBOX_${inspectorId.id}`,
+  });
+  const inspectorJsm = await jetstreamManager(inspector);
+  const kvConsumers = async () => ({
+    presence: (await inspectorJsm.streams.info(`KV_${presenceBucket(SPACE)}`)).state.consumer_count,
+    channels: (await inspectorJsm.streams.info(`KV_${channelBucket(SPACE)}`)).state.consumer_count,
+  });
+  const consumersBefore = await kvConsumers();
+
   const send = await cotal(["send", "-c", "general", "hello from user mode", "--space", SPACE]);
   check("user-mode send exits 0 (login → exchange → bearer → callout)", send.status === 0, send.out);
+  const consumersAfterSend = await kvConsumers();
+  check("a user-mode send leaves no watch consumer on the presence bucket or the channel registry (#4091)",
+    consumersAfterSend.presence === consumersBefore.presence && consumersAfterSend.channels === consumersBefore.channels, { before: consumersBefore, after: consumersAfterSend });
+  const userList = await cotal(["channel", "--space", SPACE]);
+  const consumersAfterList = await kvConsumers();
+  check("a user-mode `cotal channel` reads the registry once and leaves no scan consumer (#4091)",
+    userList.status === 0 && consumersAfterList.channels === consumersAfterSend.channels, { status: userList.status, out: userList.out.slice(0, 300), before: consumersAfterSend, after: consumersAfterList });
+  await inspector.close().catch(() => {});
   const hasText = (g: CotalMessage, text: string) => g.parts?.some((pt) => (pt as { text?: string }).text === text);
   const arrived = await until(() => got.some((g) => hasText(g, "hello from user mode")));
   const frame = got.find((g) => hasText(g, "hello from user mode"));

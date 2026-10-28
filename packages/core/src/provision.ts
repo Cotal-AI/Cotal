@@ -1570,6 +1570,12 @@ export function permissionsFor(
     // Channel registry: read-only (watch + direct kv.get for the join-time replay decision).
     // No `$KV.${channelBucket(space)}.*` publish — privileged-write, default-deny gives that free.
     `$JS.API.STREAM.MSG.GET.${CHKV}`,
+    // The one-shot CLI reads the registry once with a batched Direct Get, whose request subject is
+    // the bare stream (#4091). On a user-auth mesh those commands connect on the user's bearer, which
+    // the auth service mints with these rows, so the row is what lets them leave no watch consumer
+    // behind. The same reply-subject reasoning as the presence read above: the consumer create below
+    // already grants that vector on this world-readable bucket.
+    `$JS.API.DIRECT.GET.${CHKV}`,
     `$JS.API.CONSUMER.CREATE.${CHKV}.>`,
     `$JS.API.CONSUMER.INFO.${CHKV}.>`,
     // Delivery lease/readiness: READ-ONLY (kv.get) for the non-gating `cotal_channels` delivery-health
