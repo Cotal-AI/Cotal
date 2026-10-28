@@ -421,24 +421,51 @@ export class EngineUnavailable extends Error {
   }
 }
 
+/**
+ * One field off a foreign throw, when that field is a string.
+ *
+ * A handler is other people's code. It may throw a primitive, an `Error` whose `name` or `message`
+ * was assigned a number or a function, or an object whose field is a getter that throws. Any of
+ * those must not become the answer: a non-string cannot cross as the wire's string, and a getter
+ * that throws would replace the handler's failure with the recorder's own. Absent, not a string,
+ * or a read that itself throws is the same answer, `undefined`.
+ */
+function stringField(v: unknown, field: "name" | "message" | "stack"): string | undefined {
+  if (v === null || (typeof v !== "object" && typeof v !== "function")) return undefined;
+  try {
+    const value = (v as Record<string, unknown>)[field];
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `String(v)` without consulting `v`'s own fields.
+ *
+ * `Error.prototype.toString` reads `name` and `message`, so it is exactly the getter the field read
+ * just refused. `Object.prototype.toString` does not: an object answers `[object Object]` and an
+ * `Error` answers `[object Error]`. A primitive still takes `String`, which cannot throw on it.
+ */
+function textOf(v: unknown): string {
+  if (v !== null && (typeof v === "object" || typeof v === "function")) return Object.prototype.toString.call(v);
+  return String(v);
+}
+
 /** The message off anything a foreign body throws, read defensively: other people's code may throw a primitive. */
 export function messageOf(v: unknown): string {
-  if (v instanceof Error) return v.message;
-  const m = (v as { message?: unknown } | null | undefined)?.message;
-  return typeof m === "string" ? m : String(v);
+  return stringField(v, "message") ?? textOf(v);
 }
 
 /**
  * The name off anything a foreign body throws, read the same way as {@link messageOf}.
  *
- * An `Error`'s own name, else a string `name` field, else `"Error"`. A thrown primitive has no name,
- * and neither does an object whose `name` is not a string; both answer the base name rather than
- * whatever `String` would make of the value.
+ * A string `name`, else `"Error"`. A thrown primitive has no name, and neither does an object whose
+ * `name` is not a string or whose read throws; both answer the base name rather than whatever
+ * `String` would make of the value.
  */
 export function nameOf(v: unknown): string {
-  if (v instanceof Error) return v.name;
-  const n = (v as { name?: unknown } | null | undefined)?.name;
-  return typeof n === "string" ? n : "Error";
+  return stringField(v, "name") ?? "Error";
 }
 
 /**
@@ -451,8 +478,8 @@ export function nameOf(v: unknown): string {
  * and `"undefined"` stringified into it would be a place that does not exist.
  */
 export function stackOf(v: unknown): string | undefined {
-  const s = (v as { stack?: unknown } | null | undefined)?.stack;
-  return typeof s === "string" && s !== "" ? s : undefined;
+  const s = stringField(v, "stack");
+  return s !== undefined && s !== "" ? s : undefined;
 }
 
 /** A recorded step's inputs changed, so its recorded result may no longer be the truth. */
