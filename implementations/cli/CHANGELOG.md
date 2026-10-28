@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.115.2
+
+### Patch Changes
+
+- 33e6bf0: `cotal down --abandon-stop <id> --yes` run again after a successful abandon had stopped the stack refused "no member of this stack retains a stop request with that ID" and sent the operator to `cotal down --dry-run` to see what blocks the stop, or to a `cotal service status <definition> --instance <id>` command with placeholders, though nothing blocked and the stack was not running. When no member retains any stop request, the `TARGET_NOT_FOUND` refusal now says "no member of this stack retains a stop request; nothing was abandoned" and names `cotal up` as Next, or `cotal down` while the stack runs. A member that retains a different stop request still gets the refusal that names it.
+- 33e6bf0: `cotal down --abandon-stop <id>` without `--yes`, given an ID that no stack member retains, such as the operation ID of the `down` that sent the stop, told the operator to rerun it with `--yes` "to give it up", and that rerun only refused `TARGET_NOT_FOUND`. The ID is now looked up first, with nothing written, so such an ID refuses `TARGET_NOT_FOUND`, naming the stop request a member retains and its `--abandon-stop` command, with or without `--yes`. An ID a member retains still asks for `--yes` as before.
+- Updated dependencies [fe37cb4]
+  - @cotal-ai/core@0.115.2
+  - @cotal-ai/workspace@0.115.2
+
 ## 0.115.1
 
 ### Patch Changes
