@@ -513,6 +513,28 @@ export interface RemoteManagerEnvelope {
   identities: RemoteManagerAuthorityRequest["identities"];
 }
 
+/** The base envelope fields shared by a delegated user intent request and every request from a
+ *  registered manager. `what` names the request in every refusal, so each caller keeps its prefix. */
+function parseBaseRequestEnvelope(
+  o: Record<string, unknown>,
+  kind: string,
+  what: string,
+): Pick<RemoteManagerEnvelope, "space" | "actor" | "instanceId" | "requestId"> {
+  if (o.v !== 1 || o.kind !== kind) enrollmentError(what, `must carry { v: 1, kind: ${JSON.stringify(kind)} }`);
+  for (const key of ["space", "actor", "instanceId", "requestId"] as const)
+    if (typeof o[key] !== "string" || (o[key] as string).length === 0) enrollmentError(what, `requires non-empty ${key}`);
+  assertValidOwnerToken(o.actor as string);
+  assertLifecycleToken(o.instanceId as string, `${what} instanceId`);
+  if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string))
+    enrollmentError(what, "requestId must be a 22-64 character idempotency token");
+  return {
+    space: o.space as string,
+    actor: o.actor as string,
+    instanceId: o.instanceId as string,
+    requestId: o.requestId as string,
+  };
+}
+
 /** Closed parser for the envelope of a request from a registered manager. `what` names the request
  *  in every refusal, so each request keeps its own prefix. The epoch differs per request
  *  (`serveEpoch` or `processEpoch`), so each caller checks its own. `registrationProof` is false for
@@ -522,25 +544,18 @@ export function parseRemoteManagerEnvelope(
   o: Record<string, unknown>, kind: string, what: string, registrationProof: boolean,
 ): Omit<RemoteManagerEnvelope, "registrationProof"> & { registrationProof?: string };
 export function parseRemoteManagerEnvelope(o: Record<string, unknown>, kind: string, what: string, registrationProof = true) {
-  if (o.v !== 1 || o.kind !== kind) enrollmentError(what, `must carry { v: 1, kind: ${JSON.stringify(kind)} }`);
-  for (const key of ["space", "actor", "instanceId", "managerLifecycleUid", "requestId"] as const)
-    if (typeof o[key] !== "string" || (o[key] as string).length === 0) enrollmentError(what, `requires non-empty ${key}`);
-  assertValidOwnerToken(o.actor as string);
-  assertLifecycleToken(o.instanceId as string, `${what} instanceId`);
-  assertLifecycleToken(o.managerLifecycleUid as string, `${what} lifecycleUid`);
-  if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string))
-    enrollmentError(what, "requestId must be a 22-64 character idempotency token");
+  const base = parseBaseRequestEnvelope(o, kind, what);
+  if (typeof o.managerLifecycleUid !== "string" || o.managerLifecycleUid.length === 0)
+    enrollmentError(what, "requires non-empty managerLifecycleUid");
+  assertLifecycleToken(o.managerLifecycleUid, `${what} lifecycleUid`);
   if (registrationProof) {
     if (typeof o.registrationProof !== "string" || !/^sha256:[0-9a-f]{64}$/.test(o.registrationProof))
       enrollmentError(what, "requires a sha256 registrationProof");
   } else if (o.registrationProof !== undefined) enrollmentError(what, "must not carry registrationProof");
   const identities = parseRemoteManagerIdentities(o.identities, (detail) => enrollmentError(what, detail));
   return {
-    space: o.space as string,
-    actor: o.actor as string,
-    instanceId: o.instanceId as string,
-    managerLifecycleUid: o.managerLifecycleUid as string,
-    requestId: o.requestId as string,
+    ...base,
+    managerLifecycleUid: o.managerLifecycleUid,
     ...(registrationProof ? { registrationProof: o.registrationProof as string } : {}),
     identities,
   };
@@ -1141,22 +1156,13 @@ export function parseDelegatedUserIntentRequest(raw: unknown): DelegatedUserInte
   const allowed = new Set(["v", "kind", "space", "actor", "accountPublicKey", "instanceId", "requestId", "intent"]);
   for (const key of Object.keys(o))
     if (!allowed.has(key)) enrollmentError(what, `carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
-  if (o.v !== 1 || o.kind !== "delegated-user-intent") enrollmentError(what, 'must carry { v: 1, kind: "delegated-user-intent" }');
-  for (const key of ["space", "actor", "instanceId", "requestId"] as const)
-    if (typeof o[key] !== "string" || (o[key] as string).length === 0) enrollmentError(what, `requires non-empty ${key}`);
-  assertValidOwnerToken(o.actor as string);
-  assertLifecycleToken(o.instanceId as string, `${what} instanceId`);
-  if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string))
-    enrollmentError(what, "requestId must be a 22-64 character idempotency token");
+  const base = parseBaseRequestEnvelope(o, "delegated-user-intent", what);
   const intent = parseOperation(o.intent, what, "intent");
   return {
     v: 1,
     kind: "delegated-user-intent",
-    space: o.space as string,
-    actor: o.actor as string,
+    ...base,
     accountPublicKey: parseAccountPublicKey(o.accountPublicKey, what),
-    instanceId: o.instanceId as string,
-    requestId: o.requestId as string,
     intent: intent.operation === "launch"
       ? { operation: "launch", target: parseLaunchTarget(intent.target, what, false) }
       : { operation: "retire", target: parseRetirementTarget(intent.target, what) },

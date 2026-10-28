@@ -10,7 +10,11 @@ import {
   parseRemoteDelegatedRecoveryRequest,
   parseRemoteDelegatedRecoveryResult,
 } from "../src/delegated-recovery.js";
-import { parseRemoteDelegatedUserIntentExecutionRequest } from "../src/remote-manager-authority.js";
+import {
+  parseDelegatedUserIntentRequest,
+  parseRemoteDelegatedUserIntentExecutionRequest,
+  parseRemoteManagerEnvelope,
+} from "../src/remote-manager-authority.js";
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 const hash = (value: unknown): string => contractDigest(value).slice("sha256:".length);
@@ -153,7 +157,29 @@ add("reject inherited launch envelope", () => { const r = launch(); const proto 
 
 add("reason allowlist is frozen", () => { assert.equal(Object.isFrozen(DELEGATED_RECOVERY_REASONS), true); });
 
-const EXPECTED_CELLS = 71;
+const userIntent = {
+  v: 1 as const, kind: "delegated-user-intent" as const, space: envelope.space, actor: "operator",
+  accountPublicKey: envelope.accountPublicKey, instanceId: envelope.instanceId, requestId: envelope.requestId,
+  intent: { operation: "launch" as const, target: { actor: target.actor } },
+};
+add("accept delegated user intent and shared manager envelope", () => {
+  assert.equal(parseDelegatedUserIntentRequest(userIntent).intent.operation, "launch");
+  assert.equal(parseRemoteManagerEnvelope(envelope, envelope.kind, "probe envelope").requestId, envelope.requestId);
+});
+for (const [label, mutation] of [
+  ["v 2", { v: 2 }], ["empty space", { space: "" }], ["dotted actor", { actor: "a.b" }],
+  ["bad instanceId", { instanceId: "short" }], ["16-char requestId", { requestId: "a".repeat(16) }],
+  ["21-char requestId", { requestId: "a".repeat(21) }], ["65-char requestId", { requestId: "a".repeat(65) }],
+  ["dotted requestId", { requestId: "a".repeat(10) + "." + "a".repeat(11) }],
+] as const) add(`shared base rule refuses ${label} alike`, () => {
+  const norm = (m: string) => m.replaceAll("probe envelope", "<what>").replaceAll("delegated user intent", "<what>").replace(/kind: "[^"]*"/, 'kind: "<kind>"');
+  let sharedMsg = "", intentMsg = "";
+  assert.throws(() => parseRemoteManagerEnvelope({ ...envelope, ...mutation }, envelope.kind, "probe envelope"), (e: Error) => { sharedMsg = norm(e.message); return true; });
+  assert.throws(() => parseDelegatedUserIntentRequest({ ...userIntent, ...mutation }), (e: Error) => { intentMsg = norm(e.message); return true; });
+  assert.equal(intentMsg, sharedMsg);
+});
+
+const EXPECTED_CELLS = 80;
 let ran = 0;
 for (const [name, run] of cases) {
   try { run(); }
