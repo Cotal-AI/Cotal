@@ -594,7 +594,7 @@ may be serving its space and nothing listens at its recorded broker address, so 
 there too. A controller stack that completed ordinary `cotal down` is eligible after its retained
 service records prove every process gone. Missing instance records, live or unresolved processes,
 and an unfinished down still refuse. That is the cold path past a `legacy` verdict: `cotal down`,
-then `cotal update`. A space prepared on this machine that never started, whether this folder's,
+then `cotal update`, and the verdict's `Next` line names it with that mesh's space. A space prepared on this machine that never started, whether this folder's,
 selected or named, has no broker and no manager, so it is named and skipped the same way. Any other
 selected mesh whose manager cannot be read is still a refusal: a named space that is not
 recorded, a mesh registered with `cotal meshes add`, a `--server` override, a `cotal supervise`
