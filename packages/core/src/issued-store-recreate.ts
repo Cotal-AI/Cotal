@@ -1,5 +1,5 @@
 import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, writeSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { JetStreamApiCodes, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import { nuid, type NatsConnection } from "@nats-io/transport-node";
 import { downloadStreamSnapshot } from "./backup.js";
@@ -68,7 +68,8 @@ function writeAll(fd: number, data: Uint8Array): void {
  * there. `backupDir` must not exist and its parent must. It is created 0700 with one 0700 directory
  * per stream holding `backup.json` and `stream.tar.s2`, each 0600 and fsynced, which
  * `nats stream restore` reads. Every backup is checked against the stream's message count and last
- * sequence before any stream is deleted, so a store an active writer still changes is left in place.
+ * sequence, as read before its snapshot and again just before the first delete, so a store a
+ * writer changed while it was backed up is left in place.
  * Throws {@link IssuedStoreRecreateRefusal}, with nothing written or deleted, when neither store
  * predates bounded retention or the backup directory cannot be created.
  */
@@ -115,6 +116,12 @@ export async function removeIssuedStoresBeforeRetention(
     backedUp.push({ ...s, backup });
   }
   fsyncDir(dir);
+  fsyncDir(dirname(dir));
+  for (const s of backedUp) {
+    const now = (await jsm.streams.info(s.stream)).state;
+    if (now.messages !== s.messages || now.last_seq !== s.lastSeq)
+      throw new Error(`${s.stream} changed after its backup (${s.messages} messages to sequence ${s.lastSeq}, now ${now.messages} to sequence ${now.last_seq}); a writer is still active, so no stream was deleted - stop every issuer and resolver of space ${opts.space} and run this again with a new backup directory`);
+  }
   const removed: string[] = [];
   for (const s of backedUp) {
     try {

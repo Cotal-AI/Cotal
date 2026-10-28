@@ -20,7 +20,6 @@ import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { nanos } from "@nats-io/transport-node";
 import {
   decode,
   encodeOperator,
@@ -111,6 +110,7 @@ import { credsClaims, isUserNkey, type Identity } from "./identity.js";
 import {
   backupProfilePermissions,
   restoreProfilePermissions,
+  snapshotAckGrant,
   type BackupPermissionScope,
   type RestorePermissionScope,
 } from "./backup.js";
@@ -2089,19 +2089,18 @@ function teardownPermissions(space: string, pr: MintPrincipal, transferStreams: 
 /** ISSUED-STORE-RECREATE — `cotal up --recreate-issued-stores`, and an embedder's call of
  *  `removeIssuedStoresBeforeRetention`: back up, then delete, the two issued-authority stores of ONE
  *  space that predate bounded retention. Exactly `STREAM.INFO`, `STREAM.SNAPSHOT` and
- *  `STREAM.DELETE` on those two streams, the snapshot's delivery inside its own inbox, and a
- *  one-use response permission per received chunk for that chunk's ACK (the `backup` profile's
- *  pattern). Nothing reads a row, writes a store or reaches another stream. */
+ *  `STREAM.DELETE` on those two streams, the snapshot's delivery inside its own inbox, and the
+ *  snapshot ACK subjects of those two streams ({@link snapshotAckGrant}). Nothing reads a row,
+ *  writes a store or reaches another stream. */
 function issuedStoreRecreatePermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
   return {
     pub: {
       allow: [
         "$JS.API.INFO",
-        ...issuedStoreStreamNames(space).flatMap((s) => [`$JS.API.STREAM.INFO.${s}`, `$JS.API.STREAM.SNAPSHOT.${s}`, `$JS.API.STREAM.DELETE.${s}`]),
+        ...issuedStoreStreamNames(space).flatMap((s) => [`$JS.API.STREAM.INFO.${s}`, `$JS.API.STREAM.SNAPSHOT.${s}`, `$JS.API.STREAM.DELETE.${s}`, snapshotAckGrant(s)]),
       ],
     },
     sub: { allow: [`_INBOX_${pr.connId}.>`] },
-    resp: { max: 1, ttl: nanos(60_000) },
   };
 }
 
