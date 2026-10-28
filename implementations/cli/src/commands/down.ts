@@ -105,7 +105,7 @@ import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { captureSeatCheckpoint } from "../lib/seat-capture.js";
 import { processRecorded, stopInFlight, stopLocalProcess } from "../lib/local-process-stop.js";
 import { stopManager } from "../lib/manager-proc.js";
-import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
+import { ensureDelivery, removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
 import { controllerStackRecorded, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
 import { noticeBetweenSteps } from "../lib/interrupt-notice.js";
 import { goneRootDown, goneRootStackDown, validateGoneRootDownArguments } from "./stack-gone.js";
@@ -718,6 +718,19 @@ function assertSessionStores(paths: readonly string[]): string[] {
   });
 }
 
+/** Start the delivery daemon a refused cut stopped as its Plane 3 fence. Resolves to nothing when
+ *  the daemon is running again, and to the reason when it is not, so the refusal can say so. */
+async function restartFencedDelivery(space: string, server: string, tls: boolean): Promise<string | undefined> {
+  try {
+    const ensured = await ensureDelivery({ space, server, tls });
+    if (!ensured.running) return "no delivery daemon is running after the attempt";
+    console.error(c.dim(`• delivery daemon started again after the refused cut${ensured.pid !== undefined ? ` (pid ${ensured.pid})` : ""}`));
+    return undefined;
+  } catch (e) {
+    return (e as Error).message;
+  }
+}
+
 async function preserveStateDown(storeOverride?: string, sessionStores: readonly string[] = []): Promise<void> {
   const root = cotalRoot();
   const matching = loadMeshes().filter((mesh) => mesh.root === root);
@@ -850,7 +863,8 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
       // Fence Plane 3 BEFORE any inventory work: with the delivery daemon stopped, no durable
       // join/leave can mutate MEMBERS at or after the moment the inventory is taken.
       const delivery = all.find((component) => component.name === "delivery");
-      if (delivery && mayBeRunning(delivery, context)) await stopLocalProcess(delivery, context); // fence an uncertain delivery: no MEMBERS mutation may race the inventory
+      const deliveryFenced = delivery !== undefined && mayBeRunning(delivery, context);
+      if (delivery && deliveryFenced) await stopLocalProcess(delivery, context); // fence an uncertain delivery: no MEMBERS mutation may race the inventory
       const prepared = await askManager(
         target.space,
         target.server,
@@ -876,8 +890,12 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
           retainedPrincipals.add(observed.managerId);
           unmanaged = observed.roster.filter((presence) => !retainedPrincipals.has(presence.card.id));
         }
+        // A known, clean refusal, classified as one: it used to be a bare Error, reported as an
+        // unknown outcome (`OPERATION_UNKNOWN`) with no next step (#4510).
         if (unmanaged.length)
-          throw new Error(`cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => `${presence.card.name} (${presence.card.id})`).join(", ")} (manager lease holder: ${observed.managerId})`);
+          throw new CommandFailure("refused", "LIFECYCLE_BLOCKED",
+            `cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => `${presence.card.name} (${presence.card.id})`).join(", ")} (manager lease holder: ${observed.managerId}); nothing was preserved`,
+            { remedy: "stop those endpoints, or wait for their presence to expire, then run `cotal down --preserve-state` again" });
         // A seat that cannot be checkpointed is refused HERE, at prepare time, while every child is
         // still running. This reads only the prepared inventory, so it needs nothing that stopping
         // would provide, and refusing after the stack is down would cost the operator a running mesh
@@ -892,6 +910,18 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
           await askManager(target.space, target.server, "abortPreservation", { attemptId }, target.auth, "any", 30_000);
         } catch { /* best effort - the fence dies with the manager */ }
         clearPreservationPrepareIntent(lock);
+        // The delivery daemon was stopped above as the Plane 3 fence, and a refusal used to leave
+        // it stopped: the operator read "running, unfenced mesh" while no spawn, retirement or join
+        // could complete until the next `cotal up` (#4510). Start it again, and when that fails say
+        // so in the refusal, so what it names is what is actually left.
+        if (deliveryFenced) {
+          const notRestarted = await restartFencedDelivery(mesh.space, mesh.server, target.auth.tls === true);
+          if (notRestarted !== undefined) {
+            const message = `${cause instanceof Error ? cause.message : String(cause)}; the delivery daemon stopped for the cut could not be started again (${notRestarted})`;
+            throw new CommandFailure("refused", isCommandFailure(cause) ? cause.code : "LIFECYCLE_BLOCKED", message,
+              { remedy: "start the delivery daemon with `cotal up`, then address the refusal and run `cotal down --preserve-state` again" });
+          }
+        }
         throw cause;
       }
       resume = writeMaintenanceResumeDocument(lock, {
