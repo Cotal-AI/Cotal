@@ -38,7 +38,8 @@
  *     - a second managed serve on D refuses CONFLICT / LOCK_HELD naming the live holder's pid, and
  *       the first's socket keeps its inode;
  *     - after SIGKILL of the first, its socket stays and the kernel has released its lock;
- *     - a new serve needs no operator step: it binds the SAME derived path, with a different inode,
+ *     - a new serve needs no operator step: with the dead inode pinned under a second name, it
+ *       leaves the pin as that inode's only link, binds another inode at the SAME derived path,
  *       and answers its own pid;
  *  H5 peer must be the lock owner:
  *     - the smoke process holds `D/daemon.lock` through the same kernel `flock` the daemon takes;
@@ -54,7 +55,7 @@
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -277,9 +278,15 @@ try {
     await stop(managedServe, "SIGKILL");
     check("H4 instrument: after SIGKILL the socket is left behind, and the kernel has released the lock while its record still names the dead pid", existsSync(derived) && lstatSync(derived).ino === ino && lockFree(managed) && lockRecordPid(managed) === killedPid, { free: lockFree(managed), recorded: lockRecordPid(managed), killedPid });
     // No operator step: the successor removes exactly the socket the record names and binds its own.
+    // A second name keeps the dead inode allocated through the restart, so the successor's socket
+    // cannot be given its number, which some filesystems hand straight back once it is freed. Its
+    // link count then shows whether the successor removed the public name.
+    const pin = join(dirname(derived), "stale-pin");
+    linkSync(derived, pin);
     managedServe = await serve(["--daemon-home", managed]);
     check("H4 the successor serves with no manual removal, on the SAME derived path", live(managedServe) && managedServe.socket === derived, { socket: managedServe?.socket, derived });
-    check("H4 it bound a different inode, so it did not adopt the dead socket", existsSync(derived) && lstatSync(derived).ino !== ino, { now: existsSync(derived) ? lstatSync(derived).ino : null, stale: ino });
+    check("H4 it removed the dead socket and bound a new one: the pinned dead inode has lost its public name and the path holds another inode", existsSync(derived) && lstatSync(pin).nlink === 1 && lstatSync(derived).ino !== ino, { pinLinks: lstatSync(pin).nlink, now: existsSync(derived) ? lstatSync(derived).ino : null, stale: ino });
+    rmSync(pin);
     check("H4 status answers the successor's pid", (await cli(["status", "--daemon-home", managed, "--json"])).doc.result?.pid === managedServe!.child.pid);
   });
 

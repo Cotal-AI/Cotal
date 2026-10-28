@@ -5235,11 +5235,14 @@ That recovery rests on the lifetime lock below. Each `serve` holds a kernel `flo
 file, which the kernel releases when the holder dies, SIGKILL included, and records the socket it
 publishes there by device and inode number. A `serve` that takes the lock therefore knows its
 predecessor is gone, and because publishing the socket needs the lock, nobody else can be putting
-one at that path while it holds it. It removes the one socket its own record names and binds its
-own. A `serve` whose state directory is unreadable, or which finds a socket its record does not
-name, removes nothing and refuses `CONFLICT` (`ALREADY_RUNNING`), naming the path. A clean shutdown
-clears the record, so a socket that appears at the path afterwards is refused the same way. A
-non-socket entry there refuses `PERMISSION_DENIED` (`SOCKET_NOT_SOCKET`) and is left alone.
+one at that path while it holds it. It removes the one socket its own record names, once a connect
+to it is refused, and binds its own. A filesystem can give a new file the inode number of one it
+freed, so a socket with the recorded numbers that a process answers on belongs to someone else. A
+`serve` whose state directory is unreadable, or which finds a socket its record does not name or a
+process answers on, removes nothing and refuses `CONFLICT` (`ALREADY_RUNNING`), naming the path. A
+clean shutdown clears the record, so a socket that appears at the path afterwards is refused the
+same way. A non-socket entry there refuses `PERMISSION_DENIED` (`SOCKET_NOT_SOCKET`) and is left
+alone.
 
 `--daemon-home <dir>` runs or reaches a separate daemon whose own state lives in `<dir>`: its
 sign-in session, its per-space identity, register request and service store, all at the paths

@@ -265,8 +265,9 @@ async function serveLocked(opts: ServeOptions, uid: number, lock: HeldLifetime):
   });
 
   // Clear the public path. The lifetime lock is held, so nobody else can be publishing there, and
-  // the only socket this may remove is the exact inode the dead predecessor's record names.
-  if (claimSocketPath(paths.socket, lock.previous?.socket) === "recover") {
+  // the only socket this may remove is the exact inode the dead predecessor's record names, once a
+  // connect to it is refused.
+  if (await claimSocketPath(paths.socket, lock.previous?.socket) === "recover") {
     unlinkSync(paths.socket);
     counters.socketsRecovered++;
     log(`daemon: recovered the socket its predecessor left at ${paths.socket} (its lifetime lock was already released)`);
