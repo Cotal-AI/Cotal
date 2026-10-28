@@ -40,6 +40,7 @@ process.env.COTAL_HOME = home;
 // the compile-time checking this smoke exists to exercise.
 let probeConnect!: typeof import("@cotal-ai/core").probeConnect;
 let createSpaceAuth!: typeof import("@cotal-ai/core").createSpaceAuth;
+let listPersonaCatalog!: typeof import("@cotal-ai/core").listPersonaCatalog;
 let authDir!: typeof import("@cotal-ai/workspace").authDir;
 let findCotalRoot!: typeof import("@cotal-ai/workspace").findCotalRoot;
 let clearCurrent!: typeof import("@cotal-ai/workspace").clearCurrent;
@@ -58,10 +59,9 @@ let enrollmentInput!: typeof import("../src/commands/spawn.js").enrollmentInput;
 let scrubEnrollmentEnv!: typeof import("../src/commands/spawn.js").scrubEnrollmentEnv;
 let checkEnrollmentBundle!: typeof import("../src/commands/spawn.js").checkEnrollmentBundle;
 let runBearerPreflight!: typeof import("../src/commands/spawn.js").runBearerPreflight;
-let listPersonas!: typeof import("../src/lib/personas.js").listPersonas;
 let pruneStaleMeshes!: typeof import("../src/lib/meshes.js").pruneStaleMeshes;
 try {
-  ({ probeConnect, createSpaceAuth } = await import("@cotal-ai/core"));
+  ({ probeConnect, createSpaceAuth, listPersonaCatalog } = await import("@cotal-ai/core"));
   ({
     authDir,
     findCotalRoot,
@@ -76,7 +76,6 @@ try {
     setCurrent,
   } = await import("@cotal-ai/workspace"));
   ({ checkEnrollmentBundle, enrollmentInput, runBearerPreflight, scrubEnrollmentEnv, spawnComplete, spawnPersona } = await import("../src/commands/spawn.js"));
-  ({ listPersonas } = await import("../src/lib/personas.js"));
   ({ spaceCompletion } = await import("../src/lib/completion.js"));
   ({ pruneStaleMeshes } = await import("../src/lib/meshes.js"));
 } catch (e) { cleanScratch(e); }
@@ -195,8 +194,8 @@ try {
   check("1 mesh: resolves to its root", one.root === projA, one.root);
   check(
     "1 mesh: personas come from the TARGET mesh",
-    listPersonas(one.root).map((p) => p.name).join(",") === "researcher,reviewer",
-    listPersonas(one.root).map((p) => p.name),
+    listPersonaCatalog(one.root).map((p) => p.name).join(",") === "researcher,reviewer",
+    listPersonaCatalog(one.root).map((p) => p.name),
   );
 
   // `cotal use` is authoritative even with one recorded mesh, and inside a project with no space of its own.

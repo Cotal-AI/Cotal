@@ -24,9 +24,9 @@
   "mutations": [
     {
       "name": "the persona catalog ignores the resolved root and reads from the cwd",
-      "file": "implementations/cli/src/lib/personas.ts",
-      "find": "  const dir = personaDir(root);",
-      "replace": "  const dir = personaDir(process.cwd());",
+      "file": "implementations/cli/src/commands/personas.ts",
+      "find": "  const entries = listPersonaCatalog(root);",
+      "replace": "  const entries = listPersonaCatalog(process.cwd());",
       "expectRed": "catalog: personas list prints the MESH's personas",
       "cell": "catalog: personas list prints the MESH's personas",
       "note": "This exact substitution keeps TypeScript green while restoring the silent cwd fallback the required root argument removed."

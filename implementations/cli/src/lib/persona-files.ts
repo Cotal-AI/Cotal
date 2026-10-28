@@ -3,7 +3,7 @@ import { accessSync, constants, existsSync, lstatSync, mkdtempSync, readdirSync,
 import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import {
-  acquireLock, agentFilePath, assertValidName, hardenPrivate, MAX_NAME_LENGTH, mkSecretDir,
+  acquireLock, agentFilePath, assertValidName, hardenPrivate, linkTarget, MAX_NAME_LENGTH, mkSecretDir,
   parseAgentFileSource, saveAgentFile, utf16Problem, writeSecretFile, writeSecretFileAtomic,
   type AgentDef,
 } from "@cotal-ai/core";
@@ -14,7 +14,7 @@ import {
 import { DEFAULT_AGENT_NAME } from "./default-persona.js";
 import { shellWord } from "./endpoint-errors.js";
 import { exitInterrupted, INTERRUPT_SIGNALS, type InterruptSignal } from "./interrupt-notice.js";
-import { catalogFolderProblem, linkTarget } from "./personas.js";
+import { catalogFolderProblem } from "./personas.js";
 
 export interface PersonaCatalog { root: string; space: string }
 export interface PersonaSource { bytes: Buffer; ino: number; dev: number; mtimeMs: number }

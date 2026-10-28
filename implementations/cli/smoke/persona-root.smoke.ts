@@ -53,7 +53,7 @@ let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
 let resolveMeshTarget!: typeof import("@cotal-ai/workspace").resolveMeshTarget;
 let agentFilePath!: typeof import("@cotal-ai/core").agentFilePath;
 let loadAgentFile!: typeof import("@cotal-ai/core").loadAgentFile;
-let listPersonas!: typeof import("../src/lib/personas.js").listPersonas;
+let listPersonaCatalog!: typeof import("@cotal-ai/core").listPersonaCatalog;
 let personas!: typeof import("../src/commands/personas.js").personas;
 let personasComplete!: typeof import("../src/commands/personas.js").personasComplete;
 let spawnComplete!: typeof import("../src/commands/spawn.js").spawnComplete;
@@ -68,8 +68,7 @@ let commandFailureReport!: typeof import("@cotal-ai/workspace").commandFailureRe
 let renderReport!: typeof import("@cotal-ai/workspace").renderReport;
 try {
   ({ recordMesh, setCurrent, resolveMeshTarget } = await import("@cotal-ai/workspace"));
-  ({ agentFilePath, loadAgentFile } = await import("@cotal-ai/core"));
-  ({ listPersonas } = await import("../src/lib/personas.js"));
+  ({ agentFilePath, loadAgentFile, listPersonaCatalog } = await import("@cotal-ai/core"));
   ({ personas, personasComplete } = await import("../src/commands/personas.js"));
   ({ spawnComplete } = await import("../src/commands/spawn.js"));
   ({ sendComplete } = await import("../src/commands/send.js"));
@@ -99,7 +98,7 @@ function project(label: string, personas: { name: string; role: string; channel:
 }
 
 const sorted = (r: { items: { value: string }[] }) => r.items.map((i) => i.value).sort();
-const names = (root: string) => listPersonas(root).map((p) => p.name).sort();
+const names = (root: string) => listPersonaCatalog(root).map((p) => p.name).sort();
 
 /** Run `cotal personas list` for real and return everything it printed.
  *

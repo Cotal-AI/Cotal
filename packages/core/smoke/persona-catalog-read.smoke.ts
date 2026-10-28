@@ -17,13 +17,16 @@
  *
  * Run: pnpm smoke:persona-catalog-read
  */
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+  linkTarget,
   listPersonaCatalog,
   personaCatalogDescription,
   personaCatalogReadable,
+  readPersonaCatalog,
   saveAgentFile,
 } from "../src/agent-file.js";
 
@@ -38,7 +41,20 @@ const check = (label: string, ok: boolean, extra?: unknown): void => {
 };
 
 const root = mkdtempSync(join(tmpdir(), "cotal-persona-catalog-"));
-check("an empty root is an empty catalog, not a throw", listPersonaCatalog(root).length === 0);
+check("an empty root is an empty catalog, not a throw", listPersonaCatalog(root).length === 0 && readPersonaCatalog(root).length === 0);
+
+const fileRoot = mkdtempSync(join(tmpdir(), "cotal-persona-catalog-file-"));
+mkdirSync(join(fileRoot, ".cotal"), { recursive: true });
+writeFileSync(join(fileRoot, ".cotal", "agents"), "not a directory\n");
+let fileRootCode: string | undefined;
+try {
+  readPersonaCatalog(fileRoot);
+} catch (e) {
+  fileRootCode = (e as NodeJS.ErrnoException).code;
+}
+check("readPersonaCatalog throws ENOTDIR when .cotal/agents is a regular file", fileRootCode === "ENOTDIR", fileRootCode);
+check("listPersonaCatalog returns [] when .cotal/agents is a regular file", listPersonaCatalog(fileRoot).length === 0);
+rmSync(fileRoot, { recursive: true, force: true });
 
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
 saveAgentFile(join(root, ".cotal", "agents", "mine.md"), {
@@ -133,6 +149,55 @@ check(
   "alice sees an operator-written name only",
   !("role" in aliceOperator) && !("description" in aliceOperator),
   aliceOperator,
+);
+
+const specialRoot = mkdtempSync(join(tmpdir(), "cotal-persona-catalog-special-"));
+const specialDir = join(specialRoot, ".cotal", "agents");
+mkdirSync(specialDir, { recursive: true });
+mkdirSync(join(specialDir, "nonreg.md"));
+saveAgentFile(join(specialDir, "target.md"), {
+  name: "target",
+  role: "worker",
+  subscribe: [],
+  persona: "Target body.",
+});
+symlinkSync(join(specialDir, "target.md"), join(specialDir, "linked.md"));
+writeFileSync(join(specialDir, "utf16.md"), Buffer.from("\uFEFF---\nname: utf16\n---\nUTF-16 body.\n", "utf16le"));
+const special = listPersonaCatalog(specialRoot);
+const nonregRow = special.find((e) => e.name === "nonreg");
+const linkedRow = special.find((e) => e.name === "linked");
+const utf16Row = special.find((e) => e.name === "utf16");
+check(
+  "a non-regular .md entry is reported as notRegular without opening it",
+  nonregRow?.notRegular === true && nonregRow.error === `persona is not a regular file: ${join(specialDir, "nonreg.md")}`,
+  nonregRow,
+);
+check(
+  "a symlinked .md entry records its resolved linkTarget",
+  linkedRow?.def?.name === "target" && linkedRow.link === realpathSync(join(specialDir, "target.md")) && linkTarget(join(specialDir, "linked.md")) === linkedRow.link,
+  linkedRow,
+);
+check(
+  "a UTF-16 .md entry records its encoding diagnostic",
+  utf16Row?.error !== undefined && utf16Row.encoding === "it is saved as UTF-16, and Cotal reads only UTF-8",
+  utf16Row,
+);
+rmSync(specialRoot, { recursive: true, force: true });
+rmSync(root, { recursive: true, force: true });
+
+const cliPersonasSrc = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "implementations", "cli", "src", "lib", "personas.ts"),
+  "utf8",
+);
+check(
+  "CLI personas helper delegates catalog listing to @cotal-ai/core (#3677)",
+  cliPersonasSrc.includes("listPersonaCatalog")
+    && cliPersonasSrc.includes("readPersonaCatalog")
+    && !cliPersonasSrc.includes("export function listPersonas")
+    && !cliPersonasSrc.includes("export function readPersonas")
+    && !cliPersonasSrc.includes("export interface PersonaEntry")
+    && !cliPersonasSrc.includes("readdirSync")
+    && !cliPersonasSrc.includes("loadAgentFile"),
 );
 
 console.log(`\nPERSONA CATALOG READ ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);

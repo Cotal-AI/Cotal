@@ -102,7 +102,7 @@
     },
     {
       "name": "an unreadable persona catalog reads as an empty one",
-      "file": "implementations/cli/src/lib/personas.ts",
+      "file": "packages/core/src/agent-file.ts",
       "find": "    if ((e as NodeJS.ErrnoException).code === \"ENOENT\") return [];\n",
       "replace": "    if (e) return [];\n",
       "expectRed": "an unreadable persona catalog is partial with exit 4",
