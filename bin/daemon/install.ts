@@ -134,7 +134,7 @@ function lingerEnabled(user: string): boolean {
 /** The user whose manager this install targets, read from the environment and never from argv. */
 function invokingUser(): string {
   const user = process.env.USER || process.env.LOGNAME;
-  if (!user || !/^[A-Za-z0-9._][A-Za-z0-9._-]{0,31}$/.test(user)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this session does not identify the user whose systemd manager would run the daemon; run it from a logged-in session");
+  if (!user || !/^[A-Za-z0-9._][A-Za-z0-9._-]{0,31}$/.test(user)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this session's USER and LOGNAME do not name the user whose systemd manager would run the daemon", { remedy: "run from a logged-in session of the user who will run the daemon (login sets USER and LOGNAME)" });
   return user;
 }
 
@@ -161,7 +161,7 @@ export function planInstall(paths: DaemonPaths, daemonHome: string | undefined):
   const user = invokingUser();
   const rendered = renderDaemonUnit(systemdUserUnitDirectory(), daemonHome);
   const existing = readReceipt(paths);
-  if (existing) throw new CommandFailure("refused", "CONFLICT", `this daemon already has an installed unit (${existing.unit}); remove it with cotal daemon uninstall before installing again`);
+  if (existing) throw new CommandFailure("refused", "CONFLICT", `this daemon already has an installed unit (${existing.unit}); remove it with \`cotal daemon uninstall\` before installing again`);
   return { unit: rendered.unit, unitPath: rendered.unitPath, sha256: rendered.sha256, user, lingerAlready: lingerEnabled(user),
     restart: directive(rendered.bytes, "Restart"), wantedBy: directive(rendered.bytes, "WantedBy"), ...(daemonHome !== undefined ? { daemonHome } : {}) };
 }
@@ -209,7 +209,7 @@ export interface UninstallPlan {
 /** The exact recorded unit `uninstall` would remove, refusing a receipt that no longer matches. */
 export function planUninstall(paths: DaemonPaths): UninstallPlan {
   const receipt = readReceipt(paths);
-  if (!receipt) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this daemon has no installed unit recorded by cotal daemon install; nothing was removed");
+  if (!receipt) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this daemon has no installed unit recorded by `cotal daemon install`; nothing was removed");
   try { lstatSync(receipt.unitPath); }
   catch { throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the recorded unit file ${receipt.unitPath} is gone; nothing was removed. Delete ${unitReceiptFile(paths)} by hand to forget it`); }
   try { assertSystemdSource(receipt.unitPath, receipt.unitSha256); }

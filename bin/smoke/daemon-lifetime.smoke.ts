@@ -16,10 +16,14 @@
  *   ALREADY_RUNNING and left in place.
  * - `install` writes one systemd user unit with `Restart=always` and `WantedBy=default.target`,
  *   and refuses a second install. `uninstall` refuses with no recorded unit.
+ * - `serve` prints one ready line, `daemon ready at <socket>`, on stdout and none on stderr.
+ * - A refusal that names a command after other words writes it in backticks, and its plain text
+ *   and its `--json` text are the same.
  *
  * Cells (each asserts counts or exact codes, never just "no error"):
- *  L1 control: `serve` binds the fixed socket, `status` answers that pid, the lock file exists, and
- *     a second serve refuses CONFLICT / LOCK_HELD naming the live pid with the socket's inode unchanged;
+ *  L1 control: `serve` binds the fixed socket and prints one ready line, on stdout; `status` answers
+ *     that pid, the lock file exists, and a second serve refuses CONFLICT / LOCK_HELD naming the live
+ *     pid with the socket's inode unchanged, its Next naming `cotal daemon status` in plain and --json;
  *  L2 the lock is kernel-held, not a pid record: an independent `flock` on the lock file is refused
  *     while the daemon serves and granted after SIGKILL, with the record still naming the dead pid.
  *     This is the cell that fails if the lock ever becomes an inferred-liveness record again;
@@ -27,23 +31,31 @@
  *     `socketsRecovered === 1`, binds a different inode, and `status` answers the new pid;
  *  L4 a socket the record does not name is refused: after SIGKILL the operator replaces the stale
  *     socket with a different same-uid listener's. The next serve refuses CONFLICT / ALREADY_RUNNING,
- *     removes 0 files, the listener's inode is unchanged and it received 0 bytes;
- *  L5 a clean stop leaves no generation to recover: after `close()` the record names no socket, so a
- *     foreign socket placed at the path is refused ALREADY_RUNNING and kept;
+ *     removes 0 files, the listener's inode is unchanged and it received 0 bytes. Its Next names
+ *     `cotal daemon status` and `cotal daemon serve` in plain and --json;
+ *  L5 a clean stop leaves no generation to recover: after `close()` the record names no socket and
+ *     `status` refuses NOT_RUNNING naming `cotal daemon serve`, so a foreign socket placed at the path
+ *     is refused ALREADY_RUNNING and kept;
  *  L6 `install --dry-run` through the CLI: it names the unit, path and digest, writes nothing, and
  *     the rendered unit carries `Restart=always`, `WantedBy=default.target`, an absolute pinned
- *     PATH and a `daemon serve` ExecStart under this entry;
- *  L7 refusals with no effect: `uninstall` with no recorded unit refuses TARGET_NOT_FOUND, and
- *     `uninstall` outside a terminal without `--yes` refuses USAGE_INVALID;
+ *     PATH and a `daemon serve` ExecStart under this entry. With a recorded unit it refuses CONFLICT
+ *     naming `cotal daemon uninstall`;
+ *  L7 refusals with no effect: `uninstall` with no recorded unit refuses TARGET_NOT_FOUND naming
+ *     `cotal daemon install`, and `uninstall` outside a terminal without `--yes` refuses USAGE_INVALID;
  *  L8 `setup` validates before it touches anything: a missing `--space`, a non-loopback HTTP
  *     `--idp` and an out-of-range `--wait` each refuse USAGE_INVALID with no unit written; and with
  *     a daemon already answering while no unit is recorded it refuses CONFLICT /
  *     RUNNING_WITHOUT_UNIT rather than installing a second one its lifetime lock would refuse.
  *     `setup` reaching connected is proven against a real space in
  *     `bin/smoke/daemon-service-connect.smoke.ts`.
+ *  L9 `install --dry-run` outside a logged-in session: with USER and LOGNAME unset it refuses
+ *     TARGET_UNAVAILABLE naming both, and with them set and a private runtime directory it refuses
+ *     DEPENDENCY_UNAVAILABLE naming `systemctl --user show-environment`. Each has a Next, in plain
+ *     and --json, and writes no receipt.
  *
- * L6 and L7's dry-run cells need a systemd user manager to answer its own config directory. Where
- * there is none they are skipped by name and counted, never reported as passed.
+ * L6's dry-run cell needs a systemd user manager to answer its own config directory. Where there is
+ * none it is skipped by name and counted, never reported as passed. L8 needs none: it refuses before
+ * any unit is rendered.
  *
  * Applying an install writes a unit into the operator's own `~/.config/systemd/user` and enables it
  * with their user manager, which this suite will not do. So `install` and `uninstall` are covered
@@ -53,9 +65,9 @@
  *
  * Run: tsx bin/smoke/daemon-lifetime.smoke.ts   (Linux only)
  */
-import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { constants } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -116,16 +128,20 @@ const children: ChildProcess[] = [];
  *  cells that read the user manager use it, and they write nothing outside the sandbox. */
 const realRuntimeDir = process.env.XDG_RUNTIME_DIR;
 /** The daemon as a real child whose own pid is the daemon's, so a SIGKILL kills the holder. */
-function child(args: string[], opts: { userManager?: boolean } = {}): ChildProcess {
+function child(args: string[], opts: { userManager?: boolean; env?: NodeJS.ProcessEnv } = {}): ChildProcess {
   const runtime = opts.userManager && realRuntimeDir ? realRuntimeDir : rtDir;
   const c = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), join(repo, "bin", "cotal.ts"), "daemon", ...args], {
-    cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: runtime, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
+    cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: runtime, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", ...opts.env }, stdio: ["ignore", "pipe", "pipe"],
   });
   children.push(c);
   return c;
 }
 async function cli(...args: string[]): Promise<{ status: number | null; doc: Record<string, any>; out: string; err: string }> {
-  const c = child(args);
+  return cliEnv({}, ...args);
+}
+/** Like {@link cli}, with `env` laid over the child's environment; an `undefined` value unsets it. */
+async function cliEnv(env: NodeJS.ProcessEnv, ...args: string[]): Promise<{ status: number | null; doc: Record<string, any>; out: string; err: string }> {
+  const c = child(args, { env });
   let out = "", err = "";
   c.stdout!.on("data", (b) => { out += String(b); });
   c.stderr!.on("data", (b) => { err += String(b); });
@@ -164,8 +180,8 @@ async function cliUserManager(...args: string[]): Promise<{ status: number | nul
   return { status, doc, out, err };
 }
 
-/** Start a serving child and wait for its ready line, returning its pid. */
-async function serveChild(): Promise<{ proc: ChildProcess; pid: number }> {
+/** Start a serving child and wait for its ready line, returning its pid and what it printed so far. */
+async function serveChild(): Promise<{ proc: ChildProcess; pid: number; out: () => string; err: () => string }> {
   const c = child(["serve"]);
   let out = "", err = "";
   c.stdout!.on("data", (b) => { out += String(b); });
@@ -176,7 +192,14 @@ async function serveChild(): Promise<{ proc: ChildProcess; pid: number }> {
     await kill(c);
     throw new Error(`the serving child never reported ready (exit ${c.exitCode}); stdout=${JSON.stringify(out)} stderr=${JSON.stringify(err.slice(-600))}`);
   }
-  return { proc: c, pid: c.pid! };
+  return { proc: c, pid: c.pid!, out: () => out, err: () => err };
+}
+/** A refusal's message and Next, read from its --json document and found as the same text in its
+ *  plain output, so the two presentations cannot drift. */
+function sameText(json: { doc: Record<string, any> }, plain: { out: string; err: string }): boolean {
+  const text = `${plain.out}${plain.err}`;
+  return typeof json.doc.error?.message === "string" && typeof json.doc.error?.remedy === "string"
+    && text.includes(json.doc.error.message) && text.includes(`Next\n  ${json.doc.error.remedy}`);
 }
 async function kill(c: ChildProcess, signal: NodeJS.Signals = "SIGKILL"): Promise<void> {
   if (c.exitCode !== null || c.signalCode !== null) return;
@@ -212,6 +235,9 @@ try {
     const first = await serveChild();
     const st = await cli("status", "--json");
     check("L1 status answers the serving child's pid, exit 0", st.status === 0 && st.doc.result?.pid === first.pid, { status: st.status, pid: st.doc.result?.pid, expected: first.pid, out: st.out.slice(0, 300) });
+    // Read once status has answered, so the daemon is past its ready point on both streams.
+    const readyLines = (text: string) => text.split("\n").filter((line) => line.includes("ready at"));
+    check("L1 serve printed one ready line, `daemon ready at <socket>`, on stdout and none on stderr", JSON.stringify(readyLines(first.out())) === JSON.stringify([`daemon ready at ${paths.socket}`]) && readyLines(first.err()).length === 0, { out: first.out(), err: first.err() });
     check("L1 the lock file exists in the daemon's own state directory", existsSync(paths.lock) && paths.lock === join(home, "daemon", "daemon.lock"), paths.lock);
     const rec = lockRecord();
     check("L1 its record names the live holder", rec?.v === 1 && rec?.pid === first.pid, rec);
@@ -219,6 +245,8 @@ try {
     const second = await cli("serve", "--json");
     check("L1 a second serve refuses CONFLICT / LOCK_HELD, exit 2", second.status === 2 && second.doc.error?.code === "CONFLICT" && second.doc.error?.cause?.code === "LOCK_HELD", { status: second.status, out: second.out.slice(0, 300) });
     check("L1 the refusal names the live holder's pid", String(second.doc.error?.message ?? "").includes(`pid ${first.pid}`), second.doc.error?.message);
+    const secondPlain = await cli("serve", "--plain");
+    check("L1 its Next names `cotal daemon status` in backticks, in plain and --json alike", String(second.doc.error?.remedy).includes("run `cotal daemon status`, with the same --daemon-home") && secondPlain.status === 2 && sameText(second, secondPlain), { remedy: second.doc.error?.remedy, plain: secondPlain.out + secondPlain.err });
     check("L1 the first daemon's socket keeps its inode, so 0 replacements", ino(paths.socket) === socketIno);
     await kill(first.proc, "SIGTERM");
   });
@@ -267,6 +295,8 @@ try {
     const r = await cli("serve", "--json");
     check("L4 serve refuses CONFLICT / ALREADY_RUNNING, exit 2", r.status === 2 && r.doc.error?.code === "CONFLICT" && r.doc.error?.cause?.code === "ALREADY_RUNNING", { status: r.status, out: r.out.slice(0, 300) });
     check("L4 the refusal says it is not the socket this home published", String(r.doc.error?.message ?? "").includes("is not the socket this daemon home's last daemon published"), r.doc.error?.message);
+    const plain = await cli("serve", "--plain");
+    check("L4 its Next names `cotal daemon status` and `cotal daemon serve` in backticks, in plain and --json alike", /^run `cotal daemon status`: .*confirm no `cotal daemon serve` process is running/.test(String(r.doc.error?.remedy)) && plain.status === 2 && sameText(r, plain), { remedy: r.doc.error?.remedy, plain: plain.out + plain.err });
     check("L4 that socket keeps its inode and 0 entries were removed", ino(paths.socket) === foreign && readdirSync(paths.dir).length === before);
     check("L4 the other process received 0 bytes", !other.gotBytes());
     await kill(other.proc, "SIGTERM");
@@ -279,6 +309,9 @@ try {
     check("L5 instrument: the record names this daemon's socket while it serves", lockRecord()?.socket?.ino === mine);
     await d.close();
     check("L5 a clean close clears the record, so it names no generation", lockRecord() === undefined, lockRecord());
+    const stopped = await cli("status", "--json"), stoppedPlain = await cli("status", "--plain");
+    check("L5 status then refuses TARGET_UNAVAILABLE / NOT_RUNNING, exit 2", stopped.status === 2 && stopped.doc.error?.cause?.code === "NOT_RUNNING", { status: stopped.status, out: stopped.out.slice(0, 300) });
+    check("L5 its Next names `cotal daemon serve` in backticks, in plain and --json alike", stopped.doc.error?.remedy === "start it with `cotal daemon serve`" && stoppedPlain.status === 2 && sameText(stopped, stoppedPlain), { remedy: stopped.doc.error?.remedy, plain: stoppedPlain.out + stoppedPlain.err });
     const other = await impostor(paths.socket);
     const foreign = ino(paths.socket);
     const r = await cli("serve", "--json");
@@ -311,11 +344,24 @@ try {
     check("L6 the unit it would write restarts the daemon on its own", r.doc.result?.restart === "always", r.doc.result?.restart);
     check("L6 the unit it would write starts at login", r.doc.result?.wantedBy === "default.target", r.doc.result?.wantedBy);
     check("L6 it names the user whose manager would run it", r.doc.result?.user === (process.env.USER || process.env.LOGNAME), r.doc.result?.user);
+    // A recorded unit refuses a second install before anything is read from the user manager's linger.
+    const receipt = join(home, "daemon", "service-unit.json");
+    writeFileSync(receipt, `${JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath: join(root, "cotal-daemon.service"), unitSha256: r.doc.result?.sha256, installedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
+    try {
+      const again = await shippedCli("install", "--dry-run", "--json"), againPlain = await shippedCli("install", "--dry-run", "--plain");
+      check("L6 with a recorded unit it refuses CONFLICT, exit 2", again.status === 2 && again.doc.error?.code === "CONFLICT", { status: again.status, out: again.out.slice(0, 300) });
+      const text = `${againPlain.out}${againPlain.err}`;
+      check("L6 that refusal names `cotal daemon uninstall` in backticks, in plain and --json alike", String(again.doc.error?.message).includes("remove it with `cotal daemon uninstall` before installing again") && againPlain.status === 2 && text.includes(again.doc.error.message), { message: again.doc.error?.message, plain: text });
+    } finally {
+      rmSync(receipt, { force: true });
+    }
   });
 
   await cell("L7 uninstall refuses with no effect", async () => {
     const r = await cli("uninstall", "--yes", "--json");
     check("L7 with no recorded unit it refuses TARGET_NOT_FOUND, exit 2", r.status === 2 && r.doc.error?.code === "TARGET_NOT_FOUND", { status: r.status, out: r.out.slice(0, 300) });
+    const plain = await cli("uninstall", "--yes", "--plain");
+    check("L7 that refusal names `cotal daemon install` in backticks, in plain and --json alike", String(r.doc.error?.message).includes("no installed unit recorded by `cotal daemon install`") && plain.status === 2 && `${plain.out}${plain.err}`.includes(r.doc.error.message), { message: r.doc.error?.message, plain: plain.out + plain.err });
     check("L7 no unit receipt was created", !existsSync(join(home, "daemon", "service-unit.json")));
     const noYes = await cli("uninstall", "--json");
     check("L7 outside a terminal without --yes it refuses USAGE_INVALID, exit 1", noYes.status === 1 && noYes.doc.error?.code === "USAGE_INVALID", { status: noYes.status, out: noYes.out.slice(0, 300) });
@@ -342,6 +388,20 @@ try {
     } finally {
       await kill(running.proc, "SIGTERM");
     }
+  });
+
+  await cell("L9 install --dry-run outside a logged-in session names what it read and gives a Next", async () => {
+    const receipt = join(home, "daemon", "service-unit.json");
+    const noUser = { USER: undefined, LOGNAME: undefined };
+    const a = await cliEnv(noUser, "install", "--dry-run", "--json"), aPlain = await cliEnv(noUser, "install", "--dry-run", "--plain");
+    check("L9 with USER and LOGNAME unset it refuses TARGET_UNAVAILABLE, exit 2", a.status === 2 && a.doc.error?.code === "TARGET_UNAVAILABLE", { status: a.status, out: a.out.slice(0, 300) });
+    check("L9 that refusal names USER and LOGNAME, with a Next, in plain and --json alike", /USER and LOGNAME/.test(String(a.doc.error?.message)) && /USER and LOGNAME/.test(String(a.doc.error?.remedy)) && aPlain.status === 2 && sameText(a, aPlain), { error: a.doc.error, plain: aPlain.out + aPlain.err });
+    // The suite's own runtime directory reaches no user manager, and no session bus is inherited.
+    const unreachable = { USER: userInfo().username, LOGNAME: userInfo().username, XDG_RUNTIME_DIR: rtDir, DBUS_SESSION_BUS_ADDRESS: undefined };
+    const b = await cliEnv(unreachable, "install", "--dry-run", "--json"), bPlain = await cliEnv(unreachable, "install", "--dry-run", "--plain");
+    check("L9 with a private runtime directory it refuses DEPENDENCY_UNAVAILABLE, exit 2", b.status === 2 && b.doc.error?.code === "DEPENDENCY_UNAVAILABLE", { status: b.status, out: b.out.slice(0, 300) });
+    check("L9 that refusal names `systemctl --user show-environment` and XDG_RUNTIME_DIR, with a Next, in plain and --json alike", String(b.doc.error?.message).includes("did not answer `systemctl --user show-environment`") && String(b.doc.error?.remedy).includes("XDG_RUNTIME_DIR") && bPlain.status === 2 && sameText(b, bPlain), { error: b.doc.error, plain: bPlain.out + bPlain.err });
+    check("L9 neither refusal wrote a unit receipt", !existsSync(receipt));
   });
 } catch (e) {
   fail++;

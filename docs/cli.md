@@ -5203,8 +5203,16 @@ terminal `uninstall` needs `--yes`. `uninstall` acts on the unit `install` recor
 that is gone refuses `TARGET_NOT_FOUND`, and one whose bytes changed refuses `CONFLICT`, with
 nothing removed either way.
 
-`serve` runs in the foreground and prints `daemon ready at <socket>` once the endpoint is bound
-and checked. That success line is plain text; `--json` shapes its refusals. `status` prints the
+`install`, `--dry-run` included, needs a logged-in session of the user who will run the daemon. It
+reads that user from `USER`, or from `LOGNAME` when `USER` is unset, and the user manager's config
+directory from `systemctl --user show-environment`. When neither variable names a user it refuses
+`TARGET_UNAVAILABLE` and names both. When the user manager does not answer, as from a shell whose
+`XDG_RUNTIME_DIR` is not the user manager's runtime directory, it refuses `DEPENDENCY_UNAVAILABLE`
+and names that command. Each refusal's Next says to run it from a logged-in session.
+
+`serve` runs in the foreground and prints one ready line, `daemon ready at <socket>`, on stdout once
+the endpoint is bound and checked. Its log lines, such as a recovered socket, go to stderr. That
+success line is plain text; `--json` shapes its refusals. `status` prints the
 state, version, protocol, process ID, start time and uptime. `state: "ready"` means only that the
 local control listener is bound and verified, not that a mesh or Cloud connection exists.
 
@@ -5242,13 +5250,16 @@ created or repaired.
 `serve` holds the lifetime lock `<dir>/daemon.lock` while it runs. The default daemon holds the
 same lock at `<COTAL_HOME>/daemon/daemon.lock`. A second `serve` for the same daemon refuses
 `CONFLICT` (`LOCK_HELD`), naming the live holder and when it started. A start that fails for any
-other reason releases the lock again. Every client command with
-`--daemon-home` sends nothing unless the process at that socket is the lock's live owner (same pid
-and process start). Otherwise it refuses `PERMISSION_DENIED` (`PEER_NOT_LOCK_OWNER`).
+other reason releases the lock again. Every client command sends nothing unless the process at its
+socket is the live owner (same pid and process start) of its daemon's lock: `<dir>/daemon.lock`
+with `--daemon-home`, and `<COTAL_HOME>/daemon/daemon.lock` in the client's own Cotal home without
+it. Otherwise it refuses `PERMISSION_DENIED` (`PEER_NOT_LOCK_OWNER`). So a client whose
+`COTAL_HOME` is not the one the default daemon runs with is refused, because that daemon keeps
+another Cotal home's state.
 
 This daemon is a different machine identity. Nothing is copied from the default daemon: it needs
 its own `login`, its own `register`, and the space owner's approval of its own instance. Without
-`--daemon-home` every command behaves as before.
+`--daemon-home` every command reaches the default daemon.
 
 `login` signs the running daemon in with device approval. The daemon runs the same sign-in as
 `cotal login` and keeps the session in the machine's Cotal home, where `cotal login` keeps it. The
@@ -9210,6 +9221,9 @@ On Linux, `service install <name> --instance <full-id> --dry-run` asks the
 systemd user manager for its config directory, then renders a
 bounded direct-process unit and private environment candidates and reports
 their paths and digests without printing their bytes or the inherited `PATH`.
+A user manager that does not answer `systemctl --user show-environment` refuses
+`DEPENDENCY_UNAVAILABLE`, naming that command, with a Next to run from a
+logged-in session.
 With no existing instance, the inspection checks the declared process,
 durable CLI entry and user manager, then reports that apply would allocate a
 stopped full ID; it
