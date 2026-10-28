@@ -1,5 +1,27 @@
 # cotal-ai
 
+## 0.119.1
+
+### Patch Changes
+
+- 846d91e: `cotal daemon` lines now name commands in backticks, so a Next or message wraps each command whole and `--json` carries the same text. `cotal daemon serve` prints one ready line, `daemon ready at <socket>`, on stdout; the duplicate `daemon: ready at` line on stderr is gone. `cotal daemon install`, `--dry-run` included, names what it read when it refuses outside a logged-in session: `USER` and `LOGNAME` when neither names a user, and `systemctl --user show-environment` when the user manager does not answer. Each refusal now has a Next. `cotal service install` gives the same user-manager refusal.
+- f57bc1f: Redirecting stderr no longer leaves ANSI color in the file. Color under `auto` was decided by stdout alone, so `cotal spawn 2>err.txt` on a terminal wrote `Mesh:` headings and `✗` refusals to `err.txt` with their color codes, and `cotal spawn >out.txt` left the refusal on the terminal uncolored. Each stream is now colored only when it is a terminal, so a pipe or redirect of either stream is plain text. Reports, help, warnings and failure reports take their color from the stream they are written to, as do most error lines. Some other lines a command writes directly, such as progress notes, are colored only when stdout and stderr are both terminals. `always`, `never`, `--no-color`, `NO_COLOR`, `FORCE_COLOR` and `TERM=dumb` keep their meaning for both streams.
+- Updated dependencies [846d91e]
+- Updated dependencies [7c52767]
+- Updated dependencies [f57bc1f]
+- Updated dependencies [a3b8311]
+- Updated dependencies [9f32677]
+- Updated dependencies [3431be6]
+  - @cotal-ai/cli@0.119.1
+  - @cotal-ai/workspace@0.119.1
+  - @cotal-ai/runtime@0.119.1
+  - @cotal-ai/manager@0.119.1
+  - @cotal-ai/auth@0.119.1
+  - @cotal-ai/core@0.119.1
+  - @cotal-ai/connector-core@0.119.1
+  - @cotal-ai/delivery@0.119.1
+  - @cotal-ai/seat@0.119.1
+
 ## 0.119.0
 
 ### Minor Changes
