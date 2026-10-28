@@ -215,7 +215,7 @@ try {
 
   // Each answered request writes one line naming the request, its space, the principal, the
   // outcome and the time each step took.
-  const steps = "queue_ms=\\d+ verify_ms=\\d+ ledger_ms=\\d+ policy_ms=\\d+ sign_ms=\\d+ total_ms=\\d+";
+  const steps = "queue_ms=\\d+ verify_ms=\\d+ ledger_ms=\\d+ policy_ms=\\d+ sign_ms=\\d+ total_ms=\\d+ remaining_ms=-?\\d+";
   check("a mint writes its callout line with the request id, owner, actor and step times",
     calloutLog.some((line) => new RegExp(`^auth callout: level=info outcome=minted space=${space} req=\\S+ cid=\\d+ owner=${owner} actor=agent_1 ${steps}$`).test(line)));
   check("a ledger denial writes its line with the reason",
