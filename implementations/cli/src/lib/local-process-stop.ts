@@ -155,6 +155,11 @@ export async function stopLocalProcess(
     if (identity.kind === "legacy") {
       if (cooperative) throw new Error(`${component.label} has no creation identity for cooperative shutdown; stop it with its original supervisor`);
       console.error(identityLegacyWarning(component.label, pidPath));
+    } else if (identity.kind === "no-pid") {
+      // verifyIdentityPin rereads the pidfile. A record removed, emptied or replaced after the first
+      // read is no longer the pid this stop parsed, so that cached pid is not signalled and the
+      // record that remains is kept for the next attempt.
+      throw new Error(`${component.label} pidfile at ${pidPath} no longer holds the pid this stop read - refusing to signal it or remove the record. Rerun this command.`);
     } else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal(component.label, pidPath, identity);
     // The beforeSignal hook authorizes an action against a LIVE exact process. A pinned record whose
     // process is already ESRCH-gone needs no spare capability or destructive intent because no signal
