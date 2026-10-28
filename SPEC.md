@@ -1709,7 +1709,8 @@ The plane and a hosted context expose `decide`, `revoke`, `name-bind`, `operatio
 `proposal-read` as one in-process function; a hosted context refuses it as `unavailable` while it is
 not ready. The host checks an owner granter's current interactive row but authenticates no caller:
 the embedder MUST authenticate the granter it passes, operator or owner. The stock auth service
-serves that function on `POST /service-endpoint-host` when started with `--service-endpoints`: the
+serves that function on `POST /service-endpoint-host` when started with `--service-endpoints`, or
+as a lane of `auth-service --spaces` whose manifest entry sets `serviceEndpoints`: the
 body is `{ idpToken, request }` with no granter, the route verifies the IdP token and derives the
 granter itself. `decide`, a revoke whose cause is `owner-request`, the four caller-policy operations
 (`caller-grant`, `caller-revoke`, `caller-policy-read`, `caller-policy-list`) and the reads
