@@ -782,26 +782,34 @@ export function removeIdentityPin(pidfilePath: string): void {
 
 /** The loud torn/unpinned refusal, in the same shape as {@link identityRefusal}: name the component,
  *  the file, what was found, and the operator's next step. Legacy records do not reach this helper:
- *  callers emit {@link identityLegacyWarning} and proceed. */
-export function identityUncertaintyRefusal(label: string, pidfilePath: string, verdict: PinVerdict): Error {
+ *  callers emit {@link identityLegacyWarning} and proceed. Match and gone signal or clear, mismatch
+ *  refuses through {@link identityRefusal}, and no-pid means there is no process to stop. */
+export function identityUncertaintyRefusal(
+  label: string,
+  pidfilePath: string,
+  verdict: Extract<PinVerdict, { kind: "torn-pin" | "torn-pairing" | "unpinned" }>,
+): Error {
   const pin = identityPinPath(pidfilePath);
-  if (verdict.kind === "torn-pin")
-    return new Error(
-      `refusing to stop ${label} at ${pidfilePath}: its identity pin ${pin} holds unattributable content ${JSON.stringify(verdict.raw)} - a torn or tampered write. The record is preserved.\n` +
-      `NEXT: inspect the recorded process with \`ps\`. If it should be stopped, stop it, then rerun this command; once the pid is dead the stale record clears automatically.`,
-    );
-  if (verdict.kind === "torn-pairing")
-    return new Error(
-      `refusing to stop ${label} at ${pidfilePath}: its identity pin ${pin} names pid ${verdict.pinPid}, not the pidfile's pid. The record is preserved.\n` +
-      `NEXT: inspect both the pidfile pid and the pin pid with \`ps\`. Automatic cleanup follows proven death of the pidfile target. If that process should be stopped, stop it, then rerun this command; do not delete the identity pin.`,
-    );
-  if (verdict.kind === "unpinned")
-    return new Error(
-      `refusing to stop ${label} at ${pidfilePath}: its process is live but no creation identity could be established for it, so target identity cannot be proven. The record is preserved.\n` +
-      `NEXT: stop the process, then rerun this command; once the pid is dead the stale record clears automatically.`,
-    );
-  return new Error(
-    `refusing to stop ${label} at ${pidfilePath}: the identity state is unsupported (${verdict.kind}). The record is preserved.\n` +
-    `NEXT: stop the process, then rerun this command; once the pid is dead the stale record clears automatically.`,
-  );
+  switch (verdict.kind) {
+    case "torn-pin":
+      return new Error(
+        `refusing to stop ${label} at ${pidfilePath}: its identity pin ${pin} holds unattributable content ${JSON.stringify(verdict.raw)} - a torn or tampered write. The record is preserved.\n` +
+        `NEXT: inspect the recorded process with \`ps\`. If it should be stopped, stop it, then rerun this command; once the pid is dead the stale record clears automatically.`,
+      );
+    case "torn-pairing":
+      return new Error(
+        `refusing to stop ${label} at ${pidfilePath}: its identity pin ${pin} names pid ${verdict.pinPid}, not the pidfile's pid. The record is preserved.\n` +
+        `NEXT: inspect both the pidfile pid and the pin pid with \`ps\`. Automatic cleanup follows proven death of the pidfile target. If that process should be stopped, stop it, then rerun this command; do not delete the identity pin.`,
+      );
+    case "unpinned":
+      return new Error(
+        `refusing to stop ${label} at ${pidfilePath}: its process is live but no creation identity could be established for it, so target identity cannot be proven. The record is preserved.\n` +
+        `NEXT: stop the process, then rerun this command; once the pid is dead the stale record clears automatically.`,
+      );
+    default: {
+      const unreachable: never = verdict;
+      void unreachable;
+      throw new Error("identityUncertaintyRefusal: verdict outside torn-pin, torn-pairing and unpinned");
+    }
+  }
 }
