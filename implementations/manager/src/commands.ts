@@ -218,11 +218,13 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
       if (loadSpaceAccountAuth(authDir(root), localSpace))
         return { space: localSpace, server: ve.server ?? DEFAULT_SERVER, remoteUser: false, tlsRequired: false, eventsRequired: false };
       // Nothing named or selected a space and this folder hosts none, so the default name is no one's
-      // space and the refusal does not name it.
+      // space and the refusal does not name it. It words that state as `cotal manager start` does, and
+      // leads with the commands that start a hosted space's manager from any folder: `supervise
+      // --space` runs in this folder, which holds no signer for a space another folder hosts.
       if (ve.space === undefined)
-        throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this folder holds no space and none is selected, so no manager started", {
+        throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no space is selected, and this folder is not a space's project, so no manager started", {
           target: { root },
-          remedy: "for a space hosted elsewhere, run `cotal supervise --space <name>` or select it with `cotal use <name>`; to host one here, run `cotal up`",
+          remedy: "for a space a folder on this machine hosts, run `cotal manager start --space <name>` or select it with `cotal use <name>`; for a space no folder here hosts, run `cotal supervise --space <name>`; to host one here, run `cotal up`",
         });
       throw new Error(`neither hosting '${localSpace}' (no \`cotal up\` root here) nor registered to it (no meshes entry) — \`cotal up\` to host, or \`cotal meshes add\` to join`);
     }

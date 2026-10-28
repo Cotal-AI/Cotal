@@ -5029,9 +5029,11 @@ hosts or is registered for, else the one `cotal use` selected, else the space th
 hosts. A space the folder only holds, such as a prepared or stopped one or one a `cotal up` in a
 folder above it left, does not take the run from the selection. With nothing selected, a prepared or
 stopped space is refused as not started, and the refusal names the `cotal up` that starts it. A
-folder that holds no space, with nothing selected, is refused `TARGET_NOT_FOUND`, and Next names
-`cotal supervise --space <name>` or `cotal use <name>` for a space hosted elsewhere, and `cotal up`
-to host one here. A registered or selected space runs its manager
+folder that holds no space, with nothing selected, is refused `TARGET_NOT_FOUND` in the words
+`cotal manager start` uses there. Next leads with `cotal manager start --space <name>` or
+`cotal use <name>`, which start the manager of a space a folder on this machine hosts from any
+folder. It keeps `cotal supervise --space <name>` for a space no folder here hosts, and names
+`cotal up` to host one here. A registered or selected space runs its manager
 in the folder that space is registered at, with that folder's records and signer, so a start from
 any folder is the same manager, with the same instance and name. With `--space` or `COTAL_SPACE`
 the manager runs in this folder. For a static or user-auth space that another folder hosts, a
