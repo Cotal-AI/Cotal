@@ -429,6 +429,19 @@ export function messageOf(v: unknown): string {
 }
 
 /**
+ * The name off anything a foreign body throws, read the same way as {@link messageOf}.
+ *
+ * An `Error`'s own name, else a string `name` field, else `"Error"`. A thrown primitive has no name,
+ * and neither does an object whose `name` is not a string; both answer the base name rather than
+ * whatever `String` would make of the value.
+ */
+export function nameOf(v: unknown): string {
+  if (v instanceof Error) return v.name;
+  const n = (v as { name?: unknown } | null | undefined)?.name;
+  return typeof n === "string" ? n : "Error";
+}
+
+/**
  * The stack off anything a foreign body throws, or `undefined` when there is none to keep.
  *
  * Read with the same defensiveness as {@link messageOf} and for the same reason: a handler is other
