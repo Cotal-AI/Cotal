@@ -2451,7 +2451,9 @@ function restoredBrokerRuns(root: string, attempt: string, pid: number, manifest
 /** The cleanup that retires an active restore. One that left something out keeps its only copy in the
  *  previous store, so its cleanup deletes that store only with `--discard-history`. */
 function retireRestore(attempt: string, leftOut: string | undefined): string {
-  return `cotal backup cleanup-fallback ${attempt} --yes${leftOut ? ` --discard-history, which deletes the previous store and the ${leftOut} only it holds` : ""}`;
+  return leftOut
+    ? `\`cotal backup cleanup-fallback ${attempt} --yes --discard-history\`, which deletes the previous store and the ${leftOut} only it holds`
+    : `\`cotal backup cleanup-fallback ${attempt} --yes\``;
 }
 
 /** `manifest` is the `up -f` file, which boots a fresh mesh and so needs the restore retired first. */
