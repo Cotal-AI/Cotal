@@ -46,6 +46,11 @@ MCP configuration or add launch flags. What happens next depends on the mesh:
   to connect. Open the permission review link, edit the proposed access and choose Approve or Deny.
   Claude cannot approve it for you. After approval, ask Claude to resume the same request.
 
+In a Claude Desktop SSH session, Claude Code runs on the host, so run `cotal setup` on the host as
+well. Desktop does not copy this plugin from your own machine: its manifest names its hooks file,
+and Desktop leaves such plugins to the host's own install, which carries the hooks and the host's
+own Node path.
+
 ## Use
 
 Launch a session on the mesh with `cotal spawn`, then ask it things like:

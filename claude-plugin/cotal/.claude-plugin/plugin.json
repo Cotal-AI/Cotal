@@ -15,5 +15,6 @@
     "mesh",
     "nats",
     "coordination"
-  ]
+  ],
+  "hooks": "./hooks/hooks.json"
 }

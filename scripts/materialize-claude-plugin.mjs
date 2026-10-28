@@ -55,6 +55,13 @@ function verify(name, dir) {
   for (const ref of referencedPaths(dir))
     if (!existsSync(join(dir, ref))) throw new Error(`materialize-claude-plugin: ${name} references ${ref}, which is not in the plugin directory`);
   if (name === "cotal") {
+    // Claude Desktop copies a laptop's enabled plugins to an SSH host without their hooks/ and
+    // with the laptop's absolute Node path, and that copy overrides the host's own install. It
+    // skips a plugin whose manifest names its hooks file, so the host's own install runs instead.
+    // Claude Code merges a named ./hooks/hooks.json with the default once, not twice.
+    const manifest = JSON.parse(readFileSync(join(dir, ".claude-plugin", "plugin.json"), "utf8"));
+    if (manifest.hooks !== "./hooks/hooks.json")
+      throw new Error('materialize-claude-plugin: cotal\'s plugin.json must name "hooks": "./hooks/hooks.json", or Claude Desktop copies it to SSH hosts without its hooks');
     // The docs bundle inside mcp.cjs is stamped from bin/package.json at build time, so a bundle
     // built before `changeset version` carries the previous release under the new manifest version.
     // The bundle is built with `--minify-whitespace`, which closes the gap after the key, so match

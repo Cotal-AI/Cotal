@@ -6,5 +6,6 @@
   "homepage": "https://cotal.ai",
   "repository": "https://github.com/Cotal-AI/Cotal",
   "license": "Apache-2.0",
-  "keywords": ["cotal", "multi-agent", "mesh", "nats", "coordination"]
+  "keywords": ["cotal", "multi-agent", "mesh", "nats", "coordination"],
+  "hooks": "./hooks/hooks.json"
 }
