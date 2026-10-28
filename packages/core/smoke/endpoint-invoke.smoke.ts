@@ -14,7 +14,7 @@
  */
 import {
   CotalEndpoint, compileContract, describeEndpoint, epReplySubject, invokeCommand, parseEpSubject, resolveService,
-  unansweredRequest, type EpCaller, type ResolvedService,
+  unansweredRequest, epCall, EpEnvelopeError, EP_UNANSWERED, submitAndFollowGoal, type EpCaller, type ResolvedService,
 } from "../src/index.js";
 
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -330,6 +330,43 @@ console.log("describe REQUEST-BINDING (freelance HIGH #1):");
     () => ep.describeService(ENDPOINT, { instanceId: ATTACKER.instanceId, deadlineMs: 100 }), "deadline-exceeded");
   c("a failed pinned describe leaves the class cache intact", cache.get(ENDPOINT) === service);
   c("an unpinned describe still returns its original class handle after the pinned refusal", await ep.describeService(ENDPOINT) === service);
+}
+
+// Submitted identity survives both the call's timer and the follower's earlier timer/stop.
+// These constructed connections grade races and correlation, not real manager acceptance.
+{
+  const contract = { input: compileContract({ root: { type: "null" } }), output: compileContract({ root: { type: "null" } }) };
+  const op = { endpoint: ENDPOINT, command: "spawn", contract, caller: CALLER };
+  const detail = (e: unknown) => e instanceof EpEnvelopeError ? e.details?.find(d => d.kind === EP_UNANSWERED) : undefined;
+  let sent: string | undefined;
+  const nc = { ...fakeNc(() => [], req => { sent = req.id; }), flush: async () => {} };
+  const errorOf = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e);
+  const direct = await errorOf(epCall(nc as never, SPACE, { mode: "one" }, op, { deadlineMs: 20, currentEpoch: () => HONEST.epoch }));
+  c("an unanswered call retains the actual generated envelope id with unknown outcome", detail(direct)?.requestId === sent && typeof sent === "string" && direct instanceof EpEnvelopeError && direct.outcome === "unknown", direct);
+  const ctl = new AbortController();
+  const call = epCall(nc as never, SPACE, { mode: "one" }, op, { deadlineMs: 1000, currentEpoch: () => HONEST.epoch, signal: ctl.signal });
+  ctl.abort();
+  const cancelled = await errorOf(call);
+  c("a cancelled published call retains its own envelope id", detail(cancelled)?.requestId === sent && cancelled instanceof EpEnvelopeError && cancelled.outcome === "unknown", cancelled);
+  const followed = await errorOf(submitAndFollowGoal(nc as never, SPACE, ENDPOINT, CALLER, 20,
+    signal => epCall(nc as never, SPACE, { mode: "one" }, op, { deadlineMs: 1000, currentEpoch: () => HONEST.epoch, signal })));
+  c("the follower deadline wins before epCall but retains the submitted id", detail(followed)?.requestId === sent && followed instanceof EpEnvelopeError && followed.code === "deadline-exceeded" && followed.outcome === "unknown", followed);
+  const innerTimeout = await errorOf(submitAndFollowGoal(nc as never, SPACE, ENDPOINT, CALLER, 1000,
+    signal => epCall(nc as never, SPACE, { mode: "one" }, op, { deadlineMs: 20, currentEpoch: () => HONEST.epoch, signal })));
+  c("an epCall deadline winning first keeps both request id and generic no-retry guidance", detail(innerTimeout)?.requestId === sent && innerTimeout instanceof EpEnvelopeError && innerTimeout.message.includes("do NOT retry"), innerTimeout);
+  const stop = new AbortController();
+  const waiting = submitAndFollowGoal(nc as never, SPACE, ENDPOINT, CALLER, 1000,
+    signal => epCall(nc as never, SPACE, { mode: "one" }, op, { deadlineMs: 1000, currentEpoch: () => HONEST.epoch, signal }), { signal: stop.signal });
+  await wait(10); stop.abort();
+  const stopped = await errorOf(waiting);
+  c("stopping an in-flight follower retains id without asserting acceptance", detail(stopped)?.requestId === sent && stopped instanceof EpEnvelopeError && stopped.outcome === "unknown" && !stopped.message.includes("was accepted"), stopped);
+  const before = await errorOf(submitAndFollowGoal(nc as never, SPACE, ENDPOINT, CALLER, 20, async () => { throw new Error("must not submit"); }, {
+    prepare: async () => { throw new EpEnvelopeError("deadline-exceeded", "no describe reply", [{ kind: EP_UNANSWERED, endpoint: ENDPOINT, command: "describe" }]); },
+  }));
+  c("a preparation refusal never invents a submitted request id", detail(before)?.command === "describe" && detail(before)?.requestId === undefined, before);
+  const refusal = new EpEnvelopeError("unavailable", "broker no responders", [{ kind: EP_UNANSWERED, endpoint: ENDPOINT, command: "spawn" }], "not-executed");
+  const refused = await errorOf(submitAndFollowGoal(nc as never, SPACE, ENDPOINT, CALLER, 100, async () => { throw refusal; }));
+  c("a concrete pre-effect refusal survives unchanged without a submitted goal", refused === refusal && detail(refused)?.requestId === undefined, refused);
 }
 
 console.log(`\n${fail === 0 ? "ENDPOINT-INVOKE BINDING SMOKE OK ✅" : "ENDPOINT-INVOKE BINDING SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);

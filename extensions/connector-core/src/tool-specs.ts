@@ -1467,6 +1467,13 @@ export function cotalToolSpecs(
           // An uncertain launch is still managed and may yet join. Reported as an error it reads as a
           // failed launch, and the caller's retry starts a second agent on the same work.
           const pending = reply.code === "uncertain";
+          const submission = reply.data as { goalId?: string; submissionUnknown?: boolean } | undefined;
+          if (!reply.ok && submission?.submissionUnknown && submission.goalId) {
+            const goalId = submission.goalId;
+            const next = `cotal_invoke(endpoint="manager", command="goal-result", args={"goalId":${JSON.stringify(goalId)}})`;
+            const message = `Spawn submission for ${name} has an unknown outcome for goal "${goalId}". Acceptance has not been confirmed; the seat may appear later. Do NOT retry: another submission could create a second lifecycle. ${reply.error ?? "The submission wait ended."} Next: ${next} as this same caller, or inspect 'ps'/'inspect'. A missing result does not prove the submission failed.`;
+            return { text: message, structured: { status: "unknown", name, goalId, next, message } };
+          }
           if (!reply.ok && !pending) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? "manager refused", reply)}`);
           const d = reply.data as {
             name?: string; mode?: string; model?: string; id?: string; actor?: string; executor?: { lifecycleUid: string };

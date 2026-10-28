@@ -411,8 +411,9 @@ export async function epCall(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let denialWatch: { denied: Promise<never>; release(): void } | undefined;
   let onAbort: (() => void) | undefined;
+  let published = false;
   const cancelled = new Promise<never>((_, reject) => {
-    onAbort = () => reject(new EpEnvelopeError("unavailable", `${op.endpoint}.${op.command} observation cancelled; the request may have executed`, undefined, "unknown"));
+    onAbort = () => reject(new EpEnvelopeError("unavailable", `${op.endpoint}.${op.command} observation cancelled; the request may have executed`, published ? [{ ...unansweredDetail(op), requestId: req.requestId }] : undefined, "unknown"));
     opts.signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {
@@ -442,8 +443,9 @@ export async function epCall(
       });
       opts.signal?.throwIfAborted();
       nc.publish(req.subject, req.body, { reply: noRespReplyTo });
+      published = true;
     });
-    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`, [unansweredDetail(op)])), deadlineMs); });
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`, [{ ...unansweredDetail(op), requestId: req.requestId }], "unknown")), deadlineMs); });
     const msg = await Promise.race([outcome, timeout, denialWatch.denied, cancelled]);
     const attributed = parseAttributedReply(space, msg.subject, msg.data, req.requestId, op, expect);
     // Taken BEFORE the currency check below, because a responder that fenced on the bind settled

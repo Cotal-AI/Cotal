@@ -225,7 +225,43 @@ for (const [label, config, expected] of [
   check(`${label} generic untargeted call retains its existing class route`, calls.at(-1)?.opts.instanceId === undefined);
 }
 
-const EXPECTED_CELLS = 57;
+// Constructed throw exercises the actual managerInvoke -> spawn -> tool rendering pipeline.
+// The paused-manager live replay supplies publication, late acceptance and goal-to-seat proof.
+{
+  const goalId = "published_spawn_request";
+  const tools = cotalToolSpecs(cfg);
+  const spawnTool = tools.find(t => t.name === "cotal_spawn")!;
+  const unknown = async (error: EpEnvelopeError, model?: string) => {
+    const agent = new MeshAgent(cfg);
+    let calls = 0;
+    (agent as unknown as { ep: unknown }).ep = {
+      invokeService: async () => { calls++; throw error; }, principal: { owner: "local", actor: "caller" },
+    };
+    (agent as unknown as { _connected: boolean })._connected = true;
+    const result = await spawnTool.run(agent, cfg, { name: "reviewer", ...(model ? { model } : {}) });
+    return { result, calls };
+  };
+  const submitted = new EpEnvelopeError("deadline-exceeded", "submission outcome is unknown", [{ kind: EP_UNANSWERED, endpoint: "manager", command: "spawn", requestId: goalId }], "unknown");
+  const { result, calls } = await unknown(submitted);
+  check("an unknown submitted spawn is not reported as a plain failure", !result.isError && result.structured?.status === "unknown", result);
+  check("unknown spawn text and structured data retain the same goal", result.text.includes(`goal "${goalId}"`) && result.structured?.goalId === goalId, result);
+  check("unknown spawn gives an existing same-caller goal-result read", result.text.includes('command="goal-result"') && result.text.includes("as this same caller"), result);
+  check("unknown spawn forbids retry and treats missing readback as inconclusive", result.text.includes("Do NOT retry") && result.text.includes("missing result does not prove"), result);
+  check("the unknown result neither resubmits nor claims confirmed acceptance", calls === 1 && result.text.includes("Acceptance has not been confirmed"), { result, calls });
+  const pinned = await unknown(submitted, "requested-model");
+  check("a requested model does not discard the unknown goal or inspect an unallocated alias", pinned.calls === 1 && pinned.result.structured?.goalId === goalId, pinned);
+  for (const [label, error] of [
+    ["describe deadline", new EpEnvelopeError("deadline-exceeded", "no describe reply", [{ kind: EP_UNANSWERED, endpoint: "manager", command: "describe", requestId: goalId }])],
+    ["broker no responder", new EpEnvelopeError("unavailable", "no responder", [{ kind: EP_UNANSWERED, endpoint: "manager", command: "spawn", requestId: goalId }], "not-executed")],
+    ["malformed request id", new EpEnvelopeError("deadline-exceeded", "unknown", [{ kind: EP_UNANSWERED, endpoint: "manager", command: "spawn", requestId: "invalid.id" }], "unknown")],
+    ["another endpoint", new EpEnvelopeError("deadline-exceeded", "unknown", [{ kind: EP_UNANSWERED, endpoint: "other", command: "spawn", requestId: goalId }], "unknown")],
+  ] as const) {
+    const r = await unknown(error);
+    check(`${label} never manufactures a recoverable spawn goal`, r.result.isError === true && r.result.structured?.goalId === undefined, r);
+  }
+}
+
+const EXPECTED_CELLS = 67;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

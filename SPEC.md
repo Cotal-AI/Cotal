@@ -3041,6 +3041,12 @@ facts.
 
 Patterns over the verbs and contracts; zero new transport.
 
+The reference manager's spawn goal uses the submitted request's `id`. If the caller's
+submission wait ends before acceptance is observed, the reference client retains that id
+in its local error details and the spawn tool's unknown result. This is a readback
+coordinate, not evidence of acceptance or permission to retry. Existing caller-scoped
+goal reads resolve a later terminal without adding a command or transport kind.
+
 **Action**, a long-running command. `action` is a command **marker**, never a class: an
 action command's submissions are `class: journal` (§13.3).
 
