@@ -326,6 +326,7 @@ try {
       FAKE_JCODE_JOURNAL: journal,
       FAKE_JCODE_APPEND_RECORDS: "1",
       FAKE_JCODE_RUNTIME_PROVIDER: "selected-provider",
+      FAKE_JCODE_TURN_DELAY_MS: "500",
       FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
         { model: "fake-model", provider: "default-provider", api_method: "chat_completions", available: true, detail: "wrong route" },
         { model: "fake-model", provider: "selected-provider", api_method: "responses", available: true, detail: "active route" },
@@ -622,6 +623,53 @@ try {
     peerMeta?.provider === "selected-provider" && peerMeta?.model === "fake-model",
     peerMeta,
   );
+  // A focus mention is ack-dropped by MeshAgent, so the host must drive a hint without an inbox
+  // item. Use the real MCP tool to enter focus and a real broker publication to reach that branch.
+  const normalChannel = await callJcodeMcp(peerHome, relaySocket, relayToken, { channel: "team", mode: "normal" }, "cotal_channel_mode");
+  await waitFor("the preceding DM turn completes before focus", () => entries().find((entry) =>
+    entry.ev === "turn_done_emitted" && String(entry.content).includes("mesh-wake")));
+  const focusMode = await callJcodeMcp(peerHome, relaySocket, relayToken, { attention: "focus" }, "cotal_status");
+  check("the Jcode peer enters focus through its live MCP route", !normalChannel.isError && !focusMode.isError, { normalChannel, focusMode });
+  await sleep(100);
+  const hintTurns = () => entries().filter((entry) => entry.ev === "request" &&
+    (entry.frame as { req?: string; no_reply?: boolean }).req === "send_message" &&
+    !(entry.frame as { no_reply?: boolean }).no_reply &&
+    String((entry.frame as { content?: string }).content).includes("You were mentioned by operator on #team. Pull it with cotal_inbox."));
+  const hintStart = hintTurns().length;
+  const focusBody = "FOCUS-MENTION-BODY-MUST-NOT-BE-INJECTED";
+  await operator.multicast(focusBody, { channel: "team", mentions: ["jcodepeer"] });
+  await waitFor("focus mention wake-only turn", () => hintTurns().length > hintStart ? true : undefined).catch(() => undefined);
+  const focusTurn = hintTurns()[hintStart];
+  check("an idle focus mention drives a pull hint without an automatic inbox item", Boolean(focusTurn), focusTurn);
+  check("the focus wake hint never auto-injects the channel body", Boolean(focusTurn) &&
+    !String((focusTurn?.frame as { content?: string } | undefined)?.content).includes(focusBody), focusTurn);
+  await waitFor("focus wake turn completion", () => entries().find((entry) => entry.ev === "turn_done_emitted" &&
+    String(entry.content).includes("You were mentioned by operator on #team.")));
+  await sleep(100);
+  check("a successful focus hint leaves no empty wake loop", hintTurns().length === hintStart + 1, hintTurns());
+  const busyMarker = "FOCUS-BUSY-DM-CONTROL";
+  await operator.unicast(peerId!, busyMarker);
+  await waitFor("focus DM starts a busy turn", () => entries().find((entry) =>
+    entry.ev === "turn_run" && String(entry.content).includes(busyMarker)));
+  const beforeBusyMention = hintTurns().length;
+  await operator.multicast("BUSY-FOCUS-BODY-MUST-STAY-OUT", { channel: "team", mentions: ["jcodepeer"] });
+  await sleep(100);
+  check("a busy focus mention does not dispatch a concurrent turn", hintTurns().length === beforeBusyMention, hintTurns());
+  await waitFor("busy focus mention reaches the following turn", () =>
+    hintTurns().length > beforeBusyMention ? true : undefined).catch(() => undefined);
+  const busyHint = hintTurns()[beforeBusyMention];
+  check("a focus mention received while busy wakes the next turn", Boolean(busyHint), busyHint);
+  check("a deferred focus hint also excludes the channel body", Boolean(busyHint) &&
+    !String((busyHint?.frame as { content?: string } | undefined)?.content).includes("BUSY-FOCUS-BODY-MUST-STAY-OUT"), busyHint);
+  await sleep(600);
+  const beforeAmbient = hintTurns().length;
+
+  await operator.multicast("FOCUS-AMBIENT-IS-NOT-A-WAKE", { channel: "team" });
+  await sleep(100);
+  check("focus ambient does not drive a mention hint", hintTurns().length === beforeAmbient, hintTurns());
+  const reopen = await callJcodeMcp(peerHome, relaySocket, relayToken, { attention: "open" }, "cotal_status");
+  check("the focus test restores open attention through MCP", !reopen.isError, reopen);
+
 
   await stopHostTree(child, "SIGTERM");
   check("host exits cleanly on SIGTERM", child.exitCode === 0, { code: child.exitCode, stderr });
