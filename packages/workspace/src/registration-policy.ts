@@ -104,18 +104,6 @@ export function checkBundleDocument(parsed: unknown): Check<UserBundle> {
  *  registration, where patience is cheaper than a wrong record. */
 const EXCHANGE_PROBE_TIMEOUT_MS = 5_000;
 
-/**
- * Fetch that CANNOT be walked off HTTPS.
- *
- * `fetch` follows redirects by default and will happily follow `https://` → `http://`, so a
- * 302 from anyone on the path turns a pinned, encrypted fetch into a plaintext one — and the
- * document being fetched IS the trust being adopted. `redirect: "manual"` stops the hop here;
- * a redirect is then reported as the refusal it is, rather than silently followed.
- *
- * Loopback `http://` stays usable for tests and for an exchange on this machine (nothing leaves
- * the box), which is also what keeps the suites honest without a TLS fixture. Everything else
- * must be `https:`.
- */
 /** A pinned fetch that the policy itself refused: a target that is not https (and not a loopback
  *  http literal), or an answer that is a redirect. A transport failure is not one of these: it
  *  escapes as whatever `fetch` threw, so a caller tells a refusal from a failure with `instanceof`
@@ -159,7 +147,18 @@ export async function pinnedFetchProbe(target: string): Promise<{ refused: boole
   }
 }
 
-/** One hop, no downgrade, no redirect-following. */
+/**
+ * One hop, no downgrade, no redirect-following: a fetch that CANNOT be walked off HTTPS.
+ *
+ * `fetch` follows redirects by default and will happily follow `https://` → `http://`, so a
+ * 302 from anyone on the path turns a pinned, encrypted fetch into a plaintext one — and the
+ * document being fetched IS the trust being adopted. `redirect: "manual"` stops the hop here;
+ * a redirect is then reported as the refusal it is, rather than silently followed.
+ *
+ * Loopback `http://` stays usable for tests and for an exchange on this machine (nothing leaves
+ * the box), which is also what keeps the suites honest without a TLS fixture. Everything else
+ * must be `https:`.
+ */
 export async function pinnedFetch(target: string, what: string): Promise<Response> {
   const u = new URL(target);
   const bad = assertPinnedFetchUrl(u, what);
