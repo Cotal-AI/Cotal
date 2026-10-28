@@ -5,13 +5,12 @@ import {
   checkDiscoveryDocument,
   clearCurrent,
   discoveryDocumentUrl,
-  findMesh,
   getCurrent,
   keepsRegistration,
   loadMeshes,
   pinnedFetch,
   PinnedFetchRefused,
-  removeMesh,
+  removeMeshes,
   renderReport,
   terminalWidth,
   type MeshEntry,
@@ -84,7 +83,7 @@ export async function meshes(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
   if (sub === "add") return addMesh(args.positionals.slice(1), v);
-  if (sub === "rm" || sub === "remove") return removeMeshes(args.positionals.slice(1), v);
+  if (sub === "rm" || sub === "remove") return rmMeshes(args.positionals.slice(1), v);
   if (sub !== undefined && sub !== "list") {
     stderrLine("✗ ", `unknown subcommand "${sub}" - usage: cotal meshes [list | add <space> --server <url> | rm <space> …]`, c.red);
     process.exit(1);
@@ -416,15 +415,16 @@ function take<T>(r: Check<T>): T {
 /** `cotal meshes rm <space> …` — drop records. This never stops a mesh: it removes what THIS
  *  machine remembers about one. For a mesh running here that distinction is a footgun (the broker
  *  keeps running with nothing pointing at it), so those are refused in favour of `cotal down`. */
-async function removeMeshes(names: string[], v: Values): Promise<void> {
+async function rmMeshes(names: string[], v: Values): Promise<void> {
   if (names.length === 0) {
     console.error(c.red("usage: cotal meshes rm <space> [<space> …]"));
     process.exit(1);
   }
+  const byName = new Map(loadMeshes().map((m) => [m.space, m]));
+  const removed: MeshEntry[] = [];
   let failed = false;
-  let clearedCurrent = false;
   for (const space of names) {
-    const m = findMesh(space);
+    const m = byName.get(space);
     if (!m) {
       stderrLine("✗ ", `no mesh named "${space}" is registered - see \`cotal meshes\``, c.red);
       failed = true;
@@ -464,14 +464,18 @@ async function removeMeshes(names: string[], v: Values): Promise<void> {
       failed = true;
       continue;
     }
-    removeMesh(space);
-    if (getCurrent() === space) {
-      clearCurrent();
-      clearedCurrent = true;
-    }
-    console.log(c.green(`✓ unregistered "${space}"`), c.dim(m.server));
+    byName.delete(space);
+    removed.push(m);
   }
-  if (clearedCurrent) console.log(c.dim("there is no default mesh now - `cotal use <name>` to set one"));
+  if (removed.length > 0) {
+    const current = getCurrent();
+    const removedSpaces = removed.map((m) => m.space);
+    removeMeshes(removedSpaces);
+    const clearedCurrent = current !== undefined && removedSpaces.includes(current);
+    if (clearedCurrent) clearCurrent();
+    for (const m of removed) console.log(c.green(`✓ unregistered "${m.space}"`), c.dim(m.server));
+    if (clearedCurrent) console.log(c.dim("there is no default mesh now - `cotal use <name>` to set one"));
+  }
   if (failed) process.exit(1);
 }
 

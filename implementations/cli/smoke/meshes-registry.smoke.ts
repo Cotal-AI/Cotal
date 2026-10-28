@@ -27,10 +27,12 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { mock } from "node:test";
 import { SMOKE_BROKER_TOKEN, freePort, listenOn, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Sandbox the machine-home BEFORE anything reads the registry — homeCotalDir() reads COTAL_HOME per
@@ -43,7 +45,7 @@ process.env.COTAL_HOME = home;
 // exactly as the real binary does, or the check silently has nothing to look at.
 await import("../src/index.js");
 const { createSpaceAuth, isReachable, registry } = await import("@cotal-ai/core");
-const { acquireMaintenanceLock, authDir, beginMaintenanceCut, findMesh, getCurrent, isCommandFailure, loadMeshes, loadSpaceAuth, pruneMesh, pruneStaleMeshes, recordMesh, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removePreparedSpace, resolveNativeServiceTarget, saveSpaceAuth, setCurrent, writeMaintenanceResumeDocument } = await import("@cotal-ai/workspace");
+const { acquireMaintenanceLock, authDir, beginMaintenanceCut, clearCurrent, findMesh, getCurrent, isCommandFailure, loadMeshes, loadSpaceAuth, meshesDir, pruneMesh, pruneStaleMeshes, recordMesh, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removePreparedSpace, resolveNativeServiceTarget, saveSpaceAuth, setCurrent, writeMaintenanceResumeDocument } = await import("@cotal-ai/workspace");
 const { meshes, meshesComplete } = await import("../src/commands/meshes.js");
 
 let pass = 0;
@@ -1007,7 +1009,7 @@ try {
   let busyError: Error | undefined;
   await claimSpace("claimed-busy", DEAD, localRoot).catch((e: Error) => void (busyError = e));
   check("a live holder at another root is refused as in use, naming `cotal down`",
-    claimRefused(busyError, "CONFLICT") && busyError?.message.includes(`already in use by a mesh at ${LIVE}`) === true && remedyOf(busyError).includes("cotal up --space <name>") && remedyOf(busyError).includes(`cotal down in ${root}`) && JSON.stringify(findMesh("claimed-busy")) === busyBefore,
+    claimRefused(busyError, "CONFLICT") && busyError?.message.includes(`already in use by a mesh at ${LIVE}`) === true && remedyOf(busyError).includes("cotal up --space <name>") && remedyOf(busyError).includes(`\`cotal down\` in ${root}`) && JSON.stringify(findMesh("claimed-busy")) === busyBefore,
     claimText(busyError));
   removeMesh("claimed-busy");
   recordMesh({ space: "reclaimable", server: DEAD, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
@@ -1141,19 +1143,64 @@ try {
     /^space: +remote-dead \(default\)$/m.test(narrow) && /^notes: +registered (·|-) offline$/m.test(narrow) && !/^SPACE /m.test(narrow), narrow);
 
   // ── rm ────────────────────────────────────────────────────────────────────────────────────────
-  setCurrent("remote-dead");
-  const removed = await run(["rm", "remote-dead"]);
-  check("rm drops the record", removed.code === 0 && findMesh("remote-dead") === undefined, loadMeshes());
-  check("rm releases a current that pointed at it", getCurrent() === undefined, getCurrent());
-  check("rm says the default is gone", removed.out.includes("no default mesh now"), removed.out);
+  const currentPointer = join(home, "current-mesh");
+  const counted = async <T>(work: () => Promise<T>): Promise<{ value: T; listings: number; pointerReads: number }> => {
+    const listing = mock.method(fs, "readdirSync");
+    const reading = mock.method(fs, "readFileSync");
+    syncBuiltinESMExports();
+    try {
+      const value = await work();
+      return {
+        value,
+        listings: listing.mock.calls.filter((c) => String(c.arguments[0]) === meshesDir()).length,
+        pointerReads: reading.mock.calls.filter((c) => String(c.arguments[0]) === currentPointer).length,
+      };
+    } finally {
+      listing.mock.restore();
+      reading.mock.restore();
+      syncBuiltinESMExports();
+    }
+  };
 
-  const unknown = await run(["rm", "never-existed"]);
-  check("rm of an unknown mesh exits non-zero", unknown.code === 1 && unknown.out.includes("no mesh named"), unknown.out);
+  setCurrent("remote-dead");
+  const removed = await counted(() => run(["rm", "remote-dead"]));
+  check("rm drops the record", removed.value.code === 0 && findMesh("remote-dead") === undefined, loadMeshes());
+  check("rm releases a current that pointed at it", getCurrent() === undefined, getCurrent());
+  check("rm says the default is gone", removed.value.out.includes("no default mesh now"), removed.value.out);
+  check("rm with one name lists the registry twice and reads the current pointer once",
+    removed.listings === 2 && removed.pointerReads === 1, { listings: removed.listings, pointerReads: removed.pointerReads });
+
+  const unknown = await counted(() => run(["rm", "never-existed"]));
+  check("rm of an unknown mesh exits non-zero", unknown.value.code === 1 && unknown.value.out.includes("no mesh named"), unknown.value.out);
+  check("rm with no accepted names skips the removal scan and pointer read",
+    unknown.listings === 1 && unknown.pointerReads === 0, { listings: unknown.listings, pointerReads: unknown.pointerReads });
 
   recordMesh({ space: "a1", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   recordMesh({ space: "a2", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
-  const multi = await run(["rm", "a1", "a2"]);
-  check("rm takes several names at once", multi.code === 0 && loadMeshes().length === 0, loadMeshes());
+  writeFileSync(
+    join(meshesDir(), "a3.json"),
+    JSON.stringify({ space: "a3", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() }),
+    { mode: 0o600 },
+  );
+  setCurrent("a2");
+  const multi = await counted(() => run(["rm", "a1", "a2", "a3"]));
+  check("rm takes several names at once, including a pre-hex record, and clears a matching current",
+    multi.value.code === 0 && loadMeshes().length === 0 && getCurrent() === undefined && multi.value.out.includes("no default mesh now"),
+    { out: multi.value.out, meshes: loadMeshes(), current: getCurrent() });
+  check("rm with several names lists the registry twice and reads the current pointer once for the whole batch",
+    multi.listings === 2 && multi.pointerReads === 1, { listings: multi.listings, pointerReads: multi.pointerReads });
+
+  recordMesh({ space: "keep-selected", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  recordMesh({ space: "drop-twice", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  setCurrent("keep-selected");
+  const repeated = await counted(() => run(["rm", "drop-twice", "drop-twice"]));
+  check("repeating a name unregisters it once, reports the second as missing, and keeps an unrelated current",
+    repeated.value.code === 1 && findMesh("drop-twice") === undefined && getCurrent() === "keep-selected" &&
+      repeated.value.out.includes('✓ unregistered "drop-twice"') && repeated.value.out.includes('no mesh named "drop-twice" is registered') &&
+      !repeated.value.out.includes("no default mesh now") && repeated.listings === 2 && repeated.pointerReads === 1,
+    { out: repeated.value.out, listings: repeated.listings, pointerReads: repeated.pointerReads, current: getCurrent() });
+  clearCurrent();
+  removeMesh("keep-selected");
 
   // A mesh RUNNING here: `rm` is the wrong verb — it would leave a live broker with no record.
   // "Running here" must be LOCAL PROCESS OWNERSHIP, not a reachable address: any broker answers on
