@@ -33,8 +33,11 @@ import.
   label throws when tmux cannot be queried.
 
 Session-name and pane-capture failures name the read operation, include tmux's error text and
-retain the failed call as `cause`. A failed capture returns no screen only when the pane's exit
-is confirmed. A failed exit probe still throws.
+retain the failed call as `cause`. Starting a session, selecting a window, and sending text or a
+key do the same: a failure reads `tmux: couldn't <operation>` with tmux's report and the original
+error as `cause`. A spawn refused before its window opens carries that text.
+A failed capture returns no screen only when the pane's exit is confirmed. A failed exit probe
+still throws.
 
 ## Usage
 
