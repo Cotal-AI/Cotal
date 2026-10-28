@@ -230,8 +230,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // auth service's host route, plus the reads behind them.
   "service-endpoint": {
     flags: [
-      "caller-ceiling:string", "claim:string", "json:boolean:j", "owner:string", "plain:boolean",
-      "request-id:string", "space:string:s",
+      "caller-ceiling:string", "claim:string", "commands:string", "cursor:string", "json:boolean:j",
+      "lifecycle:string", "owner:string", "plain:boolean", "request-id:string", "space:string:s",
+      "to:string",
     ],
     positionals: true,
   },
