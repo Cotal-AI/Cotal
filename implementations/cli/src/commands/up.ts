@@ -51,6 +51,7 @@ import {
   isJetStreamMissing,
   seedChannelRegistry,
   ensureDefaultDeliveryClass,
+  UndecodableChannelDefaults,
   assertValidChannel,
   isConcreteChannel,
   validateChannelConfig,
@@ -4798,6 +4799,9 @@ async function postStart(
     space,
     creds: setup?.creds,
     deliveryClass: setup ? "durable" : "live",
+  }).catch((error: unknown) => {
+    if (!(error instanceof UndecodableChannelDefaults)) throw error;
+    throw new CommandFailure("refused", "CONFLICT", error.message, { target: { space }, remedy: "read the defaults key and replace it with channel defaults; the bytes were left as they are" });
   });
 }
 

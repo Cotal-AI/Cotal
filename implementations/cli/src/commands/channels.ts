@@ -4,7 +4,7 @@ import * as prompts from "../lib/prompts.js";
 import {
   assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
   ChannelRegistryConflict, channelBucket, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, validateChannelConfig,
-  type ChannelConfig, type ChannelRegistryFile, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
+  type ChannelConfig, type ChannelRegistryFile, type ChannelRegistryRead, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
@@ -200,7 +200,7 @@ function seedReapplies(space: string, action: string, name: string | undefined, 
 export async function refuseUnknownChannel(name: string, values: Values, target: object, action: "members" | "remove"): Promise<void> {
   const reader = await connectOrThrow(values, "operator");
   const auth = reader.bearer ? { bearer: reader.bearer, sentinelCreds: reader.sentinelCreds } : { creds: reader.creds };
-  let registry: ChannelRegistryFile;
+  let registry: ChannelRegistryRead;
   try { registry = await readChannelRegistry({ servers: reader.server, space: reader.space, ...auth, directGet: !reader.bearer }); }
   catch (error) {
     if (isPublishPermissionDenied(error)) return;
@@ -234,26 +234,33 @@ function policyFields(config: ChannelConfig | undefined, defaults: ChannelRegist
   ];
 }
 
-function registryView(result: { action: string; name?: string; space: string; registry: ChannelRegistryFile }): Report {
+function registryView(result: { action: string; name?: string; space: string; registry: ChannelRegistryRead }): Report {
   const { registry, name } = result;
+  const bad = (key: string) => registry.undecodable?.find((entry) => entry.key === key);
   if (result.action === "show") {
     const config = Object.hasOwn(registry.channels ?? {}, name!) ? registry.channels![name!] : undefined;
+    const undecodable = bad(name!);
     return { sections: [
-      { title: `Channel · #${name}`, blocks: [{ kind: "fields", rows: [["Space", result.space], ["Metadata", config ? "configured" : "no saved entry"], ...policyFields(config, registry.defaults), ["Description", config?.description || "not set"]] }] },
+      { title: `Channel · #${name}`, blocks: [{ kind: "fields", rows: [["Space", result.space], ["Metadata", undecodable ? "not decoded" : config ? "configured" : "no saved entry"], ...policyFields(config, registry.defaults), ["Description", config?.description || "not set"]] }, ...(undecodable ? [{ kind: "lines" as const, lines: [{ text: `The saved entry does not decode (${undecodable.error}). The key was left as it is, and the channel resolves to the default policy.`, tone: "waiting" as const }] }] : [])] },
       ...(config?.instructions ? [{ title: "Instructions · advisory", blocks: [{ kind: "lines" as const, lines: config.instructions.split(/\r?\n/) }] }] : []),
       { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch members ${name}`, description: "Read broker-observed membership" }, { command: `cotal history ${name}`, description: "Read retained messages within your grant" }] }] },
     ] };
   }
-  if (result.action === "defaults") return { sections: [
-    { title: "Channel defaults", blocks: [{ kind: "fields", rows: [["Space", result.space], ...policyFields(registry.defaults, undefined)] }, { kind: "lines", lines: [{ text: "Per-channel settings override these defaults. Replay is not an access control.", tone: "hint" }] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ch defaults --replay --window 24h", description: "Set defaults for this space" }] }] },
-  ] };
+  if (result.action === "defaults") {
+    const undecodable = bad("=defaults");
+    return { sections: [
+      { title: "Channel defaults", blocks: [{ kind: "fields", rows: [["Space", result.space], ...(undecodable ? [["Saved entry", "not decoded"] as [string, string]] : []), ...policyFields(registry.defaults, undefined)] }, { kind: "lines", lines: [{ text: undecodable ? `The saved defaults do not decode (${undecodable.error}). The key was left as it is, and channels inherit the built-in policy.` : "Per-channel settings override these defaults. Replay is not an access control.", tone: undecodable ? "waiting" : "hint" }] }] },
+      { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ch defaults --replay --window 24h", description: "Set defaults for this space" }] }] },
+    ] };
+  }
   const entries = Object.entries(registry.channels ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  const undecodable = [...(registry.undecodable ?? [])].sort((a, b) => a.key.localeCompare(b.key));
   return { sections: [
     { title: `Channels · ${result.space}`, blocks: [entries.length ? {
       kind: "table", columns: [{ key: "name", label: "Channel" }, { key: "description", label: "Description" }, { key: "replay", label: "Replay" }, { key: "delivery", label: "Delivery" }],
       rows: entries.map(([channel, config]) => ({ name: { text: `#${channel}`, tone: "command" }, description: config.description ?? "not set", replay: `${effectiveReplay(config, registry.defaults) ? "on" : "off"}${config.replay === undefined ? " · default" : ""}`, delivery: effectiveDeliveryClass(config, registry.defaults) })),
     } : { kind: "lines", lines: ["No saved channel metadata."] }, { kind: "lines", lines: [{ text: "Configured entries only. Channels with traffic but no saved metadata are not included.", tone: "hint" }] }] },
+    ...(undecodable.length ? [{ title: "Not decoded", blocks: [{ kind: "table" as const, columns: [{ key: "key", label: "Key" }, { key: "error", label: "Error" }], rows: undecodable.map((entry) => ({ key: entry.key === "=defaults" ? "defaults" : `#${entry.key}`, error: entry.error })), }, { kind: "lines" as const, lines: [{ text: "These keys stay in the registry. Their channels resolve to the default policy until the value decodes.", tone: "hint" as const }] }] }] : []),
     { title: "Next", blocks: [{ kind: "commands", items: [
       { command: "cotal ch show <name>", description: "Read policy and advisory instructions" },
       { command: 'cotal ch set <name> --desc "…"', description: "Save channel metadata without changing access" },
