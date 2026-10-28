@@ -31,6 +31,7 @@ import {
   probeLiveness,
   probeWebReadiness,
   progressSignal,
+  readPidfile,
   readWebSession,
   removePidPair,
   userViewAuth,
@@ -1413,9 +1414,13 @@ export async function waitForDetachedWeb(
     if (spawnError) throw new Error(`web dashboard failed to start: ${spawnError.message}`);
     if (child.exitCode !== null || child.signalCode !== null || probeLiveness(pid) === "dead")
       throw new Error(`web dashboard exited before becoming ready (pid ${pid})`);
-    if (pidFileOwned(opts.pidPath, pid)) {
+    // Absent is "not claimed yet". A file that exists and cannot be read is not: treating that as
+    // absent waits out the whole window and then reports a timeout with no probe, over a dashboard
+    // that is up. `readPidfile` throws that error, naming the path.
+    const recorded = readPidfile(opts.pidPath);
+    if (recorded === String(pid)) {
       // The child writes its readiness nonce only after `listen()` succeeded, so an absent, empty or
-      // partial file simply means "not up yet" and the loop keeps waiting — exactly as it did
+      // partial file simply means "not up yet" and the loop keeps waiting, exactly as it did
       // before this surface required authentication. The probe is otherwise unchanged: a squatter on
       // the port still answers with its own space/pid and still fails the match below.
       const session = readWebSession(opts.sessionPath);
@@ -1456,11 +1461,6 @@ export async function terminateDetachedWeb(child: ChildProcess, pidPath: string)
     }
   }
   removePidPair(pidPath, String(pid));
-}
-
-function pidFileOwned(path: string, pid: number): boolean {
-  try { return readFileSync(path, "utf8").trim() === String(pid); }
-  catch { return false; }
 }
 
 async function waitForDeath(child: ChildProcess, pid: number, timeoutMs: number): Promise<boolean> {
