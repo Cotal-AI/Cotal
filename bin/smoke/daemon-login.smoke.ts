@@ -139,11 +139,15 @@ const secretKeys = (frames: Frame[]) => keysOf(frames).filter((k) => SECRET_KEYS
 // chooses it, as in daemon-endpoint.smoke.ts.
 const root = mkdtempSync(join(scratchParent, "cdl-"));
 chmodSync(root, 0o700);
+/** The Cotal home the CLI cells run with. A client reaches only the default daemon whose lifetime
+ *  lock sits in its own Cotal home, so every daemon here keeps its lock there, never in the home of
+ *  whoever runs this suite. Its session stays in its own `home`. */
+const cliHome = join(root, "cli-home");
 let n = 0;
 const fresh = () => {
   const rt = join(root, `rt${++n}`);
   const home = join(root, `home${n}`);
-  return { paths: daemonPaths({ XDG_RUNTIME_DIR: rt }), rt, home };
+  return { paths: daemonPaths({ XDG_RUNTIME_DIR: rt }, cliHome), rt, home };
 };
 const mkRuntime = async (rt: string) => { const { mkdirSync } = await import("node:fs"); mkdirSync(rt, { mode: 0o700 }); };
 
@@ -198,7 +202,7 @@ const sessionSaved = (home: string) => existsSync(join(home, "idp-sessions.json"
 /** `cotal daemon login --idp <idp> --json` through the composition root, against the daemon at `rt`. */
 async function runCli(rt: string, idp: string): Promise<{ status: number | null; out: string; err: string }> {
   const child = spawn(join(repo, "node_modules", ".bin", "tsx"), [join(repo, "bin", "cotal.ts"), "daemon", "login", "--idp", idp, "--json"], {
-    cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rt, COTAL_HOME: join(root, "cli-home"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
+    cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rt, COTAL_HOME: cliHome, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
   });
   const exited = new Promise<number | null>((r) => child.once("exit", (c) => r(c)));
   let out = "", err = "";
@@ -449,7 +453,7 @@ try {
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const child = spawn(join(repo, "node_modules", ".bin", "tsx"), [join(repo, "bin", "cotal.ts"), "daemon", "login", "--idp", base, "--json"], {
-        cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rt, COTAL_HOME: join(root, "cli-home"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
+        cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rt, COTAL_HOME: cliHome, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
       });
       const exited = new Promise<number | null>((r) => child.once("exit", (c) => r(c)));
       let out = "", err = "";
@@ -465,7 +469,7 @@ try {
       let doc: Record<string, unknown> = {};
       try { doc = JSON.parse(out) as Record<string, unknown>; } catch { /* reported below */ }
       check("L12 exit 0 with a signed-in result for the IdP subject", status === 0 && JSON.stringify(doc).includes(userId), { status, out: out.slice(0, 400), err: err.slice(0, 400) });
-      check("L12 the session landed in the DAEMON's session dir, not the CLI's COTAL_HOME", !!stored?.token && !existsSync(join(root, "cli-home", "idp-sessions.json")));
+      check("L12 the session landed in the DAEMON's session dir, not the CLI's COTAL_HOME", !!stored?.token && !existsSync(join(cliHome, "idp-sessions.json")));
       check("L12 neither stdout nor stderr carries the session token", !!stored?.token && !out.includes(stored.token) && !err.includes(stored.token));
     } finally { await d.close(); }
   });
