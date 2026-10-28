@@ -129,8 +129,9 @@ A space your own composition provisions, rather than `cotal up`, runs the same s
 - The flag refuses `USAGE_INVALID` when the backup directory exists or its parent does not, or with
   `-f` or `--restore`, and `LIFECYCLE_BLOCKED` while the stack runs or the root has a maintenance
   attempt to recover. It runs only on a broker that start launches, before any issuer.
-- A backup that does not match its stream's message count and last sequence means an issuer is
-  still writing. Nothing is deleted. Stop it and run the start again with a new backup directory.
+- A backup that does not match its stream's message count and last sequence, or a store that
+  changes between its backup and the deletes, means an issuer is still writing. Nothing is deleted.
+  Stop it and run the start again with a new backup directory.
 
 ### The backup
 
