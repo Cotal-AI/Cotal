@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.113.1
+
+### Patch Changes
+
+- 51d8642: `cotal down` attributes a recorded pid through the component's own command check, and it does that at one point. A record whose identity pin names another process start is refused and kept, for the delivery daemon and the manager alike. A record with no pin whose live command is not that component's is removed without a signal, and the two stops print one line for it.
+- Updated dependencies [14c4333]
+- Updated dependencies [51d8642]
+  - @cotal-ai/core@0.113.1
+  - @cotal-ai/workspace@0.113.1
+
 ## 0.113.0
 
 ### Minor Changes
