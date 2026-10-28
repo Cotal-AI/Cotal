@@ -89,9 +89,14 @@ export function resolveManifest(src: string, sourcePath: string): ResolvedManife
 
   if (issues.length) throw new ManifestError(sourcePath, issues);
 
+  const broker = raw.broker ? {
+    ...raw.broker,
+    ...(raw.broker.logFile !== undefined ? { logFile: isAbsolute(raw.broker.logFile) ? raw.broker.logFile : resolvePath(dirname(sourcePath), raw.broker.logFile) } : {}),
+  } : undefined;
+
   return {
     space: raw.space,
-    broker: raw.broker,
+    broker,
     runtime: raw.runtime,
     personaPermissions: raw.personaPermissions ?? "reject",
     defaults: raw.defaults,
@@ -288,6 +293,10 @@ function invertPolicy(name: string, channels: ResolvedChannel[]): AgentPolicy {
 function validateBroker(broker: NonNullable<RawManifest["broker"]>, add: (m: string, p?: (string | number)[]) => void): void {
   if (broker.host?.includes("://"))
     add(`broker.host is a bind address (e.g. 127.0.0.1), not a URL - drop the scheme`, ["broker", "host"]);
+  if (broker.logFile !== undefined && (!broker.logFile.trim() || /[\u0000-\u001f\u007f]/u.test(broker.logFile)))
+    add("broker.logFile must be a non-empty file path without control characters", ["broker", "logFile"]);
+  if (broker.logFile === undefined && (broker.logfileSizeLimit !== undefined || broker.logfileMaxNum !== undefined))
+    add("broker.logfileSizeLimit and broker.logfileMaxNum require broker.logFile", ["broker"]);
   if (broker.servers) for (const problem of serverUrlProblems(broker.servers, "broker.servers")) add(problem, ["broker", "servers"]);
   // `idp` pairs with user auth ONLY — on any other mode it would be silently ignored, and a
   // silently-ignored identity provider is exactly the kind of drift the no-fallback rule exists for.

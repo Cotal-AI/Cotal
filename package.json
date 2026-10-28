@@ -863,6 +863,7 @@
     "smoke:setup-pure:live": "pnpm --filter @cotal-ai/cli... build && tsx bin/smoke/setup-pure-live.smoke.ts",
     "smoke:up-control-plane-guidance:live": "tsx implementations/cli/smoke/up-control-plane-guidance.smoke.ts",
     "smoke:up-stack:live": "tsx bin/smoke/up-stack-live.smoke.ts",
+    "smoke:broker-logging:live": "tsx implementations/cli/smoke/broker-logging-live.smoke.ts",
     "smoke:stack-member-crash:live": "tsx implementations/cli/smoke/stack-member-crash-live.smoke.ts",
     "smoke:ext:live": "tsx bin/smoke/ext-live.smoke.ts",
     "smoke:seat-runtime-ext:live": "tsx bin/smoke/seat-runtime-ext-live.smoke.ts",

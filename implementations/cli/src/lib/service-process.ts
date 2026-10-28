@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync, type Stats } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { CommandFailure, assertRecordIdentity, shellPath, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, oneLine, targetErrorCode, workspaceErrorParts, type MeshTargetError, localRecordAccess, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { openPrivateAppend } from "@cotal-ai/core";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
 import { serviceInstallIntents } from "./service-install-intent.js";
 import { serviceUninstallIntents } from "./service-uninstall-intent.js";
@@ -624,6 +625,20 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "service preparation did not establish an accepted direct-child launch plan; no child was launched, and no provider or launch was retried", { target: instanceProjection(row) });
     }
     const path = serviceLogPath(value.space, id, true)!;
+    if (value.launch.type === "adapter" && value.launch.adapter === "nats-broker") {
+      let startupFd: number | undefined;
+      try { startupFd = openPrivateAppend(path); }
+      catch (error) { throw new CommandFailure("refused", "PERMISSION_DENIED", `the broker startup diagnostics log is not an owned private regular file: ${(error as Error).message}; no broker was launched`, { target: { path } }); }
+      finally { if (startupFd !== undefined) closeSync(startupFd); }
+    }
+    if (value.launch.type === "adapter" && value.launch.adapter === "nats-broker" && typeof value.launch.options.logFile === "string") {
+      const nativeLog = resolve(value.launch.options.logFile);
+      if (nativeLog === path) throw new CommandFailure("refused", "CONFLICT", "the native broker log must differ from this launch's private startup diagnostics log; no broker was launched", { target: { path } });
+      let nativeFd: number | undefined;
+      try { nativeFd = openPrivateAppend(nativeLog); }
+      catch (error) { throw new CommandFailure("refused", "PERMISSION_DENIED", `the native broker log is not an owned private regular file: ${(error as Error).message}; no broker was launched`, { target: { path: nativeLog } }); }
+      finally { if (nativeFd !== undefined) closeSync(nativeFd); }
+    }
     let log: number | undefined;
     // Where this launch's own log lines start, so a failure quotes this launch and not an earlier one.
     let logFrom: number | undefined;

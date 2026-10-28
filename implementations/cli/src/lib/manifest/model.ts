@@ -72,7 +72,15 @@ export interface ResolvedAgent {
 /** The fully resolved, validated manifest — channel-centric on disk, per-agent here. */
 export interface ResolvedManifest {
   space: string;
-  broker?: { servers?: string; host?: string; auth?: boolean | "static" | "user"; idp?: string };
+  broker?: {
+    servers?: string;
+    host?: string;
+    auth?: boolean | "static" | "user";
+    idp?: string;
+    logFile?: string;
+    logfileSizeLimit?: number;
+    logfileMaxNum?: number;
+  };
   runtime?: string;
   personaPermissions: PersonaPermissions;
   defaults?: ChannelDefaults;
