@@ -263,7 +263,9 @@ possible), and the callout connection closes last.
 **Acknowledgment.** After each reconcile pass has closed every lane its manifest does not name, the
 host writes `<manifest>.applied`, atomically, holding `{"version": 1, "sha256": "<hex>"}`: the
 SHA-256 of the manifest bytes that pass read. It states that every space that manifest does not name
-has no lane in this process. Opening is not part of it; a space's readiness is its own discovery
+has no lane in this process, and none can come up: an open the host left running past its deadline
+for a space the manifest no longer names holds the record back until it has settled and any lane it
+produced is closed. Opening is not part of it; a space's readiness is its own discovery
 file. The acknowledgment is written by `runSpaceHost` itself, so the full host, the callout host and
 the delivery host all write it with this one contract. A host that cannot write it at startup
 refuses before it opens any lane.

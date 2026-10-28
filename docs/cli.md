@@ -7683,9 +7683,12 @@ manifest bytes it applied, and is replaced through a rename. To stop serving one
 from every manifest that names it and wait until each host's `<manifest>.applied` names the manifest
 you wrote; from then on no lane for that space is left in those processes. A lane that does not
 confirm its close holds the acknowledgment back, and the host retries that close every 5 seconds
-without opening the space again until it does. A host writes it before
-it opens any lane at startup, and refuses to start when it cannot. A host whose last space you remove
-is stopped instead, since a manifest names at least one space.
+without opening the space again until it does. So does a space the manifest no longer names whose
+open is still running past its deadline: that open would come up as a lane after you were told
+there was none, so the host names the space and acknowledges nothing until the open has settled and
+any lane it brought up is closed. The other spaces keep opening and serving meanwhile. A host writes
+the file before it opens any lane at startup, and refuses to start when it cannot. A host whose last
+space you remove is stopped instead, since a manifest names at least one space.
 
 `--spaces` without `--callout-only` serves several spaces from one process as their full auth
 service, one lane each: the callout, the authority plane, the loopback exchange and JWKS, and the

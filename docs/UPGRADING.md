@@ -34,6 +34,35 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Multi-space host acknowledgments after 0.116.1
+
+Every multi-space host (`auth-service --spaces`, `auth-service --callout-only --spaces`,
+`deliver --spaces`) writes `<manifest>.applied` to say that every space the manifest does not name
+has no lane in that process. From 0.115.2 a space whose open outlived the pass deadline kept that
+open running outside the lane map, so a manifest that dropped such a space was acknowledged while
+its open was still pending. The open then settled, the host took the lane, and the next pass closed
+it. A writer that treats the acknowledgment as a fence, as Cotal Cloud does before it tears a tenant
+down, could see a lane come up for the space after it was told there was none.
+
+The host now holds the record for such a space until its open has settled and any lane it brought up
+is closed, the same way it already holds it for a lane whose close did not confirm. It names the
+space when it starts holding:
+
+```
+✗ delivery host: space(s) "<s>" left the manifest while still opening - acknowledging nothing until each open settles and any lane it opened is closed
+```
+
+### What changes for you
+
+- A removal you fence on can now take as long as that space's open does. There is no timeout and no
+  partial answer: the record names the manifest you wrote only once the removal is true. An operator
+  script that waited a fixed few seconds for `<manifest>.applied` and then proceeded was reading an
+  answer the host could not yet give; give it the time a hung open can take, or stop the host.
+- The other spaces are unaffected. They keep opening, serving and closing while one space's removal
+  is held, which the host's lane lines report as before.
+- A space the manifest still names does not hold anything back: a pending open only matters once the
+  manifest has dropped the space.
+
 ## Membership snapshot reads after 0.115.4
 
 `CotalEndpoint.readMembership()` now reads the membership feed with batched Direct Gets and binds

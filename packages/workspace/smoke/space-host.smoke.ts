@@ -10,7 +10,10 @@
  * serve, and is closed on a retry; the default startup refuses unless every space opens and closes
  * what it opened; a host that cannot write its acknowledgment refuses to start; an open that hangs
  * holds back neither the other spaces nor the ready line, is not started twice, and its late lane
- * is taken, or closed when its space has gone or the host refused.
+ * is taken, or closed when its space has gone or the host refused; a manifest that drops a space
+ * whose open is still running is acknowledged only once that open has settled and any lane it
+ * produced is closed, including when that open settles while the pass is inside another lane's
+ * close.
  *
  * Run: pnpm smoke:space-host
  */
@@ -43,9 +46,10 @@ const applied = (path: string): string | undefined => {
 type Event = { space: string; what: "open" | "open-failed" | "closed" | "close-rejected"; port?: number };
 const events: Event[] = [];
 const count = (space: string, what: Event["what"]) => events.filter((e) => e.space === space && e.what === what).length;
-/** Per space: how many opens to fail, how many closes to reject, how long a close takes, and a
- *  promise an open waits on before it returns (a hung open, released by the cell). */
-const faults = new Map<string, { openFailures?: number; closeRejections?: number; closeMs?: number; holdOpen?: Promise<void> }>();
+/** Per space: how many opens to fail, how many closes to reject, how long a close takes, a promise
+ *  an open waits on before it returns (a hung open, released by the cell), and a hook that runs once
+ *  as a close starts, which a cell uses to make something happen while the host awaits that close. */
+const faults = new Map<string, { openFailures?: number; closeRejections?: number; closeMs?: number; holdOpen?: Promise<void>; onClose?: () => void }>();
 /** How many times each space's open was entered, held ones included. */
 const starts = new Map<string, number>();
 const logLines: string[] = [];
@@ -70,6 +74,9 @@ const openStub = async (space: string, settings: { port: number }): Promise<Spac
       if (closed) return;
       // Read when the close runs: a cell sets a lane's close faults after the lane opened.
       const fc = faults.get(space) ?? {};
+      const hook = fc.onClose;
+      fc.onClose = undefined;
+      hook?.();
       if (fc.closeMs) await wait(fc.closeMs);
       if ((fc.closeRejections ?? 0) > 0) {
         fc.closeRejections!--;
@@ -185,16 +192,65 @@ try {
   check("the open that settles after its deadline is taken as that space's lane, opened once",
     await until(() => slowHost.lanes.has("h"), 3_000) && !slowHost.opening.has("h") && count("h", "open") === 1 && starts.get("h") === 1 && logLines.some((l) => l.includes('space "h" opened after its deadline')), events.slice(-3));
 
-  // ---- a late open for a space the manifest dropped meanwhile is closed ---------------------------------
+  // ---- a removal is not acknowledged while the removed space's open is still running (#5079) -----------
   let releaseJ!: () => void;
   faults.set("j", { holdOpen: new Promise<void>((r) => { releaseJ = r; }) });
   write(slow, entries({ h: 11, i: 13, j: 14 }));
   await until(() => logLines.some((l) => l.includes('space "j" did not open within 1s')), 5_000);
   const withoutJ = write(slow, entries({ h: 11, i: 13 }));
-  await until(() => applied(slow) === withoutJ, 5_000);
+  await wait(1_500);
+  check("a manifest that drops a space is not acknowledged while that space's open is still running",
+    applied(slow) !== withoutJ && slowHost.opening.has("j") && count("j", "open") === 0,
+    { applied: applied(slow), withoutJ, opening: [...slowHost.opening] });
+  check("the host said which dropped space's open holds the acknowledgment back",
+    logLines.some((l) => l.includes('space(s) "j" left the manifest while still opening')), logLines.slice(-3));
+  const withM = write(slow, entries({ h: 11, i: 13, m: 15 }));
+  check("another space still opens while a dropped space's pending open holds the acknowledgment",
+    await until(() => count("m", "open") === 1, 5_000) && (await wait(300), applied(slow) !== withM),
+    { applied: applied(slow), events: events.slice(-2) });
   releaseJ();
-  check("a lane that opens after its space left the manifest is closed by the next pass and never served",
-    await until(() => count("j", "closed") === 1, 5_000) && !slowHost.lanes.has("j") && count("j", "open") === 1, events.slice(-3));
+  let closedWhenApplied: boolean | undefined;
+  check("the manifest is acknowledged on the pass after the late lane closed, and that lane never served",
+    await until(() => { if (applied(slow) !== withM) return false; closedWhenApplied = count("j", "closed") === 1; return true; }, 8_000)
+    && closedWhenApplied === true && count("j", "open") === 1 && !slowHost.lanes.has("j") && !slowHost.opening.has("j"),
+    { closedWhenApplied, events: events.slice(-3) });
+
+  // ---- a dropped space whose late open fails releases the acknowledgment without the retry wait --------
+  let releaseN!: () => void;
+  faults.set("n", { holdOpen: new Promise<void>((r) => { releaseN = r; }), openFailures: 1 });
+  const withN = write(slow, entries({ h: 11, i: 13, m: 15, n: 16, o: 18 }));
+  await until(() => logLines.some((l) => l.includes('space "n" did not open within 1s')), 5_000);
+  check("a space the manifest still names holds back nothing while its open runs past the deadline",
+    await until(() => applied(slow) === withN, 5_000) && slowHost.opening.has("n") && slowHost.lanes.has("o"), { applied: applied(slow), opening: [...slowHost.opening] });
+  const withoutN = write(slow, entries({ h: 11, i: 13, m: 15, o: 18 }));
+  await wait(1_000);
+  check("a dropped space holds the acknowledgment back even when its open will fail",
+    applied(slow) !== withoutN && slowHost.opening.has("n"), { applied: applied(slow), opening: [...slowHost.opening] });
+  const releasedAt = Date.now();
+  releaseN();
+  const appliedAfterFail = await until(() => applied(slow) === withoutN, 8_000);
+  check("a late open that fails for a dropped space releases the acknowledgment without waiting out the retry, and the space is not opened again",
+    appliedAfterFail && Date.now() - releasedAt < 3_000 && count("n", "open-failed") === 1 && count("n", "open") === 0 && starts.get("n") === 1,
+    { ms: Date.now() - releasedAt, starts: starts.get("n"), events: events.slice(-2) });
+
+  // ---- an open that settles inside another lane's close is closed before anything is acknowledged -----
+  let releaseR!: () => void;
+  faults.set("r", { holdOpen: new Promise<void>((r) => { releaseR = r; }) });
+  write(slow, entries({ h: 11, i: 13, m: 15, o: 18, r: 19, u: 20 }));
+  await until(() => logLines.some((l) => l.includes('space "r" did not open within 1s')), 5_000);
+  check("the pass that drops two spaces starts with one open pending and the other lane up",
+    slowHost.opening.has("r") && slowHost.lanes.has("u"), { opening: [...slowHost.opening], lanes: [...slowHost.lanes.keys()] });
+  // u's close releases r's open, so the host takes r's lane while it is inside u's close, after the
+  // pass listed what it would close and after it read which spaces were still opening. r's own close
+  // is slow enough to be seen, so a pass that acknowledged before closing r would be caught here.
+  faults.set("u", { closeMs: 600, onClose: () => releaseR() });
+  faults.get("r")!.closeMs = 400;
+  const withoutRU = write(slow, entries({ h: 11, i: 13, m: 15, o: 18 }));
+  let bothClosedWhenApplied: boolean | undefined;
+  check("an open that settles inside another lane's close is closed before the manifest is acknowledged",
+    await until(() => { if (applied(slow) !== withoutRU) return false; bothClosedWhenApplied = count("r", "closed") === 1 && count("u", "closed") === 1; return true; }, 15_000)
+    && bothClosedWhenApplied === true && !slowHost.lanes.has("r") && !slowHost.opening.has("r") && count("r", "open") === 1 && starts.get("r") === 1,
+    { bothClosedWhenApplied, events: events.slice(-4) });
 
   // ---- the default startup refuses a hung open at the deadline ------------------------------------------
   const strictSlow = join(dir, "strict-slow.json");

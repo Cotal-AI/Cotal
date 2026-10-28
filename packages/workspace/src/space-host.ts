@@ -15,7 +15,10 @@
  *
  * Once a pass has closed every lane its manifest does not name, the host writes
  * `<manifest>.applied` naming the SHA-256 of the manifest bytes that pass read. A writer that
- * removes a space waits for that record to know the space has no lane left in this process.
+ * removes a space waits for that record to know the space has no lane left in this process. A space
+ * the manifest does not name whose open is still running holds that record back until the open has
+ * settled and any lane it produced is closed, because that open would otherwise become a lane after
+ * the writer was told there was none.
  */
 import { createHash } from "node:crypto";
 import { readFileSync, renameSync, watch, writeFileSync, type FSWatcher } from "node:fs";
@@ -26,8 +29,9 @@ import { basename, dirname, resolve } from "node:path";
 const REOPEN_WAIT_SECONDS = 5;
 
 /** How long a pass waits for one space's open. The lane opens of a pass run together, and an open
- *  that has not settled by then no longer holds the pass: the others are served, the ready line and
- *  the acknowledgment are written, and the lane is taken or closed when that open settles. */
+ *  that has not settled by then no longer holds the pass: the others are served, the ready line is
+ *  written, and the lane is taken or closed when that open settles. The acknowledgment is written
+ *  too while the manifest still names the space, and held back once it does not. */
 const OPEN_DEADLINE_SECONDS = 30;
 
 /** The backstop reconcile. A lost lane and a changed manifest each reconcile at once, so this only
@@ -216,8 +220,12 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
   };
 
   /** Opens that outlived their pass's deadline and have not settled. No second open starts for a
-   *  space here: the one pending is taken, or closed, when it settles. */
+   *  space here: the one pending is taken, or closed, when it settles. One whose space the manifest
+   *  no longer names holds back the acknowledgment until then. */
   const opening = new Set<string>();
+  /** The spaces the manifest the last pass read named. An open that settles after its deadline
+   *  reads it to tell a retry of a space still wanted from one the acknowledgment is waiting on. */
+  let wantedSpaces: ReadonlySet<string> = new Set<string>();
   const openDeadline = options.openDeadlineSeconds ?? OPEN_DEADLINE_SECONDS;
 
   const take = (lane: SpaceLane, settings: S): void => {
@@ -270,8 +278,14 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
       schedule(0);
     }, (e: unknown) => {
       opening.delete(space);
-      log(`✗ ${label}: space "${space}" could not be served (${e instanceof Error ? e.message : String(e)}) after its deadline - retrying in ${REOPEN_WAIT_SECONDS}s`);
-      schedule(REOPEN_WAIT_SECONDS);
+      const why = e instanceof Error ? e.message : String(e);
+      // A space the manifest dropped meanwhile opens no lane to retry, and its pending open was
+      // holding back the acknowledgment: that pass runs now rather than after the retry wait.
+      const wanted = wantedSpaces.has(space);
+      log(wanted
+        ? `✗ ${label}: space "${space}" could not be served (${why}) after its deadline - retrying in ${REOPEN_WAIT_SECONDS}s`
+        : `✗ ${label}: space "${space}" could not be served (${why}) after its deadline - it left the manifest meanwhile, so it is not opened again`);
+      schedule(wanted ? REOPEN_WAIT_SECONDS : 0);
     });
     return "pending";
   };
@@ -303,10 +317,15 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
   // ---- the acknowledgment ------------------------------------------------------------------------
   // Sound because passes are serialized and each reads the manifest afresh: a pass that read an
   // older manifest and is still opening a removed space is followed by one that closes it before
-  // it acknowledges, nothing opens a space except a pass whose own manifest names it, and no pass
-  // acknowledges while a lane whose close rejected may still serve.
+  // it acknowledges, nothing opens a space except a pass whose own manifest names it, no pass
+  // acknowledges while a lane whose close rejected may still serve, and no pass acknowledges while
+  // an open it left running past its deadline could still bring up a lane for a space the manifest
+  // does not name (#5079).
   const appliedPath = `${manifestPath}.applied`;
   let acknowledged: string | undefined;
+  /** The digest a pending open already held back, so the hold is reported once per manifest rather
+   *  than on every pass that finds it. */
+  let heldDigest: string | undefined;
   /** Record that every space the manifest with this digest does not name has no lane. Written
    *  through a sibling and a rename, so a reader never sees a partial record. */
   const acknowledge = (sha256: string): void => {
@@ -350,6 +369,10 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
         }
         const wanted = read.manifest;
         const want = new Set(wanted.spaces);
+        wantedSpaces = want;
+        // Taken before the closes below, so an open that settles while this pass runs is either
+        // still listed here or already a lane this pass's own close loop takes out (#5079).
+        const heldOpening = [...opening].filter((space) => !want.has(space));
         for (const [space, lane] of [...unclosed]) {
           if (stopping) continue;
           if (await closeLane(space, lane)) log(`${label}: space "${space}" closed its lane on a retry`);
@@ -367,13 +390,17 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
             : `${label}: space "${space}" left the manifest - closed its lane; ${lanes.size} lane(s) up`);
         }
         if (stopping) return;
-        if (unclosed.size === 0) {
+        if (unclosed.size === 0 && heldOpening.length === 0) {
           try {
             acknowledge(read.sha256);
           } catch (e) {
             log(`✗ ${label}: could not write ${appliedPath} (${e instanceof Error ? e.message : String(e)}) - a writer waiting on it keeps waiting; retrying on the next pass`);
           }
         } else {
+          if (heldOpening.length > 0 && heldDigest !== read.sha256) {
+            heldDigest = read.sha256;
+            log(`✗ ${label}: space(s) ${heldOpening.map((space) => JSON.stringify(space)).join(", ")} left the manifest while still opening - acknowledging nothing until each open settles and any lane it opened is closed`);
+          }
           schedule(REOPEN_WAIT_SECONDS);
         }
         await openWanted(wanted);
@@ -411,6 +438,7 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
   // A manifest that does not read whole refuses under either policy: there is no list to serve. The
   // acknowledgment is written before any lane opens, so a host that cannot write it refuses too.
   const initial = readManifestFile(manifestPath, options.settings);
+  wantedSpaces = new Set(initial.manifest.spaces);
   try {
     acknowledge(initial.sha256);
   } catch (e) {
