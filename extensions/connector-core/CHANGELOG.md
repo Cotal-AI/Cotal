@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.118.1
+
+### Patch Changes
+
+- 6a634a6: `handleGatewayRequest` accepts `selection`, so a hosted gateway's `cotal_connect` can take the channels, role and capabilities an agent asks for. The `cotal_connect` description now tells the agent to ask for what it already knows it needs in that first call.
+
 ## 0.118.0
 
 No changes in this release.
