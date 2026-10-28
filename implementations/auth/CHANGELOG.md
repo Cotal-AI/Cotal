@@ -1,5 +1,27 @@
 # @cotal-ai/auth
 
+## 0.116.0
+
+### Patch Changes
+
+- e61594c: `POST /interactive-lifecycle/retire`, `POST /managed-lifecycle/retire` and `POST /manager-service-authority/verify-enrollment` count a missing or wrong loopback capability in the same invalid-capability window as `POST /exchange`. The first 30 in a rolling minute answer 401 with the route's own reason, and a further one answers 429. Each refusal is logged. A correct capability is unchanged. The interactive retirement route still states `outcome: "not-executed"` on that refusal, because nothing was retired.
+- Updated dependencies [3c60b76]
+- Updated dependencies [2e7cdfd]
+- Updated dependencies [5b85487]
+- Updated dependencies [ff23d2d]
+- Updated dependencies [c19eaf9]
+- Updated dependencies [c8072d6]
+- Updated dependencies [726cd81]
+- Updated dependencies [352ee27]
+- Updated dependencies [cf3218f]
+- Updated dependencies [81a6062]
+- Updated dependencies [ff12daa]
+- Updated dependencies [fee5f39]
+- Updated dependencies [a8a49b7]
+  - @cotal-ai/core@0.116.0
+  - @cotal-ai/workspace@0.116.0
+  - @cotal-ai/lang@0.116.0
+
 ## 0.115.4
 
 ### Patch Changes
