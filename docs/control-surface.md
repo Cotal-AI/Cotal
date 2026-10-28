@@ -395,7 +395,9 @@ cleanly instead of throwing from the retry timer. The resolved command is never 
 readiness behavior.
 
 The describe and the contract store reads after it share the resolver's one deadline, so a slow
-store read fails the resolve with `deadline-exceeded` when that deadline expires. Cancelling a
+store read fails the resolve with `deadline-exceeded` when that deadline expires. `cotal invoke` passes its
+`--timeout` as that deadline (default 10000 ms) and gives the reply what the resolve leaves of it.
+`cotal describe` has no `--timeout` and passes 10000 ms. Cancelling a
 resolve settles a store read in flight instead of waiting for it to return. When one store read
 fails, the resolve fails with it and fetches no further command contracts; fetches already under
 way finish on their own.

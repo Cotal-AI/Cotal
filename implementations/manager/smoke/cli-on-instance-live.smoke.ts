@@ -56,6 +56,8 @@
  * an unpinned `spawn --detach` meet there: the code, the manager and host it names, and its Next.
  * Cell 12 adds a second manager whose catalog lacks a persona the first one has, and grades the
  * refusal of a spawn pinned to it: the manager, host and file it names, and the manager its Next pins.
+ * Cell 13 invokes an endpoint nothing serves with `--timeout 1000` and grades that the refusal comes
+ * within that deadline, with the same code, message and `--json` envelope.
  *
  * Mutation-proof target `cli-on-mint`: drop the instance from the mint (in
  * `packages/workspace/src/connect.ts`, force `pinned` to `undefined`) and cell 3's
@@ -693,6 +695,35 @@ try {
     nowhere.status === 2 && nowhereOut.includes(`no persona "nowhere" in the catalog of manager ${IID6} on host ${hostname()}`) &&
       nowhereOut.includes("nothing was launched; create that file on the manager's host, then run the spawn again") && !nowhereOut.includes("--config"),
     { status: nowhere.status, out: nowhereOut.slice(-900) });
+
+  // `--timeout` is one deadline for the call, the contract read included. Nothing serves `nosuch`, so
+  // its contract read is never answered and the refusal comes when the flag's 1000ms run out. The
+  // resolver used to wait a fixed 10s here whatever the flag said. The 5s bound leaves room for load.
+  console.log("\n13. invoke --timeout bounds the contract read of an endpoint nothing serves");
+  const unservedMessage = "no instance of nosuch answered its contract read, so nothing is serving it or none could be reached";
+  let startedAt = performance.now();
+  const unserved = await cotal(["invoke", "nosuch", "ping", "--timeout", "1000", "--space", space], root1);
+  const unservedMs = Math.round(performance.now() - startedAt);
+  mustHaveRun(unserved, "an invoke of an endpoint nothing serves");
+  const unservedOut = strip(unserved.out);
+  check("invoke nosuch ping --timeout 1000 is refused TARGET_UNAVAILABLE, exit 2, within 5s and with the same message",
+    unserved.status === 2 && unservedMs < 5000 && /Code:\s+TARGET_UNAVAILABLE/.test(unservedOut) && unservedOut.includes(unservedMessage),
+    { status: unserved.status, elapsedMs: unservedMs, out: unservedOut.slice(-900) });
+  startedAt = performance.now();
+  const unservedJson = await cotal(["invoke", "nosuch", "ping", "--timeout", "1000", "--space", space, "--json"], root1);
+  const unservedJsonMs = Math.round(performance.now() - startedAt);
+  mustHaveRun(unservedJson, "an invoke --json of an endpoint nothing serves");
+  let unservedEnv: { target?: { requestId?: unknown } } | undefined;
+  try { unservedEnv = JSON.parse(unservedJson.stdout); } catch { unservedEnv = undefined; }
+  const expectedEnv = {
+    schemaVersion: 1, command: "invoke", target: { space, endpoint: "nosuch", command: "ping", requestedInstanceId: null, requestId: "<id>", accepted: null },
+    outcome: "refused", completeness: "not-checked", result: null, warnings: [],
+    error: { code: "TARGET_UNAVAILABLE", message: unservedMessage, remedy: `start the service that serves nosuch, then run the command again; cotal service --space ${space} lists this space's services`, cause: { code: "deadline-exceeded" } },
+  };
+  check("...and its --json envelope keeps its shape, within 5s",
+    unservedJson.status === 2 && unservedJsonMs < 5000 && typeof unservedEnv?.target?.requestId === "string" &&
+      JSON.stringify({ ...unservedEnv, target: { ...unservedEnv.target, requestId: "<id>" } }) === JSON.stringify(expectedEnv),
+    { status: unservedJson.status, elapsedMs: unservedJsonMs, stdout: unservedJson.stdout.slice(-900) });
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 } finally {
