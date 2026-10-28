@@ -926,6 +926,21 @@ try {
     await new Promise<void>((resolve) => ackProxy.close(() => resolve()));
   }
 
+  // After JetStream disable/re-enable, nats-server 2.12.1 can delete an existing stream
+  // but reply 404. Restart only this owned broker so the publish-fault cells do not
+  // depend on that reload artifact. The same MCP session must rebind ready first.
+  jsBroker.kill("SIGTERM");
+  await awaitExit(jsBroker);
+  if (jsBroker.exitCode !== 0) throw new Error("the owned reload broker did not stop cleanly");
+  jsBroker = startBroker(jsConfig);
+  releases.push(teardownOnSignal(jsBroker, dir));
+  for (let i = 0; i < 80; i++) { if (await isReachable(jsServers)) break; await sleep(50); }
+  const publishRebind = await tool("cotal_reconnect");
+  const publishReady = await jsStatus();
+  if (publishRebind.isError || publishReady.state !== "ready") {
+    throw new Error(`the owned publish fixture did not rebind ready: ${JSON.stringify({ publishRebind, publishReady })}`);
+  }
+
   // A native stream fault leaves presence healthy. A missing PubAck cannot prove non-delivery:
   // the real DM below times out while its exact message remains readable from the broker.
   await setupSpaceStreams({ servers: jsServers, space: jsCfg.space });
