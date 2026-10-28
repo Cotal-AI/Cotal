@@ -1,5 +1,14 @@
 # @cotal-ai/core
 
+## 0.116.1
+
+### Patch Changes
+
+- 31cb8e5: Every place that decides whether a write lost its expected-last-sequence CAS now calls `isCasLoss`, which reads the JetStream error code (10071 or 10164) and never the message text. The `deprovisionAgent` purge path used to accept 10071 or any message containing "10071" or "wrong last sequence", and missed 10164. The auth session ledger kept its own copy that read an `api_error` field the JetStream client does not set, so it only worked through a message match. The create-only publishes for goal binds, work items, checkpoint settle facts, receipts and contract artifacts spelled the code pair inline.
+- c6be6dd: An anycast delivery now reaches `message` listeners with `toService` set to the role in its `svc` subject, and with any payload `to` or `channel` removed, as channel and DM deliveries already were. The payload's routing fields used to pass through unchecked, so a peer could publish to one role while the receiver saw another role, a DM addressed to it, or a channel post, for example in `cotal join` output and connector inbox frames.
+- 331ea96: Delete the presence and channel-registry watch consumers when an endpoint stops, when a silent presence watch is rebound, and when a manual reconnect retires a live connection, including a watch whose bind was still in flight at that moment. They used to stay on the broker for five minutes, so repeated starts and stops or a silent bucket piled up idle consumers on both KV streams.
+- b695d8a: A timer writer's `stop()` no longer waits out the 5 second poll window when it lands while the pump is still issuing a fetch or between two batches. The pump closes that fetch as soon as it is issued, so the delivery daemon no longer spends that window stopping a writer it has just started.
+
 ## 0.116.0
 
 ### Patch Changes
