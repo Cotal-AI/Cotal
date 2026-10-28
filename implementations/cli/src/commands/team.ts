@@ -548,7 +548,7 @@ async function bootTeam(file: string, values: TeamValues): Promise<void> {
   try { local = findMesh(space); waiting = findPreparedSpace(space); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the selected local registration or prepared-space record could not be read; no boot root was chosen", { target: { space } }); }
   if (local && local.origin !== "up") throw new CommandFailure("refused", "CONFLICT", "a remote, discovered or hand-registered space cannot become an owned fresh local boot target", { target: { space } });
-  if (!local && !waiting) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "prepare this space at an explicit local root before a fresh team boot; no current directory or machine home was guessed", { target: { space }, remedy: `cotal space create ${space} --root <project-directory>` });
+  if (!local && !waiting) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "prepare this space at an explicit local root before a fresh team boot; no current directory or machine home was guessed", { target: { space }, remedy: `cotal space create ${space} --root <project-directory>`, remedyIsCommand: true });
   if (local && waiting && canonicalRoot(local.root) !== canonicalRoot(waiting.root)) throw new CommandFailure("refused", "CONFLICT", "the registered and prepared records disagree on this space's root; no stack was started", { target: { space } });
   const root = canonicalRoot(waiting?.root ?? local!.root);
   // The service controller owns the fresh boot: the same exact members, journal and stop route as

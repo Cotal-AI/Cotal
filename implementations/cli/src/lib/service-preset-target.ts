@@ -108,7 +108,7 @@ export function resolvePresetService(space: string, root: string, requested: str
     // A definition that is not this preset's takes no preset options on its start line.
     if (!options.length) return undefined;
     const launch = exact.record.value.launch;
-    if (launch.type !== "adapter" || launch.adapter !== preset!.adapter) throw new CommandFailure("refused", "USAGE_INVALID", `${requested} is a saved service of your own, not the ${requested} preset; its options are fixed when it is added`, { target: { space, name: requested }, remedy: `cotal service start ${requested}` });
+    if (launch.type !== "adapter" || launch.adapter !== preset!.adapter) throw new CommandFailure("refused", "USAGE_INVALID", `${requested} is a saved service of your own, not the ${requested} preset; its options are fixed when it is added`, { target: { space, name: requested }, remedy: `cotal service start ${requested}`, remedyIsCommand: true });
     return redefine(space, root, preset!, exact, requested, options, values);
   }
   if (!preset) {

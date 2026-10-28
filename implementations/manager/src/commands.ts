@@ -1118,7 +1118,7 @@ function managerInvocation(args: ParsedArgs): { command: Command; args: ParsedAr
     if (Object.keys(parsed.values).some((key) => !["json", "plain"].includes(key))) throw new CommandFailure("refused", "USAGE_INVALID", "choose a manager command, such as manager start, before its options");
     return undefined;
   }
-  if (lifecycle.some((item) => item.name === mode)) throw new CommandFailure("refused", "UNSUPPORTED", `manager ${mode} runs through the cotal CLI's service controller, which this composition does not include`, { remedy: `cotal service ${mode} manager` });
+  if (lifecycle.some((item) => item.name === mode)) throw new CommandFailure("refused", "UNSUPPORTED", `manager ${mode} runs through the cotal CLI's service controller, which this composition does not include`, { remedy: `cotal service ${mode} manager`, remedyIsCommand: true });
   const child = maintenance.find((item) => item.name === mode);
   if (!child) throw new CommandFailure("refused", "USAGE_INVALID", `manager takes ${[...lifecycle, ...maintenance].map((item) => item.name).join(", ")}`);
   const index = parsed.positionalIndices?.[0];

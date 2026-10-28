@@ -192,6 +192,18 @@ for (const [remedy, command] of [
 }
 const heldNote = renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [{ text: heldSpaceNote({ space: "stoppedspace-1028", root: "/nonexistent-cotal-root", state: "stopped" }), tone: "hint" }] }] }] }, "plain", 80).split("\n");
 check("the stopped-space note keeps `cotal up` on one line at 80 columns", heldNote.length === 2 && heldNote[1] === "`cotal up`", heldNote);
+// A command wider than the line runs past it on one line. The exec-endpoint `next:` command and the
+// remedy of its refusal broke before `--handler <file>`; a remedy that starts with a command and goes
+// on as prose still wraps at its spaces.
+const wide = "cotal service add <name> --preset exec-endpoint --contract <file> --handler <file>";
+const wideNext = renderReport({ sections: [{ title: "Services", blocks: [{ kind: "table", columns: [{ key: "name", label: "Service" }, { key: "state", label: "State" }, { key: "next", label: "Next" }], rows: [{ name: { text: "exec-endpoint", tone: "command" }, state: "not started", next: { text: wide, tone: "command" } }] }] }] }, "plain", 80).split("\n");
+check(`an ${wide.length}-column next: command keeps one line at 80 columns`, wideNext.some((line) => line.trim() === wide) && wideNext.filter((line) => line.includes("--handler")).length === 1, wideNext);
+const wideRemedy = nextLines(wide);
+const commandRemedy = renderReport(commandFailureReport(new CommandFailure("refused", "USAGE_INVALID", "the exec-endpoint preset needs --contract, --handler", { remedy: wide, remedyIsCommand: true })), "plain", 80).split("\n");
+check(`a refusal whose remedy is one ${wide.length}-column command keeps it on one line under Next at 80 columns; the same text without remedyIsCommand wraps`,
+  commandRemedy.at(-1) === `  ${wide}` && commandRemedy.at(-2) === "Next" && !wideRemedy.some((line) => line.includes(wide)), { commandRemedy, wideRemedy });
+const prose = nextLines("cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid");
+check("a remedy that starts with a command and goes on as prose wraps at its spaces", prose.slice(prose.indexOf("Next") + 1).length > 1 && fits(prose.join("\n"), 80), prose);
 const longFields = { sections: [{ blocks: [{ kind: "fields" as const, rows: [["id", "x"], ["server", "nats://broker.example.com:4222 with a note that runs well past the line"]] as [string, string][] }] }] };
 const longField = renderReport(longFields, "plain", 60);
 check("a long field value fits the width", fits(longField, 60), longField);

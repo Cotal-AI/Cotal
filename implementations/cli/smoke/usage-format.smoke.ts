@@ -34,6 +34,9 @@
  * is refused naming it and that operation's flags and usage, without the help: `serve --json` says
  * serve has no --json or --plain output.
  *
+ * On an 80-column pty a command wider than the line keeps one line: the exec-endpoint `next:` of
+ * `cotal service` and the remedy of its `service add` refusal, which each broke onto a second line.
+ *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, with the
  * built `@cotal-ai/linear` extension imported for its cells. The examples census renders each help
  * in this process from the built surfaces the binary composes, and runs both help forms of each
@@ -50,6 +53,7 @@ import { findCommand, findSubcommand, parseCommandArgs, registry, type Command, 
 import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { displayWidth } from "@cotal-ai/workspace";
 import ts from "typescript";
+import { clean, nodePty } from "./_console-pty.js";
 
 const REPO = join(import.meta.dirname, "..", "..", "..");
 const BIN = join(REPO, "bin", "dist", "cotal.js");
@@ -152,6 +156,29 @@ for (const [args, usage, foreign] of [
 ] as const) {
   const r = run([...args]);
   check(`${args.join(" ")} prints the usage ${usage.trim()} and no other subcommand's options`, r.status === 0 && r.stdout.includes(`Usage\n  ${usage}`) && !foreign?.test(r.stdout), shown(r));
+}
+
+// On an 80-column terminal a command wider than the line keeps one line: the exec-endpoint `next:`
+// of `cotal service` broke before `--handler <file>`, and the remedy of its `service add` refusal
+// before `<file>`, in the refusal line and under `--plain` in its Next.
+{
+  const root = join(home, "wide-next");
+  mkdirSync(root);
+  const created = run(["space", "create", "widenext", "--root", root]);
+  const at80 = async (args: string[]): Promise<string[]> => {
+    let out = "";
+    const pty = nodePty([BIN, ...args], { cwd: neutral, env: env as Record<string, string>, cols: 80, rows: 200 });
+    pty.onData((data) => { out += data; });
+    await new Promise<void>((resolve) => pty.onExit(() => resolve()));
+    return clean(out).split(/\r?\n/);
+  };
+  const command = "cotal service add <name> --preset exec-endpoint --contract <file> --handler <file>";
+  const listed = await at80(["service", "--space", "widenext"]);
+  check(`cotal service on 80 columns keeps the ${command.length}-column exec-endpoint next: command on one line`, created.status === 0 && listed.some((line) => line.trim() === command), { created: shown(created), listed });
+  for (const flags of [[], ["--plain"]]) {
+    const refused = await at80(["service", "add", "myep", "--preset", "exec-endpoint", "--space", "widenext", ...flags]);
+    check(`the service add refusal on 80 columns${flags.length ? " under --plain" : ""} keeps its remedy command on one line`, refused.some((line) => line.trim() === command.replace("<name>", "myep")), refused.slice(0, 16));
+  }
 }
 
 // Every command and subcommand `cotal help` lists shows one to three examples, the most common use

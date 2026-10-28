@@ -351,7 +351,7 @@ function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command, wo
   if (report) writeSync(2, `${renderReport(commandFailureReport(failure), plain ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
   else {
     stderrLine("✗ ", oneLine(failure.message), c.red);
-    if (failure.remedy) stderrLine("  ", oneLine(failure.remedy), c.dim);
+    if (failure.remedy) stderrLine("  ", oneLine(failure.remedy), c.dim, failure.remedyIsCommand);
   }
   if (!cmd) return;
   if (report) console.error("");

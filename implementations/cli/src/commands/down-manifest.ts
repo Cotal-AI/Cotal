@@ -55,7 +55,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
     ledger = found.ledger; // loadLedger already validated the WHOLE ledger as untrusted input
   } catch (e) {
     stderrLine("✗ ", `${(e as Error).message}`, c.red);
-    if (isCommandFailure(e) && e.remedy) stderrLine("  ↳ ", e.remedy, c.dim);
+    if (isCommandFailure(e) && e.remedy) stderrLine("  ↳ ", e.remedy, c.dim, e.remedyIsCommand);
     process.exit(1);
   }
 
