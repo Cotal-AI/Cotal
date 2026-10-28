@@ -136,6 +136,27 @@ const reply = (who: { instanceId: string; epoch: number }, nonce: string, id: st
 
 console.log("describe REQUEST-BINDING (freelance HIGH #1):");
 
+// Class-only credentials select an attributed responder without using an instance subject.
+{
+  const nc = fakeNc((req) => [reply(ATTACKER, req.nonce, req.id), reply(HONEST, req.nonce, req.id)]);
+  const { responder } = await describeEndpoint(nc, SPACE, ENDPOINT, CALLER, { classInstanceId: HONEST.instanceId, deadlineMs: 1000 });
+  c("class responder selection ignores an earlier sibling reply", responder.instanceId === HONEST.instanceId);
+  await rejects("an absent class responder never falls back to a live sibling", () =>
+    describeEndpoint(fakeNc((req) => [reply(ATTACKER, req.nonce, req.id)]), SPACE, ENDPOINT, CALLER, { classInstanceId: HONEST.instanceId, deadlineMs: 100 }), "deadline-exceeded");
+  await rejects("class responder and instance route cannot be combined", () =>
+    describeEndpoint(fakeNc(() => { throw new Error("transport must not be touched"); }), SPACE, ENDPOINT, CALLER, { classInstanceId: HONEST.instanceId, instanceId: ATTACKER.instanceId }), "bad-request");
+  await rejects("an invalid class responder token refuses before transport", () =>
+    describeEndpoint(fakeNc(() => { throw new Error("transport must not be touched"); }), SPACE, ENDPOINT, CALLER, { classInstanceId: "bad.token" }));
+  const ep = new CotalEndpoint({ space: SPACE, lifecycleUid: CALLER.uid, card: { name: "selected-cache", kind: "agent" }, channels: [] });
+  const cached: ResolvedService = { endpoint: ENDPOINT, owner: "local", caller: CALLER, responder: ATTACKER, commands: new Map([["mutate", {} as never]]) };
+  const cache = new Map([[ENDPOINT, cached]]);
+  (ep as unknown as { nc: unknown }).nc = fakeNc(() => []);
+  (ep as unknown as { resolvedServices: Map<string, ResolvedService> }).resolvedServices = cache;
+  await rejects("class responder invoke bypasses a sibling's ordinary class cache", () =>
+    ep.invokeService(ENDPOINT, "mutate", undefined, { classInstanceId: HONEST.instanceId, deadlineMs: 100 }), "deadline-exceeded");
+  c("failed class responder selection leaves the ordinary class cache intact", cache.get(ENDPOINT) === cached);
+}
+
 // 1) An attacker reply on a DIFFERENT nonce (its own valid responder triple + a wrong request id)
 //    delivered BEFORE the honest one is IGNORED; describe binds to the honest responder.
 {
