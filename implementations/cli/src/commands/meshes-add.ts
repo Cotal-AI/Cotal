@@ -40,7 +40,7 @@ import {
 // The bundle validator and the pinned fetch live in the workspace package so a manager start can
 // run the same policy refresh a launch does. Re-exported here because registration is where the
 // CLI's callers and the consumer-contract smokes look for them.
-export { assertPinnedFetchUrl, checkUserBundle, pinnedFetch, pinnedFetchProbe, type Check, type UserBundle } from "@cotal-ai/workspace";
+export { assertPinnedFetchUrl, checkBundleDocument, checkUserBundle, pinnedFetch, pinnedFetchProbe, type Check, type UserBundle } from "@cotal-ai/workspace";
 
 /**
  * The rules behind `cotal meshes add`, as decisions rather than side effects.

@@ -51,7 +51,10 @@ export async function checkDiscoveryDocument(res: Response): Promise<Check<UserB
   return checkBundleDocument(doc);
 }
 
-function checkBundleDocument(parsed: unknown): Check<UserBundle> {
+/** The object checks {@link checkUserBundle} runs after it parses. Callers that already hold the
+ *  value use this directly: serialising it first turns an absent value into the not-JSON refusal,
+ *  which belongs only to text the caller asked this package to parse. */
+export function checkBundleDocument(parsed: unknown): Check<UserBundle> {
   const doc = parsed as Partial<UserBundle> & { userAuth?: unknown };
   if (doc === null || typeof doc !== "object") return bad("✗ the user-auth bundle must be a JSON object");
   if (typeof doc.space !== "string" || !doc.space) return bad("✗ the user-auth bundle names no space");

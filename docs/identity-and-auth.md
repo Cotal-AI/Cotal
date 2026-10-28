@@ -275,8 +275,11 @@ The catalog request carries the opaque cached session as its bearer and returns 
 }
 ```
 
-The client checks every `registration` with the same `checkUserBundle` validator used by `cotal
-meshes add`. One invalid entry refuses the whole candidate snapshot. Conditional refresh uses the
+The client checks every `registration` with `checkBundleDocument`, the object checks `checkUserBundle`
+runs after it parses a file for `cotal meshes add`. The catalog already holds the value, so it is not
+serialised back to text: a missing `registration` is a missing field, and the not-JSON sentence stays
+with a file or a discovery body that does not parse. One invalid entry refuses the whole candidate
+snapshot. Conditional refresh uses the
 catalog's `ETag`; a transport error, non-success response, or invalid candidate leaves the prior
 snapshot intact and reports the failure. Only a 401 response for the saved session recommends signing
 in again. Transport errors and server failures report that account's refresh error without discarding
