@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.116.3
+
+### Patch Changes
+
+- 1819877: Retain a published spawn request's goal id when the caller deadline ends before acceptance is observed. Report the submission as unknown with same-caller goal-result readback instead of a plain failed spawn, without resubmitting or changing persona numbering.
+
 ## 0.116.2
 
 No changes in this release.
