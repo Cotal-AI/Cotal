@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.121.1
+
+### Patch Changes
+
+- 44ff795: Name `cotal up` in backticks in the broker service schema's log file description.
+- 44ff795: `cotal invoke` and `cotal endpoint invoke` now give a Next when their deadline runs out after the endpoint contract read and before the command is published. That failure, "the <n>ms --timeout ran out before the command was published", had no remedy. It now names the same longer `--timeout` as the failure during the contract read, such as `cotal invoke manager ps --timeout 10000`, and `--json` carries it as `error.remedy`. The code stays `OPERATION_FAILED`.
+- Updated dependencies [44ff795]
+  - @cotal-ai/workspace@0.121.1
+  - @cotal-ai/core@0.121.1
+
 ## 0.121.0
 
 ### Minor Changes
