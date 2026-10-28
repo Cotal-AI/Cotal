@@ -4961,8 +4961,9 @@ A manager that fails while it starts writes one last line that names the cause:
 `the manager did not start`, then the failure's code and message, the error it wraps and its
 remedy. `start` fails `OPERATION_FAILED`, exit 5, and quotes that line, and
 `cotal service logs manager --instance <id>` shows it. With `--foreground` the line goes to this
-terminal, and the refusal says
-`its output went to this terminal and was not captured in its log` and names no log.
+terminal on stderr, after the `Mesh:` heading and lifetime notice that `start` prints there first,
+and the refusal says `its output went to this terminal and was not captured in its log` and names
+no log.
 
 `manager start` and `manager restart` run the first-run connector seed, as `cotal supervise` does,
 so a fresh machine or container has its connectors before the manager boots; `status`, `logs`,
@@ -9378,7 +9379,7 @@ replacement. `--dry-run` creates no instance and sends no process signal.
 
 `start --foreground` is an owned foreground process, not an attachable view. It rejects JSON and
 cannot adopt an already running background instance into the terminal. Before allocation it prints
-the terminal lifetime and output policy. Native auth and Linear presets use their installed signal
+the terminal lifetime and output policy on stderr. Native auth and Linear presets use their installed signal
 handlers through this same flow; neither endpoint readiness nor native cleanup is inferred from
 process exit. A foreground manager stops through the same request-bound native stop as
 `service stop`, keeping its agents: the SIGINT or SIGTERM the CLI receives is the confirmation.

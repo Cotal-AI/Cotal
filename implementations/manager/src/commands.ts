@@ -290,6 +290,10 @@ function foreignHostRefusal(space: string, root: string, server: string): Comman
   return new CommandFailure("refused", "PERMISSION_DENIED", `this folder holds no signer for user-auth space "${space}" (${root}), so no manager started`, { target: { space, root }, remedy: hostFolderStep(space, root, brokerAddressForDisplay(server) ?? "the broker") });
 }
 
+/** The next step for a native manager child whose startup did not confirm, in the words the
+ *  service controller uses for a native start it could not confirm. */
+const UNCONFIRMED_START = "inspect the original full instance and its launch request before another start";
+
 /** Run a manager daemon in this process (the long-lived supervisor), then block.
  *  `pty` ships with the manager; every other runtime needs a registered provider. The published
  *  CLI lazy-loads installed providers, while library roots import their integrations explicitly.
@@ -314,7 +318,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     if (execution === "none" && target.remoteUser)
       throw new Error("execution: none on supervise requires a genuine hosting user-auth root, not a participant registration");
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e });
+    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e, remedy: UNCONFIRMED_START });
     if (isWorkspaceTargetError(e)) throw managerTargetRefusal(e, v, managerRoot);
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
@@ -546,7 +550,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         },
       };
     } catch (e) {
-      if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm hosted authority preparation; it was not retried", { cause: e });
+      if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm hosted authority preparation; it was not retried", { cause: e, remedy: UNCONFIRMED_START });
       console.error(c.red(
         `✗ remote supervision for space "${space}" was refused: ${rejectionText(e)}. ` +
         `Foreground \`cotal spawn\` remains available; detached/managed agents require a live host-approved manager-service authority.`,
@@ -580,7 +584,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   try {
     eventsRequired = (await refreshRegistrationPolicy(target))?.events === "required";
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e });
+    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e, remedy: UNCONFIRMED_START });
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
@@ -600,7 +604,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   try {
     maxSessions = parsePositiveIntegerFlag("--max-sessions", v["max-sessions"]);
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e });
+    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e, remedy: UNCONFIRMED_START });
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
@@ -612,7 +616,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   try {
     seatCap = parseSeatCapFlag("--seat-cap", v["seat-cap"]) ?? readManagerSeatCap({ root: managerRoot, space });
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e });
+    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e, remedy: UNCONFIRMED_START });
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
@@ -622,7 +626,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   try {
     name = v.name !== undefined ? assertManagerName(v.name) : readManagerName({ root: managerRoot, space });
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e });
+    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e, remedy: UNCONFIRMED_START });
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
   }
@@ -653,7 +657,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       ...(service ? { workspaceRoot: managerRoot, onServiceIdentity: bindManagerServiceIdentity(service) } : {}),
     });
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e });
+    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e, remedy: UNCONFIRMED_START });
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }

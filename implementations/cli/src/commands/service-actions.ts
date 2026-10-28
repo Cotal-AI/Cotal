@@ -365,10 +365,11 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     writeResult(presentation, { command: commandName, target, result: { kind: "service-stop", ...result, originalIncarnationGone: true, impact: nativePlan ?? kernelPlan ?? null, cleanup: result.nativeStop?.cleanup ?? result.kernelStop?.cleanup ?? "not-checked" }, warnings: await readinessAddressSurvivors(space, [name]), noOp: stopped.noOp }, (row) => instanceView(row, stopped.noOp ? "Service was not running; nothing was stopped" : row.kernelStop ? "Original broker process exited" : "Service stopped"));
     return;
   }
-  if (values.foreground) console.log(renderReport({ space, sections: [{ title: "Foreground service lifetime", blocks: [
+  // A progress notice, on stderr with the child's own failure line and the refusal, so that stream reads in order.
+  if (values.foreground) console.error(renderReport({ space, sections: [{ title: "Foreground service lifetime", blocks: [
     { kind: "fields", rows: [["Definition", name], ["Space", space], ["Instance", selected?.name ?? "assigned once at launch"], ["Execution", "owned terminal-bound process; not a detachable view"], ["Output", "this terminal; not captured in the background log"]] },
     { kind: "lines", lines: ["Ctrl-C or terminal loss may end this process and its native in-process work. Controlled shutdown uses the selected process identity and declared stop policy. An external kill or interrupted startup is not a confirmed stop or proof of descendant, registration or authority cleanup."] },
-  ] }] }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stdout)));
+  ] }] }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr)));
   let started: Awaited<ReturnType<typeof startProcessService>>;
   if (mode === "restart") {
     const hold = store.pin(definition);
