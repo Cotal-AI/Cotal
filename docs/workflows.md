@@ -652,12 +652,15 @@ conclave cancelled on a losing branch is released by the same cancellation sweep
 checkpoint-plane pause per attempt, answered through `cotal run answer` as a checkpoint is, and
 tells the agent through the same relay `turn` uses: one relay per attempt under the attempt's own
 token, carrying the schema, the attempt count, the deadline and the previous refusal, which the
-seat's connector renders as the record wanted and the hosted command that answers it. The relay
+seat's connector renders as the record wanted and the native command that answers it. The relay
 names the ask's absolute deadline, so the manager stops serving an attempt at the instant its
-pause expires and refuses a relay already past it. When that
-literal command is run inside the managed seat, the CLI reuses the seat's lifecycle credential and
-issued caller identity rather than minting an operator instrument. The command
-does not take `--by`: the manager records the authenticated caller as the answerer. A spawned seat's
+pause expires and refuses a relay already past it. The seat calls `cotal_describe` for endpoint
+`manager`, then `cotal_invoke` with `endpoint: "manager"`, `command: "run-answer"`, `self: true`
+and `args` containing the relayed `runId`, `stepKey` and requested `value`. This uses the native
+connection's own identity even when the harness strips the shell's mesh environment. It needs no
+`run` grant or `run-status` read. Answer before ending the host turn. `cotal_yield` submits no
+answer value and can withdraw the pending relay that authorizes a baseline answer.
+The manager records the authenticated caller as the answerer. A spawned seat's
 baseline credential carries only the self-targeted `run-answer` row, and the manager accepts it only
 for the open ask or escalation relayed to that exact incarnation. It cannot answer another seat's
 ask, an unrelayed checkpoint, another run, or start and resume commands. An ask addresses

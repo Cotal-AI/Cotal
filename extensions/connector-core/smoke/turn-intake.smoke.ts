@@ -293,7 +293,13 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
     text.slice(0, 400));
   check("the previous refusal is shown, so the seat knows what to fix", text.includes('refused: "estimate" wants number'), text.slice(0, 400));
   check("the answer command is the hosted form the manager accepts: run, step, value, and no caller-chosen `--by`",
-    text.includes("cotal run answer r1 /ask:size#0 --value") && !text.includes("--by"), text.slice(0, 400));
+    !text.includes("cotal run answer") && text.includes("cotal_describe") && text.includes("cotal_invoke") && text.includes('command="run-answer", self=true')
+      && text.includes('"runId":"r1","stepKey":"/ask:size#0","value":<json record>') && !text.includes("--by"), text.slice(0, 400));
+  check("an ask names the baseline native route without a status read or run grant",
+    text.includes("needs no run grant or run-status read"), text);
+  check("an ask warns that yielding and ending the host turn submit no answer value",
+    text.includes("Do not use cotal_yield to answer this request") && text.includes("submits no value")
+      && text.includes("For ordinary turns"), text);
 }
 
 // ── 6b) an escalated checkpoint rides the same relay: the seat is shown the question it was asked ──
@@ -1464,7 +1470,7 @@ await spawn(
   }
 }
 
-const EXPECTED_CELLS = 54;
+const EXPECTED_CELLS = 56;
 const ran = pass + fail;
 console.log(`\nturn-intake.smoke: ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {
