@@ -4460,7 +4460,13 @@ Cotal does not invent an effective provider default it cannot observe. `ps` also
 facts per managed agent, because they answer different questions: the process fact from the manager's
 own runtime handle (`running` with its uptime, or `exited` with how long it ran), and the mesh fact
 from the roster (`idle` / `working` / `waiting` / `mesh offline`, or `not in roster` when the seat has
-no presence row at all: a seat that has not joined yet, or one that never did). When the seat's
+no presence row at all: a seat that has not joined yet, or one that never did).
+If the bounded launch wait elapsed without a join, `ps` prints
+`join degraded (readiness deadline elapsed)` and the manager's launch diagnosis. JSON carries
+`joinHealth: { state: "degraded", reason: <diagnosis> }`, separate from the unchanged process
+status. An observed join matching this seat's principal and lifecycle UID clears the diagnostic.
+The manager does not stop a seat because the wait elapsed.
+When the seat's
 connector relays a harness-reported condition, the mesh fact carries its code and how long it has
 held, so a seat whose turn died on a provider rate limit reads `waiting (rate_limit for 40m)` rather
 than a bare `waiting`, and `--json` carries the whole `condition` object. When the connector reports

@@ -168,6 +168,7 @@ type AgentRow = {
   status: string;
   uptimeMs: number;
   mesh: string;
+  joinHealth?: { state: "degraded"; reason: string };
   /** The harness-reported presence condition beside `mesh`; absent when none was reported. */
   condition?: { code: string; source?: string; message?: string; since?: number };
   /** Epoch ms of the seat's last reported work progress; absent when none was reported. */
@@ -228,7 +229,7 @@ function agentStatusProjection(row: AgentRow, managerInstanceId: string | null) 
       providerSource: row.provider ? exactPresence ? "exact-principal-lifecycle" : "name-match-unverified" : null, cwd: row.cwd ?? null,
       uptimeMs: row.uptimeMs, spawner: row.spawner ?? null, presenceView: row.meshView ?? null, presenceIdentityVerified: row.presenceIdentityVerified ?? null,
       presenceObservedAt: row.presenceObservedAt ?? null, offlineSince: row.offlineSince ?? null,
-      authHealth: row.authHealth ?? null, authReason: row.authReason ?? null, resume: row.resume ?? null },
+      authHealth: row.authHealth ?? null, authReason: row.authReason ?? null, joinHealth: row.joinHealth ?? null, resume: row.resume ?? null },
   };
 }
 
@@ -477,9 +478,11 @@ function silentManager(liveness: ScatterInstanceLiveness | undefined, instanceId
  *  on. A row from a manager that predates `meshView` carries no field and renders as before.
  *  An offline verdict says how long it has stood when the row carries `offlineSince` (#1208), so a
  *  seat that dropped a minute ago reads differently from one that dropped two days ago. */
-export function meshCell(r: Pick<AgentRow, "mesh" | "meshView" | "condition" | "activeAt" | "offlineSince">, now = Date.now()): Styled {
+export function meshCell(r: Pick<AgentRow, "mesh" | "meshView" | "condition" | "activeAt" | "offlineSince" | "joinHealth">, now = Date.now()): Styled {
   if (r.meshView === "stale") return { text: "mesh unknown (manager's presence view is stale)", tone: "waiting" };
   if (r.meshView === "unpopulated") return { text: "mesh unknown (manager's presence view not yet populated)", tone: "waiting" };
+  if (r.joinHealth?.state === "degraded")
+    return { text: "join degraded (readiness deadline elapsed)", tone: "failed" };
   // The harness-reported condition and the last work progress ride beside the status, as the roster
   // renders them (#618): a turn that died upstream 40m ago reads `waiting (rate_limit for 40m) ·
   // active 40m ago`, not a bare `waiting`, and a turn that stopped advancing shows the age of its
@@ -560,6 +563,8 @@ function seatBlocks(rows: readonly AgentRow[], wide: boolean): Block[] {
       }];
   const reasons = rows.filter((r) => r.authHealth && r.authReason).map((r): Cell => ({ text: `${peerLabel(r)}: ${r.authReason}`, tone: authTone(r) }));
   if (reasons.length) blocks.push({ kind: "lines", lines: reasons });
+  const joins = rows.filter((r) => r.joinHealth).map((r): Cell => ({ text: `${peerLabel(r)}: ${r.joinHealth!.reason}`, tone: "failed" }));
+  if (joins.length) blocks.push({ kind: "lines", lines: joins });
   return blocks;
 }
 
