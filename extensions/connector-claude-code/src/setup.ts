@@ -121,7 +121,7 @@ function claudeCommand(): string {
   const terminal = spawnSync("claude", ["--version"], { stdio: "ignore", timeout: 5_000, killSignal: "SIGKILL" });
   if (terminal.status === 0) return "claude";
   if ((terminal.error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT")
-    throw new Error("The installed Claude Code command could not run. Repair it before running cotal setup.");
+    throw new Error("The installed Claude Code command could not run. Repair it before running `cotal setup`.");
   const config = desktopConfigPath();
   const app = config ? dirname(config) : process.platform === "linux"
     ? join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "Claude")

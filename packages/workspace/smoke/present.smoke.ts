@@ -179,8 +179,12 @@ const bare = wrapWords("run cotal down --yes then cotal up", 24);
 check("a command outside backticks wraps at its spaces", JSON.stringify(bare) === JSON.stringify(["run cotal down --yes", "then cotal up"]), bare);
 const ticked = wrapWords("the restore left it stopped; start it with `cotal up --space restored-space` in its folder", 30);
 check("a command in backticks wraps as one word", JSON.stringify(ticked) === JSON.stringify(["the restore left it stopped;", "start it with", "`cotal up --space restored-space`", "in its folder"]), ticked);
+// A span in backticks is one word whatever it starts with, at the start of a line too, and one wider
+// than the line keeps a line of its own. This quote wrapped at its spaces.
 const quoted = wrapWords("it refuses with `this would migrate the machine-wide store` and stops", 30);
-check("a quote in backticks that is no command wraps at its spaces", JSON.stringify(quoted) === JSON.stringify(["it refuses with `this would", "migrate the machine-wide", "store` and stops"]), quoted);
+const leading = wrapWords("`systemctl --user show-environment` answers in a logged-in session", 30);
+check("a span in backticks that is no command wraps as one word, at the start of a line too",
+  JSON.stringify(quoted) === JSON.stringify(["it refuses with", "`this would migrate the machine-wide store`", "and stops"]) && JSON.stringify(leading) === JSON.stringify(["`systemctl --user show-environment`", "answers in a logged-in session"]), { quoted, leading });
 const usage = wrapWords("cotal up [--foreground|--detach] [--open] [--space <s>]", 40);
 check("a line that starts with a command, as a usage line does, wraps at its spaces", JSON.stringify(usage) === JSON.stringify(["cotal up [--foreground|--detach]", "[--open] [--space <s>]"]), usage);
 const listed = renderReport({ sections: [{ title: "Verdict", blocks: [{ kind: "commands", items: [{ command: `cotal reset store ${longName} --yes`, description: "Remove only this stopped store" }] }] }] }, "plain", 80).split("\n");
@@ -211,6 +215,11 @@ check(`a refusal whose remedy is one ${wide.length}-column command keeps it on o
   commandRemedy.at(-1) === `  ${wide}` && commandRemedy.at(-2) === "Next" && !wideRemedy.some((line) => line.includes(wide)), { commandRemedy, wideRemedy });
 const prose = nextLines("cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid");
 check("a remedy that starts with a command and goes on as prose wraps at its spaces", prose.slice(prose.indexOf("Next") + 1).length > 1 && fits(prose.join("\n"), 80), prose);
+// The daemon install refusal names `systemctl --user show-environment` in its message and its Next.
+// At 80 columns its Next split that span after `--user`.
+const systemctl = "`systemctl --user show-environment`";
+const unanswered = renderReport(commandFailureReport(new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the systemd user manager did not answer ${systemctl}; no unit directory was guessed`, { remedy: `run from a logged-in session whose XDG_RUNTIME_DIR is the user manager's runtime directory (systemd-logind sets it), where ${systemctl} answers` })), "plain", 80).split("\n");
+check(`a refusal at 80 columns keeps ${systemctl} whole in its message and in its Next`, unanswered.filter((line) => line.includes(systemctl)).length === 2 && fits(unanswered.join("\n"), 80), unanswered);
 // A stopped space's line names its last operation's command in backticks after other words, so at 80
 // columns, as `status` prints it, a 36-character space name leaves that command whole. It split after
 // `cotal`.

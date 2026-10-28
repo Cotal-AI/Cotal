@@ -36,6 +36,8 @@
  *
  * On an 80-column pty a command wider than the line keeps one line: the exec-endpoint `next:` of
  * `cotal service` and the remedy of its `service add` refusal, which each broke onto a second line.
+ * A span in backticks that is no command is one word too: the Next of `daemon install --dry-run`
+ * where no user manager answers split `systemctl --user show-environment` after `--user`.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, with the
  * built `@cotal-ai/linear` extension imported for its cells. The examples census renders each help
@@ -46,7 +48,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { findCommand, findSubcommand, parseCommandArgs, registry, type Command, type ParsedArgs, type Subcommand } from "@cotal-ai/core";
@@ -165,9 +167,9 @@ for (const [args, usage, foreign] of [
   const root = join(home, "wide-next");
   mkdirSync(root);
   const created = run(["space", "create", "widenext", "--root", root]);
-  const at80 = async (args: string[]): Promise<string[]> => {
+  const at80 = async (args: string[], ptyEnv: Record<string, string> = env as Record<string, string>): Promise<string[]> => {
     let out = "";
-    const pty = nodePty([BIN, ...args], { cwd: neutral, env: env as Record<string, string>, cols: 80, rows: 200 });
+    const pty = nodePty([BIN, ...args], { cwd: neutral, env: ptyEnv, cols: 80, rows: 200 });
     pty.onData((data) => { out += data; });
     await new Promise<void>((resolve) => pty.onExit(() => resolve()));
     return clean(out).split(/\r?\n/);
@@ -178,6 +180,20 @@ for (const [args, usage, foreign] of [
   for (const flags of [[], ["--plain"]]) {
     const refused = await at80(["service", "add", "myep", "--preset", "exec-endpoint", "--space", "widenext", ...flags]);
     check(`the service add refusal on 80 columns${flags.length ? " under --plain" : ""} keeps its remedy command on one line`, refused.some((line) => line.trim() === command.replace("<name>", "myep")), refused.slice(0, 16));
+  }
+  // A logged-in user with a private runtime directory and no session bus reaches no user manager, so
+  // the dry run refuses before it renders a unit. Its Next split the span after `--user`.
+  if (process.platform === "linux") {
+    const runtime = join(home, "no-user-manager");
+    mkdirSync(runtime, { mode: 0o700 });
+    const { DBUS_SESSION_BUS_ADDRESS: _bus, ...noBus } = env as Record<string, string>;
+    const span = "`systemctl --user show-environment`";
+    for (const flags of [[], ["--plain"]]) {
+      const refused = await at80(["daemon", "install", "--dry-run", ...flags], { ...noBus, USER: userInfo().username, LOGNAME: userInfo().username, XDG_RUNTIME_DIR: runtime });
+      const next = refused.slice(refused.indexOf("Next") + 1);
+      check(`the daemon install --dry-run refusal on 80 columns${flags.length ? " under --plain" : ""} keeps ${span} whole in its Next`,
+        refused.includes("Next") && next.some((line) => line.includes(`${span} answers`)) && refused.every((line) => displayWidth(line) <= 80), refused.slice(0, 16));
+    }
   }
 }
 
@@ -271,18 +287,21 @@ for (const [args, usage, foreign] of [
       lines.some((line) => line.includes("`cotal ps`") && displayWidth(line) <= 40) && text.split("cotal ps").length === text.split("`cotal ps`").length, lines);
   }
 
-  // Every string literal in the CLI and workspace sources that names a command after other words, as
-  // a remedy, a Next, a hint or a message does, writes it in backticks, so the renderer keeps it
-  // whole and --json carries the same text, and so does every option description a registered command
-  // declares, which its help prints. A command is `cotal` and a registered command name, or an
-  // interpolated one; `displayCmd()`, or a const bound to it, prints as `cotal`. Comments are not
-  // string literals, and a usage line or a literal that starts with its command is not a sentence
-  // naming one, unless that command is interpolated and words follow it: such a literal is a clause
-  // another sentence holds, as a last operation's "cotal up, with no recorded outcome" was. This file
-  // is not under the sources it reads.
+  // Every string literal in the shipped sources, under implementations/*/src, packages/*/src,
+  // extensions/*/src and bin, that names a command after other words, as a remedy, a Next, a hint or
+  // a message does, writes it in backticks, so the renderer keeps it whole and --json carries the same
+  // text, and so does every option description a registered command declares, which its help prints.
+  // A command is `cotal` and a registered command name, `linear` included, or an interpolated one;
+  // `displayCmd()`, or a const bound to it, prints as `cotal`. Comments are not string literals, and a
+  // usage line or a literal that starts with its command is not a sentence naming one, unless that
+  // command is interpolated and words follow it: such a literal is a clause another sentence holds, as
+  // a last operation's "cotal up, with no recorded outcome" was. The smoke-kit helpers ship nowhere,
+  // and this file is not under the sources it reads.
   {
+    await built("implementations/linear/dist/index.js");
     const names = new Set(registry.all<Command>("command").flatMap((cmd) => [cmd.name, ...(cmd.aliases ?? [])]));
-    // Literals that are code or a data value, or name cotal itself: a file and the literal's text.
+    // Literals that are code, a data value or a usage form, or name cotal itself or its config file:
+    // a file and the literal's text.
     const exempt: readonly (readonly [string, RegExp])[] = [
       ["implementations/cli/src/lib/completion-scripts.ts", /(?:)/], // shell completion scripts
       ["implementations/cli/src/lib/completion-install.ts", /^# (>>>|<<<) cotal completion (>>>|<<<)$/], // the startup-file markers
@@ -292,6 +311,10 @@ for (const [args, usage, foreign] of [
       ["implementations/cli/src/commands/status.ts", /^cotal \$\{\} {2}· {2}Node \$\{\}/], // cotal, the program, and its version
       ["implementations/cli/src/lib/nearest-word.ts", /^cotal \$\{\} has no subcommand /], // a refusal that starts with its command
       ["implementations/cli/src/commands/service-registry.ts", /^cotal up or cotal supervise$/], // startedBy, a data value
+      ["packages/core/src/connector-config.ts", /^modelPolicy\.\$\{\} in the cotal config$/], // the config file
+      ["extensions/connector-claude-code/src/setup.ts", /remove the heavy ones from the cotal config or spawn/],
+      ["implementations/auth/src/commands.ts", /^cotal \$\{\} grant <actor> --sub <IdP subject> --full {3}\(|^cotal \$\{\} revoke <actor> --sub <IdP subject>\|--owner <u_…>$/], // usage forms with alternatives
+      ["implementations/manager/src/commands.ts", /^use cotal endpoint deregister <class> <full-instance-id> \[--space <space>\] \[--yes\|--dry-run\], /],
     ];
     // Where `text` names a command after other words, or leads with an interpolated one that words
     // follow, outside backticks.
@@ -303,7 +326,8 @@ for (const [args, usage, foreign] of [
       const clause = word.startsWith("${}") && /[A-Za-z]/.test(text.slice(match.index + match[0].length).split("\n")[0]!.replace(/\$\{\}|--?[\w-]+|<[^>]*>|\[[^\]]*\]/g, ""));
       return !command || !(/[A-Za-z]/.test(line) || clause) || /(usage: |\| )$/.test(before) || (before.match(/`/g) ?? []).length % 2 === 1 ? [] : [match.index];
     });
-    const sources = spawnSync("git", ["ls-files", "--", "implementations/cli/src/*.ts", "packages/workspace/src/*.ts"], { cwd: REPO, encoding: "utf8" }).stdout.split("\n").filter(Boolean);
+    const roots = ["implementations/*/src", "packages/*/src", "extensions/*/src", "bin"];
+    const sources = spawnSync("git", ["ls-files", "--", ...roots.flatMap((root) => [`${root}/*.ts`, `${root}/*.tsx`]), ":(exclude)bin/smoke", ":(exclude)packages/smoke-kit"], { cwd: REPO, encoding: "utf8" }).stdout.split("\n").filter(Boolean);
     const offenders: string[] = [];
     for (const file of sources) {
       const source = readFileSync(join(REPO, file), "utf8");
@@ -325,7 +349,8 @@ for (const [args, usage, foreign] of [
     }
     const options = registry.all<Command>("command").flatMap((cmd) => (cmd.flags ?? []).map((flag) => [`cotal ${cmd.name} --${flag.name}`, flag.description ?? ""] as const));
     for (const [option, description] of options) for (const at of bare(description)) offenders.push(`${option}: ${JSON.stringify(description.slice(Math.max(0, at - 40), at + 40))}`);
-    check(`every source string literal and option description that names a command after other words writes it in backticks (${sources.length} files, ${options.length} options)`, sources.length > 100 && options.length > 300 && offenders.length === 0, offenders);
+    check(`every shipped source string literal and option description that names a command after other words writes it in backticks (${sources.length} files, ${options.length} options)`,
+      roots.every((root) => sources.some((file) => file.startsWith(`${root.split("/")[0]}/`))) && sources.length > 800 && options.length > 300 && offenders.length === 0, offenders);
   }
 
   // `cotal <path> --help` and `cotal help <path>` reach the help through two routes, the dispatcher's

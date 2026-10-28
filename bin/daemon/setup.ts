@@ -105,7 +105,7 @@ async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<
     // and do not quietly use the running daemon either, because it is not a persistent service.
     if (await daemonAnswers(opts)) {
       throw new CommandFailure("refused", "CONFLICT", `a daemon already answers ${opts.paths.socket} and no installed unit is recorded for it, so this would install a second one that its lifetime lock refuses; nothing was installed`, {
-        remedy: "stop that daemon and run this again, or keep it and run cotal daemon register and cotal daemon service-connect by hand",
+        remedy: "stop that daemon and run this again, or keep it and run `cotal daemon register` and `cotal daemon service-connect` by hand",
         native: { code: "RUNNING_WITHOUT_UNIT" },
       });
     }
@@ -223,8 +223,8 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
   if (!TERMINAL.has(end.state)) {
     throw new CommandFailure("partial", "OPERATION_PARTIAL", `${end.message}. The daemon is installed and running, and its registration request is sent`, {
       remedy: end.state === "approval-pending"
-        ? `ask the space owner to approve this machine, then run cotal daemon setup --space ${opts.space} again`
-        : `read cotal daemon service-status --space ${opts.space}, then run cotal daemon setup --space ${opts.space} again`,
+        ? `ask the space owner to approve this machine, then run \`cotal daemon setup --space ${opts.space}\` again`
+        : `read \`cotal daemon service-status --space ${opts.space}\`, then run \`cotal daemon setup --space ${opts.space}\` again`,
       native, target,
     });
   }
@@ -235,7 +235,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     : end.state === "conflict" ? "CONFLICT"
     : "PERMISSION_DENIED";
   throw new CommandFailure("refused", code, `${end.message}. The daemon is installed and running, and nothing is connected`, {
-    remedy: `read cotal daemon service-status --space ${opts.space}`,
+    remedy: `read \`cotal daemon service-status --space ${opts.space}\``,
     native, target,
   });
 }

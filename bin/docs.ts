@@ -165,7 +165,7 @@ function searchView(r: DocsSearchResult): Report {
   return {
     sections: r.hits.map((h) => ({
       title: h.heading,
-      blocks: [{ kind: "lines" as const, lines: [...h.text.split("\n"), { text: `read the full page: cotal docs ${h.slug}`, tone: "hint" as const }] }],
+      blocks: [{ kind: "lines" as const, lines: [...h.text.split("\n"), { text: `read the full page: \`cotal docs ${h.slug}\``, tone: "hint" as const }] }],
     })),
   };
 }

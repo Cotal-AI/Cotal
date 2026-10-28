@@ -380,7 +380,7 @@ try {
       await seat.start();
       await (seat as unknown as { pollTurns(): Promise<void> }).pollTurns();
       const surfaced = await until(async () => seat.peekPendingTurns(), 10_000);
-      const line = surfaced?.text.split("\n").find((s) => s.startsWith("Answer with: "))?.slice("Answer with: ".length);
+      const line = surfaced?.text.split("\n").find((s) => s.startsWith("Answer with: `") && s.endsWith("`"))?.slice("Answer with: `".length, -1);
       const command = line?.replace("'<json record>'", "'{\"estimate\":4}'");
       if (command !== undefined) {
         const parts = command.match(/(?:[^\s']+|'[^']*')+/g)?.map((p) => p.startsWith("'") ? p.slice(1, -1) : p) ?? [];

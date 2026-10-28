@@ -279,10 +279,10 @@ export const ROTATION_RENEWED_TTL_SEC = 30 * 24 * 60 * 60;
 /** The credential lifetime matrix. This is intentionally centralized so every new mint profile must classify its
  * credential-death behavior instead of silently inheriting non-expiring static creds. */
 export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePolicy> = {
-  agent: { class: "mixed", note: "manager children, foreground spawn/join, and cotal mint static outputs all use this profile; split or repair flow required before default exp" },
+  agent: { class: "mixed", note: "manager children, foreground spawn/join, and `cotal mint` static outputs all use this profile; split or repair flow required before default exp" },
   "manager-caller": { class: "mixed", note: "short-lived user-auth view bound to the bearer expiry and one manager instance" },
-  observer: { class: "static-operator-managed", note: "out-of-band dashboard/audit credential from cotal mint" },
-  admin: { class: "static-operator-managed", note: "out-of-band elevated dashboard/audit credential from cotal mint" },
+  observer: { class: "static-operator-managed", note: "out-of-band dashboard/audit credential from `cotal mint`" },
+  admin: { class: "static-operator-managed", note: "out-of-band elevated dashboard/audit credential from `cotal mint`" },
   supervisor: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's always-on endpoint; the manager holds the DATA seed and self-remints via the endpoint creds source" },
   delivery: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "server-side Plane-3 daemon; seed-less - the manager re-signs .cotal/delivery.creds for the SAME nkey, requests delivery-admin reloadCreds for explicit adoption, and the endpoint source re-read is only a backstop" },
   "membership-rw": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "membership feed writer; seed-less - the manager re-signs the membership-rw.creds store key for the SAME nkey, the feed adopts it on a 75% preflight-proven renewal timer (its active self-heal), and delivery-admin reloadCreds is the explicit adoption on top" },
@@ -317,7 +317,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "transfer-writer": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one carried resume per CLI call: one object's chunk and meta subjects in one instance's transfer bucket" },
   "transfer-reader": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one transcript-receive or sweep over the minting instance's own transfer bucket" },
   "endpoint-evictor": { class: "one-shot", defaultTtlSeconds: 60, note: "one re-registration's verify-evict window: a scoped delivery-admin caller that kicks+verifies the SUPERSEDED serve family before the epoch advances; 60s bounds a copied cred to a minute" },
-  "remote-manager": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "auth-service", note: "the scoped remote manager lifecycle: own lease/presence plus same-owner agent provisioning; issued only by the typed supervise protocol, never by cotal mint or a raw view/profile string" },
+  "remote-manager": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "auth-service", note: "the scoped remote manager lifecycle: own lease/presence plus same-owner agent provisioning; issued only by the typed supervise protocol, never by `cotal mint` or a raw view/profile string" },
   "environment-bootstrap": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one admitted environment's bootstrap caller; explicit expiry capped by admission and five minutes" },
   "environment-manager-supervisor": { class: "standing-renewable", renewalOwner: "environment-authority", note: "own lease/presence/liveness; explicit expiry capped by admission, no auth-store access" },
   "environment-manager-executor": { class: "standing-renewable", renewalOwner: "environment-authority", note: "own admitted authority instance RPC; explicit expiry capped by admission, no direct store access" },
