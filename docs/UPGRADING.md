@@ -61,6 +61,23 @@ once per replay with the marker. To stop paying the rescan, branch on `change.ty
 `heartbeat` into the last snapshot's `asOf`, ignore `replayed`, and read (or apply the record) on a
 `member` change. The stock dashboard, `cotal view` and `cotal channel members --follow` do this.
 
+## The Claude Code seat entry after 0.115.4
+
+The plugin's MCP server is launched through a new file, `dist/seat.cjs`, which enables Node's
+compile cache before loading the server bundle. Nothing migrates and nothing is recreated by hand.
+Two things are worth knowing before the first upgraded seat starts.
+
+Run `cotal setup` after upgrading, as the normal upgrade step. The installed plugin and the Claude
+Desktop entry both name the launched file, so a copy written by an older release still points at
+`dist/mcp.cjs`. That copy keeps working: it serves the same seat and pays the bundle's compile on
+every start. Until setup runs, `cotal status` reports the Desktop entry as stale.
+
+Each seat writes a compile cache under `~/.cotal/compile-cache`
+(`%LOCALAPPDATA%\Cotal\compile-cache` on Windows), which `COTAL_HOME` does not redirect. It holds
+under 1 MB per Node version and is safe to delete at any time. A host that gives its seats a
+read-only home gets one line on stderr per seat and seats that serve without a cache. To turn it off
+for a host, set `NODE_DISABLE_COMPILE_CACHE=1` in the seat's environment.
+
 ## Multi-space host lane opens after 0.115.2
 
 Every multi-space host (`auth-service --spaces`, `auth-service --callout-only --spaces`,

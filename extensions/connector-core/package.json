@@ -27,6 +27,10 @@
     "./relay": {
       "types": "./dist/relay.d.ts",
       "import": "./dist/relay.js"
+    },
+    "./seat-cache": {
+      "types": "./dist/seat-compile-cache.d.ts",
+      "import": "./dist/seat-compile-cache.js"
     }
   },
   "scripts": {

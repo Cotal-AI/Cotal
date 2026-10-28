@@ -379,11 +379,26 @@ async function startSession(
   return { name: config.name, close };
 }
 
-// The bundle is CommonJS: required by a host it only exports. Run from source (`tsx src/mcp.ts`)
-// it is an ES module, where `require` is undefined, and serves as before.
-if (typeof require === "undefined" || require.main === module) {
-  main().catch((e) => {
+/**
+ * Serve this process as a seat: {@link main} plus the one fatal handler a process entry owes its
+ * operator.
+ *
+ * Exported because `dist/seat.cjs` is the entry Claude Code launches, and it loads this bundle to
+ * get the compile cache in front of the compile (see `@cotal-ai/connector-core/seat-cache`). Loaded
+ * that way the bundle is not the main module, so the guard below cannot start it and the entry calls
+ * this instead. Both paths run the same body.
+ */
+export async function runClaudeSeat(): Promise<void> {
+  try {
+    await main();
+  } catch (e) {
     process.stderr.write(`[cotal-connector] fatal: ${(e as Error).stack ?? String(e)}\n`);
     process.exit(1);
-  });
+  }
 }
+
+// The bundle is CommonJS: required by a host it only exports. Run from source (`tsx src/mcp.ts`)
+// it is an ES module, where `require` is undefined, and serves as before. `node dist/mcp.cjs`
+// remains a working seat launch for a config written before `dist/seat.cjs` existed; it just pays
+// the compile every time.
+if (typeof require === "undefined" || require.main === module) void runClaudeSeat();

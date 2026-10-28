@@ -28,7 +28,7 @@ const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 type PluginEntry = Record<string, unknown>;
 
 /** What the `cotal` plugin carries from this package. */
-const COTAL_ASSETS = [".claude-plugin", ".mcp.json", "hooks", "monitors", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"] as const;
+const COTAL_ASSETS = [".claude-plugin", ".mcp.json", "hooks", "monitors", "dist/seat.cjs", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"] as const;
 
 /** The version the materialized `cotal` plugin carries: this release, then a digest of every file it
  *  holds, so `cotal status` can tell a copy an earlier release wrote. */
@@ -84,7 +84,7 @@ function pluginFiles(cotal: readonly string[]): Record<string, string> {
 function desktopEntry(cotal: readonly string[]): DesktopEntry {
   return {
     command: cotal[0]!,
-    args: [join(marketplaceDir(), "cotal", "dist", "mcp.cjs"), "--desktop"],
+    args: [join(marketplaceDir(), "cotal", "dist", "seat.cjs"), "--desktop"],
     ...(process.env.COTAL_HOME ? { env: { COTAL_HOME: process.env.COTAL_HOME } } : {}),
   };
 }
@@ -510,7 +510,7 @@ function desktopRow(signedIn?: SignedInSpace): ConnectorStatusRow | undefined {
   if (signedIn) return entry === undefined ? row("off", hostedConnector(signedIn)) : row("warn", `added, but Desktop ${hostedConnector(signedIn)}`);
   if (entry === undefined) return row("off", "not added · run `cotal setup`");
   const server = (entry as { args?: unknown }).args;
-  const expected = join(marketplaceDir(), "cotal", "dist", "mcp.cjs");
+  const expected = join(marketplaceDir(), "cotal", "dist", "seat.cjs");
   if (!Array.isArray(server) || server[0] !== expected || !existsSync(expected)) return row("warn", "stale · run `cotal setup`");
   return row("ok", "added");
 }
