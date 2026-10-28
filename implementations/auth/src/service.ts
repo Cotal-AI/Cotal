@@ -3360,10 +3360,12 @@ function notExecuted(e: unknown, code: EpErrorCode): EpEnvelopeError {
     : new EpEnvelopeError(code, e instanceof Error ? e.message : String(e), undefined, "not-executed");
 }
 
-/** A body the route refused to read keeps its status. Anything else reached a route catch, so it is a
- *  server fault: the client gets one fixed sentence, and the exception stays on the server log. */
+/** A body the route refused to read keeps its status, and a parser that classified the request
+ *  `bad-request` keeps that refusal. Anything else reached a route catch, so it is a server fault:
+ *  the client gets one fixed sentence, and the exception stays on the server log. */
 function sendRequestError(res: ServerResponse, e: unknown): void {
   if (e instanceof RequestBodyError) return send(res, e.status, { error: e.message });
+  if (e instanceof EpEnvelopeError && e.code === "bad-request") return send(res, 400, { error: e.message });
   console.error(`auth-service: a route failed: ${e instanceof Error ? e.stack ?? e.message : String(e)}`);
   send(res, 500, { error: "internal error" });
 }
