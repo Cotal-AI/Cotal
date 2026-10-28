@@ -408,7 +408,7 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Manager | [`run`](#run) | Operate durable workflow runs: start, resume, list, inspect, answer a checkpoint, check an edited program with migrate |
 | Manager | [`agent-bearer`](#plumbing) | Hidden from `cotal help`: plumbing that prints a fresh bearer for a spawned user-auth agent; you never run it directly |
 | Manager | [`auth-service`](#server-daemons) | Deprecated and hidden from `cotal help`: run a user-auth space's auth service by hand; use the `auth-service` service preset |
-| Manager | [`daemon`](#daemon) | Linux: serve the local machine daemon's control endpoint, read its status, sign it in, check and request its own registration with a space |
+| Manager | [`daemon`](#daemon) | Linux: install the local machine daemon as a user service, serve its control endpoint, read its status, sign it in, check and request its own registration with a space |
 | Services | [`service`](#service) | Run Cotal's built-in services and your own programs: list, add, start, stop, status, logs |
 | Services | [`manager`](#manager) | Start, stop and check the manager that runs your agents, and its maintenance |
 | Identity | [`mint`](#auth-mint) | Moved: credential minting is `cotal auth mint` |
@@ -5151,6 +5151,8 @@ condition.
 ## daemon
 
 ```bash
+cotal daemon install [--daemon-home <dir>] [--dry-run] [--json|--plain]
+cotal daemon uninstall [--daemon-home <dir>] [--yes|--dry-run] [--json|--plain]
 cotal daemon serve [--daemon-home <dir>] [--json|--plain]
 cotal daemon status [--daemon-home <dir>] [--json|--plain]
 cotal daemon login --idp <auth base URL> [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
@@ -5162,10 +5164,26 @@ cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
 
 This release serves a local endpoint for status, sign-in, a connection check, a registration request
-and the daemon's own service connection. It does not start a Manager, serve any command on its
-service, connect to Cloud, or install a system service. It supports Linux only. On other
+and the daemon's own service connection, and installs itself as a systemd user service. It does not
+start a Manager, serve any command on its service, or connect to Cloud. It supports Linux only. On other
 platforms, an unset `XDG_RUNTIME_DIR` produces
 `TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`); with it set, the platform check refuses `UNSUPPORTED`.
+
+`install` runs the daemon as a systemd user service. It writes one unit to the user manager's own
+configuration directory, enables it, and starts it. The unit starts at login, restarts the daemon
+when it dies, and keeps running after you log out, which on a headless server is what linger
+provides. `install` enables linger for the invoking user and says so in its receipt. A linger it
+cannot enable fails the install, naming `loginctl enable-linger <user>`, because a unit without it
+stops at logout. `uninstall` stops the service, disables autostart and removes the unit, and leaves
+linger enabled, because other user services may rely on it.
+
+The unit is `cotal-daemon.service`, or `cotal-daemon-<16 hex>.service` for a daemon with its own
+`--daemon-home`, derived from that directory as its socket is. `--dry-run` reports the unit name,
+path and the sha256 of the bytes it would write, and writes, enables and starts nothing. A second
+`install` for the same daemon refuses `CONFLICT` and names `cotal daemon uninstall`. Outside a
+terminal `uninstall` needs `--yes`. `uninstall` acts on the unit `install` recorded: a unit file
+that is gone refuses `TARGET_NOT_FOUND`, and one whose bytes changed refuses `CONFLICT`, with
+nothing removed either way.
 
 `serve` runs in the foreground and prints `daemon ready at <socket>` once the endpoint is bound
 and checked. That success line is plain text; `--json` shapes its refusals. `status` prints the
@@ -5179,13 +5197,19 @@ that is a symlink, not a directory, not owned by you, or not mode `0700`. `statu
 The daemon drops connections from other users. The kernel separates users, not processes of one
 user: any process running as you can use the local controls, including sign-in and cancellation.
 
-`status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`). `serve` refuses
-`CONFLICT` (`ALREADY_RUNNING`) for any existing socket, including one left after a crash, and
-`PERMISSION_DENIED` (`SOCKET_NOT_SOCKET`) for a non-socket entry. It removes neither.
+`status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`).
 SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SIGKILL or SIGHUP,
-including closing the terminal, leaves a stale socket. To recover, run `cotal daemon status`.
-If it reports `NOT_RUNNING`, confirm no daemon process is running, then remove the named socket
-path by hand and start again.
+including closing the terminal, leaves a stale socket, and the next `serve` recovers it by itself.
+
+That recovery rests on the lifetime lock below. Each `serve` holds a kernel `flock` on its lock
+file, which the kernel releases when the holder dies, SIGKILL included, and records the socket it
+publishes there by device and inode number. A `serve` that takes the lock therefore knows its
+predecessor is gone, and because publishing the socket needs the lock, nobody else can be putting
+one at that path while it holds it. It removes the one socket its own record names and binds its
+own. A `serve` whose state directory is unreadable, or which finds a socket its record does not
+name, removes nothing and refuses `CONFLICT` (`ALREADY_RUNNING`), naming the path. A clean shutdown
+clears the record, so a socket that appears at the path afterwards is refused the same way. A
+non-socket entry there refuses `PERMISSION_DENIED` (`SOCKET_NOT_SOCKET`) and is left alone.
 
 `--daemon-home <dir>` runs or reaches a separate daemon whose own state lives in `<dir>`: its
 sign-in session, its per-space identity, register request and service store, all at the paths
@@ -5197,10 +5221,10 @@ and cannot be the Cotal home. A relative path or the Cotal home refuses `USAGE_I
 directory `TARGET_NOT_FOUND`, and a symlinked, foreign or loose one `PERMISSION_DENIED`. Nothing is
 created or repaired.
 
-`serve` holds the lifetime lock `<dir>/daemon.lock` while it runs. A second `serve` for the same
-directory refuses `CONFLICT` (`LOCK_HELD`), naming the live holder. A start that fails for any other
-reason releases the lock again. A killed daemon leaves its socket behind, which still refuses
-`CONFLICT` (`ALREADY_RUNNING`) and is never removed, so recover as above. Every client command with
+`serve` holds the lifetime lock `<dir>/daemon.lock` while it runs. The default daemon holds the
+same lock at `<COTAL_HOME>/daemon/daemon.lock`. A second `serve` for the same daemon refuses
+`CONFLICT` (`LOCK_HELD`), naming the live holder and when it started. A start that fails for any
+other reason releases the lock again. Every client command with
 `--daemon-home` sends nothing unless the process at that socket is the lock's live owner (same pid
 and process start). Otherwise it refuses `PERMISSION_DENIED` (`PEER_NOT_LOCK_OWNER`).
 
@@ -5298,11 +5322,19 @@ While the daemon runs, the connection renews itself and reconnects on its own. T
 lives at most 60 seconds, so the broker drops the connection when each one expires and the daemon
 reconnects with the next. While the broker connection is down, for that reason or any other, the
 answer is `connecting`, not connected; it is connected again only after the broker is back and the
-space accepts the daemon as ready again. This is not a persistent service: a restarted daemon starts
-with no service connection and stays disconnected until you run `service-connect` again, and an
-ended connection is remembered only until the daemon stops.
+space accepts the daemon as ready again.
+
+A connection the space accepted is remembered across a restart. `service-connect` records that
+intent for the space once it is connected, and a starting daemon connects every space it has a
+record for, so the connections it held before a crash come back with nothing to run. The records
+are at `<COTAL_HOME>/daemon/<space segment>/service-connect.json`, mode `0600`. A connect that
+never reached connected records nothing, so a space that refuses is not retried at every start.
+The resume runs after the local endpoint is published, so a space that is slow or unreachable does
+not delay `status`, and `service-status` reports what each one actually reached. An ended
+connection is remembered only until the daemon stops.
 `service-status` reads the daemon's current answer without contacting the space. `service-disconnect`
-drains the responder and closes the connection, and stopping the daemon closes all of them.
+drains the responder and closes the connection, removes that space's resume record so the
+disconnect outlives a restart, and stopping the daemon closes all of them without removing a record.
 
 The service answers its existing `machine-status` command with `null`. This is a liveness response;
 it contains no vitals, hostname or machine metadata. Its stock Describe answer is explicitly public:

@@ -17,6 +17,12 @@
  *   or close). Either going down withdraws `connected` at once, as `connecting`; it is claimed again
  *   only after the broker is back and the space answers a fresh `ready`.
  *
+ * A connection that reached `connected` records that intent at
+ * `<COTAL_HOME>/daemon/<space segment>/service-connect.json`, and `service-disconnect` removes it.
+ * A restarted daemon reads those records and connects each space again, so the connections it held
+ * before a crash come back without anyone running `service-connect`. Only a connection the space
+ * accepted is recorded, so a refused space is not retried on every start.
+ *
  * The stock guest seam verifies each pulled credential against the registered authority's issuer
  * and keys and this daemon's embedded closure. Each opened transport binds the existing void
  * `machine-status` responder before ready. Its public descriptor includes the endpoint, derived
@@ -24,13 +30,14 @@
  * or provider text leaves this module; every message is fixed text.
  */
 import { join } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import {
   CotalEndpoint, authorizeGuestServeGrant, compileContract, resolveAuthProvider, serveAuthenticityOf, serveEndpoint,
   ServiceAuthorityTransportError, serviceWitnessDigest, VOID_SCHEMA,
   type EpServeGrant, type EpServeHandle, type SecretStore, type ServiceEndpointRenewal, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
+import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { FsSecretStore, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { DAEMON_REGISTRATION, daemonRegisterFile, daemonWitness } from "./register.js";
 import type { RegisterResult, ServiceConnectionResult, ServiceConnectionState } from "./protocol.js";
@@ -108,8 +115,27 @@ export interface ServiceConnections {
   connect(space: string): Promise<ServiceConnectionResult>;
   disconnect(space: string): Promise<ServiceConnectionResult>;
   status(space: string): ServiceConnectionResult;
+  /** Connect every space with a recorded intent. Resolves with the spaces that reached `connected`. */
+  resume(): Promise<readonly string[]>;
   /** Close every connection, source and endpoint. Used at daemon shutdown. */
   close(): Promise<void>;
+}
+
+/** Where a space's connect intent is recorded, beside its register request. */
+export function daemonConnectIntentFile(space: string, home: string = homeCotalDir()): string {
+  return join(home, "daemon", spaceSegment(space), "service-connect.json");
+}
+
+/** The space a recorded intent names, or undefined when the record is not one this module wrote. */
+function intentSpace(path: string): string | undefined {
+  let o: unknown;
+  try { o = JSON.parse(readFileSync(path, "utf8")); } catch { return undefined; }
+  if (!o || typeof o !== "object") return undefined;
+  const r = o as Record<string, unknown>;
+  if (r.v !== 1 || typeof r.space !== "string" || !r.space) return undefined;
+  // The segment is derived from the name, so a record whose name does not round-trip to the
+  // directory it sits in was not written for this space and is ignored rather than acted on.
+  return daemonConnectIntentFile(r.space, join(path, "..", "..", "..")) === path ? r.space : undefined;
 }
 
 export function createServiceConnections(home: string = homeCotalDir()): ServiceConnections {
@@ -290,14 +316,42 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     return result(space);
   }
 
+  /** Record or forget this space's connect intent. A store failure never changes the connection's
+   *  own reported state: it is reported as a resume that will not happen, not as a failed connect. */
+  const remember = (space: string): void => {
+    const path = daemonConnectIntentFile(space, home);
+    mkSecretDir(join(path, ".."));
+    writeSecretFile(path, `${JSON.stringify({ v: 1, space })}\n`);
+  };
+  const forget = (space: string): void => {
+    rmSync(daemonConnectIntentFile(space, home), { force: true });
+  };
+
   return {
-    connect: (space) => serial(space, () => connectOnce(space)),
+    connect: (space) => serial(space, async () => {
+      const r = await connectOnce(space);
+      if (r.state === "connected") { try { remember(space); } catch { /* the connection is up either way */ } }
+      return r;
+    }),
     disconnect: (space) => serial(space, async () => {
       const l = live.get(space);
       if (l) { await teardown(l); live.delete(space); }
+      // A disconnect is explicit, so it must outlive a restart: forget the intent before answering.
+      forget(space);
       return { space, state: "disconnected", message: SENTENCE.disconnected };
     }),
     status: (space) => result(space),
+    async resume() {
+      let entries: string[];
+      try { entries = readdirSync(join(home, "daemon")); } catch { return []; }
+      const spaces: string[] = [];
+      for (const entry of entries) {
+        const space = intentSpace(join(home, "daemon", entry, "service-connect.json"));
+        if (space !== undefined) spaces.push(space);
+      }
+      const settled = await Promise.all(spaces.map((space) => serial(space, () => connectOnce(space))));
+      return settled.filter((r) => r.state === "connected").map((r) => r.space);
+    },
     async close() {
       closed = true;
       await Promise.all([...live.values()].map((l) => teardown(l)));

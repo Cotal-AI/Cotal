@@ -8,9 +8,10 @@
  */
 import { connect as netConnect, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
-import { inspectLock, processStartToken } from "@cotal-ai/core";
+import { processStartToken } from "@cotal-ai/core";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, assertLinux, checkDir, checkSocket, type DaemonPaths, type PeerPid, type PeerUid } from "./endpoint.js";
 import { encode, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type LoginPrompt, type LoginResult, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
+import { readLifetimeRecord } from "./lifetime.js";
 
 /** Ask the daemon whether it could register with `space`. Nothing is registered either way. */
 export async function connectCheckViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid"> & { readonly space: string }): Promise<
@@ -167,13 +168,14 @@ async function openVerified(opts: Pick<QueryOptions, "paths" | "peerUid" | "peer
     sock.destroy();
     throw new EndpointRefusal("PEER_UID_MISMATCH", `the process answering at ${paths.socket} runs as uid ${peer}, not ${uid}; nothing was sent`);
   }
-  if (paths.lock !== undefined) {
-    // Same uid is not enough for an explicit daemon home: the answering process must be the one
-    // holding that home's lifetime lock, the same process (pid and start token) the lock recorded.
+  // Same uid is not enough: the answering process must be the one holding this daemon's lifetime
+  // lock, the same process (pid and process-start token) that lock's record names. The record is
+  // read, never the lock itself, because taking the lock to test it would refuse a legitimate
+  // start. The record is written only under the lock and cleared on a clean release.
+  {
     let pid: number | undefined;
     try { pid = opts.peerPid!(sock); } catch { pid = undefined; }
-    const held = inspectLock(paths.lock);
-    const owner = held.state === "active" ? held.owner : undefined;
+    const owner = readLifetimeRecord(paths.lock);
     if (pid === undefined || owner === undefined || owner.pid !== pid || owner.start === undefined || processStartToken(pid) !== owner.start) {
       sock.destroy();
       throw new EndpointRefusal("PEER_NOT_LOCK_OWNER", `the process answering at ${paths.socket} is not the daemon holding ${paths.lock}; nothing was sent`);

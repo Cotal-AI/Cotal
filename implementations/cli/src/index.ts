@@ -902,4 +902,9 @@ export { updateFlags } from "./commands/update.js";
 // The launch-client timeout + the manifest launch client, for the same smoke: every launch door
 // must outlive the manager's readiness wait (#159 B1).
 export { START_TIMEOUT_MS } from "./lib/control.js";
+// The owned systemd user-unit primitives the machine daemon's own install reuses, so there is one
+// mechanism for writing, registering and reading this CLI's units rather than two.
+export { daemonArgv } from "./lib/self-exec.js";
+export { assertSystemdSource, createSystemdSource } from "./lib/service-systemd-files.js";
+export { submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "./lib/service-systemd.js";
 export { launchAgent } from "./lib/manifest/live.js";
