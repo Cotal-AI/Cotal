@@ -51,6 +51,7 @@ import {
   isJetStreamMissing,
   seedChannelRegistry,
   ensureDefaultDeliveryClass,
+  UndecodableRegistryEntry,
   assertValidChannel,
   isConcreteChannel,
   validateChannelConfig,
@@ -4790,19 +4791,25 @@ async function postStart(
       throw new CommandFailure("refused", "CONFLICT", error.message, { target: { space, store: error.bucket }, remedy: `stop every other issuer and resolver of space ${space}, then add --recreate-issued-stores <backup-dir> to the cotal up that starts it` });
     throw error;
   }
-  if (seedFile) {
-    await seedChannelRegistry({ servers: server, space, creds: setup?.creds, file: seedFile });
+  try {
+    if (seedFile) {
+      await seedChannelRegistry({ servers: server, space, creds: setup?.creds, file: seedFile });
+    }
+    // SPEC §4: `defaults.deliveryClass` MUST be written at space creation so the effective default is
+    // discoverable on the wire, never inferred from the `?? "durable"` resolution fallback. Auth mode
+    // (`setup` present ⇒ the delivery daemon is up) is local/self-hosted ⇒ `durable`; open mode has no
+    // daemon and is live-only ⇒ `live`. Runs after the seed so an explicit `channels.json` default wins.
+    // A key that does not decode is not replaced by either write.
+    await ensureDefaultDeliveryClass({
+      servers: server,
+      space,
+      creds: setup?.creds,
+      deliveryClass: setup ? "durable" : "live",
+    });
+  } catch (error) {
+    if (!(error instanceof UndecodableRegistryEntry)) throw error;
+    throw new CommandFailure("refused", "CONFLICT", error.message, { target: { space }, remedy: "read the key and replace the value; the bytes were left as they are" });
   }
-  // SPEC §4: `defaults.deliveryClass` MUST be written at space creation so the effective default is
-  // discoverable on the wire, never inferred from the `?? "durable"` resolution fallback. Auth mode
-  // (`setup` present ⇒ the delivery daemon is up) is local/self-hosted ⇒ `durable`; open mode has no
-  // daemon and is live-only ⇒ `live`. Runs after the seed so an explicit `channels.json` default wins.
-  await ensureDefaultDeliveryClass({
-    servers: server,
-    space,
-    creds: setup?.creds,
-    deliveryClass: setup ? "durable" : "live",
-  });
 }
 
 /** `--recreate-issued-stores`: on the broker this boot just started, before any issuer or resolver

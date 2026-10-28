@@ -1449,9 +1449,13 @@ name, as `channel set` takes it, and its object takes those three fields plus `d
 registry, and fields the file leaves out keep their values. Any other key, a wildcard or invalid
 channel name, or an invalid value refuses `SCHEMA_INVALID` before anything starts, naming the file
 and the entry. A default file that is invalid refuses the same way, with a remedy to fix or remove
-it. A manifest start (`-f`) seeds from the manifest's own channels instead. Because the next start
-writes the default file's values back, a `channel set` or `channel defaults` of a field that file
-sets, and a `channel remove` of a channel it names, warn `CHANNEL_SEED_REAPPLIES` and name the file.
+it. A manifest start (`-f`) seeds from the manifest's own channels instead. A start also writes the
+space's default delivery class when the defaults key has none. When that key holds a value that
+does not decode, the start refuses with `CONFLICT` and leaves those bytes as they are, including
+when the channel seed would otherwise write that key. A defaults value that decodes but names no
+delivery class is still filled. Because the next start writes the default file's values back, a
+`channel set` or `channel defaults` of a field that file sets, and a `channel remove` of a
+channel it names, warn `CHANNEL_SEED_REAPPLIES` and name the file.
 
 ## down
 
@@ -6044,7 +6048,12 @@ cotal channel remove <name> [--purge] [--yes]
 ```
 
 `channel` has the shorthand `ch`; `remove` also accepts `rm`. The inventory shows configured
-metadata, not every channel with traffic. `show` includes inherited replay and delivery settings.
+metadata, not every channel with traffic. A saved entry whose value does not decode is listed
+under `Not decoded` with its key and the decode error, and the key is left in the registry. Its
+channel resolves to the default policy, as an endpoint's registry watch does. `show` of that
+channel and `defaults` when the defaults key does not decode say the same. A `set` or `defaults`
+that would write such a key refuses with `CONFLICT` and leaves the bytes as they are. `remove`
+of that key removes the entry. `show` includes inherited replay and delivery settings.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. With `--follow --json`, it emits membership NDJSON
 records. A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
