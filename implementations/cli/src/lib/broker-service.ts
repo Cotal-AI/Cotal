@@ -361,7 +361,7 @@ export const brokerService: LocalProcess = {
       config: { type: "string", minLength: 1, maxLength: 4096, description: "explicitly prepared nats-server configuration inside that root's .cotal directory; it is never generated here" },
       binary: { type: "string", minLength: 1, maxLength: 4096, description: "absolute nats-server executable; no PATH lookup is made" },
       server: { type: "string", minLength: 1, maxLength: 4096, description: "the one broker URL this configuration serves" },
-      logFile: { type: "string", minLength: 1, maxLength: 4096, description: "native nats-server log_file path prepared by cotal up" },
+      logFile: { type: "string", minLength: 1, maxLength: 4096, description: "native nats-server log_file path prepared by `cotal up`" },
     } },
   },
   async buildServiceLaunch(context) {
