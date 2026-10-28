@@ -381,7 +381,7 @@ function classifyStackMember(journal: StackJournal, role: StackRole, settle: boo
       ? "a stack member's process is neither live nor proven gone, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
       : retained?.publication === "unknown"
         ? "a stack member's stop request file does not read as its own, so whether a stop was published is unknown and the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
-        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: route.kind === "abandon" ? `${inspect(row.name)}; ${abandonRemedy(route.requestId)}` : route.kind === "resume" ? `${inspect(row.name)}; ${RESUME_REMEDY}` : observed === "unresolved-launch" ? `${inspect(row.name)}; ${abandonLaunchRemedy(row.name)}` : inspect(row.name) });
+        : `a stack member retains unconfirmed stop request ${retained?.requestId ?? value.requestId}, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried`, { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: route.kind === "abandon" ? `${inspect(row.name)}; ${abandonRemedy(route.requestId)}` : route.kind === "resume" ? `${inspect(row.name)}; ${RESUME_REMEDY}` : observed === "unresolved-launch" ? `${inspect(row.name)}; ${abandonLaunchRemedy(row.name)}` : inspect(row.name) });
   } finally { hold?.release(); }
 }
 
@@ -419,12 +419,12 @@ export function stackOperationBlock(journal: StackJournal): StackOperationBlock 
     if (!row) throw error;
     const value = row.record.value, route = memberStopRoute(value);
     if (retainedStopMaySettle(value) || route.kind === "resume") return undefined;
-    const operation = `the earlier ${journal.operation.kind === "down" ? "whole-stack stop" : journal.operation.kind} ${journal.operation.id}`;
+    const operation = `the earlier ${journal.operation.kind === "down" ? "whole-stack stop" : journal.operation.kind} (operation ${journal.operation.id})`;
     return {
       operation: { id: journal.operation.id, kind: journal.operation.kind },
       definition: target.definition, instanceId: target.instanceId, route,
       reason: route.kind === "abandon"
-        ? `${operation} asked ${target.definition} to stop and ended before it saw the process exit, and the process is gone, so up and down refuse until the stop is abandoned`
+        ? `${operation} asked ${target.definition} to stop with stop request ${route.requestId} and ended before it saw the process exit, and the process is gone, so up and down refuse until that stop request is abandoned`
         : `${operation} ended with no recorded outcome, and ${target.definition} is neither proven running nor proven stopped, so up and down refuse until it is inspected`,
     };
   }
@@ -477,9 +477,10 @@ export function abandonUnresolvedStackLaunch(journal: StackJournal, instanceId: 
  *  member's definition lock, before a `down` classifies the members. The caller holds the root's
  *  maintenance lock. A native stop is abandoned through its adapter, and a broker's or another
  *  member's signal stop once its process is gone. No member retaining it refuses `TARGET_NOT_FOUND`,
- *  and nothing is written. */
+ *  naming each stop request a member's refusal offers to abandon, and nothing is written. */
 export async function abandonRetainedStackStop(journal: StackJournal, requestId: string): Promise<{ role: StackRole; row: ServiceInstanceSnapshot; abandonment: ServiceAdapterStopAbandonment }> {
   const store = serviceDefinitionStore(journal.space);
+  const pending: { definition: string; requestId: string }[] = [];
   for (const role of STACK_ROLES.filter((entry) => stackRoleApplies(journal.mode, entry))) {
     const definition = store.read(STACK_DEFINITION[role]), launch = definition?.record.value.launch;
     if (!definition || launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER[role] || launch.options.root !== journal.root) continue;
@@ -490,9 +491,14 @@ export async function abandonRetainedStackStop(journal: StackJournal, requestId:
       if (row) return { role, ...await abandonRetainedNativeStop(definition, row, requestId) };
       const signalled = rows.find((entry) => !entry.record.value.nativeStopRequired && entry.record.value.state === "stopping" && entry.record.value.requestId === requestId);
       if (signalled) return { role, row: abandonRetainedSignalStop(signalled, requestId), abandonment: { requestId, nativeStop: "abandoned", receipts: [], withAgents: false, cleanup: "not-checked" } };
+      for (const entry of rows) {
+        const route = memberStopRoute(entry.record.value);
+        if (route.kind === "abandon") pending.push({ definition: definition.name, requestId: route.requestId });
+      }
     } finally { hold.release(); }
   }
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no member of this stack retains a stop request with that ID; nothing was abandoned", { target: { root: journal.root, space: journal.space, requestId }, remedy: `run \`cotal down --dry-run\` to see what blocks the stop, or \`cotal service status <definition> --instance <id> --space ${journal.space}\` for a member's request` });
+  const named = pending.map((stop) => `; ${stop.definition} retains stop request ${stop.requestId}`).join("");
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no member of this stack retains a stop request with that ID${named}; nothing was abandoned`, { target: { root: journal.root, space: journal.space, requestId }, remedy: pending.length === 1 ? abandonRemedy(pending[0]!.requestId) : `run \`cotal down --dry-run\` to see what blocks the stop, or \`cotal service status <definition> --instance <id> --space ${journal.space}\` for a member's request` });
 }
 
 /** Settle an earlier `up` or `down` that has no recorded outcome, from evidence only. The caller

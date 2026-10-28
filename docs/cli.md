@@ -1152,7 +1152,7 @@ the record becomes `stopped` with that receipt, the request's reservation is rel
 refusal, which it writes when it started no stop, for example because that `down` had already
 exited, the request is removed, its reservation is released, and the record returns to what its
 process shows, so `down` stops a running manager and `up` reuses it. Otherwise it refuses
-`LIFECYCLE_BLOCKED` and names the instance and the original request. `down --dry-run` writes
+`LIFECYCLE_BLOCKED` and names the instance and its stop request ID. `down --dry-run` writes
 nothing, so it does not settle such a stop and refuses the same way. `service start`, `restart` and
 `stop` refuse it `LIFECYCLE_BLOCKED`, exit 2, before any readiness probe, stop request or record write.
 The earlier stop's outcome stays unknown. When the launch's
@@ -1164,7 +1164,9 @@ removes the stack's registration. A stop that has neither a completed nor a refu
 as one whose manager was killed before it read the request, is cleared only on request:
 `cotal down --abandon-stop <request-id> --yes`, with the request ID the refusal names. It refuses
 `LIFECYCLE_BLOCKED` while the manager or the `down` that sent the request still runs, and
-`TARGET_NOT_FOUND` when no member retains that request; either way nothing changes. Otherwise it
+`TARGET_NOT_FOUND` when no member retains that request, as for the operation ID of the `down` that
+sent it. That refusal names the stop request each member retains and, when there is one, its
+`--abandon-stop` command as Next. Either way nothing changes. Otherwise it
 removes the request, the stop reservation and a `--with-agents` shutdown intent that the same stop
 armed, records the manager `failed`, and stops the rest of the stack with a `STOP_ABANDONED` warning.
 Whether that manager stopped or released its agents' seats is not confirmed, and a seat that runs
@@ -3210,8 +3212,10 @@ process is gone, and names the failed address the way other commands' `TARGET_UN
 When an earlier `down`, or a foreground
 `up` whose terminal closed, ended after it signalled the broker or the delivery daemon and before it
 saw that process exit, `up` and `down` refuse until that stop is abandoned. `status` then says so
-under the selected space, names the member, and offers `cotal down --abandon-stop <request-id> --yes`
-with the request ID their refusal names, and the member's `service status`, in place of `up --root`.
+under the selected space, names the member, the earlier stop as `operation <id>` and the member's
+stop as `stop request <request-id>`, and offers `cotal down --abandon-stop <request-id> --yes` with
+that stop request ID, which their refusal names too, and the member's `service status`, in place of
+`up --root`.
 `--json` carries the same as `folder.stackBlock`. A manager stop is decided by the manager's own
 receipts, which only `up` and `down` read, so `status` does not name it. An `up` or `down` that was
 interrupted before it recorded an outcome, and left some members running and others stopped, is

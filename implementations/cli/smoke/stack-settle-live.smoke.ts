@@ -113,7 +113,9 @@
  *     that killed `down` took. Killed while delivery's record is `stopping`, with delivery's process
  *     then ended as the down's signal ends it, it leaves delivery gone under an unconfirmed request:
  *     `status` leads Next with `down --abandon-stop <request> --yes`, and its `Delivery responder`
- *     row names the block instead of `up`.
+ *     row names the block instead of `up`. Its blocked line labels that stop request and the
+ *     operation, and `down --abandon-stop` given the operation ID refuses `TARGET_NOT_FOUND`, naming
+ *     that stop request and its command, and abandons nothing.
  * 10. A repeated `down --with-agents --yes`. After one that completed it is a no-op, exit 0. After a
  *     `down` without `--with-agents` it still refuses `LIFECYCLE_BLOCKED`.
  * 11. A first `up` under `ulimit -n 32`. Its broker cannot create the space's streams, so the `up`
@@ -1407,6 +1409,13 @@ try {
     check(`${space}: status leads Next with abandoning delivery's stop, and its delivery row names the block instead of up`,
       request !== undefined && status.stdout.includes("Stack blocked · ") && next.includes(`down --abandon-stop ${request} --yes`) && responder.includes("NOT BOUND") && !responder.includes("start it with") && (responder.includes("refuses until the stack block is cleared") || responder.includes("DEAD daemon")),
       { request, next, responder, stdout: status.stdout.slice(-3000) });
+    const operation = readStackJournal(root)?.journal.operation.id;
+    const blocked = status.stdout.split("\n").find((line) => line.includes("Stack blocked · ")) ?? "";
+    check(`${space}: its blocked line labels the stop request Next names, and the operation it also names`,
+      request !== undefined && operation !== undefined && operation !== request && blocked.includes(`with stop request ${request} `) && blocked.includes(`(operation ${operation})`), { request, operation, blocked });
+    const wrong = cli(root, "down", "--abandon-stop", operation ?? "none", "--yes");
+    check(`${space}: down --abandon-stop with the operation ID refuses TARGET_NOT_FOUND, naming the stop request and its command, and abandons nothing`,
+      wrong.status === 2 && wrong.stderr.includes("TARGET_NOT_FOUND") && wrong.stderr.includes(`stack-delivery retains stop request ${request};`) && wrong.stderr.includes(`cotal down --abandon-stop ${request} --yes`) && serviceInstances(space, "stack-delivery")[0]?.record.value.state === "stopping", { ...shown(wrong), operation });
     const abandoned = cli(root, "down", "--abandon-stop", request ?? "none", "--yes", "--json");
     const final = cli(root, "down", "--yes", "--json");
     check(`${space}: abandoning that stop lets down stop the stack`, abandoned.status === 0 && final.status === 0 && gone(space, "stack-broker") && gone(space, "stack-manager"), { abandoned: shown(abandoned), final: shown(final) });
