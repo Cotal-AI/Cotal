@@ -36,6 +36,8 @@
  *
  * On an 80-column pty a command wider than the line keeps one line: the exec-endpoint `next:` of
  * `cotal service` and the remedy of its `service add` refusal, which each broke onto a second line.
+ * A span in backticks that is no command is one word too: the Next of `daemon install --dry-run`
+ * where no user manager answers split `systemctl --user show-environment` after `--user`.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, with the
  * built `@cotal-ai/linear` extension imported for its cells. The examples census renders each help
@@ -46,7 +48,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { findCommand, findSubcommand, parseCommandArgs, registry, type Command, type ParsedArgs, type Subcommand } from "@cotal-ai/core";
@@ -165,9 +167,9 @@ for (const [args, usage, foreign] of [
   const root = join(home, "wide-next");
   mkdirSync(root);
   const created = run(["space", "create", "widenext", "--root", root]);
-  const at80 = async (args: string[]): Promise<string[]> => {
+  const at80 = async (args: string[], ptyEnv: Record<string, string> = env as Record<string, string>): Promise<string[]> => {
     let out = "";
-    const pty = nodePty([BIN, ...args], { cwd: neutral, env: env as Record<string, string>, cols: 80, rows: 200 });
+    const pty = nodePty([BIN, ...args], { cwd: neutral, env: ptyEnv, cols: 80, rows: 200 });
     pty.onData((data) => { out += data; });
     await new Promise<void>((resolve) => pty.onExit(() => resolve()));
     return clean(out).split(/\r?\n/);
@@ -178,6 +180,20 @@ for (const [args, usage, foreign] of [
   for (const flags of [[], ["--plain"]]) {
     const refused = await at80(["service", "add", "myep", "--preset", "exec-endpoint", "--space", "widenext", ...flags]);
     check(`the service add refusal on 80 columns${flags.length ? " under --plain" : ""} keeps its remedy command on one line`, refused.some((line) => line.trim() === command.replace("<name>", "myep")), refused.slice(0, 16));
+  }
+  // A logged-in user with a private runtime directory and no session bus reaches no user manager, so
+  // the dry run refuses before it renders a unit. Its Next split the span after `--user`.
+  if (process.platform === "linux") {
+    const runtime = join(home, "no-user-manager");
+    mkdirSync(runtime, { mode: 0o700 });
+    const { DBUS_SESSION_BUS_ADDRESS: _bus, ...noBus } = env as Record<string, string>;
+    const span = "`systemctl --user show-environment`";
+    for (const flags of [[], ["--plain"]]) {
+      const refused = await at80(["daemon", "install", "--dry-run", ...flags], { ...noBus, USER: userInfo().username, LOGNAME: userInfo().username, XDG_RUNTIME_DIR: runtime });
+      const next = refused.slice(refused.indexOf("Next") + 1);
+      check(`the daemon install --dry-run refusal on 80 columns${flags.length ? " under --plain" : ""} keeps ${span} whole in its Next`,
+        refused.includes("Next") && next.some((line) => line.includes(`${span} answers`)) && refused.every((line) => displayWidth(line) <= 80), refused.slice(0, 16));
+    }
   }
 }
 
