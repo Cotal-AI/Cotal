@@ -546,6 +546,11 @@ delivers, the other only wakes:
 - **Hook drain (delivery).** `SessionStart` / `UserPromptSubmit` hooks read automatic inbox items and
   inject them as `additionalContext`. This is the single authoritative path: deterministic and works
   on any Claude Code build. Quiet ambient is excluded and stays buffered for `cotal_inbox`.
+  Each hook context stays within 9,000 characters, below Claude Code's 10,000-character
+  inline limit. Complete messages that fit are handed off. The reply counts the messages
+  still waiting, which remain unacknowledged for another hook or `cotal_inbox`. A message
+  too large for one hook is left for the inbox, which can return it in parts. The budget
+  includes the session briefing, run turns, repeat labels and waiting notice.
   If a channel notice accompanies a batch the hook already delivered, an empty `cotal_inbox`
   reply identifies the most recent confirmed hook handoff by count and event. It does not return
   those bodies again or describe the receipt as a new message. A confirmed handoff means the

@@ -109,6 +109,11 @@ const REPEAT_NOTE = "(A previous delivery of one or more of these was not confir
 /** Bound on the advisory repeat labels. Only grows on undelivered replies, so it is normally empty. */
 const REPEAT_LABEL_CAP = 512;
 
+// Claude Code caps each additionalContext string at 10,000 characters. Keep headroom for
+// host framing and count the assembled context, including briefing, run turns and notices.
+const HOOK_CONTEXT_CHARS = 9_000;
+const WAITING_NOTE_RESERVE = 160;
+
 /** The hook side of the connector: the handler plus the delivery callback that commits what it
  *  injected. Both must be wired into {@link startControlServer} — the handler surfaces, the
  *  callback is the only place a peer message is ever acked. */
@@ -269,12 +274,22 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
   };
 
   /** Format the automatic batch WITHOUT acking it; the ids ride on THIS frame's delivery verdict. */
-  const surfaceAutomatic = (agent: MeshAgent, ev: HookEvent): string | undefined => {
+  const surfaceAutomatic = (agent: MeshAgent, ev: HookEvent, reserved = 0): string | undefined => {
     if (deps.delivery === false) return undefined;
-    const items = agent.peekInbox("automatic");
-    if (!items.length) return undefined;
+    const pending = agent.peekInbox("automatic");
+    if (!pending.length) return undefined;
+    const budget = HOOK_CONTEXT_CHARS - reserved - WAITING_NOTE_RESERVE - REPEAT_NOTE.length - 1;
+    const items: InboxItem[] = [];
+    for (const item of pending) {
+      const candidate = formatInjection([...items, item]);
+      if (candidate && candidate.length <= budget) items.push(item);
+    }
+    const remaining = pending.length - items.length;
+    const waiting = remaining
+      ? `${remaining} Cotal message${remaining === 1 ? " is" : "s are"} still waiting. Read with cotal_inbox; messages too large for a hook remain there.`
+      : undefined;
     const body = formatInjection(items);
-    if (!body) return undefined;
+    if (!body) return waiting;
     const ids = items.map((i) => i.recvKey);
     // These stay in the inbox until the verdict, so the overflow valve could otherwise ack one out
     // from under us mid-delivery — unrecoverable, since an acked id is never redelivered. If the
@@ -287,7 +302,8 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     // At-least-once, deliberately: an unconfirmed batch is re-surfaced rather than dropped, so a
     // reply that DID land but whose confirmation was lost shows the model the same message twice.
     // Say so, so a repeat reads as a repeat instead of as a peer sending twice.
-    return ids.some((id) => unconfirmed.has(id)) ? `${REPEAT_NOTE}\n${body}` : body;
+    const delivered = ids.some((id) => unconfirmed.has(id)) ? `${REPEAT_NOTE}\n${body}` : body;
+    return waiting ? `${delivered}\n${waiting}` : delivered;
   };
 
   /** Peek this seat's pending run turns for injection, riding THIS frame's delivery verdict: the
@@ -305,8 +321,20 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
 
   const handle: HookHandle = async (agent: MeshAgent, ev: HookEvent): Promise<Record<string, unknown>> => {
     const event = ev.hook_event_name ?? "";
-    const withContext = (text: string | undefined): Record<string, unknown> =>
-      text ? { hookSpecificOutput: { hookEventName: event, additionalContext: text } } : {};
+    const withContext = (text: string | undefined): Record<string, unknown> => {
+      if (!text) return {};
+      if (text.length > HOOK_CONTEXT_CHARS) {
+        // The other context can itself exceed the host cap. Never commit peer bodies or run
+        // turns from a frame the host would replace with a preview. Leave both for a later read.
+        const batch = inFlight.get(ev);
+        if (batch) {
+          inFlight.delete(ev);
+          batch.agent.releaseInFlight(batch.ids);
+        }
+        text = `${agent.inboxCount("automatic")} Cotal messages still waiting. Read with cotal_inbox. Additional session context did not fit in this hook.`;
+      }
+      return { hookSpecificOutput: { hookEventName: event, additionalContext: text } };
+    };
     try {
       switch (event) {
         case "SessionStart": {
@@ -344,7 +372,9 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // plus any messages waiting. Both are advisory context.
           // Order matters: surfaceAutomatic creates this frame's inFlight record; surfaceTurns
           // extends it (or creates a message-less one), so it must evaluate second.
-          const parts = [agent.channelBriefing(), surfaceAutomatic(agent, ev), surfaceTurns(agent, ev)].filter(Boolean);
+          const briefing = agent.channelBriefing();
+          const reserved = (briefing?.length ?? 0) + (agent.peekPendingTurns()?.text.length ?? 0) + 4;
+          const parts = [briefing, surfaceAutomatic(agent, ev, reserved), surfaceTurns(agent, ev)].filter(Boolean);
           return withContext(parts.length ? parts.join("\n\n") : undefined);
         }
         case "UserPromptSubmit": {
@@ -356,7 +386,8 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // Run turns ride the same frame as peer messages: this is an injectable boundary, and
           // the frame's delivery verdict is what commits them as surfaced (arming the automatic
           // `done` at the coming Stop). surfaceAutomatic first — it creates the inFlight record.
-          const parts = [surfaceAutomatic(agent, ev), surfaceTurns(agent, ev)].filter(Boolean);
+          const reserved = (agent.peekPendingTurns()?.text.length ?? 0) + 2;
+          const parts = [surfaceAutomatic(agent, ev, reserved), surfaceTurns(agent, ev)].filter(Boolean);
           return withContext(parts.length ? parts.join("\n\n") : undefined);
         }
         case "PreToolUse":
