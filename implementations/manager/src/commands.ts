@@ -28,7 +28,7 @@ import {
 } from "@cotal-ai/core";
 import {
   assertManagerName, authDir, canonicalLocalProcessPath, canonicalRoot, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, parseSeatCapFlag, publishManagerSpareCapability, readManagerName, readManagerSeatCap, reclaimDeadPreUpgradeRecord, recordManagerName, recordManagerSeatCap, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
-  c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, untilInputEnds,
+  c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, stderrLines, UNTRUSTED_CERTIFICATE, untilInputEnds,
   brokerAddressForDisplay, brokerUrlCredentialRefusal, brokerUrlHasUserinfo, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
   ConfirmationRequired, findMesh, folderSpace, folderSpaceHeld, getCurrent, targetErrorCode, targetErrorSpace, workspaceErrorParts, type MeshEntry, type MeshTargetError, type SeatCap,
@@ -294,6 +294,21 @@ function foreignHostRefusal(space: string, root: string, server: string): Comman
  *  service controller uses for a native start it could not confirm. */
 const UNCONFIRMED_START = "inspect the original full instance and its launch request before another start";
 
+/** The next step when a startup failure ends in a certificate this host does not trust, as the
+ *  `--tls-cert` row of docs/cli.md gives it. */
+const TRUST_CA = "trust the certificate's CA, or a self-signed certificate itself, by setting `NODE_EXTRA_CA_CERTS` to that PEM file for the command that starts the manager, then start it again";
+
+/** A native manager child's startup that did not confirm, wrapping `cause`, with one next step: the
+ *  cause's own when it names one, {@link TRUST_CA} when its chain ends in a certificate this host
+ *  does not trust, else {@link UNCONFIRMED_START}. */
+function unconfirmedStart(cause: unknown, message = "the native manager child did not confirm startup"): CommandFailure {
+  let last = cause;
+  while (last instanceof Error && last.cause !== undefined) last = last.cause;
+  const code = (last as NodeJS.ErrnoException | null | undefined)?.code;
+  const remedy = typeof code === "string" && UNTRUSTED_CERTIFICATE.has(code) ? TRUST_CA : UNCONFIRMED_START;
+  return new CommandFailure("unknown", "OPERATION_UNKNOWN", message, { cause, ...(isCommandFailure(cause) && cause.remedy ? {} : { remedy }) });
+}
+
 /** Run a manager daemon in this process (the long-lived supervisor), then block.
  *  `pty` ships with the manager; every other runtime needs a registered provider. The published
  *  CLI lazy-loads installed providers, while library roots import their integrations explicitly.
@@ -318,7 +333,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     if (execution === "none" && target.remoteUser)
       throw new Error("execution: none on supervise requires a genuine hosting user-auth root, not a participant registration");
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e, remedy: UNCONFIRMED_START });
+    if (service) throw unconfirmedStart(e);
     if (isWorkspaceTargetError(e)) throw managerTargetRefusal(e, v, managerRoot);
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
@@ -550,7 +565,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         },
       };
     } catch (e) {
-      if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm hosted authority preparation; it was not retried", { cause: e, remedy: UNCONFIRMED_START });
+      if (service) throw unconfirmedStart(e, "the native manager child did not confirm hosted authority preparation; it was not retried");
       console.error(c.red(
         `✗ remote supervision for space "${space}" was refused: ${rejectionText(e)}. ` +
         `Foreground \`cotal spawn\` remains available; detached/managed agents require a live host-approved manager-service authority.`,
@@ -584,7 +599,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   try {
     eventsRequired = (await refreshRegistrationPolicy(target))?.events === "required";
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e, remedy: UNCONFIRMED_START });
+    if (service) throw unconfirmedStart(e);
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
@@ -604,7 +619,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   try {
     maxSessions = parsePositiveIntegerFlag("--max-sessions", v["max-sessions"]);
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e, remedy: UNCONFIRMED_START });
+    if (service) throw unconfirmedStart(e);
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
@@ -616,7 +631,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   try {
     seatCap = parseSeatCapFlag("--seat-cap", v["seat-cap"]) ?? readManagerSeatCap({ root: managerRoot, space });
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e, remedy: UNCONFIRMED_START });
+    if (service) throw unconfirmedStart(e);
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
@@ -626,7 +641,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   try {
     name = v.name !== undefined ? assertManagerName(v.name) : readManagerName({ root: managerRoot, space });
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e, remedy: UNCONFIRMED_START });
+    if (service) throw unconfirmedStart(e);
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
   }
@@ -660,7 +675,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       ...(service ? { onServiceIdentity: bindManagerServiceIdentity(service) } : {}),
     });
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start", { cause: e, remedy: UNCONFIRMED_START });
+    if (service) throw unconfirmedStart(e);
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
@@ -992,9 +1007,11 @@ const managerCommands: Command[] = [
       const service = managerServiceChild(args);
       try { await runManager(args, "auto", service); }
       catch (error) {
-        // The controller quotes the last line this child logs, so that line names the cause: in its
-        // log in the background, on the terminal in the foreground.
-        writeSync(2, `✗ the manager did not start: ${failureLine(error)}\n`);
+        // The controller quotes the last line this child logs, so that line names the cause: on one
+        // line in its log in the background, and on the terminal in the foreground wrapped as the
+        // CLI's own lines are.
+        const line = `the manager did not start: ${failureLine(error)}`;
+        writeSync(2, process.stderr.isTTY ? `${stderrLines("✗ ", line, c.red).join("\n")}\n` : `✗ ${line}\n`);
         process.exit(exitCode("unknown", "OPERATION_UNKNOWN"));
       }
     },

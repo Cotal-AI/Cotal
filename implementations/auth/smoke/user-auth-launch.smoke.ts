@@ -29,7 +29,7 @@
  *   E5. A TLS space behind a local CA, its public exchange behind an HTTPS proxy, joined by a
  *      participant from its bundle: with `NODE_EXTRA_CA_CERTS` set, the participant's `manager start`
  *      comes up and its native child carries the variable; with it unset, the line the refusal quotes
- *      names the TLS reason.
+ *      names the TLS reason and ends in the step to set `NODE_EXTRA_CA_CERTS`, quoted whole.
  *   F. `cotal down` stops the auth service (space-scoped pid) with the broker; re-`up` WITHOUT
  *      --user-auth on a user-enabled root is refused fail-closed.
  *   G. `clean all`, and `reset space` on a stopped controller stack, name the IdP trust and the
@@ -831,6 +831,14 @@ try {
     const quoted = /the last line it logged is: (.*)$/m.exec(plain(untrusted.out))?.[1] ?? "";
     check("with NODE_EXTRA_CA_CERTS unset, manager start exits 5 and the line it quotes names the TLS reason the authority call failed on",
       untrusted.status === 5 && quoted.includes(`did not answer at ${proxyUrl}/manager-service-authority (fetch failed); cause: `) && quoted.includes("UNABLE_TO_VERIFY_LEAF_SIGNATURE"), untrusted.out);
+    const logsCommand = /`cotal service logs (\S+) --instance (\S+) --space \S+`/.exec(plain(untrusted.out));
+    const untrustedLog = await cotal(["service", "logs", logsCommand?.[1] ?? "manager", "--instance", logsCommand?.[2] ?? "none", "--space", CA_SPACE], { cwd: joinRoot, env: joinEnv });
+    const logged = /^ *(✗ the manager did not start: .*)$/m.exec(plain(untrustedLog.out))?.[1] ?? "";
+    check("…and that line keeps Node's own message as the cause and ends in the step to trust the CA with NODE_EXTRA_CA_CERTS",
+      logged.includes("UNABLE_TO_VERIFY_LEAF_SIGNATURE: unable to verify the first certificate")
+        && logged.endsWith("; next: trust the certificate's CA, or a self-signed certificate itself, by setting `NODE_EXTRA_CA_CERTS` to that PEM file for the command that starts the manager, then start it again"), untrustedLog.out);
+    check("…and the refusal quotes that line whole, over 400 characters as it is, so the quote ends in its next step",
+      [...logged].length > 400 && quoted === logged, { quoted, logged });
     const hostDown = await cotal(["down", "--yes"], { cwd: hostRoot, env: hostEnv, sandbox: hostSandbox });
     check("…and the TLS host stops", hostDown.status === 0, hostDown.out);
   }

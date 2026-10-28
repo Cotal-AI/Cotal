@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync, type Stats } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { CommandFailure, assertRecordIdentity, shellPath, boundedValue, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, oneLine, targetErrorCode, workspaceErrorParts, type MeshTargetError, localRecordAccess, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { CommandFailure, assertRecordIdentity, shellPath, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, oneLine, targetErrorCode, workspaceErrorParts, type MeshTargetError, localRecordAccess, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
 import { serviceInstallIntents } from "./service-install-intent.js";
 import { serviceUninstallIntents } from "./service-uninstall-intent.js";
@@ -1088,8 +1088,20 @@ function lastLoggedLine(path: string, from: number): string | undefined {
     let read = 0;
     while (read < length) { const count = readSync(fd, bytes, read, length - read, info.size - length + read); if (!count) break; read += count; }
     const line = bytes.subarray(0, read).toString("utf8").split("\n").map((text) => text.trim()).filter(Boolean).pop();
-    return line ? oneLine(boundedValue(line, 400)) : undefined;
+    return line ? oneLine(quotedLine(line)) : undefined;
   } catch { return undefined; } finally { closeSync(fd); }
+}
+
+/** `line` as a refusal quotes it: whole up to 1000 characters, which holds a failure line with its
+ *  causes. A longer one keeps its last `; next:` step, when that step is shorter than that, and as
+ *  much of its start as the rest holds, with the line's length where the middle was cut, so the
+ *  quote still ends in the step to take. */
+function quotedLine(line: string): string {
+  const max = 1000, chars = [...line];
+  if (chars.length <= max) return line;
+  const at = line.lastIndexOf("; next: "), step = at < 0 ? [] : [...line.slice(at)];
+  const kept = step.length < max ? step : [];
+  return `${chars.slice(0, max - kept.length).join("")}… (${chars.length} characters)${kept.join("")}`;
 }
 
 /** {@link ownedLogSlice} of a service instance's log, or undefined when no instance store exists. */
