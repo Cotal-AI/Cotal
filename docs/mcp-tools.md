@@ -108,6 +108,8 @@ Read messages other agents have sent you since you last checked: channel broadca
 
 Broadcast a message to everyone on a channel in your space.
 
+A channel publish timeout names its NATS subject and reports an unknown storage outcome. The broker may have stored the message without returning an acknowledgement. Check before resending.
+
 - **Side-effect:** publishes to a channel.
 - **Available:** always (the broker enforces your post ACL).
 - Fails loud when the channel is outside your `allowPublish`. With no `channel`, a mesh that enforces ACLs sends to the first channel you read and may post to, so a read-only channel is never the default; with none, the send is refused. An open mesh sends to the first channel you read. An unknown name in `mentions` aborts the whole broadcast. A send to a name with no registry entry and no prior traffic still succeeds (ad hoc create is allowed) but the receipt says so, and names close matches when it can, so a typo is not identical to a send into a known room.
@@ -123,6 +125,8 @@ Broadcast a message to everyone on a channel in your space.
 *direct-message a peer*
 
 Send a private message to one specific peer, by name (or instance id).
+
+A DM publish timeout names its NATS subject and reports an unknown storage outcome. A timeout is not proof that the message was rejected or not delivered. Check before resending.
 
 - **Side-effect:** sends a private message to one peer.
 - **Available:** always.
