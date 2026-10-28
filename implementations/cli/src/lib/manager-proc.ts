@@ -337,6 +337,7 @@ export const MANAGER_PROCESS = {
   pidFile: MANAGER_PIDFILE,
   cooperativeStop: true,
   artifacts: [MANAGER_DELIVERY_AWARE_MARKER, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY],
+  isOwnCommand: commandIsCotalSupervisor,
 } satisfies LocalProcess;
 
 /** Stop the space's manager. This is the one manager stop: `cotal down`, every `cotal up` teardown and
@@ -362,7 +363,6 @@ export async function stopManager(
   }
   const found = await stopLocalProcess(MANAGER_PROCESS, context, {
     pid,
-    owns: commandIsCotalSupervisor,
     beforeSignal: (attempt) => {
       if (attempt.target.token === undefined) {
         // Upgrade compatibility follows the shared identity contract: a live pre-pin record
