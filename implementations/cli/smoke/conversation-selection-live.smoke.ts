@@ -130,10 +130,14 @@ try {
     assert.throws(() => checkConversationSelection({ ...selection, endpoints: [{ endpoint: "linear", command: "search" }] }), /not available in selection v1/);
     assert.equal(authenticated, 0);
   });
-  await check("unordered, duplicate, wildcard and empty selections are refused", () => {
+  await check("a channel pattern is a valid selection, and a malformed one is refused", () => {
+    assert.deepEqual(conversationSelection({ channels: [{ channel: "team.>", access: "read" }, { channel: "ops.*", access: "read-post" }] }).channels,
+      [{ channel: "ops.*", access: "read-post" }, { channel: "team.>", access: "read" }]);
+    assert.throws(() => conversationSelection({ channels: [{ channel: "team.>.x", access: "read" }] }), /only valid as the last segment/);
+  });
+  await check("unordered, duplicate and empty selections are refused", () => {
     assert.throws(() => checkConversationSelection({ ...selection, channels: [...selection.channels].reverse() }), /ascending/);
     assert.throws(() => conversationSelection({ capabilities: ["spawn", "spawn"] }), /unique/);
-    assert.throws(() => conversationSelection({ channels: [{ channel: "team.*", access: "read" }] }), /wildcard/);
     assert.throws(() => checkConversationSelection({ v: 1, channels: [], role: null, capabilities: [], endpoints: [] }), /selects nothing/);
     assert.throws(() => checkConversationSelection({ ...selection, role: null }), /role must be set exactly/);
   });
@@ -215,7 +219,7 @@ try {
   createMode = "exact";
   for (const dir of [s.retire.dir, plain.retire.dir, recovered.retire.dir, narrower.retire.dir]) await retireUserApp(dir);
   await check("selected identities retire by the unchanged v1 wire", () => assert(!existsSync(s.retire.dir) && !existsSync(narrower.retire.dir)));
-  assert.equal(assertions, 22);
+  assert.equal(assertions, 23);
   console.log(`conversation-selection-live: ${assertions} checks passed; isolated HTTPS only, no hosted selection server exists yet`);
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));
