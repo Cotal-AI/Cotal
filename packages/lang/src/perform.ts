@@ -171,7 +171,7 @@ function recordableError(e: EffectError, kind: string): { readonly error: EntryE
  * L4028: an effect kind `once` does not admit (spec/cotal-lang.md §7.8), refused before its entry
  * begins, so no handler method is called and a resume reaches the same refusal.
  */
-function notHoldable(kind: EffectKind, path: readonly ScopeFrame[]): RuntimeFault {
+function notHoldable(kind: EffectKind | ScopeKind, path: readonly ScopeFrame[]): RuntimeFault {
   return new RuntimeFault(
     "L4028",
     `\`${kind}\` runs inside \`once\` at ${scopePathString(path)}, and \`once\` admits only \`ask\`: a resume could not hold any other kind without dispatching it again or losing run state it builds. Move the \`${kind}\` outside the \`once\` that wraps the write.`,
@@ -1346,8 +1346,10 @@ export async function performScope(
   /** The `branchDigest` over a named loser set. Absent where there is nothing to digest. */
   branchDigest?: (losers: readonly string[]) => string | undefined,
 ): Promise<unknown> {
-  if (scopeKey.kind === "conclave" && atMostOnce(scopeKey.scope)) throw notHoldable("conclave", scopeKey.scope);
   const dispatches = scopeTraits(scopeKey.kind)?.dispatches === true;
+  // `once` admits no scope that calls the handler. The `dispatches` trait is that classification,
+  // so a kind added to it is refused here.
+  if (dispatches && atMostOnce(scopeKey.scope)) throw notHoldable(scopeKey.kind, scopeKey.scope);
   const inputHash = digest(
     subject === undefined
       ? { kind: scopeKey.kind, name: scopeKey.name }
