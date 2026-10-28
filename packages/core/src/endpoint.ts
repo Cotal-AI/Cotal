@@ -2846,15 +2846,16 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** The resolved, digest-verified command surface of `endpoint` as this connection's caller sees
-   *  it: the same resolve and the same per-name cache {@link invokeService} uses, so a describe
-   *  followed by an invoke binds both to one incarnation. `refresh` drops the cached entry first. */
-  async describeService(endpoint: string, opts: { deadlineMs?: number; signal?: AbortSignal; refresh?: boolean } = {}): Promise<ResolvedService> {
+   *  it. Unpinned calls share {@link invokeService}'s per-name cache, and `refresh` drops that entry.
+   *  `instanceId` selects one instance without reading or populating the class cache, as a pinned
+   *  invoke does. The caller's existing credential must permit that route. */
+  async describeService(endpoint: string, opts: { deadlineMs?: number; signal?: AbortSignal; refresh?: boolean; instanceId?: string } = {}): Promise<ResolvedService> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     if (opts.refresh) this.resolvedServices.delete(endpoint);
-    const cached = this.resolvedServices.get(endpoint);
+    const cached = opts.instanceId === undefined ? this.resolvedServices.get(endpoint) : undefined;
     if (cached) return cached;
-    const svc = await resolveService(this.nc, this.space, endpoint, this.serviceCaller(), { deadlineMs: opts.deadlineMs ?? 10_000, signal: opts.signal });
-    this.resolvedServices.set(endpoint, svc);
+    const svc = await resolveService(this.nc, this.space, endpoint, this.serviceCaller(), { deadlineMs: opts.deadlineMs ?? 10_000, signal: opts.signal, ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}) });
+    if (opts.instanceId === undefined) this.resolvedServices.set(endpoint, svc);
     return svc;
   }
 

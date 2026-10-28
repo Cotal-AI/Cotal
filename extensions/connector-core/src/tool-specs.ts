@@ -1408,7 +1408,7 @@ export function cotalToolSpecs(
             catch { return false; }
           }, "instance must be a lifecycle token ([a-z0-9]{26,32})")
           .optional()
-          .describe("Optional manager instance id for a multi-manager space. Omitted uses class anycast. A pin that cannot be resolved is refused without falling back to another manager."),
+          .describe("Optional manager instance id for a multi-manager space. An open managed seat defaults to its launching manager; an unbound open or static caller uses class anycast. User-auth selection remains issuer-bound. A pin that cannot be resolved is refused without falling back to another manager."),
         role: z
           .string()
           .optional()
@@ -1840,9 +1840,10 @@ export function cotalToolSpecs(
         endpoint: z.string().min(1).max(200).describe("The endpoint name, e.g. com.example.orders."),
         refresh: z.boolean().optional().describe("Resolve again instead of using this session's cached surface."),
       },
-      async run(agent, _config, { endpoint, refresh }: { endpoint: string; refresh?: boolean }) {
+      async run(agent, config, { endpoint, refresh }: { endpoint: string; refresh?: boolean }) {
         try {
-          const svc = await agent.ep.describeService(endpoint, { refresh });
+          const instanceId = endpoint === "manager" && !isAuthed(config) ? config.managerInstanceId : undefined;
+          const svc = await agent.ep.describeService(endpoint, { refresh, ...(instanceId !== undefined ? { instanceId } : {}) });
           const commands = [...svc.commands.values()]
             .sort((a, b) => a.command.localeCompare(b.command))
             .map((c) => ({
@@ -1872,9 +1873,10 @@ export function cotalToolSpecs(
         self: z.boolean().optional().describe("Targeted commands only: act on this session itself."),
         timeoutMs: z.number().int().min(1).max(120000).optional().describe("Reply deadline in milliseconds (default 30000)."),
       },
-      async run(agent, _config, { endpoint, command, args, self, timeoutMs }: { endpoint: string; command: string; args?: Record<string, unknown>; self?: boolean; timeoutMs?: number }) {
+      async run(agent, config, { endpoint, command, args, self, timeoutMs }: { endpoint: string; command: string; args?: Record<string, unknown>; self?: boolean; timeoutMs?: number }) {
         try {
-          const r = await agent.ep.invokeService(endpoint, command, args, { deadlineMs: timeoutMs ?? 30_000, ...(self ? { target: { mode: "self" as const } } : {}) });
+          const instanceId = endpoint === "manager" && self && !isAuthed(config) ? config.managerInstanceId : undefined;
+          const r = await agent.ep.invokeService(endpoint, command, args, { deadlineMs: timeoutMs ?? 30_000, ...(self ? { target: { mode: "self" as const } } : {}), ...(instanceId !== undefined ? { instanceId } : {}) });
           if (r.reply.ok !== true) {
             const e = r.reply.error;
             // An endpoint's error text is bounded like its data: nothing over the limit is cut, and

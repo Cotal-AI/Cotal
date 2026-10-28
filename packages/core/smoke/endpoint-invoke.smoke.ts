@@ -13,7 +13,7 @@
  * No broker. Run: pnpm smoke:ep-invoke
  */
 import {
-  compileContract, describeEndpoint, epReplySubject, invokeCommand, parseEpSubject, resolveService,
+  CotalEndpoint, compileContract, describeEndpoint, epReplySubject, invokeCommand, parseEpSubject, resolveService,
   unansweredRequest, type EpCaller, type ResolvedService,
 } from "../src/index.js";
 
@@ -315,6 +315,21 @@ console.log("describe REQUEST-BINDING (freelance HIGH #1):");
   await wait(350);
   c("a resolved command is published exactly ONCE; describe readiness retry never widens to caller-supplied commands",
     publishes === 1 && result.reply.ok === true, { publishes, result });
+}
+
+// A pinned describe must not borrow a class handle or replace it. The pin has no responder here,
+// so the real describe path must time out while the cached unpinned control keeps resolving.
+{
+  const ep = new CotalEndpoint({ space: SPACE, servers: "nats://127.0.0.1:1", lifecycleUid: CALLER.uid, card: { name: "cache-probe", kind: "agent" }, channels: [] });
+  const service: ResolvedService = { endpoint: ENDPOINT, owner: "local", caller: CALLER, responder: HONEST, commands: new Map() };
+  const cache = new Map([[ENDPOINT, service]]);
+  (ep as unknown as { nc: unknown }).nc = fakeNc(() => []);
+  (ep as unknown as { resolvedServices: Map<string, ResolvedService> }).resolvedServices = cache;
+  c("CONTROL: unpinned describe uses the existing class cache", await ep.describeService(ENDPOINT) === service);
+  await rejects("pinned describe bypasses the class cache and addresses its missing instance",
+    () => ep.describeService(ENDPOINT, { instanceId: ATTACKER.instanceId, deadlineMs: 100 }), "deadline-exceeded");
+  c("a failed pinned describe leaves the class cache intact", cache.get(ENDPOINT) === service);
+  c("an unpinned describe still returns its original class handle after the pinned refusal", await ep.describeService(ENDPOINT) === service);
 }
 
 console.log(`\n${fail === 0 ? "ENDPOINT-INVOKE BINDING SMOKE OK ✅" : "ENDPOINT-INVOKE BINDING SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
