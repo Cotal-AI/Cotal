@@ -25,7 +25,7 @@ import { submitAndFollowGoalWith, type SubmitAndFollowGoalOptions } from "./endp
 import { contractStoreContext, fetchContractClosure, contractRefToHex, contractArtifactDigestHex, type ContractStoreContext, type ArtifactMemo } from "./endpoint-contract-store.js";
 import { parseClusterDocument, type ClusterDocument } from "./endpoint-cluster.js";
 import { epScatterService, type EpAttributedReply, type EpScatterResult, type EpInstanceLiveness } from "./endpoint-verbs.js";
-import type { EpCaller } from "./endpoint-subjects.js";
+import { assertCommandToken, type EpCaller } from "./endpoint-subjects.js";
 import { BIND_SPLIT_REISSUES, type ResolvedCommand, type ResolvedService, dec, describeEndpoint, invokeCommand } from "./endpoint-caller.js";
 export { BIND_SPLIT_REISSUES, describeEndpoint, goalFollowRefusal, invokeCommand } from "./endpoint-caller.js";
 export type { ResolvedCommand, ResolvedService } from "./endpoint-caller.js";
@@ -59,7 +59,7 @@ export async function invokeRepairingSplit(
   args: Record<string, unknown> | undefined,
   opts: Parameters<typeof invokeCommand>[5],
   reresolve: () => Promise<ResolvedService> = () =>
-    resolveService(nc, space, service.endpoint, service.caller, { deadlineMs: opts.deadlineMs ?? 10_000, ...(opts.signal ? { signal: opts.signal } : {}) }),
+    resolveService(nc, space, service.endpoint, service.caller, { deadlineMs: opts.deadlineMs ?? 10_000, commands: [command], ...(opts.signal ? { signal: opts.signal } : {}) }),
 ): Promise<EpAttributedReply> {
   let handle = service;
   // A member that looked the target up and found no mapping says more about it than a bind refusal,
@@ -184,14 +184,27 @@ async function pooled<T, R>(items: readonly T[], limit: number, work: (item: T) 
  *
  * `describe` itself pins no contract (§13.7), so it is issued as a raw void-arg request
  * ({@link describeEndpoint}), never through the digest-stamping {@link epCall}.
+ *
+ * `opts.commands` narrows the returned handle to those visible commands. The resolver still uses
+ * the fresh describe as the authority for visibility, then fetches only the cluster documents and
+ * schema closures needed by that subset. An absent requested command fails before any contract-store
+ * read. Omit it to resolve the complete visible surface, as discovery callers require.
  */
 export async function resolveService(
   nc: NatsConnection,
   space: string,
   endpoint: string,
   caller: EpCaller,
-  opts: { deadlineMs?: number; instanceId?: string; signal?: AbortSignal } = {},
+  opts: { deadlineMs?: number; instanceId?: string; signal?: AbortSignal; commands?: readonly string[] } = {},
 ): Promise<ResolvedService> {
+  if (opts.commands !== undefined) {
+    if (!Array.isArray(opts.commands) || opts.commands.length === 0)
+      throw new EpEnvelopeError("failed-precondition", "commands must be a non-empty array when a resolve is narrowed");
+    for (const command of opts.commands) {
+      try { assertCommandToken(command); }
+      catch (e) { throw new EpEnvelopeError("failed-precondition", `invalid requested command: ${(e as Error).message}`); }
+    }
+  }
   // `deadlineMs` bounds the WHOLE resolve: the describe spends from it, and each closure walk is
   // budgeted with what remains, so a slow store read fails the resolve at the caller's deadline.
   const startedAt = performance.now();
@@ -199,6 +212,10 @@ export async function resolveService(
   const { answer, responder } = await describeEndpoint(nc, space, endpoint, caller, { ...opts, deadlineMs });
   const store = await contractStoreContext(nc, space);
   const visible = new Set<string>(answer.descriptor.clusters.flatMap((cl) => cl.commands));
+  const requested = opts.commands === undefined ? visible : new Set(opts.commands);
+  for (const command of requested)
+    if (!visible.has(command))
+      throw new EpEnvelopeError("not-found", `command "${command}" is not in ${endpoint}'s visible surface; describe lists ${[...visible].sort().join(", ") || "(none)"}`);
   // The store reads dominate a resolve's wall time and are all caller->broker round-trips, so they
   // are issued CONCURRENTLY and deduped through one memo rather than queued one behind another (a
   // 17-command surface measured 70 strictly sequential reads, 22 of them re-reads; at a WAN RTT
@@ -211,14 +228,15 @@ export async function resolveService(
       throw new EpEnvelopeError("deadline-exceeded", `resolving ${endpoint} exhausted its ${deadlineMs}ms deadline before a contract-store read`);
     return { artifactMemo, walkBudgetMs, ...(opts.signal ? { signal: opts.signal } : {}) };
   };
-  const docs = await pooled(answer.descriptor.clusters, RESOLVE_MAX_INFLIGHT_READS, (cl) => {
+  const clusters = answer.descriptor.clusters.filter((cl) => cl.commands.some((command) => requested.has(command)));
+  const docs = await pooled(clusters, RESOLVE_MAX_INFLIGHT_READS, (cl) => {
     opts.signal?.throwIfAborted();
     return fetchClusterDocument(store, cl.digest, walk());
   });
   // Flattened in DOCUMENT ORDER first, then resolved concurrently and inserted in that same order:
   // when two clusters declare one command name, last-in-document-order still wins, exactly as the
   // sequential form did. Concurrency must not make the resolved surface depend on read timing.
-  const declared = docs.flatMap((doc) => doc.commands).filter((cmd) => visible.has(cmd.name)); // a describe VIEW may narrow a cluster's commands
+  const declared = docs.flatMap((doc) => doc.commands).filter((cmd) => requested.has(cmd.name)); // a describe VIEW may narrow a cluster's commands
   // Each command needs two closures, so the pool runs at half the read bound to keep the in-flight
   // read count under it.
   const resolved = await pooled(declared, Math.max(1, RESOLVE_MAX_INFLIGHT_READS >> 1), async (cmd): Promise<ResolvedCommand> => {

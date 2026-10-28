@@ -196,6 +196,31 @@ try {
   check("the reads are issued CONCURRENTLY — many overlap, not just a command's own input/output pair",
     m1.maxInFlight >= 8, `maxInFlight=${m1.maxInFlight}`);
 
+  // ---- 2b. ONE COMMAND: an invoke does not pay for the endpoint's whole surface -----------------
+  console.log("\n2b. one-command resolution reads only that command's cluster and schema closures");
+  const mOne = newMeter();
+  const one = await resolveService(meteredConnection(rawNc, mOne, 0), space, MANAGER_ENDPOINT, caller, {
+    deadlineMs: 10_000, commands: ["despawn"],
+  });
+  const oneDistinct = new Set(mOne.order).size;
+  console.log(`   commands resolved: ${one.commands.size}`);
+  console.log(`   reads: ${mOne.total} (${oneDistinct} distinct)`);
+  check("one-command resolution returns only the requested command",
+    one.commands.size === 1 && one.commands.has("despawn"), [...one.commands.keys()]);
+  check("one-command resolution avoids the other 39 commands' contracts",
+    mOne.total === oneDistinct && mOne.total <= 6 && mOne.total < m1.total / 10,
+    { oneReads: mOne.total, fullReads: m1.total, distinct: oneDistinct });
+  const missingMeter = newMeter();
+  let missing: unknown;
+  try {
+    await resolveService(meteredConnection(rawNc, missingMeter, 0), space, MANAGER_ENDPOINT, caller, {
+      deadlineMs: 10_000, commands: ["not-visible"],
+    });
+  } catch (error) { missing = error; }
+  check("an absent requested command fails after describe and before contract-store reads",
+    (missing as { code?: string } | undefined)?.code === "not-found" && missingMeter.total === 0,
+    { error: (missing as Error | undefined)?.message, reads: missingMeter.total });
+
   // ---- 3. WAN RECONSTRUCTION: inject a synthetic RTT and check the arithmetic -------------------
   const INJECT_MS = 15; // a scaled-down stand-in for the reported ~150ms WAN RTT
   console.log(`\n3. WAN reconstruction: re-run the SAME resolve with ${INJECT_MS}ms injected per request`);

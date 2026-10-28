@@ -255,33 +255,38 @@ export class MeshHandler {
   ) {}
 
   /**
-   * The resolved manager service, memoized as a PROMISE so concurrent branches share one describe
-   * round-trip — and dropped on failure, so a resolve that lost to a manager restart is retried by
-   * the next effect instead of poisoning every spawn for the handler's lifetime.
+   * Resolved manager commands, each memoized as a PROMISE so concurrent branches asking for the
+   * same command share one describe round-trip. A failed resolve is dropped, so a manager restart
+   * does not poison later effects. Different commands stay separate and never fetch one another's
+   * contract closures.
    */
-  private managerService: Promise<ResolvedService> | undefined;
-  private manager(instanceId?: string): Promise<ResolvedService> {
+  private readonly managerServices = new Map<string, Promise<ResolvedService>>();
+  private manager(command: string, instanceId?: string): Promise<ResolvedService> {
     // #1616 ITEM 3 — PINNED DISPATCH. An explicit placement target resolves through the EXISTING
     // instance-dispatch API: `resolveService`'s `instanceId` opt becomes
     // `EpRoute { mode: "inst", instanceId }`, and the handle it returns carries
     // `pinnedInstanceId` so `invokeCommand` addresses that instance and never the class
-    // queue. It is deliberately NOT served from `managerService`: that memo holds the class-anycast
+    // queue. It is deliberately NOT served from `managerServices`: those memos hold class-anycast
     // resolution, and handing a pinned caller the anycast handle would reinstate the exact fallback
     // this item removes. A wrong, unavailable or replaced instance therefore fails to resolve —
     // before a child exists — instead of quietly succeeding somewhere else.
     if (instanceId !== undefined)
-      return resolveService(this.nc, this.binding.space, this.binding.endpoint, this.binding.caller, { instanceId });
-    this.managerService ??= resolveService(this.nc, this.binding.space, this.binding.endpoint, this.binding.caller)
-      .catch((e) => {
-        this.managerService = undefined;
-        throw e;
-      });
-    return this.managerService;
+      return resolveService(this.nc, this.binding.space, this.binding.endpoint, this.binding.caller, { instanceId, commands: [command] });
+    let service = this.managerServices.get(command);
+    if (service === undefined) {
+      service = resolveService(this.nc, this.binding.space, this.binding.endpoint, this.binding.caller, { commands: [command] })
+        .catch((e) => {
+          this.managerServices.delete(command);
+          throw e;
+        });
+      this.managerServices.set(command, service);
+    }
+    return service;
   }
 
   /** A silent pinned describe before submission is host reachability evidence, not seat death. */
-  private async relayManagerBeforeSubmit(host: string | undefined, ref: GoalRef, kind: "turn" | "ask" | "checkpoint", label: string): Promise<ResolvedService> {
-    try { return await this.manager(host); }
+  private async relayManagerBeforeSubmit(host: string | undefined, command: string, ref: GoalRef, kind: "turn" | "ask" | "checkpoint", label: string): Promise<ResolvedService> {
+    try { return await this.manager(command, host); }
     catch (err) {
       if (host !== undefined && unansweredRequest(err) && (await readGoalStatus(await this.actionCtx(), ref)) === undefined)
         throw new EffectError("L4002", kind, `${label}: placed host ${host} unreachable`);
@@ -309,8 +314,8 @@ export class MeshHandler {
     opts: { target?: EpVerbTarget; deadlineMs?: number; id?: string },
   ): Promise<EpAttributedReply> {
     return invokeRepairingSplit(this.nc, this.binding.space, service, command, args, opts, () => {
-      this.managerService = undefined;
-      return this.manager();
+      this.managerServices.delete(command);
+      return this.manager(command);
     });
   }
 
@@ -814,7 +819,7 @@ export class MeshHandler {
     // nothing ran. A bounded run of them leaves the discharge open rather than claiming it gone.
     const allocator = fact.committer?.instanceId;
     for (let attempt = 0; ; attempt += 1) {
-      const reply = await this.invokeManager(await this.manager(), "despawn", { graceful: true }, {
+      const reply = await this.invokeManager(await this.manager("despawn"), "despawn", { graceful: true }, {
         target: { mode: "owner", ...target },
         deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
       });
@@ -829,7 +834,7 @@ export class MeshHandler {
       if (!unrun && (allocator === undefined || reply.responder.instanceId === allocator)) return;
       if (attempt === MANAGER_ROUTE_ATTEMPTS)
         throw new Error(`the spawn goal "${goalId}" was allocated by manager instance ${allocator ?? "(unrecorded)"}, but none of ${attempt + 1} despawns was answered by it, and neither another manager's miss nor a refusal that ran nothing means it is gone; the discharge stays open to retry`);
-      this.managerService = undefined;
+      this.managerServices.delete("despawn");
     }
   }
 
@@ -1461,7 +1466,8 @@ export class MeshHandler {
         // to resolve and skips both the invoke and the bind, so its behaviour is unchanged.
         let resolution = readCwdResolution(recorded?.resolution);
         try {
-          const service = await this.manager(req.placement?.instanceId);
+          const command = req.cwd !== undefined && resolution === undefined ? "resolve-cwd" : "spawn";
+          const service = await this.manager(command, req.placement?.instanceId);
           if (req.cwd !== undefined && resolution === undefined) {
             // `req.placement` is guaranteed here: a cwd without one refused at the affinity gate above.
             resolution = await this.resolveCwd(req, service, req.cwd, req.placement?.instanceId ?? "");
@@ -1470,7 +1476,8 @@ export class MeshHandler {
             // a launched seat whose directory no record names.
             await ctx.bind({ resolution });
           }
-          reply = await this.invokeManager(service, "spawn",
+          const spawnService = service.commands.has("spawn") ? service : await this.manager("spawn", req.placement?.instanceId);
+          reply = await this.invokeManager(spawnService, "spawn",
             spawnArgs(resolution === undefined ? req : { ...req, cwd: resolution.cwd }), {
               id: goalId,
               deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
@@ -1645,8 +1652,8 @@ export class MeshHandler {
       const payload = JSON.stringify({ run: this.binding.runId, step, context, noticeIds: notices.map((n) => n.noticeId) });
       let submitted = false;
       const submit = async (): Promise<EpAttributedReply> => {
-        const service = submitted ? await this.manager(host)
-          : await this.relayManagerBeforeSubmit(host, ref, "turn", `turn(${name}#${uid})`);
+        const service = submitted ? await this.manager("turn", host)
+          : await this.relayManagerBeforeSubmit(host, "turn", ref, "turn", `turn(${name}#${uid})`);
         // After invocation may have run, retain the existing goal reconciliation.
         submitted = true;
         return this.invokeManager(service, "turn",
@@ -2038,7 +2045,7 @@ export class MeshHandler {
     const ref: GoalRef = { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId };
     const actx = await this.actionCtx();
     if ((await readGoalStatus(actx, ref)) !== undefined) return;
-    const service = await this.relayManagerBeforeSubmit(seat.host, ref, kind, `${kind}(${step})`);
+    const service = await this.relayManagerBeforeSubmit(seat.host, "turn", ref, kind, `${kind}(${step})`);
     let reply: EpAttributedReply;
     try {
       reply = await this.invokeManager(service, "turn",
@@ -2078,7 +2085,7 @@ export class MeshHandler {
     if ((await readGoalStatus(actx, ref)) === undefined) return;
     const accepter = (await readGoalIndex(actx, ref))?.iid;
     for (let attempt = 0; ; attempt += 1) {
-      const reply = await this.invokeManager(await this.manager(), "cancel", { goalId }, { deadlineMs: TURN_ACCEPT_DEADLINE_MS });
+      const reply = await this.invokeManager(await this.manager("cancel"), "cancel", { goalId }, { deadlineMs: TURN_ACCEPT_DEADLINE_MS });
       if (reply.reply.ok !== false || (await readGoalResult(actx, ref)) !== undefined) return;
       if (accepter === undefined || reply.responder.instanceId === accepter) {
         const err = reply.reply.error!;
@@ -2086,7 +2093,7 @@ export class MeshHandler {
       }
       if (attempt === MANAGER_ROUTE_ATTEMPTS)
         throw new Error(`the relay "${goalId}" was accepted by manager instance ${accepter}, but none of ${attempt + 1} cancels was answered by it; the discharge stays open to retry`);
-      this.managerService = undefined;
+      this.managerServices.delete("cancel");
     }
   }
 
@@ -2419,7 +2426,7 @@ export class MeshHandler {
       if (await decided()) return false;
       let answer: EpAttributedReply;
       try {
-        answer = await this.invokeManager(await this.manager(), "inspect", { name }, {});
+        answer = await this.invokeManager(await this.manager("inspect"), "inspect", { name }, {});
       } catch (e) {
         if (unansweredRequest(e)) break;
         if (await decided()) return false;
@@ -2433,7 +2440,7 @@ export class MeshHandler {
         if (await decided()) return false;
         throw new Error(`inspect(${name}) was refused by manager instance ${allocator}, which allocated ${name}#${uid}: ${reply.error?.message ?? "refused with no message"}`);
       }
-      this.managerService = undefined;
+      this.managerServices.delete("inspect");
     }
     return !(await decided());
   }

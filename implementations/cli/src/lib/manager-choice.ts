@@ -172,7 +172,7 @@ export async function managersWithPersona(values: { space?: unknown; server?: un
     let connection: Awaited<ReturnType<typeof openEndpointConnection>> | undefined;
     try {
       connection = await openEndpointConnection(flags, "control-caller-privileged", BASELINE_LIFECYCLE_ENDPOINT, manager.instanceId);
-      const service = await resolveService(connection.nc, connection.space, BASELINE_LIFECYCLE_ENDPOINT, connection.auth.epCaller!, { instanceId: manager.instanceId, deadlineMs: 5_000 });
+      const service = await resolveService(connection.nc, connection.space, BASELINE_LIFECYCLE_ENDPOINT, connection.auth.epCaller!, { instanceId: manager.instanceId, deadlineMs: 5_000, commands: ["list-personas"] });
       // The list names every persona in the catalog; a card it cannot show you is listed by name.
       const listed = service.commands.has("list-personas") ? (await invokeCommand(connection.nc, connection.space, service, "list-personas", undefined, { deadlineMs: 5_000 })).reply : undefined;
       const personas = listed?.ok ? (listed.data as { personas?: unknown } | undefined)?.personas : undefined;

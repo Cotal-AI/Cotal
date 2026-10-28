@@ -420,7 +420,9 @@ store read fails the resolve with `deadline-exceeded` when that deadline expires
 `cotal describe` has no `--timeout` and passes 10000 ms. Cancelling a
 resolve settles a store read in flight instead of waiting for it to return. When one store read
 fails, the resolve fails with it and fetches no further command contracts; fetches already under
-way finish on their own.
+way finish on their own. A call for one command fetches only that command's cluster and schema
+closures. `describe` still fetches the complete visible surface because its result lists every
+command.
 
 The resolve and the invoke are separate trips through the same anycast queue, so in a
 multi-manager space an unpinned call can land on an instance the caller did not resolve. Every

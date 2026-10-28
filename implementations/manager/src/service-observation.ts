@@ -76,7 +76,7 @@ export async function observeManagerService(context: ManagerObservationContext, 
     const caller = auth.bearer !== undefined && auth.managerInstanceId !== undefined
       ? await issuedUserCaller(nc, selected.space, String(options.name), auth.epCaller!)
       : auth.epCaller!;
-    const service = await resolveService(nc, selected.space, MANAGER_ENDPOINT, caller, { instanceId: binding.native.instanceId, deadlineMs: 5000, signal: context.signal });
+    const service = await resolveService(nc, selected.space, MANAGER_ENDPOINT, caller, { instanceId: binding.native.instanceId, deadlineMs: 5000, signal: context.signal, commands: ["status"] });
     const response = await invokeCommand(nc, selected.space, service, "status", undefined, { deadlineMs: 5000, signal: context.signal });
     if (!response.reply.ok) throw new CommandFailure("refused", "PERMISSION_DENIED", "the invoking caller did not receive the native manager status; no wider caller was tried");
     const status = response.reply.data as ManagerStatus;

@@ -67,7 +67,9 @@ export async function invokeUserManager(
   let instanceId: string;
   let service: ResolvedService;
   const onAbort = () => { void nc?.close(); };
-  const resolve = (signal = opts.signal, deadlineMs = opts.deadlineMs ?? 10_000) => resolveService(nc!, config.space, endpoint, caller, { instanceId, deadlineMs, signal });
+  const resolve = (signal = opts.signal, deadlineMs = opts.deadlineMs ?? 10_000) => resolveService(nc!, config.space, endpoint, caller, {
+    instanceId, deadlineMs, signal, commands: opts.follow ? [command, "goal-result"] : [command],
+  });
   const connect = async (signal = opts.signal, deadline = Date.now() + (opts.deadlineMs ?? 10_000)) => {
     const token = await bearer(signal);
     let credentialId: string | undefined;

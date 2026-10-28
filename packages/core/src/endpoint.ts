@@ -2886,11 +2886,13 @@ export class CotalEndpoint extends EventEmitter {
     const caller = this.serviceCaller();
     const resolve = async (signal = opts.signal, deadlineMs = opts.deadlineMs ?? 10_000): Promise<ResolvedService> => {
       signal?.throwIfAborted();
+      const needed = opts.follow ? [command, "goal-result"] : [command];
       const cached = opts.instanceId === undefined ? this.resolvedServices.get(endpoint) : undefined;
-      if (cached) return cached;
+      if (cached && needed.every((name) => cached.commands.has(name))) return cached;
       const svc = await resolveService(nc, this.space, endpoint, caller, {
         deadlineMs,
         signal,
+        commands: needed,
         ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}),
       });
       // A pinned resolve never enters the endpoint-only class cache. Otherwise a later unpinned call

@@ -3028,7 +3028,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       }
       const { caller, client } = reader;
       const { nc: readerNc } = await client;
-      return await invokeCommand(readerNc, space, await resolveService(readerNc, space, "manager", caller, { instanceId }), "status", undefined, {});
+      return await invokeCommand(readerNc, space, await resolveService(readerNc, space, "manager", caller, { instanceId, commands: ["status"] }), "status", undefined, {});
     };
     const service: Omit<AuthServiceHandle, "readiness"> = {
       url,
