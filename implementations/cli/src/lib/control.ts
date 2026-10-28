@@ -703,6 +703,11 @@ export function scatterProbeMaterial(
   return { kind: "as-is" };
 }
 
+/** Commands whose closures one scatter run invokes: the scattered verb, plus status for host labels. */
+export function scatterResolveCommands(command: string, reportHosts: boolean): string[] {
+  return [...new Set([command, ...(reportHosts ? ["status"] : [])])];
+}
+
 /** The ep-rail CLASS SCATTER (P2 item 3, `cotal ps` default).
  *
  * TWO connections, because a connection's permissions are fixed at authentication and this command
@@ -787,7 +792,8 @@ async function askManagerScatterEp(
   try {
     return await withControlConnection(server, probeAuth, async (nc) => {
       const { probeLiveness, livenessOf } = pinnedLivenessProbe(nc, { space, endpoint: BASELINE_LIFECYCLE_ENDPOINT, caller, pinned: probed });
-      const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000 });
+      const commands = scatterResolveCommands(mapped.command, reportHosts);
+      const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000, commands });
       const result = await scatterCommand(nc, space, service, mapped.command, undefined, {
         deadlineMs: timeoutMs ?? 8_000,
         reconcileDeadlineMs: 3_000,

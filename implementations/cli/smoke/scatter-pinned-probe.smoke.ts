@@ -50,10 +50,10 @@ const {
 } = await import("@cotal-ai/core");
 const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
 const { Manager } = await import("../../manager/src/manager.js");
-const { managerRailGone, pinnedLivenessProbe } = await import("../src/lib/control.js");
+const { managerRailGone, pinnedLivenessProbe, scatterResolveCommands } = await import("../src/lib/control.js");
 const { pickFreePort } = await import("../../../packages/core/smoke/_free-port.js");
 
-const EXPECTED_CELLS = 28; // predicted 14: +1 for the counter's own positive control (3a), +2 for the never-asked fallback the mutation pass found uncovered, +4 for section 6's prefix/superstring pair (review), +4 for section 7's spawn census, +2 for section 8's removal, +1 for section 9's unanswered describe
+const EXPECTED_CELLS = 29; // +1: multi-manager ps resolves only ps + status closures; predicted 14: +1 for the counter's own positive control (3a), +2 for the never-asked fallback the mutation pass found uncovered, +4 for section 6's prefix/superstring pair (review), +4 for section 7's spawn census, +2 for section 8's removal, +1 for section 9's unanswered describe
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -278,7 +278,15 @@ try {
       && Boolean(refusal.warnings?.some((w) => w.code === "MANAGER_SILENT" && w.message.startsWith(`manager ${IID_CORPSE} was skipped: its registration is stale`))),
     { spawnMs, status: unpinned.status, out: unpinned.stdout.slice(0, 900), err: unpinned.stderr.slice(-600) });
 
-  console.log("8. ps names a removal that works on this space, and the legacy spelling refuses without its usage");
+  console.log("8. ps names a removal that works on this space, resolves only its commands, and the legacy spelling refuses without its usage");
+  const psCommands = scatterResolveCommands("ps", true);
+  const barePsCommands = scatterResolveCommands("ps", false);
+  const statusCommands = scatterResolveCommands("status", true);
+  check("multi-manager ps resolves only ps and optional status closures instead of the manager's full contract surface",
+    psCommands.length === 2 && psCommands[0] === "ps" && psCommands[1] === "status" &&
+      barePsCommands.length === 1 && barePsCommands[0] === "ps" &&
+      statusCommands.length === 1 && statusCommands[0] === "status",
+    { psCommands, barePsCommands, statusCommands });
   const ps = await cli(["ps", "--space", SPACE]);
   check("ps lists the corpse as stale and names endpoint deregister from this space's own root",
     ps.status === 4 && ps.stdout.includes(`remove the record from this space's own root: \`cotal endpoint deregister manager ${IID_CORPSE} --yes\``), { status: ps.status, out: ps.stdout.slice(-700) });

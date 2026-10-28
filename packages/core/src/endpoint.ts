@@ -907,9 +907,13 @@ export class CotalEndpoint extends EventEmitter {
   private readonly acceptedToken?: string;
   /** The issuer-bound generation, learned once per connection from the accepted row. */
   private issuedGeneration?: string;
-  /** Per-endpoint-name {@link resolveService} cache for {@link invokeService} — dropped on a
-   *  `failed-precondition` currency refusal (the described incarnation was superseded). */
+  /** Full per-endpoint-name {@link resolveService} cache for {@link describeService}. Narrow command
+   *  handles never enter it, so discovery cannot inherit a truncated invocation surface. */
   private readonly resolvedServices = new Map<string, ResolvedService>();
+  /** Narrow invocation handles, keyed by endpoint and the sorted command set they verify. Kept
+   *  separate from full discovery handles so alternating commands neither overwrite each other nor
+   *  poison {@link describeService}. */
+  private readonly resolvedCommandServices = new Map<string, Map<string, ResolvedService>>();
   /** Active goal followers awaiting outcome, tracked so endpoint stop can cancel them immediately
    *  and connection replacement / reconnect can trigger reconciliation. */
   private readonly activeGoalFollowers = new Set<{ cancel: () => void; reconnected: (nc: NatsConnection) => void }>();
@@ -2839,13 +2843,20 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** Drop every cached handle for one endpoint after refresh or a currency split. */
+  private clearResolvedService(endpoint: string): void {
+    this.resolvedServices.delete(endpoint);
+    this.resolvedCommandServices.delete(endpoint);
+  }
+
   /** The resolved, digest-verified command surface of `endpoint` as this connection's caller sees
-   *  it. Unpinned calls share {@link invokeService}'s per-name cache, and `refresh` drops that entry.
-   *  `instanceId` selects one instance without reading or populating the class cache, as a pinned
-   *  invoke does. The caller's existing credential must permit that route. */
+   *  it. Unpinned calls cache the complete discovery surface, and `refresh` drops both the full
+   *  handle and any command-specific invocation handles. `instanceId` selects one instance without
+   *  reading or populating either class cache, as a pinned invoke does. The caller's existing
+   *  credential must permit that route. */
   async describeService(endpoint: string, opts: { deadlineMs?: number; signal?: AbortSignal; refresh?: boolean; instanceId?: string } = {}): Promise<ResolvedService> {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    if (opts.refresh) this.resolvedServices.delete(endpoint);
+    if (opts.refresh) this.clearResolvedService(endpoint);
     const cached = opts.instanceId === undefined ? this.resolvedServices.get(endpoint) : undefined;
     if (cached) return cached;
     const svc = await resolveService(this.nc, this.space, endpoint, this.serviceCaller(), { deadlineMs: opts.deadlineMs ?? 10_000, signal: opts.signal, ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}) });
@@ -2887,17 +2898,28 @@ export class CotalEndpoint extends EventEmitter {
     const resolve = async (signal = opts.signal, deadlineMs = opts.deadlineMs ?? 10_000): Promise<ResolvedService> => {
       signal?.throwIfAborted();
       const needed = opts.follow ? [command, "goal-result"] : [command];
-      const cached = opts.instanceId === undefined ? this.resolvedServices.get(endpoint) : undefined;
-      if (cached && needed.every((name) => cached.commands.has(name))) return cached;
+      const full = opts.instanceId === undefined ? this.resolvedServices.get(endpoint) : undefined;
+      if (full && needed.every((name) => full.commands.has(name))) return full;
+      const cacheKey = [...needed].sort().join("\u0000");
+      const commandCache = opts.instanceId === undefined ? this.resolvedCommandServices.get(endpoint) : undefined;
+      const cached = commandCache?.get(cacheKey);
+      if (cached) return cached;
       const svc = await resolveService(nc, this.space, endpoint, caller, {
         deadlineMs,
         signal,
         commands: needed,
         ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}),
       });
-      // A pinned resolve never enters the endpoint-only class cache. Otherwise a later unpinned call
-      // could silently inherit that instance, or a different pin could reuse the wrong manager.
-      if (opts.instanceId === undefined) this.resolvedServices.set(endpoint, svc);
+      // Pinned resolves never enter either class cache. Narrow unpinned handles stay in their own
+      // command-set cache, so they cannot truncate discovery or evict another command's handle.
+      if (opts.instanceId === undefined) {
+        let byCommand = this.resolvedCommandServices.get(endpoint);
+        if (!byCommand) {
+          byCommand = new Map();
+          this.resolvedCommandServices.set(endpoint, byCommand);
+        }
+        byCommand.set(cacheKey, svc);
+      }
       return svc;
     };
     const invokeOpts = { ...(opts.target ? { target: opts.target } : {}), ...(opts.deadlineMs !== undefined ? { deadlineMs: opts.deadlineMs } : {}) };
@@ -2956,7 +2978,7 @@ export class CotalEndpoint extends EventEmitter {
               (d): d is EpBindRefusedDetail => d.kind === EP_BIND_REFUSED,
             )?.boundTo,
           });
-          this.resolvedServices.delete(endpoint);
+          this.clearResolvedService(endpoint);
           // A FAILED RE-ISSUE RETHROWS THE ORIGINAL REFUSAL, not the resolve error: if the endpoint
           // has since retired, the resolve times out and the caller would otherwise get `no describe
           // reply within 10000ms` — about a describe it never asked for — losing the one fact that
@@ -3028,7 +3050,7 @@ export class CotalEndpoint extends EventEmitter {
           // the one answering, so every later call would reuse it and meet the same refusal. This is
           // not a retry — nothing is re-issued by it, and for a command that is not repeat-safe the
           // next call is the caller's, made after it has verified.
-          this.resolvedServices.delete(endpoint);
+          this.clearResolvedService(endpoint);
           if (!isRepeatSafeCommand(endpoint, command)) throw e;
           return await invokeResolved(await resolve(signal), signal);
         }

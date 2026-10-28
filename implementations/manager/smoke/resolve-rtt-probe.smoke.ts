@@ -43,7 +43,7 @@ import { connect, type NatsConnection } from "@nats-io/transport-node";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER,
-  resolveService,
+  CotalEndpoint, resolveService,
   type EpCaller,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
@@ -158,7 +158,7 @@ try {
   const id = newIdentity();
   const uid = mintLifecycleUid();
   const caller: EpCaller = { owner: DEV_OWNER, actor: id.id, uid };
-  const creds = await mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["spawn"] });
+  const creds = await mintCreds(auth, id, "control-caller-privileged", { lifecycleUid: uid });
   const rawNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
 
   // ---- 1. COUNT the round-trips one cold resolveService performs -------------------------------
@@ -220,6 +220,36 @@ try {
   check("an absent requested command fails after describe and before contract-store reads",
     (missing as { code?: string } | undefined)?.code === "not-found" && missingMeter.total === 0,
     { error: (missing as Error | undefined)?.message, reads: missingMeter.total });
+
+  // ---- 2c. ENDPOINT CACHE: partial invoke handles never truncate discovery or thrash -------------
+  // The core smoke covers this cache contract hermetically. This live cell proves the same public
+  // methods against a real manager, real describe, and real contract-store reads.
+  console.log("\n2c. command handles and the full describe surface use separate caches");
+  const client = new CotalEndpoint({
+    space, servers: SERVERS, creds, lifecycleUid: uid,
+    card: { id: id.id, name: "cache-probe", kind: "agent" }, channels: [],
+    consume: false, watchPresence: false, watchChannels: false, registerPresence: false,
+  });
+  await client.start();
+  const clientPriv = client as unknown as { nc: NatsConnection };
+  const cacheMeter = newMeter();
+  clientPriv.nc = meteredConnection(clientPriv.nc, cacheMeter, 0);
+  const ps = await client.invokeService(MANAGER_ENDPOINT, "ps", undefined, { deadlineMs: 10_000 });
+  const afterPs = cacheMeter.total;
+  const status = await client.invokeService(MANAGER_ENDPOINT, "status", undefined, { deadlineMs: 10_000 });
+  const afterStatus = cacheMeter.total;
+  await client.invokeService(MANAGER_ENDPOINT, "ps", undefined, { deadlineMs: 10_000 });
+  const afterRepeatedPs = cacheMeter.total;
+  const described = await client.describeService(MANAGER_ENDPOINT);
+  check("invokeService resolves and invokes two different manager commands",
+    ps.reply.ok === true && status.reply.ok === true && afterPs > 0 && afterStatus > afterPs,
+    { ps: ps.reply, status: status.reply, afterPs, afterStatus });
+  check("alternating invokes retain each command handle instead of re-resolving the first command",
+    afterRepeatedPs === afterStatus, { afterPs, afterStatus, afterRepeatedPs });
+  check("a prior narrowed invoke never truncates describeService's complete discovery surface",
+    described.commands.size === shipped.commandCount && described.commands.has("ps") && described.commands.has("status"),
+    { commands: [...described.commands.keys()], expected: shipped.commandCount });
+  await client.stop();
 
   // ---- 3. WAN RECONSTRUCTION: inject a synthetic RTT and check the arithmetic -------------------
   const INJECT_MS = 15; // a scaled-down stand-in for the reported ~150ms WAN RTT
