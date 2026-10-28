@@ -40,13 +40,16 @@ export type EndpointProblemCode =
   | "LOCK_HELD"
   | "NOT_RUNNING";
 
-/** A refusal at the local endpoint, typed so callers and tests can count it. */
+/** A refusal at the local endpoint, typed so callers and tests can count it. `remedy` replaces the
+ *  next step its code gives, for a case of that code that has its own. */
 export class EndpointRefusal extends Error {
   readonly code: EndpointProblemCode;
-  constructor(code: EndpointProblemCode, message: string) {
+  readonly remedy?: string;
+  constructor(code: EndpointProblemCode, message: string, remedy?: string) {
     super(message);
     this.name = "EndpointRefusal";
     this.code = code;
+    if (remedy !== undefined) this.remedy = remedy;
   }
 }
 

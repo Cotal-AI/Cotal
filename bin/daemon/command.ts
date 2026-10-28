@@ -102,16 +102,17 @@ const REFUSAL: Record<EndpointProblemCode, { code: "UNSUPPORTED" | "TARGET_UNAVA
   DIR_WRONG_MODE: { code: "PERMISSION_DENIED", remedy: "inspect the directory; the daemon never changes the mode of an existing directory" },
   SOCKET_NOT_SOCKET: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was removed" },
   SOCKET_WRONG_OWNER: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was removed" },
-  SOCKET_WRONG_MODE: { code: "PERMISSION_DENIED", remedy: "inspect the socket; nothing was sent" },
+  SOCKET_WRONG_MODE: { code: "PERMISSION_DENIED", remedy: "the daemon publishes its socket with mode 0600, so another process made this one or changed its mode: find the process listening at it with `ss -xlp` and stop it, then start the daemon with `cotal daemon serve`" },
   PEER_UID_MISMATCH: { code: "PERMISSION_DENIED", remedy: "another user's process holds the daemon endpoint; nothing was sent" },
-  PEER_NOT_LOCK_OWNER: { code: "PERMISSION_DENIED", remedy: "the process at this daemon home's socket is not the daemon holding its lock; nothing was sent" },
+  PEER_NOT_LOCK_OWNER: { code: "PERMISSION_DENIED", remedy: "find the process listening at that socket with `ss -xlp`. If it is a daemon started with another Cotal home, run this command with that `COTAL_HOME`; otherwise stop it, then start the daemon with `cotal daemon serve`" },
   LOCK_HELD: { code: "CONFLICT", remedy: "a daemon already holds this lifetime lock; run `cotal daemon status`, with the same --daemon-home when you passed one" },
 };
 
 function asFailure(e: unknown): unknown {
   if (!(e instanceof EndpointRefusal)) return e;
   const r = REFUSAL[e.code];
-  return new CommandFailure("refused", r.code, e.message, { ...(r.remedy ? { remedy: r.remedy } : {}), native: { code: e.code } });
+  const remedy = e.remedy ?? r.remedy;
+  return new CommandFailure("refused", r.code, e.message, { ...(remedy ? { remedy } : {}), native: { code: e.code } });
 }
 
 function statusView(s: DaemonStatus): Report {
