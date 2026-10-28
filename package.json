@@ -9,6 +9,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "smoke:no-manager-credential-warning:live": "tsx implementations/cli/smoke/no-manager-credential-warning-live.smoke.ts",
     "typecheck": "pnpm build && pnpm -r typecheck",
     "build": "pnpm -r build",
     "gen:schema": "node scripts/generate-cotal-schema.mjs",

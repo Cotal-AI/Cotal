@@ -710,7 +710,10 @@ runs from another folder refuses `CONFLICT` as well. Its Next names
 the other one in its own folder. A background boot also brings up the control plane (delivery daemon in auth
 mode, then the manager). `--no-manager` is the broker-only mode: it boots
 the broker (and the delivery daemon in auth mode) and starts no manager, so there is no manager
-pidfile to leave stale. A refresh under the flag of a mesh whose manager is live refuses rather
+pidfile to leave stale. Authenticated starts and refreshes warn that no local process re-signs the
+daemon credentials and list their stored expiry times. A manager must renew the same secret store;
+the daemon only adopts re-signed credentials. `cotal doctor auth` inspects their local health.
+A refresh under the flag of a mesh whose manager is live refuses rather
 than keeping or stopping it. Stop a controller stack's manager first with
 `cotal service stop stack-manager --space <s> --yes`. A legacy stack has no command that stops only
 its manager: `cotal down` stops the whole stack, then `cotal up --no-manager --space <s>` starts it

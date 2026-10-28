@@ -1,3 +1,4 @@
+import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
@@ -1990,6 +1991,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // `recordOurMesh` carries everything else (`tlsRequired`, the recorded host and session
       // ceiling, the store) from the record as it stands at write time, not from `held`.
       recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ...(values.host ? { attachHost: values.host } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ts: new Date().toISOString() }, "refresh");
+      if (noManager && held.mode !== "open") recordOperationWarning(await noManagerCredentialWarning(root, held.space));
       seedPersonaAfterUp(root);
       // The same Next a launch ends with: this mesh runs, so the steps are the ones that use and
       // stop it. A manager the refresh found or healed is what makes `spawn` one of them.
@@ -2337,6 +2339,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       noManager,
       onDeliveryExit,
     });
+    if (noManager && setup && controlPlane) recordOperationWarning(await noManagerCredentialWarning(cotalRoot(), space));
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
     await completeResumeActivation(
@@ -4095,6 +4098,7 @@ export async function startMeshDetached(
     noManager: opts.noManager,
     quietBoot: opts.quietBoot,
   });
+  if (opts.noManager && useAuth && controlPlane) recordOperationWarning(await noManagerCredentialWarning(cotalRoot(), space));
   return {
     server,
     pid: child.pid ?? 0,
