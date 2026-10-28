@@ -52,7 +52,7 @@ import { idFromCreds } from "./identity.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { isConsumerNotFound } from "./jetstream-missing.js";
 import { createEndpointStreams } from "./endpoint-binding.js";
-import { openAclRegistry, deleteAcl } from "./acls.js";
+import { openAclRegistry, deleteAcl, fenceAcl } from "./acls.js";
 import { openMembersRegistry, deleteMember } from "./members.js";
 import {
   BACKUP_MAX_MSGS_PER_SUBJECT,
@@ -848,6 +848,36 @@ export class DeprovisionError extends Error {
     super(message, cause !== undefined ? { cause } : undefined);
     this.name = "DeprovisionError";
     this.accounting = accounting;
+  }
+}
+
+/** Fence a retiring LIFECYCLE before its membership inventory is read: narrow its read-ACL row to no
+ *  reads ({@link fenceAcl}, a compare-and-set update that never creates the row). The delivery daemon
+ *  re-reads that exact row around every membership row a join creates, so after this returns no join
+ *  of the lifecycle keeps a row the inventory does not list. Pass a `deprovisioner` credential pinned to
+ *  this lifecycle: its exact-key ACL grants cover the read and the update, and it needs no member
+ *  channels. Reads the row through that exact-key direct get, so on a clustered broker a stale read
+ *  only loses the compare-and-set and retries. */
+export async function fenceLifecycleAcl(opts: {
+  servers: string;
+  space: string;
+  targetId: string;
+  lifecycleUid: string;
+  creds?: string;
+}): Promise<"fenced" | "absent"> {
+  const nc = await dialerFor(opts.servers)({
+    servers: opts.servers,
+    ...standaloneConnectOpts({ creds: opts.creds, tls: false }),
+    // A teardown step: fail fast, as deprovisionAgent does.
+    maxReconnectAttempts: 0,
+    timeout: 5_000,
+  });
+  try {
+    const t = deprovisionTargetPrincipal({ principal: opts.targetId, lifecycleUid: opts.lifecycleUid });
+    const kv = await new Kvm(nc).open(aclBucket(opts.space), { allow_direct: true });
+    return await fenceAcl(kv, principalKey(t.owner, t.actor).key, t.lifecycleUid);
+  } finally {
+    await nc.drain();
   }
 }
 

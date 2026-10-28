@@ -6548,10 +6548,19 @@ single-function profiles, each granting only the verbs its function needs and no
   other channels stay retained, the teardown logs the inventory as incomplete, and retirement
   remains held pending retry rather than releasing the alias. The daemon MUST NOT hold that verb
   behind its other admin commands. Requests that arrive together MAY share one read of the members
-  bucket, provided that read began after each of them arrived. Once the daemon takes a lifecycle's
-  inventory request, it MUST refuse every `durableJoin` and `durableLeave` bound to that lifecycle,
-  and it MUST begin the read only after the joins and leaves of that lifecycle already running have
-  finished, so no row of the lifecycle is written after the read begins.
+  bucket, provided that read began after each of them arrived. Before it asks for that inventory,
+  the manager MUST fence the lifecycle: it narrows the lifecycle's read-ACL row to an empty
+  `allowSubscribe` with a compare-and-set update of the existing row, keeping its ceiling and never
+  creating a row, under a deprovisioner credential pinned to that lifecycle. The daemon MUST read the
+  lifecycle's exact ACL row immediately before a `durableJoin` writes the row that creates or reopens
+  its membership, and again after that write. It MUST refuse the join when the channel is not within
+  that row, and after the write it MUST first remove the row by its exact key. Every other membership
+  write, such as a leave's tombstone or an activation, MUST update only the revision it read and MUST
+  NOT recreate a removed key. A row of a fenced lifecycle that the inventory does not list is then
+  never kept, whichever daemon process wrote it. The daemon also keeps its own fence, for a manager
+  that does not narrow: once it takes a lifecycle's inventory request, it MUST refuse every
+  `durableJoin` and `durableLeave` bound to that lifecycle, and it MUST begin the read only after the
+  joins and leaves of that lifecycle already running have finished.
 - `supervisor`: the always-on agent-lifecycle daemon (the manager process's own connection). It
   is the manager endpoint's serve credential (§13.9) and the ONLY holder of the capabilities for
   the delivery endpoint's admin commands (below).
@@ -6706,6 +6715,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-28 | **A retiring lifecycle's fence is its ACL row (Appendix B).** The fence of the next entry lived only in one daemon's memory and was checked before a join wrote its row, so a join whose ACL lookup outlived the fence, a join from a still-connected seat after a daemon restart, or a join a quiesced predecessor finished after its successor's inventory each kept one row of a retired lifecycle. The manager now narrows the lifecycle's ACL row to an empty `allowSubscribe` before it asks for the inventory. The daemon re-reads that exact row before and after the write that creates a membership row, and removes the row and refuses the join when the channel is no longer within it. Other membership writes only update the revision they read. The daemon's own refusal and its wait for running writes stay, for a manager that does not narrow, as on a hosted daemon serving older managers. No wire change. |
 | 2026-10-28 | **A lifecycle's memberships stop changing once its inventory is requested (Appendix B).** A seat's eviction closes its connection but does not settle the daemon's own work: a `durableJoin` already running, or one queued on `ctl.delivery` and authorized after the inventory against the still-live ACL row, could commit a row the inventory never listed, and retirement then kept it. Once the daemon takes a lifecycle's `lifecycleMemberships` request, it MUST refuse every `durableJoin` and `durableLeave` bound to that lifecycle, and it MUST begin the read only after the ones already running have finished. No wire change. |
 | 2026-10-27 | **The membership inventory is not held behind other admin commands (Appendix B).** A manager stop retires many lifecycles at once, and each retirement asked the delivery daemon for its `lifecycleMemberships` inventory after its eviction. The daemon answered its admin commands one at a time, so the inventories waited behind every other seat's eviction, missed their deadline, and left rows retained. The daemon now MUST NOT hold that verb behind its other admin commands. Requests that arrive together MAY share one read of the members bucket, provided the read began after each of them arrived, so every answer stays as complete as a read of its own. No wire change. |
 | 2026-10-27 | **One auth service process MAY serve several spaces in full (§10, §13.13, Appendix B), additive.** One process may serve several spaces' exchange and JWKS as one full auth service per space. Each space's exchange is served on listeners of its own and mints only from that space's keys and ledger; each space keeps its own authority plane, claim row, scanner connections and fence, and a fence downs that space's service alone. Such a process holds one `issuer` session per space, never shared across spaces or accounts. |

@@ -30,6 +30,7 @@ import {
   connectorServers,
   spawnEnvAllow,
   deprovisionAgent,
+  fenceLifecycleAcl,
   DeprovisionError,
   addDeprovisionAccounting,
   type DeprovisionResourceAccounting,
@@ -5226,10 +5227,15 @@ export class Manager {
     // Durable membership rows are lifecycle-keyed per concrete channel. Start with the launch's
     // concrete read channels, then include wildcard-covered and unnamed channels from the inventory.
     const memberChannels = new Set((a.launch?.allowSubscribe ?? []).filter(isConcreteChannel));
+    // Fence the lifecycle before its inventory is read: its read-ACL row narrowed to no reads, which
+    // every durable join re-reads around the row it writes, so a join the inventory does not see
+    // removes its own row. A fence that cannot be written makes the inventory incomplete.
+    const unfenced = await this.fenceRetiringAcl(a);
     // Complete the set from the delivery daemon's lifecycle-exact inventory, which covers rows on
     // wildcard-granted channels and teardowns that carry no launch spec. An inventory that cannot be
     // read leaves those rows RETAINED and says so; it never widens the delete beyond exact keys.
-    const inventory = await this.lifecycleMembershipInventory(a);
+    const listed = await this.lifecycleMembershipInventory(a);
+    const inventory = unfenced === undefined ? listed : { ...listed, complete: false, reason: `the ACL fence was not written (${unfenced})${listed.complete ? "" : `; ${listed.reason}`}` };
     for (const ch of inventory.channels) memberChannels.add(ch);
     if (!inventory.complete)
       console.error(`deprovision ${a.name} (${a.id}): membership inventory incomplete (${inventory.reason}); rows on channels outside its launch policy stay RETAINED for uid ${a.lifecycleUid}`);
@@ -5254,6 +5260,22 @@ export class Manager {
     if (!inventory.complete)
       throw new DeprovisionError(`membership inventory incomplete (${inventory.reason}); rows on channels outside its launch policy stay RETAINED for uid ${a.lifecycleUid}`, accounting);
     return accounting;
+  }
+
+  /** Narrow the retiring lifecycle's read-ACL row to no reads ({@link fenceLifecycleAcl}) through a
+   *  `deprovisioner` credential pinned to it. Returns undefined once fenced, or the reason it was not. */
+  private async fenceRetiringAcl(a: { id: string; lifecycleUid: string }): Promise<string | undefined> {
+    try {
+      const creds = await mintCreds(this.auth!, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: a.id, lifecycleUid: a.lifecycleUid, memberChannels: [] } });
+      await withTimeout(
+        fenceLifecycleAcl({ servers: this.servers ?? DEFAULT_SERVER, space: this.space, targetId: a.id, lifecycleUid: a.lifecycleUid, creds }),
+        DEPROVISION_TIMEOUT_MS,
+        `fence ${a.id}: the ACL fence timed out`,
+      );
+      return undefined;
+    } catch (e) {
+      return rejectionText(e);
+    }
   }
 
   /** The retiring lifecycle's durable membership channels, read from the delivery daemon's

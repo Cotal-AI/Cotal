@@ -167,6 +167,29 @@ async function main() {
   await tombstoneMember(kv, "team.api", E, lid(E), 120, W, 2); // a CURRENT leave (matching gen) succeeds
   check("current leave via tombstoneMember (expectedGen=2) tombstones at leaveCursor", (await readMember(kv, "team.api", E, lid(E)))?.record.leaveCursor === 120);
 
+  // ---- with no expected generation, a tombstone pins the generation it first read: a rejoin that lands
+  //      between its read and its write is refused as stale, never tombstoned on the CAS retry ----
+  await commitMember(kv, rec({ channel: "pin", owner: E, generation: 1, joinCursor: 10 }));
+  const update = kv.update.bind(kv);
+  let rejoined = false;
+  kv.update = async (k, d, v, ...rest) => {
+    if (!rejoined && k === memberKey("pin", E, lid(E))) {
+      rejoined = true;
+      await commitMember(kv, rec({ channel: "pin", owner: E, generation: 2, joinCursor: 20 }));
+    }
+    return update(k, d, v, ...rest);
+  };
+  let pinThrew = false;
+  try { await tombstoneMember(kv, "pin", E, lid(E), 30, W); } catch (e) { pinThrew = e instanceof StaleMembershipWrite; }
+  kv.update = update;
+  const pinned = await readMember(kv, "pin", E, lid(E));
+  check("a tombstone with no expected generation refuses a rejoin that landed before its write — gen2 stays open",
+    pinThrew && rejoined && pinned?.record.generation === 2 && pinned.record.leaveCursor === undefined, pinned?.record);
+  // ---- an update-only tombstone never recreates a purged row ----
+  await commitMember(kv, rec({ channel: "purged", owner: E, generation: 1, joinCursor: 10 }));
+  await deleteMember(kv, "purged", E, lid(E));
+  check("a tombstone of a purged row writes nothing", (await tombstoneMember(kv, "purged", E, lid(E), 30, W, 1)) === undefined && (await readMember(kv, "purged", E, lid(E))) === undefined);
+
   // ---- activation completing AFTER a same-generation leave must NOT resurrect the membership (reopen §7)
   // (review-general-2 BLOCKER: commitMember allows same-generation updates, so a blind activation flip
   //  would CLOBBER a same-gen tombstone — clear its leaveCursor. activateMember refuses via CAS unless the

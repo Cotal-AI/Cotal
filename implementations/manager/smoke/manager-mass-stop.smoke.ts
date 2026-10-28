@@ -10,9 +10,10 @@
  *     requested: the rest wait for a slot, and a chat session's terminal and a static reconcile's
  *     terminal wait for the same slots;
  *   - every seat's inventory is requested only after its own eviction returned
- *     (static-lifecycle.ts: `evictAndAudit` is awaited before `cleanupStaticSlotOnce`). The eviction
- *     does not settle a join or leave the daemon is already running; the daemon's per-lifecycle fence
- *     does, and `smoke:lifecycle-inventory-concurrency` counts it;
+ *     (static-lifecycle.ts: `evictAndAudit` is awaited before `cleanupStaticSlotOnce`), and reaches the
+ *     daemon with the lifecycle's ACL row already narrowed to no reads. The eviction does not settle a
+ *     join or leave the daemon is already running; the ACL fence and the daemon's per-lifecycle marks
+ *     do, and `smoke:retire-fence-lifetime` and `smoke:lifecycle-inventory-concurrency` count them;
  *   - after the stop, 0 membership rows of the retired lifecycles remain on the broker, including the
  *     ones on a wildcard-granted channel only the inventory can name, and no retirement reports its
  *     inventory as incomplete.
@@ -28,13 +29,14 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, renam
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  CONTROL_DELIVERY_ADMIN, controlServiceSubject, createSpaceAuth, DEV_OWNER, liveKvEntries, mintCreds, mintLifecycleUid, newIdentity, openMembersRegistry,
-  parseMemberKey, registry, setupSpaceStreams, type Connector, type ControlReply, type ControlRequest, type LaunchOpts, type LaunchSpec,
+  CONTROL_DELIVERY_ADMIN, controlServiceSubject, createSpaceAuth, DEV_OWNER, liveKvEntries, mintCreds, mintLifecycleUid, newIdentity, openAclRegistry, openMembersRegistry,
+  parseMemberKey, readAcl, registry, setupSpaceStreams, type Connector, type ControlReply, type ControlRequest, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { MeshAgent, configFromEnv } from "@cotal-ai/connector-core";
 import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import type { KV } from "@nats-io/kv";
 import { Manager } from "../src/manager.js";
 import { bootBroker } from "./_boot-broker.js";
 import { bootDeliveryDaemon } from "./_boot-delivery.js";
@@ -81,9 +83,14 @@ try {
   });
   // When each eviction returned, by principal.
   const evictedAt = new Map<string, number>();
+  // Whether each inventory found its lifecycle's ACL row narrowed to no reads when it reached the daemon.
+  const fencedAtInventory: boolean[] = [];
+  let aclKv: KV | undefined;
   const d = daemon.ep as unknown as { handleDeliveryAdmin(req: ControlRequest): Promise<ControlReply> };
   const handle = d.handleDeliveryAdmin.bind(d);
   d.handleDeliveryAdmin = async (req) => {
+    if (req.op === "lifecycleMemberships" && aclKv)
+      fencedAtInventory.push((await readAcl(aclKv, String(req.args?.principal), String(req.args?.lifecycleUid)))?.record.allowSubscribe.length === 0);
     const reply = await handle(req);
     if (req.op === "evictPrincipal" && reply.ok) evictedAt.set(String(req.args?.principal), Date.now());
     return reply;
@@ -91,6 +98,7 @@ try {
   // Every request the stop sends on the daemon's admin rail, as it is published.
   const observerId = newIdentity();
   observer = await connect({ servers: broker.servers, inboxPrefix: `_INBOX_${observerId.id}`, authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, observerId, "delivery"))) });
+  aclKv = await openAclRegistry(observer, space);
   const published: { op: string; principal: string; at: number }[] = [];
   const rail = observer.subscribe(controlServiceSubject(space, CONTROL_DELIVERY_ADMIN, "*", "*"));
   void (async () => {
@@ -206,6 +214,8 @@ try {
     { evictions: evictionsSent.length, inventories: inventories.length });
   const early = inventories.filter((p) => !(evictedAt.get(p.principal)! <= p.at));
   check("each seat's inventory was requested only after its own eviction returned", early.length === 0 && inventories.length === SEATS, early);
+  check(`each of the ${SEATS} inventories reached the daemon with its lifecycle's ACL row already fenced`,
+    fencedAtInventory.length === SEATS && fencedAtInventory.every(Boolean), { fenced: fencedAtInventory.filter(Boolean).length, of: fencedAtInventory.length });
 
   const after = (await rows()).filter((r) => uids.has(r.lifecycleUid));
   check("0 membership rows of the retired lifecycles remain on the broker", after.length === 0, after);

@@ -269,6 +269,39 @@ async function writeAcl(
   );
 }
 
+/**
+ * Fence a retiring lifecycle: narrow its read-ACL row to `allowSubscribe: []`, keeping the mint-time
+ * ceiling. A compare-and-set update of the existing row at the revision just read, retried when the
+ * revision moved; it NEVER creates a row. Returns `"absent"` when there is no usable row (never written,
+ * deleted, purged or garbled): a durable join re-reads this exact row and refuses on any of those, so
+ * the lifecycle is already closed to new membership rows. Throws when the update keeps losing.
+ */
+export async function fenceAcl(kv: KV, owner: string, lifecycleUid: string): Promise<"fenced" | "absent"> {
+  const key = aclKey(owner, lifecycleUid);
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const cur = await readAcl(kv, owner, lifecycleUid);
+    if (!cur) return "absent";
+    if (cur.record.allowSubscribe.length === 0) return "fenced";
+    const next: AclRecord = {
+      allowSubscribe: [],
+      issuedAllowSubscribe: [...(cur.record.issuedAllowSubscribe ?? cur.record.allowSubscribe)],
+      revision: (cur.record.revision ?? 0) + 1,
+      updatedAt: Date.now(),
+    };
+    try {
+      await kv.update(key, new TextEncoder().encode(JSON.stringify(next)), cur.revision);
+      return "fenced";
+    } catch (e) {
+      lastErr = e; // the row moved, or was removed, under us: re-read
+    }
+  }
+  throw new Error(
+    `acl fence exhausted retries for ${owner} uid ${lifecycleUid}${lastErr ? ` - last error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}` : ""}`,
+    lastErr instanceof Error ? { cause: lastErr } : undefined,
+  );
+}
+
 /** Permanently remove one LIFECYCLE's ACL row (GC / footprint deletion — revocation deletes the
  *  footprint AFTER invalidating creds). Lifecycle-exact by construction: a replayed delete for a
  *  retired lifecycle names a key the successor's row does not share. Distinct from a
