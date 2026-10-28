@@ -129,3 +129,8 @@ export function readBrokerPolicy(root: string): BrokerPolicy | undefined {
 
   return { version: 1, transport: { kind: "tls-required", certFile: t.certFile, keyFile: t.keyFile }, ...limits };
 }
+
+/** Node's codes for a certificate chain this client does not trust: a self-signed certificate, or
+ *  one whose CA is not among Node's trusted CAs, which `NODE_EXTRA_CA_CERTS` adds. An expired
+ *  certificate, or one that names another host, is not among them. */
+export const UNTRUSTED_CERTIFICATE: ReadonlySet<string> = new Set(["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "CERT_UNTRUSTED"]);

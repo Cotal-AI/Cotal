@@ -198,6 +198,7 @@ import {
   spaceNameTooLong,
   MIN_FILE_STORE,
   NATS_PIDFILE,
+  UNTRUSTED_CERTIFICATE,
   exitCode,
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
@@ -4571,9 +4572,6 @@ function brokerRecoveryEvidence(log?: string): { evidence: number; restoring: bo
   const restored = text.match(/Restored \d/g)?.length ?? 0;
   return { evidence: size + restored, restoring: started > restored };
 }
-
-/** Node's codes for a certificate chain this client does not trust. */
-const UNTRUSTED_CERTIFICATE = new Set(["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "CERT_UNTRUSTED"]);
 
 /** Throw when the TLS listener at `server` answers and this client refuses its certificate in the
  *  handshake, which waiting does not change. It dials as the setup that follows does. */

@@ -112,6 +112,31 @@ export function localeIsUtf8(env: NodeJS.ProcessEnv = process.env): boolean {
   return !locale || /utf-?8/i.test(locale);
 }
 
+/** `prefix` then `text` wrapped to `width`, each continuation line indented under the text, each
+ *  piece painted on its own. */
+export function hang(prefix: string, text: string | readonly string[], width: number, paint: (s: string) => string = (s) => s): string[] {
+  return wrapWords(text, width - prefix.length).map((piece, i) => (i === 0 ? prefix : " ".repeat(prefix.length)) + paint(piece));
+}
+
+/** The lines of a `✗` failure or `↳` hint on stderr, wrapped at spaces to the terminal, each
+ *  continuation line under the text. Its control characters are shown as escapes, as a report shows
+ *  them (see {@link oneLine}), because the text can quote a file or an argument. Under a locale that
+ *  is not UTF-8 it is written as plain writes it: `!` for the failure mark and the punctuation in
+ *  ASCII. A `whole` text, such as a remedy that is one command, is never broken: one wider than the
+ *  line runs past it. `paint` colors only when stderr is colored. */
+export function stderrLines(prefix: string, text: string, paint: (s: string) => string, whole = false): string[] {
+  const ascii = !localeIsUtf8();
+  const lead = ascii ? plainPunctuation(prefix.replace("✗", "!")) : prefix;
+  const shown = oneLine(text);
+  const words = ascii ? plainPunctuation(shown) : shown;
+  return paintFor(process.stderr, () => hang(lead, whole ? [words] : words, terminalWidth(process.stderr)).map(paint));
+}
+
+/** A `✗` failure or `↳` hint on stderr, in the {@link stderrLines} that fit the terminal. */
+export function stderrLine(prefix: string, text: string, paint: (s: string) => string, whole = false): void {
+  for (const line of stderrLines(prefix, text, paint, whole)) console.error(line);
+}
+
 /** Whether `style` draws marks: rich style does, under a UTF-8 locale. */
 const marks = (style: Style): boolean => style === "rich" && localeIsUtf8();
 

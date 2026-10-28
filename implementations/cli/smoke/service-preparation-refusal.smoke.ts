@@ -32,7 +32,8 @@
  * status. A second instance whose readiness address the first one answers is refused before launch,
  * naming the address and that instance, and no instance is recorded for it. A process with process
  * readiness that exits at once fails its start, exit 5, recording its exit code, and its restart is
- * partial, exit 4, naming that exit code and its log. One that exits after readiness stays recorded
+ * partial, exit 4, naming that exit code and its log. When the last line it logged is over 1000
+ * characters, the refusal quotes its start and its `; next:` step. One that exits after readiness stays recorded
  * running with its process gone and no exit code, and its `service status --instance` Next names
  * that instance's `service logs`, which shows the line it logged. A running or stopped instance's
  * status has no Next.
@@ -351,6 +352,15 @@ const answering = (port: number, status: number) => ({ type: "process", executab
   const after = run(["service", "status", "broken", "--space", "b1"]);
   check("status then shows it failed with exit code 1", after.envelope?.result?.recordedState === "failed" && (after.envelope.result.exit as { code?: number } | null)?.code === 1, after.envelope?.result);
   check("rig: the definition is forgotten", run(["service", "remove", "broken", "--space", "b1", "--yes"]).status === 0);
+  // A last line longer than the quote holds keeps its start and its next step.
+  const line = `fatal: ${"cause ".repeat(200)}; next: run the step that clears it`, longFile = join(home, "long.json");
+  writeFileSync(longFile, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: "/bin/sh", args: ["-c", "printf '%s\\n' \"$0\"; exit 1", line], cwd: root }, readiness: { type: "process", timeoutMs: 3000 } }));
+  check("rig: a definition whose process logs one long line and exits 1 is saved", run(["service", "add", "long", "--file", longFile, "--space", "b1"]).status === 0);
+  const long = run(["service", "start", "long", "--space", "b1"]);
+  const quote = (long.envelope?.error?.message ?? "").split("the last line it logged is: ")[1] ?? "";
+  check("a start whose last logged line is over 1000 characters quotes its start and its next step, naming its length where the middle was cut",
+    exited(long) && line.length > 1000 && quote.startsWith(line.slice(0, 500)) && quote.endsWith(`… (${line.length} characters); next: run the step that clears it`) && quote.length < line.length, shown(long));
+  check("rig: the long definition is forgotten", run(["service", "remove", "long", "--space", "b1", "--yes"]).status === 0);
 }
 
 // A process that exits after its readiness was recorded, as a crash leaves it. Nothing observed its

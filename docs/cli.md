@@ -4955,11 +4955,16 @@ saved service runs, `install` refuses it as `stop` does and names `cotal down`.
 
 A manager that fails while it starts writes one last line that names the cause:
 `the manager did not start`, then the failure's code and message, the error it wraps and its
-remedy. `start` fails `OPERATION_FAILED`, exit 5, and quotes that line, and
-`cotal service logs manager --instance <id>` shows it. With `--foreground` the line goes to this
-terminal on stderr, after the `Mesh:` heading and lifetime notice that `start` prints there first,
-and the refusal says `its output went to this terminal and was not captured in its log` and names
-no log.
+one next step after `; next:`. `start` fails `OPERATION_FAILED`, exit 5, and quotes that line,
+whole up to 1000 characters. A longer line is quoted by its start and its `; next:` step, with its
+length where the middle was cut. `cotal service logs manager --instance <id>` shows the whole line.
+When the error ends in a certificate this machine does not trust, such as
+`UNABLE_TO_VERIFY_LEAF_SIGNATURE`, Node's message stays as the cause, and the next step is to set
+`NODE_EXTRA_CA_CERTS` to the CA file, or the self-signed certificate, for the command that starts
+the manager, as the `--tls-cert` row of [up](#up) says. With `--foreground` the line goes to this
+terminal on stderr, wrapped at its width as the CLI's own lines are, after the `Mesh:` heading and
+lifetime notice that `start` prints there first, and the refusal says
+`its output went to this terminal and was not captured in its log` and names no log.
 
 `manager start` and `manager restart` run the first-run connector seed, as `cotal supervise` does,
 so a fresh machine or container has its connectors before the manager boots; `status`, `logs`,
@@ -5022,7 +5027,7 @@ Next names the folder that hosts the space.
 | `--console-port <n>` | none | Protocol-console port |
 | `--console-host <host>` | loopback | Bind host for the console endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets the browser console reach this manager from another machine. `cotal attach` does not use this face: it redeems a mesh session grant over the broker |
 | `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair keeps it |
-| `--seat-cap <n\|unlimited>` | `unlimited` | Live seats this manager admits for one owner. `unlimited` leaves the manager's own 50-slot ceiling as the only bound, so a mesh with one owner keeps every slot. Set a number where several owners share a manager, and one owner cannot take the host. A launch over it is refused before anything is reserved, naming the owner's count, the cap and the remedy. It is recorded in this root, so a later start without the flag keeps it |
+| `--seat-cap <n\|unlimited>` | `unlimited` | Live seats this manager admits for one owner. `unlimited` leaves the manager's own 50-slot ceiling as the only bound, so a mesh with one owner keeps every slot. Set a number where several owners share a manager, and one owner cannot take the host. A launch over it is refused before anything is reserved, naming the owner's count, the cap and the remedy. It is recorded in this root, so a later start without the flag keeps it. A recorded cap that cannot be read fails the start, naming the record's path, and the next step is to remove or repair that record. With no record, the start uses `unlimited` |
 | `--name <name>` | none | The manager's name. Its presence card carries it, `who --all` and the manager choice show it, and `--on` takes it on a user-auth mesh. It is recorded in this root, so a later start without `--name` keeps it. Without a name, the manager shows as `<host>/<runtime>` |
 | `--roster <file>` | none | Declarative roster to boot at startup. See [Roster files](define-a-team.md#roster-files) |
 | `--launch <spec>` | none | Resolved manifest launch spec (from `up -f` / `team boot`) |
@@ -9389,7 +9394,8 @@ Process readiness waits up to one second, or its deadline when that is shorter, 
 exit. One that exits by then fails the start with `OPERATION_FAILED`, exit 5, and its exit code is
 recorded; a restart whose replacement exits so is partial, exit 4, and names that exit code. A
 background start also quotes the last line the process logged during that launch, and says its log
-records the cause when it logged nothing. A foreground start says its output went to this terminal
+records the cause when it logged nothing. A line over 1000 characters is quoted by its start and its
+last `; next:` step. A foreground start says its output went to this terminal
 and was not captured in its log, and names no log to read. A live
 creation-pinned direct process is reported Running. HTTP readiness uses
 a bounded loopback request with credentials omitted and redirects disabled. Its success is
