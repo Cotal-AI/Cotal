@@ -49,13 +49,6 @@ async function listCodexModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalo
   // probe from looking like a managed seat. A later PATH change cannot pick a different file.
   const bin = process.env.COTAL_CODEX_BIN?.trim() || opts.resolvedBinaries?.codex || "codex";
   const child = spawn(bin, ["app-server"], { env: discoveryEnv(), stdio: ["pipe", "pipe", "ignore"] });
-  const kill = (): void => {
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      /* ignore */
-    }
-  };
   try {
     const result = await new Promise<{ data?: CodexModelEntry[] }>((resolvePromise, reject) => {
       const timer = setTimeout(() => reject(new Error("codex app-server model/list timed out (10s)")), 10_000);
@@ -118,7 +111,7 @@ async function listCodexModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalo
       }));
     return { source: "codex app-server model/list", models };
   } finally {
-    kill();
+    child.kill("SIGKILL");
   }
 }
 

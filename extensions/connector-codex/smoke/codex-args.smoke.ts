@@ -3,11 +3,14 @@
  * rendering and every declared fail-loud edge. Run: pnpm smoke:codex-args
  */
 import { strict as assert } from "node:assert";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { ChildProcess } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry } from "@cotal-ai/core";
 import { configFromEnv, controlFromEnv } from "@cotal-ai/connector-core";
+import { AppServerDriver } from "../src/app-server.js";
 import { codexConnector } from "../src/index.js";
 
 let pass = 0;
@@ -243,6 +246,196 @@ try {
   check("variant support is declared", codexConnector.supportsModelVariant === true);
   check("resume support is NOT declared (pre-mint preflight)", codexConnector.supportsResume !== true);
   check("requires names the codex binary", Array.isArray(codexConnector.requires) && codexConnector.requires.includes("codex"));
+
+  // listModels + AppServerDriver.stop: child.kill("SIGKILL") is called bare without an empty
+  // catch block. Node's ChildProcess.kill returns false on an already-exited or unspawned child
+  // and throws only when the signal itself is invalid, which must propagate rather than be swallowed.
+  const fakeCatalog = join(dir, "codex-catalog.mjs");
+  writeFileSync(
+    fakeCatalog,
+    `#!${process.execPath}
+import { createInterface } from "node:readline";
+const rl = createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.id === 1) {
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { userAgent: "fake/0.145.0" } }) + "\\n");
+  } else if (msg.id === 2) {
+    process.stdout.write(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      result: { data: [{ id: "gpt-5.4", model: "gpt-5.4", displayName: "GPT-5.4" }] },
+    }) + "\\n");
+  }
+});
+setInterval(() => {}, 1000);
+`,
+  );
+  chmodSync(fakeCatalog, 0o755);
+
+  const fakeExitEarly = join(dir, "codex-exit-early.mjs");
+  writeFileSync(
+    fakeExitEarly,
+    `#!${process.execPath}
+import { createInterface } from "node:readline";
+const rl = createInterface({ input: process.stdin });
+let lines = 0;
+rl.on("line", () => {
+  if (++lines >= 2) process.exit(0);
+});
+`,
+  );
+  chmodSync(fakeExitEarly, 0o755);
+
+  const fakeIgnoreTerm = join(dir, "codex-ignore-term.mjs");
+  writeFileSync(
+    fakeIgnoreTerm,
+    `#!${process.execPath}
+import { createRequire } from "node:module";
+const require = createRequire(${JSON.stringify(fileURLToPath(new URL("../package.json", import.meta.url)))});
+const { WebSocketServer } = require("ws");
+process.on("SIGTERM", () => {});
+const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+wss.on("listening", () => {
+  process.stderr.write("listening on: ws://127.0.0.1:" + wss.address().port + "\\n");
+});
+wss.on("connection", (ws) => {
+  ws.on("message", (raw) => {
+    for (const line of String(raw).split("\\n").filter(Boolean)) {
+      const msg = JSON.parse(line);
+      if (msg.method === "initialize") {
+        ws.send(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { userAgent: "fake/0.145.0" } }) + "\\n");
+      } else if (msg.method === "thread/start") {
+        ws.send(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: "t-1" }, model: "gpt-5.4" } }) + "\\n");
+      } else if (msg.method === "thread/inject_items") {
+        ws.send(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }) + "\\n");
+      }
+    }
+  });
+});
+setInterval(() => {}, 1000);
+`,
+  );
+  chmodSync(fakeIgnoreTerm, 0o755);
+
+  const realKill = ChildProcess.prototype.kill;
+  const killCalls: { signal: NodeJS.Signals | number | undefined; ret: boolean | null; threw: string | null }[] = [];
+  const children: ChildProcess[] = [];
+  let forceInvalidSigkill = false;
+  ChildProcess.prototype.kill = function (this: ChildProcess, signal?: NodeJS.Signals | number): boolean {
+    children.push(this);
+    const sig = forceInvalidSigkill && signal === "SIGKILL" ? ("SIGPROBE" as NodeJS.Signals) : signal;
+    try {
+      const ret = realKill.call(this, sig);
+      killCalls.push({ signal, ret, threw: null });
+      return ret;
+    } catch (e) {
+      killCalls.push({ signal, ret: null, threw: (e as NodeJS.ErrnoException).code ?? (e as Error).message });
+      throw e;
+    }
+  };
+  try {
+    killCalls.length = 0;
+    const cat = await codexConnector.listModels!({ resolvedBinaries: { codex: fakeCatalog } });
+    check(
+      "listModels returns the catalog and kills the live app-server child with SIGKILL",
+      cat.models.length === 1 && cat.models[0]?.id === "gpt-5.4" && killCalls.at(-1)?.signal === "SIGKILL" && killCalls.at(-1)?.ret === true,
+      killCalls,
+    );
+
+    killCalls.length = 0;
+    let earlyErr = "";
+    try {
+      await codexConnector.listModels!({ resolvedBinaries: { codex: fakeExitEarly } });
+    } catch (e) {
+      earlyErr = (e as Error).message;
+    }
+    check(
+      "listModels on an already-exited child calls SIGKILL bare (returns false without throwing)",
+      /exited \(0\) before model\/list answered/.test(earlyErr) &&
+        killCalls.at(-1)?.signal === "SIGKILL" &&
+        killCalls.at(-1)?.ret === false &&
+        killCalls.at(-1)?.threw === null,
+      { earlyErr, killCalls },
+    );
+
+    killCalls.length = 0;
+    let enoentCode = "";
+    try {
+      await codexConnector.listModels!({ resolvedBinaries: { codex: join(dir, "missing-codex") } });
+    } catch (e) {
+      enoentCode = (e as NodeJS.ErrnoException).code ?? "";
+    }
+    check(
+      "listModels on an unspawned child (ENOENT) calls SIGKILL bare (returns false without throwing)",
+      enoentCode === "ENOENT" &&
+        killCalls.at(-1)?.signal === "SIGKILL" &&
+        killCalls.at(-1)?.ret === false &&
+        killCalls.at(-1)?.threw === null,
+      { enoentCode, killCalls },
+    );
+
+    killCalls.length = 0;
+    forceInvalidSigkill = true;
+    let invalidSigCode = "";
+    try {
+      await codexConnector.listModels!({ resolvedBinaries: { codex: fakeCatalog } });
+    } catch (e) {
+      invalidSigCode = (e as NodeJS.ErrnoException).code ?? "";
+    } finally {
+      forceInvalidSigkill = false;
+      for (const c of children) realKill.call(c, "SIGKILL");
+    }
+    check(
+      "listModels does not swallow a kill throw in finally",
+      invalidSigCode === "ERR_UNKNOWN_SIGNAL",
+      { invalidSigCode, killCalls },
+    );
+
+    killCalls.length = 0;
+    const stopHome1 = join(dir, "stop-home-1");
+    mkdirSync(stopHome1, { recursive: true });
+    const driver1 = new AppServerDriver({ cwd: dir, codexHome: stopHome1, configOverrides: [], bin: fakeIgnoreTerm, log: () => {} });
+    await driver1.start();
+    await driver1.stop();
+    check(
+      "AppServerDriver.stop escalates from SIGTERM to SIGKILL when the child ignores SIGTERM",
+      killCalls.length === 2 &&
+        killCalls[0]?.signal === "SIGTERM" &&
+        killCalls[1]?.signal === "SIGKILL" &&
+        killCalls[1]?.ret === true &&
+        killCalls[1]?.threw === null,
+      killCalls,
+    );
+
+    const stopHome2 = join(dir, "stop-home-2");
+    mkdirSync(stopHome2, { recursive: true });
+    const driver2 = new AppServerDriver({ cwd: dir, codexHome: stopHome2, configOverrides: [], bin: fakeIgnoreTerm, log: () => {} });
+    await driver2.start();
+    let stopEscalationThrow = "";
+    const onUncaught = (e: Error): void => {
+      stopEscalationThrow = (e as NodeJS.ErrnoException).code ?? e.message;
+      const last = children.at(-1);
+      if (last) realKill.call(last, "SIGKILL");
+    };
+    process.once("uncaughtException", onUncaught);
+    forceInvalidSigkill = true;
+    try {
+      await driver2.stop();
+    } finally {
+      forceInvalidSigkill = false;
+      process.removeListener("uncaughtException", onUncaught);
+      for (const c of children) realKill.call(c, "SIGKILL");
+    }
+    check(
+      "AppServerDriver.stop escalation does not swallow a kill throw",
+      stopEscalationThrow === "ERR_UNKNOWN_SIGNAL",
+      stopEscalationThrow,
+    );
+  } finally {
+    ChildProcess.prototype.kill = realKill;
+    for (const c of children) realKill.call(c, "SIGKILL");
+  }
 
   console.log(`\n${pass} checks passed`);
 } finally {
