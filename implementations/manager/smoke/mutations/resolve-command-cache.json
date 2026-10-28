@@ -16,8 +16,8 @@
     {
       "name": "narrow invoke handles are not retained by command set",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      if (cached) return cached;",
-      "replace": "      if (cached && false) return cached;",
+      "find": "      const cached = commandCache?.get(cacheKey);",
+      "replace": "      const cached = undefined as ResolvedService | undefined;",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "alternating invokes retain each command handle instead of re-resolving the first command",
       "cell": "alternating invokes retain each command handle instead of re-resolving the first command"
