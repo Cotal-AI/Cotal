@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.119.3
+
+### Patch Changes
+
+- 8866e1e: Endpoint calls now resolve only the command contracts they need instead of fetching the endpoint's complete visible surface. Manager operations that used to read 124 contract-store artifacts for a 40-command surface now read six artifacts for one command, while `describe` still resolves every visible command.
+
 ## 0.119.2
 
 No changes in this release.
