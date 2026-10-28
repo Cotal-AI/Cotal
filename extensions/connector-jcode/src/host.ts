@@ -767,7 +767,10 @@ export async function runJcodeHost(): Promise<void> {
   };
   /** Reserve a batch for the duration of one handover, returning its release. Idempotent per key:
    *  a key already reserved by another path is not selected, so double reservation cannot arise. */
-  const reserveForHandover = (keys: string[]): (() => void) => {
+  const reserveForHandover = (keys: string[]): (() => void) | undefined => {
+    // Keep the native deliveries owned while the host hands them over and waits for turn success.
+    // Refusing the hold must defer the whole handover, never surface an unprotected batch.
+    if (!agent.holdInFlight(keys)) return undefined;
     const batch = new Set(keys);
     heldReservations.add(batch);
     for (const key of keys) reservedIds.add(key);
@@ -775,7 +778,11 @@ export async function runJcodeHost(): Promise<void> {
     return () => {
       if (released) return;
       released = true;
-      heldReservations.delete(batch);
+      // Recovery or stop may already have released this handover, before a new one took its keys.
+      if (!heldReservations.delete(batch)) return;
+      // Accepted keys transfer this hold to the containing turn's ledger. A failed handover
+      // releases its keys without acknowledging them, so the broker can redeliver.
+      agent.releaseInFlight([...batch].filter((key) => !surfacedIds.includes(key)));
       // Delete only what no OTHER live handover also holds, so releasing one batch cannot unreserve
       // a key another in-flight handover is still relying on.
       const stillHeld = new Set<string>();
@@ -871,6 +878,10 @@ export async function runJcodeHost(): Promise<void> {
   const shutdown = async (code = 0): Promise<void> => {
     if (stopping) return;
     stopping = true;
+    agent.releaseInFlight(surfacedIds);
+    surfacedIds = [];
+    for (const batch of heldReservations) agent.releaseInFlight([...batch]);
+    heldReservations.clear();
     eventWaitStop.abort();
     if (fallbackTimer !== undefined) {
       clearTimeout(fallbackTimer);
@@ -988,6 +999,7 @@ export async function runJcodeHost(): Promise<void> {
     const committed = surfacedIds;
     surfacedIds = [];
     agent.drainInboxDeliveries(committed);
+    agent.releaseInFlight(committed);
     publishInboundHealth();
   };
 
@@ -1016,6 +1028,7 @@ export async function runJcodeHost(): Promise<void> {
       const committed = surfacedIds;
       surfacedIds = [];
       agent.drainInboxDeliveries(committed);
+      agent.releaseInFlight(committed);
     }
     // Kickoff excludes the automatic inbox. Preserve that deferred work even when ordinary
     // dnd traffic contributes nothing to pendingWake(). Pull-only traffic stays excluded.
@@ -1053,6 +1066,12 @@ export async function runJcodeHost(): Promise<void> {
       briefed = true;
       const briefing = agent.channelBriefing();
       if (briefing) parts.unshift(briefing);
+    }
+    // The prompt is not dispatched unless every selected delivery can remain owned until its
+    // containing turn settles. MeshAgent renews these holds with JetStream in-progress acks.
+    if (!agent.holdInFlight(ids)) {
+      driving = false;
+      return;
     }
     turnActive = true;
     surfacedIds = [...ids];
@@ -1155,6 +1174,7 @@ export async function runJcodeHost(): Promise<void> {
       const committed = surfacedIds;
       surfacedIds = [];
       if (committed.length) agent.drainInboxDeliveries(committed);
+      agent.releaseInFlight(committed);
       publishInboundHealth();
       // A turn that SUCCEEDS clears the backoff: the next failure starts from the short delay again
       // rather than inheriting a penalty the seat has already recovered from.
@@ -1165,6 +1185,7 @@ export async function runJcodeHost(): Promise<void> {
     } catch (error) {
       closeEventRun(error as Error);
       await events?.settled();
+      agent.releaseInFlight(surfacedIds);
       surfacedIds = [];
       consecutiveFailures++;
       const condition = jcodeTurnCondition(error);
@@ -1235,6 +1256,7 @@ export async function runJcodeHost(): Promise<void> {
         // the batch unselectable by any concurrent path without claiming it was accepted.
         const keys = items.map((item) => item.recvKey);
         const release = reserveForHandover(keys);
+        if (!release) return;
         // NOT gated, and this is a correctness point rather than an optimisation. The soft interrupt
         // goes out via the SDK's `requestOk`, whose reply is matched by `reply_to` against the
         // request's own id, so its acceptance is ALREADY correlated and cannot be satisfied by
@@ -1464,6 +1486,7 @@ export async function runJcodeHost(): Promise<void> {
     // Reserving makes the batch unselectable; only verified acceptance promotes it to the ledger the
     // turn boundary acks. Any other outcome releases, leaving the delivery owed and un-acked.
     const release = reserveForHandover(keys);
+    if (!release) return;
     // Observe `message_accepted` OURSELVES rather than inferring acceptance from the await.
     //
     // Found in review, and it is the difference between a late delivery and a lost one. The SDK's
@@ -1644,6 +1667,7 @@ export async function runJcodeHost(): Promise<void> {
     reconnecting = true;
     turnActive = false;
     driving = false;
+    agent.releaseInFlight(surfacedIds);
     surfacedIds = []; // deliberately unacked; the replacement redrives the durable inbox batch
     // Same reasoning: the replacement redrives the durable batch, so reservations held against the
     // lost bridge must not keep those items unselectable on the new one.
@@ -1653,6 +1677,7 @@ export async function runJcodeHost(): Promise<void> {
     // each one's own release checks `client !== current` and returns without promoting, so nothing
     // is in flight that could still land. At the new-turn boundary the bridge is alive and the
     // handover may still be awaiting acceptance, which is why that site re-derives instead.
+    for (const batch of heldReservations) agent.releaseInFlight([...batch]);
     heldReservations.clear();
     reservedIds = new Set();
     void agent.setStatus("waiting").catch(() => {});
@@ -1764,6 +1789,8 @@ export async function runJcodeHost(): Promise<void> {
     // SDK's own run(): a frame naming another session is not this seat's.
     connected.on("harness_error", (event: ApiEvent) => {
       if (driving || event.ev !== "error" || ("session_id" in event && event.session_id !== sessionId)) return;
+      agent.releaseInFlight(surfacedIds);
+      surfacedIds = [];
       const condition = jcodeTurnCondition(new HarnessError(String(event.code ?? "internal"), String(event.message ?? "harness error")));
       if (condition) relayTurnCondition(condition);
     });

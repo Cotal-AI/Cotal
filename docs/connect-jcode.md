@@ -276,7 +276,11 @@ advisory idle pulse between tool rounds of a still-open Cotal-owned run) enters 
 soft-interrupt queue. Ambient channel traffic stays buffered for the next turn. The host marks
 presence working while the session is busy, publishes `activity` naming automatic queue depth and age
 while anything remains uncommitted, and acknowledges every initial or soft-interrupted inbox id only
-after that containing turn succeeds. A failed Cotal-owned turn or private Harness replacement leaves
+after that containing turn succeeds. It holds the batch in flight and restarts its native JetStream
+ack wait while the handover or containing turn is active, so a healthy long turn does not hand the
+same role request to another peer. A failed handover, failed turn, stop or private Harness replacement
+releases that hold without acknowledging the batch. Delivery remains at-least-once if ownership
+expires or the holder fails after acting. A failed Cotal-owned turn or private Harness replacement leaves
 those ids unacknowledged for mesh redelivery. When the Harness reports the failure itself, such as a
 provider `rate_limit`, the host relays its error code as the presence `condition`, so the roster and
 `cotal ps` read `waiting (rate_limit for 2m)`. A turn the TUI owns is covered too: its failure arrives as an
