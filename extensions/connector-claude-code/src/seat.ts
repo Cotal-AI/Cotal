@@ -1,7 +1,7 @@
 /**
  * The entry Claude Code launches for a Cotal seat (`dist/seat.cjs`).
  *
- * All it does is put Node's compile cache in front of the 6 MB `dist/mcp.cjs` bundle and then run
+ * All it does is put Node's compile cache in front of the 4.9 MB `dist/mcp.cjs` bundle and then run
  * it. The cache covers modules compiled after it is enabled, so this has to be a separate file:
  * enabling it from inside the bundle would be too late for the bundle itself, which is where the
  * whole cost is.
