@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { hostname, userInfo } from "node:os";
 import { closeSync, fstatSync, openSync, read } from "node:fs";
 import { promisify } from "node:util";
@@ -391,7 +392,10 @@ export async function send(args: ParsedArgs): Promise<void> {
   const refusal = fileRefusal(input, values);
   const body = await bodyOf(input, values, refusal);
   const warnings: OutputWarning[] = [];
-  const opened = await openTransient(values, senderName(), { throwOnRefusal: true, report: (level) => {
+  // The account signer binds this OS-derived label to a stable operator actor, not a peer seat.
+  // A fresh transport key still authenticates each send. Explicit credentials and user auth keep theirs.
+  const senderActor = `cli_${createHash("sha256").update(senderName()).digest("hex")}`;
+  const opened = await openTransient(values, senderName(), { throwOnRefusal: true, senderActor, report: (level) => {
     warnings.push({ code: level === "error" ? "SENDER_CONNECTION_WARNING" : "SENDER_WARNING", target: { destination: input.target }, message: "The transient sender reported a connection or delivery warning; its receipt confirms only the stated storage outcome." });
   } });
   const { ep, space, connection } = opened;

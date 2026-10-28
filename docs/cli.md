@@ -5897,6 +5897,13 @@ Direct and role sends have no native mention field and refuse that option as `US
 A direct send may use `--reply-to <message-id>` to identify the message it answers. The sender
 still has no inbox and does not promise thread continuity.
 
+A one-shot sender displays the OS login and host as `<login>@<host>`, not the launching
+seat's name. On a local static-auth mesh, the account signer binds that label to a stable
+`local.cli_<sha256>` principal. Each send still uses a fresh, short-lived connection credential
+with the existing operator permissions. An explicit `--creds` keeps that credential's principal,
+and a signed-in mesh keeps the user's `cli` actor. Open meshes do not authenticate a sender.
+A peer message is not proof of the person's authorization to perform an action.
+
 The receipt names the destination and message identifier without repeating the body. Direct and
 role sends include the broker's stored sequence. Storage does not confirm delivery, acceptance
 or completion. A direct send to an agent the roster shows offline also warns on stderr:
