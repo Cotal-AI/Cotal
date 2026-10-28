@@ -1166,7 +1166,8 @@ as one whose manager was killed before it read the request, is cleared only on r
 `LIFECYCLE_BLOCKED` while the manager or the `down` that sent the request still runs, and
 `TARGET_NOT_FOUND` when no member retains that request, as for the operation ID of the `down` that
 sent it. That refusal names the stop request each member retains and, when there is one, its
-`--abandon-stop` command as Next. Either way nothing changes. Otherwise it
+`--abandon-stop` command as Next. Its fields show the ID it was given as `Given ID`, and `--json`
+carries it as `target.requestId`. Either way nothing changes. Otherwise it
 removes the request, the stop reservation and a `--with-agents` shutdown intent that the same stop
 armed, records the manager `failed`, and stops the rest of the stack with a `STOP_ABANDONED` warning.
 Whether that manager stopped or released its agents' seats is not confirmed, and a seat that runs

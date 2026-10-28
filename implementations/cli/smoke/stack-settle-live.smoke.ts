@@ -115,7 +115,8 @@
  *     `status` leads Next with `down --abandon-stop <request> --yes`, and its `Delivery responder`
  *     row names the block instead of `up`. Its blocked line labels that stop request and the
  *     operation, and `down --abandon-stop` given the operation ID refuses `TARGET_NOT_FOUND`, naming
- *     that stop request and its command, and abandons nothing.
+ *     that stop request and its command, and abandons nothing. Its fields label the operation ID
+ *     `Given ID`, and `--json` keeps it as `target.requestId`.
  * 10. A repeated `down --with-agents --yes`. After one that completed it is a no-op, exit 0. After a
  *     `down` without `--with-agents` it still refuses `LIFECYCLE_BLOCKED`.
  * 11. A first `up` under `ulimit -n 32`. Its broker cannot create the space's streams, so the `up`
@@ -1413,9 +1414,14 @@ try {
     const blocked = status.stdout.split("\n").find((line) => line.includes("Stack blocked · ")) ?? "";
     check(`${space}: its blocked line labels the stop request Next names, and the operation it also names`,
       request !== undefined && operation !== undefined && operation !== request && blocked.includes(`with stop request ${request} `) && blocked.includes(`(operation ${operation})`), { request, operation, blocked });
-    const wrong = cli(root, "down", "--abandon-stop", operation ?? "none", "--yes");
+    const wrong = cli(root, "down", "--abandon-stop", operation ?? "none", "--yes", "--plain");
     check(`${space}: down --abandon-stop with the operation ID refuses TARGET_NOT_FOUND, naming the stop request and its command, and abandons nothing`,
       wrong.status === 2 && wrong.stderr.includes("TARGET_NOT_FOUND") && wrong.stderr.includes(`stack-delivery retains stop request ${request};`) && wrong.stderr.includes(`cotal down --abandon-stop ${request} --yes`) && serviceInstances(space, "stack-delivery")[0]?.record.value.state === "stopping", { ...shown(wrong), operation });
+    check(`${space}: that refusal's fields label the operation ID as the ID it was given, not as the original request`,
+      operation !== undefined && new RegExp(`Given ID: +${operation}\n`).test(wrong.stderr) && !wrong.stderr.includes("Original request"), { ...shown(wrong), operation });
+    const wrongJson = cli(root, "down", "--abandon-stop", operation ?? "none", "--yes", "--json");
+    check(`${space}: under --json that refusal still carries the given ID as target.requestId`,
+      wrongJson.status === 2 && wrongJson.env?.error?.code === "TARGET_NOT_FOUND" && operation !== undefined && wrongJson.env.target?.requestId === operation && serviceInstances(space, "stack-delivery")[0]?.record.value.state === "stopping", { ...shown(wrongJson), target: wrongJson.env?.target, operation });
     const abandoned = cli(root, "down", "--abandon-stop", request ?? "none", "--yes", "--json");
     const final = cli(root, "down", "--yes", "--json");
     check(`${space}: abandoning that stop lets down stop the stack`, abandoned.status === 0 && final.status === 0 && gone(space, "stack-broker") && gone(space, "stack-manager"), { abandoned: shown(abandoned), final: shown(final) });

@@ -93,6 +93,12 @@ check("an unset target is null", bare.target === null, bare);
 const attemptId = "restore-00000000-0000-4000-8000-000000000000";
 const attemptReport = renderReport(commandFailureReport(new CommandFailure("unknown", "OPERATION_UNKNOWN", "the restore did not finish", { target: { attemptId } })), "plain");
 check("a failure report prints the attempt id its target carries", new RegExp(`Attempt: +${attemptId}`).test(attemptReport), attemptReport);
+// A request ID the caller gave that names nothing is labelled as given; any other stays the original request.
+const requestId = "00000000-0000-4000-8000-000000000001";
+const givenReport = renderReport(commandFailureReport(new CommandFailure("refused", "TARGET_NOT_FOUND", "no member retains a stop request with that ID", { target: { requestId }, given: "requestId" })), "plain");
+check("a failure report labels a request ID the caller gave as given, not as the original request", new RegExp(`Given ID: +${requestId}`).test(givenReport) && !givenReport.includes("Original request"), givenReport);
+const originalReport = renderReport(commandFailureReport(new CommandFailure("refused", "TARGET_NOT_FOUND", "the endpoint refused the call", { target: { requestId } })), "plain");
+check("a failure report still labels a request ID it was not given as the original request", new RegExp(`Original request: +${requestId}`).test(originalReport) && !originalReport.includes("Given ID"), originalReport);
 
 const ok: Envelope = { schemaVersion: 1, command: "version", target: null, outcome: "ok", completeness: "complete", result: { v: 1 }, warnings: [] };
 const line = envelopeLine(ok);

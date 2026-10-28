@@ -306,7 +306,7 @@ export function commandFailureReport(failure: CommandFailure): Report {
   const fields: (readonly [string, Cell])[] = [["Outcome", { text: failure.outcome, tone: failure.outcome === "unknown" || failure.outcome === "partial" ? "waiting" : "failed" }], ["Code", failure.code]];
   const target = object(failure.target);
   const labels: readonly (readonly [string, string])[] = [["space", "Space"], ["endpoint", "Endpoint"], ["command", "Native command"], ["name", "Name"], ["deploymentId", "Deployment"], ["attemptId", "Attempt"], ["instanceId", "Instance"], ["requestedInstanceId", "Requested instance"], ["managerInstanceId", "Manager"], ["requestId", "Original request"], ["requestedGoalId", "Requested goal"], ["acceptedGoalId", "Accepted goal"]];
-  for (const [key, label] of labels) if (typeof target?.[key] === "string" && target[key]) fields.push([label, target[key] as string]);
+  for (const [key, label] of labels) if (typeof target?.[key] === "string" && target[key]) fields.push([key === failure.given ? "Given ID" : label, target[key] as string]);
   const accepted = object(target?.accepted);
   if (typeof accepted?.goalId === "string") fields.push(["Accepted goal", accepted.goalId]);
   if (typeof accepted?.fingerprint === "string") fields.push(["Goal fingerprint", accepted.fingerprint]);
