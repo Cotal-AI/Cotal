@@ -220,6 +220,17 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
   };
 }
 
+const REQUIRED_CREDENTIALS: Record<(typeof REMOTE_MANAGER_AUTHORITY_OPERATIONS)[number], readonly string[]> = Object.freeze({
+  prepare: Object.freeze(["supervisor", "executor"]),
+  activate: Object.freeze(["serve", "goalWriter", "sessionLedger"]),
+  renew: Object.freeze(["supervisor", "executor"]),
+  session: Object.freeze(["sessionServing"]),
+  retire: Object.freeze(["retirementRequester"]),
+  renewStandingBundle: REMOTE_MANAGER_IDENTITY_NAMES,
+  renewRunDriver: Object.freeze(["runDriver", "runMediator"]),
+  transferReader: Object.freeze(["transferReader"]),
+});
+
 /** Issue one lifecycle phase after the IdP proof and interactive row were fresh-read. */
 export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthorityArgs): Promise<RemoteManagerAuthorityMaterial> {
   const r = parseRemoteManagerAuthorityRequest(args.request, { allowPlatform: args.holder === "platform" });
@@ -238,23 +249,7 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
   }
   const issued = await args.issue({ owner: args.owner, actors, request: r });
   const credentials = issued.credentials;
-  const required = r.operation === "renewStandingBundle"
-    ? REMOTE_MANAGER_IDENTITY_NAMES
-    : r.operation === "renewRunDriver"
-      ? ["runDriver", "runMediator"]
-      : r.operation === "prepare"
-    ? ["supervisor", "executor"]
-    : r.operation === "activate"
-      ? ["serve", "goalWriter", "sessionLedger"]
-      : r.operation === "renew"
-        ? ["supervisor", "executor"]
-      : r.operation === "session"
-        ? ["sessionServing"]
-        : r.operation === "retire"
-          ? ["retirementRequester"]
-        : r.operation === "transferReader"
-          ? ["transferReader"]
-        : REMOTE_MANAGER_IDENTITY_NAMES;
+  const required = REQUIRED_CREDENTIALS[r.operation];
   for (const name of required)
     if (!(name in credentials))
       throw new EpEnvelopeError("internal", `manager-service ${r.operation} did not issue required credential ${name}`);

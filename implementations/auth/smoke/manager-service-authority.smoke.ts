@@ -1,6 +1,7 @@
 /** Closed remote manager-service authority policy cells (broker-free). */
 import assert from "node:assert/strict";
-import { createSpaceAuth, managedRetirementOpId, mintLifecycleUid, mintPublicUserJwt, newIdentity, permissionsFor, remoteManagerActors } from "@cotal-ai/core";
+import { readFileSync } from "node:fs";
+import { EpEnvelopeError, REMOTE_MANAGER_AUTHORITY_OPERATIONS, REMOTE_MANAGER_IDENTITY_NAMES, createSpaceAuth, managedRetirementOpId, mintLifecycleUid, mintPublicUserJwt, newIdentity, permissionsFor, remoteManagerActors, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest } from "@cotal-ai/core";
 import { remoteManagerIssuerGrants } from "@cotal-ai/auth";
 import { authorizeRemoteManagerMaintenance, issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, USER_TOKEN_VIEWS } from "@cotal-ai/auth";
 import { authorizeRemoteManagerRenewal } from "../src/manager-authority.js";
@@ -336,6 +337,96 @@ await cell("manager actors are fixed by the server-selected instance coordinate"
     goalWriter: `manager_goal_${instanceId}`,
     sessionLedger: `manager_session_${instanceId}`,
   });
+});
+
+const expectedRequiredByOperation: Record<(typeof REMOTE_MANAGER_AUTHORITY_OPERATIONS)[number], readonly (keyof RemoteManagerAuthorityMaterial["credentials"])[]> = {
+  prepare: ["supervisor", "executor"],
+  activate: ["serve", "goalWriter", "sessionLedger"],
+  renew: ["supervisor", "executor"],
+  session: ["sessionServing"],
+  retire: ["retirementRequester"],
+  renewStandingBundle: REMOTE_MANAGER_IDENTITY_NAMES,
+  renewRunDriver: ["runDriver", "runMediator"],
+  transferReader: ["transferReader"],
+};
+const operationRequests: Record<(typeof REMOTE_MANAGER_AUTHORITY_OPERATIONS)[number], RemoteManagerAuthorityRequest> = {
+  prepare: request,
+  activate: { ...request, operation: "activate", registrationProof, contractArtifacts: [{ name: "c1" }] },
+  renew: { ...request, operation: "renew", registrationProof },
+  session: { ...request, operation: "session", registrationProof, session: { id: newIdentity().id, endpoint: "manager", sessionId: "sess-1", epoch: 0, exp: 300 } },
+  retire: retireRequest,
+  renewStandingBundle: renewWithProof,
+  renewRunDriver: runWithProof,
+  transferReader: { ...request, operation: "transferReader", registrationProof, transferReader: { id: newIdentity().id } },
+};
+await cell("every operation in REMOTE_MANAGER_AUTHORITY_OPERATIONS requires its exact credential family and refuses each omitted credential", async () => {
+  const credsFor = (names: readonly (keyof RemoteManagerAuthorityMaterial["credentials"])[]) =>
+    Object.fromEntries(names.map((name, idx) => [name, { jwt: "a.b.c", exp: 200 + idx }])) as RemoteManagerAuthorityMaterial["credentials"];
+  for (const op of REMOTE_MANAGER_AUTHORITY_OPERATIONS) {
+    const required = expectedRequiredByOperation[op];
+    for (const omitted of required) {
+      let err: unknown;
+      try {
+        await issueRemoteManagerAuthority({
+          request: operationRequests[op],
+          owner: renewalOwner,
+          scope: ["supervise"],
+          authorizeRenewal: async () => {},
+          issue: async () => ({ credentials: credsFor(required.filter((name) => name !== omitted)) }),
+        });
+      } catch (e) {
+        err = e;
+      }
+      assert.ok(err instanceof EpEnvelopeError, `expected EpEnvelopeError when ${op} omits ${omitted}`);
+      assert.equal(err.code, "internal");
+      assert.equal(err.message, `manager-service ${op} did not issue required credential ${omitted}`);
+    }
+    const material = await issueRemoteManagerAuthority({
+      request: operationRequests[op],
+      owner: renewalOwner,
+      scope: ["supervise"],
+      authorizeRenewal: async () => {},
+      issue: async () => ({ credentials: credsFor(required) }),
+    });
+    assert.equal(material.operation, op);
+    assert.deepEqual(Object.keys(material.credentials), [...required]);
+  }
+  await assert.rejects(
+    issueRemoteManagerAuthority({
+      request: runWithProof,
+      owner: renewalOwner,
+      scope: ["supervise"],
+      authorizeRenewal: async () => {},
+      issue: async () => ({ credentials: credsFor(["runDriver", "runMediator", "sessionServing"]) }),
+    }),
+    (err: unknown) => err instanceof EpEnvelopeError && err.code === "internal" &&
+      err.message === "manager-service renewRunDriver returned credentials outside its closed profile set",
+  );
+});
+await cell("issueRemoteManagerAuthority maps each operation through a frozen REQUIRED_CREDENTIALS record with no default fallback", () => {
+  const built = readFileSync(new URL("../dist/manager-authority.js", import.meta.url), "utf8");
+  const tableMatch = /const REQUIRED_CREDENTIALS = Object\.freeze\(\{([\s\S]*?)\n\}\);/.exec(built);
+  assert.ok(tableMatch, "expected frozen REQUIRED_CREDENTIALS table in built manager-authority.js");
+  const fnStart = built.indexOf("export async function issueRemoteManagerAuthority(");
+  const fnEnd = built.indexOf("\n}\n", fnStart);
+  assert.ok(fnStart > 0 && fnEnd > fnStart);
+  const fnBody = built.slice(fnStart, fnEnd);
+  assert.equal(fnBody.includes("const required = REQUIRED_CREDENTIALS[r.operation];"), true);
+  assert.equal(fnBody.includes(": REMOTE_MANAGER_IDENTITY_NAMES"), false);
+  const evaluate = new Function(
+    "REMOTE_MANAGER_IDENTITY_NAMES",
+    `${tableMatch[0]}\nreturn REQUIRED_CREDENTIALS;`,
+  ) as (names: readonly string[]) => Record<string, readonly string[] | undefined>;
+  const table = evaluate(REMOTE_MANAGER_IDENTITY_NAMES);
+  assert.equal(Object.isFrozen(table), true);
+  assert.deepEqual(Object.keys(table), [...REMOTE_MANAGER_AUTHORITY_OPERATIONS]);
+  for (const op of REMOTE_MANAGER_AUTHORITY_OPERATIONS) {
+    assert.equal(Object.isFrozen(table[op]), true);
+    assert.deepEqual(table[op], expectedRequiredByOperation[op]);
+  }
+  for (const unmapped of ["probeOp", "renewal", "activateX"]) {
+    assert.equal(table[unmapped], undefined);
+  }
 });
 
 console.log(`\nmanager-service-authority: ${pass} passed, ${fail} failed`);
